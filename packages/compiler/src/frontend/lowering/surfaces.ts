@@ -809,6 +809,7 @@ function exactValueParams(...types: IrType[]): BuiltinValueParam[] {
 /** Object helpers whose checked-native ABI is also their stored value ABI.
  * These adapters operate on the live checked object/property table. */
 export const OBJECT_CALLABLE_VALUES: Record<string, BuiltinModuleFn | undefined> = {
+  freeze: { fn: "dyn.freeze", params: [DYN], result: DYN, valueParams: exactValueParams(DYN) },
   is: {
     fn: "dyn.sameValue",
     params: [DYN, DYN],

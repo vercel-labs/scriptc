@@ -275,6 +275,48 @@ static void check_cycles(void) {
   puts("owned cycles and dead outside cycles do not keep a region");
 }
 
+static void check_array_metadata(void) {
+  for (int strings = 0; strings < 2; strings++) for (int outside = 0; outside < 2; outside++) {
+    double r = region();
+    scr_region_enter(r);
+    Node *root = node_new(0), *held = node_new(7);
+    ScrArr *a = scr_arr_new(strings ? SCR_ELEM_STR : SCR_ELEM_F64, 1);
+    if (strings) scr_arr_push_ref(a, scr_str_new("held", 4));
+    else scr_arr_push_f64(a, 42);
+    root->kids = a;
+    ScrDyn *metadata = scr_dyn_new_obj();
+    scr_arr_ext(a)->metadata = metadata;
+    scr_dyn_obj_set(metadata, "held", 4, scr_dyn_new_typed_ref(
+        held, node_retain, node_release, "Node", 4, NULL, NULL));
+    node_release(held);
+    if (outside) scr_arr_retain(a);
+    scr_region_leave();
+    node_release(root);
+    ndisposed = 0;
+    void (*hook)(void *) = scr_weak_dispose_hook;
+    scr_weak_dispose_hook = note_disposed;
+    scr_region_release(r);
+    if (outside) {
+      assert(!was_disposed(root) && !was_disposed(held));
+      assert(held->value == 7 && a->len == 1);
+      scr_arr_release(a);
+      /* An ordinary array release leaves the region's counted references
+       * unchanged. Cross the same allocation threshold as check_retry_schedule
+       * before asking the scheduler to revisit this ownership graph. */
+      double retry = region();
+      scr_region_enter(retry);
+      for (size_t i = 0; i < ((size_t)9 << 20) / sizeof(Node); i++) node_release(node_new(0));
+      scr_region_leave();
+      scr_region_enter(retry);
+      scr_region_leave();
+      scr_region_release(retry);
+    }
+    assert(was_disposed(root) && was_disposed(held));
+    scr_weak_dispose_hook = hook;
+  }
+  puts("primitive array metadata participates in region ownership");
+}
+
 static void check_unwalked(void) {
   double r = region();
   scr_region_enter(r);
@@ -410,18 +452,26 @@ static void check_default_region(void) {
   double r = region();
   scr_region_enter(r);
   Node *a = node_new(1);
+  uintptr_t held_address = (uintptr_t)a;
+  scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
   scr_region_leave();
   scr_region_release(r);
+  assert(scr_native_integrity_flags(a) == SCR_NATIVE_FROZEN);
   node_release(a);
   scr_region_enter(r); /* a released region takes no new objects */
   Node *d = node_new(4);
   scr_region_enter(1e15); /* never created */
   Node *e = node_new(5);
+  scr_native_integrity_strengthen(d, SCR_NATIVE_SEALED);
+  scr_native_integrity_strengthen(e, SCR_NATIVE_FROZEN);
   scr_region_leave();
   scr_region_leave();
   assert(scr_rgn_chunk_of(d) == scr_rgn_chunk_of(e) && scr_rgn_chunk_of(d) != scr_rgn_chunk_of(a));
   scr_region_release(-1);
   scr_region_release(region());
+  assert(!scr_native_integrity_flags((void *)held_address));
+  assert(scr_native_integrity_flags(d) == SCR_NATIVE_SEALED);
+  assert(scr_native_integrity_flags(e) == SCR_NATIVE_FROZEN);
   node_release(d);
   node_release(e);
   puts("objects outside every live region go to the default region");
@@ -505,6 +555,8 @@ int main(int argc, char **argv) {
   } else if (!strcmp(mode, "retained")) {
     check_default_region();
     check_published();
+  } else if (!strcmp(mode, "array-metadata")) {
+    check_array_metadata();
 #ifdef SCR_WORKERS
   } else if (!strcmp(mode, "threads")) {
     check_threads();

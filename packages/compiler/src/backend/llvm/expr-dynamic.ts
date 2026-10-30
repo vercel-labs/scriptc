@@ -83,7 +83,9 @@ export function emitDynamicExpr(
           const adapter = host.liveDynUnionRefAdapter(v.type);
           const boxed = B.tmp();
           B.line(`${boxed} = call ptr @${adapter}(ptr ${v.name})`);
-          return host.own({ name: boxed, type: e.type });
+          const result = host.own({ name: boxed, type: e.type });
+          host.emitPendingCheck();
+          return result;
         }
         if (!streamTypedRefEligible(v.type) && !isDynTypedRefType(v.type)) {
           throw new InternalCompilerError(`llvm emitter bug: live dyn ref of ${typeKey(v.type)}`);
@@ -96,8 +98,10 @@ export function emitDynamicExpr(
         B.line(
           `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, v.type)}(ptr ${v.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
         );
-        for (const line of bindLiveArrayOps(host.shapeHost, adapter, boxed)) B.line(line);
-        return host.own({ name: boxed, type: e.type });
+        const bound = bindLiveArrayOps(host.shapeHost, B, adapter, boxed);
+        const result = host.own({ name: bound, type: e.type });
+        host.emitPendingCheck();
+        return result;
       }
       if (v.type.kind === "func") {
         // A closure boxes as the checked-dynamic tree's function kind: retained closure +
@@ -413,10 +417,10 @@ export function emitDynamicExpr(
           const acc = elemAccess(arm.elem);
           const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
           host.declare(
-            `declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`,
+            `declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_slot_${acc}(ptr, double)`,
           );
           const v = B.tmp();
-          B.line(`${v} = call ${accTy} @scr_arr_get_${acc}(ptr ${payload}, double ${k.name})`);
+          B.line(`${v} = call ${accTy} @scr_arr_get_slot_${acc}(ptr ${payload}, double ${k.name})`);
           if (typeEquals(arm.elem, e.type)) {
             B.line(`store ${ty} ${v}, ptr ${slot}`);
             B.br(join);

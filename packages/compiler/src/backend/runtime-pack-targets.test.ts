@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { loadRuntimePack, type RuntimePackManifest } from "./runtime-pack.js";
+import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import {
   LINUX_ARM64_GNU_TARGET,
   LINUX_ARM64_MUSL_TARGET,
@@ -52,7 +53,7 @@ async function fixture(target: NativeTargetSpec, workers = false) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
+    runtime_abi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
     compiler: { command: "fixture", identity: "fixture", target: target.llvmTriple },
     macros: { executable: [], excluded: ["SCR_LIB"], sanitizer: "external-toolchain-required" },
     flavors: {

@@ -23,6 +23,11 @@ export type StackObjectSource = IrExpr & { kind: "recordLit" | "new" | "call" };
  * (record-results.ts). The caller proves that every use of the value only
  * projects it. */
 export function canStackObject(host: LlvmEmitterContext, e: IrExpr): e is StackObjectSource {
+  if (
+    host.publishedTypes?.requiresHeapIdentity(e.type) ||
+    host.nativeIntegrityTypes?.requiresHeapIdentity(e.type)
+  )
+    return false;
   // A producer with a result-slot entry builds its fresh result in the
   // caller's storage.
   if (e.kind === "call") return host.fnByName.has(resultEntryName(e.callee));

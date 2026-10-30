@@ -94,7 +94,7 @@ function fixture(
     body: body(ref("map", map), ref("key", key), ref("other", map)),
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [{ id: "optional", arms: [value, UNDEFINED_T] }],

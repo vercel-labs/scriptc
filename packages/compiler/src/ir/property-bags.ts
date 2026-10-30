@@ -77,7 +77,7 @@ export function dropUnwrittenPropertyBags(mod: IrModule): IrModule {
       },
     });
   }
-  // Field presence tracking (JavaScript classes) keeps the bag it records into.
+  // Exposed classes keep the bag that owns their field presence and attributes.
   const kept = new Set(classes.filter((cls) => cls.tracksOwnFields).map((cls) => rootOf(cls.name)));
   const removed = new Set<string>();
   for (const [name, roots] of writes) {

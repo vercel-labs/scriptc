@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  arrayOf,
   BOOL,
   DYN,
   F64,
@@ -28,7 +29,7 @@ function fn(name: string, body: IrStmt[], locals: IrLocal[] = [local]): IrFuncti
   return { name, body, locals, params: [], returnType: VOID, loc };
 }
 function moduleWith(...functions: IrFunction[]): IrModule {
-  return { irVersion: 16, sourceFile: loc.file, entry: "caller", functions };
+  return { irVersion: 17, sourceFile: loc.file, entry: "caller", functions };
 }
 const assignment: IrStmt = { kind: "assign", localId: local.id, value, loc };
 const expression: IrExpr = { kind: "assignExpr", localId: local.id, value, type: F64, loc };
@@ -42,6 +43,56 @@ const increment: IrExpr = {
 };
 const read: IrExpr = { kind: "varRef", localId: local.id, type: F64, loc };
 const exprStmt = (expr: IrExpr): IrStmt => ({ kind: "exprStmt", expr, loc });
+
+test.each(["dyn.objCreate", "dyn.newClassPrototype"] as const)(
+  "%s propagates invalid-prototype errors through callers",
+  (operation) => {
+    const base: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
+    const name: IrExpr = { kind: "strLit", value: "Child", type: STRING, loc };
+    const target = fn("target", [
+      exprStmt({
+        kind: "libCall",
+        fn: operation,
+        args: operation === "dyn.objCreate" ? [base] : [base, name],
+        type: DYN,
+        loc,
+      }),
+    ]);
+    const caller = fn("caller", [
+      exprStmt({ kind: "call", callee: "target", args: [], type: VOID, loc }),
+    ]);
+    expect([...computeMayThrow(moduleWith(caller, target)).fns].sort()).toEqual([
+      "caller",
+      "target",
+    ]);
+  },
+);
+
+test("array property access and live exposure propagate pending through callers", () => {
+  const type = arrayOf(F64);
+  const arr: IrExpr = { kind: "varRef", localId: "array", type, loc };
+  const operations: IrExpr[] = [
+    { kind: "arrayPropertyRead", arr, index: value, consume: "number", type: F64, loc },
+    { kind: "arrayHasProperty", arr, index: value, type: BOOL, loc },
+    { kind: "dynFrom", value: arr, liveRef: true, type: DYN, loc },
+  ];
+  for (const operation of operations) {
+    const target = fn(
+      "target",
+      [exprStmt(operation)],
+      [{ id: "array", name: "array", type, mutable: false }],
+    );
+    const caller = fn(
+      "caller",
+      [exprStmt({ kind: "call", callee: "target", args: [], type: VOID, loc })],
+      [],
+    );
+    expect([...computeMayThrow(moduleWith(caller, target)).fns].sort()).toEqual([
+      "caller",
+      "target",
+    ]);
+  }
+});
 
 test.each([
   ["store", assignment],
@@ -138,6 +189,67 @@ const closureOf = (fnName: string): IrExpr => ({
 const callClosure = (fnName: string): IrStmt =>
   exprStmt({ kind: "callValue", callee: closureOf(fnName), args: [], type: VOID, loc });
 const failure: IrStmt = { kind: "throw", value, loc };
+
+test.each(["arraySet", "arraySetUndefined", "arrayDelete", "arraySetLength"] as const)(
+  "%s integrity failures propagate through direct and closure calls and discharge at catch",
+  (kind) => {
+    const array = arrayOf(F64);
+    const arr: IrExpr = { kind: "varRef", localId: "a", type: array, loc };
+    const mutation: IrStmt =
+      kind === "arraySetLength"
+        ? { kind, arr, length: value, loc }
+        : kind === "arraySet"
+          ? { kind, arr, index: value, value, loc }
+          : { kind, arr, index: value, loc };
+    const target = fn("target", [mutation], [{ id: "a", name: "a", type: array, mutable: false }]);
+    const caught = fn(
+      "caught",
+      [
+        {
+          kind: "tryCatch",
+          tryBody: [mutation],
+          catchBody: [],
+          catchLocalId: null,
+          finallyBody: null,
+          loc,
+        },
+      ],
+      target.locals,
+    );
+    const result = computeMayThrow(
+      moduleWith(
+        target,
+        caught,
+        fn("direct", [call("target")], []),
+        fn("indirect", [callClosure("target")], []),
+      ),
+    );
+    expect(result.fns).toEqual(new Set(["target", "direct", "indirect"]));
+    expect(result.indirect).toBe(true);
+  },
+);
+
+test.each(["module.link", "module.fail"] as const)(
+  "%s propagates children-array failures through its caller",
+  (operation) => {
+    const target = fn(
+      "target",
+      [
+        exprStmt({
+          kind: "libCall",
+          fn: operation,
+          args: operation === "module.link" ? [value, value] : [value],
+          type: VOID,
+          loc,
+        }),
+      ],
+      [],
+    );
+    expect(computeMayThrow(moduleWith(fn("caller", [call("target")], []), target)).fns).toEqual(
+      new Set(["caller", "target"]),
+    );
+  },
+);
 
 test("propagates through a long caller-first chain without recursive graph traversal", () => {
   const size = 6000;
@@ -716,4 +828,52 @@ test("unreachable statements do not seed", () => {
     ),
   );
   expect([...answer.fns].sort()).toEqual(["reachable", "thrower"]);
+});
+
+test.each([
+  "reverse",
+  "sortPrimitive",
+  "copyWithin",
+  "fill",
+  "fillUndefined",
+  "pop",
+  "shift",
+  "splice",
+  "spliceInsert",
+  "push",
+  "pushSpread",
+  "unshift",
+  "unshiftSpread",
+] as const)("array %s integrity errors propagate through callers", (method) => {
+  const removal = method === "pop" || method === "shift";
+  const extension =
+    method === "push" ||
+    method === "pushSpread" ||
+    method === "unshift" ||
+    method === "unshiftSpread";
+  const array = arrayOf(removal ? DYN : F64);
+  const receiver: IrLocal = { id: "array", name: "array", type: array, mutable: false };
+  const args =
+    method === "pushSpread" || method === "unshiftSpread"
+      ? [{ kind: "arrayLit" as const, elems: [value], type: array, loc }]
+      : method === "reverse" || method === "sortPrimitive" || removal
+        ? []
+        : method === "copyWithin" || method === "fill"
+          ? [value, value, value]
+          : method === "spliceInsert"
+            ? [value, value, { kind: "arrayLit" as const, elems: [value], type: array, loc }]
+            : [value, value];
+  const operation: IrExpr = {
+    kind: "arrIntrinsic",
+    method,
+    receiver: { kind: "varRef", localId: receiver.id, type: array, loc },
+    args,
+    type: removal ? DYN : extension ? F64 : array,
+    loc,
+  };
+  const target = fn("target", [exprStmt(operation)], [receiver]);
+  const caller = fn("caller", [
+    exprStmt({ kind: "call", callee: "target", args: [], type: VOID, loc }),
+  ]);
+  expect([...computeMayThrow(moduleWith(caller, target)).fns].sort()).toEqual(["caller", "target"]);
 });

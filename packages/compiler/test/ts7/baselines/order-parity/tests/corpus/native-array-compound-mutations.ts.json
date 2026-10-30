@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-array-compound-mutations.ts"
+ ],
+ "diags": []
+}

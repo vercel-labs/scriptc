@@ -54,6 +54,7 @@ import {
   typeEquals,
   typeKey,
   unionContainerArmsOk,
+  UNDEFINED_T,
   VOID,
 } from "./ir.js";
 import { DYN_CLASS_PROPERTIES } from "./ir.js";
@@ -431,7 +432,11 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       const environment = cls.fields.find(
         (field) => field.name === `%classEnvironment:${cls.name}`,
       );
-      if (environment?.type.kind !== "classval" || environment.type.className !== cls.name) {
+      if (
+        environment?.type.kind !== "classval" ||
+        environment.type.className !== cls.name ||
+        environment.visibility !== "internal"
+      ) {
         errors.push({
           message: `class ${cls.name}: local class requires its constructor environment field`,
           loc: cls.loc,
@@ -471,7 +476,12 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     if (
       cls.tracksOwnFields &&
       (cls.runtime ||
-        cls.fields.find((field) => field.name === DYN_CLASS_PROPERTIES)?.type.kind !== "dyn")
+        !cls.fields.some(
+          (field) =>
+            field.name === DYN_CLASS_PROPERTIES &&
+            field.type.kind === "dyn" &&
+            field.visibility === "internal",
+        ))
     ) {
       errors.push({
         message: `class ${cls.name}: field presence tracking requires a native dyn property bag`,
@@ -493,8 +503,12 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         });
       }
     }
-    if (cls.instancePrototypeHelper !== undefined) {
-      const helper = functionsByName.get(cls.instancePrototypeHelper);
+    for (const [name, label] of [
+      [cls.instancePrototypeHelper, "instance prototype"],
+      [cls.nativePropertyBagHelper, "native property bag"],
+    ]) {
+      if (name === undefined) continue;
+      const helper = functionsByName.get(name);
       const receiver = helper?.params[0]?.type;
       if (
         !helper ||
@@ -506,11 +520,16 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         helper.classCaptures !== undefined
       ) {
         errors.push({
-          message: `class ${cls.name}: instance prototype helper must be a noncapturing (instance) => dyn function`,
+          message: `class ${cls.name}: ${label} helper must be a noncapturing (instance) => dyn function`,
           loc: cls.loc,
         });
       }
     }
+    if (cls.nativePropertyBagHelper !== undefined && !cls.tracksOwnFields)
+      errors.push({
+        message: `class ${cls.name}: native property bag helper requires field presence tracking`,
+        loc: cls.loc,
+      });
     for (const symbol of cls.symbolFields ?? []) {
       const global = mod.globals?.find((global) => global.id === symbol.globalId);
       if (
@@ -598,7 +617,10 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     if (
       cls.fields.length < base.fields.length ||
       base.fields.some(
-        (f, i) => cls.fields[i]!.name !== f.name || !typeEquals(cls.fields[i]!.type, f.type),
+        (f, i) =>
+          cls.fields[i]!.name !== f.name ||
+          cls.fields[i]!.visibility !== f.visibility ||
+          !typeEquals(cls.fields[i]!.type, f.type),
       )
     ) {
       errors.push({
@@ -641,6 +663,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       family.fields.some(
         (field, index) =>
           cls.fields[index]?.name !== field.name ||
+          cls.fields[index]?.visibility !== field.visibility ||
           !typeEquals(cls.fields[index]!.type, field.type),
       )
     ) {
@@ -1330,6 +1353,8 @@ function validateFunction(
         return checkStringExpr(e);
       case "arrayLit":
       case "arrayNewLen":
+      case "arrayPropertyRead":
+      case "arrayHasProperty":
       case "arrayGet":
       case "arrayHas":
       case "arrayState":
@@ -2003,6 +2028,8 @@ function validateFunction(
       kind:
         | "arrayLit"
         | "arrayNewLen"
+        | "arrayPropertyRead"
+        | "arrayHasProperty"
         | "arrayGet"
         | "arrayHas"
         | "arrayState"
@@ -2064,6 +2091,54 @@ function validateFunction(
         expectType(e.length, F64, "arrayNewLen length");
         break;
       }
+      case "arrayPropertyRead": {
+        checkExpr(e.arr);
+        checkExpr(e.index);
+        expectType(e.index, F64, "arrayPropertyRead index");
+        if (e.arr.type.kind !== "array") {
+          err("arrayPropertyRead requires an array", e.loc);
+          break;
+        }
+        const elem = e.arr.type.elem;
+        switch (e.consume) {
+          case "required":
+            if (!typeEquals(e.type, elem))
+              err("required property read must return its element type", e.loc);
+            break;
+          case "value": {
+            const expected =
+              elem.kind === "dyn"
+                ? [DYN]
+                : [
+                    ...(elem.kind === "union" ? (unions.get(elem.unionId)?.arms ?? []) : [elem]),
+                    UNDEFINED_T,
+                  ];
+            const actual =
+              e.type.kind === "union" ? (unions.get(e.type.unionId)?.arms ?? []) : [e.type];
+            const keys = (types: IrType[]): string =>
+              [...new Set(types.map(typeKey))].sort().join(";");
+            if (keys(expected) !== keys(actual))
+              err("property read must return element or undefined", e.loc);
+            break;
+          }
+          case "number":
+          case "numberConstructor":
+            if (!typeEquals(e.type, F64) || !["f64", "bool", "string"].includes(elem.kind))
+              err("numeric property read requires scalar storage and f64 result", e.loc);
+            break;
+          case "boolean":
+            if (!typeEquals(e.type, BOOL) || (elem.kind !== "f64" && elem.kind !== "bool"))
+              err("boolean property read requires number/bool storage and bool result", e.loc);
+            break;
+          case "string":
+            if (!typeEquals(e.type, STRING) || elem.kind !== "string")
+              err("string property read requires string storage and result", e.loc);
+            break;
+          default:
+            err("invalid array property consumer", e.loc);
+        }
+        break;
+      }
       case "arrayGet": {
         checkExpr(e.arr);
         checkExpr(e.index);
@@ -2075,6 +2150,7 @@ function validateFunction(
         }
         break;
       }
+      case "arrayHasProperty":
       case "arrayHas": {
         checkExpr(e.arr);
         checkExpr(e.index);
@@ -2457,11 +2533,12 @@ function validateFunction(
           !(elem.kind === "dyn" && e.type.kind === "dyn")
         ) {
           const rdef = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+          const source = elem.kind === "union" ? unions.get(elem.unionId) : undefined;
           if (
             !rdef ||
             !rdef.arms.some((arm) => arm.kind === "undefinedT") ||
             !(elem.kind === "union"
-              ? typeEquals(elem, e.type)
+              ? source && unionWideningTags(source.arms, rdef.arms) !== null
               : rdef.arms.some((arm) => typeEquals(arm, elem)))
           ) {
             err(`arrIntrinsic ${e.method} result must be the elem|undefined union`, e.loc);
@@ -3802,6 +3879,46 @@ function validateFunction(
   }
 
   function checkIntrinsicExpr(e: IrExpr & { kind: "intrinsic" }): void {
+    if (e.name.startsWith("native.")) {
+      for (const arg of e.args) checkExpr(arg);
+      const [receiver, key, operation] = e.args;
+      if (receiver?.type.kind !== "record" && receiver?.type.kind !== "object")
+        err(`${e.name} requires a native record or class receiver`, e.loc);
+      const write = e.name === "native.checkWrite";
+      const keyed =
+        e.name === "native.propertyReset" ||
+        e.name === "native.declareUndefined" ||
+        e.name === "native.isDeclaredUndefined";
+      if (
+        (e.name === "native.declareUndefined" || e.name === "native.isDeclaredUndefined") &&
+        receiver?.type.kind !== "object"
+      )
+        err(`${e.name} requires a class receiver`, e.loc);
+      const nativeSet =
+        write && operation?.kind === "numLit" && (operation.value === 0 || operation.value === 1);
+      if (e.args.length !== (write ? (nativeSet ? 4 : 3) : keyed ? 2 : 1))
+        err(`${e.name} has invalid argument count`, e.loc);
+      const rhs = e.args[3];
+      if (
+        nativeSet &&
+        rhs &&
+        (rhs.type.kind === "void" || isUnitType(rhs.type) || rhs.kind === "fieldAbsent")
+      )
+        err("native.checkWrite requires a stored RHS value", e.loc);
+      if ((write || keyed) && key?.type.kind !== "string")
+        err(`${e.name} requires a string property key`, e.loc);
+      if (
+        write &&
+        (operation?.kind !== "numLit" ||
+          !Number.isInteger(operation.value) ||
+          operation.value < 0 ||
+          operation.value > 4)
+      )
+        err("native.checkWrite requires a property operation literal from 0 through 4", e.loc);
+      const result = write || e.name.startsWith("native.is") ? "bool" : "void";
+      if (e.type.kind !== result) err(`${e.name} must be ${result}`, e.loc);
+      return;
+    }
     if (e.name === "module.tdzCheck") {
       const [flag, name] = e.args;
       if (e.args.length !== 2 || flag === undefined || name?.kind !== "strLit") {

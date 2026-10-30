@@ -4,3 +4,10 @@ union-clone-override-width.ts:8:18 - error SC2001: values of type '{ kind: "left
   8 |   const result = { ...source, payload };
     |                  ^~~~~~~~~~~~~~~~~~~~~~
   9 |   return result.payload.extra;
+
+union-clone-override-width.ts:16:18 - error SC2001: values of type '{ kind: "left"; left: number; payload: WiderRecord; } | { kind: "right"; right: number; payload: WiderRecord; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+
+  15 |   // A known tag still cannot authorize dropping the replacement's fields.
+  16 |   const result = { ...source, payload };
+     |                  ^~~~~~~~~~~~~~~~~~~~~~
+  17 |   return result.payload.extra;

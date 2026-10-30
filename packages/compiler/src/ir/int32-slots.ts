@@ -10,6 +10,7 @@ import {
 } from "./integer-ranges.js";
 import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
 import { findInitializerBindings, withInitializerBindings } from "./initializer-bindings.js";
+import { computeNativeSetEffects } from "./native-integrity.js";
 import { everyExprChild, everyStmtChild, everyStmtList, everyTypeChild } from "./traverse.js";
 
 /** Whole-program int32 specialization of numeric storage.
@@ -315,6 +316,7 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.iteratorStepDone",
   "dyn.mapSeedEntries",
   "dyn.mapSeedEntry",
+  "dyn.newClassPrototype",
   "dyn.numberConstructor",
   "dyn.objCreate",
   "dyn.objEntries",
@@ -378,8 +380,8 @@ function walkFunction(
 }
 
 /** The class field names that runtime stores through live dynamic views
- * (typed-ref capsules) can write: every name when `all` (a dynamic store
- * whose key is not a literal), otherwise the
+ * (typed-ref capsules) can write: every name when `all` (an unresolved
+ * dynamic call or a store whose key is not a literal), otherwise the
  * literal keys of `dyn.keySet`/`dyn.keyDelete`. A view commits a store back
  * into the instance's native field slots, which the IR does not show. */
 export function dynamicFieldStores(
@@ -387,6 +389,7 @@ export function dynamicFieldStores(
   records = new Map((mod.records ?? []).map((r) => [r.id, r])),
   unions = new Map((mod.unions ?? []).map((u) => [u.id, u])),
 ): { all: boolean; names: Set<string> } {
+  if (computeNativeSetEffects(mod).callsSetter) return { all: true, names: new Set() };
   const dynTypes = new Map<IrType, boolean>();
   const dynNamed = new Map<string, boolean>();
   const dynish = (type: IrType): boolean => {
@@ -427,6 +430,13 @@ export function dynamicFieldStores(
     walkFunction(fn, {
       expr: (e) => {
         if (dynWritesAll) return;
+        // Runtime dispatch can write a live receiver, including one captured
+        // by a bound callable with no explicit arguments. The IR has no
+        // callee-body proof that permits omitting commits or narrowing fields.
+        if (e.kind === "dynInvoke" || e.kind === "dynCall") {
+          dynWritesAll = true;
+          return;
+        }
         if (
           e.kind === "libCall" &&
           !DYN_READ_ONLY.has(e.fn) &&

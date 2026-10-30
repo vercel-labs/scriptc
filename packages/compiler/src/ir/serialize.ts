@@ -8,9 +8,9 @@
  * materializes the complete document as a single string. */
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
 
-// Version 16 removes embedded-engine types, operations, and module metadata.
-// Older modules can require runtime support that no longer exists.
-export const IR_VERSION = 16 as const;
+// Version 17 records class field visibility and native property operation ownership.
+// Older modules infer visibility from names and can expose private storage here.
+export const IR_VERSION = 17 as const;
 
 /** IR artifacts are plain data. Scan each function once before deciding
  * whether its JSON encoding needs the complete-number-domain replacer. */

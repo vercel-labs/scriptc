@@ -12,7 +12,7 @@ import {
 import { varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import type { ClassInfo } from "./lower-classes.js";
+import { classFieldType, type ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 
 function literalName(name: ts.PropertyName): string | null {
@@ -20,7 +20,10 @@ function literalName(name: ts.PropertyName): string | null {
 }
 
 function bagOnlyProperty(owner: ClassInfo, name: string): boolean {
-  return !owner.fields.has(name) && owner.subclasses.every((child) => bagOnlyProperty(child, name));
+  return (
+    classFieldType(owner, name) === undefined &&
+    owner.subclasses.every((child) => bagOnlyProperty(child, name))
+  );
 }
 
 function runtimeRooted(info: ClassInfo): boolean {
@@ -91,17 +94,19 @@ export function lowerClassDataDescriptor(
   const descriptors = call.arguments[member === "defineProperty" ? 2 : 1]!;
   if (member === "defineProperty") {
     const key = call.arguments[1]!;
-    if ((ts.isStringLiteral(key) && !safeName(info, key.text)) || !descriptor(descriptors))
-      return null;
+    // A proven bag name can use the runtime descriptor conversion directly.
+    // Its getters may mutate native fields; copying and committing a native
+    // snapshot here would overwrite those changes.
+    if (ts.isStringLiteral(key)) {
+      if (!safeName(info, key.text)) return null;
+    } else if (!descriptor(descriptors)) return null;
   } else {
     if (
       !ts.isObjectLiteralExpression(descriptors) ||
       !descriptors.properties.every((p) => {
         if (!ts.isPropertyAssignment(p)) return false;
         const name = literalName(p.name);
-        return (
-          name !== null && name !== "__proto__" && safeName(info, name) && descriptor(p.initializer)
-        );
+        return name !== null && name !== "__proto__" && safeName(info, name);
       })
     )
       return null;
@@ -181,32 +186,31 @@ function descriptorGuard(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): string
   const key = varRef("key", DYN, loc);
   const fields = new Set<string>();
   const collect = (owner: ClassInfo): void => {
-    for (const field of owner.fields.keys()) fields.add(field);
+    for (const field of owner.def.fields)
+      if (classFieldType(owner, field.name) !== undefined) fields.add(field.name);
     for (const child of owner.subclasses) collect(child);
   };
   collect(info);
-  const body: IrStmt[] = [...fields]
-    .filter((field) => !field.startsWith("%") && !field.startsWith("#"))
-    .map((field): IrStmt => ({
-      kind: "if",
-      cond: {
-        kind: "dynScalarEq",
-        left: key,
-        right: lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc }, DYN),
-        type: BOOL,
+  const body: IrStmt[] = [...fields].map((field): IrStmt => ({
+    kind: "if",
+    cond: {
+      kind: "dynScalarEq",
+      left: key,
+      right: lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc }, DYN),
+      type: BOOL,
+      loc,
+    },
+    then: [
+      {
+        kind: "runtimeFence",
+        code: "SC2020",
+        message: `changing the descriptor of native field '${field}' is not supported yet`,
         loc,
       },
-      then: [
-        {
-          kind: "runtimeFence",
-          code: "SC2020",
-          message: `changing the descriptor of native field '${field}' is not supported yet`,
-          loc,
-        },
-      ],
-      else_: null,
-      loc,
-    }));
+    ],
+    else_: null,
+    loc,
+  }));
   if (existing) {
     existing.body = body;
     return name;

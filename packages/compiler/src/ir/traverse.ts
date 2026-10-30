@@ -184,6 +184,8 @@ export function everyExprChild(
       return node.elems.every((child) => expr(child));
     case "arrayNewLen":
       return expr(node.length);
+    case "arrayPropertyRead":
+    case "arrayHasProperty":
     case "arrayGet":
       return expr(node.arr) && expr(node.index);
     case "arrayHas":
@@ -497,6 +499,8 @@ export function mapExprChildren(
       return { ...node, elems: node.elems.map((child) => expr(child)) };
     case "arrayNewLen":
       return { ...node, length: expr(node.length) };
+    case "arrayPropertyRead":
+    case "arrayHasProperty":
     case "arrayGet":
       return { ...node, arr: expr(node.arr), index: expr(node.index) };
     case "arrayHas":

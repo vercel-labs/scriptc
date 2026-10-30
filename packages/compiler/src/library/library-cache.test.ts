@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import type { IrModule } from "../ir/ir.js";
+import { IR_VERSION } from "../ir/serialize.js";
 import {
   FrontendInputTracker,
   trackedAccessibleEntries,
@@ -256,75 +257,85 @@ test("early library cache misses on source edits and newly-resolved candidates",
   expect(await readEarlyLibraryCache(f.root, f.options, null)).toBeNull();
 });
 
-test("semantic library cache restores and rebases IR after a comment-only edit", async () => {
-  const f = await fixture();
-  const sourceBefore = await readFile(f.source, "utf8");
-  const returnStart = sourceBefore.indexOf("return");
-  const semanticMod = {
-    irVersion: 16,
-    sourceFile: f.source,
-    functions: [
-      {
-        name: "__main",
-        params: [],
-        returnType: { kind: "void" },
-        locals: [],
-        body: [],
-        loc: { file: f.source, start: returnStart, end: returnStart + 6 },
+test.each([16, IR_VERSION])(
+  "semantic library cache handles IR%d after a comment-only edit",
+  async (version) => {
+    const f = await fixture();
+    const sourceBefore = await readFile(f.source, "utf8");
+    const returnStart = sourceBefore.indexOf("return");
+    const semanticMod = {
+      irVersion: 17,
+      sourceFile: f.source,
+      functions: [
+        {
+          name: "__main",
+          params: [],
+          returnType: { kind: "void" },
+          locals: [],
+          body: [],
+          loc: { file: f.source, start: returnStart, end: returnStart + 6 },
+        },
+      ],
+      entry: "__main",
+    } satisfies IrModule;
+    // Publish an old artifact through the same V8 cache path; its version is
+    // deliberately outside the current producer's type contract.
+    semanticMod.irVersion = version as IrModule["irVersion"];
+    const tracker = new FrontendInputTracker();
+    tracker.run(() => trackedReadFile(f.source));
+    await publishEarlyLibraryCache(f.root, f.options, {
+      llvmPath: f.llvmPath,
+      irPath: f.irPath,
+      sidecarPath: f.sidecarPath,
+      native: {
+        backend: "llvm",
+        regex: false,
+        assert: false,
+        inspect: false,
+        symbol: false,
+        bigint: false,
+        searchParams: false,
+        emitter: false,
+        zlib: false,
+        copying: false,
+        textDecoderLegacy: false,
+        dynInvoke: false,
       },
-    ],
-    entry: "__main",
-  } satisfies IrModule;
-  const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
-  await publishEarlyLibraryCache(f.root, f.options, {
-    llvmPath: f.llvmPath,
-    irPath: f.irPath,
-    sidecarPath: f.sidecarPath,
-    native: {
-      backend: "llvm",
-      regex: false,
-      assert: false,
-      inspect: false,
-      symbol: false,
-      bigint: false,
-      searchParams: false,
-      emitter: false,
-      zlib: false,
-      copying: false,
-      textDecoderLegacy: false,
-      dynInvoke: false,
-    },
-    frontend: tracker.snapshot(),
-    semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
-  });
+      frontend: tracker.snapshot(),
+      semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
+    });
 
-  const sourceAfter = `// inserted comment\n${sourceBefore}`;
-  await writeFile(f.source, sourceAfter);
-  expect(await readEarlyLibraryCache(f.root, f.options, null)).toBeNull();
-  const hit = await readSemanticLibraryCache(f.root, f.options, null);
-  expect(hit).not.toBeNull();
-  expect(hit?.changedSources).toEqual([f.source]);
-  expect(hit?.translationUnit).toBe("; generated llvm\n");
-  expect(hit?.mod.functions[0]!.loc.start).toBe(sourceAfter.indexOf("return"));
-  expect(hit?.frontend.probes).toContainEqual(
-    expect.objectContaining({
-      op: "file",
-      path: f.source,
-    }),
-  );
+    const sourceAfter = `// inserted comment\n${sourceBefore}`;
+    await writeFile(f.source, sourceAfter);
+    expect(await readEarlyLibraryCache(f.root, f.options, null)).toBeNull();
+    const hit = await readSemanticLibraryCache(f.root, f.options, null);
+    if (version !== IR_VERSION) {
+      expect(hit).toBeNull();
+      return;
+    }
+    expect(hit).not.toBeNull();
+    expect(hit?.changedSources).toEqual([f.source]);
+    expect(hit?.translationUnit).toBe("; generated llvm\n");
+    expect(hit?.mod.functions[0]!.loc.start).toBe(sourceAfter.indexOf("return"));
+    expect(hit?.frontend.probes).toContainEqual(
+      expect.objectContaining({
+        op: "file",
+        path: f.source,
+      }),
+    );
 
-  const earlyRoot = join(f.root, "early-lib");
-  const [key] = await readdir(earlyRoot);
-  await writeFile(join(earlyRoot, key!, "program.tu"), "corrupt\n");
-  expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
-});
+    const earlyRoot = join(f.root, "early-lib");
+    const [key] = await readdir(earlyRoot);
+    await writeFile(join(earlyRoot, key!, "program.tu"), "corrupt\n");
+    expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
+  },
+);
 
 test("semantic library cache refuses token and directive edits", async () => {
   const f = await fixture();
   const sourceBefore = await readFile(f.source, "utf8");
   const semanticMod = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: f.source,
     functions: [
       {
@@ -372,7 +383,7 @@ test("semantic LLVM cache accepts comment edits that shift source lines", async 
   const f = await fixture();
   const sourceBefore = await readFile(f.source, "utf8");
   const semanticMod = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: f.source,
     functions: [
       {
@@ -447,7 +458,7 @@ test("semantic LLVM cache accepts line separator normalization", async () => {
       frontend: tracker.snapshot(),
       semantic: {
         mod: {
-          irVersion: 16,
+          irVersion: 17,
           sourceFile: f.source,
           functions: [],
           entry: "__main",
@@ -468,7 +479,7 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
   const importedSource = "export function helper(): number { return 1; }\n";
   await writeFile(imported, importedSource);
   const semanticMod = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: f.source,
     functions: [
       {

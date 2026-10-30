@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule, serializeModule, validateModule } from "../src/index.js";
 import { analyzeCallLifetimes } from "../src/backend/llvm/call-lifetimes.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
+import { mangleBorrowedFunction, mangleClassRetain } from "../src/backend/mangle.js";
 import { type IrModule } from "../src/ir/ir.js";
 
 /** A pending-exception check: the inline active-cell test or a runtime call. */
@@ -37,6 +38,53 @@ function body(llvm: string, symbol: string): string {
   );
   expect(found, symbol).not.toBeNull();
   return found![0];
+}
+
+/** Source Get owns its result, whether the element came from a slot or a getter. */
+function arrayReadValues(
+  module: IrModule,
+  llvm: string,
+  work: string,
+  count = 1,
+): [string, ...string[]] {
+  const helper = module.functions.find(
+    (fn) => fn.body[0]?.kind === "return" && fn.body[0].value?.kind === "arrayPropertyRead",
+  );
+  expect(helper).toBeDefined();
+  const symbol = mangleBorrowedFunction(helper!.name);
+  const read = body(llvm, symbol);
+  expect(read).toContain("@scr_arr_property_get");
+  expect(read).toContain("@scr_arr_property_unbox");
+  const array = helper!.params[0]!.type;
+  expect(array.kind).toBe("array");
+  if (array.kind === "array") {
+    expect(["object", "string"]).toContain(array.elem.kind);
+    const retain =
+      array.elem.kind === "object" ? mangleClassRetain(array.elem.className) : "scr_str_retain_v";
+    expect(read).toContain(`= call ptr @${retain}(`);
+  }
+  const calls = [...work.matchAll(new RegExp(`(%t\\d+) = call ptr @${symbol}(?:\\.i32)?\\(`, "g"))];
+  expect(calls).toHaveLength(count);
+  const values = calls.map((call) => call[1]!);
+  expect(new Set(values).size).toBe(count);
+  return values as [string, ...string[]];
+}
+
+/** Select the actual pending-check successor, not an unrelated later release. */
+function continuation(work: string, callee: string, outcome: "normal" | "unwind"): string {
+  const call = work.indexOf(`@${callee}`);
+  expect(call).toBeGreaterThanOrEqual(0);
+  const after = work.slice(call);
+  const branch = /br i1 [^,]+, label %([\w.]+), label %([\w.]+)/.exec(after);
+  expect(branch).not.toBeNull();
+  expect(after.slice(0, branch!.index)).toMatch(PENDING_CHECK);
+  const label = branch![outcome === "unwind" ? 1 : 2]!;
+  const block = after.split(`${label}:\n`)[1];
+  expect(block).toBeDefined();
+  const result = block!.split(/^\w[\w.]*:/m)[0]!;
+  const releases = result.match(/call void @\w*release\w*\(ptr %t\d+\)/g) ?? [];
+  expect(new Set(releases).size).toBe(releases.length);
+  return result;
 }
 
 test("projected collection receivers borrow across local helper work and typed mutation", async () => {
@@ -107,7 +155,7 @@ console.log(relay("ready", "re"));
   expect(emitLlvmModule(deserializeModule(serializeModule(module)))).toBe(llvm);
 });
 
-test("direct source array arguments use stack tags without changing the helper ABI", async () => {
+test("direct source array arguments keep owned values through the borrowed helper ABI", async () => {
   const module = await lower(`
 class Item { value: number; constructor(value: number) { this.value = value; } }
 function value(item: Item): number { return item.value; }
@@ -115,7 +163,7 @@ function work(items: Item[], index: number): number { return value(items[index])
 console.log(work([new Item(7)], 0));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
@@ -123,10 +171,13 @@ void keepBoxed;
   expect(value.params[0]!.type.kind).toBe("union");
   const llvm = emitLlvmModule(module);
   const work = body(llvm, "sc_bf_work");
-  expect(work).toContain("alloca %ScrUnion");
-  expect(work).toContain("@sc_bf_value");
-  expect(work).not.toContain("@scr_union_new_ref");
-  expect(work).not.toContain("@scr_union_release");
+  const [valueRead] = arrayReadValues(module, llvm, work);
+  expect(work).toMatch(new RegExp(`@sc_bf_value(?:\\.i32)?\\(ptr ${valueRead}\\)`));
+  for (const outcome of ["normal", "unwind"] as const) {
+    expect(continuation(work, "sc_bf_value", outcome)).toContain(
+      `@scr_union_release(ptr ${valueRead})`,
+    );
+  }
   expect(work).not.toContain("@sc_retain_Item");
   expect(body(llvm, "sc_f_value")).toContain("@scr_union_release");
 });
@@ -140,17 +191,16 @@ function work(items: Item[]): number { return value(items[0], clear(items)); }
 console.log(work([new Item(7)]));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
   const llvm = emitLlvmModule(module);
   const work = body(llvm, "sc_bf_work");
-  expect(work).toContain("alloca %ScrUnion");
-  expect(work).toContain("@sc_retain_Item");
-  expect(work).toContain("@sc_release_Item");
-  expect(work.indexOf("@sc_retain_Item")).toBeLessThan(work.indexOf("@sc_bf_clear"));
-  expect(work).not.toContain("@scr_union_release");
+  const [value] = arrayReadValues(module, llvm, work);
+  expect(work.indexOf(`${value} = call ptr`)).toBeLessThan(work.indexOf("@sc_bf_clear"));
+  expect(continuation(work, "sc_bf_clear", "unwind")).toContain(`@scr_union_release(ptr ${value})`);
+  expect(continuation(work, "sc_bf_value", "normal")).toContain(`@scr_union_release(ptr ${value})`);
 });
 
 test("source helpers that return their input retain a heap representation", async () => {
@@ -173,12 +223,17 @@ function work(items: Item[]): string { return label(items[0]); }
 console.log(work([new Item("kept")]));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
   const llvm = emitLlvmModule(module);
-  expect(body(llvm, "sc_bf_work")).toContain("alloca %ScrUnion");
+  const work = body(llvm, "sc_bf_work");
+  const [value] = arrayReadValues(module, llvm, work);
+  const normal = continuation(work, "sc_bf_label", "normal");
+  expect(normal).toContain(`@scr_union_release(ptr ${value})`);
+  expect(normal).not.toContain("@scr_str_release");
+  expect(normal).toMatch(/ret ptr %t\d+/);
   expect(body(llvm, "sc_bf_label")).toContain("@scr_str_retain_v");
   expect(body(llvm, "sc_bf_label")).not.toContain("@scr_union_retain_v");
 });
@@ -195,7 +250,7 @@ console.log(invoke(size, "indirect"));
   expect(body(llvm, "sc_bf_invoke")).toContain("@scr_str_retain_v");
 });
 
-test("many source call sites share one helper recognition without sharing stack storage", async () => {
+test("many source call sites keep separate owned results from one read helper", async () => {
   const module = await lower(`
 class Item { value = 7; }
 function pair(left: Item, right: Item): number { return left.value + right.value; }
@@ -203,15 +258,23 @@ function work(items: Item[]): number { return pair(items[0], items[1]) + pair(it
 console.log(work([new Item(), new Item()]));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
-  const work = body(emitLlvmModule(module), "sc_bf_work");
-  expect(work.match(/alloca %ScrUnion/g)).toHaveLength(4);
-  expect(work.match(/@sc_bf_pair/g)).toHaveLength(2);
-  expect(work).not.toContain("@scr_union_new_ref");
-  expect(work).not.toContain("@scr_union_release");
+  const llvm = emitLlvmModule(module);
+  const work = body(llvm, "sc_bf_work");
+  const values = arrayReadValues(module, llvm, work, 4);
+  const pairs = [...work.matchAll(/@sc_bf_pair(?:\.i32)?\(ptr (%t\d+), ptr (%t\d+)\)/g)];
+  expect(pairs).toHaveLength(2);
+  for (const [index, pair] of pairs.entries()) {
+    const inputs = values.slice(index * 2, index * 2 + 2);
+    expect(pair.slice(1)).toEqual(inputs);
+    for (const outcome of ["normal", "unwind"] as const) {
+      const block = continuation(work.slice(pair.index), "sc_bf_pair", outcome);
+      for (const value of inputs) expect(block).toContain(`@scr_union_release(ptr ${value})`);
+    }
+  }
 });
 
 test("a throwing later source argument releases the retained snapshot on its exception edge", async () => {
@@ -223,17 +286,19 @@ function work(items: Item[]): number { return read(items[0], fail(items)); }
 try { console.log(work([new Item()])); } catch {}
 `);
   // The later argument removes the element, so the snapshot must own it.
-  const work = body(emitLlvmModule(module), "sc_bf_work");
+  const llvm = emitLlvmModule(module);
+  const work = body(llvm, "sc_bf_work");
+  const [value] = arrayReadValues(module, llvm, work);
   const failure = work.indexOf("@sc_bf_fail");
   expect(failure).toBeGreaterThan(0);
-  expect(work.slice(0, failure)).toContain("@sc_retain_Item");
+  expect(work.indexOf(`${value} = call ptr`)).toBeLessThan(failure);
   expect(work.slice(failure)).toMatch(PENDING_CHECK);
-  const exceptionEdge = work.slice(failure, work.indexOf("@sc_bf_read"));
-  expect(exceptionEdge).toContain("@sc_release_Item");
+  expect(continuation(work, "sc_bf_fail", "unwind")).toContain(`@sc_release_Item(ptr ${value})`);
+  expect(continuation(work, "sc_bf_read", "normal")).toContain(`@sc_release_Item(ptr ${value})`);
   expect(work).not.toContain("@scr_union_release");
 });
 
-test("a throwing later source argument that writes no element leaves the snapshot borrowed", async () => {
+test("a throwing later source argument releases its owned read even without an array write", async () => {
   const module = await lower(`
 class Item { value = 7; }
 function read(item: Item, ignored: number): number { return item.value + ignored; }
@@ -241,36 +306,39 @@ function fail(): number { throw new Error("failed"); }
 function work(items: Item[]): number { return read(items[0], fail()); }
 try { console.log(work([new Item()])); } catch {}
 `);
-  // Neither the callee nor the later argument writes an array element (the
-  // Error constructor's stores into its own fresh object do not count), so
-  // the borrowed parameter's array keeps the element alive and no edge,
-  // normal or exceptional, owes a release.
-  const work = body(emitLlvmModule(module), "sc_bf_work");
+  // Get can invoke a promoted getter, so its result has its own owner even
+  // when the later argument preserves all array slots.
+  const llvm = emitLlvmModule(module);
+  const work = body(llvm, "sc_bf_work");
+  const [value] = arrayReadValues(module, llvm, work);
   const failure = work.indexOf("@sc_f_fail");
   expect(failure).toBeGreaterThan(0);
+  expect(work.indexOf(`${value} = call ptr`)).toBeLessThan(failure);
   expect(work.slice(failure)).toMatch(PENDING_CHECK);
   expect(work).not.toContain("@sc_retain_Item");
-  expect(work).not.toContain("@sc_release_Item");
+  expect(continuation(work, "sc_f_fail", "unwind")).toContain(`@sc_release_Item(ptr ${value})`);
+  expect(continuation(work, "sc_bf_read", "normal")).toContain(`@sc_release_Item(ptr ${value})`);
   expect(work).not.toContain("@scr_union_release");
 });
 
-test("pure string helpers preserve the array owner of an immediate optional string", async () => {
+test("pure string helpers borrow the owned result of an immediate array read", async () => {
   const module = await lower(`
 function size(text: string): number { return text.length + text.charCodeAt(0); }
 function work(words: string[], index: number): number { return size(words[index]); }
 console.log(work(["first"], 0));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<string | undefined>();
 void keepBoxed;
 `);
-  const work = body(emitLlvmModule(module), "sc_bf_work");
-  expect(work).toContain("alloca %ScrUnion");
+  const llvm = emitLlvmModule(module);
+  const work = body(llvm, "sc_bf_work");
+  const [value] = arrayReadValues(module, llvm, work);
   expect(work).toContain("@sc_bf_size");
   expect(work).not.toContain("@scr_str_retain_v");
   expect(work).not.toContain("@scr_str_release");
-  expect(work).not.toContain("@scr_union_release");
+  expect(continuation(work, "sc_bf_size", "normal")).toContain(`@scr_union_release(ptr ${value})`);
 });
 
 test("string-producing helpers return an owner while borrowing their array input", async () => {
@@ -280,13 +348,17 @@ function work(words: string[]): string { return trim(words[0]); }
 console.log(work([" first "]));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<string | undefined>();
 void keepBoxed;
 `);
   const llvm = emitLlvmModule(module);
   const work = body(llvm, "sc_bf_work");
-  expect(work).toContain("alloca %ScrUnion");
+  const [value] = arrayReadValues(module, llvm, work);
+  const normal = continuation(work, "sc_bf_trim", "normal");
+  expect(normal).toContain(`@scr_union_release(ptr ${value})`);
+  expect(normal).not.toContain("@scr_str_release");
+  expect(normal).toMatch(/ret ptr %t\d+/);
   expect(work).not.toContain("@scr_str_retain_v");
   expect(body(llvm, "sc_bf_trim")).toContain("@scr_str_trim");
   expect(body(llvm, "sc_f_trim")).toContain("@scr_union_release");
@@ -300,15 +372,19 @@ function work(words: string[]): boolean { return prefix(words[0], clear(words));
 console.log(work(["first"]));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<string | undefined>();
 void keepBoxed;
 `);
-  const work = body(emitLlvmModule(module), "sc_bf_work");
-  expect(work).toContain("alloca %ScrUnion");
-  expect(work).toContain("@scr_str_retain_v");
+  const llvm = emitLlvmModule(module);
+  const work = body(llvm, "sc_bf_work");
+  const [value] = arrayReadValues(module, llvm, work);
+  expect(work.indexOf(`${value} = call ptr`)).toBeLessThan(work.indexOf("@sc_bf_clear"));
   expect(work).toContain("@scr_str_release");
-  expect(work).not.toContain("@scr_union_release");
+  expect(continuation(work, "sc_bf_clear", "unwind")).toContain(`@scr_union_release(ptr ${value})`);
+  expect(continuation(work, "sc_bf_prefix", "normal")).toContain(
+    `@scr_union_release(ptr ${value})`,
+  );
 });
 
 test("whole-union string comparisons only project their operands", async () => {
@@ -318,19 +394,21 @@ function work(words: string[], index: number): number { return size(words[index]
 console.log(work([""], 0));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<string | undefined>();
 void keepBoxed;
 `);
   const facts = analyzeCallLifetimes(new Map(module.functions.map((fn) => [fn.name, fn])));
   expect(facts.parameters.get("size")?.has(0)).toBe(true);
-  const work = body(emitLlvmModule(module), "sc_bf_work");
-  expect(work).toContain("alloca %ScrUnion");
+  const llvm = emitLlvmModule(module);
+  const work = body(llvm, "sc_bf_work");
+  const [value] = arrayReadValues(module, llvm, work);
   expect(work).not.toContain("@scr_union_new");
   expect(work).toContain("@sc_bf_size");
+  expect(continuation(work, "sc_bf_size", "normal")).toContain(`@scr_union_release(ptr ${value})`);
 });
 
-test("class element comparisons, tests and optional chains read through stack tags", async () => {
+test("class element comparisons, tests and optional chains release owned reads", async () => {
   const source = `
 class Part { weight = 1; }
 function same(parts: Part[], index: number, probe: Part): boolean { return parts[index] === probe; }
@@ -347,25 +425,43 @@ function count(parts: Part[], probe: Part): number {
 const parts = [new Part()];
 console.log(same(parts, 0, parts[0]), missing(parts, 3), weight(parts, 2), count(parts, parts[0]));
 `;
-  // Keeps the optional element union a tagged box (Set elements are boxes),
-  // so the stack-tag paths stay exercised; nullable pointers bypass them.
-  const boxed = emitLlvmModule(
-    await lower(`${source}
+  // Exercise both tagged union cleanup and nullable payload cleanup.
+  const boxedModule = await lower(`${source}
 const keepBoxed = new Set<Part | undefined>();
 void keepBoxed;
-`),
-  );
-  const nullable = emitLlvmModule(await lower(source));
+`);
+  const nullableModule = await lower(source);
+  const boxed = emitLlvmModule(boxedModule);
+  const nullable = emitLlvmModule(nullableModule);
   for (const name of ["same", "missing", "weight", "count"]) {
     const work = body(boxed, `sc_bf_${name}`);
-    expect(work, name).toContain("alloca %ScrUnion");
+    const [value] = arrayReadValues(boxedModule, boxed, work);
     expect(work, name).not.toContain("@scr_union_new");
-    expect(work, name).not.toMatch(/call ptr @sc_bf__x25_arr_idxOr/);
     // A nullable class element is the element pointer itself: no box at all.
     const plain = body(nullable, `sc_bf_${name}`);
+    const [payload] = arrayReadValues(nullableModule, nullable, plain);
     expect(plain, name).not.toContain("%ScrUnion");
     expect(plain, name).not.toContain("@scr_union_new");
-    expect(plain, name).not.toMatch(/call ptr @sc_bf__x25_arr_idxOr/);
+    for (const [code, input, release] of [
+      [work, value, "scr_union_release"],
+      [plain, payload, "sc_release_Part"],
+    ] as const) {
+      if (name === "count") {
+        expect(code).toContain(`store ptr ${input}, ptr %sc_l_part_0`);
+        const cleanup =
+          /(%t\d+) = load ptr, ptr %sc_l_part_0\n\s+call void @(\w+)\(ptr \1\)\n\s+br label %loop\.u\d+/.exec(
+            code,
+          );
+        expect(cleanup).not.toBeNull();
+        expect(cleanup![2]).toBe(release);
+      } else {
+        const normal = code
+          .split(/^\w[\w.]*:\n/m)
+          .find((block) => /ret (?:i1|double) %t\d+/.test(block));
+        expect(normal).toBeDefined();
+        expect(normal).toContain(`@${release}(ptr ${input})`);
+      }
+    }
   }
 });
 

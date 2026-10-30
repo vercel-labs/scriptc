@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-array-prototype-access.ts"
+ ],
+ "diags": []
+}

@@ -99,7 +99,7 @@ describe("record conversion with shared layouts", () => {
     (type, values) => {
       const f = fixture(type, values);
       f.shapes[2]!.fields = f.shapes[1]!.fields.slice();
-      expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toEqual({
+      expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf, f.lift)).toEqual({
         field: "kind",
         fieldType: type,
         routes: [
@@ -113,22 +113,35 @@ describe("record conversion with shared layouts", () => {
         { name: "kind", type },
         { name: "left", type: STRING },
       ];
-      expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toBeNull();
+      expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf, f.lift)?.routes).toEqual([
+        { tag: 0, lift: { how: "copy" }, values: [values[0]] },
+      ]);
     },
   );
 
-  test("requires unambiguous literal ownership and matching field order", () => {
+  test("requires unambiguous literal ownership and permits validated field reordering", () => {
     const f = fixture();
     f.shapes[2]!.fields = f.shapes[1]!.fields.slice();
     f.to.discriminant!.cases[1]!.values = ["left"];
-    expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toBeNull();
+    expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf, f.lift)).toBeNull();
     f.to.discriminant!.cases[1]!.values = ["right"];
     f.shapes[2]!.fields.reverse();
-    expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toBeNull();
+    expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf, f.lift)?.routes).toEqual([
+      { tag: 0, lift: { how: "copy" }, values: ["left"] },
+      { tag: 1, lift: { how: "width" }, values: ["right"] },
+    ]);
   });
 });
 
 describe("union conversion planning", () => {
+  test("uses destination discriminators without source metadata, even for an exact arm", () => {
+    const f = fixture();
+    delete f.from.discriminant;
+    expect(split(f.plan()).routes.map((route) => route.lift.how)).toEqual(["width", "width"]);
+    f.to.arms[0] = record("r0");
+    expect(split(f.plan()).routes.map((route) => route.lift.how)).toEqual(["copy", "width"]);
+  });
+
   test("matches large unions in source order, including duplicate destination arms", () => {
     const arms: IrType[] = Array.from({ length: 48 }, (_, index) => record(`r${index}`));
     const from: IrUnionDef = { id: "large-from", arms };

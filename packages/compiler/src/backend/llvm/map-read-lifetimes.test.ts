@@ -71,7 +71,7 @@ function fixture(value: IrType = record, key: IrType = F64): IrModule {
     ],
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [{ id: "cell", fields: [{ name: "x", type: F64 }] }],
@@ -401,7 +401,7 @@ test("a number-key write after a read stores into the found entry and appends th
     ],
   };
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [],

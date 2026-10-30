@@ -324,7 +324,7 @@ export function emitDenseArrayGet(
   return result;
 }
 
-/** `scr_arr_get_number`: a numeric element, or NaN for every missing,
+/** `scr_arr_get_slot_number`: a numeric element, or NaN for every missing,
  * hole, or present-undefined slot (answered by the runtime). */
 export function emitDenseArrayNumber(
   host: LlvmEmitterContext,
@@ -339,7 +339,7 @@ export function emitDenseArrayNumber(
     indexExpr,
     "f64",
     { kind: "f64" },
-    "scr_arr_get_number",
+    "scr_arr_get_slot_number",
     false,
   );
 }
@@ -375,7 +375,11 @@ export function emitDenseArrayState(
   B.br(join);
   B.startBlock(slow);
   const slowValue = B.tmp();
-  B.line(`${slowValue} = call ${ty} @${fn}(ptr ${array}, double ${index.name})${READ_FALLBACK}`);
+  // Own presence on promoted names constructs a temporary receiver, so its
+  // reference-count writes cannot carry the raw state query's read-only effect.
+  B.line(
+    `${slowValue} = call ${ty} @${fn}(ptr ${array}, double ${index.name})${kind === "state" ? READ_FALLBACK : " cold"}`,
+  );
   B.br(join);
   B.startBlock(join);
   const result = B.tmp();
@@ -390,7 +394,9 @@ export function emitDenseArrayState(
  * value's reference. A dense index stores the slot, marks it present, and
  * extends the length when it lands at or past it; a replaced present
  * reference is released after the new edge is published (a release can
- * collect cycles). Every other index takes the unchanged runtime call. */
+ * collect cycles). Every other index takes the unchanged runtime call.
+ * The caller must check scr_arr_check_set before transferring the value;
+ * these storage paths cannot unwind an already-transferred reference. */
 export function emitDenseArraySet(
   host: LlvmEmitterContext,
   array: string,

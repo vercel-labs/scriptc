@@ -58,7 +58,7 @@ const guarded = (body: IrStmt[]): IrStmt[] => [
   ...body,
 ];
 const moduleOf = (globals: IrGlobal[], functions: IrFunction[]): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "init-only-globals.ts",
   entry: "%init",
   globals: [guard, ...globals],

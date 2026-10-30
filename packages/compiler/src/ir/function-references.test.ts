@@ -155,6 +155,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].baseValueGlobal": "other",
   "classes[].prototypeDataHelper": "reference",
   "classes[].instancePrototypeHelper": "reference",
+  "classes[].nativePropertyBagHelper": "reference",
   "classes[].localCaptures[].name": "other",
   "classes[].localCaptures[].localId": "other",
   "classes[].symbolFields[].field": "other",
@@ -228,7 +229,7 @@ const entry = (body: IrStmt[] = []): IrFunction => ({
   loc,
 });
 const module = (body: IrStmt[] = []): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: loc.file,
   entry: "%main",
   functions: [target, entry(body)],
@@ -267,6 +268,10 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
   "classes[].instancePrototypeHelper": () => ({
     ...module(),
     classes: [{ name: "%m0.Cell", fields: [], instancePrototypeHelper: TARGET, loc }],
+  }),
+  "classes[].nativePropertyBagHelper": () => ({
+    ...module(),
+    classes: [{ name: "%m0.Cell", fields: [], nativePropertyBagHelper: TARGET, loc }],
   }),
   "lib.exports[].fnName": () => ({
     ...module(),

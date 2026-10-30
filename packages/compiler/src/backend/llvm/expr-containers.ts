@@ -104,13 +104,36 @@ export function arrPush(
   return emitDenseArrayPush(host, arr, acc, value);
 }
 
-/** Move evaluated values through one bounded slot buffer per call site. */
+/** Pack already-evaluated, owned inputs without changing their order. */
+function emitArraySlots(
+  host: LlvmEmitterContext,
+  acc: "f64" | "bool" | "ref",
+  values: LlValue[],
+  buffer: string,
+): void {
+  const B = host.B;
+  values.forEach((value, i) => {
+    const slot = B.tmp(),
+      pointer = B.tmp();
+    const pack =
+      acc === "f64"
+        ? `bitcast double ${value.name} to i64`
+        : acc === "bool"
+          ? `zext i1 ${value.name} to i64`
+          : `ptrtoint ptr ${value.name} to i64`;
+    B.line(`${slot} = ${pack}`);
+    B.line(`${pointer} = getelementptr inbounds i64, ptr ${buffer}, ${host.sizeType} ${i}`);
+    B.line(`store i64 ${slot}, ptr ${pointer}`);
+  });
+}
+
+/** Fresh construction can append in bounded chunks: its array cannot yet
+ * be frozen or exposed to a later argument. Public mutations call once. */
 export function emitArrayValues(
   host: LlvmEmitterContext,
   arr: string,
   acc: "f64" | "bool" | "ref",
   values: LlValue[],
-  prepend = false,
   sharedBuffer?: string,
 ): string {
   const B = host.B;
@@ -121,44 +144,18 @@ export function emitArrayValues(
     B.line(`${result} = call double @scr_arr_len(ptr ${arr})`);
     return result;
   }
-  if (values.length === 1) {
-    if (!prepend) return arrPush(host, arr, acc, values[0]!.name);
-    const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
-    host.declare(
-      `declare double @scr_arr_unshift_${acc}(ptr, ${ty}${acc === "bool" ? " zeroext" : ""})`,
-    );
-    const result = B.tmp();
-    B.line(`${result} = call double @scr_arr_unshift_${acc}(ptr ${arr}, ${ty} ${values[0]!.name})`);
-    return result;
-  }
+  if (values.length === 1) return arrPush(host, arr, acc, values[0]!.name);
   const capacity = Math.min(values.length, 64);
   const buffer = sharedBuffer ?? B.tmp();
   if (sharedBuffer === undefined) B.entryAllocas.push(`${buffer} = alloca [${capacity} x i64]`);
-  const helper = prepend ? "scr_arr_unshift_many" : "scr_arr_push_many";
-  host.declare(`declare double @${helper}(ptr, ${host.sizeType}, ptr)`);
+  host.declare(`declare double @scr_arr_push_many(ptr, ${host.sizeType}, ptr)`);
   let result = "";
   for (let processed = 0; processed < values.length; processed += capacity) {
-    const count = Math.min(capacity, values.length - processed);
-    // Prepending consumes chunks from the end, preserving source order
-    // both within each chunk and across the completed operation.
-    const start = prepend ? values.length - processed - count : processed;
-    for (let i = 0; i < count; i++) {
-      const slot = B.tmp(),
-        pointer = B.tmp();
-      const value = values[start + i]!.name;
-      const pack =
-        acc === "f64"
-          ? `bitcast double ${value} to i64`
-          : acc === "bool"
-            ? `zext i1 ${value} to i64`
-            : `ptrtoint ptr ${value} to i64`;
-      B.line(`${slot} = ${pack}`);
-      B.line(`${pointer} = getelementptr inbounds i64, ptr ${buffer}, ${host.sizeType} ${i}`);
-      B.line(`store i64 ${slot}, ptr ${pointer}`);
-    }
+    const batch = values.slice(processed, processed + capacity);
+    emitArraySlots(host, acc, batch, buffer);
     result = B.tmp();
     B.line(
-      `${result} = call double @${helper}(ptr ${arr}, ${host.sizeType} ${count}, ptr ${buffer})`,
+      `${result} = call double @scr_arr_push_many(ptr ${arr}, ${host.sizeType} ${batch.length}, ptr ${buffer})`,
     );
   }
   return result;
@@ -236,24 +233,13 @@ function emitDiscarded(host: LlvmEmitterContext, e: IrExpr): void {
   if (values.length > 0) {
     buffer = B.tmp();
     B.entryAllocas.push(`${buffer} = alloca [${values.length} x i64]`);
-    values.forEach((value, i) => {
-      const slot = B.tmp(),
-        pointer = B.tmp();
-      const pack =
-        acc === "f64"
-          ? `bitcast double ${value.name} to i64`
-          : acc === "bool"
-            ? `zext i1 ${value.name} to i64`
-            : `ptrtoint ptr ${value.name} to i64`;
-      B.line(`${slot} = ${pack}`);
-      B.line(`${pointer} = getelementptr inbounds i64, ptr ${buffer}, ${host.sizeType} ${i}`);
-      B.line(`store i64 ${slot}, ptr ${pointer}`);
-    });
+    emitArraySlots(host, acc, values, buffer);
   }
   host.declare(`declare void @scr_arr_splice_drop(ptr, double, double, ${host.sizeType}, ptr)`);
   B.line(
     `call void @scr_arr_splice_drop(ptr ${r.name}, double ${start.name}, double ${count}, ${host.sizeType} ${values.length}, ptr ${buffer})`,
   );
+  host.emitPendingCheck();
 }
 
 export function emitArrayCopyLoop(
@@ -572,10 +558,10 @@ export function emitArrIntrinsic(
           : undefined;
       if (!table && elem.kind === "f64")
         return { name: emitDenseArrayNumber(host, r.name, index, e.args[0]), type: e.type };
-      host.declare(`declare double @scr_arr_get_number(ptr, double)`);
+      host.declare(`declare double @scr_arr_get_slot_number(ptr, double)`);
       const t = B.tmp();
       B.line(
-        `${t} = call double @${table ? `${table.symbol}_get` : "scr_arr_get_number"}(ptr ${r.name}, double ${index.name})`,
+        `${t} = call double @${table ? `${table.symbol}_get` : "scr_arr_get_slot_number"}(ptr ${r.name}, double ${index.name})`,
       );
       return { name: t, type: e.type };
     }
@@ -597,30 +583,45 @@ export function emitArrIntrinsic(
       );
       return { name: t, type: e.type };
     }
-    case "push": {
-      // Variadic like JS: every argument evaluates first (left to
-      // right), then each appends in order. Ownership of refcounted
-      // arguments moves into the array; the result is the new length —
-      // the last push's return, or the unchanged length for Node's
-      // no-op zero-argument call.
-      const vs = e.args.map((a) => host.emitExpr(a));
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 1, f64Lit(0), f64Lit(vs.length));
-      return { name: emitArrayValues(host, r.name, acc, vs), type: e.type };
-    }
-    case "pushSpread": {
-      // `a.push(...src)`: append src's elements in order (borrowed src,
-      // count snapshotted). Result: the new length.
-      const src = emitBorrowedInput(host, e.args[0]!);
-      if (host.publishedTypes?.containerGuarded(e.receiver.type) === true) {
-        host.declare(`declare double @scr_arr_len(ptr)`);
-        const n = B.tmp();
-        B.line(`${n} = call double @scr_arr_len(ptr ${src.name})`);
-        host.emitPublishedArrayGuard(r.name, e.receiver.type, 1, f64Lit(0), n);
-      }
-      host.emitArrayCopyLoop(r.name, src.name, acc);
-      host.declare(`declare double @scr_arr_len(ptr)`);
+    case "push":
+    case "unshift": {
+      // The runtime must see the complete count, including zero. Large
+      // argument lists use owned array storage instead of a huge stack slot.
       const t = B.tmp();
-      B.line(`${t} = call double @scr_arr_len(ptr ${r.name})`);
+      if (e.args.length > 64) {
+        const items = host.emitExpr({
+          kind: "arrayLit",
+          elems: e.args,
+          type: e.receiver.type,
+          loc: e.loc,
+        });
+        host.declare(`declare double @scr_arr_${method}_spread(ptr, ptr)`);
+        B.line(`${t} = call double @scr_arr_${method}_spread(ptr ${r.name}, ptr ${items.name})`);
+      } else {
+        const values = e.args.map((arg) => host.emitExpr(arg));
+        if (acc === "ref") values.forEach((value) => host.moveTemp(value));
+        let buffer = "null";
+        if (values.length) {
+          buffer = B.tmp();
+          B.entryAllocas.push(`${buffer} = alloca [${values.length} x i64]`);
+          emitArraySlots(host, acc, values, buffer);
+        }
+        host.declare(`declare double @scr_arr_${method}_many(ptr, ${host.sizeType}, ptr)`);
+        B.line(
+          `${t} = call double @scr_arr_${method}_many(ptr ${r.name}, ${host.sizeType} ${values.length}, ptr ${buffer})`,
+        );
+      }
+      host.emitPendingCheck();
+      return { name: t, type: e.type };
+    }
+    case "pushSpread":
+    case "unshiftSpread": {
+      const src = emitBorrowedInput(host, e.args[0]!);
+      const helper = method === "pushSpread" ? "scr_arr_push_spread" : "scr_arr_unshift_spread";
+      host.declare(`declare double @${helper}(ptr, ptr)`);
+      const t = B.tmp();
+      B.line(`${t} = call double @${helper}(ptr ${r.name}, ptr ${src.name})`);
+      host.emitPendingCheck();
       return { name: t, type: e.type };
     }
     case "concatSpread": {
@@ -630,30 +631,8 @@ export function emitArrIntrinsic(
       B.line(`${t} = call double @scr_arr_concat_copy(ptr ${r.name}, ptr ${src.name})`);
       return { name: t, type: e.type };
     }
-    case "unshift": {
-      // Evaluate every argument before the first mutation, then insert
-      // from right to left so the final front order is source order.
-      const vs = e.args.map((a) => host.emitExpr(a));
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 4, f64Lit(0), f64Lit(vs.length));
-      return { name: emitArrayValues(host, r.name, acc, vs, true), type: e.type };
-    }
-    case "unshiftSpread": {
-      // The runtime snapshots the borrowed source and handles self-spread.
-      const src = emitBorrowedInput(host, e.args[0]!);
-      if (host.publishedTypes?.containerGuarded(e.receiver.type) === true) {
-        host.declare(`declare double @scr_arr_len(ptr)`);
-        const n = B.tmp();
-        B.line(`${n} = call double @scr_arr_len(ptr ${src.name})`);
-        host.emitPublishedArrayGuard(r.name, e.receiver.type, 4, f64Lit(0), n);
-      }
-      host.declare(`declare double @scr_arr_unshift_spread(ptr, ptr)`);
-      const t = B.tmp();
-      B.line(`${t} = call double @scr_arr_unshift_spread(ptr ${r.name}, ptr ${src.name})`);
-      return { name: t, type: e.type };
-    }
     case "pop":
     case "shift": {
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, method === "pop" ? 2 : 6);
       const checkedValue = elem.kind === "dyn" && e.type.kind === "dyn";
       if (!checkedValue && e.type.kind !== "union")
         throw new InternalCompilerError("llvm emitter bug: array removal result is not a union");
@@ -661,7 +640,7 @@ export function emitArrIntrinsic(
       const tag = def ? def.arms.findIndex((arm) => typeEquals(arm, elem)) : -1;
       const undefTag = undefinedArmTag(e.type, host.unionsById);
       const sameUnion = elem.kind === "union" && typeEquals(elem, e.type);
-      if (!checkedValue && ((!sameUnion && tag < 0) || undefTag < 0))
+      if (!checkedValue && ((elem.kind !== "union" && tag < 0) || undefTag < 0))
         throw new InternalCompilerError("llvm emitter bug: array removal union lacks its arms");
       host.declare(`declare zeroext i8 @scr_arr_${method}_state(ptr, ptr)`);
       const rawSlot = B.slot();
@@ -671,15 +650,22 @@ export function emitArrIntrinsic(
       const state = B.tmp();
       const has = B.tmp();
       B.line(`${state} = call zeroext i8 @scr_arr_${method}_state(ptr ${r.name}, ptr ${rawSlot})`);
+      const raw = B.tmp();
+      const value = B.tmp();
+      B.line(`${raw} = load i64, ptr ${rawSlot}`);
+      if (acc === "ref") {
+        B.line(`${value} = inttoptr i64 ${raw} to ptr`);
+        // A worker cancellation can arrive after a successful removal.
+        // Own the transferred reference before polling so unwind releases it.
+        host.own({ name: value, type: elem });
+      }
+      host.emitPendingCheck();
       B.line(`${has} = icmp eq i8 ${state}, 1`);
       const lp = B.newLabel("remove.p");
       const la = B.newLabel("remove.a");
       const lj = B.newLabel("remove.j");
       B.condBr(has, lp, la);
       B.startBlock(lp);
-      const raw = B.tmp();
-      const value = B.tmp();
-      B.line(`${raw} = load i64, ptr ${rawSlot}`);
       if (into) {
         // Slot bits for f64; a canonical 0/1 for bool, like scr_union_new_bool.
         let bits = raw;
@@ -701,10 +687,16 @@ export function emitArrIntrinsic(
       }
       if (elem.kind === "f64") B.line(`${value} = bitcast i64 ${raw} to double`);
       else if (elem.kind === "bool") B.line(`${value} = icmp ne i64 ${raw}, 0`);
-      else B.line(`${value} = inttoptr i64 ${raw} to ptr`);
-      B.line(
-        `store ptr ${checkedValue || sameUnion || e.type.kind !== "union" ? value : host.unionNewOwned(e.type.unionId, tag, { name: value, type: elem })}, ptr ${resultSlot}`,
-      );
+      else host.moveTemp({ name: value, type: elem });
+      // A union element may gain an undefined arm in the removal result.
+      // Widen tags through the shared owner before releasing its old box.
+      const removed =
+        elem.kind === "union" && e.type.kind === "union" && !sameUnion
+          ? emitUnionWiden(host, value, elem.unionId, e.type.unionId, true)
+          : checkedValue || sameUnion || e.type.kind !== "union"
+            ? value
+            : host.unionNewOwned(e.type.unionId, tag, { name: value, type: elem });
+      B.line(`store ptr ${removed}, ptr ${resultSlot}`);
       B.br(lj);
       B.startBlock(la);
       if (checkedValue) {
@@ -795,13 +787,14 @@ export function emitArrIntrinsic(
     }
     case "sortPrimitive":
     case "toSortedPrimitive": {
-      if (e.method === "sortPrimitive") host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
       host.declare(`declare ptr @scr_arr_sort_primitive(ptr, i1 zeroext)`);
       const result = B.tmp();
       B.line(
         `${result} = call ptr @scr_arr_sort_primitive(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0})`,
       );
-      return host.own({ name: result, type: e.type });
+      const value = host.own({ name: result, type: e.type });
+      if (e.method === "sortPrimitive") host.emitPendingCheck();
+      return value;
     }
     case "sortValues": {
       // The runtime invokes the borrowed comparator with the callValue ABI
@@ -836,17 +829,17 @@ export function emitArrIntrinsic(
     }
     case "reverse": {
       // Mutates in place and returns the same receiver as a fresh +1.
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
       host.declare(`declare ptr @scr_arr_reverse(ptr)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_arr_reverse(ptr ${r.name})`);
-      return host.own({ name: t, type: e.type });
+      const result = host.own({ name: t, type: e.type });
+      host.emitPendingCheck();
+      return result;
     }
     case "copyWithin":
     case "fill":
     case "fillUndefined": {
       const args = e.args.map((arg) => host.emitExpr(arg));
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
       const helper =
         e.method === "copyWithin"
           ? "scr_arr_copy_within"
@@ -860,7 +853,9 @@ export function emitArrIntrinsic(
       B.line(
         `${result} = call ptr @${helper}(ptr ${r.name}, ${args.map((arg, i) => `${types[i]} ${arg.name}`).join(", ")})`,
       );
-      return host.own({ name: result, type: e.type });
+      const out = host.own({ name: result, type: e.type });
+      host.emitPendingCheck();
+      return out;
     }
     case "toSpliced": {
       const start = host.emitExpr(e.args[0]!);
@@ -898,27 +893,29 @@ export function emitArrIntrinsic(
     }
     case "splice": {
       // The removal splice: removed elements come back as a fresh +1
-      // array, ownership MOVED out of the receiver. An omitted count
+      // array after the runtime completes its ordered mutations. An omitted count
       // removes to the end (+Infinity, the slice convention).
       const start = host.emitExpr(e.args[0]!);
       const cnt = e.args[1] ? host.emitExpr(e.args[1]).name : F64_INF;
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
       host.declare(`declare ptr @scr_arr_splice(ptr, double, double)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_arr_splice(ptr ${r.name}, double ${start.name}, double ${cnt})`);
-      return host.own({ name: t, type: e.type });
+      const out = host.own({ name: t, type: e.type });
+      host.emitPendingCheck();
+      return out;
     }
     case "spliceInsert": {
       const start = host.emitExpr(e.args[0]!);
       const count = host.emitExpr(e.args[1]!);
       const items = emitBorrowedInput(host, e.args[2]!);
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
       host.declare(`declare ptr @scr_arr_splice_insert(ptr, double, double, ptr)`);
       const t = B.tmp();
       B.line(
         `${t} = call ptr @scr_arr_splice_insert(ptr ${r.name}, double ${start.name}, double ${count.name}, ptr ${items.name})`,
       );
-      return host.own({ name: t, type: e.type });
+      const out = host.own({ name: t, type: e.type });
+      host.emitPendingCheck();
+      return out;
     }
     case "flatCopy":
     case "flatOne": {

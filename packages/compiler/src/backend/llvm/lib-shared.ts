@@ -1300,6 +1300,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",
   "dyn.classPrototype": "scr_dyn_class_prototype",
+  "dyn.newClassPrototype": "scr_dyn_new_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
   "dyn.classSuper": "scr_dyn_class_super",

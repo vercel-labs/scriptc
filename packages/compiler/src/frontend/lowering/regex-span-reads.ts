@@ -71,6 +71,8 @@ export function foldRegexSpanReads(lowerer: Lowerer, fn: IrFunction): void {
     let index: IrExpr | undefined;
     if (expr.kind === "call" && expr.callee === stringIndexHelper && expr.args.length === 2)
       [result, index] = expr.args;
+    else if (expr.kind === "arrayPropertyRead" && expr.consume === "numberConstructor")
+      ({ arr: result, index } = expr);
     else if (expr.kind === "arrayGet") ({ arr: result, index } = expr);
     else return null;
     if (
@@ -86,6 +88,8 @@ export function foldRegexSpanReads(lowerer: Lowerer, fn: IrFunction): void {
   };
   /** The capture read a foldable consumer takes, and its other operands. */
   const foldable = (expr: IrExpr): { read: IrExpr; rest: IrExpr[] } | null => {
+    if (expr.kind === "arrayPropertyRead" && expr.consume === "numberConstructor")
+      return { read: expr, rest: [] };
     if (expr.kind === "unionEq" && !expr.sameValue) {
       if (isLiteral(expr.right)) return { read: expr.left, rest: [] };
       if (isLiteral(expr.left)) return { read: expr.right, rest: [] };
@@ -109,7 +113,7 @@ export function foldRegexSpanReads(lowerer: Lowerer, fn: IrFunction): void {
 
   const visitExpr = (expr: IrExpr, parent: IrExpr | null): boolean => {
     const fold = foldable(expr);
-    const folded = fold && fold.read.kind === "call" ? captureRead(fold.read) : null;
+    const folded = fold ? captureRead(fold.read) : null;
     const candidate = folded && candidates.get(folded.local);
     if (fold && folded && candidate) {
       candidate.folds.set(expr, folded.use);
@@ -151,7 +155,24 @@ export function foldRegexSpanReads(lowerer: Lowerer, fn: IrFunction): void {
     }
     if (lazy === 0) continue;
     for (const [consumer, use] of candidate.folds) {
-      if (lazyIndices.has(use.index)) rewrites.set(consumer, spanRead(consumer, use));
+      if (lazyIndices.has(use.index))
+        rewrites.set(consumer, {
+          kind: "ternary",
+          // Fresh captures, including unmatched ones, are own slots. Outside
+          // those slots preserve Get; inherited values can still be observed.
+          cond: {
+            kind: "arrayHas",
+            arr: use.result,
+            index: numLit(use.index, consumer.loc),
+            type: BOOL,
+            loc: consumer.loc,
+          },
+          then: spanRead(consumer, use),
+          // Clone so the preorder rewrite cannot revisit this same consumer.
+          else_: { ...consumer },
+          type: consumer.type,
+          loc: consumer.loc,
+        });
     }
     const { match } = candidate;
     const mask = match.args[1]!;
@@ -188,7 +209,7 @@ function spanRead(consumer: IrExpr, use: CaptureUse): IrExpr {
     };
     return consumer.negated ? { kind: "unary", op: "!", operand: test, type: BOOL, loc } : test;
   }
-  if (consumer.kind === "libCall")
+  if (consumer.kind === "libCall" || consumer.kind === "arrayPropertyRead")
     return { kind: "libCall", fn: "regex.groupNumber", args: capture, type: F64, loc };
   const radix = (consumer as IrExpr & { kind: "call" }).args[1]!;
   return { kind: "libCall", fn: "regex.groupParseInt", args: [...capture, radix], type: F64, loc };

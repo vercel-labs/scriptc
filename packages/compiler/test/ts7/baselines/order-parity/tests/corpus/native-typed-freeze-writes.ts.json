@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-typed-freeze-writes.ts"
+ ],
+ "diags": []
+}

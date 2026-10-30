@@ -67,6 +67,8 @@ void scr_classobj_release_v(void *c);
 /* `X.name` (+1 — a no-op retain on the interned immortal). */
 ScrStr *scr_classobj_name(ScrClassObj *c);
 struct ScrDyn *scr_dyn_class_prototype(struct ScrDyn *value, struct ScrDyn *base);
+/* name is an immortal compiler literal, like ScrClassObj.name. */
+struct ScrDyn *scr_dyn_new_class_prototype(struct ScrDyn *base, const ScrStr *name);
 struct ScrDyn *scr_dyn_class_base_prototype(struct ScrDyn *constructor);
 struct ScrDyn *scr_dyn_class_inherit(struct ScrDyn *constructor, struct ScrDyn *base);
 void scr_dyn_class_super(struct ScrDyn *constructor, struct ScrDyn *receiver, struct ScrDyn *arguments);

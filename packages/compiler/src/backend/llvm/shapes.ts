@@ -59,6 +59,8 @@ export interface ShapeHost {
   /** Byte offset from an object pointer back to ScrCycHdr.buf. */
   readonly cycleBufOffset: number;
   readonly tracedShapes: Set<string>;
+  /** Exposed records can own an out-of-line dynamic metadata bag. */
+  readonly recordMetadataShapes?: ReadonlySet<string>;
   readonly tracedUnions: Set<string>;
   /** Unions represented as a nullable arm pointer (nullable-unions.ts):
    * their RC and trace entry points are the arm's NULL-tolerant ones. */
@@ -574,12 +576,14 @@ function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): st
         : family === "box"
           ? [
               // scr_box_release buffers a surviving box only when its trace
-              // visits the payload (scr_box_traced): a closure (kind 4), or a
+              // visits the payload (scr_box_traced): an array (3), closure (4), or a
               // class instance whose obj_trace is set.
               `  %kp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 8 : 4} ; ScrBox.kind`,
               `  %kind = load i32, ptr %kp`,
+              `  %array = icmp eq i32 %kind, 3`,
               `  %func = icmp eq i32 %kind, 4`,
-              `  br i1 %func, label %root, label %objbox`,
+              `  %known = or i1 %array, %func`,
+              `  br i1 %known, label %root, label %objbox`,
               `objbox:`,
               `  %otp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 32 : 16} ; ScrBox.obj_trace`,
               `  %ot = load ptr, ptr %otp`,
@@ -683,7 +687,7 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
       host.declare(`declare void @scr_map_trace_v(ptr, ptr, ptr)`);
       return "@scr_map_trace_v";
     case "array":
-      if (traceAdapter(host, t.elem) === null) return null;
+      // Named properties can close cycles even when indexed slots are scalars.
       host.declare(`declare void @scr_arr_trace_v(ptr, ptr, ptr)`);
       return "@scr_arr_trace_v";
     default:
@@ -820,10 +824,6 @@ export function boxNewCall(host: ShapeHost, t: IrType): string {
   if (kind !== undefined) {
     host.declare(`declare ptr @scr_box_new(i32)`);
     return `call ptr @scr_box_new(i32 ${kind})`;
-  }
-  if (t.kind === "array" && traceAdapter(host, t) === null) {
-    host.declare(`declare ptr @scr_box_new(i32)`);
-    return `call ptr @scr_box_new(i32 3)`; // SCR_BOX_ARR
   }
   if (isRefCounted(t)) {
     const v = vAdapters(host, t);
@@ -1497,6 +1497,11 @@ export function emitRecordShapes(
         `define internal void @${mangleRecordTrace(shape.id)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} {`,
         `entry:`,
       ];
+      const metadata = host.recordMetadataShapes?.has(shape.id) === true;
+      if (metadata) {
+        host.declare(`declare void @scr_record_source_trace(ptr, ptr, ptr)`);
+        tr.push(`  call void @scr_record_source_trace(ptr %o, ptr %visit, ptr %ctx)`);
+      }
       tracedMembers.forEach((m, i) => {
         tr.push(...traceFieldVisitLines(struct, m.index, i, llvmCommentText(m.name)));
       });
@@ -1507,6 +1512,12 @@ export function emitRecordShapes(
         `define internal void @${mangleRecordGcFree(shape.id)}(ptr %o) ${FN_ATTRS} {`,
         `entry:`,
       ];
+      if (metadata) {
+        // The collector accounted for this edge. Unlink before any child
+        // release can re-enter disposal, without releasing the edge twice.
+        host.declare(`declare void @scr_record_source_collected(ptr)`);
+        gf.push(`  call void @scr_record_source_collected(ptr %o)`);
+      }
       untracedRefMembers.forEach((m, i) => {
         gf.push(
           `  %f${i} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${m.index}`,

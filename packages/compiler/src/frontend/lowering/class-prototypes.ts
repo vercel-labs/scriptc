@@ -149,9 +149,16 @@ export function classPrototypeData(
             {
               kind: "assign",
               localId: globalId,
-              value: base
-                ? { kind: "libCall", fn: "dyn.objCreate", args: [base], type: DYN, loc }
-                : { kind: "dynObjLit", fields: [], type: DYN, loc },
+              value: {
+                kind: "libCall",
+                fn: "dyn.newClassPrototype",
+                args: [
+                  base ?? dynUndefinedExpr(loc),
+                  { kind: "strLit", value: className, type: STRING, loc },
+                ],
+                type: DYN,
+                loc,
+              },
               loc,
             },
             {
@@ -236,6 +243,72 @@ export function hasClassPrototypeData(info: ClassInfo): boolean {
     info.def.prototypeDataHelper !== undefined ||
     (info.base !== null && hasClassPrototypeData(info.base))
   );
+}
+
+/** Observe one inherited property without widening full-prototype reflection
+ * admission. Install it at prototype initialization, never during a read. */
+export function observeClassPrototypeProperty(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  name: string,
+  loc: SrcLoc,
+  receiver: IrExpr,
+): boolean {
+  if (!info.decl) return false;
+  if (info.localClass) return !!info.runtimePrototypeMembers;
+  const values: { key: string; value: IrExpr }[] = [];
+  if (name === "constructor") {
+    values.push(
+      { key: "value", value: classValueRef(lowerer, info, info.decl) },
+      { key: "writable", value: { kind: "boolLit", value: true, type: BOOL, loc } },
+    );
+  } else {
+    for (const kind of ["get", "set"]) {
+      if (!info.methods.has(`${kind}:${name}`)) continue;
+      const value = classMethodValue(lowerer, info.decl, info, `${kind}:${name}`, loc);
+      if (!value || !lowerer.dynConvertible(value.type)) return false;
+      values.push({ key: kind, value });
+    }
+    if (!values.length) return false;
+  }
+  const prototype = classPrototypeData(lowerer, info, loc, receiver);
+  if (!prototype) return false;
+  if (info.prototypeReflectionReady || info.prototypeObservedProperties?.has(name)) return true;
+  const helper = lowerer.liftedFns.find((fn) => fn.name === info.def.prototypeDataHelper);
+  const initialize = helper?.body[0];
+  if (initialize?.kind !== "if") return false;
+  if (!info.prototypeObservedProperties) info.prototypeObservedProperties = new Set();
+  info.prototypeObservedProperties.add(name);
+  initialize.then.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "dyn.defineProperty",
+      args: [
+        prototype,
+        lowerer.coerceToExpected({ kind: "strLit", value: name, type: STRING, loc }, DYN),
+        {
+          kind: "dynObjLit",
+          fields: [
+            ...values,
+            {
+              key: "configurable",
+              value: { kind: "boolLit", value: true, type: BOOL, loc } as IrExpr,
+            },
+          ].map((field) => ({
+            key: { kind: "strLit", value: field.key, type: STRING, loc },
+            value: lowerer.coerceToExpected(field.value, DYN),
+          })),
+          type: DYN,
+          loc,
+        },
+      ],
+      type: DYN,
+      loc,
+    },
+    loc,
+  });
+  return true;
 }
 
 /** Populate the shared prototype view before exposing it to reflection.

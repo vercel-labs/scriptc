@@ -95,7 +95,7 @@ console.log(sum([circle, new Rect(1)]));`),
     expect(sum).not.toContain("@sc_bf__x25_dyn_class_computed_");
   });
 
-  test("property reads through an interface read the implementing field", async () => {
+  test("interface property reads retain typed results through the descriptor owner", async () => {
     const llvm = await emittedLlvm(
       "field",
       `interface Sized {
@@ -111,10 +111,14 @@ console.log(size(new Box()));
 `,
     );
     expect(bodies(llvm, "sc_bf_size")).not.toContain("@sc_bf__x25_dyn_class_property_");
-    const helper = llvm.indexOf("; %dyn.class.protocol.0");
-    expect(llvm.slice(helper, llvm.indexOf("\n}\n", helper))).toMatch(
-      /getelementptr inbounds %sc_o_Box, ptr [^,]+, i64 0, i32 \d+/,
+    expect(bodies(llvm, "sc_bf_size")).toContain("call double @sc_bf__x25_dyn_class_protocol_0");
+    expect(bodies(llvm, "sc_bf__x25_dyn_class_protocol_0")).toContain(
+      "call double @sc_f__x25_dyn_class_protocol_fallback_0",
     );
+    const fallback = bodies(llvm, "sc_f__x25_dyn_class_protocol_fallback_0");
+    expect(fallback).toContain("call ptr @sc_bf__x25_dyn_class_property_0");
+    expect(fallback).toMatch(/call double @sc_dc_\d+\(/);
+    expect(fallback).not.toContain("@scr_dyn_call");
   });
 
   test("matched receivers unbox without reference counting, ahead of an out-of-line fallback", async () => {
@@ -129,7 +133,7 @@ console.log(size(new Box()));
     );
   });
 
-  test("loops lend interface array elements to dispatch that cannot release them", async () => {
+  test("interface array loops own semantic Get results through typed dispatch", async () => {
     const lent = await emittedLlvm(
       "lent",
       shapes(`function sum(list: Shape[]): number {
@@ -139,8 +143,8 @@ console.log(size(new Box()));
 }
 console.log(sum([circle, new Rect(1)]));`),
     );
-    expect(bodies(lent, "sc_bf_sum")).not.toContain("@scr_dyn_retain_v");
-    // A method that can empty the array keeps the owned element read.
+    // Get can invoke an accessor, so even a stable method uses an owned read.
+    // A method that empties the array must retain that same ownership boundary.
     const owned = await emittedLlvm(
       "owned",
       shapes(`const kept: Shape[] = [];
@@ -158,7 +162,26 @@ function sum(list: Shape[]): number {
 }
 console.log(sum(kept));`),
     );
-    expect(bodies(owned, "sc_bf_sum")).toContain("@scr_dyn_retain_v");
+    for (const llvm of [lent, owned]) {
+      const sum = bodies(llvm, "sc_bf_sum");
+      expect(sum).not.toContain("@scr_dyn_iterator");
+      expect(sum).toContain("call ptr @sc_rc_retain_dyn");
+      expect(sum).toContain("call ptr @scr_arr_property_get");
+      const dispatch =
+        /(%t\d+) = load ptr, ptr (%sc_l_s_\d+)\n  %t\d+ = call double @sc_bf__x25_dyn_class_protocol_\d+(?:\.i32)?\(ptr \1,/.exec(
+          sum,
+        );
+      expect(dispatch).not.toBeNull();
+      const cleanup = new RegExp(
+        `(%t\\d+) = load ptr, ptr ${dispatch![2]}\\n  call void @sc_rc_release_dyn\\(ptr \\1\\)`,
+        "g",
+      );
+      const releases = [...sum.matchAll(cleanup)];
+      expect(releases).toHaveLength(2);
+      expect(releases[0]!.index).toBeGreaterThan(dispatch!.index);
+      expect(sum.slice(releases[0]!.index)).toMatch(/br label %loop\.u\d+/);
+      expect(sum.slice(releases[1]!.index)).toContain("ret double");
+    }
   });
 
   test("a method an instance can replace keeps the checked dynamic call", async () => {

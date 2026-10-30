@@ -135,9 +135,109 @@ static void test_read_storage(void) {
 #endif
 }
 
+static void define_module_graph(void) {
+  scr_module_registry_init(4);
+  ScrArr *paths = scr_arr_new(SCR_ELEM_STR, 0);
+  ScrStr *path = S(".");
+  const char *names[] = {"main", "first", "second", "other"};
+  for (size_t i = 0; i < 4; i++) {
+    ScrStr *name = S(names[i]);
+    scr_module_define((double)i, name, name, path, paths, i == 0);
+    scr_str_release(name);
+  }
+  scr_str_release(path);
+  scr_arr_release(paths);
+  scr_module_enter(0);
+}
+
+static void test_module_integrity(void) {
+  const unsigned levels[] = {0, SCR_NATIVE_NON_EXTENSIBLE, SCR_NATIVE_SEALED, SCR_NATIVE_FROZEN};
+  for (size_t level = 0; level < 4; level++) {
+    define_module_graph();
+    scr_module_link(0, 1);
+    scr_module_enter(1);
+    scr_module_finish(1);
+    ScrArr *children = scr_module_children(0);
+    if (levels[level]) scr_native_integrity_strengthen(children, levels[level]);
+    scr_module_link(0, 1);
+    check(!scr_exc_pending() && children->len == 1, "cached child needs no duplicate write");
+    scr_module_link(0, 2);
+    check(scr_exc_pending() == (level != 0), "new child link propagates restriction");
+    check(scr_module_parent(2) == (level ? -2 : 0), "failed link leaves first parent unset");
+    check(!scr_module_loaded(2), "link does not initialize child");
+    scr_exc_clear();
+    if (level) {
+      scr_module_link(3, 2);
+      check(!scr_exc_pending() && scr_module_parent(2) == 3,
+            "another parent can own the first successful link");
+    }
+    ScrArr *other = scr_module_children(3);
+    if (levels[level]) scr_native_integrity_strengthen(other, levels[level]);
+    scr_module_link(3, 1);
+    check(scr_exc_pending() == (level != 0), "cached child still needs a new parent link");
+    check(scr_module_parent(1) == 0 && scr_module_loaded(1),
+          "failed cached link preserves existing module state");
+    scr_exc_clear();
+    scr_arr_release(other);
+    scr_arr_release(children);
+
+    for (size_t failed = 1; failed <= 2; failed++) {
+      define_module_graph();
+      scr_module_link(0, 1);
+      scr_module_enter(1);
+      scr_module_link(0, 2);
+      scr_module_enter(2);
+      children = scr_module_children(0);
+      if (levels[level]) scr_native_integrity_strengthen(children, levels[level]);
+      scr_throw_str(S("body error"));
+      ScrCaught *original = scr_exc_take();
+      scr_module_fail((double)failed);
+      bool cleanup_failed = scr_exc_pending();
+      check(cleanup_failed == (level >= 2), "sealed and frozen module cleanup throws");
+      ScrStr *filename = scr_module_filename((double)failed);
+      check(!scr_module_cache_has(filename) && !scr_module_loaded((double)failed),
+            "failed cleanup still evicts the module");
+      scr_str_release(filename);
+      if (cleanup_failed) {
+        ScrCaught *cleanup = scr_exc_take();
+        ScrStr *text = scr_caught_to_string(cleanup);
+        check(strncmp(text->data, "TypeError:", 10) == 0, "cleanup failure owns the TypeError");
+        scr_str_release(text);
+        scr_caught_release(cleanup);
+      } else {
+        scr_rethrow(original);
+        ScrCaught *rethrow = scr_exc_take();
+        check(rethrow->payload == original->payload, "successful cleanup preserves body error identity");
+        scr_caught_release(rethrow);
+      }
+      scr_caught_release(original);
+      check(children->len == (level >= 2 ? 2 : 1), "children alias retains cleanup length");
+      check(scr_arr_get_f64(children, 0) == (failed == 1 && level < 3 ? 2 : 1),
+            "children alias retains ordered partial cleanup");
+      scr_module_link(0, (double)failed);
+      check(scr_exc_pending() == (level != 0),
+            "retry attempts insertion even when failed cleanup kept an old child");
+      scr_exc_clear();
+      if (level) {
+        scr_module_link(3, (double)failed);
+        check(!scr_exc_pending() && scr_module_parent((double)failed) == 3,
+              "retry may initialize through a different parent");
+      }
+      scr_arr_release(children);
+    }
+  }
+  scr_module_registry_init(0);
+  check(!scr_native_integrity_active(), "module teardown retires children integrity");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   scr_lib_init(argc, argv);
+  if (argc == 2 && strcmp(argv[1], "--module-integrity-probe") == 0) {
+    test_module_integrity();
+    printf("%d/%d checks passed\n", checks - failures, checks);
+    return failures ? 1 : 0;
+  }
   if (argc >= 3 && strcmp(argv[argc - 1], "--argv-collision-probe") == 0) {
     ScrArr *args = scr_process_argv();
     double n = scr_arr_len(args);
@@ -156,6 +256,7 @@ int main(int argc, char **argv) {
   }
   test_large_set_materialization();
   test_read_storage();
+  test_module_integrity();
   const char *dir = argv[1];
   char pb[4096];
   ScrStr *p; /* current path operand */

@@ -9,7 +9,11 @@ import {
   type IrFunction,
   type IrStmt,
 } from "../../ir/ir.js";
-import { ClassDynamicDispatch, classPropertiesHelper } from "./class-dynamic-dispatch.js";
+import {
+  ClassDynamicDispatch,
+  classPropertiesHelper,
+  trackClassFieldCreation,
+} from "./class-dynamic-dispatch.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 
@@ -53,6 +57,254 @@ function context() {
   ]);
   return { lowerer, liftedFns, boxed };
 }
+
+function trackedContext() {
+  const { lowerer } = context();
+  const type = { kind: "object", className: "Widget" } as const;
+  lowerer.classes.set("Widget", {
+    def: {
+      name: "Widget",
+      tracksOwnFields: true,
+      nativePropertyBagHelper: "prepare.Widget",
+      fields: [
+        { name: "#public", type: DYN },
+        { name: "%public", type: STRING },
+        { name: "#secret", type: F64, visibility: "private" },
+      ],
+    },
+    symbolFields: new Map(),
+  } as unknown as ClassInfo);
+  lowerer.coerceToExpected = (value, type) =>
+    value.type.kind === type.kind ? value : { kind: "dynFrom", value, type, loc };
+  const receiver: IrExpr = { kind: "call", callee: "receiverEffect", args: [], type, loc };
+  return { lowerer, receiver };
+}
+
+test.each(["set", "setSloppy", "define"] as const)(
+  "class %s saves conversion before admission and couples presence with the store",
+  (propertyOp) => {
+    const { lowerer, receiver } = trackedContext();
+    const value: IrExpr = {
+      kind: "dynCheck",
+      value: { kind: "call", callee: "valueEffect", args: [], type: DYN, loc },
+      type: STRING,
+      loc,
+    };
+    const target = fn("write", [
+      {
+        kind: "fieldSet",
+        obj: receiver,
+        className: "Widget",
+        field: "%public",
+        value,
+        propertyOp,
+        loc,
+      },
+    ]);
+    const functions = [target];
+    trackClassFieldCreation(lowerer, functions);
+    const block = target.body[0]!;
+    if (block.kind !== "block") throw new Error("missing guarded store");
+    expect(block.body).toMatchObject([
+      { kind: "varDecl", init: receiver },
+      { kind: "varDecl", init: value },
+      {
+        kind: "if",
+        cond: {
+          kind: "intrinsic",
+          name: "native.checkWrite",
+          args: [
+            { kind: "varRef" },
+            literal("%public"),
+            { kind: "numLit", value: { set: 0, setSloppy: 1, define: 2 }[propertyOp] },
+            ...(propertyOp === "define" ? [] : [{ kind: "varRef" }]),
+          ],
+        },
+        then: [{ kind: "fieldSet", value: { kind: "varRef" } }],
+        else_: null,
+      },
+    ]);
+    const savedReceiver = block.body[0]!;
+    const saved = block.body[1]!;
+    const admitted = block.body[2]!;
+    if (
+      savedReceiver.kind !== "varDecl" ||
+      saved.kind !== "varDecl" ||
+      admitted.kind !== "if" ||
+      admitted.cond.kind !== "intrinsic"
+    )
+      throw new Error("missing saved class value");
+    expect(admitted.cond.args).toHaveLength(propertyOp === "define" ? 3 : 4);
+    if (propertyOp !== "define")
+      expect(admitted.cond.args[3]).toMatchObject({ kind: "varRef", localId: saved.localId });
+    expect(admitted.then).toMatchObject([
+      {
+        kind: "fieldSet",
+        obj: { kind: "varRef", localId: savedReceiver.localId },
+        value: { kind: "varRef", localId: saved.localId },
+        propertyOp,
+      },
+    ]);
+    expect(functions).toEqual([target]);
+  },
+);
+
+test.each(["set", "setSloppy", "define"] as const)(
+  "class %s without native admission publishes field creation after the store",
+  (propertyOp) => {
+    const { lowerer, receiver } = trackedContext();
+    delete lowerer.classes.get("Widget")!.def.nativePropertyBagHelper;
+    const value = literal("stored");
+    const target = fn("write", [
+      {
+        kind: "fieldSet",
+        obj: receiver,
+        className: "Widget",
+        field: "%public",
+        value,
+        propertyOp,
+        loc,
+      },
+    ]);
+    const functions = [target];
+    trackClassFieldCreation(lowerer, functions);
+    const block = target.body[0]!;
+    if (block.kind !== "block" || block.body[0]?.kind !== "varDecl")
+      throw new Error("missing saved class receiver");
+    expect(block.body.slice(1)).toMatchObject([
+      {
+        kind: "fieldSet",
+        obj: { kind: "varRef", localId: block.body[0].localId },
+        value,
+        propertyOp,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "call",
+          callee: "%dyn.class.fieldCreated",
+          args: [
+            expect.anything(),
+            expect.anything(),
+            { kind: "boolLit", value: propertyOp === "define" },
+          ],
+        },
+      },
+    ]);
+    const helper = functions.find((item) => item.name === "%dyn.class.fieldCreated")!;
+    expect(helper.body[1]).toMatchObject({
+      kind: "if",
+      cond: {
+        kind: "logical",
+        op: "||",
+        left: { kind: "varRef", localId: "define" },
+        right: { kind: "unary", op: "!", operand: { kind: "libCall", fn: "dyn.hasOwnComputed" } },
+      },
+    });
+  },
+);
+
+test.each([false, true])(
+  "guarded class increment preserves the computed result: prefix=%s",
+  (prefix) => {
+    const { lowerer, receiver } = trackedContext();
+    const target = fn("update", [
+      statement({
+        kind: "fieldIncDec",
+        obj: receiver,
+        className: "Widget",
+        field: "#public",
+        fieldDyn: true,
+        op: "+",
+        prefix,
+        propertyOp: "setSloppy",
+        type: F64,
+        loc,
+      }),
+    ]);
+    trackClassFieldCreation(lowerer, [target]);
+    const body = target.body[0]!;
+    if (body.kind !== "exprStmt" || body.expr.kind !== "seqExpr")
+      throw new Error("missing guarded update");
+    const { stmts, result } = body.expr;
+    expect(stmts.map((stmt) => stmt.kind)).toEqual([
+      "varDecl",
+      "varDecl",
+      "varDecl",
+      "varDecl",
+      "if",
+    ]);
+    expect(stmts[1]).toMatchObject({
+      init: { kind: "dynCheck", value: { kind: "fieldGet", field: "#public" } },
+    });
+    expect(stmts[3]).toMatchObject({ init: { kind: "dynFrom" } });
+    expect(stmts[4]).toMatchObject({
+      kind: "if",
+      cond: {
+        name: "native.checkWrite",
+        args: [
+          { kind: "varRef" },
+          literal("#public"),
+          { kind: "numLit", value: 1 },
+          { kind: "varRef", localId: (stmts[3] as Extract<IrStmt, { kind: "varDecl" }>).localId },
+        ],
+      },
+      then: [{ kind: "fieldSet" }],
+    });
+    expect(result).toMatchObject({
+      kind: "varRef",
+      localId: (stmts[prefix ? 2 : 1] as Extract<IrStmt, { kind: "varDecl" }>).localId,
+    });
+    expect(JSON.stringify(target.body)).not.toContain('"kind":"fieldIncDec"');
+  },
+);
+
+test("guarded class fields keep the old string until admission and leave private slots alone", () => {
+  const { lowerer, receiver } = trackedContext();
+  const obj: IrExpr = { kind: "varRef", localId: "obj", type: receiver.type, loc };
+  const old: IrExpr = { kind: "varRef", localId: "old", type: STRING, loc };
+  const clear: IrStmt = {
+    kind: "fieldSet",
+    obj,
+    className: "Widget",
+    field: "%public",
+    value: literal(""),
+    loc,
+  };
+  const privateStore: IrStmt = {
+    kind: "fieldSet",
+    obj,
+    className: "Widget",
+    field: "#secret",
+    value: { kind: "numLit", value: 9, type: F64, loc },
+    loc,
+  };
+  const target = fn("append", [
+    statement({
+      kind: "seqExpr",
+      stmts: [
+        clear,
+        {
+          kind: "assign",
+          localId: "old",
+          value: { kind: "strConcat", left: old, right: literal("suffix"), type: STRING, loc },
+          loc,
+        },
+        { ...clear, value: old },
+        privateStore,
+      ],
+      result: old,
+      type: STRING,
+      loc,
+    }),
+  ]);
+  trackClassFieldCreation(lowerer, [target]);
+  const body = target.body[0]!;
+  if (body.kind !== "exprStmt" || body.expr.kind !== "seqExpr") throw new Error("missing append");
+  expect(body.expr.stmts.map((stmt) => stmt.kind)).toEqual(["assign", "block", "fieldSet"]);
+  expect(body.expr.stmts[2]).toEqual(privateStore);
+  expect(JSON.stringify(body.expr.stmts[1])).not.toContain('"value":""');
+});
 
 test("preserves typed function bodies when other functions box classes", () => {
   const { lowerer, boxed } = context();
@@ -111,6 +363,101 @@ test.each([
   const transformed = target.body;
   expect(dispatch.process(lowerer, [boxed, target, ...liftedFns])).toBe(false);
   expect(target.body).toBe(transformed);
+});
+
+test.each([false, true])(
+  "routes literal presence through class dispatch: negated=%s",
+  (negated) => {
+    const { lowerer, boxed, liftedFns } = context();
+    lowerer.coerceToExpected = (value, type) =>
+      value.type.kind === type.kind ? value : { kind: "dynFrom", value, type, loc };
+    const receiver: IrExpr = { kind: "call", callee: "receiverEffect", args: [], type: DYN, loc };
+    const target = fn("probe", [
+      statement({
+        kind: "dynHasKey",
+        key: "method",
+        value: receiver,
+        type: BOOL,
+        loc,
+        ...(negated ? { negated: true as const } : {}),
+      }),
+    ]);
+    const dispatch = new ClassDynamicDispatch();
+    expect(dispatch.process(lowerer, [boxed, target])).toBe(true);
+    const operation = target.body[0];
+    if (operation?.kind !== "exprStmt") throw new Error("missing probe");
+    const call = operation.expr.kind === "unary" ? operation.expr.operand : operation.expr;
+    expect(operation.expr.kind).toBe(negated ? "unary" : "call");
+    expect(call).toMatchObject({
+      kind: "call",
+      args: [receiver, { kind: "dynFrom", value: literal("method") }],
+    });
+    expect(JSON.stringify(target.body).match(/receiverEffect/g)).toHaveLength(1);
+    const helper = liftedFns.find((item) => item.name.startsWith("%dyn.class.computed."));
+    expect(helper?.body.at(-1)).toMatchObject({
+      kind: "return",
+      value: { kind: "libCall", fn: "dyn.in" },
+    });
+    expect(dispatch.process(lowerer, [boxed, target, ...liftedFns])).toBe(false);
+  },
+);
+
+test("settles cached presence against the reflected declaration owner", () => {
+  const { lowerer, boxed, liftedFns } = context();
+  const base = {
+    def: { name: "Base", fields: [], prototypeDataHelper: "%prototype.Base", loc },
+    fields: new Map(),
+    methods: new Map([["inherited", { params: [], ret: F64 }]]),
+    base: null,
+    subclasses: [],
+    decl: {},
+    prototypeObservedMethodsReady: true,
+  } as unknown as ClassInfo;
+  const child = {
+    def: { name: "Widget", fields: [], prototypeDataHelper: "%prototype.Widget", loc },
+    fields: new Map(),
+    methods: new Map([["own", { params: [], ret: F64 }]]),
+    base,
+    subclasses: [],
+    decl: {},
+    prototypeObservedMethodsReady: true,
+  } as unknown as ClassInfo;
+  base.subclasses.push(child);
+  lowerer.classes.set("Base", base);
+  lowerer.classes.set("Widget", child);
+  lowerer.classCanBeConstructed = () => true;
+  lowerer.coerceToExpected = (value, type) =>
+    value.type.kind === type.kind ? value : { kind: "dynFrom", value, type, loc };
+  const target = fn("probe", [
+    statement({
+      kind: "dynHasKey",
+      key: "inherited",
+      value: variable("receiver"),
+      type: BOOL,
+      loc,
+    }),
+  ]);
+  const dispatch = new ClassDynamicDispatch();
+  dispatch.process(lowerer, [boxed, target]);
+  const helper = liftedFns.find((item) => item.name.startsWith("%dyn.class.keys."))!;
+  const answer = (name: string) => {
+    const branch = helper.body.find(
+      (item) =>
+        item.kind === "if" &&
+        item.cond.kind === "strEq" &&
+        item.cond.right.kind === "strLit" &&
+        item.cond.right.value === name,
+    );
+    if (branch?.kind !== "if" || branch.then[0]?.kind !== "return")
+      throw new Error("missing key branch");
+    return branch.then[0].value;
+  };
+  expect(answer("inherited")).toMatchObject({ kind: "ternary" });
+  expect(answer("own")).toMatchObject({ kind: "ternary" });
+  base.prototypeReflectionReady = true;
+  dispatch.finalize(lowerer);
+  expect(answer("inherited")).toMatchObject({ kind: "libCall", fn: "dyn.in" });
+  expect(answer("own")).toMatchObject({ kind: "ternary" });
 });
 
 test("discovers dispatch sites added during a later reachability pass", () => {

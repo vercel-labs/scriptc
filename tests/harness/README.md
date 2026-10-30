@@ -77,6 +77,8 @@ This is a local latency benchmark, not a timing assertion in CI. Compare the sam
 
 The compiler caches frontend work, native program objects, and linked outputs. Tests place caches under `node_modules/.cache/scriptc-tests/cas` (gitignored; override with `SCRIPTC_CACHE_DIR`) instead of the per-user default. Cached programs still execute for every differential comparison.
 
+`SCRIPTC_TEST_OUTPUT_DIR` selects the output directory for both differential corpus harnesses; unset or empty uses `node_modules/.cache/scriptc-tests`. Use a separate directory per concurrent run to isolate emitted programs and transformed Node oracle files. This does not change the compiler CAS selected by `SCRIPTC_CACHE_DIR` or the original corpus source paths.
+
 - **frontend results** (`early-exe/` and `early-lib/`): exact repeats validate the frontend's complete file and resolution snapshot before restoring emitted LLVM, optional IR, and native feature selections. Source, configuration, package-resolution, target, and FFI changes invalidate the relevant result. Library comment-only edits can reuse lowered IR while regenerating source locations and identity metadata.
 - **LLVM artifacts** (`native-codegen-v1/`): checksum-verified program objects and assembly are keyed by LLVM input, helper identity, target ABI, and optimization settings. Library identity getters compile separately, and dev libraries can reuse unchanged LLVM shards.
 - **runtime packs**: ordinary builds select and verify installed precompiled objects and vendor archives. These are distribution artifacts, so compiling an application does not compile runtime C sources.

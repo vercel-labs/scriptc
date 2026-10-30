@@ -399,6 +399,67 @@ static MockRec *mock_cyc_new(int value) {
 static const ScrArrOps mock_ops = { &mock_retain, &mock_release, NULL };
 static const ScrArrOps mock_cyc_ops = { &mock_cyc_retain, &mock_cyc_release, &mock_trace };
 
+/* A named property can close a cycle independently of the indexed element
+ * type. Exercise every allocator and both traced and untraced slot payloads. */
+static void test_named_metadata_cycles(void) {
+  const ScrElemKind kinds[] = {SCR_ELEM_F64, SCR_ELEM_BOOL, SCR_ELEM_STR,
+                              SCR_ELEM_BYTES, SCR_ELEM_ARR, SCR_ELEM_REF, SCR_ELEM_REF};
+  for (size_t kind = 0; kind < sizeof kinds / sizeof *kinds; kind++) {
+    for (int allocation = 0; allocation < 3; allocation++) {
+      scr_collect_cycles();
+      long arrays = scr_arr_live_count(), strings = scr_str_live_count();
+      long bytes = scr_bytes_live_count(), dyn = scr_dyn_live_count(), records = mock_live;
+      size_t headered = scr_cyc_live;
+      const ScrArrOps *ops = kind == 6 ? &mock_cyc_ops : &mock_ops;
+      ScrArr *a = kinds[kind] == SCR_ELEM_REF
+          ? (allocation == 1 ? scr_arr_new_ops_small(ops) : scr_arr_new_ops(ops, 2))
+          : allocation == 2 ? scr_arr_new_inline(kinds[kind], 2)
+          : allocation == 1 ? scr_arr_new_small(kinds[kind]) : scr_arr_new(kinds[kind], 2);
+      check(a->cyc, "named metadata owner has a collector header for every element kind");
+      if (!a->cyc) { scr_arr_release(a); continue; }
+      const double indices[] = {0, 4294967294.0, -1};
+      for (size_t i = 0; i < sizeof indices / sizeof *indices; i++) {
+        double index = indices[i];
+        switch (kinds[kind]) {
+        case SCR_ELEM_F64: scr_arr_set_f64(a, index, 42); break;
+        case SCR_ELEM_BOOL: scr_arr_set_bool(a, index, true); break;
+        case SCR_ELEM_STR: scr_arr_set_ref(a, index, scr_str_new("owned", 5)); break;
+        case SCR_ELEM_BYTES: scr_arr_set_ref(a, index, scr_bytes_new(SCR_BYTES_U8, 4)); break;
+        case SCR_ELEM_ARR: {
+          ScrArr *inner = scr_arr_new(SCR_ELEM_F64, 1);
+          scr_arr_push_f64(inner, 42);
+          scr_arr_set_ref(a, index, inner);
+          break;
+        }
+        case SCR_ELEM_REF:
+          scr_arr_set_ref(a, index, kind == 6 ? mock_cyc_new(42) : mock_new(42));
+          break;
+        }
+      }
+      ScrDyn *metadata = scr_dyn_new_obj();
+      scr_arr_ext(a)->metadata = metadata;
+      scr_dyn_obj_set(metadata, "self", 4, scr_dyn_new_typed_ref_traced(
+          a, scr_arr_retain_v, scr_arr_release_v, "array:metadata", 14, NULL, NULL));
+      /* A second edge reaches the owner through a closure's native array
+       * capture, independently of the capsule's trace contract. */
+      ScrClosure *closure = scr_closure_new(NULL, 1);
+      closure->caps[0] = scr_box_new(SCR_BOX_ARR);
+      scr_box_set_ref(closure->caps[0], scr_arr_retain(a));
+      ScrDyn *function = scr_dyn_new_func(closure, NULL, 0, "()", "capture");
+      scr_dyn_obj_set(metadata, "capture", 7, function);
+      scr_collect_cycles();
+      check(a->rc == 3 && scr_arr_has(a, 0) && scr_arr_has(a, -1),
+            "external owner survives collection with both named back edges");
+      scr_arr_release(a);
+      scr_collect_cycles();
+      check(scr_arr_live_count() == arrays && scr_str_live_count() == strings &&
+            scr_bytes_live_count() == bytes && scr_dyn_live_count() == dyn &&
+            mock_live == records && scr_cyc_live == headered,
+            "named cycles release traced children and untraced slot payloads exactly once");
+    }
+  }
+}
+
 static void test_ref_elements(void) {
 #ifdef SCR_RC_AUDIT
   long arrays0 = scr_arr_live_count();
@@ -1172,9 +1233,17 @@ static void test_dense_comparator_sort(void) {
         "a single value needs no comparator call");
   size_t rc = one->rc;
   one->rc = SIZE_MAX; /* as publication marks it */
-  check(!scr_arr_sort_dense(one, &floor_fn, 2, false, 0, NULL), "a published array takes the general path");
+  check(scr_arr_sort_dense(one, &floor_fn, 2, false, 0, NULL) && !scr_exc_pending(),
+        "a published singleton sort performs no writes");
   one->rc = rc;
   scr_arr_release(one);
+  ScrArr *single_hole = scr_arr_new(SCR_ELEM_F64, 1);
+  scr_arr_set_len(single_hole, 1);
+  check(scr_arr_sort_dense(single_hole, &floor_fn, 2, false, 0, NULL) &&
+        !scr_arr_has(single_hole, 0), "in-place singleton sort preserves its hole");
+  check(!scr_arr_sort_dense(single_hole, &floor_fn, 2, true, 0, NULL) && sort_calls == 0,
+        "toSorted materializes a singleton hole through the snapshot path");
+  scr_arr_release(single_hole);
   scr_arr_release(undef);
   scr_arr_release(holes);
   scr_arr_release(nums);
@@ -1237,6 +1306,105 @@ static void test_dense_comparator_sort(void) {
   scr_str_release(dense_replacement);
   check(scr_str_live_count() == strings0, "a mutating comparator leaks no string");
   dense_target = NULL;
+}
+
+static ScrArr *integrity_sort_receiver;
+static unsigned integrity_sort_mode, integrity_sort_calls;
+
+static void integrity_sort_edit(void) {
+  if (integrity_sort_calls++) return;
+  if (integrity_sort_mode == 1) scr_arr_delete(integrity_sort_receiver, 1);
+  if (integrity_sort_mode == 2) scr_arr_set_len(integrity_sort_receiver, 1);
+  scr_native_integrity_strengthen(integrity_sort_receiver,
+      integrity_sort_mode == 1 || integrity_sort_mode == 2
+          ? SCR_NATIVE_NON_EXTENSIBLE : SCR_NATIVE_FROZEN);
+  if (integrity_sort_mode == 3) scr_throw_f64(77);
+}
+
+static double integrity_sort_numbers(ScrClosure *self, double left, double right) {
+  (void)self;
+  integrity_sort_edit();
+  return left - right;
+}
+
+static double integrity_sort_strings(ScrClosure *self, void *left, void *right) {
+  (void)self;
+  double order = scr_str_cmp_u16(left, right);
+  scr_str_release(left); scr_str_release(right);
+  integrity_sort_edit();
+  return order;
+}
+
+static void test_sort_integrity_callbacks(void) {
+  long strings = scr_str_live_count(), arrays = scr_arr_live_count();
+  ScrClosure numbers = {SIZE_MAX, (void *)integrity_sort_numbers, 0, NULL, 0};
+  ScrClosure words = {SIZE_MAX, (void *)integrity_sort_strings, 0, NULL, 0};
+  for (int references = 0; references < 2; references++) {
+    for (integrity_sort_mode = 0; integrity_sort_mode < 4; integrity_sort_mode++) {
+      ScrArr *a = scr_arr_new(references ? SCR_ELEM_STR : SCR_ELEM_F64, 3);
+      for (int i = 3; i > 0; i--) {
+        if (references) { char value = (char)('0' + i); scr_arr_push_ref(a, scr_str_new(&value, 1)); }
+        else scr_arr_push_f64(a, i);
+      }
+      integrity_sort_receiver = a;
+      integrity_sort_calls = 0;
+      check(scr_arr_sort_dense(a, references ? &words : &numbers, 2, false, 0, NULL),
+            "dense sort handles comparator-time integrity changes");
+      check(scr_exc_pending(), "sort preserves comparator failure or refuses the first forbidden write");
+      if (integrity_sort_mode == 3 && scr_exc_pending()) {
+        ScrCaught *caught = scr_exc_take();
+        ScrStr *message = scr_caught_to_string(caught);
+        check(strcmp(message->data, "77") == 0, "the comparator exception precedes frozen writeback");
+        scr_str_release(message); scr_caught_release(caught);
+      } else scr_exc_clear();
+      check(integrity_sort_calls > 0 && a->len == (integrity_sort_mode == 2 ? 1 : 3),
+            "sort keeps comparator edits to receiver length");
+      double first = references ? ((ScrStr *)scr_arr_peek_ref(a, 0))->data[0] - '0'
+                                : scr_arr_get_f64(a, 0);
+      check_f64(first, integrity_sort_mode == 1 || integrity_sort_mode == 2 ? 1 : 3,
+                "sort retains only writes completed before refusal");
+      if (integrity_sort_mode == 1)
+        check(!scr_arr_has(a, 1), "sort cannot refill a comparator-created non-extensible hole");
+      scr_arr_release(a);
+    }
+  }
+  ScrClosure pure = {SIZE_MAX, (void *)sort_by_floor, 0, NULL, 0};
+  for (int scenario = 0; scenario < 8; scenario++) {
+    int order = scenario & 1;
+    bool sorted = (scenario & 2) != 0, published = (scenario & 4) != 0;
+    ScrArr *a = scr_arr_new(SCR_ELEM_F64, 2);
+    scr_arr_push_f64(a, sorted ? 1 : 3); scr_arr_push_f64(a, 2);
+    size_t rc = a->rc;
+    if (published) a->rc = SIZE_MAX;
+    else scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
+    check(scr_arr_sort_dense(a, &pure, 2, false, order, NULL) && scr_exc_pending(),
+          "ordinary and keyed sort reject frozen writeback");
+    scr_exc_clear();
+    check_f64(scr_arr_get_f64(a, 0), sorted ? 1 : 3,
+              "a frozen sort receiver keeps its original order");
+    if (published) a->rc = rc;
+    scr_arr_release(a);
+  }
+  for (int hole = 0; hole < 2; hole++) {
+    ScrArr *a = scr_arr_new(SCR_ELEM_STR, 4);
+    ScrStr *b = scr_str_new("b", 1), *first = scr_str_new("a", 1);
+    scr_arr_push_ref(a, b);
+    scr_arr_push_ref(a, first);
+    scr_arr_set_ref(a, hole ? 3 : 2, scr_str_retain(b));
+    scr_native_integrity_strengthen(a, SCR_NATIVE_NON_EXTENSIBLE);
+    ScrArr *result = scr_arr_sort_primitive(a, false);
+    check(hole ? result == NULL && scr_exc_pending() : result == a && !scr_exc_pending(),
+          "primitive sort transfers duplicate references before any refused insertion");
+    scr_exc_clear();
+    check(scr_arr_peek_ref(a, 0) == first && scr_arr_peek_ref(a, 1) == b &&
+          scr_arr_peek_ref(a, hole ? 3 : 2) == b,
+          "primitive sort retains snapshot identity through overwritten references");
+    if (result) scr_arr_release(result);
+    scr_arr_release(a);
+  }
+  integrity_sort_receiver = NULL;
+  check(scr_str_live_count() == strings && scr_arr_live_count() == arrays,
+        "refused sort writeback releases retained work values");
 }
 
 static void test_exact_construction(void) {
@@ -1484,6 +1652,286 @@ static void test_bool_bytes(void) {
  * the inline room on its own (ASan reports an invalid free otherwise). */
 static bool inline_slots(const ScrArr *a) {
   return a->data == (const uint64_t *)((const char *)a + ((sizeof(ScrArr) + 7) & ~(size_t)7));
+}
+
+static void test_indexed_storage_names(void) {
+  ScrArr *a = scr_arr_new_small(SCR_ELEM_F64);
+  ScrArr *b = scr_arr_new_small(SCR_ELEM_F64);
+  scr_arr_set_f64(a, -1, 11);
+  scr_arr_set_f64(b, -1, 22);
+  ScrArrProp *a_props = a->ext->props, *b_props = b->ext->props;
+  scr_arr_swap_indexed_storage(a, b);
+  check(a->ext->props == a_props && b->ext->props == b_props,
+        "indexed refresh preserves both named-property owners");
+  check_f64(scr_arr_get_f64(a, -1), 11, "target keeps its named numeric value");
+  check_f64(scr_arr_get_f64(b, -1), 22, "temporary keeps its named numeric value");
+  scr_arr_release(a);
+  scr_arr_release(b);
+
+  a = scr_arr_new_small(SCR_ELEM_F64);
+  b = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(a, 11);
+  scr_arr_swap_indexed_storage(a, b);
+  check(!a->ext && !b->ext && a->len == 0 && b->len == 1,
+        "dense-only transfer keeps extensions unallocated");
+  scr_arr_release(a);
+  check_f64(scr_arr_get_f64(b, 0), 11, "moved inline values outlive their original header");
+  scr_arr_release(b);
+
+  a = scr_arr_new_small(SCR_ELEM_BOOL);
+  b = scr_arr_new(SCR_ELEM_BOOL, 0);
+  scr_arr_set_bool(b, 3000000, true);
+  scr_arr_swap_indexed_storage(a, b);
+  check(a->ext && b->ext && arr_sparse_len(a) == 1 && arr_sparse_len(b) == 0 && b->len == 0,
+        "sparse transfer creates a missing extension before changing owners");
+  scr_arr_release(b);
+  check(scr_arr_get_bool(a, 3000000), "moved sparse values outlive their original header");
+  scr_arr_release(a);
+}
+
+static unsigned metadata_gets, metadata_sets;
+static ScrDyn *metadata_receiver;
+
+static ScrDyn *metadata_getter(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  ScrDyn *receiver = scr_dyn_this_get();
+  check(receiver == metadata_receiver, "copied accessor receives the detached snapshot");
+  scr_dyn_release(receiver);
+  metadata_gets++;
+  return scr_dyn_new_num(73.5);
+}
+
+static ScrDyn *metadata_setter(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  metadata_sets++;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *metadata_key(const char *name) {
+  ScrStr *text = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return key;
+}
+
+static void test_metadata_copy(void) {
+  scr_collect_cycles();
+  long arrays = scr_arr_live_count(), strings = scr_str_live_count(), dyn = scr_dyn_live_count();
+  size_t headered = scr_cyc_live;
+  ScrArr *a = scr_arr_new_small(SCR_ELEM_F64);
+  ScrDyn *source = scr_arr_ext(a)->metadata = scr_dyn_new_obj();
+  ScrDyn *target = scr_dyn_new_arr(), *prototype = scr_dyn_new_obj();
+  ScrDyn *data_key = metadata_key("data"), *accessor_key = metadata_key("accessor");
+  ScrDyn *mutable_key = metadata_key("mutable");
+  ScrSym *symbol = scr_sym_new(NULL);
+  ScrDyn *symbol_key = scr_dyn_new_symbol(symbol);
+  scr_sym_release(symbol);
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_new_num(11.5));
+  scr_dyn_release(scr_dyn_define_property(source, data_key, descriptor));
+  scr_dyn_release(descriptor);
+
+  descriptor = scr_dyn_new_obj();
+  ScrDyn *getter = scr_dyn_new_func(scr_closure_new(NULL, 0), metadata_getter, 0, "()", "metadata_getter");
+  scr_dyn_obj_set(descriptor, "get", 3, getter);
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
+  scr_dyn_release(scr_dyn_define_property(source, accessor_key, descriptor));
+  scr_dyn_release(descriptor);
+  scr_dyn_obj_set(source, "mutable", 7, scr_dyn_new_num(22.5));
+
+  descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_new_num(33.5));
+  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  scr_dyn_release(scr_dyn_define_property(source, symbol_key, descriptor));
+  scr_dyn_release(descriptor);
+
+  descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "set", 3,
+      scr_dyn_new_func(scr_closure_new(NULL, 0), metadata_setter, 1, "(number)", "metadata_setter"));
+  scr_dyn_release(scr_dyn_define_property(prototype, mutable_key, descriptor));
+  scr_dyn_release(descriptor);
+  scr_dyn_release(scr_dyn_set_prototype(target, prototype));
+  scr_dyn_arr_push(target, scr_dyn_new_num(44.5));
+  metadata_gets = metadata_sets = 0;
+  metadata_receiver = target;
+  scr_arr_copy_metadata(a, target);
+  check(!scr_exc_pending() && !metadata_gets && !metadata_sets,
+        "metadata copying invokes neither getters nor inherited setters");
+  check(target->v.arr.len == 1 && target->v.arr.items[0]->v.num == 44.5,
+        "metadata copying preserves indexed snapshot contents");
+  ScrDyn *keys[] = {data_key, accessor_key, mutable_key, symbol_key};
+  for (size_t i = 0; i < sizeof keys / sizeof *keys; i++) {
+    ScrDyn *original = scr_dyn_get_own_property_descriptor(source, keys[i]);
+    ScrDyn *copied = scr_dyn_get_own_property_descriptor(target, keys[i]);
+    check(copied && copied->kind == SCR_DYN_OBJ, "snapshot retains every string and symbol descriptor");
+    if (copied && copied->kind == SCR_DYN_OBJ) {
+      const char *fields[] = {"value", "writable", "get", "set", "enumerable", "configurable"};
+      for (size_t f = 0; f < sizeof fields / sizeof *fields; f++) {
+        const ScrDyn *left = scr_dyn_obj_get(original, fields[f], strlen(fields[f]));
+        const ScrDyn *right = scr_dyn_obj_get(copied, fields[f], strlen(fields[f]));
+        check((!left && !right) || (left && right && scr_dyn_strict_eq(left, right)),
+              "copied descriptor preserves its value, accessors and attributes");
+      }
+    }
+    scr_dyn_release(original);
+    scr_dyn_release(copied);
+  }
+  ScrDyn *replacement = scr_dyn_new_num(55.5);
+  scr_dyn_key_set(target, mutable_key->v.str, replacement);
+  scr_dyn_symbol_key_set(target, symbol_key, replacement);
+  scr_dyn_release(replacement);
+  ScrDyn *original_symbol = scr_dyn_symbol_key_get(source, symbol_key, false);
+  check(scr_dyn_obj_get(source, "mutable", 7)->v.num == 22.5 &&
+        original_symbol->kind == SCR_DYN_NUM && original_symbol->v.num == 33.5,
+        "detached string and symbol updates leave native metadata unchanged");
+  scr_dyn_release(original_symbol);
+  scr_arr_release(a);
+  scr_collect_cycles();
+  ScrDyn *value = scr_dyn_arr_named_get(target, accessor_key->v.str);
+  check(value && value->kind == SCR_DYN_NUM && value->v.num == 73.5 && metadata_gets == 1,
+        "copied accessor survives native metadata disposal and runs once on Get");
+  scr_dyn_release(value);
+  for (size_t i = 0; i < sizeof keys / sizeof *keys; i++) scr_dyn_release(keys[i]);
+  scr_dyn_release(target);
+  scr_dyn_release(prototype);
+  metadata_receiver = NULL;
+  scr_collect_cycles();
+  check(scr_arr_live_count() == arrays && scr_str_live_count() == strings &&
+        scr_dyn_live_count() == dyn && scr_cyc_live == headered && !scr_exc_pending(),
+        "metadata snapshots release every descriptor, closure and symbol owner");
+}
+
+static void storage_set(ScrArr *a, double index, int value, bool traced) {
+  switch (a->elem) {
+  case SCR_ELEM_F64: scr_arr_set_f64(a, index, value); break;
+  case SCR_ELEM_BOOL: scr_arr_set_bool(a, index, value == 11); break;
+  case SCR_ELEM_STR: {
+    char text[16];
+    int length = snprintf(text, sizeof text, "%d", value);
+    scr_arr_set_ref(a, index, scr_str_new(text, (size_t)length));
+    break;
+  }
+  case SCR_ELEM_REF: {
+    MockRec *record = traced ? mock_cyc_new(value) : mock_new(value);
+    if (traced) record->owner = scr_arr_retain(a);
+    scr_arr_set_ref(a, index, record);
+    break;
+  }
+  default: abort();
+  }
+}
+
+static bool storage_value(ScrArr *a, double index, int value) {
+  if (scr_arr_state(a, index) != SCR_ARR_VALUE) return false;
+  switch (a->elem) {
+  case SCR_ELEM_F64: return scr_arr_get_f64(a, index) == value;
+  case SCR_ELEM_BOOL: return scr_arr_get_bool(a, index) == (value == 11);
+  case SCR_ELEM_STR: return atoi(((ScrStr *)scr_arr_peek_ref(a, index))->data) == value;
+  case SCR_ELEM_REF: return ((MockRec *)scr_arr_peek_ref(a, index))->value == value;
+  default: abort();
+  }
+}
+
+static void storage_check(ScrArr *a, int pattern, int value) {
+  check(a->len == (pattern & 2 ? 3000003 : pattern & 1 ? 3 : 0),
+        "indexed storage moves length with its slots");
+  check((pattern & 1 ? storage_value(a, 0, value) : !scr_arr_has(a, 0)) &&
+        !scr_arr_has(a, 1) &&
+        scr_arr_state(a, 2) == (pattern & 1 ? SCR_ARR_UNDEFINED : SCR_ARR_HOLE),
+        "dense values, holes and explicit undefined move together");
+  check((pattern & 2 ? storage_value(a, 3000000, value) : !scr_arr_has(a, 3000000)) &&
+        !scr_arr_has(a, 3000001) &&
+        scr_arr_state(a, 3000002) == (pattern & 2 ? SCR_ARR_UNDEFINED : SCR_ARR_HOLE),
+        "sparse values, holes and explicit undefined move together");
+  check(filled_ok(a), "indexed storage preserves the dense filled-prefix invariant");
+}
+
+static void test_indexed_storage(void) {
+  const ScrElemKind kinds[] = {SCR_ELEM_F64, SCR_ELEM_BOOL, SCR_ELEM_STR,
+                              SCR_ELEM_REF, SCR_ELEM_REF};
+  for (size_t kind = 0; kind < sizeof kinds / sizeof *kinds; kind++)
+    for (int allocation = 0; allocation < 3; allocation++)
+      for (int pattern = 0; pattern < 4; pattern++)
+        for (int reverse = 0; reverse < 2; reverse++) {
+          scr_collect_cycles();
+          long arrays = scr_arr_live_count(), strings = scr_str_live_count();
+          long dyn = scr_dyn_live_count(), records = mock_live;
+          size_t headered = scr_cyc_live;
+          ScrArr *pair[2];
+          ScrArrExt *extensions[2];
+          ScrArrProp *properties[2];
+          ScrDyn *metadata[2];
+          size_t counts[2];
+          ScrSym *symbol = scr_sym_new(NULL);
+          ScrDyn *key = scr_dyn_new_symbol(symbol);
+          scr_sym_release(symbol);
+          for (int side = 0; side < 2; side++) {
+            int layout = (allocation + side) % 3;
+            int contents = side ? 3 - pattern : pattern;
+            int value = side ? 22 : 11;
+            const ScrArrOps *ops = kind == 4 ? &mock_cyc_ops : &mock_ops;
+            ScrArr *a = pair[side] = kinds[kind] == SCR_ELEM_REF
+                ? (layout == 1 ? scr_arr_new_ops_small(ops) : scr_arr_new_ops(ops, 4))
+                : layout == 2 ? scr_arr_new_inline(kinds[kind], 4)
+                : layout == 1 ? scr_arr_new_small(kinds[kind]) : scr_arr_new(kinds[kind], 4);
+            if (contents & 1) {
+              storage_set(a, 0, value, kind == 4);
+              scr_arr_set_undefined(a, 2);
+            }
+            if (contents & 2) {
+              storage_set(a, 3000000, value, kind == 4);
+              scr_arr_set_undefined(a, 3000002);
+            }
+            storage_set(a, -1, value, kind == 4);
+            extensions[side] = a->ext;
+            properties[side] = a->ext->props;
+            metadata[side] = a->ext->metadata = scr_dyn_new_obj();
+            scr_dyn_obj_set(metadata[side], "label", 5, scr_dyn_new_num(value + 0.5));
+            ScrDyn *symbol_value = scr_dyn_new_num(value + 0.5);
+            scr_dyn_symbol_key_set(metadata[side], key, symbol_value);
+            scr_dyn_release(symbol_value);
+            counts[side] = a->rc;
+          }
+          ScrArr *a = pair[0], *b = pair[1];
+          uint64_t *inline_data = a->data;
+          scr_arr_swap_indexed_storage(a, a);
+          check(a->data == inline_data && a->ext == extensions[0] && a->rc == counts[0],
+                "self swap preserves inline storage and ownership");
+          ScrArr *alias = scr_arr_retain(a);
+          scr_native_integrity_strengthen(a, SCR_NATIVE_NON_EXTENSIBLE);
+          scr_arr_swap_indexed_storage(a, b);
+          check(!inline_slots(a) && !inline_slots(b), "storage transfer detaches both inline buffers");
+          check(a->rc == counts[0] + 1 && b->rc == counts[1] && a->elem == b->elem && a->ops == b->ops,
+                "storage transfer borrows both representations without changing RC");
+          check(scr_arr_integrity_flags(a) == SCR_NATIVE_NON_EXTENSIBLE && !scr_arr_integrity_flags(b),
+                "indexed storage does not transfer native integrity identity");
+          storage_check(alias, 3 - pattern, 22);
+          storage_check(b, pattern, 11);
+          for (int side = 0; side < 2; side++) {
+            ScrArr *owner = pair[side];
+            check(owner->ext == extensions[side] && owner->ext->metadata == metadata[side] &&
+                  owner->ext->props == properties[side] && storage_value(owner, -1, side ? 22 : 11),
+                  "indexed transfer preserves both named-property containers and values");
+            ScrDyn *label = scr_dyn_obj_get(owner->ext->metadata, "label", 5);
+            ScrDyn *symbol_value = scr_dyn_symbol_key_get(owner->ext->metadata, key, false);
+            check(label->kind == SCR_DYN_NUM && label->v.num == (side ? 22.5 : 11.5) &&
+                  symbol_value->kind == SCR_DYN_NUM && symbol_value->v.num == label->v.num,
+                  "string and symbol metadata stay attached to their original referent");
+            scr_dyn_release(symbol_value);
+          }
+          scr_arr_release(alias);
+          scr_arr_release(pair[reverse]);
+          scr_collect_cycles();
+          storage_check(pair[!reverse], reverse ? 3 - pattern : pattern, reverse ? 22 : 11);
+          scr_arr_release(pair[!reverse]);
+          scr_dyn_release(key);
+          scr_collect_cycles();
+          check(scr_arr_live_count() == arrays && scr_str_live_count() == strings &&
+                scr_dyn_live_count() == dyn && mock_live == records && scr_cyc_live == headered &&
+                !scr_native_integrity_active() && !scr_exc_pending(),
+                "either release order frees all values, named properties and cyclic owners");
+        }
 }
 
 static void test_inline_slots(void) {
@@ -1884,7 +2332,675 @@ static void test_dense_slots(void) {
   scr_arr_release(nums);
 }
 
+
+static void check_error(const char *expected) {
+  check(scr_exc_pending(), expected);
+  if (!scr_exc_pending()) return;
+  ScrCaught *caught = scr_exc_take();
+  ScrStr *text = scr_caught_to_string(caught);
+  check(strcmp(text->data, expected) == 0, expected);
+  scr_str_release(text);
+  scr_caught_release(caught);
+}
+
+static void test_integrity_properties(void) {
+  const unsigned levels[] = {SCR_NATIVE_NON_EXTENSIBLE, SCR_NATIVE_SEALED, SCR_NATIVE_FROZEN};
+  const double keys[] = {0, 2, 2000000, -1, 0.5, 4294967295.0, NAN, INFINITY};
+  for (size_t level = 0; level < sizeof levels / sizeof *levels; level++) {
+    ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
+      scr_arr_set_f64(a, keys[i], 3);
+    scr_arr_set_undefined(a, 2);
+    scr_arr_set_len(a, 2000004);
+    scr_native_integrity_strengthen(a, levels[level]);
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++) {
+      scr_arr_set_f64(a, keys[i], 7);
+      if (level == 2) {
+        check(scr_exc_pending(), "frozen existing numeric properties reject writes");
+        scr_exc_clear();
+      } else {
+        check(!scr_exc_pending(), "non-extensible and sealed existing writes succeed");
+        check_f64(scr_arr_get_f64(a, keys[i]), 7, "existing numeric property changed");
+      }
+    }
+    scr_arr_set_f64(a, 1, 8);
+    check_error("TypeError: Cannot add property 1, object is not extensible");
+    check(!scr_arr_has(a, 1), "failed hole write preserves absence");
+    scr_arr_set_undefined(a, 2000002);
+    check_error("TypeError: Cannot add property 2000002, object is not extensible");
+    check(!scr_arr_has(a, 2000002), "failed undefined write preserves sparse hole");
+    scr_arr_set_f64(a, -2, 8);
+    check_error("TypeError: Cannot add property -2, object is not extensible");
+    check(!scr_arr_delete(a, 1) && !scr_exc_pending(), "missing deletion is a no-op");
+    bool removed = scr_arr_delete(a, 2);
+    if (level == 0) {
+      check(removed && !scr_exc_pending() && !scr_arr_has(a, 2), "non-extensible deletion succeeds");
+      scr_arr_set_undefined(a, 2);
+      check_error("TypeError: Cannot add property 2, object is not extensible");
+    } else {
+      check(!removed && scr_arr_has(a, 2), "sealed and frozen deletion preserves present element");
+      check_error("TypeError: Cannot delete property '2' of [object Array]");
+    }
+    scr_arr_release(a);
+    check(!scr_native_integrity_active(), "array disposal clears its integrity metadata");
+  }
+}
+
+static void test_integrity_length(void) {
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_undefined(a, 2);
+  scr_arr_set_len(a, 6);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_NON_EXTENSIBLE);
+  scr_arr_set_len(a, 8);
+  check(a->len == 8 && !scr_exc_pending() && !scr_arr_has(a, 7),
+        "non-extensible length growth creates holes");
+  scr_arr_set_len(a, 2);
+  check(a->len == 2 && !scr_exc_pending(), "non-extensible shrink deletes present undefined");
+  scr_arr_release(a);
+
+  a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_undefined(a, 2);
+  scr_arr_set_f64(a, 2000000, 9);
+  scr_arr_set_len(a, 4294967295.0);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_SEALED);
+  scr_arr_set_len(a, 1);
+  check_error("TypeError: Cannot delete property '2000000' of [object Array]");
+  check(a->len == 2000001 && scr_arr_has(a, 2) && scr_arr_get_f64(a, 2000000) == 9,
+        "sealed shrink restores length after the highest sparse element");
+  scr_arr_release(a);
+
+  a = scr_arr_new(SCR_ELEM_BOOL, 0);
+  scr_arr_set_undefined(a, 2);
+  scr_arr_set_len(a, 7);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_SEALED);
+  scr_arr_set_len(a, 1);
+  check_error("TypeError: Cannot delete property '2' of [object Array]");
+  check(a->len == 3 && scr_arr_has(a, 2), "sealed shrink includes present undefined");
+  scr_arr_set_len(a, 8);
+  scr_arr_set_len(a, 3);
+  check(a->len == 3 && !scr_exc_pending(), "sealed trailing holes can shrink");
+  scr_arr_set_len(a, 1.5);
+  check_error("RangeError: Invalid array length");
+  scr_arr_release(a);
+
+  a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_len(a, 6);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_SEALED);
+  scr_arr_set_len(a, 0);
+  check(a->len == 0 && !scr_exc_pending(), "sealed hole-only array can shrink to zero");
+  scr_arr_release(a);
+
+  a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
+  const double lengths[] = {0, 1, -1, 1.5, NAN, INFINITY, 4294967296.0};
+  for (size_t i = 0; i < sizeof lengths / sizeof *lengths; i++) {
+    scr_arr_set_len(a, lengths[i]);
+    check_error("TypeError: Cannot assign to read only property 'length' of object '[object Array]'");
+    check(a->len == 0, "frozen length assignment leaves length unchanged");
+  }
+  scr_arr_release(a);
+}
+
+static void test_integrity_owned_refs(void) {
+#ifdef SCR_RC_AUDIT
+  long strings = scr_str_live_count();
+#endif
+  ScrArr *a = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_set_ref(a, 0, scr_str_new("kept", 4));
+  scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
+  scr_arr_set_ref(a, 0, scr_str_new("rejected", 8));
+  check_error("TypeError: Cannot assign to read only property '0' of object '[object Array]'");
+  ScrStr *kept = scr_arr_get_ref(a, 0);
+  check(strcmp(kept->data, "kept") == 0, "rejected ref write leaves old owner intact");
+  scr_arr_set_ref(a, 0, kept); /* the failing setter must consume this +1 */
+  check_error("TypeError: Cannot assign to read only property '0' of object '[object Array]'");
+  check(kept->rc == 1, "failing self-assignment consumes exactly the input reference");
+  scr_arr_release(a);
+#ifdef SCR_RC_AUDIT
+  check(scr_str_live_count() == strings, "rejected ref writes release every temporary");
+#endif
+  a = scr_arr_new(SCR_ELEM_ARR, 0);
+  ScrArr *child = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
+  scr_arr_set_ref(a, 0, scr_arr_retain(child));
+  check_error("TypeError: Cannot add property 0, object is not extensible");
+  check(child->rc == 1, "rejected array value releases its transferred reference");
+  scr_arr_release(child);
+  scr_arr_release(a);
+
+  a = scr_arr_new(SCR_ELEM_BYTES, 0);
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, 4);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
+  scr_arr_set_ref(a, 0, scr_bytes_retain(bytes));
+  check_error("TypeError: Cannot add property 0, object is not extensible");
+  check(bytes->rc == 1, "rejected byte view releases its transferred reference");
+  scr_bytes_release(bytes);
+  scr_arr_release(a);
+
+  long records = mock_live;
+  a = scr_arr_new_ops(&mock_ops, 0);
+  MockRec *record = mock_new(7);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
+  scr_arr_set_ref(a, 0, mock_retain(record));
+  check_error("TypeError: Cannot add property 0, object is not extensible");
+  check(record->rc == 1, "rejected record value releases through its ops");
+  mock_release(record);
+  scr_arr_release(a);
+
+  a = scr_arr_new_ops(&mock_cyc_ops, 0);
+  record = mock_cyc_new(8);
+  record->owner = scr_arr_retain(a);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
+  scr_arr_set_ref(a, 0, record);
+  check_error("TypeError: Cannot add property 0, object is not extensible");
+  check(a->rc == 1 && a->len == 0, "refusal releases a cyclic input without installing it");
+  scr_arr_release(a);
+  scr_collect_cycles();
+  check(mock_live == records, "rejected record inputs leave no live values");
+  check(!scr_native_integrity_active(), "refusal cleanup leaves no integrity metadata");
+}
+
+static void test_removal_owned_results(void) {
+  long arrays = scr_arr_live_count(), records = mock_live;
+  for (int shift = 0; shift < 2; shift++) for (int sparse = 0; sparse < 2; sparse++)
+    for (int restricted = 0; restricted < 2; restricted++) for (int discard = 0; discard < 2; discard++) {
+      ScrArr *a = scr_arr_new_ops(&mock_cyc_ops, 0);
+      MockRec *record = mock_cyc_new(7);
+      record->owner = scr_arr_retain(a);
+      scr_arr_set_ref(a, sparse && !shift ? 2000000 : 0, record);
+      if (sparse && shift) scr_arr_set_len(a, 2000001);
+      size_t length = a->len;
+      if (restricted) scr_native_integrity_strengthen(a, SCR_NATIVE_NON_EXTENSIBLE);
+      uint64_t slot = 0;
+      uint8_t state = shift ? scr_arr_shift_state(a, discard ? NULL : &slot)
+          : scr_arr_pop_state(a, discard ? NULL : &slot);
+      check(!scr_exc_pending() && state == SCR_ARR_VALUE && a->len == length - 1,
+            "dense and sparse removal succeeds with a writable length");
+      if (!discard) {
+        MockRec *out = (MockRec *)(uintptr_t)slot;
+        check(out == record && out->value == 7 && out->rc == 1,
+              "successful removal transfers exactly one outgoing reference");
+        mock_cyc_release(out);
+      }
+      check(mock_live == records && filled_ok(a), "discarded removal releases after consistent storage");
+      scr_arr_release(a);
+      scr_collect_cycles();
+      check(scr_arr_live_count() == arrays && !scr_native_integrity_active(),
+            "successful removal releases every cyclic owner and restriction");
+    }
+
+  ScrArr *a = scr_arr_new_ops(&mock_cyc_ops, 0);
+  for (int i = 0; i < 3; i++) {
+    MockRec *record = mock_cyc_new(i + 1);
+    record->owner = scr_arr_retain(a);
+    scr_arr_push_ref(a, record);
+  }
+  scr_native_integrity_strengthen(a, SCR_NATIVE_SEALED);
+  uint64_t slot = UINT64_MAX;
+  check(scr_arr_shift_state(a, &slot) == SCR_ARR_HOLE && slot == 0,
+        "failed shift transfers no saved result");
+  check_error("TypeError: Cannot delete property '2' of [object Array]");
+  check(a->len == 3 && ((MockRec *)scr_arr_peek_ref(a, 0))->value == 2 &&
+        ((MockRec *)scr_arr_peek_ref(a, 1))->value == 3 &&
+        scr_arr_peek_ref(a, 1) == scr_arr_peek_ref(a, 2) && mock_live == records + 2,
+        "failed sealed shift keeps completed writes and releases the saved first value");
+  scr_native_integrity_strengthen(a, SCR_NATIVE_FROZEN);
+  check(scr_arr_pop_ref(a) == NULL, "typed pop preserves a pending refusal instead of trapping");
+  check_error("TypeError: Cannot delete property '2' of [object Array]");
+  check(scr_arr_shift_ref(a) == NULL, "typed shift preserves a pending refusal instead of trapping");
+  check_error("TypeError: Cannot assign to read only property '0' of object '[object Array]'");
+  scr_arr_release(a);
+  scr_collect_cycles();
+  check(mock_live == records && scr_arr_live_count() == arrays && !scr_native_integrity_active(),
+        "failed removals release every retained reference");
+}
+
+static void integrity_publish_array(void *ptr, ScrPub *context) {
+  scr_pub_arr(ptr, context, NULL);
+}
+
+/* Sparse storage must preserve the same partial writes as the dense Node
+ * matrix. Back-edges make replacement and failure cleanup collectable at
+ * every release, including reverse's retained value after a deletion. */
+static void test_integrity_range_sparse_refs(void) {
+  const double high = 2000000;
+  const unsigned levels[] = {SCR_NATIVE_NON_EXTENSIBLE, SCR_NATIVE_SEALED, SCR_NATIVE_FROZEN};
+  long arrays = scr_arr_live_count(), records = mock_live;
+  for (int op = 0; op < 3; op++) for (size_t level = 0; level < 3; level++) {
+    ScrArr *a = scr_arr_new_ops(&mock_cyc_ops, 0);
+    MockRec *first = mock_cyc_new(1), *last = mock_cyc_new(3), *fill = NULL;
+    first->owner = scr_arr_retain(a);
+    last->owner = scr_arr_retain(a);
+    scr_arr_set_ref(a, op == 2 ? 0 : high, first);
+    scr_arr_set_ref(a, op == 2 ? high : high + 3, last);
+    if (op == 0) {
+      scr_arr_set_undefined(a, high + 1);
+      fill = mock_cyc_new(9);
+      fill->owner = scr_arr_retain(a);
+    } else {
+      MockRec *middle = mock_cyc_new(2);
+      middle->owner = scr_arr_retain(a);
+      scr_arr_set_ref(a, op == 2 ? 1 : high + 1, middle);
+    }
+    check(a->cap < (size_t)high && arr_sparse_len(a) > 0,
+          "restricted ranges exercise sparse storage");
+    scr_native_integrity_strengthen(a, levels[level]);
+    ScrArr *result = op == 0 ? scr_arr_fill_ref(a, fill, high, high + 4)
+        : op == 1 ? scr_arr_copy_within(a, high + 1, high, high + 3)
+        : scr_arr_reverse(a);
+    check(result == NULL, "partial sparse mutation returns no owned result");
+    if (op == 0) {
+      check_error(level == 2
+          ? "TypeError: Cannot assign to read only property '2000000' of object '[object Array]'"
+          : "TypeError: Cannot add property 2000002, object is not extensible");
+      check(((MockRec *)scr_arr_peek_ref(a, high))->value == (level == 2 ? 1 : 9),
+            "sparse fill keeps its first completed write");
+      check(level == 2 ? scr_arr_state(a, high + 1) == SCR_ARR_UNDEFINED
+          : ((MockRec *)scr_arr_peek_ref(a, high + 1))->value == 9,
+          "sparse fill replaces a present undefined before the hole");
+      check(((MockRec *)scr_arr_peek_ref(a, high + 3))->value == 3,
+            "sparse fill stops before later references");
+      mock_cyc_release(fill);
+    } else if (op == 1) {
+      check_error(level == 0
+          ? "TypeError: Cannot add property 2000002, object is not extensible"
+          : "TypeError: Cannot delete property '2000003' of [object Array]");
+      check(((MockRec *)scr_arr_peek_ref(a, high))->value == 1 &&
+            ((MockRec *)scr_arr_peek_ref(a, high + 1))->value == 2,
+            "backward sparse copy stops before earlier sources");
+      check(level == 0 ? !scr_arr_has(a, high + 3)
+          : ((MockRec *)scr_arr_peek_ref(a, high + 3))->value == 3,
+          "sparse copy preserves a completed deletion on later failure");
+    } else {
+      check_error(level == 0
+          ? "TypeError: Cannot add property 1999999, object is not extensible"
+          : level == 1 ? "TypeError: Cannot delete property '1' of [object Array]"
+          : "TypeError: Cannot assign to read only property '0' of object '[object Array]'");
+      check(((MockRec *)scr_arr_peek_ref(a, 0))->value == (level == 2 ? 1 : 3) &&
+            ((MockRec *)scr_arr_peek_ref(a, high))->value == (level == 2 ? 3 : 1),
+            "reverse keeps completed swaps across dense and sparse storage");
+      check(level == 0 ? !scr_arr_has(a, 1)
+          : ((MockRec *)scr_arr_peek_ref(a, 1))->value == 2,
+          "reverse keeps a deletion before its failed sparse store");
+      check(!scr_arr_has(a, high - 1), "failed reverse store leaves its sparse hole");
+    }
+    if (op != 2) {
+      check(!scr_arr_has(a, high + 2) && scr_arr_next_present(a, 0) == high,
+            "failed sparse ranges preserve holes outside completed writes");
+    }
+    check(a->len == (size_t)high + (op == 2 ? 1 : 4) && filled_ok(a),
+          "partial sparse ranges preserve length and the filled prefix");
+    scr_arr_release(result);
+    scr_arr_release(a);
+    scr_collect_cycles();
+    check(mock_live == records && scr_arr_live_count() == arrays,
+          "partial range cleanup releases all cyclic references");
+    check(!scr_native_integrity_active(), "collected sparse arrays retire integrity metadata");
+  }
+}
+
+static void test_integrity_splice_ownership(void) {
+  long arrays = scr_arr_live_count(), records = mock_live;
+  for (int sparse = 0; sparse < 2; sparse++) for (unsigned level = 0; level < 4; level++) {
+    double base = sparse ? 2000000 : 0;
+    ScrArr *a = scr_arr_new_ops(&mock_cyc_ops, 0);
+    for (int i = 0; i < 3; i++) {
+      MockRec *record = mock_cyc_new(i + 1);
+      record->owner = scr_arr_retain(a);
+      scr_arr_set_ref(a, base + i, record);
+    }
+    if (level) scr_native_integrity_strengthen(a, level == 1 ? SCR_NATIVE_NON_EXTENSIBLE
+        : level == 2 ? SCR_NATIVE_SEALED : SCR_NATIVE_FROZEN);
+    MockRec *insert = mock_cyc_new(9);
+    insert->owner = scr_arr_retain(a);
+    uint64_t slot = (uint64_t)(uintptr_t)insert;
+    scr_arr_splice_drop(a, base, 2, 1, &slot);
+    if (level < 2) {
+      check(!scr_exc_pending() && a->len == (size_t)base + 2 && mock_live == records + 2,
+            "successful discard splice consumes its inserted cyclic reference");
+      check(((MockRec *)scr_arr_peek_ref(a, base))->value == 9 &&
+            ((MockRec *)scr_arr_peek_ref(a, base + 1))->value == 3,
+            "successful discard splice preserves the tail");
+    } else if (level == 2) {
+      check_error(sparse ? "TypeError: Cannot delete property '2000002' of [object Array]"
+          : "TypeError: Cannot delete property '2' of [object Array]");
+      check(a->len == (size_t)base + 3 && mock_live == records + 2 &&
+            ((MockRec *)scr_arr_peek_ref(a, base))->value == 1 &&
+            scr_arr_peek_ref(a, base + 1) == scr_arr_peek_ref(a, base + 2),
+            "failed discard splice keeps tail writes and releases unused insertion");
+    } else {
+      check_error(sparse ? "TypeError: Cannot assign to read only property '2000001' of object '[object Array]'"
+          : "TypeError: Cannot assign to read only property '1' of object '[object Array]'");
+      check(a->len == (size_t)base + 3 && mock_live == records + 3,
+            "early splice refusal releases all insertion arguments");
+    }
+    check(filled_ok(a), "splice preserves the filled prefix after partial mutation");
+    if (sparse && level) {
+      size_t length = a->len;
+      long live = mock_live;
+      slot = (uint64_t)(uintptr_t)mock_cyc_new(8);
+      scr_arr_splice_drop(a, base, 0, 1, &slot);
+      check_error(level == 1 ? "TypeError: Cannot add property 2000002, object is not extensible"
+          : "TypeError: Cannot add property 2000003, object is not extensible");
+      check(a->len == length && mock_live == live && filled_ok(a),
+            "sparse growth refusal preserves its receiver and releases the unused argument");
+    }
+    scr_arr_release(a);
+    scr_collect_cycles();
+    check(mock_live == records && scr_arr_live_count() == arrays &&
+          !scr_native_integrity_active(), "splice releases cyclic snapshots and pending arguments");
+  }
+
+  ScrArr *a = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_set_ref(a, 2000000, scr_str_new("tail", 4));
+  scr_arr_set_len(a, 2000002);
+  ScrArr *removed = scr_arr_splice_insert(a, 0, INFINITY, a);
+  check(!scr_exc_pending() && a->len == 2000002 && removed->len == 2000002,
+        "sparse self insertion snapshots the original length");
+  check(scr_arr_state(removed, 0) == SCR_ARR_HOLE &&
+        scr_arr_state(a, 0) == SCR_ARR_UNDEFINED &&
+        scr_arr_state(a, 2000001) == SCR_ARR_UNDEFINED &&
+        scr_arr_peek_ref(a, 2000000) == scr_arr_peek_ref(removed, 2000000),
+        "self insertion materializes input holes but preserves removed holes");
+  scr_arr_release(a);
+  scr_native_integrity_strengthen(removed, SCR_NATIVE_FROZEN);
+  ScrArr *empty = scr_arr_new(SCR_ELEM_STR, 0);
+  ScrArr *copy = scr_arr_to_spliced(removed, 0, 2000000, empty);
+  check(!scr_exc_pending() && copy->len == 2 &&
+        scr_arr_peek_ref(copy, 0) == scr_arr_peek_ref(removed, 2000000) &&
+        scr_arr_state(copy, 1) == SCR_ARR_UNDEFINED && removed->len == 2000002,
+        "toSpliced reads frozen sparse inputs without mutating them");
+  scr_arr_release(copy);
+  scr_arr_release(empty);
+  scr_arr_release(removed);
+  check(scr_arr_live_count() == arrays && !scr_native_integrity_active(),
+        "sparse self insertion and copying release their arrays");
+}
+
+static void test_integrity_extension_ownership(void) {
+  long arrays = scr_arr_live_count(), records = mock_live;
+  const size_t counts[] = {0, 1, 2, 64, 65};
+  for (int prepend = 0; prepend < 2; prepend++) for (int sparse = 0; sparse < 2; sparse++)
+    for (unsigned level = 0; level < 4; level++) for (size_t c = 0; c < 5; c++) {
+      size_t count = counts[c], base = sparse ? 2000000 : 0;
+      ScrArr *a = scr_arr_new_ops(&mock_cyc_ops, 128);
+      MockRec *first = mock_cyc_new(1);
+      first->owner = scr_arr_retain(a);
+      scr_arr_set_ref(a, (double)base, first);
+      scr_arr_set_len(a, (double)(base + 3)); /* trailing holes are moved before a present value */
+      if (level) scr_native_integrity_strengthen(a, level == 1 ? SCR_NATIVE_NON_EXTENSIBLE
+          : level == 2 ? SCR_NATIVE_SEALED : SCR_NATIVE_FROZEN);
+      uint64_t slots[65];
+      for (size_t i = 0; i < count; i++) {
+        MockRec *record = mock_cyc_new((int)i + 2);
+        record->owner = scr_arr_retain(a);
+        slots[i] = (uint64_t)(uintptr_t)record;
+      }
+      double result = prepend ? scr_arr_unshift_many(a, count, slots) : scr_arr_push_many(a, count, slots);
+      bool refused = level && (count || level == 3);
+      if (refused) {
+        char message[128];
+        if (count) snprintf(message, sizeof message,
+            "TypeError: Cannot add property %zu, object is not extensible",
+            prepend ? base + count : base + 3);
+        else snprintf(message, sizeof message,
+            "TypeError: Cannot assign to read only property 'length' of object '[object Array]'");
+        check_error(message);
+        check(result == 0 && a->len == base + 3 && mock_live == records + 1,
+              "extension refusal consumes every cyclic input before or after tail movement");
+      } else {
+        check(result == (double)(base + 3 + count) && !scr_exc_pending() &&
+              mock_live == records + 1 + (long)count,
+              "extension accepts the entire argument count and owns each value");
+        check(scr_arr_peek_ref(a, (double)(base + (prepend ? count : 0))) == first,
+              "extension preserves the original sparse or dense edge");
+      }
+      check(filled_ok(a), "extension preserves the filled prefix and hole states");
+      scr_arr_release(a);
+      scr_collect_cycles();
+      check(mock_live == records && scr_arr_live_count() == arrays &&
+            !scr_native_integrity_active(), "extension releases all cyclic argument and receiver owners");
+    }
+}
+
+static void test_published_property_guards(void) {
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_undefined(a, 2);
+  scr_native_integrity_strengthen(a, SCR_NATIVE_SEALED);
+  scr_publish(a, integrity_publish_array);
+  check(!scr_exc_pending() && a->rc == SIZE_MAX && !scr_native_integrity_flags(a),
+        "publication replaces metadata");
+  scr_arr_set_f64(a, 1, 9);
+  check_error("TypeError: Cannot add property 1, object is not extensible");
+  scr_arr_set_f64(a, -1, 9);
+  check_error("TypeError: Cannot add property -1, object is not extensible");
+  check(scr_arr_check_delete(a, 1) && !scr_exc_pending(),
+        "published guard allows deleting an absent index");
+  check(!scr_arr_check_set(a, 1), "published guard rejects adding a hole");
+  check_error("TypeError: Cannot add property 1, object is not extensible");
+  scr_arr_set_len(a, 3);
+  check_error("TypeError: Cannot assign to read only property 'length' of object '[object Array]'");
+  scr_arr_push_many(a, 0, NULL);
+  check_error("TypeError: Cannot assign to read only property 'length' of object '[object Array]'");
+  scr_arr_unshift_many(a, 0, NULL);
+  check_error("TypeError: Cannot assign to read only property 'length' of object '[object Array]'");
+  scr_arr_push_f64(a, 9);
+  check_error("TypeError: Cannot add property 3, object is not extensible");
+  double numbers[2] = {8, 9};
+  uint64_t slots[2];
+  memcpy(slots, numbers, sizeof slots);
+  scr_arr_unshift_many(a, 2, slots);
+  check_error("TypeError: Cannot add property 4, object is not extensible");
+  ScrArr *copy = scr_arr_new(SCR_ELEM_F64, 0);
+  check(scr_arr_push_spread(copy, a) == 3 && scr_arr_unshift_spread(copy, a) == 6 &&
+        !scr_exc_pending() && a->len == 3 && !scr_arr_has(a, 0),
+        "published sources can be borrowed by both extension methods");
+  for (size_t i = 0; i < copy->len; i++)
+    check(scr_arr_state(copy, (double)i) == SCR_ARR_UNDEFINED,
+          "extension materializes holes from a published source");
+  scr_arr_release(copy);
+}
+
+/* Differential presence/state matrix: Node supplies the independent oracle
+ * in array.test.ts. All three representations take the same JS operations. */
+static void integrity_print_contents(ScrArr *a, int kind) {
+  for (size_t i = 0; i < a->len; i++) {
+    double state = scr_arr_state(a, (double)i);
+    if (state == SCR_ARR_HOLE) putchar('h');
+    else if (state == SCR_ARR_UNDEFINED) putchar('u');
+    else if (kind == 0) printf("%.0f", scr_arr_get_f64(a, (double)i));
+    else if (kind == 1) putchar(scr_arr_get_bool(a, (double)i) ? '1' : '0');
+    else fputs(((ScrStr *)scr_arr_peek_ref(a, (double)i))->data, stdout);
+  }
+}
+
+static uint64_t integrity_value_slot(int kind, int value) {
+  if (kind == 0) {
+    double number = value;
+    uint64_t slot;
+    memcpy(&slot, &number, sizeof slot);
+    return slot;
+  }
+  if (kind == 1) return value % 2 != 0;
+  char text = (char)('0' + value);
+  return (uint64_t)(uintptr_t)scr_str_new(&text, 1);
+}
+
+static int integrity_mutation_oracle(int mode) {
+  bool removal = mode == 1;
+  for (int kind = 0; kind < 3; kind++) for (size_t n = 0; n <= 4; n++) {
+    size_t patterns = 1;
+    for (size_t i = 0; i < n; i++) patterns *= 3;
+    for (size_t pattern = 0; pattern < patterns; pattern++)
+      for (unsigned level = 0; level < 4; level++) for (int op = 0; op < (mode == 4 ? 2 : mode == 3 ? 16 : mode == 2 ? 22 : removal ? 2 : 8); op++) {
+        ScrArr *a = scr_arr_new(kind == 0 ? SCR_ELEM_F64 : kind == 1 ? SCR_ELEM_BOOL : SCR_ELEM_STR, n);
+        scr_arr_set_len(a, (double)n);
+        size_t digits = pattern;
+        for (size_t i = 0; i < n; i++, digits /= 3) {
+          if (digits % 3 == 1) scr_arr_set_undefined(a, (double)i);
+          if (digits % 3 == 2) {
+            if (kind == 0) scr_arr_set_f64(a, (double)i, (double)i + 1);
+            else if (kind == 1) scr_arr_set_bool(a, (double)i, (i + 1) % 2 != 0);
+            else {
+              char value = (char)('1' + i);
+              scr_arr_set_ref(a, (double)i, scr_str_new(&value, 1));
+            }
+          }
+        }
+        if (level) scr_native_integrity_strengthen(a, level == 1 ? SCR_NATIVE_NON_EXTENSIBLE
+            : level == 2 ? SCR_NATIVE_SEALED : SCR_NATIVE_FROZEN);
+        ScrArr *result = NULL;
+        uint64_t removed = 0;
+        uint8_t removed_state = SCR_ARR_HOLE;
+        double extended = 0;
+        if (mode == 4) {
+          result = scr_arr_sort_primitive(a, op != 0);
+        } else if (mode == 3) {
+          bool prepend = op % 2 != 0;
+          if (op < 2 || (op >= 4 && op < 6) || (op >= 12 && op < 14)) {
+            size_t count = op < 2 ? 0 : op < 6 ? 2 : 65;
+            uint64_t slots[65];
+            for (size_t i = 0; i < count; i++)
+              slots[i] = integrity_value_slot(kind, count == 2 ? (int)i + 8 : (int)(i % 9) + 1);
+            extended = prepend ? scr_arr_unshift_many(a, count, slots) : scr_arr_push_many(a, count, slots);
+          } else if (op < 4) {
+            if (kind == 0) extended = prepend ? scr_arr_unshift_f64(a, 9) : scr_arr_push_f64(a, 9);
+            else if (kind == 1) extended = prepend ? scr_arr_unshift_bool(a, true) : scr_arr_push_bool(a, true);
+            else {
+              ScrStr *text = scr_str_new("9", 1);
+              extended = prepend ? scr_arr_unshift_ref(a, text) : scr_arr_push_ref(a, text);
+            }
+          } else {
+            ScrArr *items = op == 8 || op == 9 ? a : scr_arr_new(a->elem, 0);
+            if (op == 6 || op == 7) {
+              uint64_t slot = integrity_value_slot(kind, 9);
+              scr_arr_push_many(items, 1, &slot);
+              scr_arr_set_undefined(items, 1);
+              scr_arr_set_len(items, 3);
+              slot = integrity_value_slot(kind, 8);
+              scr_arr_push_many(items, 1, &slot);
+            } else if (op >= 14) scr_arr_set_undefined(items, 0);
+            extended = prepend ? scr_arr_unshift_spread(a, items) : scr_arr_push_spread(a, items);
+            if (items != a) scr_arr_release(items);
+          }
+          if (!scr_exc_pending()) result = scr_arr_retain(a);
+        } else if (mode == 2) {
+          int action = op < 12 ? op : op - 12;
+          double start = action == 3 ? -2 : action == 10 ? (double)n
+              : (action == 2 || (action >= 5 && action <= 8)) ? 1 : 0;
+          double count = action == 0 || action == 6 || action == 10 ? 0
+              : action == 4 || action == 11 ? (double)n : action == 5 ? INFINITY
+              : action == 8 ? 2 : 1;
+          size_t add = action >= 6 && action <= 8 ? 1 : action == 9 ? 2 : 0;
+          uint64_t slots[2];
+          for (size_t i = 0; i < add; i++)
+            slots[i] = integrity_value_slot(kind, action == 9 && i == 0 ? 8 : 9);
+          if (op >= 12) {
+            scr_arr_splice_drop(a, start, count, add, slots);
+          } else if (action == 11) {
+            result = scr_arr_splice_insert(a, start, count, a);
+          } else if (add || action == 10) {
+            ScrArr *items = scr_arr_new(a->elem, add + 1);
+            scr_arr_push_many(items, add, slots);
+            if (action == 10) scr_arr_set_undefined(items, 0);
+            result = scr_arr_splice_insert(a, start, count, items);
+            scr_arr_release(items);
+          } else result = scr_arr_splice(a, start, count);
+        } else if (removal) {
+          removed_state = op == 0 ? scr_arr_pop_state(a, &removed) : scr_arr_shift_state(a, &removed);
+          if (!scr_exc_pending()) result = scr_arr_retain(a);
+        } else if (op == 0) result = scr_arr_reverse(a);
+        else if (op == 1 || op == 2) {
+          double start = op == 1 ? 0 : 1, end = op == 1 ? (double)n : 1;
+          if (kind == 0) result = scr_arr_fill_f64(a, 9, start, end);
+          else if (kind == 1) result = scr_arr_fill_bool(a, true, start, end);
+          else {
+            ScrStr *value = scr_str_new("9", 1);
+            result = scr_arr_fill_ref(a, value, start, end);
+            scr_str_release(value);
+          }
+        } else if (op == 3) result = scr_arr_fill_undefined(a, 1, (double)n - 1);
+        else if (op == 4) result = scr_arr_copy_within(a, 0, 0, (double)n);
+        else if (op == 5) result = scr_arr_copy_within(a, 1, 0, (double)n);
+        else if (op == 6) result = scr_arr_copy_within(a, 0, 1, (double)n);
+        else result = scr_arr_copy_within(a, -2, 0, (double)n - 1);
+        printf("%d|%zu|%zu|%u|%d|", kind, n, pattern, level, op);
+        bool threw = scr_exc_pending();
+        if (threw) {
+          check(result == NULL, "throwing range operation returns no owned result");
+          check(mode != 3 || extended == 0, "failed extension returns an inert scalar");
+          check(!removal || (removed_state == SCR_ARR_HOLE && removed == 0),
+                "throwing removal leaves no transferred value");
+          ScrCaught *caught = scr_exc_take();
+          ScrStr *text = scr_caught_to_string(caught);
+          printf("%s", text->data);
+          scr_str_release(text);
+          scr_caught_release(caught);
+        } else {
+          check(mode == 2 || (mode == 4 && op == 1) || result == a,
+                "successful in-place operation returns the same array");
+          fputs("ok", stdout);
+          if (mode == 4) {
+            check(op == 0 || result != a, "toSorted returns a fresh array");
+            printf(":%zu:", result->len);
+            integrity_print_contents(result, kind);
+          } else if (mode == 3) printf(":%.0f", extended);
+          else if (mode == 2 && op < 12) {
+            check(result && result != a, "splice returns a fresh removed array");
+            printf(":%zu:", result->len);
+            integrity_print_contents(result, kind);
+          } else if (removal) {
+            putchar(':');
+            if (removed_state != SCR_ARR_VALUE) putchar('u');
+            else if (kind == 0) {
+              double value;
+              memcpy(&value, &removed, sizeof value);
+              printf("%.0f", value);
+            } else if (kind == 1) putchar(removed ? '1' : '0');
+            else fputs(((ScrStr *)(uintptr_t)removed)->data, stdout);
+          }
+        }
+        if (removal && removed_state == SCR_ARR_VALUE && kind == 2)
+          scr_str_release((ScrStr *)(uintptr_t)removed);
+        check(mode >= 2 || a->len == n - (removal && !threw && n > 0),
+              "mutation changes length only after successful removal");
+        check(filled_ok(a), "range operation preserves the filled prefix after success or refusal");
+        scr_arr_release(result);
+        printf("|%zu|", a->len);
+        integrity_print_contents(a, kind);
+        putchar('\n');
+        scr_arr_release(a);
+      }
+  }
+  check(!scr_native_integrity_active(), "range matrix releases all integrity identities");
+  scr_collect_cycles();
+  check(scr_arr_live_count() == 0 && scr_str_live_count() == 0,
+        "range matrix releases every array and string");
+  return failed ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--metadata-copy") == 0) {
+    test_metadata_copy();
+    fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
+    return failed ? 1 : 0;
+  }
+  if (argc == 2 && strcmp(argv[1], "--indexed-storage") == 0) {
+    test_indexed_storage_names();
+    test_indexed_storage();
+    fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
+    return failed ? 1 : 0;
+  }
+  if (argc == 2 && strcmp(argv[1], "--named-metadata") == 0) {
+    test_named_metadata_cycles();
+    fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
+    return failed ? 1 : 0;
+  }
+  if (argc == 2 && strcmp(argv[1], "--integrity-range-oracle") == 0) return integrity_mutation_oracle(0);
+  if (argc == 2 && strcmp(argv[1], "--integrity-removal-oracle") == 0) return integrity_mutation_oracle(1);
+  if (argc == 2 && strcmp(argv[1], "--integrity-splice-oracle") == 0) return integrity_mutation_oracle(2);
+  if (argc == 2 && strcmp(argv[1], "--integrity-extend-oracle") == 0) return integrity_mutation_oracle(3);
+  if (argc == 2 && strcmp(argv[1], "--integrity-sort-oracle") == 0) return integrity_mutation_oracle(4);
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
     scr_arr_push_f64(a, 1);
@@ -1912,6 +3028,7 @@ int main(int argc, char **argv) {
   test_dense_slots();
   test_typed_sort();
   test_dense_comparator_sort();
+  test_sort_integrity_callbacks();
   test_f64_basics();
   test_numeric_read();
   test_borrowed_ref_read();
@@ -1924,6 +3041,7 @@ int main(int argc, char **argv) {
   test_index_of_includes();
   test_ref_elements();
   test_ref_cycle();
+  test_named_metadata_cycles();
   test_ref_truncate_cycle();
   test_ref_trace_storage_boundaries();
   test_join();
@@ -1934,6 +3052,18 @@ int main(int argc, char **argv) {
   test_filled_prefix();
   test_bool_bytes();
   test_inline_slots();
+  test_indexed_storage_names();
+  test_indexed_storage();
+  test_metadata_copy();
+
+  test_integrity_properties();
+  test_integrity_length();
+  test_integrity_owned_refs();
+  test_removal_owned_results();
+  test_integrity_range_sparse_refs();
+  test_integrity_splice_ownership();
+  test_integrity_extension_ownership();
+  test_published_property_guards();
 
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
   return failed == 0 ? 0 : 1;

@@ -326,7 +326,7 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
       WASI_RUNNER,
       outPath,
     ]);
-    expect(wasm.stdout).toBe(node.stdout);
+    expect(wasm.stdout, `WASI exited ${wasm.exitCode}: ${wasm.stderr}`).toBe(node.stdout);
     expect(wasm.exitCode).toBe(expectedExitCode(entry));
     expect(node.exitCode).toBe(expectedExitCode(entry));
     if (wasm.exitCode === 0) expect(wasm.stderr).toBe(node.stderr);

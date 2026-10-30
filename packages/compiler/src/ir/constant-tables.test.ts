@@ -9,10 +9,10 @@ const id = "%g.table";
 const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
 const ref = (): IrExpr => ({ kind: "varRef", localId: id, type, loc });
 const read = (index = num(0)): IrExpr => ({
-  kind: "arrIntrinsic",
-  method: "getNumber",
-  receiver: ref(),
-  args: [index],
+  kind: "arrayPropertyRead",
+  consume: "number",
+  arr: ref(),
+  index,
   type: F64,
   loc,
 });
@@ -20,7 +20,7 @@ const expr = (value: IrExpr): IrStmt => ({ kind: "exprStmt", expr: value, loc })
 
 function fixture(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     globals: [{ id, name: "table", type, mutable: false }],

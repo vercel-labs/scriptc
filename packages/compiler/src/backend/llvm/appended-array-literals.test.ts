@@ -22,7 +22,7 @@ const push = (receiver: IrExpr): IrStmt => ({
 
 function module(body: IrStmt[], locals: string[]): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [

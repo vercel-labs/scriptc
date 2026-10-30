@@ -26,7 +26,7 @@ function module(elem: IrType, method: "indexOf" | "includes"): IrModule {
     loc,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [

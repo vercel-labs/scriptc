@@ -34,4 +34,6 @@ export interface LlStreamTypedRefAdapter {
   recordOps?: string;
   /** `@sym` of the ScrDynTypedClassOps table for class instance capsules. */
   classOps?: string;
+  /** Independent getter-free native integrity/write owner. */
+  nativeObjectOps?: string;
 }

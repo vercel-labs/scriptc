@@ -110,3 +110,49 @@ ${postlude}`);
   expect(init(mod).locals.some((l) => l.name === "kept")).toBe(true);
   expect(helperCalls(init(mod))).toEqual(["%arr.filter", "%arr.fused"]);
 });
+
+test("split callback visits stabilize the actual property read", async () => {
+  const mod = await lowerSource(`
+function run(values: number[]): void {
+  let visits = 0;
+  console.log(values.map((value) => { visits++; return value === undefined ? 0 : value + 1; }).length);
+  console.log(values.filter((value): boolean => { visits++; return value === undefined || value > 0; }).length);
+  console.log(values.findIndex((value) => { visits++; return value === undefined; }), visits);
+}
+const absent: number[] = [];
+run([absent[4], 1]);
+`);
+  for (const method of ["map", "filter", "findIndex"]) {
+    const helper = mod.functions.find((fn) => fn.name.startsWith("%arr." + method + "."));
+    expect(helper, method).toBeDefined();
+    expect(count(helper!, "arrayGet"), method).toBeGreaterThan(0);
+    expect(count(helper!, "arrayPropertyRead"), method).toBe(1);
+    let captured = false;
+    everyStmtList(helper!.body, {
+      expr: () => true,
+      stmt: (stmt) => {
+        if (stmt.kind === "varDecl" && stmt.init?.kind === "arrayPropertyRead") {
+          captured = true;
+          expect(stmt.init.consume).toBe("value");
+        }
+        return true;
+      },
+    });
+    expect(captured, method).toBe(true);
+  }
+});
+
+test("fused split visits preserve the slow property read", async () => {
+  const mod = await lowerSource(`
+function run(values: number[]): number[] {
+  return values.filter((value): boolean => value === undefined || value > 0)
+    .map((value) => value === undefined ? 0 : value + 1);
+}
+const absent: number[] = [];
+console.log(run([absent[4], 1]).length);
+`);
+  const fused = mod.functions.filter((fn) => fn.name.startsWith("%arr.fused."));
+  expect(fused).toHaveLength(1);
+  expect(count(fused[0]!, "arrayGet")).toBeGreaterThan(0);
+  expect(count(fused[0]!, "arrayPropertyRead")).toBe(1);
+});

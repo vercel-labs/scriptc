@@ -1,3 +1,7 @@
+import {
+  objectIntegrityAliasOf,
+  objectIntegrityCallableType,
+} from "./builtins/object-integrity.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
@@ -1692,7 +1696,25 @@ export function collectGlobals(
       // compile-time callable projection: calls retain per-site overload
       // resolution and value reads reuse the source's interned closure.
       if (isConst && registerOverloadedCallableAlias(lowerer, decl)) continue;
-      if (isConst && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) continue;
+      if (isConst && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) {
+        const member = ts.isIdentifier(decl.name)
+          ? objectIntegrityAliasOf(lowerer, decl.name)
+          : null;
+        if (member && ts.isIdentifier(decl.name)) {
+          const symbol = lowerer.checker.getSymbolAtLocation(decl.name)!;
+          const global: IrGlobal = {
+            id: `%g.${tag}${nsPrefix}${decl.name.text}`,
+            name: decl.name.text,
+            type: objectIntegrityCallableType(member),
+            mutable: false,
+            tdz: true,
+            source: bindingSource(decl.name),
+          };
+          lowerer.globalsBySymbol.set(symbol, global);
+          lowerer.globalsList.push(global);
+        }
+        continue;
+      }
       // `const f = (x) => ...` at file scope of an npm-static JS file
       // whose params are implicit-any: the implicit-monomorphization
       // twin of the generic binding above — no global exists; calls and
@@ -2844,11 +2866,8 @@ export function lowerFileInit(
         kind: "tryCatch",
         tryBody: guardedBody,
         catchBody: [
-          {
-            kind: "exprStmt",
-            expr: { kind: "libCall", fn: "module.fail", args: [moduleRef], type: VOID, loc: loc0 },
-            loc: loc0,
-          },
+          // Cleanup can throw through module.children. Reset the retry guard
+          // first so its exception does not strand a failed initializer.
           ...(guardId !== undefined
             ? [
                 {
@@ -2859,6 +2878,11 @@ export function lowerFileInit(
                 },
               ]
             : []),
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "module.fail", args: [moduleRef], type: VOID, loc: loc0 },
+            loc: loc0,
+          },
           { kind: "rethrow", localId: catchLocal.id, loc: loc0 },
         ],
         catchLocalId: catchLocal.id,

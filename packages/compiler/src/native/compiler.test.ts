@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, test, vi } from "vitest";
 import { NativeCompiler } from "./compiler.js";
+import { prepareNativeExecutable } from "./prepare.js";
+import { IR_VERSION } from "../ir/serialize.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { runNativeFrontend } from "../frontend/pipeline-native.js";
+import type { FrontendFactory } from "../frontend/pipeline.js";
 import { emitNativeObject } from "../backend/native-tools.js";
 import { MACOS_ARM64_TARGET } from "../backend/targets.js";
 import { VOID, type IrModule } from "../ir/ir.js";
@@ -37,6 +40,65 @@ afterEach(() => {
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
+test("bootstrap rejects IR16 before invoking the frontend or emitting LLVM", () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-old-bootstrap-ir-"));
+  directories.push(directory);
+  const entry = join(directory, "entry.ts");
+  const artifact = join(directory, "entry.ir.json");
+  writeFileSync(
+    artifact,
+    JSON.stringify({
+      irVersion: 16,
+      sourceFile: entry,
+      entry: "main",
+      functions: [],
+      classes: [
+        {
+          name: "Vault",
+          fields: [{ name: "#secret", type: { kind: "f64" } }],
+          loc: { file: entry, start: 0, end: 0 },
+        },
+      ],
+    }),
+  );
+  const target = MACOS_ARM64_TARGET;
+  const toolchain: NativeToolchain = {
+    compilerVersion: "0.0.0",
+    target,
+    helper: target.helper,
+    ts7Executable: "unused",
+    helperExecutable: "unused",
+    helperPackageRoot: "unused",
+    runtimePackRoot: "unused",
+    linker: "clang",
+    linkerArgs: [],
+    dsymutil: "unused",
+  };
+  const frontend = vi.fn<FrontendFactory>();
+  vi.stubEnv("SCRIPTC_BOOTSTRAP_IR_INPUT", artifact);
+  try {
+    expect(() =>
+      prepareNativeExecutable(
+        entry,
+        {
+          outDir: directory,
+          outPath: join(directory, "program"),
+          outputKind: "exe",
+          strip: true,
+        },
+        null,
+        toolchain,
+        frontend,
+        null,
+      ),
+    ).toThrow(`IR version mismatch: file has 16, compiler expects ${IR_VERSION}`);
+    expect(frontend).not.toHaveBeenCalled();
+    expect(emitNativeObject).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 test.each([
   "traced",
   "empty trace",
@@ -60,7 +122,7 @@ test.each([
   writeFileSync(output, "previous executable");
   writeFileSync(llvmPath, "previous LLVM");
   const module: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: entry,
     entry: "%main",
     functions: [
@@ -197,7 +259,7 @@ test.each([false, true])(
     writeFileSync(output, "previous object");
     writeFileSync(llvmPath, "previous LLVM");
     const module: IrModule = {
-      irVersion: 16,
+      irVersion: 17,
       sourceFile: entry,
       entry: "%main",
       functions: [

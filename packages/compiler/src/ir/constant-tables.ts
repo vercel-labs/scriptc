@@ -72,8 +72,17 @@ export function findConstantNumericTables(
         }
         break;
       }
+      case "arrayPropertyRead": {
+        const candidate = candidateFor(node.arr);
+        if (candidate && (node.consume === "number" || node.consume === "numberConstructor")) {
+          candidate.reads++;
+          return expr(node.index);
+        }
+        break;
+      }
       case "arrayGet":
       case "arrayHas":
+      case "arrayHasProperty":
       case "arrayState":
         if (candidateFor(node.arr)) return expr(node.index);
         break;

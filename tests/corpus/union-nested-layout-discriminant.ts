@@ -59,3 +59,41 @@ function packageSegment(path: string): number {
 }
 console.log(packageSegment("/workspace/node_modules/package"));
 console.log(packageSegment("/workspace/src"));
+
+// Inferred callback records can share another variant's exact layout or
+// width-convert to it. The discriminator still owns optional slot completion.
+type Statement =
+  | { kind: "set"; value: number; propertyOp?: "set" | "define" }
+  | { kind: "throw"; value: number }
+  | { kind: "block"; body: Statement[] };
+function statements(values: number[]): Statement[] {
+  return values.map(value => ({ kind: "set", value }));
+}
+function extraStatements(values: number[]): Statement[] {
+  return values.map(value => ({ kind: "set", value, extra: true }));
+}
+function copyStatement(statement: Statement): Statement {
+  switch (statement.kind) {
+    case "set": return { ...statement, value: statement.value + 1 };
+    case "throw": return { ...statement, value: statement.value + 2 };
+    case "block": return { ...statement, body: statement.body.map(copyStatement) };
+  }
+}
+for (const body of [statements([1, 2]), extraStatements([3, 4])]) {
+  const copied = copyStatement({ kind: "block", body });
+  if (copied.kind === "block") {
+    for (const statement of copied.body) {
+      if (statement.kind === "set") console.log(statement.kind, statement.value, statement.propertyOp);
+    }
+  }
+}
+function maybeStatement(value: number): { kind: "set" | "throw"; value: number } | undefined {
+  return value < 0 ? undefined : { kind: value === 0 ? "throw" : "set", value };
+}
+for (const value of [-1, 0, 1]) {
+  const statement: Statement | undefined = maybeStatement(value);
+  if (statement !== undefined) {
+    const copied = copyStatement(statement);
+    if (copied.kind !== "block") console.log(copied.kind, copied.value);
+  } else console.log("missing");
+}

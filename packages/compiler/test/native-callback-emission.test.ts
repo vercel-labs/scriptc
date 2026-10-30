@@ -81,3 +81,23 @@ console.log(counter.value);
 `);
   expect(module.functions.some((fn) => fn.name.startsWith("%dyn.class."))).toBe(true);
 });
+
+test.each([false, true])(
+  "typed callbacks admit native ownership (local class: %s)",
+  async (local) => {
+    const body = `
+class Counter { notify(): string { return "default"; } }
+const counter = new Counter();
+counter.notify = (): string => "replacement";
+console.log(counter.notify());
+const callback = counter.notify;
+console.log(callback.call(counter));
+`;
+    const module = await lower(local ? `function run(): void { ${body} } run();` : body);
+    const cls = module.classes!.find((item) => item.jsName === "Counter")!;
+    expect(cls).toBeDefined();
+    expect(cls.tracksOwnFields).toBe(true);
+    expect(cls.nativePropertyBagHelper).toBeDefined();
+    expect(cls.instancePrototypeHelper ?? cls.prototypeDataHelper).toBeDefined();
+  },
+);

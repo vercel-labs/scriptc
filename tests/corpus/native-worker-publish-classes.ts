@@ -1,5 +1,5 @@
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
-import { publish } from "@scriptc/threads";
+import { publish, sharesPublishedGraphs } from "@scriptc/threads";
 
 // @scriptc/threads publish(): a class graph (cycles, shared nodes, arrays,
 // maps, sets, records) becomes immutable; in scriptc it is also immortal and
@@ -22,6 +22,18 @@ class Base {
   constructor(label: string) {
     this.label = label;
   }
+  title(): string { return this.label; }
+}
+
+// Both contexts create their own default prototype. Publishing own storage
+// must neither retain that context's prototype nor reject its method slot.
+function untyped(value: Base): any { return value; }
+
+function publishedDefault(label: string): string {
+  const scratch: any = new Base("scratch");
+  scratch.title = () => "shadow";
+  const value = untyped(publish(new Base(label)));
+  return `${value.title()} ${value.constructor === Base} ${"title" in value} ${value.missing}`;
 }
 
 class Tree extends Base {
@@ -135,6 +147,7 @@ function writes(side: string, root: Tree): void {
 }
 
 if (isMainThread) {
+  console.log("published default", publishedDefault("main"));
   // Unpublished objects of the same classes stay writable.
   const scratch = build("s-");
   scratch.label = "scratch";
@@ -170,8 +183,15 @@ if (isMainThread) {
     console.log("exit", code);
   });
 } else {
+  log(`published default ${publishedDefault("worker")}`);
   const data = workerData as { root: Tree; label: string };
   const root = publish(data.root);
+  // Node clones away the prototype; native readers resolve it in this worker.
+  if (sharesPublishedGraphs) {
+    const shared = untyped(root);
+    if (shared.title() !== root.label || shared.constructor !== Tree)
+      throw new Error("shared class prototype was not resolved in the receiving worker");
+  }
   log(`worker ${data.label} ${summarize(root)}`);
   writes("worker", root);
   const mine = publish(build("w-"));

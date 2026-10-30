@@ -36,7 +36,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 import { resolveCc, runtimeSrcDir } from "../src/backend/native-toolchain.js";
-import { RUNTIME_ABI_MARKER } from "../src/backend/runtime-abi.js";
+import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "../src/backend/runtime-abi.js";
 import type { IrModule } from "../src/ir/ir.js";
 import { compile } from "../src/index.js";
 
@@ -334,6 +334,13 @@ describe("LLVM backend declares match scr_runtime.h prototypes", () => {
     expect(await readFile(join(repoRoot, "packages/runtime/src/scr_console.c"), "utf8")).toContain(
       `void ${RUNTIME_ABI_MARKER}(void) {}`,
     );
+    for (const builder of ["runtime-darwin-arm64", "runtime-pack-common"]) {
+      expect(
+        await readFile(join(repoRoot, "packages", builder, "scripts/build.mjs"), "utf8"),
+      ).toContain(
+        `runtime_abi: { version: ${RUNTIME_ABI_VERSION}, marker: "${RUNTIME_ABI_MARKER}" }`,
+      );
+    }
   });
   test("ScrBytes structural type matches the C runtime layout", async () => {
     const outDir = await mkdtemp(join(tmpdir(), "scriptc-llvm-layout-"));

@@ -3,11 +3,14 @@ import { describe, expect, test } from "vitest";
 import {
   DYN,
   F64,
+  BOOL,
   HANDLE_KINDS,
   BYTES_ELEMENT_NAME,
   bytesOf,
   canConvertToDyn,
   canDynCheckTo,
+  classDynViewSupported,
+  isClassOwnEnumerableField,
   type IrBytesElem,
   isJsonSafeType,
   isJsonStringifySafeType,
@@ -23,6 +26,28 @@ import {
 } from "./ir.js";
 
 describe("IR kind sets", () => {
+  test("class property visibility follows declarations rather than key prefixes", () => {
+    for (const name of ["value", "#public", "%public"])
+      expect(isClassOwnEnumerableField({ name, type: F64 })).toBe(true);
+    for (const visibility of ["private", "internal"] as const) {
+      const field = { name: "hidden", type: { kind: "caught" } as IrType, visibility };
+      expect(isClassOwnEnumerableField(field)).toBe(false);
+      expect(
+        classDynViewSupported(
+          [field],
+          () => undefined,
+          () => undefined,
+        ),
+      ).toBe(true);
+    }
+    expect(
+      classDynViewSupported(
+        [{ name: "#public", type: { kind: "caught" } }],
+        () => undefined,
+        () => undefined,
+      ),
+    ).toBe(false);
+  });
   test("keeps procStream as the scalar handle exception", () => {
     expect(HANDLE_KINDS.has("procStream")).toBe(true);
     expect(POINTER_KINDS.has("procStream")).toBe(false);
@@ -159,6 +184,60 @@ describe("checked records with opaque payloads", () => {
       isJsonStringifyDynamicType(arrayOf({ kind: "union", unionId: "optional" }), record, union),
     ).toBe(true);
   });
+});
+
+describe("native text codec admission", () => {
+  test.each(["TextEncoder", "TextDecoder"])(
+    "%s keeps runtime checked casts without admitting instance boxing",
+    (codec) => {
+      const native: IrType = { kind: "record", shapeId: "codec" };
+      const optional: IrType = { kind: "union", unionId: "optionalCodec" };
+      const fields = [
+        { name: `%${codec}`, type: F64 },
+        ...(codec === "TextDecoder"
+          ? [
+              { name: "%fatal", type: BOOL },
+              { name: "%ignoreBOM", type: BOOL },
+              { name: "%state", type: DYN },
+            ]
+          : []),
+      ];
+      const records = new Map<string, IrRecordShape>([
+        ["codec", { id: "codec", fields }],
+        ["nested", { id: "nested", fields: [{ name: "value", type: optional }] }],
+        ["indexed", { id: "indexed", fields: [], indexValue: native }],
+        [
+          "plain",
+          {
+            id: "plain",
+            fields: fields.map((field, index) => ({ ...field, name: `field${index}` })),
+          },
+        ],
+      ]);
+      const record = (id: string) => records.get(id);
+      const union = (id: string): IrUnionDef | undefined =>
+        id === "optionalCodec" ? { id, arms: [native, { kind: "undefinedT" }] } : undefined;
+      const types: [IrType, boolean, boolean][] = [
+        [native, true, false],
+        [arrayOf(native), true, false],
+        [optional, true, false],
+        [{ kind: "record", shapeId: "nested" }, true, false],
+        [{ kind: "record", shapeId: "indexed" }, true, false],
+        [{ kind: "map", key: STRING, value: native }, false, false],
+        [{ kind: "set", elem: native }, false, false],
+        [{ kind: "promise", inner: native }, true, false],
+        [{ kind: "func", params: [], ret: native }, true, false],
+        [{ kind: "func", params: [native], ret: STRING }, false, true],
+      ];
+      for (const [type, checked, boxed] of types) {
+        expect(canDynCheckTo(type, record, union)).toBe(checked);
+        expect(canConvertToDyn(type, record, union)).toBe(boxed);
+      }
+      const plain: IrType = { kind: "record", shapeId: "plain" };
+      expect(canDynCheckTo(plain, record, union)).toBe(true);
+      expect(canConvertToDyn(plain, record, union)).toBe(true);
+    },
+  );
 });
 
 describe("native typed-array boundaries", () => {

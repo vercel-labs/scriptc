@@ -829,6 +829,44 @@ try {
 // defines. The cipher runtime has neither, so both throw a coded SC2020
 // error.
 describe("cipher output encodings that print through source text or a class toString", () => {
+  test("class refusals follow inherited declarations and effective prototypes", async () => {
+    const r = await compileAndRun(
+      "cipher-encoding-prototype-declarations",
+      `import { createCipheriv, createHash } from "node:crypto";
+class Encoding { name = "nope"; }
+class CustomEncoding extends Encoding { toString(): string { return this.name; } }
+class Child extends CustomEncoding {}
+class Opaque extends CustomEncoding { hash = createHash("sha256"); }
+function box(value: Encoding): any { return value; }
+function probe(value: any, update = false): void {
+  try {
+    const cipher = createCipheriv("aes-128-ctr", Buffer.alloc(16), Buffer.alloc(16));
+    if (update) cipher.update("", "utf8", value);
+    else cipher.final(value);
+  }
+  catch (error) { console.log((error as Error & { code?: string }).code); }
+}
+probe(box(new Encoding()));
+const value = box(new Child());
+probe(value);
+const prototype = Object.getPrototypeOf(value);
+Object.setPrototypeOf(value, null);
+probe(value);
+Object.setPrototypeOf(value, {});
+probe(value);
+Object.setPrototypeOf(value, prototype);
+probe(value);
+probe(box(new Opaque()));
+probe(box(new Opaque()), true);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "ERR_UNKNOWN_ENCODING\nSC2020\nERR_UNKNOWN_ENCODING\nERR_UNKNOWN_ENCODING\nSC2020\nSC2020\nSC2020\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("update() and final() throw SC2020", async () => {
     const r = await compileAndRun(
       "cipher-encoding-class-to-string",

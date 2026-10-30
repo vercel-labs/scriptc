@@ -133,6 +133,24 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
       // No RC audit line: every region was freed, so the strict exit audit ran.
       expect(ownedStats.other).toEqual([]);
 
+      const metadata = await run(bin, "array-metadata");
+      expect(metadata.stdout).toBe("primitive array metadata participates in region ownership\n");
+      const metadataStats = attempts(metadata.stderr);
+      expect(metadataStats.attempts).toEqual([
+        "1 freed",
+        "2 kept",
+        "2 freed",
+        "3 freed",
+        "4 freed",
+        "5 kept",
+        "5 freed",
+        "6 freed",
+      ]);
+      expect(metadataStats.summaries).toEqual([
+        "scriptc regions: 6 created, 6 released, 6 freed, 0 pinned, 0 kept",
+      ]);
+      expect(metadataStats.other).toEqual([]);
+
       // Optimized runtimes leave the reports out (RC-audit ones keep them)
       // and say so once.
       if (!sanitized) {

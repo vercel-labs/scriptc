@@ -79,7 +79,7 @@ function apply(arg: "param" | "element"): IrFunction {
 function moduleWith(functions: IrFunction[], main: IrStmt[] = []): IrModule {
   const store = local("store", strings, { mutable: true, boxed: true });
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [

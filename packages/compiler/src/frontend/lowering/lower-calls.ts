@@ -1,3 +1,9 @@
+import {
+  isObjectIntegrityMember,
+  lowerObjectIntegrityCall,
+  objectIntegrityAliasOf,
+} from "./builtins/object-integrity.js";
+import { tryLowerNumericIndexRead } from "./array-values.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
@@ -84,7 +90,6 @@ import {
   lowerObjectIterOverIndexShape,
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
-import { tryFuseIndexRead } from "./array-values.js";
 import { lowerBytesStaticCall } from "./containers/bytes.js";
 import {
   lowerRegexMethodCall,
@@ -786,6 +791,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // keeps its custom result helper; ordinary builtins route through
     // their existing promise-module lowering.
     {
+      objectIntegrityAliasOf(lowerer, expr.expression);
       const sym = lowerer.resolveValueSymbol(expr.expression);
       const projection = sym ? lowerer.staticCallables.get(sym) : undefined;
       if (projection?.kind === "promisified-exec-file") {
@@ -804,6 +810,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           { module: projection.module, member: projection.member },
           loc,
         );
+      }
+      if (projection?.kind === "object-integrity") {
+        return lowerObjectIntegrityCall(lowerer, expr, projection.member);
       }
       if (projection?.kind === "builtin-function") {
         return lowerBuiltinCall(
@@ -1980,6 +1989,8 @@ function lowerNumberConstructorValue(
     });
   }
   const arg = lowerer.lowerExpr(argNode);
+  const propertyNumber = tryLowerNumericIndexRead(lowerer, arg, loc, true);
+  if (propertyNumber) return propertyNumber;
   if (arg.type.kind === "nullT")
     return defaultAfterUndefined(arg, { kind: "numLit", value: 0, type: F64, loc });
   if (arg.type.kind === "bigint")
@@ -1999,29 +2010,6 @@ function lowerNumberConstructorValue(
     return { kind: "libCall", fn: "num.fromString", args: [arg], type: F64, loc };
   if (arg.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.numberConstructor", args: [arg], type: F64, loc };
-  // Number(strings[i]) without boxing `string | undefined`: a missing slot
-  // converts like undefined, to NaN.
-  const indexedString =
-    arg.type.kind === "union" &&
-    arg.kind === "call" &&
-    arg.args[0]?.type.kind === "array" &&
-    arg.args[0].type.elem.kind === "string"
-      ? tryFuseIndexRead(
-          lowerer,
-          arg,
-          F64,
-          (read) => ({ kind: "libCall", fn: "num.fromString", args: [read], type: F64, loc }),
-          {
-            kind: "bin",
-            op: "/",
-            left: { kind: "numLit", value: 0, type: F64, loc },
-            right: { kind: "numLit", value: 0, type: F64, loc },
-            type: F64,
-            loc,
-          },
-        )
-      : null;
-  if (indexedString) return indexedString;
   if (arg.type.kind === "union" && lowerer.dynConvertible(arg.type))
     return {
       kind: "libCall",
@@ -3753,14 +3741,7 @@ export function lowerDynDispatchMethodCall(
     if (spread?.kind === "dynCall")
       return {
         kind: "seqExpr",
-        stmts: [
-          { kind: "varDecl", localId: local.id, init: recv, loc },
-          {
-            kind: "exprStmt",
-            expr: { kind: "libCall", fn: "dyn.arrayPrototype", args: [], type: DYN, loc },
-            loc,
-          },
-        ],
+        stmts: [{ kind: "varDecl", localId: local.id, init: recv, loc }],
         result: { ...spread, receiver },
         type: DYN,
         loc,
@@ -7161,6 +7142,10 @@ function lowerObjectStaticCall(
         ...(fnName !== null ? { fnName } : {}),
       };
     }
+    // Const aliases can retain native array storage even when spelled `any`.
+    // Descriptors belong to the referent's live metadata, not a snapshot.
+    if (target?.type.kind === "array" && lowerer.dynConvertible(target.type))
+      target = lowerer.coerceInto(targetNode, target, DYN);
     const descriptorPrimitive =
       member === "getOwnPropertyDescriptor" &&
       target &&
@@ -7195,8 +7180,8 @@ function lowerObjectStaticCall(
   // runtime turns each descriptor's `value` into an own property on
   // the dyn node (OBJ members preserve attributes; FUNC nodes carry an
   // own-property table). Accessors use the target as their receiver.
-  // The result is the target, like JS. Typed targets keep the fence:
-  // static shapes have no property table to extend.
+  // The result is the target, like JS. Native arrays share their referent's
+  // metadata; other static shapes keep their layout-specific boundary.
   if (
     member === "defineProperties" &&
     call.arguments.length === 2 &&
@@ -7209,6 +7194,8 @@ function lowerObjectStaticCall(
       const native = lowerClassDataDescriptor(lowerer, call, member, target);
       if (native) return native;
     }
+    if (target?.type.kind === "array" && lowerer.dynConvertible(target.type))
+      target = lowerer.coerceInto(call.arguments[0]!, target, DYN);
     // A FUNCTION-typed target boxes through the dyn boundary: the
     // property table lives on the CLOSURE (shared by every box of this
     // function value), so defining through a fresh box sticks — the
@@ -7248,108 +7235,7 @@ function lowerObjectStaticCall(
     }
     return null;
   }
-  if (
-    ["preventExtensions", "isExtensible", "seal", "isSealed"].includes(member) &&
-    call.arguments.length === 1 &&
-    !ts.isSpreadElement(call.arguments[0]!)
-  ) {
-    const value = lowerer.lowerExpr(call.arguments[0]!);
-    if (
-      value.type.kind === "string" ||
-      value.type.kind === "f64" ||
-      value.type.kind === "bool" ||
-      value.type.kind === "symbol" ||
-      isUnitType(value.type)
-    ) {
-      if (member === "preventExtensions" || member === "seal") return value;
-      const loc = locOf(call);
-      const answer: IrExpr = { kind: "boolLit", value: member !== "isExtensible", type: BOOL, loc };
-      return isSafeToDiscard(value)
-        ? answer
-        : {
-            kind: "seqExpr",
-            stmts: [{ kind: "exprStmt", expr: value, loc: value.loc }],
-            result: answer,
-            type: BOOL,
-            loc,
-          };
-    }
-    if (value.type.kind === "dyn") {
-      const operation = {
-        preventExtensions: "dyn.preventExtensions",
-        isExtensible: "dyn.isExtensible",
-        seal: "dyn.seal",
-        isSealed: "dyn.isSealed",
-      } as const;
-      const fn = operation[member as keyof typeof operation];
-      return {
-        kind: "libCall",
-        fn,
-        args: [value],
-        type: member.startsWith("is") ? BOOL : DYN,
-        loc: locOf(call),
-      };
-    }
-  }
-  // Object.freeze: on a FRESH literal (object or array) the result IS
-  // the argument — no alias exists, so the frozen bit is unobservable
-  // (writes through the Readonly<T> result are compile errors, and no
-  // other reference can write). Primitives pass through per ES2015.
-  // Aliased objects keep a fence: a later write through the original
-  // reference would need the runtime frozen bit (strict mode throws).
-  if (member === "isFrozen" && call.arguments.length === 1) {
-    const value = lowerer.lowerExprExpecting(call.arguments[0]!, DYN);
-    return { kind: "libCall", fn: "dyn.isFrozen", args: [value], type: BOOL, loc: locOf(call) };
-  }
-  if (member === "freeze") {
-    if (call.arguments.length !== 1 || ts.isSpreadElement(call.arguments[0]!)) {
-      lowerer.noLowering(`Object.freeze with ${call.arguments.length} arguments`, call);
-    }
-    const argNode = call.arguments[0]!;
-    let inner: ts.Expression = argNode;
-    while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner))
-      inner = inner.expression;
-    const value =
-      isJsSourceFile(call.getSourceFile()) &&
-      (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner))
-        ? lowerer.lowerExprExpecting(argNode, DYN)
-        : lowerer.lowerExpr(argNode);
-    if (value.type.kind === "dyn")
-      return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
-    if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
-      return value; // fresh — freeze is identity here, honestly
-    }
-    if (
-      value.type.kind === "string" ||
-      value.type.kind === "f64" ||
-      value.type.kind === "bool" ||
-      value.type.kind === "symbol" ||
-      value.type.kind === "bigint" ||
-      isUnitType(value.type)
-    ) {
-      return value; // ES2015: freeze of a primitive is the primitive
-    }
-    if (
-      value.type.kind === "union" &&
-      lowerer.unions
-        .get(value.type.unionId)
-        ?.arms.every(
-          (arm) =>
-            isUnitType(arm) ||
-            arm.kind === "f64" ||
-            arm.kind === "bigint" ||
-            arm.kind === "bool" ||
-            arm.kind === "string" ||
-            arm.kind === "symbol",
-        )
-    )
-      return value;
-    lowerer.noLowering(
-      "Object.freeze of a possibly-aliased value",
-      call,
-      "freeze of a FRESH object/array literal (and of primitives) compiles — frozen-ness is unobservable there; an aliased target's later writes would need the runtime frozen bit",
-    );
-  }
+  if (isObjectIntegrityMember(member)) return lowerObjectIntegrityCall(lowerer, call, member);
   // `Object.hasOwn(r, k)` over a RECORD receiver: a record's own-key set
   // is its declared field list, so membership is a compare chain against
   // the field names (interned per shape). Optional fields answer by
@@ -7386,6 +7272,7 @@ function lowerObjectStaticCall(
     // index bounds, Node's ToObject TypeError on nullish.
     if (
       probed?.type.kind === "dyn" ||
+      (probed?.type.kind === "array" && lowerer.dynConvertible(probed.type)) ||
       (probed && isDynTypedRefType(probed.type)) ||
       (probed?.type.kind === "object" && lowerer.errorHierarchyClassOf(probed.type.className)) ||
       (probed && constructor && (constructor.callableBase || hasRuntimeStatics(constructor))) ||

@@ -4,6 +4,88 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Fixes
+
+- **Checked object properties retain function names:** descriptor values preserve declared and inferred names, including constructor names used in rejected-write errors.
+
+- **Native class presence and rejected writes follow prototypes:** literal `in` checks share class dispatch with computed keys, and reflected deletions remain visible. Getter-only assignment errors preserve the rejecting prototype without invoking getters; reflective and sloppy writes still return or ignore refusal.
+
+- **Native cipher errors preserve class conversion refusals:** unsupported output encodings with a class-defined `toString` keep their explicit `SC2020` error, including inherited methods and opaque instances.
+
+- **Record conversions preserve union variants:** select a destination layout from its discriminator before completing optional fields or copying narrower records, preventing invalid native reads in inferred array callbacks and self-hosted compiler passes.
+
+- **Native class inspection retains constructor names:** default, null, and restored prototypes preserve the exact class label, including derived instances passed through base-typed values. Anonymous classes keep their unnamed display.
+
+- **Native accessor prototypes preserve receivers:** ordinary and reflective reads and writes invoke logical accessor descriptors without requiring raw record-layout mutation or materializing physical accessor slots.
+
+- **Native class prototypes keep one owner:** own-property storage no longer retains compiler-default prototypes, so published classes remain readable across worker contexts. Explicit prototype changes stay attached to the native instance across aliases, reflection and enumeration, and remain outside publication admission.
+
+- **Circular native inspection preserves identity:** detect a revisited referent before refreshing its checked view, preventing stale-entry reads while retaining Node's reference numbering and depth rules.
+
+- **Declared record spreads retain source key order:** settle copy order before emitting guarded writes, so canonical storage layout does not reorder observable property insertion.
+
+- **Reflect reads follow array prototypes:** checked arrays use their effective prototype during property traversal, matching ordinary reads and inherited writes without changing getter receivers.
+
+- **Private regex captures retain lazy numeric reads:** recognize fused numeric property reads while preserving ordinary property access outside own capture slots and after result escape.
+
+- **Native property emission remains self-hostable:** descriptor reads use ordered field recipes, and guarded writes retain canonical IR statement identities.
+
+- **Inherited class property bags preserve their receiver:** specialize the complete capsule cast when creating native helpers, so subclass prototype selection compiles without an invalid self-cast.
+
+- **Private scalar classes retain stack allocation:** resolve deferred field declarations before escape analysis and remove their temporary helpers.
+
+- **Native values remain publishable after typed writes:** discard redundant field attributes, including after sealing, while preserving declaration masks and descriptor overrides.
+
+- **Serialized class fields retain declaration visibility:** IR17 distinguishes private and compiler-owned storage from public names beginning with `#` or `%`. Older IR artifacts are rejected; regenerate them with the matching compiler.
+
+- **Native object integrity follows typed aliases:** direct calls and immutable aliases of `Object.freeze`, `Object.seal`, `Object.preventExtensions`, and their queries use the same record/class owner as checked dynamic views. Mutations preserve receiver identity, remain shallow, and inspect property descriptors without invoking getters or creating an absent property bag. Readonly class results retain identity and private-method receivers across bindings and returns while accepting structural implementations.
+
+- **Native property operations preserve live aliases:** array statement deletion uses the live referent with JavaScript key conversion and strict/sloppy refusal. Non-numeric `Object.hasOwn` array keys use the same property owner. Native class data fields accept per-key descriptor changes and deletion without converting sibling fields. Typed class assignments dispatch inherited setters with the original receiver and saved value; field declarations bypass setters. Typed stores finalize presence before releasing old values, and snapshots preserve readonly descriptors without invoking accessors. Bare fields and parameter properties define own undefined values in declaration order, including before sealing or freezing; typed inspection follows live descriptors.
+
+- **Native array aliases share named properties and integrity:** checked views and typed aliases keep one owner for named values, descriptors, symbols and prototypes. Compiled property reads call accessors once and apply the requested numeric, boolean or string conversion. Direct calls and immutable aliases of preventExtensions, seal, freeze and their queries use the live array owner without invoking getters; frozen accessor setters remain callable. Integrity mutations preserve typed return identity and evaluate extra arguments before applying restrictions.
+
+- **Native dynamic sorts release work buffers through their allocator:** prevent plain builds from aborting when sort or toSorted uses a small temporary worklist. Success and exception cleanup now pair with the runtime allocator.
+
+- **Incompatible native runtimes fail before execution:** runtime ABI 24 covers collector-backed scalar arrays, shared array tracing and native class default-prototype callbacks. Rebuild compiler objects and runtime packs together; older packs are rejected during selection and mismatched manual links fail on the versioned marker.
+
+- **Checked casts cannot fabricate text codec state:** TextEncoder and TextDecoder extraction requires exact native identity instead of reconstructing their private fields from an ordinary object. Union extraction recognizes native codecs before trying structural arms, independent of their order. Existing casts retain their catchable runtime TypeError; dynamic-boxing restrictions remain unchanged.
+
+- **Mutable objects stay mutable beside published values:** keep record and class types with publication guards on the heap instead of confusing stack storage's immortal reference count with a published object.
+- **Nullable class-field assignments preserve evaluation order:** evaluate the right-hand side before rejecting a published receiver, and release its temporary value when the write throws.
+
+### Internal
+
+- **Native record mutations update one property:** checked data-field definitions, assignments and Reflect writes preserve callback changes to siblings and revalidate receiver descriptors after conversion. Typed and checked stores publish property metadata before releasing the old value, preserve assignment attributes, and append re-added keys in write order. Inherited setters keep the original typed receiver and value, including on non-extensible objects; an existing own field avoids dynamic boxing. Setter callbacks participate in storage and runtime-link analysis. Optional deletion stores absence and removes property order and attribute metadata without converting values; required fields remain undeletable. Omitted values and compatible frozen definitions avoid unnecessary conversion; unsupported field conversions remain refused.
+
+- **Native record metadata follows its referent:** extra properties, symbols and prototypes participate in cycle tracing, including records exposed through custom Error views. Worker publication refuses context-local metadata before changing reference counts, and worker cleanup retires empty registries. Prototype updates revalidate after preparation callbacks.
+
+- **Exact native callback extraction stays separate from adaptation:** retain the original closure only for its full signature, without generating an unsupported typed-rest adapter. Ordinary adaptable signatures keep their checked callable bridge; public conversion admission remains unchanged.
+
+- **Native array prototypes follow their referent:** custom and null prototypes survive aliases, snapshot refreshes and checked-view disposal. Prototype writes compare effective identity before integrity checks, reject cycles across native aliases and retain collector-visible ownership.
+- **Array view refreshes preserve property ownership:** live commits and cached casts share one indexed-storage swap, keeping named numeric properties and metadata attached to each native array. Inline slots detach before transfer; dense values, sparse values and holes move together. Metadata snapshots retain descriptors and symbols without invoking accessors or inherited setters. First mutable exposure promotes named numeric slots transactionally into shared metadata; failed promotion preserves the original slots for retry.
+- **Native arrays trace named-property ownership independently of element types:** mutable heap arrays carry collector headers; scalar, string, byte and reference storage share complementary teardown. Containing shapes, captures, promises, query-string unions and region walks retain these edges. Compiler output and runtime packs must be rebuilt together.
+- **Reflect array writes share live storage with strict assignment:** indexed and length writes distinguish quiet integrity refusal from conversion exceptions, recheck native storage after callbacks, and preserve completed sealed truncation. Published array restrictions remain visible through prototype walks. Named writes use the shared descriptor owner, including accessor setters on frozen arrays.
+- **Property definitions normalize callbacks before touching native storage:** key coercion runs once, inherited descriptor fields are read in order, and invalid getters stop conversion immediately. Batch definitions stage string and symbol descriptors through the same conversion path before applying them.
+
+- **Object copying observes live owners between properties:** assign snapshots keys, rereads each source value, and commits each successful target write before callbacks or later failures. Arrays, functions, native records, and symbol fields share this path; literal spread keeps data-property semantics.
+- **Compiled array writes use the runtime integrity boundary:** dense stores and self-concatenation check before transferring or unlinking references; unchanged length, undefined, and delete operations propagate refusals. Remove the separate publication-only array policy and preserve caller exception edges.
+- **Native sort writeback honors receiver integrity:** primitive and dense comparator sorts retain their work values, apply restricted writes in order, and preserve comparator errors and completed writes before refusal. Copying sorts keep fresh mutable storage; frozen empty and singleton in-place sorts remain no-ops.
+- **Dynamic array methods initialize with their runtime session:** computed reads, calls, presence checks, and reflection see the native prototype before user code in executables, workers, and libraries. Library resets rebuild methods without undoing prototype edits during a session; presence checks follow the live prototype instead of resurrecting deleted methods from a name list. JSON-only runtime builds keep their optional linkage.
+- **Dynamic array mutators share ordered property operations:** checked arrays and native views preserve holes, original receivers, callback effects, and successful writes before a later refusal across all nine mutators. Sort retains its collected values through callbacks and compares default keys as UTF-16. Function presence checks do not call getters. Generic array-like scans retain an explicit iteration limit without limiting backed array storage.
+- **Dynamic calls retain writable native views:** unresolved method and callable dispatch keep commit adapters and prevent integer-field narrowing for dynamically exposed classes. A tuple mutated only through a dynamic method no longer depends on an unrelated keyed assignment to retain its writeback adapter.
+- **Native capsules retain live operations across producer boundaries:** stream union array, record, and class arms reuse their canonical adapters. Published worker messages preserve operation tables and their shape while creating recipient-local views, so indexed writes and reflection keep their owning runtime path.
+- **Checked array properties use the original receiver:** native indexed reads and writes resolve inherited accessors without refreshing a snapshot, own elements shadow inherited properties, and type refusals stop at the failed write. Named array setters and borrowed reads of opaque native views preserve receiver identity; accessor effects survive native alias writes, reentrant refreshes, and exceptions without a stale snapshot commit. Reads, presence checks, and JSON serialization follow mixed prototype chains; compiled reads preserve getter exceptions and release results during unwinding. Named match metadata shares the same referent owner.
+- **Checked array length and delete operations preserve live state:** native capsules mutate their array owner directly, including sealed partial truncation and reference release. Length coercion observes both conversions and callback changes; missing-index deletion and non-strict refusal follow ordinary array behavior. Checked deletion unlinks self-references before collection can observe a stale edge.
+- **CommonJS loading respects children-array failures:** stop initialization after rejected links, evict failed modules and reset retry guards before cleanup, and propagate cleanup errors instead of overwriting them with the module body error.
+
+- **Native push and unshift share ordered mutation ownership:** preserve full argument counts, zero-argument length writes, self-spread snapshots, and reference cleanup on refusal. Optional and large compiler calls reach one runtime mutation; fresh array construction keeps bounded batching.
+- **Native splice preserves ordered partial mutations:** returned and discarded calls share integrity checks, snapshot self-insertion, and consume reference arguments on success or failure. Compiler calls propagate the runtime refusal after argument evaluation.
+- **Native array removals share mutation ownership:** pop and shift honor ordered integrity checks, retain partial writes, and release discarded or failed results. Direct, discarded, and union-valued compiler paths use the same runtime operations.
+- **Native array range mutations preserve property order:** fill, copyWithin, and reverse stop at the first integrity refusal, keep earlier successful writes, and release temporary references. Compiler calls unwind after the runtime decision, including valid frozen-array no-ops.
+- **Native array property actions enforce recorded integrity:** indexed and numeric-property writes, deletes, and length assignments use shared guards, preserve ownership on refusal, and restore sealed length at the first undeletable element. Compiled stores preserve receiver, key and value evaluation order before the runtime integrity decision.
+- **Checked native views preserve recorded integrity:** refreshed descriptors inherit native non-extensible, sealed, and frozen restrictions without freezing nested values or invoking accessors. Live array integrity operations strengthen and query the referent directly; published arrays remain immutable without metadata writes.
+- **Native integrity metadata follows object lifetime:** recorded restrictions survive checked-view disposal and collection, retire after successful publication, and clear only at final context teardown. Direct typed `Object.freeze` admission remains separate from checked array-view operations.
+
 <!-- release:start -->
 
 ## 0.3.5

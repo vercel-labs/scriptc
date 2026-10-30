@@ -2646,7 +2646,7 @@ ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDy
 
 ScrPromise *scr_fsp_readdir(ScrStr *path) {
   ScrArr *names = scr_fs_readdir(path);
-  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, scr_arr_trace_v);
 }
 
 ScrPromise *scr_fsp_rm(ScrStr *path) {

@@ -596,9 +596,9 @@ export function emitBorrowedArrayRead(
     join,
   );
   B.startBlock(slow);
-  host.declare("declare ptr @scr_arr_borrow_ref(ptr, double)");
+  host.declare("declare ptr @scr_arr_borrow_slot_ref(ptr, double)");
   const value = B.tmp();
-  B.line(`${value} = call ptr @scr_arr_borrow_ref(ptr ${array.name}, double ${index.name})`);
+  B.line(`${value} = call ptr @scr_arr_borrow_slot_ref(ptr ${array.name}, double ${index.name})`);
   B.line(`store ptr ${value}, ptr ${slot}`);
   B.br(join);
   B.startBlock(join);
@@ -714,15 +714,15 @@ export function emitLocalArrayRead(
     const value = B.tmp(),
       bits = B.tmp();
     if (read.element.kind === "f64") {
-      host.declare(`declare double @scr_arr_get_f64(ptr, double)`);
+      host.declare(`declare double @scr_arr_get_slot_f64(ptr, double)`);
       B.line(
-        `${value} = call double @scr_arr_get_f64(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
+        `${value} = call double @scr_arr_get_slot_f64(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
       );
       B.line(`${bits} = bitcast double ${value} to i64`);
     } else {
-      host.declare(`declare zeroext i1 @scr_arr_get_bool(ptr, double)`);
+      host.declare(`declare zeroext i1 @scr_arr_get_slot_bool(ptr, double)`);
       B.line(
-        `${value} = call zeroext i1 @scr_arr_get_bool(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
+        `${value} = call zeroext i1 @scr_arr_get_slot_bool(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
       );
       B.line(`${bits} = zext i1 ${value} to i64`);
     }

@@ -1249,29 +1249,19 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
  * or `{`, then its entries. */
 static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent, size_t depth,
                                  const char *cls) {
-  if (d->v.obj.len == 0) {
-    if (cls) {
-      ab_cstr(b, cls);
-      ab_cstr(b, " {}");
-      return;
-    }
-    ab_cstr(b, d->null_proto ? "[Object: null prototype] {}" : "{}");
-    return;
-  }
-  if (depth == 0) {
-    if (cls) {
-      ab_cstr(b, "[");
-      ab_cstr(b, cls);
-      ab_cstr(b, "]");
-      return;
-    }
-    ab_cstr(b, d->null_proto ? "[Object: null prototype]" : "[Object]");
-    return;
-  }
-  if (cls) {
+  bool truncated = depth == 0 && d->v.obj.len != 0;
+  if (d->null_proto || truncated) {
+    ab_char(b, '[');
+    ab_cstr(b, cls ? cls : "Object");
+    if (d->null_proto) ab_cstr(b, ": null prototype");
+    ab_char(b, ']');
+    if (truncated) return;
+    ab_char(b, ' ');
+  } else if (cls) {
     ab_cstr(b, cls);
     ab_cstr(b, " ");
-  } else if (d->null_proto) ab_cstr(b, "[Object: null prototype] ");
+  }
+  if (d->v.obj.len == 0) { ab_cstr(b, "{}"); return; }
   /* Render every entry, then sort the RENDERED texts (Node's
    * sorted:true sorts formatted entries, quotes included). */
   ScrCfEntry *ents = malloc(d->v.obj.len * sizeof *ents);
@@ -1562,9 +1552,9 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
     case SCR_DYN_TYPED_REF: {
       /* A program class instance renders under its class name. */
       ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
-      const ScrStr *cls = scr_dyn_typed_ref_class_name(d);
+      const char *cls = scr_dyn_typed_ref_class_name(d);
       if (cls && materialized->kind == SCR_DYN_OBJ && scr_dyn_obj_get(materialized, "%error", 6) == NULL)
-        scr_assert_cf_object(b, materialized, indent, depth, cls->data);
+        scr_assert_cf_object(b, materialized, indent, depth, cls);
       else
         scr_assert_cf_value(b, materialized, indent, depth);
       scr_dyn_release(materialized);

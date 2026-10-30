@@ -366,6 +366,17 @@ export class PublishWalkers {
       lines.push(`  %msmall = icmp ult i64 %mrc, 4294967294`, `  %mok2 = and i1 %mok1, %msmall`);
       ok = "%mok2";
     }
+    if (kind === PUB_KIND_OBJECT) {
+      // Context-local property metadata cannot cross threads. Keep the same
+      // admission as scr_pub_mark before the inline path makes rc immortal.
+      this.host.declare(`declare ptr @scr_native_publication_refusal(ptr)`);
+      lines.push(
+        `  %mmetadata = call ptr @scr_native_publication_refusal(ptr %o)`,
+        `  %mplain = icmp eq ptr %mmetadata, null`,
+        `  %mokattrs = and i1 ${ok}, %mplain`,
+      );
+      ok = "%mokattrs";
+    }
     lines.push(`  br i1 ${ok}, label %mfast, label %mslow`, `mslow:`, ...call("ms"), `mfast:`);
     let buf = "0";
     if (cyc) {

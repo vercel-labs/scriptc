@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { F64, VOID, type IrStmt, type IrModule } from "./ir.js";
+import { F64, VOID, isClassOwnEnumerableField, type IrStmt, type IrModule } from "./ir.js";
 import {
   IR_VERSION,
   deserializeModule,
@@ -87,12 +87,63 @@ test("compact artifacts preserve the full module and special numeric values", ()
   expect(deserializeModule(serializeModule(mod, true))).toEqual(mod);
 });
 
-test("the new number format rejects documents bearing an older version", () => {
+test("serialized modules reject documents bearing an older version", () => {
   const json = serializeModule(numbers([NaN])).replace(
     `"irVersion": ${IR_VERSION}`,
     `"irVersion": ${IR_VERSION - 1}`,
   );
   expect(() => deserializeModule(json)).toThrow("IR version mismatch");
+});
+
+test.each(["text", "bytes"])("IR16 class storage is rejected by the %s reader", (encoding) => {
+  // IR16 hid these fields by spelling. They lack the declaration metadata
+  // required to distinguish them from quoted public names in current IR.
+  const previous = {
+    ...numbers([]),
+    irVersion: 16,
+    classes: [
+      {
+        name: "Vault",
+        fields: [
+          { name: "#secret", type: F64 },
+          { name: "%storage", type: F64 },
+        ],
+        loc: { file: "vault.ts", start: 0, end: 0 },
+      },
+    ],
+  };
+  for (const space of [undefined, 2]) {
+    const text = JSON.stringify(previous, null, space);
+    expect(() =>
+      encoding === "text" ? deserializeModule(text) : deserializeModuleBytes(Buffer.from(text)),
+    ).toThrow(`IR version mismatch: file has 16, compiler expects ${IR_VERSION}`);
+  }
+});
+
+test.each(["text", "bytes"])("class field visibility survives the %s reader", (encoding) => {
+  const mod = numbers([]);
+  mod.classes = [
+    {
+      name: "Vault",
+      fields: [
+        { name: "#secret", type: F64, visibility: "private" },
+        { name: "%storage", type: F64, visibility: "internal" },
+        { name: "#public", type: F64 },
+        { name: "%public", type: F64 },
+        { name: "typedPrivate", type: F64 },
+      ],
+      loc: { file: "vault.ts", start: 0, end: 0 },
+    },
+  ];
+  for (const compact of [false, true]) {
+    const text = serializeModule(mod, compact);
+    const decoded =
+      encoding === "text" ? deserializeModule(text) : deserializeModuleBytes(Buffer.from(text));
+    expect(decoded).toEqual(mod);
+    expect(
+      decoded.classes![0]!.fields.filter(isClassOwnEnumerableField).map((f) => f.name),
+    ).toEqual(["#public", "%public", "typedPrivate"]);
+  }
 });
 
 test("compact artifacts preserve mixed ordinary functions and special numbers in metadata", () => {

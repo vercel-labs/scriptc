@@ -53,6 +53,16 @@ for (const key in view) {
 console.log("mutating", visited.join(","), Object.keys(view).join(","));
 
 // for-in reaches enumerable properties of a prototype set through the view.
-Object.setPrototypeOf(view, { inherited: 1 });
+const inherited = { inherited: 1 };
+Object.setPrototypeOf(view, inherited);
 walk("inherited", view);
+function alias(value: Account): Record<string, unknown> {
+  const checked: unknown = value;
+  return checked as Record<string, unknown>;
+}
+walk("inherited alias", alias(account));
+console.log("alias prototype", Object.getPrototypeOf(alias(account)) === inherited, "inherited" in alias(account));
+Object.setPrototypeOf(alias(account), null);
+walk("null alias", view);
+console.log("null prototype", Object.getPrototypeOf(view) === null, "inherited" in view);
 console.log("values", account.balance, JSON.stringify(view));

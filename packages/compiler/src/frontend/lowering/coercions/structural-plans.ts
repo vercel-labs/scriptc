@@ -31,12 +31,18 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     const tag = lowerer.armTag(dst.unionId, src);
     const def = lowerer.unions.get(dst.unionId);
     if (!def) return null;
-    if (tag >= 0) {
-      const shape = src.kind === "record" ? lowerer.shapes.get(src.shapeId) : undefined;
-      if (shape && planRecordUnionWrap(shape, def, (id) => lowerer.shapes.get(id)))
-        return { how: "discriminantWrap" };
-      return { how: "wrap", tag };
-    }
+    const shape = src.kind === "record" ? lowerer.shapes.get(src.shapeId) : undefined;
+    if (
+      shape &&
+      planRecordUnionWrap(
+        shape,
+        def,
+        (id) => lowerer.shapes.get(id),
+        (from, to) => lowerer.widthLiftPlan(from, to),
+      )
+    )
+      return { how: "discriminantWrap" };
+    if (tag >= 0) return { how: "wrap", tag };
     const candidates: { tag: number; arm: IrType }[] = [];
     def.arms.forEach((arm, i) => {
       if (isUnitType(arm)) return;

@@ -6,6 +6,8 @@ import { describe, expect, test } from "vitest";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
+import { selectNativeRuntimePack } from "./runtime-pack-native.js";
 import {
   effectiveRuntimeFeatures,
   evaluateRuntimePredicate,
@@ -117,7 +119,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
+    runtime_abi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -333,6 +335,52 @@ describe("runtime pack manifests", () => {
       size: 1,
     };
     expect(() => parseRuntimePackManifest(malformed)).toThrow("malformed");
+  });
+
+  test("Node and native drivers accept the current runtime ABI", async () => {
+    const { packagePath, root } = await fixture();
+    const selection = await loadRuntimePack({
+      target: MACOS_ARM64_TARGET,
+      features: BASE,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+    const native = selectNativeRuntimePack(root, MACOS_ARM64_TARGET, VERSION, BASE, "release");
+    expect(native.manifest.runtime_abi).toEqual({
+      version: RUNTIME_ABI_VERSION,
+      marker: RUNTIME_ABI_MARKER,
+    });
+    expect(native.selected.runtime.map((artifact) => join(root, artifact.path))).toEqual(
+      selection.runtimeObjects,
+    );
+  });
+
+  test.each([
+    { version: 22, marker: "scr_runtime_abi_v22" },
+    { version: RUNTIME_ABI_VERSION, marker: "scr_runtime_abi_v22" },
+    { version: 22, marker: RUNTIME_ABI_MARKER },
+  ])("rejects incompatible ABI $version/$marker before selecting artifacts", async (abi) => {
+    const { packagePath, manifest, root } = await fixture();
+    await writeFile(
+      join(root, "runtime-pack.json"),
+      JSON.stringify({ ...manifest, runtime_abi: abi }),
+    );
+    // Library flavors are deliberately absent: ABI rejection must precede
+    // flavor selection in both drivers, including library consumers.
+    for (const mode of ["executable", "library", "library-thread"] as const) {
+      await expect(
+        loadRuntimePack({
+          target: MACOS_ARM64_TARGET,
+          features: BASE,
+          optimization: "release",
+          mode,
+          resolver: () => packagePath,
+        }),
+      ).rejects.toThrow("malformed");
+      expect(() =>
+        selectNativeRuntimePack(root, MACOS_ARM64_TARGET, VERSION, BASE, "release", mode),
+      ).toThrow("malformed");
+    }
   });
 
   test("a stale manifest reports its identity independently from the package", async () => {

@@ -30,6 +30,8 @@ void scr_module_registry_init(double count);
 void scr_module_define(double module_id, ScrStr *filename, ScrStr *id,
                        ScrStr *path, ScrArr *paths, bool is_main);
 void scr_module_enter(double module_id);
+/* Linking and failure cleanup may throw through an exposed children array.
+ * A rejected link does not adopt its parent; failure always evicts first. */
 void scr_module_link(double parent_id, double child_id);
 void scr_module_finish(double module_id);
 void scr_module_fail(double module_id);

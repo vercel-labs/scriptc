@@ -15,7 +15,15 @@ import {
   shapeHasAccessorSlots,
   typeEquals,
 } from "../../../ir/ir.js";
-import type { IrExpr, IrLocal, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
+import type {
+  IrExpr,
+  IrFunction,
+  IrLocal,
+  IrRecordShape,
+  IrStmt,
+  IrType,
+  SrcLoc,
+} from "../../../ir/ir.js";
 import { isCjsExportTableLiteral, isJsSourceFile, locOf } from "../../program.js";
 import { NARROW_FIRST } from "../surfaces.js";
 import { recordShapeMismatchDiag } from "../../../diagnostics/diagnostic.js";
@@ -32,6 +40,7 @@ import { isSafeToRepeat } from "./evaluation-safety.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceSymbolFieldCopy } from "../symbol-fields.js";
 import { planUnionRetag } from "../union-retag.js";
+import { literalValues } from "../../literal-values.js";
 import { runtimeOptionalStorageOperand } from "../lower-exprs.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
@@ -437,6 +446,9 @@ export function lowerDynObjectLiteral(
         v = lowerer.coerceToExpected(fence, DYN);
       }
     }
+    // Keep the per-property refusal above, then carry source metadata such
+    // as a function's declared or inferred name through the canonical slot.
+    if (!boxValue) v = lowerer.coerceInto(valueExpr, v, DYN);
     fields.push({ key, value: v });
   }
   flushFields();
@@ -2358,7 +2370,33 @@ function lowerUnionRecordClone(lowerer: Lowerer, expr: ts.ObjectLiteralExpressio
       // would reshape an unannotated spread expression without a
       // diagnostic.
       if (!lift) return null;
-      if (lift.how === "retag" && valueType?.kind === "union" && fieldType.kind === "union") {
+      if (
+        lift.how === "discriminantWrap" &&
+        valueType?.kind === "record" &&
+        fieldType.kind === "union"
+      ) {
+        const to = lowerer.unions.get(fieldType.unionId);
+        const property = to?.discriminant
+          ? lowerer.checker.getPropertyOfType(lowerer.typeOf(node), to.discriminant.field)
+          : undefined;
+        if (
+          !property ||
+          property.flags &
+            (ts.SymbolFlags.Optional | ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)
+        )
+          return null;
+        // Only the override's known variant must preserve identity. Other
+        // structurally compatible routes may copy narrower payloads, but
+        // the checker proves their discriminators cannot occur here.
+        const values = literalValues(lowerer.checker.getTypeOfSymbol(property));
+        const target = values && lowerer.literalUnionArm(fieldType.unionId, values);
+        const payload = target && lowerer.widthLiftPlan(valueType, target);
+        if (!payload || (payload.how !== "copy" && payload.how !== "upcast")) return null;
+      } else if (
+        lift.how === "retag" &&
+        valueType?.kind === "union" &&
+        fieldType.kind === "union"
+      ) {
         const from = lowerer.unions.get(valueType.unionId);
         const to = lowerer.unions.get(fieldType.unionId);
         const plan =
@@ -2738,6 +2776,8 @@ function lowerDeclaredSpreadMerge(
           loc,
         });
       }
+      const prefix = body.slice();
+      const fieldStmts = new Map<string, IrStmt>();
       for (const field of source.shape?.fields ?? []) {
         const target = shape.fields.find((candidate) => candidate.name === field.name);
         if (!target) continue; // The declared destination drops extra keys.
@@ -2770,9 +2810,12 @@ function lowerDeclaredSpreadMerge(
         // A dyn field, including a present undefined, is a real property;
         // its checked conversion runs and can overwrite an earlier value.
         const present = lowerer.recordFieldPresent(receiver, source.shapeId, field.name, loc);
-        if (present.kind === "recordHas") {
-          body.push({ kind: "if", cond: present, then: [write], else_: null, loc });
-        } else body.push(write);
+        const copy: IrStmt =
+          present.kind === "recordHas"
+            ? { kind: "if", cond: present, then: [write], else_: null, loc }
+            : write;
+        body.push(copy);
+        fieldStmts.set(field.name, copy);
       }
       const iv = source.shape ? source.shape.indexValue : DYN;
       if (iv) {
@@ -2888,7 +2931,7 @@ function lowerDeclaredSpreadMerge(
         );
       }
       body.push({ kind: "return", value: destination, loc });
-      lowerer.liftedFns.push({
+      const fn: IrFunction = {
         name: helper,
         params: [
           { localId: "out.0", name: "out", type },
@@ -2898,7 +2941,26 @@ function lowerDeclaredSpreadMerge(
         locals,
         body,
         loc,
-      });
+      };
+      const sourceShape = source.shape;
+      if (sourceShape) {
+        const suffix = body.slice(prefix.length + fieldStmts.size);
+        // Native metadata records these writes in order. Use settled source
+        // order, not the canonical layout, just like indexed record copies.
+        lowerer.shapeOrderHelperFinalizers.push(() => {
+          const current = lowerer.shapes.get(source.shapeId) ?? sourceShape;
+          const order = current.declaredOrder ?? current.fields.map((field) => field.name);
+          fn.body = [
+            ...prefix,
+            ...order.flatMap((field) => {
+              const stmt = fieldStmts.get(field);
+              return stmt ? [stmt] : [];
+            }),
+            ...suffix,
+          ];
+        });
+      }
+      lowerer.liftedFns.push(fn);
       // Publish only a fully checked helper: rejected conversions must not
       // leave an entry that a later literal could reuse without a body.
       lowerer.valueHelpers.set(key, helper);

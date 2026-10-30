@@ -62,7 +62,7 @@ function fixture(key: IrType, value: IrType, read: "key" | "value"): IrModule {
     body,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [],
@@ -141,7 +141,7 @@ function lookupFixture(): IrModule {
     body: [{ kind: "return", value: has, loc }],
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [],

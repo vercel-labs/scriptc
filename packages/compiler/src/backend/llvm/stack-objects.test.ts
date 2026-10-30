@@ -214,7 +214,7 @@ test("loop bindings are never reassigned into a fixed slot", () => {
     ],
   };
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [{ id: "point", fields: [{ name: "x", type: F64 }] }],
@@ -256,6 +256,111 @@ console.log(run(3));
   expect(run).toMatch(/alloca %sc_rs_\w+, align 8/);
   // An alias of a reassigned binding must keep seeing the old object.
   expect(run).toContain("call ptr @sc_new_Box()");
+});
+
+test("publication guards keep matching object types out of frame and result-slot storage", async () => {
+  const mod = await moduleFor(`
+interface Point { x: number; live: boolean }
+function publishPoint(p: Point): Point { return p; }
+function makePoint(n: number): Point { return { x: n, live: true }; }
+function forwardPoint(n: number): Point { return makePoint(n); }
+function shift(p: Point): void { p.x += 1; }
+class Meter { value: number; constructor(n: number) { this.value = n; } }
+function publishMeter(m: Meter): Meter { return m; }
+function makeMeter(n: number): Meter { return new Meter(n); }
+class Plain { value: number; constructor(n: number) { this.value = n; } }
+function makePlain(n: number): Plain { return new Plain(n); }
+export function run(n: number): number {
+  shift({ x: n, live: true });
+  shift(makePoint(n));
+  const literal: Point = { x: n, live: true };
+  shift(literal);
+  const produced = forwardPoint(n);
+  shift(produced);
+  const direct = new Meter(n);
+  direct.value = n + 2;
+  let built = makeMeter(n);
+  built.value = n + 3;
+  built = makeMeter(built.value);
+  const other = makePlain(n);
+  other.value = n + 4;
+  return literal.x + produced.x + direct.value + built.value + other.value;
+}
+const shared = publishPoint(makePoint(1));
+const sharedMeter = publishMeter(makeMeter(3));
+console.log(run(4), shared.x, sharedMeter.value);
+`);
+  // Isolate backend storage selection from package resolution: these two
+  // identity helpers become the same intrinsic that @scriptc/threads lowers.
+  for (const fn of mod.functions) {
+    if (fn.name !== "publishPoint" && fn.name !== "publishMeter") continue;
+    const param = fn.params[0]!;
+    const value: IrExpr = {
+      kind: "varRef",
+      localId: param.localId,
+      type: param.type,
+      loc: fn.loc,
+    };
+    fn.body = [
+      {
+        kind: "return",
+        value: {
+          kind: "intrinsic",
+          name: "threads.publish",
+          args: [value],
+          type: value.type,
+          loc: fn.loc,
+        },
+        loc: fn.loc,
+      },
+    ];
+  }
+  expect(validateModule(mod)).toEqual([]);
+  const entries = addRecordResultEntries(mod)
+    .functions.filter((fn) => fn.name.startsWith(RESULT_ENTRY_PREFIX))
+    .map((fn) => fn.name);
+  expect(entries).toEqual([`${RESULT_ENTRY_PREFIX}makePlain`]);
+  const ir = emitLlvmModule(mod);
+  const run = body(ir, "run");
+  expect(run).not.toMatch(/alloca %sc_rs_/);
+  expect(run).not.toContain("alloca %sc_o_Meter");
+  expect(run).toMatch(/call ptr @sc_rnew_/);
+  expect(run).toContain("call ptr @sc_new_Meter()");
+  expect(run).toMatch(/call ptr @sc_\w*f_makePoint(?:\.i32)?\(/);
+  expect(run).toMatch(/call ptr @sc_\w*f_forwardPoint(?:\.i32)?\(/);
+  expect(run).toMatch(/call ptr @sc_\w*f_makeMeter(?:\.i32)?\(/);
+  expect(run).toContain("alloca %sc_o_Plain, align 8");
+  expect(run).toMatch(/call void @sc_\w*into_makePlain\(/);
+  // Preserve rejection of real published receivers; fix their allocation
+  // candidates rather than weakening or removing the shared write guard.
+  expect(body(ir, "shift")).toContain("@scr_throw_published_field");
+  expect(run).toContain("@scr_throw_published_field");
+});
+
+test("checked aliases keep native heap identity and leave unrelated scalar optimization intact", async () => {
+  const mod = await moduleFor(`
+interface Point { x: number; live: boolean }
+function makePoint(n: number): Point { return { x: n, live: true }; }
+function forwardPoint(n: number): Point { return makePoint(n); }
+function inspectPoint(value: Point): boolean { const view: unknown = value; return Object.isFrozen(view); }
+class Plain { value: number; constructor(n: number) { this.value = n; } }
+function makePlain(n: number): Plain { return new Plain(n); }
+export function run(n: number): number {
+  const point = forwardPoint(n);
+  const plain = makePlain(n);
+  return point.x + plain.value;
+}
+console.log(inspectPoint(makePoint(1)), run(2));
+`);
+  const entries = addRecordResultEntries(mod)
+    .functions.filter((fn) => fn.name.startsWith(RESULT_ENTRY_PREFIX))
+    .map((fn) => fn.name);
+  expect(entries).toEqual([`${RESULT_ENTRY_PREFIX}makePlain`]);
+  const run = body(emitLlvmModule(mod), "run");
+  expect(run).not.toMatch(/alloca %sc_rs_/);
+  expect(run).toMatch(/call ptr @sc_\w*f_forwardPoint(?:\.i32)?\(/);
+  expect(run).toContain("alloca %sc_o_Plain, align 8");
+  expect(run).toMatch(/call void @sc_\w*into_makePlain\(/);
 });
 
 test("producers returning a parameter copy it only for shapes nothing writes", async () => {

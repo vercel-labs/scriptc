@@ -1362,10 +1362,8 @@ class FusedLoop {
       }
       const valueT = arrayValueType(this.lowerer, arrT.elem);
       if (stage.fast) {
-        // The split visit: a value goes on as the plain element, a present
-        // undefined as the undefined arm.
-        const missing = this.lowerer.wrappedUndefined(valueT, loc);
-        if (!missing) return fail();
+        // Own values use raw slots; the slow visit uses the canonical read.
+        // Do not infer an undefined value from the storage state.
         const v = this.local("v", arrT.elem);
         const u = this.local("u", valueT);
         return [
@@ -1384,7 +1382,12 @@ class FusedLoop {
               ...rest({ kind: "value", id: v, type: arrT.elem }),
             ],
             else_: [
-              { kind: "varDecl", localId: u, init: missing, loc },
+              {
+                kind: "varDecl",
+                localId: u,
+                init: arrayValueRead(this.lowerer, a, i, arrT.elem, loc),
+                loc,
+              },
               ...rest({ kind: "value", id: u, type: valueT }),
             ],
             loc,

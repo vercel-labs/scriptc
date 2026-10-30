@@ -53,3 +53,32 @@ console.log("json", JSON.stringify(record));
 console.log("descriptor", JSON.stringify(Object.getOwnPropertyDescriptor(record, "extra")));
 Object.assign(record, { first: 4, appended: 5 });
 console.log("assigned", data.first, record.extra, record.appended, JSON.stringify(record));
+
+// Rejection belongs to the getter's holder, even through a derived instance
+// or replacement prototype. Reporting it must not invoke either getter.
+let getterReads = 0, constructorReads = 0;
+class ReadonlyBase { get locked() { getterReads++; return 1; } }
+class ReadonlyChild extends ReadonlyBase {}
+const readonly = new ReadonlyChild();
+function writeLocked(value) {
+  try { value.locked = 2; } catch (error) { console.log("holder", error.message); }
+  console.log("reflect", Reflect.set(value, "locked", 3));
+}
+writeLocked(readonly);
+Object.preventExtensions(readonly);
+writeLocked(readonly);
+const changed = new ReadonlyChild();
+const replacement = { get locked() { getterReads++; return 4; } };
+Object.setPrototypeOf(changed, replacement);
+writeLocked(changed);
+Object.defineProperty(replacement, "constructor", { value: function Renamed() {}, configurable: true });
+console.log("constructor name", Object.getOwnPropertyDescriptor(replacement, "constructor").value.name);
+writeLocked(changed);
+Object.defineProperty(replacement, "constructor", { value: function() {}, configurable: true });
+console.log("inferred constructor name", Object.getOwnPropertyDescriptor(replacement, "constructor").value.name);
+writeLocked(changed);
+Object.defineProperty(replacement, "constructor", { get() { constructorReads++; return 1; }, configurable: true });
+writeLocked(changed);
+Object.setPrototypeOf(replacement, null);
+writeLocked(changed);
+console.log("getter reads", getterReads, constructorReads);

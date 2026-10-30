@@ -42,7 +42,9 @@ console.log(a${i}.join(":"));
         0,
       );
       expect(stackSlots).toBeLessThanOrEqual(lists.length * 3 * 64);
-      expect(llvm).toContain(`@scr_arr_unshift_many(ptr`);
+      // Public insertions see all arguments at once; only construction batches.
+      expect(llvm.match(/call double @scr_arr_unshift_spread\(ptr /g)).toHaveLength(lists.length);
+      expect(llvm.match(/call double @scr_arr_push_spread\(ptr /g)).toHaveLength(lists.length);
       expect(llvm).toContain(`declare double @scr_arr_push_many(ptr, i${pointerBits}, ptr)`);
       expect(llvm).toMatch(/zext i1 .* to i64/);
       expect(llvm).toMatch(/ptrtoint ptr .* to i64/);

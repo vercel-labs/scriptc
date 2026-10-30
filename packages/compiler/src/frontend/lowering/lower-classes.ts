@@ -390,6 +390,7 @@ export interface ClassInfo {
   prototypeMethodValues?: Map<string, IrExpr>;
   prototypeReflectionReady?: true;
   prototypeObservedMethodsReady?: true;
+  prototypeObservedProperties?: Set<string>;
   prototypeReflectionRefusal?: string;
   localClass?: {
     context: FnCtx | null;
@@ -407,8 +408,9 @@ export interface ClassInfo {
   fieldOrder: {
     name: string;
     type: IrType;
+    visibility?: "private";
     initializer: ts.Expression | undefined;
-    /** A bare JS dyn field defines undefined at its declaration position,
+    /** An emitted bare declaration defines undefined at this position,
      * even if an earlier initializer or base constructor wrote the slot. */
     undefinedInitializer?: SrcLoc;
     /** Redeclared field: initialize the existing slot at this position;
@@ -416,6 +418,8 @@ export interface ClassInfo {
     redeclared?: true;
     errorCause?: true;
   }[];
+  /** Settled after exposure discovery; an unexposed class needs no metadata. */
+  declarationHelper?: IrFunction;
   /** OWN declared methods only — inherited lookups walk the base chain
    * (findMethodOn). An `abstract` entry is a signature with no body (and
    * no module function): it declares the vtable slot; concrete subclasses
@@ -631,6 +635,34 @@ export interface ClassInfo {
   decorationThrows?: { name: string };
 }
 
+/** The entire inheritance family shares native integrity admission. Symbol
+ * fields and runtime-owned roots need their own mutation contracts. */
+export function classNativeIntegrityEligible(info: ClassInfo): boolean {
+  let root = info;
+  while (root.base) root = root.base;
+  const hasSymbols = (current: ClassInfo): boolean =>
+    !!current.symbolFields?.size || current.subclasses.some(hasSymbols);
+  return !root.def.runtime && !hasSymbols(root);
+}
+
+/** Source access selects a property identity before it selects native storage.
+ * Printed private/symbol names are ordinary strings to public callers. */
+export function classFieldType(
+  info: ClassInfo | undefined,
+  name: string,
+  access: "public" | "private" | "symbol" = "public",
+): IrType | undefined {
+  // Accessor overrides remove the logical field but retain its base storage
+  // prefix. Looking up that slot directly would bypass the subclass accessor.
+  const type = info?.fields.get(name);
+  if (!info || !type) return undefined;
+  const field = info.def.fields.find((field) => field.name === name);
+  if (!field || field.visibility === "internal") return undefined;
+  if (field.visibility === "private") return access === "private" ? type : undefined;
+  const symbol = [...(info.symbolFields?.values() ?? [])].includes(name);
+  return (access === "symbol" ? symbol : access === "public" && !symbol) ? type : undefined;
+}
+
 /** A decorated class's decoration state (see ClassInfo.classDecorators). */
 export interface ClassDecorationInfo {
   /** The class-level decorator nodes, source order. */
@@ -780,23 +812,23 @@ export function registerBuiltinErrorClasses(lowerer: Lowerer): void {
         fields: [
           { name: "name", type: STRING },
           { name: "message", type: STRING },
-          { name: "%code", type: STRING },
-          { name: "%cause", type: DYN },
-          { name: "%causeEnumerable", type: BOOL },
-          { name: "%messagePresent", type: BOOL },
-          { name: "%messageEnumerable", type: BOOL },
-          { name: "%namePresent", type: BOOL },
-          { name: "%nameEnumerable", type: BOOL },
-          { name: "%stackFrames", type: STRING },
-          { name: "%stack", type: STRING },
-          { name: "%systemErrno", type: F64 },
-          { name: "%systemCall", type: STRING },
-          { name: "%systemPath", type: STRING },
-          { name: "%systemDest", type: STRING },
-          { name: "%systemMessage", type: STRING },
-          { name: "%systemCode", type: STRING },
-          { name: "%nativePlain", type: BOOL },
-          { name: "%errnoOrder", type: BOOL },
+          { name: "%code", type: STRING, visibility: "internal" },
+          { name: "%cause", type: DYN, visibility: "internal" },
+          { name: "%causeEnumerable", type: BOOL, visibility: "internal" },
+          { name: "%messagePresent", type: BOOL, visibility: "internal" },
+          { name: "%messageEnumerable", type: BOOL, visibility: "internal" },
+          { name: "%namePresent", type: BOOL, visibility: "internal" },
+          { name: "%nameEnumerable", type: BOOL, visibility: "internal" },
+          { name: "%stackFrames", type: STRING, visibility: "internal" },
+          { name: "%stack", type: STRING, visibility: "internal" },
+          { name: "%systemErrno", type: F64, visibility: "internal" },
+          { name: "%systemCall", type: STRING, visibility: "internal" },
+          { name: "%systemPath", type: STRING, visibility: "internal" },
+          { name: "%systemDest", type: STRING, visibility: "internal" },
+          { name: "%systemMessage", type: STRING, visibility: "internal" },
+          { name: "%systemCode", type: STRING, visibility: "internal" },
+          { name: "%nativePlain", type: BOOL, visibility: "internal" },
+          { name: "%errnoOrder", type: BOOL, visibility: "internal" },
         ],
         loc,
       },
@@ -2117,6 +2149,28 @@ export function collectClassShapeInner(
       }
     }
     const fields = new Map<string, IrType>(base ? base.fields : []);
+    const fieldKinds = new Map<string, "public" | "private" | "internal" | "symbol">(
+      (base?.def.fields ?? []).map((field) => [
+        field.name,
+        [...(base?.symbolFields?.values() ?? [])].includes(field.name)
+          ? "symbol"
+          : (field.visibility ?? "public"),
+      ]),
+    );
+    const claimField = (
+      name: string,
+      kind: "public" | "private" | "symbol",
+      node: ts.Node,
+    ): void => {
+      const previous = fieldKinds.get(name);
+      if (previous !== undefined && previous !== kind)
+        lowerer.unsupported(
+          "SC1090",
+          node,
+          `distinct class fields sharing the storage name '${name}' (public, private, symbol, and compiler fields require distinct slots)`,
+        );
+      fieldKinds.set(name, kind);
+    };
     const errorRooted = (() => {
       for (let c = base; c; c = c.base) if (c.builtinError) return true;
       return false;
@@ -2600,6 +2654,7 @@ export function collectClassShapeInner(
               "computed class fields without an initializer and a stable string, number, or module-level literal Symbol()/Symbol.for() key",
             );
           }
+          claimField(fieldName, symbolKey ? "symbol" : "public", member.name);
           const declared = lowerer.typeOf(member);
           const inferred =
             member.type || !member.initializer
@@ -2663,12 +2718,16 @@ export function collectClassShapeInner(
           if (symbolKey) symbolFields.set(symbolKey.identity, fieldName);
           continue;
         }
-        // #private fields ride the ordinary field machinery — the '#'
-        // name is unspellable publicly, so the slot never collides, and
-        // enumeration surfaces (inspect) exclude it like Node.
+        // Private slots retain declaration identity; quoted public names
+        // can have the same spelling and must never alias these slots.
         if (!ts.isIdentifier(member.name) && !ts.isPrivateIdentifier(member.name)) {
           lowerer.unsupported("SC1090", member, "computed field names");
         }
+        claimField(
+          member.name.text,
+          ts.isPrivateIdentifier(member.name) ? "private" : "public",
+          member.name,
+        );
         // A field initialized with a GENERIC arrow/function expression
         // (`time = async <T>(label, fn) => {...}` — the Output.time
         // idiom): a generic MEMBER, not a field. No closure slot can
@@ -2775,8 +2834,12 @@ export function collectClassShapeInner(
         ) {
           lowerer.unsupported("SC1090", member.name, "'unknown'-typed class fields");
         }
+        // A declare field keeps its type/layout for later constructor writes,
+        // but emits no property definition of its own.
         const undefinedInitializer =
-          type.kind === "dyn" && !member.initializer ? locOf(member) : undefined;
+          !member.initializer && !modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)
+            ? locOf(member)
+            : undefined;
         if (fields.has(member.name.text)) {
           // REDECLARING an inherited field: Node [[Define]]s the OWN
           // property again when THIS class's field initializers run
@@ -2790,6 +2853,11 @@ export function collectClassShapeInner(
           // JS dyn redeclaration resets the existing slot to undefined.
           // Other bare or type-changing redeclarations keep the fence.
           const baseType = fields.get(member.name.text)!;
+          if (
+            modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) &&
+            typeEquals(type, baseType)
+          )
+            continue;
           if ((member.initializer || type.kind === "dyn") && typeEquals(type, baseType)) {
             fieldOrder.push({
               name: member.name.text,
@@ -2850,6 +2918,7 @@ export function collectClassShapeInner(
         fieldOrder.push({
           name: member.name.text,
           type,
+          ...(ts.isPrivateIdentifier(member.name) ? { visibility: "private" as const } : {}),
           initializer: member.initializer,
           ...(undefinedInitializer ? { undefinedInitializer } : {}),
         });
@@ -3431,6 +3500,7 @@ export function collectClassShapeInner(
           name: pp.name,
           type: pp.type,
           initializer: undefined,
+          undefinedInitializer: locOf(pp.param),
         })),
       );
     }
@@ -3944,7 +4014,11 @@ export function collectClassShapeInner(
           ...(base?.def.fields ?? []),
           ...fieldOrder
             .filter((f) => f.redeclared !== true)
-            .map((f) => ({ name: f.name, type: f.type })),
+            .map((f) => ({
+              name: f.name,
+              type: f.type,
+              ...(f.visibility ? { visibility: f.visibility } : {}),
+            })),
         ],
         ...(methods.size > 0 ? { methods: [...methods.keys()] } : {}),
         ...((): { prototypeNames?: string[] } => {
@@ -5139,10 +5213,17 @@ export function lowerClassExpressionInfo(
   const info = lowerer.classes.get(lowerer.classNamer(expr));
   if (!info) throw new PoisonError(); // collection poisoned and reported
   if (local) {
+    if (info.def.fields.some((field) => field.name === `%classEnvironment:${info.def.name}`))
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "public field colliding with local class environment storage",
+      );
     info.def.localCaptures = [];
     info.def.fields.push({
       name: `%classEnvironment:${info.def.name}`,
       type: { kind: "classval", className: info.def.name },
+      visibility: "internal",
     });
     info.localClass = { context: null, bodies: new Map(), captureSources: [], ready: false };
     if (info.base?.localClass) {
@@ -7315,14 +7396,62 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
     }
     if (f.undefinedInitializer) {
       const loc = f.undefinedInitializer;
-      out.push({
-        kind: "fieldSet",
-        obj: { kind: "varRef", localId: thisLocal.id, type: thisType, loc },
-        className: info.def.name,
-        field: f.name,
-        value: dynUndefinedExpr(loc),
-        loc,
-      });
+      const value =
+        f.type.kind === "dyn"
+          ? dynUndefinedExpr(loc)
+          : f.type.kind === "undefinedT"
+            ? { kind: "unitLit" as const, unit: "undefined" as const, type: UNDEFINED_T, loc }
+            : f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
+              ? lowerer.wrappedUndefined(f.type, loc)
+              : null;
+      if (value) {
+        out.push({
+          kind: "fieldSet",
+          propertyOp: "define",
+          obj: varRef(thisLocal.id, thisType, loc),
+          className: info.def.name,
+          field: f.name,
+          value,
+          loc,
+        });
+      } else if (f.visibility !== "private") {
+        // Required slots cannot store undefined. Delay metadata admission
+        // until exposure discovery settles, without boxing this instance.
+        if (!info.declarationHelper) {
+          const params: IrParam[] = [
+            { localId: "receiver", name: "receiver", type: thisType },
+            { localId: "key", name: "key", type: STRING },
+          ];
+          info.declarationHelper = {
+            name: `%class.declare.${info.def.name}`,
+            params,
+            returnType: VOID,
+            locals: params.map((p) => ({
+              id: p.localId,
+              name: p.name,
+              type: p.type,
+              mutable: false,
+            })),
+            body: [{ kind: "return", value: null, loc }],
+            loc,
+          };
+          lowerer.liftedFns.push(info.declarationHelper);
+        }
+        out.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "call",
+            callee: info.declarationHelper.name,
+            args: [
+              varRef(thisLocal.id, thisType, loc),
+              { kind: "strLit", value: f.name, type: STRING, loc },
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+      }
     }
     if (!f.initializer) continue;
     lowerer.stats.statementsTotal++;
@@ -7332,6 +7461,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
       const value = lowerer.lowerExprExpecting(f.initializer, f.type);
       out.push({
         kind: "fieldSet",
+        propertyOp: "define",
         obj: { kind: "varRef", localId: thisLocal.id, type: thisType, loc: locOf(f.initializer) },
         className: info.def.name,
         field: f.name,

@@ -35,7 +35,7 @@ export function lifetimeRegionType(lowerer: Lowerer): IrType {
   const info: ClassInfo = {
     def: {
       name: LIFETIME_REGION_CLASS,
-      fields: [{ name: REGION_FIELD, type: F64 }],
+      fields: [{ name: REGION_FIELD, type: F64, visibility: "private" }],
       loc: BUILTIN_LOC,
     },
     fields: new Map(),

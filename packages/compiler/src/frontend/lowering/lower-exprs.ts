@@ -1,3 +1,4 @@
+import { objectIntegrityAliasOf, objectIntegrityAliasRead } from "./builtins/object-integrity.js";
 import { guardNullProto, nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
 import { generatorDrain } from "./iterator-adapters.js";
@@ -128,7 +129,6 @@ import {
 } from "./array-values.js";
 import { strCharsCall } from "./containers/array-construction.js";
 import { lowerOptionalStringIndex } from "./string-index.js";
-import { tryLowerIndexedComparison } from "./indexed-comparison.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { unsupportedModuleFeatureOf } from "../builtin-modules.js";
 import { fenceEnumObjectValue, lowerEnumAccess } from "./lower-enums.js";
@@ -149,6 +149,7 @@ import { expandoMemberRead, expandoWritableTarget } from "./lower-expando.js";
 import { lowerSocketInstanceOf, lowerTlsRootCertificates } from "./lower-server.js";
 import {
   type ClassInfo,
+  classFieldType,
   findGenericMethodOn,
   lowerStaticFieldRead,
   staticFieldWriteTarget,
@@ -189,6 +190,7 @@ import {
 } from "./expressions/optional-chains.js";
 import { foldedStringKeyOf } from "./expressions/object-literals.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { nativePropertySetOperation } from "./expressions/property-strictness.js";
 import {
   fenceNodeModuleMutation,
   isNodeModuleValue,
@@ -808,6 +810,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // runtime function object (its calls rewrite directly) — call it
     // through its immutable binding instead.
     {
+      objectIntegrityAliasOf(lowerer, expr);
       const sym = lowerer.resolveValueSymbol(expr);
       const projection = sym ? lowerer.staticCallables.get(sym) : undefined;
       if (
@@ -820,6 +823,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           "SC1090",
           expr,
           `a promisified builtin as a value (call '${expr.text}' directly)`,
+        );
+      }
+      if (projection?.kind === "object-integrity") {
+        if (own(OBJECT_CALLABLE_VALUES, projection.member))
+          return objectIntegrityAliasRead(lowerer, expr);
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `an Object.${projection.member} alias as an escaping value (call it directly)`,
         );
       }
       if (projection?.kind === "builtin-function") {
@@ -1841,31 +1853,6 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         type: { kind: "symbol" },
         loc,
       };
-    }
-    if (lowerer.stdlibGlobalMember(expr, "Object") === "freeze") {
-      const name = "%builtin.Object.freeze";
-      if (!lowerer.liftedFns.some((fn) => fn.name === name))
-        lowerer.liftedFns.push({
-          name,
-          params: [{ localId: "value", name: "value", type: DYN }],
-          locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-          returnType: DYN,
-          body: [
-            {
-              kind: "return",
-              value: {
-                kind: "libCall",
-                fn: "dyn.freeze",
-                args: [varRef("value", DYN, loc)],
-                type: DYN,
-                loc,
-              },
-              loc,
-            },
-          ],
-          loc,
-        });
-      return { kind: "closure", fnName: name, captures: [], type: funcOf([DYN], DYN), loc };
     }
     // An Hmac has no copy() (Hash does): Node answers undefined, which
     // `typeof mac.copy` feature checks read. TypeScript rejects the read.
@@ -6900,7 +6887,14 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       !assertedElementKeepsUndefined(lowerer, expr.parent);
     if (provenPresent) {
       return lowerer.maybeNarrow(
-        { kind: "arrayGet", arr, index, type: elemT, loc: locOf(expr) },
+        {
+          kind: "arrayPropertyRead",
+          arr,
+          index,
+          consume: "required",
+          type: elemT,
+          loc: locOf(expr),
+        },
         expr,
       );
     }
@@ -7611,21 +7605,7 @@ function lowerElementCompoundParts(
 /** ToString of one stabilized `string[]` element read for `+=`: a missing
  * element concatenates as "undefined". */
 function arrayStringOperand(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
-  return {
-    kind: "ternary",
-    cond: {
-      kind: "bin",
-      op: "===",
-      left: { kind: "arrayState", arr, index, type: F64, loc },
-      right: { kind: "numLit", value: 1, type: F64, loc },
-      type: BOOL,
-      loc,
-    },
-    then: { kind: "arrayGet", arr, index, type: STRING, loc },
-    else_: strLit("undefined", loc),
-    type: STRING,
-    loc,
-  };
+  return { kind: "arrayPropertyRead", arr, index, consume: "string", type: STRING, loc };
 }
 
 /** Checked member assignment evaluates the reference before its RHS and
@@ -8013,6 +7993,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       const value = lowerer.lowerExprExpecting(expr.right, fieldType);
       return {
         kind: "recordSet",
+        propertyOp: nativePropertySetOperation(lowerer, expr),
         obj,
         shapeId: receiverIr.shapeId,
         field: String(idx),
@@ -8045,6 +8026,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
           const value = lowerer.lowerExprExpecting(expr.right, field.type);
           return {
             kind: "recordSet",
+            propertyOp: nativePropertySetOperation(lowerer, expr),
             obj,
             shapeId: receiverIr.shapeId,
             field: litKey,
@@ -8095,6 +8077,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
           lowerer.badType(expr.right, lowerer.typeOf(expr.right));
         return {
           kind: "recordKeySet",
+          propertyOp: nativePropertySetOperation(lowerer, expr),
           obj,
           shapeId: receiverIr.shapeId,
           key,
@@ -8148,6 +8131,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       );
       return {
         kind: "recordKeySet",
+        propertyOp: nativePropertySetOperation(lowerer, expr),
         obj,
         shapeId: receiverIr.shapeId,
         key,
@@ -10452,8 +10436,6 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     case ts.SyntaxKind.EqualsEqualsEqualsToken:
     case ts.SyntaxKind.ExclamationEqualsEqualsToken: {
       const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
-      const indexed = tryLowerIndexedComparison(lowerer, left, right, negated, loc);
-      if (indexed) return indexed;
       if (plainBothNum)
         return { kind: "bin", op: negated ? "!==" : "===", left, right, type: BOOL, loc };
       if (bothStr) {
@@ -12640,7 +12622,7 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       if (recvArr.type.kind === "array") {
         const n = Number(kNode.text);
         return {
-          kind: "arrayHas",
+          kind: "arrayHasProperty",
           arr: recvArr,
           index: { kind: "numLit", value: n, type: F64, loc },
           type: BOOL,
@@ -12649,14 +12631,9 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       }
     }
   }
-  // A RUNTIME numeric key over an ARRAY receiver (`if (i in arr)` in a
-  // loop) asks the same slot/property presence query as the literal fold
-  // above and `Object.hasOwn`. The checked-dynamic fallback below would
-  // box the receiver and materialize every element on each evaluation,
-  // which makes such loops quadratic. A Number key never names an
-  // inherited property: neither Array.prototype nor Object.prototype has
-  // index-like or numeric-string keys. JS evaluates the key before the
-  // receiver, so the key is stabilized in a hidden local first.
+  // Numeric `in` shares the own-slot fast path, then checks a promoted
+  // referent's prototype without running getters. JS evaluates the key
+  // before the receiver, so stabilize it in a hidden local first.
   if (
     lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind === "f64" &&
     lowerer.mapTypeOf(lowerer.typeOf(expr.right))?.kind === "array"
@@ -12669,7 +12646,7 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
         kind: "seqExpr",
         stmts: [{ kind: "varDecl", localId: keyLocal.id, init: k, loc }],
         result: {
-          kind: "arrayHas",
+          kind: "arrayHasProperty",
           arr: recvArr,
           index: varRef(keyLocal.id, F64, loc),
           type: BOOL,
@@ -13934,7 +13911,11 @@ export function lowerUnionProperty(
   const nonUnitArms = def.arms.filter((arm) => !isUnitType(arm));
   if (nonUnitArms.length === 1 && nonUnitArms[0]?.kind === "object") {
     const objectType = nonUnitArms[0];
-    const fieldType = lowerer.classes.get(objectType.className)?.fields.get(field);
+    const fieldType = classFieldType(
+      lowerer.classes.get(objectType.className),
+      field,
+      ts.isPrivateIdentifier(expr.name) ? "private" : "public",
+    );
     if (fieldType !== undefined) {
       let receiver = lowerer.runtimeOptionalPropertyReceiver(
         expr.expression,
@@ -13969,7 +13950,11 @@ export function lowerUnionProperty(
     if (arm.kind === "record") {
       ft = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === field)?.type;
     } else if (arm.kind === "object") {
-      ft = lowerer.classes.get(arm.className)?.fields.get(field);
+      ft = classFieldType(
+        lowerer.classes.get(arm.className),
+        field,
+        ts.isPrivateIdentifier(expr.name) ? "private" : "public",
+      );
     }
     if (!ft || ft.kind === "void" || isUnitType(ft) || (common && !typeEquals(common, ft))) {
       common = null;
@@ -14151,10 +14136,15 @@ function classFieldTarget(
   saved?: IrExpr,
 ): FieldTarget | null {
   const represented = saved ?? lowerer.lowerExpr(receiverNode);
+  const access = receiverNode.parent;
+  const privateName =
+    ts.isPropertyAccessExpression(access) &&
+    access.expression === receiverNode &&
+    ts.isPrivateIdentifier(access.name);
   if (
     represented.type.kind === "dyn" &&
     isJsSourceFile(receiverNode.getSourceFile()) &&
-    !fieldName.startsWith("#")
+    !privateName
   ) {
     return { container: "dynamic", obj: represented, field: fieldName, fieldType: DYN };
   }
@@ -14165,7 +14155,8 @@ function classFieldTarget(
     lowerer.flushDeferredClass(receiverType.className);
     return null;
   }
-  const fieldType = info.fields.get(fieldName);
+  const fieldType = classFieldType(info, fieldName, privateName ? "private" : "public");
+  const declared = info.def.fields.find((field) => field.name === fieldName);
   const lowerObjectReceiver = (): IrExpr => {
     let obj = represented;
     if (obj.type.kind === "union") {
@@ -14197,11 +14188,19 @@ function classFieldTarget(
       };
     }
   }
+  if (declared && fieldType === undefined && !privateName) {
+    return {
+      container: "dynamic",
+      obj: lowerer.coerceToExpected(lowerObjectReceiver(), DYN),
+      field: fieldName,
+      fieldType: DYN,
+    };
+  }
   if (fieldType) {
     const obj = lowerObjectReceiver();
     if (
       isJsSourceFile(receiverNode.getSourceFile()) &&
-      !fieldName.startsWith("#") &&
+      !privateName &&
       [...lowerer.classes.values()].some(
         (candidate) =>
           lowerer.isSubclassOf(candidate.def.name, receiverType.className) &&
@@ -14843,6 +14842,7 @@ export function fieldSetStmt(
       const result = varRef(stored.id, stored.type, loc);
       const write: IrStmt = {
         kind: "fieldSet",
+        propertyOp: nativePropertySetOperation(lowerer, blame),
         obj: {
           kind: "unionNarrow",
           unionId,
@@ -15015,6 +15015,7 @@ export function fieldSetStmt(
   if (target.container === "recordOvf") {
     return {
       kind: "recordKeySet",
+      propertyOp: nativePropertySetOperation(lowerer, blame),
       obj: target.obj,
       shapeId: target.shapeId,
       key: { kind: "strLit", value: target.field, type: STRING, loc },
@@ -15026,6 +15027,7 @@ export function fieldSetStmt(
   return target.container === "class"
     ? {
         kind: "fieldSet",
+        propertyOp: nativePropertySetOperation(lowerer, blame),
         obj: target.obj,
         className: target.className,
         field: target.field,
@@ -15034,6 +15036,7 @@ export function fieldSetStmt(
       }
     : {
         kind: "recordSet",
+        propertyOp: nativePropertySetOperation(lowerer, blame),
         obj: target.obj,
         shapeId: target.shapeId,
         field: target.field,

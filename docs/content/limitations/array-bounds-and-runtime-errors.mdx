@@ -2,6 +2,8 @@ Typed-array reads at an index that is not an integer in the array's range return
 
 Ordinary arrays track holes separately from present `undefined` values. Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can grow the array, and length growth creates holes.
 
+Borrowed mutating `Array.prototype` methods on generic array-like objects reject phases that require more than one million iterations with a catchable `Error`. Argument coercions and completed earlier phases keep their effects. Empty ranges and other bounded operations remain available even with a large `length`; backed checked arrays and native array views do not have this generic scan limit.
+
 Runtime traps cannot be caught. User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
 
 Deep recursion in Linux and macOS executables throws Node's catchable `RangeError: Maximum call stack size exceeded`, on the main thread, in worker threads, and inside async functions and generators. The depth at which it is thrown differs from Node: the main thread uses the process stack limit (usually 8 MiB), worker threads get an 8 MiB stack, and async functions and generators run on 512 KiB stacks, so native code usually recurses deeper than Node on threads and somewhat less deeply inside async bodies. Recursion inside runtime library operations, such as serializing deeply nested data, is not checked. Windows executables, WASI builds and library builds do not check the stack, and exhausting it there terminates the process.

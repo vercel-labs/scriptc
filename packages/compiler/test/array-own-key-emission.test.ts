@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,8 +40,8 @@ console.log(present([1], 0), replaced([1]));
     expect(body("replaced")).toContain("@scr_arr_has(");
     expect(body("replaced")).toContain("@scr_arr_retain_v(");
 
-    // An unchecked read is statically number but may evaluate to undefined.
-    // Keep its existing refusal instead of turning the key into NaN or zero.
+    // An unchecked read can yield undefined. Its property key must remain
+    // "undefined", distinct from both a numeric zero and NaN.
     await writeFile(
       entry,
       `
@@ -48,11 +49,26 @@ function missing(values: number[], keys: number[], index: number): boolean {
   return Object.hasOwn(values, keys[index]);
 }
 console.log(missing([1], [], 0));
+const values = [1];
+Object.defineProperty(values, "undefined", { value: 2 });
+console.log(missing(values, [], 0));
 `,
     );
-    const missing = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
-    expect(missing.ok).toBe(false);
-    expect(missing.diagnostics.some((d) => d.code === "SC2020")).toBe(true);
+    const missing = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "program"),
+      sanitize: process.env["SCRIPTC_SAN"] === "1",
+    });
+    if (!missing.ok) throw new Error(JSON.stringify(missing.diagnostics));
+    const oracle = spawnSync(process.execPath, [entry], { encoding: "utf8", timeout: 30_000 });
+    const native = spawnSync(missing.binaryPath, { encoding: "utf8", timeout: 30_000 });
+    for (const run of [oracle, native]) {
+      expect(run.error).toBeUndefined();
+      expect(run.signal).toBeNull();
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stderr).toBe("");
+      expect(run.stdout).toBe("false\ntrue\n");
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

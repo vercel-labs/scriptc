@@ -53,6 +53,9 @@ typedef struct {
     size_t type_key_len;
     ScrDyn *(*materialize)(void *);
     void (*commit)(void *, const ScrDyn *);
+    const void *ops;
+    const ScrDynNativeObjectOps *native_object;
+    unsigned view; /* same array/record/class tags as ScrDynTypedRefRecipe */
     bool traced;
   } typed;
 } ScrMessageNode;
@@ -229,6 +232,10 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     node->typed.type_key_len = input->v.typed_ref.type_key_len;
     node->typed.materialize = input->v.typed_ref.materialize;
     node->typed.commit = input->v.typed_ref.commit;
+    node->typed.ops = input->v.typed_ref.array;
+    node->typed.native_object = input->v.typed_ref.native_object;
+    node->typed.view = !node->typed.ops ? 0 : input->v.typed_ref.klass ? 3
+        : input->v.typed_ref.record ? 2 : 1;
     node->typed.traced = input->v.typed_ref.traced;
     if (getenv("SCRIPTC_PUBLISH_TRACE"))
       fprintf(stderr, "scriptc: published %.*s shared by reference\n", (int)node->typed.type_key_len,
@@ -403,7 +410,7 @@ static bool scr_publish_container_ok(const ScrDyn *d) {
   if (d->prototype || d->symbol_properties || d->symbol_keys || d->copied_from_native) return false;
   if (!scr_dyn_is_frozen(d)) return false;
   if (d->kind == SCR_DYN_ARR) return d->v.arr.properties == NULL;
-  if (d->null_proto || d->v.obj.source_identity || d->v.obj.source_access) return false;
+  if (d->null_proto || d->v.obj.source_identity || d->v.obj.source_access || d->v.obj.class_name) return false;
   for (size_t i = 0; i < d->v.obj.len; i++) {
     const ScrDynEntry *e = &d->v.obj.entries[i];
     if (e->accessor || !e->enumerable) return false;
@@ -629,6 +636,15 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
       values[i] = (node->typed.traced ? scr_dyn_new_typed_ref_traced : scr_dyn_new_typed_ref)(
           node->typed.ptr, node->typed.retain, node->typed.release, node->typed.type_key,
           node->typed.type_key_len, node->typed.materialize, node->typed.commit);
+      /* Share immutable operation tables, never the sender's cached view.
+       * Dropping these hooks would route live operations through a snapshot. */
+      if (node->typed.view == 1) {
+        if (!scr_dyn_typed_ref_bind_array(values[i], node->typed.ops)) goto done;
+      } else if (node->typed.view == 2)
+        scr_dyn_typed_ref_bind_record(values[i], node->typed.ops);
+      else if (node->typed.view == 3)
+        scr_dyn_typed_ref_bind_class(values[i], node->typed.ops);
+      scr_dyn_typed_ref_bind_native_object(values[i], node->typed.native_object);
       break;
     }
     if (!values[i] || scr_exc_pending()) goto done;

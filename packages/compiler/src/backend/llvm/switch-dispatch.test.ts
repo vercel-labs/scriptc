@@ -13,7 +13,7 @@ function emit(type: IrType, tests: (IrExpr | null)[], pointerBits: 32 | 64 = 64)
 function emitWith(disc: IrExpr, tests: (IrExpr | null)[], pointerBits: 32 | 64 = 64): string {
   const type = disc.kind === "varRef" ? disc.type : F64;
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -151,7 +151,7 @@ test("long string labels select by their first word and confirm the rest inline"
 function emitLlvmModuleFor(labels: string[]): string {
   const value: IrExpr = { kind: "varRef", localId: "value", type: STRING, loc };
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [

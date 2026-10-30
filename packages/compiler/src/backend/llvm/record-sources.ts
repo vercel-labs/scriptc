@@ -13,9 +13,3 @@ export function recordSourceFieldOrder(shape: IrRecordShape): string[] {
   const listed = new Set(order);
   return [...order, ...shape.fields.map((f) => f.name).filter((name) => !listed.has(name))];
 }
-
-/** Closed declared-field layouts: the shapes a checked conversion can keep
- * an undeclared-key source for. */
-export function recordMayKeepSource(shape: IrRecordShape): boolean {
-  return !shape.tuple && !shape.indexValue && shape.fields.length > 0;
-}

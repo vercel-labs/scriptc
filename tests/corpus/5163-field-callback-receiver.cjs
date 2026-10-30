@@ -48,3 +48,25 @@ const fns = [
   },
 ];
 console.log(fns[0]());
+
+// Reflecting a base prototype makes its live slots authoritative, even if
+// presence was lowered before the later body that exposes the prototype.
+class PresenceBase { inherited() { return 1; } }
+class PresenceChild extends PresenceBase { own() { return 2; } }
+const presenceChild = new PresenceChild();
+let presenceReads = 0;
+function presenceReceiver() { presenceReads++; return presenceChild; }
+function reportPresence(value, key) {
+  console.log('inherited' in value, key in value, !('inherited' in value), 'own' in value);
+}
+reportPresence(presenceReceiver(), 'inherited');
+function exposeBase() { return Object.getPrototypeOf(new PresenceBase()); }
+const exposedBase = exposeBase();
+const inheritedKey = ['inherited'].join('');
+delete exposedBase[inheritedKey];
+reportPresence(presenceReceiver(), inheritedKey);
+exposedBase[inheritedKey] = 3;
+reportPresence(presenceReceiver(), inheritedKey);
+Object.setPrototypeOf(presenceChild, null);
+reportPresence(presenceReceiver(), inheritedKey);
+console.log('presence reads', presenceReads);

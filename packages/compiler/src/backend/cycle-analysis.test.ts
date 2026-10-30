@@ -21,7 +21,7 @@ import { computeTraced as llvmTraced } from "./llvm/shapes.js";
 const loc = { file: "cycles.ts", start: 0, end: 1 };
 function module(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", locals: [], params: [], returnType: VOID, body: [], loc }],
@@ -90,6 +90,33 @@ test("removes an entire acyclic dependency chain to a fixed point", () => {
   check(mod, []);
 });
 
+test("checked record metadata makes scalar and empty records cycle-capable before allocation", () => {
+  const mod = module();
+  mod.records = [
+    shape("scalar", [F64]),
+    shape("empty", []),
+    shape("holder", [ref("scalar")]),
+    shape("unexposed", [F64]),
+    { ...shape("tuple", [F64]), tuple: true },
+    { ...shape("indexed", []), indexValue: F64 },
+  ];
+  mod.unions = [{ id: "maybe", arms: [ref("scalar"), { kind: "nullT" }] }];
+  for (const id of ["scalar", "empty", "tuple", "indexed"])
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      expr: { kind: "dynFrom", value: value(ref(id)), type: DYN, loc },
+      loc,
+    });
+  checkExact(mod, ["record:scalar", "record:empty", "record:holder"], ["maybe"]);
+  expect(explainCycle(mod, "record:empty")).toEqual({
+    kind: "intrinsic",
+    steps: [],
+    owner: "record:empty",
+    field: "<metadata>",
+    holds: "dyn",
+  });
+});
+
 test("retains mutual cycles but not the shapes that merely hold them", () => {
   const mod = module();
   mod.records = [
@@ -112,6 +139,28 @@ test("a holder that reaches an intrinsic reference stays traced", () => {
   ];
   // A closure can capture anything, including `outer`.
   check(mod, ["record:outer", "record:a", "record:b"]);
+});
+
+test("scalar arrays keep readonly holders and union arms traceable through named properties", () => {
+  const mod = module();
+  mod.records = [
+    shape("numbers", [arrayOf(F64)]),
+    shape("strings", [arrayOf(STRING)]),
+    shape("nested", [arrayOf(arrayOf(F64))]),
+    shape("outer", [ref("numbers")]),
+    shape("leaf", [F64, STRING]),
+  ];
+  mod.unions = [{ id: "array", arms: [arrayOf(F64), { kind: "nullT" }] }];
+  // No post-construction field writes are needed: the mutable descriptor
+  // owner belongs to the array, independently of its containing field.
+  checkExact(mod, ["record:numbers", "record:strings", "record:nested", "record:outer"], ["array"]);
+  expect(explainCycle(mod, "record:numbers")).toEqual({
+    kind: "intrinsic",
+    steps: [],
+    owner: "record:numbers",
+    field: "field0",
+    holds: "array",
+  });
 });
 
 test("tracks cycles through unions, array elements and map values", () => {
@@ -237,7 +286,7 @@ test("removes a long alternating shape/union chain regardless of definition orde
   const size = 6000;
   mod.records = Array.from({ length: size }, (_, i) =>
     shape(`r${i}`, [
-      arrayOf({ kind: "union", unionId: `u${i}` }),
+      setOf({ kind: "union", unionId: `u${i}` }),
       mapOf({ kind: "union", unionId: `u${i}` }, { kind: "union", unionId: `u${i}` }),
     ]),
   );
@@ -260,7 +309,7 @@ test("removing one dependency keeps other branches, cycles, and intrinsic refere
     shape("intrinsic", [ref("leaf"), { kind: "caught" }]),
     shape("pruned", [mapOf(ref("leaf"), arrayOf(ref("leaf")))]),
   ];
-  check(mod, ["record:cycle", "record:intrinsic"]);
+  check(mod, ["record:cycle", "record:intrinsic", "record:pruned"]);
 });
 
 test("hierarchies and unions participate in the same dependency graph", () => {
@@ -675,7 +724,9 @@ test("types that can become checked-dynamic capsules are mutable", () => {
     expr: { kind: "dynFrom", value: value(funcOf([], ref("box"))), type: DYN, loc },
     loc,
   });
-  checkExact(holder, ["object:Tree"], ["link"]);
+  // The exposed record can own a dynamic metadata bag independently of
+  // its physical field, including a back-reference from an extra property.
+  checkExact(holder, ["object:Tree", "record:box"], ["link"]);
   const logged = tree([dynamicStore]);
   logged.functions[0]!.body.push({
     kind: "exprStmt",
@@ -723,9 +774,9 @@ test("ProgramLifetime hierarchies are leaves: never traced and never closing a c
   check(mod, ["object:Node", "object:Name", "object:Sym", "object:Scope", "record:holder"]);
   // With it, Node and Sym are never freed: edges into them cannot close a
   // garbage cycle, and the collector never walks their fields. Only the
-  // mortal Scope cycle remains.
+  // mortal Scope cycle and holder's mutable array properties remain.
   mod.contracts = { programLifetime: ["Node", "Sym"] };
-  check(mod, ["object:Scope"]);
+  check(mod, ["object:Scope", "record:holder"]);
 });
 
 test("explanations name a cycle through a mutable edge, or the intrinsic field reached", () => {
@@ -754,16 +805,14 @@ test("explanations name a cycle through a mutable edge, or the intrinsic field r
     field: "field0",
     holds: "func",
   });
-  // Without writes, only the array keeps its cycle: containers are mutable.
+  // An array's named properties can point back even without indexed writes.
   expect(explainCycle(mod, "record:a")).toBeNull();
   expect(explainCycle(mod, "record:items")).toEqual({
-    kind: "cycle",
-    steps: [
-      {
-        from: "record:items",
-        label: { kind: "field", field: "field0", mutable: true, via: "array" },
-      },
-    ],
+    kind: "intrinsic",
+    steps: [],
+    owner: "record:items",
+    field: "field0",
+    holds: "array",
   });
   expect(explainCycle(mod, "record:missing")).toBeNull();
 });

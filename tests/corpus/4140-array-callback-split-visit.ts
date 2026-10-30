@@ -1,6 +1,6 @@
 // Inline array callbacks over plain element types: a present value reaches
-// the callback as the element itself, while holes and present undefined
-// still reach it as undefined. Pins arguments, mutation during iteration,
+// the callback as the element itself, while slow visits perform an ordinary
+// property read. Pins arguments, mutation during iteration,
 // captured bindings, exceptions, and nested callbacks on both paths.
 interface Item {
   id: number;
@@ -131,4 +131,56 @@ describe("nested", () =>
 );
 describe("nested-reduce", () =>
   items.reduce((acc, outer) => acc + items.filter((inner) => inner.id <= outer.id).length, 0),
+);
+
+// A missing own index still performs one Get before the split callback.
+const inherited: number[] = [];
+inherited.length = 2;
+const inheritedView = inherited as unknown as Record<string, unknown>;
+const inheritedPrototype: Record<string, unknown> = JSON.parse("{}");
+Object.setPrototypeOf(inheritedPrototype, Array.prototype);
+let getterCalls = 0;
+Object.defineProperty(inheritedPrototype, "0", {
+  configurable: true,
+  get(): number {
+    getterCalls++;
+    inherited[1] = 20;
+    return 7;
+  },
+});
+Object.setPrototypeOf(inheritedView, inheritedPrototype);
+let callbackCalls = 0;
+const inheritedIndex = inherited.findIndex((value, index) => {
+  callbackCalls++;
+  if (index === 0) inherited[1] = 30;
+  return value === 30;
+});
+console.log("split-getter", inheritedIndex, getterCalls, callbackCalls);
+const getterFailure: unknown = JSON.parse('{"reason":"split getter"}');
+Object.defineProperty(inheritedPrototype, "0", {
+  configurable: true,
+  get(): number {
+    getterCalls++;
+    throw getterFailure;
+  },
+});
+try {
+  inherited.findIndex((value) => {
+    callbackCalls++;
+    return value === 7;
+  });
+} catch (error) {
+  console.log("split-getter-throw", error === getterFailure, getterCalls, callbackCalls);
+}
+
+// Filter must keep the pre-callback value on both native and optional branches.
+const missingItems: Item[] = [];
+const filterSource: Item[] = [missingItems[4], { id: 11, tag: "before" }];
+const filterSaved = filterSource.filter((_value, index): boolean => {
+  filterSource[index] = { id: 99, tag: "after" };
+  return true;
+});
+console.log(
+  "split-filter-capture", filterSaved[0] === undefined, filterSaved[1]!.id,
+  filterSource[0]!.id, filterSource[1]!.id,
 );

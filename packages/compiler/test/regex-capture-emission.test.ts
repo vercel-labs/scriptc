@@ -74,6 +74,37 @@ for (const s of ["v1.2", "x"]) {
   expect(calls(llvm, "scr_regex_match")).toHaveLength(0);
 });
 
+test("numeric capture reads keep ordinary property access after the result escapes", async () => {
+  const llvm = await emit(`
+function read(): void {
+  const match = /(\\d+)/.exec("12");
+  if (match !== null) {
+    const alias = match;
+    console.log(alias[1]);
+    console.log(Number(match[1]));
+  }
+}
+read();
+`);
+  expect(calls(llvm, "scr_regex_exec_spans")).toHaveLength(0);
+  expect(calls(llvm, "scr_regex_group_number")).toHaveLength(0);
+  expect(calls(llvm, "scr_arr_property_get").length).toBeGreaterThan(0);
+});
+
+test("lazy numeric captures retain the absent-slot property read", async () => {
+  const llvm = await emit(`
+function read(): void {
+  const match = /(a)?b/.exec("b");
+  if (match !== null) console.log(Number(match[1]), Number(match[5]));
+}
+read();
+`);
+  expect(calls(llvm, "scr_regex_exec_spans")).toHaveLength(1);
+  expect(calls(llvm, "scr_regex_group_number")).toHaveLength(2);
+  expect(calls(llvm, "scr_arr_has")).toHaveLength(2);
+  expect(calls(llvm, "scr_arr_property_get").length).toBeGreaterThanOrEqual(2);
+});
+
 test("chains of one-character global replacements fuse into one pass", async () => {
   const llvm = await emit(`
 function escape(text: string): string {

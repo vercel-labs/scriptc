@@ -1,5 +1,6 @@
 import {
   arrayOf,
+  mapOf,
   BOOL,
   F64,
   STRING,
@@ -244,12 +245,12 @@ export function backendAnalysisCases(): BackendAnalysisCase[] {
     { id: "recursive", arms: [record("cycle"), { kind: "nullT" }] },
     { id: "acyclic", arms: [record("chain"), F64] },
   ];
-  // `outer` holds the cycle but nothing reaches back to it, so only the
-  // cycle's own component is traced (cycle-analysis.ts).
+  // Array metadata can point back at its owner even when indexed values do
+  // not. The containing record is therefore intrinsically cycle-capable.
   cases.push({
     name: "shape and union fixed point",
     module: graph,
-    shapes: ["record:cycle"],
+    shapes: ["record:outer", "record:cycle"],
     unions: ["recursive"],
   });
   const hierarchy = module();
@@ -329,7 +330,7 @@ export function backendAnalysisCases(): BackendAnalysisCase[] {
   alternating.records = Array.from({ length }, (_, i) => ({
     id: `r${i}`,
     fields: [
-      { name: "next", type: arrayOf({ kind: "union" as const, unionId: `u${i}` }) },
+      { name: "next", type: mapOf(STRING, { kind: "union" as const, unionId: `u${i}` }) },
       { name: "again", type: { kind: "union" as const, unionId: `u${i}` } },
     ],
   }));
@@ -344,12 +345,12 @@ export function backendAnalysisCases(): BackendAnalysisCase[] {
     unions: [],
   });
   // Constructor-only references are proven acyclic (cycle-analysis.ts), so
-  // the cyclic branch closes through an array edge, which is always mutable.
+  // the cyclic branch closes through a map edge, which is always mutable.
   // `outer` only holds that cycle, so it stays untraced like the leaf.
   const branch = module();
   branch.records = [
     { id: "leaf", fields: [{ name: "value", type: F64 }] },
-    { id: "cycle", fields: [{ name: "next", type: arrayOf(record("cycle")) }] },
+    { id: "cycle", fields: [{ name: "next", type: mapOf(STRING, record("cycle")) }] },
     {
       id: "outer",
       fields: [

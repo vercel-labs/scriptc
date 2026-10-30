@@ -121,6 +121,13 @@ void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn) {
 bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
   size_t *rc = obj;
   if (*rc == SIZE_MAX || ctx->refusal) return false;
+  /* Thread-local descriptors and source bags have no published form.
+   * Refuse before marking so rollback preserves metadata and native slots. */
+  const char *refusal = scr_native_publication_refusal(obj);
+  if (refusal) {
+    scr_pub_refuse(ctx, refusal);
+    return false;
+  }
   if (ctx->logged == ctx->log_cap)
     ctx->log = scr_pub_grow(ctx->log, &ctx->log_cap, sizeof *ctx->log, ctx->log_inline);
 #ifdef SCR_RC_AUDIT
@@ -432,14 +439,16 @@ void scr_publish(void *root, ScrPubFn fn) {
     /* Close the candidate buffer slots the walk cleared, before anything
      * can buffer or collect again: no pass may visit a published object. */
     if (ctx.taken) scr_cyc_pub_fill();
-    /* Only dyn containers, the RC audit and LeakSanitizer need each object. */
+    /* Ordinary integrity entries can retire only after publication
+     * commits: the published referent now owns the cross-thread fact. */
 #if defined(SCR_RC_AUDIT) || defined(SCR_LSAN_IMMORTAL)
     size_t each = ctx.logged;
 #else
-    size_t each = ctx.dyns ? ctx.logged : 0;
+    size_t each = ctx.dyns || scr_native_integrity_active() ? ctx.logged : 0;
 #endif
     for (size_t i = 0; i < each; i++) {
       void *obj = scr_pub_log_obj(&ctx.log[i]);
+      scr_native_integrity_forget(obj);
       if (ctx.log[i].obj & SCR_PUB_DYN) scr_dyn_release(scr_dyn_freeze(obj));
 #ifdef SCR_RC_AUDIT
       scr_pub_audit_forget(ctx.kinds[i]);
@@ -482,64 +491,6 @@ static void scr_pub_throw(const char *fmt, const char *a, const char *b) {
 
 void scr_throw_published_field(const char *prop, const char *owner) {
   scr_pub_throw("Cannot assign to read only property '%s' of object '#<%s>'", prop, owner);
-}
-
-static void scr_pub_index_text(double index, char *out, size_t size) {
-  char buf[64];
-  size_t n = scr_f64_to_str(index, buf);
-  if (n > size - 1) n = size - 1;
-  memcpy(out, buf, n);
-  out[n] = 0;
-}
-
-/* op: 0 index write, 1 push (n = argument count), 2 pop, 3 length write,
- * 4 unshift (n = argument count), 5 delete, 6 shift, 7 other in-place
- * rewrites (splice, reverse, fill, copyWithin, sort). Returns false when
- * Node's operation would not write the frozen array at all (it then is not
- * an error: e.g. reversing an empty array). */
-bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
-  static const char length[] = "Cannot assign to read only property 'length' of object '[object Array]'";
-  char text[64];
-  size_t len = a->len;
-  switch (op) {
-  case 0:
-    scr_pub_index_text(index, text, sizeof text);
-    if (index >= 0 && index < (double)len && index == (double)(size_t)index)
-      scr_pub_throw("Cannot assign to read only property '%s' of object '[object Array]'%s", text, "");
-    else scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 1:
-    if (n == 0) break;
-    scr_pub_index_text((double)len, text, sizeof text);
-    scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 2:
-  case 6:
-    if (len == 0) break;
-    if (op == 6 && len > 1) {
-      scr_pub_throw("Cannot assign to read only property '0' of object '[object Array]'%s%s", "", "");
-      return true;
-    }
-    scr_pub_index_text((double)(len - 1), text, sizeof text);
-    scr_pub_throw("Cannot delete property '%s' of [object Array]%s", text, "");
-    return true;
-  case 3: break;
-  case 4:
-    if (n == 0) break;
-    scr_pub_index_text(len ? (double)len + n - 1 : 0, text, sizeof text);
-    scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 5:
-    scr_pub_index_text(index, text, sizeof text);
-    scr_pub_throw("Cannot delete property '%s' of [object Array]%s", text, "");
-    return true;
-  default:
-    if (len == 0) return false;
-    scr_pub_throw("Cannot assign to read only property '0' of object '[object Array]'%s%s", "", "");
-    return true;
-  }
-  scr_throw_error_msg(SCR_ERR_TYPE, length, sizeof length - 1);
-  return true;
 }
 
 void scr_throw_published_collection(bool set) {

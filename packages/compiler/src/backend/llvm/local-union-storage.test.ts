@@ -82,7 +82,7 @@ function fixture(): IrModule {
     ],
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [{ id: "optional", arms: [STRING, UNDEFINED_T] }],
@@ -359,7 +359,7 @@ test("number bindings of optional reads and `??` chains stay in stack storage", 
   });
   const zero: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [{ id: "maybe", arms: [F64, UNDEFINED_T] }],

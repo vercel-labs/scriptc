@@ -7,7 +7,7 @@ const node = { kind: "object" as const, className: "Node" };
 const kids = { kind: "array" as const, elem: node };
 
 const mod: IrModule = {
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: loc.file,
   entry: "main",
   functions: [
@@ -60,6 +60,9 @@ test("publication walkers mark and push inline, with the runtime for the rest", 
   expect(fn).toContain("icmp ult i64 %mrc, 4294967294");
   expect(fn).toContain("getelementptr inbounds { ptr, i32, i32 }, ptr %mlog, i64 %mlogged");
   expect(fn).toContain("store i64 -1, ptr %o");
+  expect(fn).toContain("%mmetadata = call ptr @scr_native_publication_refusal(ptr %o)");
+  expect(fn).toContain("%mplain = icmp eq ptr %mmetadata, null");
+  expect(fn).toContain("br i1 %mokattrs, label %mfast, label %mslow");
   // Anything else goes through scr_pub_mark.
   expect(fn).toMatch(/call zeroext i1 @scr_pub_mark\(ptr %ctx, ptr %o, i1 (true|false), i32 4\)/);
   // A string is a leaf, marked at once; other references go on the stack,
@@ -81,6 +84,8 @@ test("32-bit walkers log the count without the 64-bit escapes", () => {
   const fn = walker(emitLlvmModule(mod, { pointerBits: 32, objectAudit: false }));
   expect(fn).not.toContain("4294967294");
   expect(fn).toContain("getelementptr inbounds { ptr, i32, i32 }, ptr %mlog, i32 %mlogged");
+  expect(fn).toContain("%mmetadata = call ptr @scr_native_publication_refusal(ptr %o)");
+  expect(fn).toContain("br i1 %mokattrs, label %mfast, label %mslow");
 });
 
 test("walkers of classes with more than ten pushed fields keep their value names distinct", () => {

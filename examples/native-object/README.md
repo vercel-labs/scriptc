@@ -15,4 +15,4 @@ $ ./app-ld
 
 `cc` uses the C compiler as a linker driver. `ld` links the same precompiled runtime objects directly with the selected Apple SDK. The object defines `main`; it is a complete program object, not a library to load into another process. Use `scriptc build --lib --profile ...` for a host-callable static library.
 
-The external object ABI is experimental. Always consume the runtime pack at the exact `runtime_pack.version` reported by the same scriptc installation. The object requires `scr_runtime_abi_v22`, so a mismatched runtime fails during the link instead of starting with an incompatible ABI.
+The external object ABI is experimental. Always consume the runtime pack at the exact `runtime_pack.version` reported by the same scriptc installation. The object requires `scr_runtime_abi_v24`, so a mismatched runtime fails during the link instead of starting with an incompatible ABI.

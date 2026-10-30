@@ -8,8 +8,9 @@ import {
   DYN_CLASS_PROPERTIES,
   RUNTIME_STREAM_CLASSES,
   SYMBOL_T,
+  canDynCheckTo,
   classDynViewSupported,
-  isClassOwnEnumerableFieldName,
+  isClassOwnEnumerableField,
   isDirentShape,
   isDynTypedRefType,
   isRefCounted,
@@ -18,7 +19,7 @@ import {
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { type LlClassMeta, classFieldIndex, classStructSym } from "./classes.js";
-import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
+import { llvmCommentText } from "./common.js";
 import {
   FN_ATTRS,
   elemAccess,
@@ -30,44 +31,13 @@ import {
   type ShapeHost,
 } from "./shapes.js";
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
-import type { NullableRefField } from "./nullable-fields.js";
+import {
+  boxClassFieldValue,
+  loadClassFieldValue,
+  readClassFieldValue,
+} from "./class-field-values.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
-
-/** An owned (+1) union value for a nullable-pointer class field slot `p`
- * (the unit arm's immortal instance, or a fresh box around a retained
- * instance). The bridge releases it after boxing. */
-function nullableFieldUnion(
-  host: LlvmEmitterContext,
-  B: BlockBuilder,
-  p: string,
-  nullable: NullableRefField,
-): string {
-  const rc = vAdapters(host.shapeHost, nullable.arm);
-  host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
-  const isNull = B.tmp(),
-    retained = B.tmp(),
-    box = B.tmp(),
-    out = B.tmp();
-  const unit = B.newLabel("nf.u"),
-    ref = B.newLabel("nf.r"),
-    join = B.newLabel("nf.j");
-  B.line(`${isNull} = icmp eq ptr ${p}, null`);
-  B.condBr(isNull, unit, ref);
-  B.startBlock(unit);
-  B.br(join);
-  B.startBlock(ref);
-  B.line(`${retained} = call ptr ${rc.retain}(ptr ${p})`);
-  B.line(
-    `${box} = call ptr @scr_union_new_ref(i32 ${nullable.refTag}, ptr ${retained}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, nullable.arm)})`,
-  );
-  B.br(join);
-  B.startBlock(join);
-  B.line(
-    `${out} = phi ptr [ ${host.unitInstanceRef(nullable.unionId, nullable.unitTag)}, %${unit} ], [ ${box}, %${ref} ]`,
-  );
-  return out;
-}
 
 export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): string {
   if (inner.kind === "dyn") {
@@ -138,6 +108,25 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   return sym;
 }
 
+function streamTypedRefCanCommit(host: LlvmEmitterContext, t: IrType): boolean {
+  // Opaque record children can be boxed exactly, but a whole-view commit
+  // cannot reconstruct them. Declared writes retain their per-key owner.
+  if (
+    t.kind === "record" &&
+    !canDynCheckTo(
+      t,
+      (id) => host.recordsById.get(id),
+      (id) => host.unionsById.get(id),
+    )
+  )
+    return false;
+  return (
+    t.kind === "bytes" ||
+    t.kind === "array" ||
+    (!host.liveViewsReadOnly && (isDynTypedRefType(t) || t.kind === "record"))
+  );
+}
+
 export function streamTypedRefCommitAdapter(
   host: LlvmEmitterContext,
   t: IrType,
@@ -145,7 +134,7 @@ export function streamTypedRefCommitAdapter(
 ): string {
   // Only a runtime store into the view commits: without one in the program,
   // class and record views need no commit (or its checked conversions).
-  if (host.liveViewsReadOnly && (isDynTypedRefType(t) || t.kind === "record")) return "null";
+  if (!streamTypedRefCanCommit(host, t)) return "null";
   if (t.kind === "bytes") {
     const commit = `${snapshot}_commit`;
     const check = host.dyn.dynCheckHelper(t);
@@ -172,37 +161,16 @@ export function streamTypedRefCommitAdapter(
     const commit = `${snapshot}_commit`;
     const check = host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
-    host.declare(`declare void @scr_arr_outline(ptr)`);
-    const lines = [
+    host.declare(`declare void @scr_arr_swap_indexed_storage(ptr, ptr)`);
+    host.resolveThunkDefs.push(
       `define internal void @${commit}(ptr %target, ptr %d) ${FN_ATTRS} { ; commit live stream element ${typeKey(t)}`,
       `entry:`,
       `  %next = call ptr @${check}(ptr %d, ptr null)`,
       `  %missing = icmp eq ptr %next, null`,
       `  br i1 %missing, label %done, label %swap`,
       `swap:`,
-      // Inline slots live in each header's block; move them out first.
-      `  call void @scr_arr_outline(ptr %target)`,
-      `  call void @scr_arr_outline(ptr %next)`,
-    ];
-    const storageMembers = [
-      { name: "len", index: 1, type: host.sizeType },
-      { name: "cap", index: 2, type: host.sizeType },
-      { name: "data", index: SCR_ARR_FIELD.data, type: "ptr" },
-      { name: "present", index: SCR_ARR_FIELD.present, type: "ptr" },
-      { name: "filled", index: SCR_ARR_FIELD.filled, type: "i32" },
-      { name: "ext", index: SCR_ARR_FIELD.ext, type: "ptr" },
-    ];
-    for (const member of storageMembers) {
-      lines.push(
-        `  %target_${member.name}_ptr = getelementptr inbounds %ScrArr, ptr %target, i64 0, i32 ${member.index}`,
-        `  %next_${member.name}_ptr = getelementptr inbounds %ScrArr, ptr %next, i64 0, i32 ${member.index}`,
-        `  %target_${member.name} = load ${member.type}, ptr %target_${member.name}_ptr`,
-        `  %next_${member.name} = load ${member.type}, ptr %next_${member.name}_ptr`,
-        `  store ${member.type} %next_${member.name}, ptr %target_${member.name}_ptr`,
-        `  store ${member.type} %target_${member.name}, ptr %next_${member.name}_ptr`,
-      );
-    }
-    lines.push(
+      // Checked conversion rebuilds indices only; names belong to the target.
+      `  call void @scr_arr_swap_indexed_storage(ptr %target, ptr %next)`,
       `  call void @scr_arr_release(ptr %next)`,
       `  br label %done`,
       `done:`,
@@ -210,7 +178,6 @@ export function streamTypedRefCommitAdapter(
       `}`,
       ``,
     );
-    host.resolveThunkDefs.push(...lines);
     return `@${commit}`;
   }
   if (isDynTypedRefType(t)) {
@@ -255,7 +222,7 @@ export function streamTypedRefCommitAdapter(
     );
     const fields = meta.def.fields.filter(
       (field) =>
-        (isClassOwnEnumerableFieldName(field.name) || symbols.has(field.name)) &&
+        (isClassOwnEnumerableField(field) || symbols.has(field.name)) &&
         !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")),
     );
     for (const [index, field] of fields.entries()) {
@@ -402,7 +369,7 @@ export function streamTypedRefCommitAdapter(
       host.declare(`declare void @scr_dyn_key_delete(ptr, ptr, i1 zeroext)`);
       if (meta.def.tracksOwnFields) {
         host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-        host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
+        host.declare(`declare void @scr_dyn_table_set_data(ptr, ptr, ${host.sizeType}, ptr)`);
       }
       lines.push(
         `  %bag = call ptr @scr_dyn_new_obj()`,
@@ -415,7 +382,10 @@ export function streamTypedRefCommitAdapter(
         `  br label %done`,
         `bag_keys:`,
       );
-      if (meta.def.instancePrototypeHelper || meta.def.prototypeDataHelper) {
+      if (
+        !meta.def.nativePropertyBagHelper &&
+        (meta.def.instancePrototypeHelper || meta.def.prototypeDataHelper)
+      ) {
         host.declare(`declare ptr @scr_dyn_set_prototype(ptr, ptr)`);
         lines.push(
           ...(meta.def.instancePrototypeHelper
@@ -434,15 +404,9 @@ export function streamTypedRefCommitAdapter(
         .forEach((field, index) => {
           if (meta.def.tracksOwnFields)
             lines.push(
-              `  %bag_field${index} = call ptr @scr_dyn_obj_get(ptr %bag, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")})`,
-              `  %bag_present${index} = icmp ne ptr %bag_field${index}, null`,
-              `  br i1 %bag_present${index}, label %bag_field${index}_present, label %bag_field${index}_after`,
-              `bag_field${index}_present:`,
               `  %bag_undefined${index} = call ptr @scr_dyn_undefined()`,
               `  %bag_placeholder${index} = call ptr @scr_dyn_retain_v(ptr %bag_undefined${index})`,
-              `  call void @scr_dyn_obj_set(ptr %bag, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr %bag_placeholder${index})`,
-              `  br label %bag_field${index}_after`,
-              `bag_field${index}_after:`,
+              `  call void @scr_dyn_table_set_data(ptr %bag, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr %bag_placeholder${index})`,
             );
           else
             lines.push(
@@ -468,9 +432,14 @@ export function streamTypedRefCommitAdapter(
         ),
       );
       const { index } = classFieldIndex(meta, DYN_CLASS_PROPERTIES);
+      if (meta.def.nativePropertyBagHelper)
+        host.declare(`declare void @scr_native_property_bag_copy_prototype(ptr, ptr)`);
       lines.push(
         `  %bag_ptr = getelementptr inbounds %${classStructSym(t.className)}, ptr %target, i64 0, i32 ${index}`,
         `  %bag_old = load ptr, ptr %bag_ptr`,
+        ...(meta.def.nativePropertyBagHelper
+          ? [`  call void @scr_native_property_bag_copy_prototype(ptr %bag, ptr %bag_old)`]
+          : []),
         `  store ptr %bag, ptr %bag_ptr`,
         `  call void @scr_dyn_release_v(ptr %bag_old)`,
       );
@@ -592,8 +561,8 @@ export function liveDynUnionRefAdapter(
     B.line(
       `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, arm)}(ptr ${payload}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(armKey)}, ${host.sizeType} ${Buffer.byteLength(armKey, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
     );
-    for (const line of bindLiveArrayOps(host.shapeHost, adapter, boxed)) B.line(line);
-    B.terminate(`ret ptr ${boxed}`);
+    const result = bindLiveArrayOps(host.shapeHost, B, adapter, boxed);
+    B.terminate(`ret ptr ${result}`);
   });
   valueArms.forEach(({ arm }, index) => {
     B.startBlock(valueLabels[index]!);
@@ -651,30 +620,13 @@ export function streamTypedRefBoxValue(
   t: IrType,
   value: string,
 ): string {
-  const boxed = B.tmp();
-  if (
-    t.kind === "union" &&
-    (host.unionsById
-      .get(t.unionId)
-      ?.arms.some((arm) => streamTypedRefEligible(arm) || isDynTypedRefType(arm)) ??
-      false)
-  ) {
-    B.line(`${boxed} = call ptr @${host.liveDynUnionRefAdapter(t)}(ptr ${value})`);
-    return boxed;
-  }
-  if (t.kind === "bytes" || (!streamTypedRefEligible(t) && !isDynTypedRefType(t))) {
-    const valueTy = host.llType(t);
-    B.line(`${boxed} = call ptr @${host.dyn.toDynHelper(t)}(${valueTy} ${value})`);
-    return boxed;
-  }
-  const nested = host.liveDynRefAdapter(t);
-  const rc = vAdapters(host.shapeHost, t);
-  const key = typeKey(t);
-
+  const boxed = B.tmp(),
+    slot = B.tmp();
+  const ty = host.llType(t);
   B.line(
-    `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, t)}(ptr ${value}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${nested.snapshot}, ptr ${nested.commit})`,
+    `${slot} = ${ty === "double" ? `bitcast double ${value} to i64` : ty === "i1" ? `zext i1 ${value} to i64` : `ptrtoint ptr ${value} to i64`}`,
   );
-  for (const line of bindLiveArrayOps(host.shapeHost, nested, boxed)) B.line(line);
+  B.line(`${boxed} = call ptr @${host.dyn.nativeSlotBoxHelper(t)}(i64 ${slot})`);
   return boxed;
 }
 
@@ -685,43 +637,67 @@ export function streamTypedRefMaterializeAdapter(
   const key = typeKey(t);
   const existing = host.liveDynRefAdapters.get(key);
   if (existing) return existing;
-  // The converter depends only on the static type. Intern the complete
-  // graph across roots and union arms so recursive types emit once.
   const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
-  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
-  host.liveDynRefAdapters.set(key, adapter);
-  if (isDynTypedRefType(t)) {
-    const fields = host.classMeta.get(t.className)?.def.fields;
-    if (
-      fields &&
-      !classDynViewSupported(
-        fields,
-        (id) => host.recordsById.get(id),
-        (id) => host.unionsById.get(id),
-      )
-    ) {
-      host.declare(`declare ptr @scr_dyn_class_view_unavailable(ptr)`);
-      adapter.snapshot = "scr_dyn_class_view_unavailable";
-      return adapter;
-    }
+  const meta = isDynTypedRefType(t) ? host.classMeta.get(t.className) : undefined;
+  if (isDynTypedRefType(t) && !meta) {
+    throw new InternalCompilerError(
+      `llvm emitter bug: typed-ref materialize of unknown class ${t.className}`,
+    );
   }
-  // Publish both symbols before their bodies: class-array and callback
-  // converters can request this same adapter while emitting the commit.
-  adapter.commit = `@${snapshot}_commit`;
-  adapter.commit = host.streamTypedRefCommitAdapter(t, snapshot);
+  const shape = t.kind === "record" ? host.recordsById.get(t.shapeId) : undefined;
+  if (t.kind === "record" && !shape) {
+    throw new InternalCompilerError(
+      `llvm emitter bug: stream typed-ref materialize of unknown shape ${t.shapeId}`,
+    );
+  }
+  // Index-signature/listener records keep their source-identity and overflow
+  // walks on the ordinary converter. Other record hooks use snapshot order.
+  const ordinaryRecord =
+    shape?.indexValue ||
+    shape?.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func");
+  const byName = new Map(shape?.fields.map((field) => [field.name, field]));
+  const order = shape?.declaredOrder ?? shape?.fields.map((field) => field.name) ?? [];
+  const inOrder = new Set(order);
+  const recordFields = [
+    ...order.map((name) => byName.get(name)).filter((field) => field !== undefined),
+    ...(shape?.fields.filter((field) => !inOrder.has(field.name)) ?? []),
+  ];
+  const dirent = shape !== undefined && isDirentShape(shape);
+  const unavailable =
+    meta !== undefined &&
+    !classDynViewSupported(
+      meta.def.fields,
+      (id) => host.recordsById.get(id),
+      (id) => host.unionsById.get(id),
+    );
+  const nativeOps = host.nativeObjects.reserveOps(t);
+  const adapter: LlStreamTypedRefAdapter = {
+    snapshot: unavailable ? "scr_dyn_class_view_unavailable" : snapshot,
+    commit: !unavailable && streamTypedRefCanCommit(host, t) ? `@${snapshot}_commit` : "null",
+  };
+  if (!unavailable) {
+    if (t.kind === "array") adapter.arrayOps = `@${snapshot}_ops`;
+    if (shape && !ordinaryRecord && !shape.tuple && !dirent && liveRecordOpsEligible(recordFields))
+      adapter.recordOps = `@${snapshot}_rops`;
+  }
+  if (meta && (!unavailable || nativeOps) && liveClassOpsEligible(meta))
+    adapter.classOps = `@${snapshot}_cops`;
+  if (nativeOps) adapter.nativeObjectOps = nativeOps;
+  // Publish the complete recipe before generating any body. Native reads,
+  // commits and snapshots can recursively box this type and retain its
+  // symbols permanently, including readonly NULL and unavailable views.
+  host.liveDynRefAdapters.set(key, adapter);
+  if (nativeOps) host.nativeObjects.ops(t);
+  if (meta && adapter.classOps) liveClassOps(host, snapshot, meta);
+  if (unavailable) {
+    host.declare(`declare ptr @scr_dyn_class_view_unavailable(ptr)`);
+    return adapter;
+  }
+  host.streamTypedRefCommitAdapter(t, snapshot);
   const B = new BlockBuilder();
 
   if (isDynTypedRefType(t)) {
-    const meta = host.classMeta.get(t.className);
-    if (!meta) {
-      throw new InternalCompilerError(
-        `llvm emitter bug: typed-ref materialize of unknown class ${t.className}`,
-      );
-    }
-    if (liveClassOpsEligible(meta)) {
-      adapter.classOps = `@${snapshot}_cops`;
-      liveClassOps(host, snapshot, meta);
-    }
+    const meta = host.classMeta.get(t.className)!;
     if (meta.hierarchy && meta.children.length) {
       const vtSlot = B.tmp(),
         vt = B.tmp(),
@@ -778,7 +754,12 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`${copied} = call ptr @scr_dyn_copy_property_descriptors(ptr ${out}, ptr ${bag})`);
       B.line(`call void @scr_dyn_release_v(ptr ${copied})`);
     }
-    if (meta.def.instancePrototypeHelper || meta.def.prototypeDataHelper) {
+    if (nativeOps) {
+      host.declare(`declare void @scr_native_object_snapshot_prototype(ptr, ptr, ptr)`);
+      B.line(
+        `call void @scr_native_object_snapshot_prototype(ptr %p, ptr ${nativeOps}, ptr ${out})`,
+      );
+    } else if (meta.def.instancePrototypeHelper || meta.def.prototypeDataHelper) {
       host.declare(`declare ptr @scr_dyn_set_prototype(ptr, ptr)`);
       host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const prototype = B.tmp(),
@@ -796,50 +777,32 @@ export function streamTypedRefMaterializeAdapter(
     }
     for (const field of meta.def.fields.filter(
       (f) =>
-        isClassOwnEnumerableFieldName(f.name) &&
+        isClassOwnEnumerableField(f) &&
+        !meta.def.symbolFields?.some((symbol) => symbol.field === f.name) &&
         !(meta.root.def.name === "%Error" && (f.name === "message" || f.name === "name")),
     )) {
       const afterField = meta.def.tracksOwnFields ? B.newLabel("field.after") : null;
       if (afterField) {
-        host.declare(`declare ptr @scr_dyn_obj_get(ptr, ptr, ${host.sizeType})`);
-        const value = B.tmp(),
+        host.declare(`declare i32 @scr_native_property_bag_facts(ptr, ptr, ${host.sizeType})`);
+        const facts = B.tmp(),
+          data = B.tmp(),
           present = B.tmp(),
           yes = B.newLabel("field.present");
         B.line(
-          `${value} = call ptr @scr_dyn_obj_get(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")})`,
+          `${facts} = call i32 @scr_native_property_bag_facts(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")})`,
         );
-        B.line(`${present} = icmp ne ptr ${value}, null`);
+        B.line(`${data} = and i32 ${facts}, 2`);
+        B.line(`${present} = icmp ne i32 ${data}, 0`);
         B.condBr(present, yes, afterField);
         B.startBlock(yes);
       }
-      const { index } = classFieldIndex(meta, field.name);
-      const fieldPtr = B.tmp();
-      let fieldValue = B.tmp();
+      const boxed = readClassFieldValue(host, B, t.className, field, "%p");
+      pendingSnapshot(host, B, [boxed, out]);
+      const write = afterField ? "scr_dyn_table_set_data" : "scr_dyn_obj_set";
+      host.declare(`declare void @${write}(ptr, ptr, ${host.sizeType}, ptr)`);
       B.line(
-        `${fieldPtr} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
+        `call void @${write}(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
       );
-      if (host.int32Slots.isField(t.className, field.name)) {
-        const raw = B.tmp();
-        B.line(`${raw} = load i32, ptr ${fieldPtr}`);
-        B.line(`${fieldValue} = sitofp i32 ${raw} to double`);
-      } else if (host.inlineUnions.classField(t.className, field.name))
-        fieldValue = loadStructField(B, host.sizeType, fieldPtr, field.type, true);
-      else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
-      if (llFieldType(field.type, false) === "i8") {
-        const boolValue = B.tmp();
-        B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
-        fieldValue = boolValue;
-      }
-      const nullable = host.nullableFields.get(t.className, field.name);
-      if (nullable) fieldValue = nullableFieldUnion(host, B, fieldValue, nullable);
-      const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
-      B.line(
-        `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
-      );
-      if (nullable) {
-        host.declare(`declare void @scr_union_release(ptr)`);
-        B.line(`call void @scr_union_release(ptr ${fieldValue})`);
-      }
       if (afterField) {
         B.br(afterField);
         B.startBlock(afterField);
@@ -847,20 +810,8 @@ export function streamTypedRefMaterializeAdapter(
     }
     for (const symbol of meta.def.symbolFields ?? []) {
       const field = meta.def.fields.find((field) => field.name === symbol.field)!;
-      const { index } = classFieldIndex(meta, symbol.field);
-      const fieldPtr = B.tmp(),
-        rawKey = B.tmp();
-      let fieldValue = B.tmp();
-      B.line(
-        `${fieldPtr} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
-      );
-      const inline = host.inlineUnions.classField(t.className, field.name);
-      if (host.int32Slots.isField(t.className, field.name)) {
-        const raw = B.tmp();
-        B.line(`${raw} = load i32, ptr ${fieldPtr}`);
-        B.line(`${fieldValue} = sitofp i32 ${raw} to double`);
-      } else if (inline) fieldValue = loadStructField(B, host.sizeType, fieldPtr, field.type, true);
-      else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
+      const rawKey = B.tmp();
+      const fieldValue = loadClassFieldValue(host, B, t.className, field, "%p");
       B.line(`${rawKey} = load ptr, ptr @${mangleGlobal(symbol.globalId)}`);
       const key = host.streamTypedRefBoxValue(B, SYMBOL_T, rawKey);
       const afterSymbol =
@@ -871,30 +822,23 @@ export function streamTypedRefMaterializeAdapter(
         const initialized = B.tmp(),
           present = B.newLabel("symbol.present");
         if (meta.def.tracksOwnFields) {
-          host.declare(`declare zeroext i1 @scr_dyn_has_own_computed(ptr, ptr)`);
+          host.declare(`declare zeroext i1 @scr_dyn_table_has_symbol_data(ptr, ptr)`);
           B.line(
-            `${initialized} = call zeroext i1 @scr_dyn_has_own_computed(ptr ${out}, ptr ${key})`,
+            `${initialized} = call zeroext i1 @scr_dyn_table_has_symbol_data(ptr ${out}, ptr ${key})`,
           );
         } else B.line(`${initialized} = icmp ne ptr ${fieldValue}, null`);
         B.condBr(initialized, present, afterSymbol);
         B.startBlock(present);
       }
-      if (llFieldType(field.type, false) === "i8") {
-        const boolValue = B.tmp();
-        B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
-        fieldValue = boolValue;
-      }
-      const symbolNullable = host.nullableFields.get(t.className, field.name);
-      if (symbolNullable) fieldValue = nullableFieldUnion(host, B, fieldValue, symbolNullable);
-      const value = host.streamTypedRefBoxValue(B, field.type, fieldValue);
-      if (symbolNullable) {
-        host.declare(`declare void @scr_union_release(ptr)`);
-        B.line(`call void @scr_union_release(ptr ${fieldValue})`);
-      }
-      host.declare(`declare void @scr_dyn_symbol_key_set(ptr, ptr, ptr)`);
+      const value = boxClassFieldValue(host, B, t.className, field, fieldValue);
+      pendingSnapshot(host, B, [value, key, out]);
+      const write = meta.def.tracksOwnFields
+        ? "scr_dyn_table_set_symbol_data"
+        : "scr_dyn_symbol_key_set";
+      host.declare(`declare void @${write}(ptr, ptr, ptr)`);
       host.declare(`declare void @scr_dyn_release_v(ptr)`);
-      B.line(`call void @scr_dyn_symbol_key_set(ptr ${out}, ptr ${key}, ptr ${value})`);
-      B.line(`call void @scr_dyn_release_v(ptr ${value})`);
+      B.line(`call void @${write}(ptr ${out}, ptr ${key}, ptr ${value})`);
+      if (!meta.def.tracksOwnFields) B.line(`call void @scr_dyn_release_v(ptr ${value})`);
       if (afterSymbol) {
         B.terminate(`br label %${afterSymbol}`);
         B.startBlock(afterSymbol);
@@ -920,19 +864,8 @@ export function streamTypedRefMaterializeAdapter(
     }
     B.terminate(`ret ptr ${out}`);
   } else if (t.kind === "record") {
-    const shape = host.recordsById.get(t.shapeId);
-    if (!shape) {
-      throw new InternalCompilerError(
-        `llvm emitter bug: stream typed-ref materialize of unknown shape ${t.shapeId}`,
-      );
-    }
-    /* Keep the ordinary converter for index-signature/listener records;
-     * their source-identity and overflow walks have extra contracts.
-     * Declared-field records and tuples cover the live stream values. */
-    const ordinary =
-      shape.indexValue ||
-      shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func");
-    if (ordinary) {
+    const shape = host.recordsById.get(t.shapeId)!;
+    if (ordinaryRecord) {
       const out = B.tmp();
       B.line(`${out} = call ptr @${host.dyn.toDynHelper(t)}(ptr %p)`);
       B.terminate(`ret ptr ${out}`);
@@ -956,6 +889,7 @@ export function streamTypedRefMaterializeAdapter(
           host.inlineUnions.record(field.type),
         );
         const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
+        pendingSnapshot(host, B, [boxed, out]);
         B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
       }
       B.terminate(`ret ptr ${out}`);
@@ -964,22 +898,10 @@ export function streamTypedRefMaterializeAdapter(
       host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
       const out = B.tmp();
       B.line(`${out} = call ptr @scr_dyn_new_obj()`);
-      const byName = new Map(shape.fields.map((field) => [field.name, field]));
-      const order = shape.declaredOrder ?? shape.fields.map((field) => field.name);
-      const inOrder = new Set(order);
-      const fields = [
-        ...order.map((name) => byName.get(name)).filter((field) => field !== undefined),
-        ...shape.fields.filter((field) => !inOrder.has(field.name)),
-      ];
-      // Published before the field converters, like the array hooks below.
       // A Dirent row reads through its finished view (the prototype and
       // the non-enumerable %dtype).
-      const dirent = isDirentShape(shape);
-      if (!dirent && liveRecordOpsEligible(fields)) {
-        adapter.recordOps = `@${snapshot}_rops`;
-        liveRecordOps(host, t, snapshot, fields);
-      }
-      for (const field of fields) {
+      if (adapter.recordOps) liveRecordOps(host, t, snapshot, recordFields);
+      for (const field of recordFields) {
         const index = shape.fields.indexOf(field) + 1;
         const fieldPtr = B.tmp();
         B.line(
@@ -1003,6 +925,7 @@ export function streamTypedRefMaterializeAdapter(
           B.startBlock(set);
         }
         const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
+        pendingSnapshot(host, B, [boxed, out]);
         B.line(
           `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
         );
@@ -1019,9 +942,6 @@ export function streamTypedRefMaterializeAdapter(
     }
   } else if (t.kind === "array") {
     const elem = t.elem;
-    // Published before the element converters: a recursive element type
-    // can box this same array type while the bodies below are emitted.
-    adapter.arrayOps = `@${snapshot}_ops`;
     host.declare(`declare ptr @scr_dyn_new_arr()`);
     host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
     host.declare(`declare double @scr_arr_len(ptr)`);
@@ -1060,23 +980,25 @@ export function streamTypedRefMaterializeAdapter(
       B.br(doneLabel);
       B.startBlock(valueLabel);
       let value: string;
-      if (elem.kind === "f64" || elem.kind === "bool") {
-        const valueTy = elem.kind === "f64" ? "double" : "i1";
+      const acc = elemAccess(elem);
+      if (acc === "f64" || acc === "bool") {
+        const valueTy = acc === "f64" ? "double" : "i1";
         host.declare(
-          `declare ${elem.kind === "bool" ? "zeroext i1" : valueTy} @scr_arr_get_${elem.kind}(ptr, double)`,
+          `declare ${acc === "bool" ? "zeroext i1" : valueTy} @scr_arr_get_slot_${acc}(ptr, double)`,
         );
         value = B.tmp();
-        B.line(`${value} = call ${valueTy} @scr_arr_get_${elem.kind}(ptr %p, double ${index})`);
+        B.line(`${value} = call ${valueTy} @scr_arr_get_slot_${acc}(ptr %p, double ${index})`);
       } else {
-        host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+        host.declare(`declare ptr @scr_arr_get_slot_ref(ptr, double)`);
         value = B.tmp();
-        B.line(`${value} = call ptr @scr_arr_get_ref(ptr %p, double ${index}) ; +1`);
+        B.line(`${value} = call ptr @scr_arr_get_slot_ref(ptr %p, double ${index}) ; +1`);
       }
       const boxed = host.streamTypedRefBoxValue(B, elem, value);
-      B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
       if (isRefCounted(elem)) {
         B.line(`call void ${releaseSym(host.shapeHost, elem)}(ptr ${value})`);
       }
+      pendingSnapshot(host, B, [boxed, out]);
+      B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
       B.br(doneLabel);
       B.startBlock(doneLabel);
     });
@@ -1104,8 +1026,9 @@ export function streamTypedRefMaterializeAdapter(
  * to convert exactly one element, so `xs[i]`, `xs[i] = v`, `i in xs`, and
  * iteration on a live array do not rebuild the whole snapshot per access.
  * `get` boxes an element exactly like one step of the snapshot loop; `set`
- * stores only values the element type accepts and otherwise reports false
- * without side effects, leaving the snapshot path to raise its diagnostic. */
+ * returns ScrDynArrayWrite: mismatch=0, stored=1, refused=2. Matching and
+ * conversion may run user code, so pending errors win and converted values
+ * are released before a quiet or throwing post-conversion integrity refusal. */
 function liveArrayOps(
   host: LlvmEmitterContext,
   t: IrType & { kind: "array" },
@@ -1121,10 +1044,10 @@ function liveArrayOps(
   const G = new BlockBuilder();
   const value = G.tmp();
   host.declare(
-    `declare ${acc === "bool" ? "zeroext i1" : valueTy} @scr_arr_get_${acc}(ptr, double)`,
+    `declare ${acc === "bool" ? "zeroext i1" : valueTy} @scr_arr_get_slot_${acc}(ptr, double)`,
   );
   G.line(
-    `${value} = call ${valueTy} @scr_arr_get_${acc}(ptr %p, double %i)${acc === "ref" ? " ; +1" : ""}`,
+    `${value} = call ${valueTy} @scr_arr_get_slot_${acc}(ptr %p, double %i)${acc === "ref" ? " ; +1" : ""}`,
   );
   const boxed = host.streamTypedRefBoxValue(G, elem, value);
   if (isRefCounted(elem)) G.line(`call void ${releaseSym(host.shapeHost, elem)}(ptr ${value})`);
@@ -1133,42 +1056,56 @@ function liveArrayOps(
   const S = new BlockBuilder();
   const fits = S.tmp();
   S.line(`${fits} = call zeroext i1 @${host.dyn.dynMatchHelper(elem)}(ptr %v)`);
-  const store = S.newLabel("live.array.store");
-  const refuse = S.newLabel("live.array.refuse");
-  S.condBr(fits, store, refuse);
-  S.startBlock(refuse);
-  S.terminate(`ret i1 false`);
-  S.startBlock(store);
+  const matched = S.newLabel("live.array.matched");
+  const refused = S.newLabel("live.array.refused");
+  const matchPending = S.tmp();
+  for (const line of host.pendingTestLines(matchPending)) S.line(line.trimStart());
+  S.condBr(matchPending, refused, matched);
+  S.startBlock(refused);
+  S.terminate(`ret i32 2`);
+  S.startBlock(matched);
+  const convert = S.newLabel("live.array.convert");
+  const mismatch = S.newLabel("live.array.mismatch");
+  S.condBr(fits, convert, mismatch);
+  S.startBlock(mismatch);
+  S.terminate(`ret i32 0`);
+  S.startBlock(convert);
   const next = S.tmp();
   S.line(
     `${next} = call ${acc === "bool" ? "zeroext " : ""}${valueTy} @${host.dyn.dynCheckHelper(elem)}(ptr %v, ptr null)`,
   );
-  // A conversion that throws (an accessor on a plain object, say) has
-  // already raised the write's error; report it as handled.
   const pending = S.tmp();
   for (const line of host.pendingTestLines(pending)) S.line(line.trimStart());
-  const write = S.newLabel("live.array.write");
+  const guard = S.newLabel("live.array.guard");
   const failed = S.newLabel("live.array.failed");
-  S.condBr(pending, failed, write);
+  const write = S.newLabel("live.array.write");
+  S.condBr(pending, failed, guard);
+  S.startBlock(guard);
+  host.declare(`declare zeroext i1 @scr_arr_check_set_mode(ptr, double, i1 zeroext)`);
+  const allowed = S.tmp();
+  S.line(`${allowed} = call zeroext i1 @scr_arr_check_set_mode(ptr %p, double %i, i1 %strict)`);
+  S.condBr(allowed, write, failed);
   S.startBlock(failed);
-  S.terminate(`ret i1 true`);
+  // Some failed union conversions still return an owned wrapper.
+  if (isRefCounted(elem)) S.line(`call void ${releaseSym(host.shapeHost, elem)}(ptr ${next})`);
+  S.terminate(`ret i32 2`);
   S.startBlock(write);
   host.declare(
     `declare void @scr_arr_set_${acc}(ptr, double, ${acc === "bool" ? "i1 zeroext" : valueTy})`,
   );
   S.line(`call void @scr_arr_set_${acc}(ptr %p, double %i, ${valueTy} ${next}) ; takes ownership`);
-  S.terminate(`ret i1 true`);
+  S.terminate(`ret i32 1`);
 
   host.resolveThunkDefs.push(
     `define internal ptr @${get}(ptr %p, double %i) ${FN_ATTRS} { ; live element of ${typeKey(t)}`,
     G.render(),
     `}`,
     ``,
-    `define internal zeroext i1 @${set}(ptr %p, double %i, ptr %v) ${FN_ATTRS} { ; live element store into ${typeKey(t)}`,
+    `define internal i32 @${set}(ptr %p, double %i, ptr %v, i1 zeroext %strict) ${FN_ATTRS} { ; live element store into ${typeKey(t)}`,
     S.render(),
     `}`,
     ``,
-    `@${ops} = internal constant { ptr, ptr } { ptr @${get}, ptr @${set} }`,
+    `@${ops} = internal constant { ptr, ptr, ptr, ptr } { ptr @${get}, ptr @${set}, ptr @${host.dyn.nativeSlotBoxHelper(elem)}, ptr @${host.dyn.nativeSlotUnboxHelper(elem)} }`,
     ``,
   );
 }
@@ -1277,15 +1214,15 @@ function liveRecordOps(
   );
 }
 
-/** Compiled classes whose instance views have no prototype object. Runtime
- * classes and JavaScript classes with prototype data answer through their
- * own views. */
+/** Native classes retain declaration facts even when their current
+ * prototype omits unobserved methods or their fields have no dyn view.
+ * Those facts support refusals, not effective-property lookup. */
 function liveClassOpsEligible(meta: LlClassMeta): boolean {
   return (
     !meta.def.runtime &&
     !meta.root.def.runtime &&
-    !meta.def.prototypeDataHelper &&
-    !meta.def.instancePrototypeHelper
+    (!!meta.def.nativePropertyBagHelper ||
+      (!meta.def.prototypeDataHelper && !meta.def.instancePrototypeHelper))
   );
 }
 
@@ -1365,16 +1302,70 @@ export function liveRefView(
   return null;
 }
 
-/** Attach the element or field hooks right after a live capsule is built. */
+/** The capability is borrowed program metadata, so fresh and interned
+ * capsules bind identically without touching their cached materialization. */
+export function bindNativeObjectOps(
+  host: ShapeHost,
+  B: BlockBuilder,
+  ops: string | null | undefined,
+  capsule: string,
+): void {
+  if (!ops) return;
+  host.declare("declare void @scr_dyn_typed_ref_bind_native_object(ptr, ptr)");
+  B.line(`call void @scr_dyn_typed_ref_bind_native_object(ptr ${capsule}, ptr ${ops})`);
+}
+
+/** Attach independent native ownership and optional live-view hooks. */
 export function bindLiveArrayOps(
   host: ShapeHost,
+  B: BlockBuilder,
   adapter: LlStreamTypedRefAdapter,
   capsule: string,
-): string[] {
+): string {
+  bindNativeObjectOps(host, B, adapter.nativeObjectOps, capsule);
   const view = liveRefView(adapter);
-  if (view === null) return [];
-  host.declare(`declare void @${view.bind}(ptr, ptr)`);
-  return [`call void @${view.bind}(ptr ${capsule}, ptr ${view.ops})`];
+  if (view === null) return capsule;
+  if (view.code !== 1) {
+    host.declare(`declare void @${view.bind}(ptr, ptr)`);
+    B.line(`call void @${view.bind}(ptr ${capsule}, ptr ${view.ops})`);
+    return capsule;
+  }
+  host.declare(`declare zeroext i1 @${view.bind}(ptr, ptr)`);
+  host.declare(`declare void @scr_dyn_release_v(ptr)`);
+  const ok = B.tmp(),
+    result = B.tmp();
+  const bound = B.newLabel("bind.array.ok"),
+    fail = B.newLabel("bind.array.fail");
+  const join = B.newLabel("bind.array.join");
+  B.line(`${ok} = call zeroext i1 @${view.bind}(ptr ${capsule}, ptr ${view.ops})`);
+  B.condBr(ok, bound, fail);
+  B.startBlock(fail);
+  B.line(`call void @scr_dyn_release_v(ptr ${capsule})`);
+  B.br(join);
+  B.startBlock(bound);
+  B.br(join);
+  B.startBlock(join);
+  B.line(`${result} = phi ptr [ ${capsule}, %${bound} ], [ null, %${fail} ]`);
+  return result;
+}
+
+/** Generated snapshots own their partial output outside the emitter frame.
+ * A nested bind failure must release that output before propagating pending. */
+function pendingSnapshot(
+  host: LlvmEmitterContext,
+  B: BlockBuilder,
+  owned: readonly string[],
+): void {
+  const pending = B.tmp(),
+    fail = B.newLabel("snapshot.fail"),
+    next = B.newLabel("snapshot.next");
+  for (const line of host.pendingTestLines(pending)) B.line(line.trimStart());
+  B.condBr(pending, fail, next);
+  B.startBlock(fail);
+  host.declare(`declare void @scr_dyn_release_v(ptr)`);
+  for (const value of owned) B.line(`call void @scr_dyn_release_v(ptr ${value})`);
+  B.terminate("ret ptr null");
+  B.startBlock(next);
 }
 
 export function streamFromArrayAdapter(
@@ -1403,17 +1394,17 @@ export function streamFromArrayAdapter(
   let snapshot = `${sym}_materialize`;
   let value: string;
   if (elem.kind === "f64") {
-    host.declare(`declare double @scr_arr_get_f64(ptr, double)`);
+    host.declare(`declare double @scr_arr_get_slot_f64(ptr, double)`);
     value = B.tmp();
-    B.line(`${value} = call double @scr_arr_get_f64(ptr %a, double %i)`);
+    B.line(`${value} = call double @scr_arr_get_slot_f64(ptr %a, double %i)`);
   } else if (elem.kind === "bool") {
-    host.declare(`declare zeroext i1 @scr_arr_get_bool(ptr, double)`);
+    host.declare(`declare zeroext i1 @scr_arr_get_slot_bool(ptr, double)`);
     value = B.tmp();
-    B.line(`${value} = call i1 @scr_arr_get_bool(ptr %a, double %i)`);
+    B.line(`${value} = call i1 @scr_arr_get_slot_bool(ptr %a, double %i)`);
   } else {
-    host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+    host.declare(`declare ptr @scr_arr_get_slot_ref(ptr, double)`);
     value = B.tmp();
-    B.line(`${value} = call ptr @scr_arr_get_ref(ptr %a, double %i) ; +1`);
+    B.line(`${value} = call ptr @scr_arr_get_slot_ref(ptr %a, double %i) ; +1`);
   }
   let boxed: string;
   const valueTy = elem.kind === "f64" ? "double" : elem.kind === "bool" ? "i1" : "ptr";
@@ -1433,12 +1424,20 @@ export function streamFromArrayAdapter(
         `switch i32 ${tagValue}, label %${fallback} [ ${unionRefArms.map(({ tag }, i) => `i32 ${tag}, label %${armLabels[i]}`).join(" ")} ]`,
       );
       unionRefArms.forEach(({ arm, tag }, i) => {
+        B.startBlock(armLabels[i]!);
+        const payload = emitUnionPeek(B, elemNullable, value);
+        // Union chunks need the same live operations as non-union chunks;
+        // snapshot-only boxing loses per-operation writes and partial failures.
+        if (arm.kind !== "bytes" && (streamTypedRefEligible(arm) || isDynTypedRefType(arm))) {
+          const armBoxed = host.streamTypedRefBoxValue(B, arm, payload);
+          B.line(`store ptr ${armBoxed}, ptr ${boxedSlot}`);
+          B.br(join);
+          return;
+        }
         const armKey = typeKey(arm);
         const armSnapshot = `${snapshot}_${tag}`;
         const armCommit = host.streamTypedRefCommitAdapter(arm, armSnapshot);
         const rc = vAdapters(host.shapeHost, arm);
-        B.startBlock(armLabels[i]!);
-        const payload = emitUnionPeek(B, elemNullable, value);
         const armBoxed = B.tmp();
         B.line(
           `${armBoxed} = call ptr ${typedRefConstructor(host.shapeHost, arm)}(ptr ${payload}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(armKey)}, ${host.sizeType} ${Buffer.byteLength(armKey, "utf8")}, ptr @${armSnapshot}, ptr ${armCommit})`,
@@ -1488,7 +1487,7 @@ export function streamFromArrayAdapter(
     B.line(
       `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, elem)}(ptr ${value}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${keyPtr}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${snapshot}, ptr ${commit})`,
     );
-    if (live) for (const line of bindLiveArrayOps(host.shapeHost, live, boxed)) B.line(line);
+    if (live) boxed = bindLiveArrayOps(host.shapeHost, B, live, boxed);
   } else {
     boxed = B.tmp();
     B.line(`${boxed} = call ptr @${host.dyn.toDynHelper(elem)}(${valueTy} ${value})`);

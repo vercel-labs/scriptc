@@ -1,3 +1,4 @@
+import { objectIntegrityAliasOf } from "./object-integrity.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile } from "../../program.js";
@@ -36,6 +37,7 @@ export function registerBuiltinCallableAlias(
   if (!ts.isIdentifier(nameNode) || !init) return false;
   let targetExpr = init;
   while (ts.isParenthesizedExpression(targetExpr)) targetExpr = targetExpr.expression;
+  if (objectIntegrityAliasOf(lowerer, nameNode)) return true;
   if (!ts.isIdentifier(targetExpr)) return false;
   const sourceSymbol = lowerer.resolveValueSymbol(targetExpr);
   const existing = sourceSymbol ? lowerer.staticCallables.get(sourceSymbol) : undefined;

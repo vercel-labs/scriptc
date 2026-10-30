@@ -7,6 +7,7 @@ import { computeMayThrow } from "../packages/compiler/dist/backend/may-throw.js"
 import { computeTraced } from "../packages/compiler/dist/backend/cycle-analysis.js";
 import { validateModule } from "../packages/compiler/dist/ir/validate.js";
 import { F64, VOID } from "../packages/compiler/dist/ir/ir.js";
+import { IR_VERSION } from "../packages/compiler/dist/ir/serialize.js";
 
 const { values } = parseArgs({
   options: {
@@ -69,7 +70,7 @@ for (const size of sizes) {
           },
     ],
   }));
-  const mod = { irVersion: 13, sourceFile: loc.file, entry: "fn0", functions };
+  const mod = { irVersion: IR_VERSION, sourceFile: loc.file, entry: "fn0", functions };
   const records = Array.from({ length: size }, (_, i) => ({
     id: `r${i}`,
     fields: [

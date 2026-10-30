@@ -7,10 +7,15 @@ export class ClassProtocols {
   private implemented: Set<ts.Symbol> | null = null;
   private readonly methods = new Map<string, ts.ClassLikeDeclaration[]>();
   private readonly answers = new Map<ts.Type, boolean>();
+  private readonly mappedViews = new Set<ts.Type>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
     private readonly sources: readonly ts.SourceFile[],
+    private readonly isStdlibFile: (source: ts.SourceFile) => boolean,
+    private readonly integrityIdentitySource: (
+      call: ts.CallExpression,
+    ) => ts.Expression | undefined,
   ) {}
 
   private index(): Set<ts.Symbol> {
@@ -94,8 +99,13 @@ export class ClassProtocols {
       if (expr !== undefined) sites.push({ source: expr, target: contextual(expr) });
     };
     const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node) || ts.isNewExpression(node)) node.arguments?.forEach(flow);
-      else if (ts.isVariableDeclaration(node) && node.type !== undefined) flow(node.initializer);
+      if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+        node.arguments?.forEach(flow);
+        // Integrity mutators return their operand. The checker's readonly
+        // result can hide its class provenance before any binding is typed.
+        const source = ts.isCallExpression(node) ? this.integrityIdentitySource(node) : undefined;
+        if (source) sites.push({ source, target: () => this.checker.getTypeAtLocation(node) });
+      } else if (ts.isVariableDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isPropertyDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isParameter(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isReturnStatement(node)) flow(node.expression);
@@ -231,7 +241,7 @@ export class ClassProtocols {
       const [element] = this.checker.getTypeArguments(type as ts.TypeReference);
       return element !== undefined && this.carriesIdentity(element, marked);
     }
-    if (this.isProgramClassInstance(type)) return true;
+    if (this.isProgramClassInstance(type) || this.mappedViews.has(type)) return true;
     const symbol = type.getSymbol();
     if (symbol === undefined) return false;
     if (marked.has(symbol)) return true;
@@ -257,6 +267,7 @@ export class ClassProtocols {
     if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) return false;
     if (this.checker.getCallSignatures(type).length > 0) return false;
     if (this.checker.getConstructSignatures(type).length > 0) return false;
+    if (this.isReadonlyClassView(type)) return true;
     const symbol = type.getSymbol();
     if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
     const declarations = this.checker.declarationsOf(symbol);
@@ -298,6 +309,13 @@ export class ClassProtocols {
       return from !== undefined && to !== undefined && this.markTarget(from, to, marked);
     }
     if (!this.isStructuralTarget(target)) return false;
+    if (this.isReadonlyClassView(target)) {
+      // Utility aliases share a library symbol across instantiations. Mark
+      // only the view receiving identity; unrelated readonly records stay native.
+      if (this.mappedViews.has(target)) return false;
+      this.mappedViews.add(target);
+      return true;
+    }
     const symbol = target.getSymbol();
     if (symbol === undefined || marked.has(symbol)) return false;
     if (source.getSymbol() === symbol) return false;
@@ -325,6 +343,31 @@ export class ClassProtocols {
     return answer;
   }
 
+  /** Readonly removes private members from the type, not from the value.
+   * A checked view holds both class instances and structural implementations;
+   * neither a copied method record nor nominal class storage can do that. */
+  private isReadonlyClassView(type: ts.Type): boolean {
+    const alias = type.getAliasSymbol();
+    const args = type.getAliasTypeArguments();
+    if (
+      alias?.name !== "Readonly" ||
+      args.length !== 1 ||
+      !this.isProgramClassInstance(args[0]!) ||
+      !this.checker
+        .declarationsOf(alias)
+        .some((decl) => ts.isTypeAliasDeclaration(decl) && this.isStdlibFile(decl.getSourceFile()))
+    )
+      return false;
+    const properties = this.checker.getPropertiesOfType(type);
+    return (
+      properties.length === 0 ||
+      properties.some(
+        (property) =>
+          !isGenericCallableMemberType(this.checker.getTypeOfSymbol(property), this.checker),
+      )
+    );
+  }
+
   private protocol(type: ts.Type): boolean {
     const protocols = this.index();
     const symbol = type.getSymbol();
@@ -338,7 +381,7 @@ export class ClassProtocols {
       )
     )
       return false;
-    if (symbol && protocols.has(symbol)) return true;
+    if (this.mappedViews.has(type) || (symbol && protocols.has(symbol))) return true;
     if (
       !symbol ||
       !this.checker

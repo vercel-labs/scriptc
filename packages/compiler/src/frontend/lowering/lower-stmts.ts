@@ -1,6 +1,12 @@
+import {
+  objectIntegrityAliasOf,
+  objectIntegrityCallableType,
+  lowerObjectIntegrityAliasDecl,
+} from "./builtins/object-integrity.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { isStrictPropertyOperation } from "./expressions/property-strictness.js";
 import { importMetaBindingSource } from "./import-meta.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
 import { isPrivateSplitConsumer } from "./split-consumers.js";
@@ -29,6 +35,7 @@ import { lowerForAwaitBuiltin } from "./lower-async-iteration.js";
 import {
   BOOL,
   BYTES_U8,
+  isClassOwnEnumerableField,
   CAUGHT,
   DYN,
   F64,
@@ -62,7 +69,6 @@ import {
   isCjsJsFile,
   isEsModuleStamp,
   isJsSourceFile,
-  isNodeEsmFile,
   locOf,
   requireSpecOf,
 } from "../program.js";
@@ -121,7 +127,7 @@ import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
-import { genericIfaceBindingKeepsClass } from "./lower-classes.js";
+import { classFieldType, genericIfaceBindingKeepsClass } from "./lower-classes.js";
 import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-stream.js";
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
@@ -860,7 +866,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // TDZ read until the initializing assign completes — JS exactly.
     if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
       return false;
-    let type = lowerer.irTypeOf(decl.name);
+    const integrityMember = objectIntegrityAliasOf(lowerer, decl.name);
+    let type = integrityMember
+      ? objectIntegrityCallableType(integrityMember)
+      : lowerer.irTypeOf(decl.name);
     if (
       isJsSourceFile(decl.getSourceFile()) &&
       !decl.type &&
@@ -2567,7 +2576,7 @@ export function lowerBindingPattern(
             "destructuring with computed keys that do not fold to one property name",
           );
         }
-        const fieldType = info.fields.get(propName);
+        const fieldType = classFieldType(info, propName);
         const getF = fieldType === undefined ? lowerer.findMethodOn(info, `get:${propName}`) : null;
         const setF = fieldType === undefined ? lowerer.findMethodOn(info, `set:${propName}`) : null;
         let value: IrExpr;
@@ -3702,7 +3711,7 @@ function classInstanceRestValue(
     );
   }
   const remaining = info.def.fields.filter(
-    (f) => !f.name.startsWith("#") && !f.name.startsWith("%") && !consumed.has(f.name),
+    (f) => isClassOwnEnumerableField(f) && !consumed.has(f.name),
   );
   for (const f of remaining) {
     if (!restShape.fields.some((rf) => rf.name === f.name)) {
@@ -4222,7 +4231,13 @@ export function lowerVarDecl(
   // calls project onto the declaration's implementation ABI and value
   // reads reuse its interned closure identity.
   if (!isLet && registerOverloadedCallableAlias(lowerer, decl)) return null;
-  if (!isLet && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) return null;
+  if (!isLet && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) {
+    if (ts.isIdentifier(decl.name)) {
+      const member = objectIntegrityAliasOf(lowerer, decl.name);
+      if (member) return lowerObjectIntegrityAliasDecl(lowerer, decl, member);
+    }
+    return null;
+  }
 
   // `const knownBy = (cmd) => ...` — an IMPLICIT-ANY function-value
   // binding in npm-static JS (function-scope bindings register here, in
@@ -5381,35 +5396,6 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   };
 }
 
-function hasUseStrictDirective(statements: readonly ts.Statement[]): boolean {
-  for (const statement of statements) {
-    if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
-      return false;
-    if (statement.expression.text === "use strict") return true;
-  }
-  return false;
-}
-
-function isStrictDelete(node: ts.DeleteExpression): boolean {
-  for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
-    if (ts.isClassDeclaration(parent) || ts.isClassExpression(parent)) return true;
-    if (
-      ts.isFunctionLike(parent) &&
-      parent.body &&
-      ts.isBlock(parent.body) &&
-      hasUseStrictDirective(parent.body.statements)
-    )
-      return true;
-    if (ts.isSourceFile(parent)) {
-      return (
-        hasUseStrictDirective(parent.statements) ||
-        (!isCjsJsFile(parent) && (isNodeEsmFile(parent) || ts.isExternalModule(parent)))
-      );
-    }
-  }
-  return false;
-}
-
 /** Statement-position `delete`: process.env keys → process.envUnset
  * (unsetenv), pure `Record<string, T>` keys → recordKeyDelete (the
  * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
@@ -5502,8 +5488,17 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   ) {
     obj = lowerer.coerceToExpected(obj, DYN);
   }
+  // Native aliases delete through the live referent, preserving property-key
+  // conversion and strict/sloppy refusal instead of the strict storage opcode.
+  if (obj.type.kind === "array" && lowerer.dynConvertible(obj.type))
+    obj = lowerer.coerceInto(target.expression, obj, DYN);
   if (obj.type.kind === "dyn") {
-    const strict = { kind: "boolLit", value: isStrictDelete(expr), type: BOOL, loc } as const;
+    const strict = {
+      kind: "boolLit",
+      value: isStrictPropertyOperation(lowerer, expr),
+      type: BOOL,
+      loc,
+    } as const;
     if (ts.isElementAccessExpression(target)) {
       const key = lowerer.lowerExprExpecting(target.argumentExpression, DYN);
       return {
@@ -5533,7 +5528,14 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   if (obj.type.kind === "record") {
     const shape = lowerer.shapes.get(obj.type.shapeId);
     if (shape?.indexValue && shape.fields.length === 0 && !shape.tuple) {
-      return { kind: "recordKeyDelete", obj, shapeId: obj.type.shapeId, key: lowerKey(), loc };
+      return {
+        kind: "recordKeyDelete",
+        obj,
+        shapeId: obj.type.shapeId,
+        key: lowerKey(),
+        propertyOp: isStrictPropertyOperation(lowerer, expr) ? "delete" : "deleteSloppy",
+        loc,
+      };
     }
     // `delete r.f` of a declared OPTIONAL field (undefined-armed slot)
     // writes the field's ABSENT state: a monomorphic shape cannot remove
@@ -5556,6 +5558,7 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       if (absent) {
         return {
           kind: "recordSet",
+          propertyOp: isStrictPropertyOperation(lowerer, expr) ? "delete" : "deleteSloppy",
           obj,
           shapeId: obj.type.shapeId,
           field: field.name,
@@ -7102,7 +7105,7 @@ function destructuringAssignInto(
         const dfltInit = decoded.defaultInit;
         const dflt = dfltInit;
         const readOf = (targetT: IrType | null): IrExpr => {
-          const fieldType = info.fields.get(fieldName);
+          const fieldType = classFieldType(info, fieldName);
           const getF =
             fieldType === undefined ? lowerer.findMethodOn(info, `get:${fieldName}`) : null;
           const setF =
@@ -7540,6 +7543,7 @@ function lowerAssignTargetInto(
           const value = lowerer.coerceInto(blame, valueOf(field.type), field.type);
           out.push({
             kind: "recordSet",
+            propertyOp: isStrictPropertyOperation(lowerer, t) ? "set" : "setSloppy",
             obj: { kind: "varRef", localId: recv.id, type: obj.type, loc },
             shapeId: recvT.shapeId,
             field: field.name,

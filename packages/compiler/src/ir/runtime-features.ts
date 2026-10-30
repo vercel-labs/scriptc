@@ -1,13 +1,16 @@
-import type { IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } from "./ir.js";
+import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
+  isClassOwnEnumerableField,
+  typeKey,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_EVENT_CLASS,
   RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
 import { everyModuleNode } from "./traverse.js";
+import { computeNativeSetEffects } from "./native-integrity.js";
 
 export interface RuntimeFeatures {
   regex: boolean;
@@ -124,16 +127,23 @@ export function moduleRuntimeFeatures(mod: IrModule): RuntimeFeatures {
   return scanRuntimeFeatures(mod);
 }
 
-/** The module's record shapes and unions by id. */
+/** Named types and class descendants used by generated dynamic views. */
 interface TypeTables {
   records: Map<string, IrRecordShape>;
   unions: Map<string, IrUnionDef>;
+  classes: Map<string, IrClassDef>;
+  children: Map<string, IrClassDef[]>;
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
  * through scr_async_dyn.c: a promise, a function whose result type holds
- * one, or a record, array, tuple, union, Map or Set that holds either. */
+ * one, or a record, class, array, tuple, union, Map or Set that holds either. */
 function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean {
+  if (t.kind === "record" || t.kind === "union" || t.kind === "object") {
+    const key = typeKey(t);
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
   switch (t.kind) {
     case "promise":
       return true;
@@ -147,16 +157,32 @@ function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean
     case "map":
       return boxesPromise(t.key, tables, seen) || boxesPromise(t.value, tables, seen);
     case "record": {
-      if (seen.has(t.shapeId)) return false;
-      seen.add(t.shapeId);
       const shape = tables.records.get(t.shapeId);
       return shape?.fields.some((f) => boxesPromise(f.type, tables, seen)) ?? false;
     }
     case "union": {
-      if (seen.has(t.unionId)) return false;
-      seen.add(t.unionId);
       const def = tables.unions.get(t.unionId);
       return def?.arms.some((a) => boxesPromise(a, tables, seen)) ?? false;
+    }
+    case "object": {
+      const cls = tables.classes.get(t.className);
+      // A base capsule emits exact descendant adapters too. Only reflected
+      // fields are boxed; private storage does not introduce an async call.
+      return (
+        (cls?.fields.some(
+          (field) =>
+            (isClassOwnEnumerableField(field) ||
+              cls.symbolFields?.some((symbol) => symbol.field === field.name)) &&
+            boxesPromise(field.type, tables, seen),
+        ) ??
+          false) ||
+        (tables.children
+          .get(t.className)
+          ?.some((child) =>
+            boxesPromise({ kind: "object", className: child.name }, tables, seen),
+          ) ??
+          false)
+      );
     }
     default:
       return false;
@@ -209,11 +235,29 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
-  const typeTables = (): TypeTables =>
-    (tables ??= {
+  const typeTables = (): TypeTables => {
+    if (tables) return tables;
+    const children = new Map<string, IrClassDef[]>();
+    for (const cls of mod.classes ?? []) {
+      if (!cls.base) continue;
+      const siblings = children.get(cls.base) ?? [];
+      siblings.push(cls);
+      children.set(cls.base, siblings);
+    }
+    return (tables = {
       records: new Map((mod.records ?? []).map((r) => [r.id, r])),
       unions: new Map((mod.unions ?? []).map((u) => [u.id, u])),
+      classes: new Map((mod.classes ?? []).map((cls) => [cls.name, cls])),
+      children,
     });
+  };
+  if (
+    (stopAt === undefined || stopAt === "dynAsync") &&
+    computeNativeSetEffects(mod).boxedTypes.some((type) =>
+      boxesPromise(type, typeTables(), new Set()),
+    )
+  )
+    features.dynAsync = true;
   const expr = (node: IrExpr): boolean => {
     if (node.kind === "libCall") {
       const fn = node.fn;
@@ -311,6 +355,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "dyn.objCreateWithProperties" ||
         fn === "dyn.arrayProtoCall" ||
         fn === "dyn.arrayPrototype" ||
+        fn === "dyn.reflectGet" ||
+        fn === "dyn.bagGet" ||
+        fn === "dyn.getPrototype" ||
+        fn === "dyn.hasKey" ||
+        fn === "dyn.hasKeyComputed" ||
+        fn === "dyn.in" ||
         fn === "dyn.functionApply" ||
         fn === "dyn.builtinMethod"
       )
@@ -427,7 +477,11 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
           )
             features.copying = true;
           break;
+        // A read or presence check can observe an Array.prototype method
+        // without an explicit prototype reference or a subsequent call.
         case "dynInvoke":
+        case "dynKeyGet":
+        case "dynHasKey":
           features.dynInvoke = true;
           break;
         case "awaitExpr":
@@ -641,8 +695,8 @@ export function moduleUsesAssert(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "assert").assert;
 }
 
-/** True when the module contains any dynInvoke node or dyn.defineProps
- * libCall — the link switch that pulls scr_dyn_invoke.c (the prototype-
+/** True when the module dispatches or observes dynamic prototype methods
+ * or defines properties — the link switch that pulls scr_dyn_invoke.c (the prototype-
  * method dispatch on dyn receivers, plus scr_dyn_display and
  * scr_dyn_define_props) into the binary (native-toolchain.ts; the assert gating
  * precedent — dispatch-free binaries keep their exact size class). Same

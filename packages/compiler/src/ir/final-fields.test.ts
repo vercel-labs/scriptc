@@ -39,7 +39,7 @@ const cls = (name: string, fields: string[], base?: string): IrClassDef => ({
   fields: fields.map((field) => ({ name: field, type: STRING })),
 });
 const mod = (classes: IrClassDef[], functions: IrFunction[]): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "final-fields.ts",
   entry: "%main",
   classes,

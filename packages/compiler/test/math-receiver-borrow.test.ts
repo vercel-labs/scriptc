@@ -52,7 +52,17 @@ replaced(buffer, new Uint8Array(1));
     expect(llBody("safe")).toContain("@llvm.floor.f64(");
     expect(llBody("throughCall")).not.toContain("@scr_bytes_retain_v(");
     expect(llBody("replaced")).toContain("@scr_bytes_retain_v(");
-    expect(llBody("readArray")).not.toContain("@scr_arr_retain_v(");
+    // Semantic Get/coercion can invoke user code even when the numeric index
+    // itself is pure. Hold the array through both unwind sites and success.
+    const array = llBody("readArray");
+    const retains = [...array.matchAll(/(%t\d+) = call ptr @scr_arr_retain_v\(/g)];
+    expect(retains).toHaveLength(1);
+    const receiver = retains[0]![1]!;
+    expect(array).toContain(`@scr_arr_property_get(ptr ${receiver},`);
+    expect(array).toContain("@scr_dyn_number_coerce(");
+    expect(
+      array.match(new RegExp(`call void @scr_arr_release\\(ptr ${receiver}\\)`, "g")),
+    ).toHaveLength(3);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -8,6 +8,9 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * seed on `dynCheck` and `awaitExpr` nodes, which throw on validation
  * failure / promise rejection). */
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // Exposed module.children arrays can reject linking or failed-load cleanup.
+  "module.link",
+  "module.fail",
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",
   // node:test's { timeout } range check.
@@ -487,6 +490,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.packPushSpreadIter",
   "dyn.assignAll",
   "dyn.objCreate",
+  "dyn.newClassPrototype",
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.setPrototype",

@@ -4397,7 +4397,7 @@ static ScrClosure *scr_sc_closure(void *fn, ScrPromise *p, ScrArr *chunks) {
   ScrClosure *c = scr_closure_new(fn, 2);
   c->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
   scr_box_set_ref(c->caps[0], scr_promise_retain(p));
-  c->caps[1] = scr_box_new_obj(scr_arr_retain_v, scr_arr_release_v, NULL);
+  c->caps[1] = scr_box_new_obj(scr_arr_retain_v, scr_arr_release_v, scr_arr_trace_v);
   scr_box_set_ref(c->caps[1], scr_arr_retain(chunks));
   return c;
 }

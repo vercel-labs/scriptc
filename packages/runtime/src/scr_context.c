@@ -188,7 +188,11 @@ void scr_context_cleanup(void) {
     fn();
   }
   scr_exc_clear();
-  if (scr_exit_frees()) scr_cyc_context_cleanup();
+  if (scr_exit_frees()) {
+    scr_cyc_context_cleanup();
+    scr_record_source_trim_empty();
+  }
+  scr_native_integrity_reset();
 }
 #else
 bool scr_context_is_main(void) { return true; }

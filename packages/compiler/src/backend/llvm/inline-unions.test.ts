@@ -68,7 +68,24 @@ test("scalar-union record fields store their tag and bits inline", async () => {
   // A stored record still allocates, but its fields own nothing.
   const keep = body(ir, "keep");
   expect(keep).toMatch(/call ptr @sc_rnew_/);
-  expect(keep).not.toMatch(/@scr_union_new_/);
+  // A published write snapshots its RHS before admission. Only that
+  // temporary owns a box; the destination still copies tag/bits inline.
+  const boxes = [...keep.matchAll(/(%t\d+) = call ptr @scr_union_new_f64\(/g)];
+  expect(boxes).toHaveLength(1);
+  expect(boxes[0]!.index).toBeGreaterThan(keep.indexOf("@scr_arr_push_many"));
+  const snapshot = new RegExp(
+    `(%t\\d+) = phi ptr \\[ ${boxes[0]![1]},[^\\n]+\\n  store ptr \\1, ptr (%sc_l__x25_native_write_\\d+)`,
+  ).exec(keep);
+  expect(snapshot).not.toBeNull();
+  expect(keep.indexOf("@scr_native_object_check_set")).toBeGreaterThan(snapshot!.index);
+  const cleanup = new RegExp(
+    `(%t\\d+) = load ptr, ptr ${snapshot![2]}\\n  call void @scr_union_release\\(ptr \\1\\)`,
+    "g",
+  );
+  const releases = [...keep.matchAll(cleanup)];
+  expect(releases).toHaveLength(2);
+  expect(releases[0]!.index).toBeGreaterThan(keep.indexOf("@scr_native_object_finish_write"));
+  expect(keep.slice(releases[1]!.index)).toContain("ret double");
   const destroy = /^define internal void @sc_rrelease_r\d+_destroy\([^]*?^}/m.exec(ir)?.[0] ?? "";
   expect(destroy).not.toContain("scr_union_release");
 });
@@ -93,16 +110,31 @@ console.log(probe([1, 2, 3]));
 `;
 
 test("class fields store inline and projected instances live in frame storage", async () => {
-  const ir = emitLlvmModule(await moduleFor(PROBES));
+  const mod = await moduleFor(PROBES);
+  const ir = emitLlvmModule(mod);
   expect(ir).toMatch(/%sc_o_Probe = type \{ i64, \{ i32, i64 \}, \{ i32, i64 \} \}/);
   const probe = body(ir, "probe");
   expect(probe).toMatch(/alloca %sc_o_Probe, align 8/);
   expect(probe).not.toMatch(/@sc_new_Probe/);
   // The constructor argument is a stack copy, not a heap box.
   expect(probe).not.toMatch(/@scr_union_new_/);
-  // Fields the constructor may leave unset start at the undefined tag.
-  expect(probe).toContain("store %sc_o_Probe zeroinitializer");
-  expect(probe).toMatch(/getelementptr inbounds %sc_o_Probe, ptr %\w+, i64 0, i32 2, i32 0/);
+  // Bare declarations define undefined before conditional constructor writes,
+  // so callers no longer need a second zero-initialization pass.
+  const ctor = mod.functions.find((fn) => fn.name === "%Probe.constructor")!;
+  const conditional = ctor.body.findIndex((stmt) => stmt.kind === "if");
+  expect(conditional).toBeGreaterThanOrEqual(0);
+  const definitions = ctor.body.filter((stmt) => stmt.kind === "fieldSet");
+  expect(definitions.map((stmt) => stmt.field)).toEqual(["x", "hit"]);
+  for (const definition of definitions) {
+    expect(ctor.body.indexOf(definition)).toBeLessThan(conditional);
+    expect(definition.propertyOp).toBe("define");
+    const value = definition.value;
+    expect(value.kind).toBe("unionWrap");
+    if (value.kind !== "unionWrap") throw new Error("missing undefined definition");
+    const union = mod.unions!.find((item) => item.id === value.unionId)!;
+    expect(union.arms[value.tag]).toEqual({ kind: "undefinedT" });
+  }
+  expect(probe).not.toContain("store %sc_o_Probe zeroinitializer");
 });
 
 test("only unions of numbers, booleans and unit values store inline", () => {

@@ -705,6 +705,7 @@ static void *scr_rgn_slot_ptr(uint64_t slot) {
 }
 
 static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
+  if (a->ext) scr_rgn_enter(w, a->ext->metadata, SCR_RGN_W_DYN, NULL);
   if (a->elem != SCR_ELEM_REF && a->elem != SCR_ELEM_ARR) return;
   ScrRgnSlotKind k = a->elem == SCR_ELEM_ARR ? (ScrRgnSlotKind){SCR_RGN_W_ARR, NULL}
                                              : scr_rgn_slot_kind(a->ops ? a->ops->release : NULL);
@@ -716,7 +717,6 @@ static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
     if (a->ext->sparse[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->ext->sparse[i].slot), k);
   for (size_t i = 0; i < a->ext->prop_len; i++)
     if (a->ext->props[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->ext->props[i].slot), k);
-  scr_rgn_enter(w, a->ext->metadata, SCR_RGN_W_DYN, NULL);
 }
 
 static void scr_rgn_walk_map(ScrRgnWalk *w, ScrMap *m) {

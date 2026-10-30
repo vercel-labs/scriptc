@@ -11,13 +11,14 @@ import {
   VOID,
 } from "../ir/ir.js";
 import { computeCycleMutability, fieldKey } from "./cycle-mutability.js";
+import { computeRecordMetadataShapes } from "../ir/native-integrity.js";
 
 /** Cycle capability for native code generation.
  * Nodes are shape units and unions; edges are the references their fields
  * and arms can hold (collections flattened into their element, key and
- * value types). Closures, checked values, class values, caught values and
- * promises are INTRINSIC: they can reach anything, so a unit holding one is
- * on a potential cycle. Strings never are.
+ * value types). Arrays, closures, checked values, class values, caught values
+ * and promises are INTRINSIC: their properties can reach anything, so a unit
+ * holding one is on a potential cycle. Strings never are.
  *
  * An edge is IMMUTABLE when it can only be stored while its owner is still
  * under construction (cycle-mutability.ts derives this from the IR): such an
@@ -40,7 +41,7 @@ export function computeTraced(mod: IrModule): { shapes: Set<string>; unions: Set
 }
 
 /** Values that can reference any object. */
-export type IntrinsicKind = "func" | "dyn" | "classval" | "promise" | "caught";
+export type IntrinsicKind = "array" | "func" | "dyn" | "classval" | "promise" | "caught";
 
 /** Why an edge of the cycle graph exists (explanations only). */
 export type CycleEdgeLabel =
@@ -66,7 +67,7 @@ export type CycleExplanation =
    * explained unit back to it. */
   | { kind: "cycle"; steps: CycleStep[] }
   /** The unit reaches a field that holds a value able to reference any
-   * object (a function, a dynamic or caught value, a class value, a
+   * object (an array, a function, a dynamic or caught value, a class value, a
    * promise), so it can lie on a cycle through that value. */
   | {
       kind: "intrinsic";
@@ -121,6 +122,7 @@ function analyzeCycles(
   const programLifetime = (className: string): boolean =>
     lifetimeRoots.size > 0 && lifetimeRoots.has(rootOf(className));
   const mutability = computeCycleMutability(mod, unitOfClass);
+  const metadataRecords = computeRecordMetadataShapes(mod);
   const shapeDefs = [
     ...classes.map((c) => ({
       key: `object:${c.name}`,
@@ -143,9 +145,11 @@ function analyzeCycles(
     ...(mod.records ?? []).map((r) => ({
       key: `record:${r.id}`,
       unit: `record:${r.id}`,
-      fields: r.indexValue
-        ? [...r.fields, { name: "<overflow>", type: mapOf(STRING, r.indexValue) }]
-        : r.fields,
+      fields: [
+        ...r.fields,
+        ...(r.indexValue ? [{ name: "<overflow>", type: mapOf(STRING, r.indexValue) }] : []),
+        ...(metadataRecords.has(r.id) ? [{ name: "<metadata>", type: DYN }] : []),
+      ],
     })),
   ];
   interface Node {
@@ -216,6 +220,7 @@ function analyzeCycles(
   ): void => {
     if (from.intrinsic) return;
     switch (t.kind) {
+      case "array":
       case "func":
       case "dyn":
       case "classval":
@@ -261,7 +266,6 @@ function analyzeCycles(
         addType(from, t.value, true, label?.kind === "field" ? { ...label, via: "map" } : label);
         break;
       case "set":
-      case "array":
         addType(from, t.elem, true, label?.kind === "field" ? { ...label, via: t.kind } : label);
         break;
     }

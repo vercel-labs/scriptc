@@ -26,6 +26,18 @@
 
 static SCR_TL ScrDyn *scr_builtin_object_prototype;
 
+/* The array owns this immutable recipe, including key bytes and operation
+ * pointers. Recursive capsules can outlive a failed promotion attempt. */
+typedef struct ScrArrNamed {
+  ScrDynTypedArrayOps ops;
+  ScrDynTypedRefRecipe recipe;
+  char key[];
+} ScrArrNamed;
+
+static bool scr_typed_ref_canonical_index(const char *data, size_t len, size_t *out);
+static bool scr_typed_ref_is_length(const ScrStr *key);
+static ScrDyn *scr_dyn_array_metadata(const ScrDyn *capsule, bool create);
+
 /* Constructor capsules expose identity and name/length, but do not model
  * per-class static property tables yet. Never report a fabricated empty view. */
 static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
@@ -129,7 +141,7 @@ void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
   scr_iterator_symbol = scr_dyn_retain(key);
   scr_atexit(scr_iterator_symbol_cleanup);
-  ScrDyn *prototype = scr_dyn_array_prototype_base();
+  ScrDyn *prototype = scr_dyn_array_prototype_base(NULL);
   ScrDyn *descriptor = scr_dyn_new_obj();
   scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_array_values_function());
   scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
@@ -610,6 +622,7 @@ void scr_dyn_from_leave(void) {
  * strict alloc/free balance.
  */
 static SCR_TL ScrDyn *scr_builtin_array_prototype;
+static SCR_TL bool scr_builtin_array_prototype_initialized;
 
 /* Property names are immutable and often repeated across simultaneously live
  * objects. Entries own references to their bytes; this fixed weak table owns
@@ -899,6 +912,7 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
       d->v.obj.region = NULL;
+      d->v.obj.class_name = NULL;
       if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
         for (size_t i = 0; i < d->v.obj.cap; i++) {
           ScrDynEntry *entry = &d->v.obj.entries[i];
@@ -1250,6 +1264,7 @@ bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len) {
 
 static const ScrDyn *scr_dyn_property_owner(const ScrDyn *object, const char *key, size_t length);
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver);
+static const ScrDyn *scr_dyn_chain_link(const ScrDyn *link);
 static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function);
 static ScrDyn *scr_native_map_pack(void *ptr);
 
@@ -1505,11 +1520,31 @@ ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i) {
   return result;
 }
 
+/* Native array prototypes belong to the referent, like named metadata.
+ * Opaque capsules keep their existing view-owned prototype contract. */
+static const ScrDyn *scr_dyn_array_prototype_owner(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_TYPED_REF) return value;
+  if (!scr_dyn_typed_ref_array_ops(value)) return value->v.typed_ref.materialized;
+  const ScrArr *array = value->v.typed_ref.ptr;
+  return array->ext ? array->ext->metadata : NULL;
+}
+
+static const ScrDyn *scr_dyn_array_prototype_link(const ScrDyn *value) {
+  const ScrDyn *view = scr_dyn_array_prototype_owner(value);
+  if (view && view->prototype) return view->prototype;
+  return view && (view->null_proto || view == scr_builtin_array_prototype)
+      ? NULL : scr_builtin_array_prototype;
+}
+
+static const ScrDyn *scr_dyn_array_proto(const ScrDyn *value) {
+  return scr_dyn_chain_link(scr_dyn_array_prototype_link(value));
+}
+
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
   if (d->v.arr.properties && scr_dyn_obj_get(d->v.arr.properties, key->data, key->len))
     return scr_dyn_obj_read_receiver(d->v.arr.properties, key->data, key->len, d);
-  const ScrDyn *prototype = d->prototype ? d->prototype :
-    d != scr_builtin_array_prototype ? scr_builtin_array_prototype : NULL;
+  const ScrDyn *prototype = scr_dyn_array_prototype_link(d);
+  if (scr_exc_pending()) return NULL;
   ScrDyn *value = prototype ? scr_dyn_obj_read_receiver(prototype, key->data, key->len, d)
     : scr_dyn_retain(scr_dyn_undefined());
   if (value && value->kind == SCR_DYN_UNDEF && !d->null_proto && key->len == 11 && !memcmp(key->data, "constructor", 11)) {
@@ -1522,6 +1557,33 @@ ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
 /* Borrows key and takes ownership of value. Duplicate keys retain their
  * original spelling/storage and insertion position; the later value wins.
  * A recycled entry can reuse equal key bytes without a malloc/free pair. */
+static ScrDynEntry *scr_dyn_obj_append(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
+  if (obj->v.obj.len == obj->v.obj.cap) {
+    size_t cap = obj->v.obj.cap ? obj->v.obj.cap * 2 : 4;
+    ScrDynEntry *entries = scr_mem_realloc(obj->v.obj.entries, cap * sizeof *entries);
+    if (!entries) scr_json_oom();
+    memset(entries + obj->v.obj.cap, 0, (cap - obj->v.obj.cap) * sizeof *entries);
+    obj->v.obj.entries = entries;
+    obj->v.obj.cap = cap;
+  }
+  ScrDynEntry *e = &obj->v.obj.entries[obj->v.obj.len++];
+  if (!e->key || e->key_len != key_len || !scr_key_equal(e->key, key, key_len)) {
+    char *owned = scr_dyn_key_copy(key, key_len);
+    scr_dyn_key_release(e->key, e->key_len);
+    e->key = owned;
+  }
+  e->key_len = key_len;
+  e->value = value;
+  e->getter = NULL;
+  e->setter = NULL;
+  e->accessor = false;
+  e->writable = true;
+  e->enumerable = true;
+  e->configurable = true;
+  if (obj->v.obj.len >= SCR_DYN_OBJECT_INDEX_MIN) scr_dyn_index_append(obj);
+  return e;
+}
+
 static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
   scr_dyn_region_store(obj, value);
   /* Construction usually appends an absent name. Avoid a read hint that
@@ -1546,29 +1608,7 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return;
   }
-  if (obj->v.obj.len == obj->v.obj.cap) {
-    size_t cap = obj->v.obj.cap ? obj->v.obj.cap * 2 : 4;
-    ScrDynEntry *entries = scr_mem_realloc(obj->v.obj.entries, cap * sizeof *entries);
-    if (!entries) scr_json_oom();
-    memset(entries + obj->v.obj.cap, 0, (cap - obj->v.obj.cap) * sizeof *entries);
-    obj->v.obj.entries = entries;
-    obj->v.obj.cap = cap;
-  }
-  ScrDynEntry *e = &obj->v.obj.entries[obj->v.obj.len++];
-  if (!e->key || e->key_len != key_len || !scr_key_equal(e->key, key, key_len)) {
-    char *owned = scr_dyn_key_copy(key, key_len);
-    scr_dyn_key_release(e->key, e->key_len);
-    e->key = owned;
-  }
-  e->key_len = key_len;
-  e->value = value;
-  e->getter = NULL;
-  e->setter = NULL;
-  e->accessor = false;
-  e->writable = true;
-  e->enumerable = true;
-  e->configurable = true;
-  if (obj->v.obj.len >= SCR_DYN_OBJECT_INDEX_MIN) scr_dyn_index_append(obj);
+  scr_dyn_obj_append(obj, key, key_len, value);
 }
 
 /* ── dyn construction (compiler-emitted converters & overflow reads) ───── */
@@ -1663,6 +1703,7 @@ ScrDyn *scr_dyn_new_str(ScrStr *s) {
 static void scr_builtin_array_prototype_cleanup(void) {
   ScrDyn *prototype = scr_builtin_array_prototype;
   scr_builtin_array_prototype = NULL;
+  scr_builtin_array_prototype_initialized = false;
   scr_dyn_release(prototype);
 }
 
@@ -1681,10 +1722,16 @@ ScrDyn *scr_dyn_object_prototype(void) {
   return scr_dyn_retain(scr_builtin_object_prototype);
 }
 
-ScrDyn *scr_dyn_array_prototype_base(void) {
+ScrDyn *scr_dyn_array_prototype_base(void (*initialize)(ScrDyn *)) {
   if (!scr_builtin_array_prototype) {
     scr_builtin_array_prototype = scr_dyn_alloc(SCR_DYN_ARR);
     scr_atexit(scr_builtin_array_prototype_cleanup);
+  }
+  /* Readiness belongs to this identity, not the optional invoke unit: reset
+   * must rebuild methods, while in-session deletions must stay deleted. */
+  if (initialize && !scr_builtin_array_prototype_initialized) {
+    scr_builtin_array_prototype_initialized = true;
+    initialize(scr_builtin_array_prototype);
   }
   return scr_dyn_retain(scr_builtin_array_prototype);
 }
@@ -1721,10 +1768,87 @@ ScrDyn *scr_dyn_new_obj_null_proto(void) {
 
 static const ScrDyn *scr_dyn_chain_link(const ScrDyn *link);
 static const ScrDyn *scr_dyn_proto_next(const ScrDyn *object);
+static const ScrDynNativeObjectOps *scr_native_object_exact(void *object, const ScrDynNativeObjectOps *ops);
+
+static const ScrDynNativeObjectOps *scr_dyn_native_class_ops(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_TYPED_REF || !value->v.typed_ref.native_object) return NULL;
+  const ScrDynNativeObjectOps *ops = scr_native_object_exact(
+      value->v.typed_ref.ptr, value->v.typed_ref.native_object);
+  return ops->prototype ? ops : NULL;
+}
+
+/* Only explicit overrides belong to the instance. Default prototypes can
+ * contain thread-local closures and must resolve in the reader's context. */
+ScrDyn *scr_native_object_prototype(void *object, const ScrDynNativeObjectOps *ops) {
+  ops = scr_native_object_exact(object, ops);
+  ScrDyn *properties = ops->properties(object);
+  if (properties && properties->prototype) return scr_dyn_retain(properties->prototype);
+  if (properties && properties->null_proto) return scr_dyn_new_null();
+  return ops->prototype ? ops->prototype(object) : scr_dyn_object_prototype();
+}
+
+void scr_native_object_snapshot_prototype(void *object, const ScrDynNativeObjectOps *ops, ScrDyn *view) {
+  ScrDyn *prototype = scr_native_object_prototype(object, ops);
+  if (scr_exc_pending()) { scr_dyn_release(prototype); return; }
+  /* Keep the implicit builtin endpoint implicit. Its public mutation fence
+   * is unrelated to copying already-admitted native prototype metadata. */
+  bool implicit = prototype == scr_builtin_object_prototype;
+  bool null_proto = prototype->kind == SCR_DYN_NULL;
+  ScrDyn *old = view->prototype;
+  view->prototype = implicit || null_proto ? NULL : prototype;
+  view->null_proto = null_proto;
+  if (implicit || null_proto) scr_dyn_release(prototype);
+  scr_dyn_release(old);
+}
+
+void scr_native_property_bag_copy_prototype(ScrDyn *target, const ScrDyn *source) {
+  if (!source || source->kind != SCR_DYN_OBJ) return;
+  ScrDyn *prototype = source->prototype ? scr_dyn_retain(source->prototype) : NULL;
+  scr_dyn_region_store(target, prototype ? prototype : scr_dyn_undefined());
+  ScrDyn *old = target->prototype;
+  target->prototype = prototype;
+  target->null_proto = source->null_proto;
+  scr_dyn_release(old);
+}
+
+/* Native snapshots own values; referent bags own extra properties and
+ * explicit prototype/symbol state. Never commit that policy through a view. */
+static ScrDyn *scr_dyn_native_metadata(const ScrDyn *value) {
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_class_ops(value);
+  /* Class mutations already update this authoritative bag. In particular,
+   * a read must not rewrite the frozen bag shared by published workers. */
+  if (ops) return ops->properties(value->v.typed_ref.ptr);
+  if (value->kind != SCR_DYN_TYPED_REF || value->v.typed_ref.type_key_len < 7 ||
+      memcmp(value->v.typed_ref.type_key, "record:", 7)) return NULL;
+  ScrDyn *owner = scr_record_source_view(value->v.typed_ref.ptr);
+  if (owner) scr_native_object_sync_properties(value->v.typed_ref.ptr, owner);
+  return owner;
+}
+
+static bool scr_dyn_native_can_prepare(const ScrDyn *value) {
+  return value->kind == SCR_DYN_TYPED_REF &&
+      (scr_dyn_native_class_ops(value) || (value->v.typed_ref.type_key_len >= 7 &&
+      !memcmp(value->v.typed_ref.type_key, "record:", 7))) &&
+      value->v.typed_ref.native_object && value->v.typed_ref.native_object->prepare;
+}
+
+/* Only admitted writes create metadata. Reads and refused additions must
+ * leave publication/lifetime state unchanged on source-free records. */
+static ScrDyn *scr_dyn_native_write_metadata(const ScrDyn *value) {
+  ScrDyn *owner = scr_dyn_native_metadata(value);
+  if (!scr_dyn_native_can_prepare(value)) return owner;
+  void *ptr = value->v.typed_ref.ptr;
+  if (!owner && (*(const size_t *)ptr == SIZE_MAX ||
+      (scr_native_integrity_flags(ptr) & SCR_NATIVE_NON_EXTENSIBLE))) return NULL;
+  const ScrDynNativeObjectOps *ops = scr_native_object_exact(ptr, value->v.typed_ref.native_object);
+  if (!ops->prepare(ptr)) return NULL;
+  return scr_dyn_native_metadata(value);
+}
 
 /* A typed capsule can be a prototype when its checked view is an object. */
 static bool scr_dyn_typed_ref_prototype(const ScrDyn *value) {
   if (value->kind != SCR_DYN_TYPED_REF || scr_dyn_generator(value)) return false;
+  if (scr_dyn_typed_ref_array_ops(value) || scr_dyn_native_class_ops(value)) return true;
   const ScrDyn *view = scr_dyn_chain_link(value);
   return view && (view->kind == SCR_DYN_OBJ || view->kind == SCR_DYN_ARR);
 }
@@ -1746,6 +1870,13 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (scr_dyn_class_reflection_fence(object)) return NULL;
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_class_ops(object);
+  if (ops) return scr_native_object_prototype(object->v.typed_ref.ptr, ops);
+  if (object->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(object)) {
+    const ScrDyn *owner = scr_dyn_array_prototype_owner(object);
+    if (owner && owner->prototype) return scr_dyn_retain(owner->prototype);
+    return owner && owner->null_proto ? scr_dyn_new_null() : scr_dyn_array_prototype_base(NULL);
+  }
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (!view) return NULL;
@@ -1760,16 +1891,16 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     scr_dyn_release(table);
     if (result) return result;
   }
-  if (object->kind == SCR_DYN_ARR && object != scr_builtin_array_prototype) {
+  if (object->kind == SCR_DYN_ARR) {
     if (object->prototype) return scr_dyn_retain(object->prototype);
-    return scr_dyn_array_prototype_base();
+    if (object->null_proto) return scr_dyn_new_null();
+    return object == scr_builtin_array_prototype ? scr_dyn_object_prototype() : scr_dyn_array_prototype_base(NULL);
   }
   if (object->kind == SCR_DYN_OBJ) {
     if (object->prototype) return scr_dyn_retain(object->prototype);
     if (object->null_proto) return scr_dyn_new_null();
     return scr_dyn_object_prototype();
   }
-  if (object == scr_builtin_array_prototype) return scr_dyn_object_prototype();
   if (object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -1781,8 +1912,13 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
 }
 
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
-  if (scr_dyn_class_reflection_fence(object) || scr_dyn_class_reflection_fence(prototype)) return NULL;
-  if (object->kind == SCR_DYN_TYPED_REF) {
+  if (scr_dyn_class_reflection_fence(object) ||
+      (prototype != scr_builtin_object_prototype && scr_dyn_class_reflection_fence(prototype))) return NULL;
+  bool native_array = object->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(object);
+  const ScrDynNativeObjectOps *native_class = scr_dyn_native_class_ops(object);
+  ScrDyn *metadata = scr_dyn_native_metadata(object);
+  bool native_owner = metadata || scr_dyn_native_can_prepare(object);
+  if (object->kind == SCR_DYN_TYPED_REF && !native_array && !native_owner) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
     ScrDyn *result = scr_dyn_set_prototype(view, prototype);
@@ -1813,7 +1949,7 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   if (scr_exc_pending()) return NULL;
   bool primitive = object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
     object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL;
-  if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR && !primitive) ||
+  if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR && !native_array && !native_owner && !primitive) ||
       (prototype->kind != SCR_DYN_OBJ && prototype->kind != SCR_DYN_ARR && prototype->kind != SCR_DYN_FUNC && prototype->kind != SCR_DYN_NULL && !typed)) {
     static const char message[] = "Object prototype may only be an Object or null";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -1821,67 +1957,201 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   }
   /* A primitive receiver is returned unchanged once the prototype is valid. */
   if (primitive) return scr_dyn_retain(object);
-  for (const ScrDyn *current = scr_dyn_chain_link(prototype); current;) {
+  bool prepared = false;
+revalidate:;
+  if (native_owner) metadata = scr_dyn_native_metadata(object);
+  ScrDyn *owner = native_array ? (ScrDyn *)scr_dyn_array_prototype_owner(object) : native_owner ? metadata : object;
+  /* Record metadata can exist without native-object callbacks. Only classes
+   * resolve a context-owned default; records keep their ordinary endpoint. */
+  ScrDyn *effective = native_class ? scr_native_object_prototype(
+      object->v.typed_ref.ptr, native_class) : NULL;
+  if (scr_exc_pending()) { scr_dyn_release(effective); return NULL; }
+  const ScrDyn *current_prototype = effective ? (effective->kind == SCR_DYN_NULL ? NULL : effective)
+      : owner ? owner->prototype : NULL;
+  bool null_prototype = effective ? effective->kind == SCR_DYN_NULL : owner && owner->null_proto;
+  if (!current_prototype && !null_prototype) {
+    if (native_array || (object->kind == SCR_DYN_ARR && object != scr_builtin_array_prototype))
+      current_prototype = scr_builtin_array_prototype;
+    else if (native_owner) current_prototype = scr_builtin_object_prototype;
+  }
+  /* An unchanged prototype is valid even when non-extensible. Do not
+   * allocate native metadata for this no-op: it would block publication. */
+  bool unchanged = prototype->kind == SCR_DYN_NULL ? null_prototype
+      : current_prototype && scr_dyn_strict_eq(current_prototype, prototype);
+  scr_dyn_release(effective);
+  if (unchanged) return scr_dyn_retain(object);
+  bool restricted = native_array
+      ? (scr_arr_integrity_flags(object->v.typed_ref.ptr) & SCR_NATIVE_NON_EXTENSIBLE) != 0
+      : native_owner ? *(const size_t *)object->v.typed_ref.ptr == SIZE_MAX ||
+          (scr_native_integrity_flags(object->v.typed_ref.ptr) & SCR_NATIVE_NON_EXTENSIBLE) != 0
+      : owner->non_extensible;
+  if (restricted) {
+    static const char message[] = "Cannot set prototype of a non-extensible object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  for (const ScrDyn *link = prototype; link;) {
+    /* Distinct capsules can name one referent. Test that identity before
+     * materializing a link, which otherwise hides it behind a snapshot. */
+    if (scr_dyn_strict_eq(link, object)) goto cyclic;
+    if (link->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(link)) {
+      link = scr_dyn_array_prototype_link(link);
+      continue;
+    }
+    const ScrDyn *current = scr_dyn_chain_link(link);
+    if (scr_exc_pending()) return NULL;
+    if (!current) break;
     if (current->kind == SCR_DYN_FUNC) {
       ScrDyn *table = scr_dyn_fn_properties(current);
       current = table;
       scr_dyn_release(table); /* the function owns the table */
     }
-    if (current == object) {
-      static const char message[] = "Cyclic __proto__ value";
-      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-      return NULL;
-    }
-    current = scr_dyn_proto_next(current);
+    if (current == object) goto cyclic;
+    link = current->kind == SCR_DYN_ARR ? scr_dyn_array_prototype_link(current) : current->prototype;
   }
-  if (object->non_extensible && (prototype->kind == SCR_DYN_NULL ? object->prototype != NULL || !object->null_proto : object->prototype != prototype)) {
-    static const char message[] = "Cannot set prototype of a non-extensible object";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    return NULL;
+  if (native_array && !owner) {
+    owner = scr_dyn_new_obj();
+    scr_arr_ext(object->v.typed_ref.ptr)->metadata = owner;
+  }
+  if (native_owner && !owner && !prepared) {
+    owner = scr_dyn_native_write_metadata(object);
+    if (!owner) return NULL;
+    /* Preparation may run user code. Reread the owner and validate both
+     * extensibility and the prototype chain before installing the edge. */
+    prepared = true;
+    goto revalidate;
   }
   ScrDyn *replacement = prototype->kind == SCR_DYN_NULL ? NULL : scr_dyn_retain(prototype);
-  scr_dyn_region_store(object, replacement ? replacement : scr_dyn_undefined());
-  scr_dyn_release(object->prototype);
-  object->prototype = replacement;
-  object->null_proto = replacement ? false : true;
+  scr_dyn_region_store(owner, replacement ? replacement : scr_dyn_undefined());
+  ScrDyn *old = owner->prototype;
+  owner->prototype = replacement;
+  owner->null_proto = replacement ? false : true;
+  scr_dyn_release(old);
   return scr_dyn_retain(object);
+cyclic:;
+  static const char message[] = "Cyclic __proto__ value";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return NULL;
+}
+
+/* Apply only own-property restrictions. Internal property tables belong to
+ * this view; child values, prototypes and accessor functions stay untouched. */
+static void scr_dyn_restrict_view(ScrDyn *value, unsigned restrictions) {
+  if (!restrictions) return;
+  bool sealed = (restrictions & SCR_NATIVE_SEALED) == SCR_NATIVE_SEALED;
+  bool frozen = (restrictions & SCR_NATIVE_FROZEN) == SCR_NATIVE_FROZEN;
+  if (value->symbol_properties) scr_dyn_restrict_view(value->symbol_properties, restrictions);
+  if (value->kind == SCR_DYN_OBJ) {
+    value->non_extensible = true;
+    for (size_t i = 0; i < value->v.obj.len; i++) {
+      ScrDynEntry *entry = &value->v.obj.entries[i];
+      if (sealed) entry->configurable = false;
+      if (frozen && !entry->accessor) entry->writable = false;
+    }
+  } else if (value->kind == SCR_DYN_ARR) {
+    value->non_extensible = true;
+    if (sealed) value->v.arr.sealed = true;
+    if (frozen) value->v.arr.frozen = true;
+    if (value->v.arr.properties) scr_dyn_restrict_view(value->v.arr.properties, restrictions);
+  }
+}
+
+/* Reads and refused writes must not create empty metadata: even an empty
+ * property table has publication and lifetime meaning. */
+static ScrDyn *scr_dyn_array_metadata(const ScrDyn *capsule, bool create) {
+  ScrArr *a = capsule->v.typed_ref.ptr;
+  /* A nested promotion can retain this capsule before an outer box fails.
+   * Every later named-owner access retries that referent's transaction. */
+  if (a->rc != SIZE_MAX && a->ext && a->ext->named &&
+      a->ext->named_state == SCR_ARR_NAMES_UNPROMOTED &&
+      !scr_dyn_typed_ref_bind_array((ScrDyn *)capsule, &a->ext->named->ops)) return NULL;
+  ScrDyn *metadata = a->ext ? a->ext->metadata : NULL;
+  unsigned flags = scr_arr_integrity_flags(a);
+  if (!metadata && create && !(flags & SCR_NATIVE_NON_EXTENSIBLE))
+    scr_arr_ext(a)->metadata = metadata = scr_dyn_new_obj();
+  if (metadata && a->rc != SIZE_MAX) scr_dyn_restrict_view(metadata, flags);
+  return metadata;
+}
+
+/* Bound arrays own integrity at the referent, never at a refreshed capsule
+ * snapshot. Promotion failure must leave the prior restrictions untouched. */
+static ScrDyn *scr_dyn_array_restrict(ScrDyn *object, unsigned restrictions) {
+  ScrArr *array = object->v.typed_ref.ptr;
+  if (array->rc != SIZE_MAX) {
+    ScrDyn *metadata = scr_dyn_array_metadata(object, false);
+    if (scr_exc_pending()) return NULL;
+    scr_native_integrity_strengthen(array, restrictions);
+    if (metadata) scr_dyn_restrict_view(metadata, restrictions);
+  }
+  return scr_dyn_retain(object);
+}
+
+static bool scr_dyn_array_is_restricted(const ScrDyn *object, unsigned restrictions) {
+  ScrArr *array = object->v.typed_ref.ptr;
+  if (array->rc == SIZE_MAX) return true;
+  ScrDyn *metadata = scr_dyn_array_metadata(object, false);
+  if (scr_exc_pending()) return false;
+  unsigned flags = scr_arr_integrity_flags(array);
+  if (!(flags & SCR_NATIVE_NON_EXTENSIBLE)) return false;
+  if (scr_arr_next_present(array, 0) < (double)array->len &&
+      (flags & restrictions) != restrictions) return false;
+  return !metadata || (restrictions == SCR_NATIVE_FROZEN
+      ? scr_dyn_is_frozen(metadata) : scr_dyn_is_sealed(metadata));
+}
+
+/* Integrity belongs to the bound referent. A snapshot can omit absent fields
+ * and cannot carry restrictions back to other typed or dynamic aliases. */
+static const ScrDynNativeObjectOps *scr_dyn_native_object_ops(const ScrDyn *value) {
+  return value->kind == SCR_DYN_TYPED_REF ? value->v.typed_ref.native_object : NULL;
 }
 
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return NULL;
-  if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.preventExtensions"); return NULL; }
-  if (object->kind == SCR_DYN_OBJ || object->kind == SCR_DYN_ARR) {
-    object->non_extensible = true;
-    if (object->kind == SCR_DYN_ARR && object->v.arr.properties)
-      object->v.arr.properties->non_extensible = true;
+  if (scr_dyn_typed_ref_array_ops(object))
+    return scr_dyn_array_restrict(object, SCR_NATIVE_NON_EXTENSIBLE);
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_object_ops(object);
+  if (ops) {
+    scr_native_object_restrict(object->v.typed_ref.ptr, ops, SCR_NATIVE_NON_EXTENSIBLE);
+    return scr_dyn_retain(object);
   }
+  if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.preventExtensions"); return NULL; }
+  if (object->kind == SCR_DYN_OBJ || object->kind == SCR_DYN_ARR)
+    scr_dyn_restrict_view(object, SCR_NATIVE_NON_EXTENSIBLE);
   return scr_dyn_retain(object);
 }
 
 bool scr_dyn_is_extensible(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
+  if (scr_dyn_typed_ref_array_ops(object)) {
+    (void)scr_dyn_array_metadata(object, false);
+    return !scr_exc_pending() &&
+        !(scr_arr_integrity_flags(object->v.typed_ref.ptr) & SCR_NATIVE_NON_EXTENSIBLE);
+  }
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_object_ops(object);
+  if (ops) return !scr_native_object_is_restricted(object->v.typed_ref.ptr, ops, SCR_NATIVE_NON_EXTENSIBLE);
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isExtensible"); return false; }
   return (object->kind == SCR_DYN_OBJ || object->kind == SCR_DYN_ARR) && !object->non_extensible;
 }
 
 ScrDyn *scr_dyn_seal(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return NULL;
+  if (scr_dyn_typed_ref_array_ops(object)) return scr_dyn_array_restrict(object, SCR_NATIVE_SEALED);
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_object_ops(object);
+  if (ops) {
+    scr_native_object_restrict(object->v.typed_ref.ptr, ops, SCR_NATIVE_SEALED);
+    return scr_dyn_retain(object);
+  }
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.seal"); return NULL; }
-  if (object->symbol_properties) scr_dyn_release(scr_dyn_seal(object->symbol_properties));
-  if (object->kind == SCR_DYN_OBJ) {
-    object->non_extensible = true;
-    for (size_t i = 0; i < object->v.obj.len; i++) object->v.obj.entries[i].configurable = false;
-  }
-  if (object->kind == SCR_DYN_ARR) {
-    object->non_extensible = true;
-    object->v.arr.sealed = true;
-    if (object->v.arr.properties) scr_dyn_release(scr_dyn_seal(object->v.arr.properties));
-  }
+  scr_dyn_restrict_view(object, SCR_NATIVE_SEALED);
   return scr_dyn_retain(object);
 }
 
 bool scr_dyn_is_sealed(const ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
+  if (scr_dyn_typed_ref_array_ops(object))
+    return scr_dyn_array_is_restricted(object, SCR_NATIVE_SEALED);
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_object_ops(object);
+  if (ops) return scr_native_object_is_restricted(object->v.typed_ref.ptr, ops, SCR_NATIVE_SEALED);
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isSealed"); return false; }
   if (object->symbol_properties && !scr_dyn_is_sealed(object->symbol_properties)) return false;
   if (object->kind == SCR_DYN_ARR)
@@ -2034,19 +2304,6 @@ static bool scr_dyn_object_proto_name(const ScrStr *key) {
   return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
 }
 
-/* Own string keys of Array.prototype. */
-static bool scr_dyn_array_proto_name(const ScrStr *key) {
-  static const char *const names[] = {
-    "length", "constructor", "at", "concat", "copyWithin", "fill", "find", "findIndex",
-    "findLast", "findLastIndex", "lastIndexOf", "pop", "push", "reverse", "shift",
-    "unshift", "slice", "sort", "splice", "includes", "indexOf", "join", "keys",
-    "entries", "values", "forEach", "filter", "flat", "flatMap", "map", "every", "some",
-    "reduce", "reduceRight", "toReversed", "toSorted", "toSpliced", "with",
-    "toLocaleString", "toString"
-  };
-  return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
-}
-
 static bool scr_dyn_object_proto_key(const ScrDyn *target, const ScrStr *key) {
   return !target->null_proto && scr_dyn_object_proto_name(key);
 }
@@ -2120,6 +2377,13 @@ static bool scr_dyn_canonical_own_index(const ScrStr *key, size_t length);
 ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
+    size_t index;
+    if (scr_dyn_typed_ref_array_ops(value) && !scr_typed_ref_is_length(key) &&
+        !scr_typed_ref_canonical_index(key->data, key->len, &index)) {
+      ScrDyn *owner = scr_dyn_array_metadata(value, false);
+      if (scr_exc_pending()) return NULL;
+      return owner ? scr_dyn_own_descriptor(owner, key) : scr_dyn_retain(scr_dyn_undefined());
+    }
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_own_descriptor(view, key);
     scr_dyn_release(view);
@@ -2359,10 +2623,9 @@ ScrDyn *scr_dyn_new_buffer(const ScrBytes *b) {
  * the source's own properties here, keyed by the native record and released
  * when the record is freed (the native dispose hook). The copy fixes the
  * own-key order; declared keys hold placeholders, because the record stays
- * the source of truth for their values. It is also the record's checked
- * view: every capsule for the record adopts it, so properties written
- * through untyped references persist after the capsule is gone, and the
- * typed serializers of such a record go through its capsule. */
+ * the source of truth for their values. Capsules project that metadata into
+ * separate views; extra-property writes target this owner directly, so
+ * they persist after a capsule is gone without retaining native children. */
 typedef struct {
   void *rec;
   ScrDyn *view;
@@ -2371,6 +2634,8 @@ typedef struct {
   const char *names;
   const char *lens;
   size_t name_stride, len_stride, count;
+  /* Optional public-key map: raw serializer names also include hidden slots. */
+  const ScrDynNativeObjectOps *ops;
 } ScrRecordSource;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
@@ -2422,23 +2687,396 @@ bool scr_record_source_has(const void *rec) {
   return scr_record_source_count && scr_record_source_find(rec) != NULL;
 }
 
-static void scr_record_source_disposed(void *rec) {
+static ScrDyn *scr_record_source_remove(void *rec) {
+  if (!scr_record_source_count) return NULL;
   size_t bit = scr_record_source_filter_bit(rec);
-  if (!(scr_record_source_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)))) return;
+  if (!(scr_record_source_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)))) return NULL;
   ScrRecordSource *found = scr_record_source_find(rec);
-  if (!found) return;
+  if (!found) return NULL;
   ScrDyn *view = found->view;
   *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
   scr_record_source_count--;
   scr_record_source_deleted++;
-  /* The table no longer refers to the view, so a nested disposal that
-   * re-enters this hook sees a consistent table. */
-  scr_dyn_release(view);
+  return view;
 }
 
-/* The single native dispose hook serves weak collections and the table
- * above; each observer runs only while it has entries to forget. */
+void scr_record_source_trace(void *rec, ScrTraceVisit visit, void *context) {
+  ScrDyn *view = scr_record_source_view(rec);
+  if (view) visit(view, context);
+}
+
+void scr_record_source_collected(void *rec) {
+  /* Trial deletion already accounted for this strong edge. Its target may
+   * already be freed, so unlink without dereferencing or releasing it. */
+  (void)scr_record_source_remove(rec);
+}
+
+bool scr_record_source_trim_empty(void) {
+  /* Context cleanup may still have ProgramLifetime or abandoned-fiber
+   * roots. Retire buffers only after their final owned view is gone. */
+  if (scr_record_source_count) return false;
+  free(scr_record_sources);
+  free(scr_record_source_filter);
+  scr_record_sources = NULL;
+  scr_record_source_filter = NULL;
+  scr_record_source_capacity = scr_record_source_deleted = 0;
+  return true;
+}
+
+static void scr_record_source_disposed(void *rec) {
+  /* Unlink before release: a nested disposal must see a consistent table. */
+  scr_dyn_release(scr_record_source_remove(rec));
+}
+
+/* Native integrity belongs to the referent, not to a temporary checked
+ * capsule. Entries own no references, so freezing cannot keep a cycle
+ * alive; the disposal observer forgets them before an address is reused. */
+typedef struct ScrNativeAttributes {
+  struct ScrNativeAttributes *next;
+  size_t length;
+  unsigned attributes;
+  bool declared_undefined;
+  char key[];
+} ScrNativeAttributes;
+typedef struct {
+  const void *object;
+  unsigned restrictions;
+  ScrNativeAttributes *attributes;
+} ScrNativeIntegrity;
+static SCR_TL ScrNativeIntegrity *scr_native_integrities;
+static SCR_TL size_t scr_native_integrity_capacity, scr_native_integrity_count;
+static SCR_TL size_t scr_native_integrity_deleted;
+#define SCR_NATIVE_INTEGRITY_DELETED ((const void *)1)
+
+static size_t scr_native_integrity_bucket(const void *object, size_t capacity) {
+  uintptr_t key = (uintptr_t)object >> 3;
+  key ^= key >> 16;
+  key *= (uintptr_t)UINT64_C(0x9E3779B97F4A7C15);
+  key ^= key >> 16;
+  return (size_t)key & (capacity - 1);
+}
+
+static ScrNativeIntegrity *scr_native_integrity_find(const void *object) {
+  if (!scr_native_integrity_count) return NULL;
+  size_t mask = scr_native_integrity_capacity - 1;
+  for (size_t slot = scr_native_integrity_bucket(object, scr_native_integrity_capacity);
+       scr_native_integrities[slot].object; slot = (slot + 1) & mask) {
+    if (scr_native_integrities[slot].object == object) return &scr_native_integrities[slot];
+  }
+  return NULL;
+}
+
+unsigned scr_native_integrity_flags(const void *object) {
+  const ScrNativeIntegrity *entry = scr_native_integrity_find(object);
+  return entry ? entry->restrictions : 0;
+}
+
+bool scr_native_integrity_active(void) { return scr_native_integrity_count != 0; }
+
+void scr_native_integrity_forget(const void *object) {
+  ScrNativeIntegrity *entry = scr_native_integrity_find(object);
+  if (!entry) return;
+  ScrNativeAttributes *attributes = entry->attributes;
+  *entry = (ScrNativeIntegrity){ .object = SCR_NATIVE_INTEGRITY_DELETED };
+  scr_native_integrity_count--;
+  scr_native_integrity_deleted++;
+  while (attributes) {
+    ScrNativeAttributes *next = attributes->next;
+    free(attributes);
+    attributes = next;
+  }
+}
+
+void scr_native_integrity_reset(void) {
+  for (size_t i = 0; i < scr_native_integrity_capacity; i++) {
+    ScrNativeAttributes *attributes = scr_native_integrities[i].attributes;
+    while (attributes) {
+      ScrNativeAttributes *next = attributes->next;
+      free(attributes);
+      attributes = next;
+    }
+  }
+  free(scr_native_integrities);
+  scr_native_integrities = NULL;
+  scr_native_integrity_capacity = scr_native_integrity_count = scr_native_integrity_deleted = 0;
+  /* The shared hook still owns weak collections and retained record views. */
+}
+
+static void scr_native_integrity_reserve(void) {
+  size_t old_capacity = scr_native_integrity_capacity;
+  if (old_capacity && scr_native_integrity_count + scr_native_integrity_deleted < old_capacity / 2)
+    return;
+  size_t capacity = !old_capacity ? 64
+      : scr_native_integrity_count >= old_capacity / 4 ? old_capacity * 2 : old_capacity;
+  if (capacity < old_capacity || capacity > SIZE_MAX / sizeof(ScrNativeIntegrity)) scr_json_oom();
+  ScrNativeIntegrity *entries = calloc(capacity, sizeof *entries);
+  if (!entries) scr_json_oom();
+  for (size_t i = 0; i < old_capacity; i++) {
+    ScrNativeIntegrity entry = scr_native_integrities[i];
+    if (!entry.object || entry.object == SCR_NATIVE_INTEGRITY_DELETED) continue;
+    size_t slot = scr_native_integrity_bucket(entry.object, capacity);
+    while (entries[slot].object) slot = (slot + 1) & (capacity - 1);
+    entries[slot] = entry;
+  }
+  free(scr_native_integrities);
+  scr_native_integrities = entries;
+  scr_native_integrity_capacity = capacity;
+  scr_native_integrity_deleted = 0;
+}
+
+static void scr_dispose_observers(void *object);
+
+void scr_native_integrity_strengthen(void *object, unsigned restrictions) {
+  /* Only heap record/class/array identities reach this API. Stack objects
+   * and unrelated immortal representations are excluded by the caller;
+   * an admitted published object already carries all restrictions. */
+  if (*(const size_t *)object == SIZE_MAX) return;
+  ScrNativeIntegrity *entry = scr_native_integrity_find(object);
+  if (entry) {
+    entry->restrictions |= restrictions;
+    return;
+  }
+  scr_native_integrity_reserve();
+  size_t mask = scr_native_integrity_capacity - 1;
+  size_t slot = scr_native_integrity_bucket(object, scr_native_integrity_capacity);
+  while (scr_native_integrities[slot].object &&
+         scr_native_integrities[slot].object != SCR_NATIVE_INTEGRITY_DELETED)
+    slot = (slot + 1) & mask;
+  if (scr_native_integrities[slot].object) scr_native_integrity_deleted--;
+  scr_native_integrities[slot] = (ScrNativeIntegrity){ .object = object, .restrictions = restrictions };
+  scr_native_integrity_count++;
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
+
+static unsigned scr_native_property_apply_restrictions(unsigned facts, unsigned restrictions) {
+  if ((restrictions & SCR_NATIVE_SEALED) == SCR_NATIVE_SEALED)
+    facts &= ~SCR_NATIVE_CONFIGURABLE;
+  if ((restrictions & SCR_NATIVE_FROZEN) == SCR_NATIVE_FROZEN && (facts & SCR_NATIVE_DATA))
+    facts &= ~SCR_NATIVE_WRITABLE;
+  return facts;
+}
+
+unsigned scr_native_property_flags(const void *object, const char *key, size_t length, unsigned facts) {
+  if (!(facts & SCR_NATIVE_OWN)) return 0;
+  const ScrNativeIntegrity *entry = scr_native_integrity_find(object);
+  for (const ScrNativeAttributes *a = entry ? entry->attributes : NULL; a; a = a->next) {
+    if (a->length != length || memcmp(a->key, key, length)) continue;
+    facts = (facts & (SCR_NATIVE_OWN | SCR_NATIVE_DATA)) | a->attributes;
+    break;
+  }
+  unsigned restrictions = *(const size_t *)object == SIZE_MAX ? SCR_NATIVE_FROZEN
+      : entry ? entry->restrictions : 0;
+  return scr_native_property_apply_restrictions(facts, restrictions);
+}
+
+static ScrNativeAttributes *scr_native_property_find(const void *object, const char *key, size_t length) {
+  const ScrNativeIntegrity *entry = scr_native_integrity_find(object);
+  for (ScrNativeAttributes *a = entry ? entry->attributes : NULL; a; a = a->next)
+    if (a->length == length && !memcmp(a->key, key, length)) return a;
+  return NULL;
+}
+
+bool scr_native_property_declared_undefined(const void *object, const char *key, size_t length) {
+  const ScrNativeAttributes *a = scr_native_property_find(object, key, length);
+  return a && a->declared_undefined;
+}
+
+void scr_native_property_attributes(void *object, const char *key, size_t length, unsigned attributes) {
+  /* The keyed writer has already validated the descriptor and transferred
+   * its value. Metadata owns bytes only, never a child/capsule/closure edge. */
+  if (*(const size_t *)object == SIZE_MAX) return;
+  scr_native_integrity_strengthen(object, 0);
+  ScrNativeIntegrity *entry = scr_native_integrity_find(object);
+  ScrNativeAttributes *a = scr_native_property_find(object, key, length);
+  if (!a) {
+    if (length > SIZE_MAX - sizeof *a) scr_json_oom();
+    a = malloc(sizeof *a + length);
+    if (!a) scr_json_oom();
+    a->next = entry->attributes;
+    a->length = length;
+    a->declared_undefined = false;
+    memcpy(a->key, key, length);
+    entry->attributes = a;
+  }
+  a->attributes = attributes & (SCR_NATIVE_WRITABLE | SCR_NATIVE_ENUMERABLE | SCR_NATIVE_CONFIGURABLE);
+}
+
+void scr_native_property_forget(void *object, const char *key, size_t length) {
+  ScrNativeIntegrity *entry = scr_native_integrity_find(object);
+  if (!entry) return;
+  for (ScrNativeAttributes **slot = &entry->attributes; *slot; slot = &(*slot)->next) {
+    ScrNativeAttributes *a = *slot;
+    if (a->length != length || memcmp(a->key, key, length)) continue;
+    *slot = a->next;
+    free(a);
+    return;
+  }
+}
+
+bool scr_native_property_metadata(const void *object) {
+  const ScrNativeIntegrity *entry = scr_native_integrity_find(object);
+  return entry && entry->attributes;
+}
+
+const char *scr_native_publication_refusal(const void *object) {
+  if (scr_native_property_metadata(object))
+    return "Cannot publish a native object with property attribute overrides";
+  if (scr_record_source_has(object))
+    return "Cannot publish a native record with context-local property metadata";
+  return NULL;
+}
+
+ScrDyn *scr_native_property_bag(ScrDyn *properties) {
+  return properties && properties->kind == SCR_DYN_OBJ ? properties : NULL;
+}
+
+static unsigned scr_dyn_entry_facts(const ScrDynEntry *entry) {
+  if (!entry) return 0;
+  return SCR_NATIVE_OWN | (entry->accessor ? 0 : SCR_NATIVE_DATA) |
+      (!entry->accessor && entry->writable ? SCR_NATIVE_WRITABLE : 0) |
+      (entry->enumerable ? SCR_NATIVE_ENUMERABLE : 0) |
+      (entry->configurable ? SCR_NATIVE_CONFIGURABLE : 0);
+}
+
+/* A refreshed value never owns descriptor policy. Overlay the referent's
+ * scalar attributes without reading a getter or retaining a native child. */
+static void scr_native_object_refresh_descriptors(const void *object, ScrDyn *view) {
+  if (view && view->kind == SCR_DYN_OBJ && scr_native_property_metadata(object)) {
+    for (size_t i = 0; i < view->v.obj.len; i++) {
+      ScrDynEntry *entry = &view->v.obj.entries[i];
+      unsigned facts = scr_native_property_flags(object, entry->key, entry->key_len,
+                                                  scr_dyn_entry_facts(entry));
+      entry->writable = (facts & SCR_NATIVE_WRITABLE) != 0;
+      entry->enumerable = (facts & SCR_NATIVE_ENUMERABLE) != 0;
+      entry->configurable = (facts & SCR_NATIVE_CONFIGURABLE) != 0;
+    }
+  }
+  unsigned restrictions = *(const size_t *)object == SIZE_MAX ? SCR_NATIVE_FROZEN
+      : scr_native_integrity_flags(object);
+  scr_dyn_restrict_view(view, restrictions);
+}
+
+unsigned scr_native_property_bag_facts(const ScrDyn *properties, const char *key, size_t length) {
+  return scr_dyn_entry_facts(properties ? scr_dyn_find_entry(properties, key, length) : NULL);
+}
+
+static const ScrDynNativeObjectOps *scr_native_object_exact(void *object, const ScrDynNativeObjectOps *ops) {
+  return ops->exact ? ops->exact(object) : ops;
+}
+
+static size_t scr_native_object_index(const ScrDynNativeObjectOps *ops, const char *key, size_t length) {
+  for (size_t i = 0; i < ops->count; i++)
+    if (ops->lengths[i] == length && !memcmp(ops->names[i], key, length)) return i;
+  return ops->count;
+}
+
+void scr_native_object_restrict(void *object, const ScrDynNativeObjectOps *ops, unsigned restrictions) {
+  ops = scr_native_object_exact(object, ops);
+  if (*(const size_t *)object == SIZE_MAX) return;
+  ScrDyn *properties = ops->properties ? ops->properties(object) : NULL;
+  scr_native_integrity_strengthen(object, restrictions);
+  if (properties) scr_dyn_restrict_view(properties, restrictions);
+}
+
+void scr_native_object_sync_properties(const void *object, ScrDyn *properties) {
+  scr_native_object_refresh_descriptors(object, properties);
+}
+
+static bool scr_native_property_restricted(unsigned facts, unsigned restrictions) {
+  return !(facts & SCR_NATIVE_OWN) || (!(facts & SCR_NATIVE_CONFIGURABLE) &&
+      (restrictions != SCR_NATIVE_FROZEN || !(facts & SCR_NATIVE_DATA) || !(facts & SCR_NATIVE_WRITABLE)));
+}
+
+bool scr_native_object_is_restricted(void *object, const ScrDynNativeObjectOps *ops, unsigned restrictions) {
+  ops = scr_native_object_exact(object, ops);
+  if (*(const size_t *)object == SIZE_MAX) return true;
+  if (!(scr_native_integrity_flags(object) & SCR_NATIVE_NON_EXTENSIBLE)) return false;
+  if (restrictions == SCR_NATIVE_NON_EXTENSIBLE) return true;
+  for (size_t i = 0; i < ops->count; i++) {
+    const char *key = ops->names[i];
+    unsigned facts = scr_native_property_flags(object, key, ops->lengths[i], ops->facts(object, i));
+    if (!scr_native_property_restricted(facts, restrictions)) return false;
+  }
+  ScrDyn *properties = ops->properties ? ops->properties(object) : NULL;
+  if (!properties) return true;
+  /* Declared properties are authoritative in native slots and scalar
+   * overrides. A retained source view may still contain their placeholders. */
+  for (size_t i = 0; i < properties->v.obj.len; i++) {
+    const ScrDynEntry *entry = &properties->v.obj.entries[i];
+    if (scr_native_object_index(ops, entry->key, entry->key_len) != ops->count) continue;
+    if (entry->configurable || (restrictions == SCR_NATIVE_FROZEN && !entry->accessor && entry->writable))
+      return false;
+  }
+  return !properties->symbol_properties || (restrictions == SCR_NATIVE_FROZEN
+      ? scr_dyn_is_frozen(properties->symbol_properties) : scr_dyn_is_sealed(properties->symbol_properties));
+}
+
+static unsigned scr_native_object_property(void *object, const ScrDynNativeObjectOps *ops,
+                                           const char *key, size_t length) {
+  size_t index = scr_native_object_index(ops, key, length);
+  unsigned facts = index == ops->count ? 0 : ops->facts(object, index);
+  return scr_native_property_flags(object, key, length, facts);
+}
+
+static bool scr_native_property_admitted(void *object, unsigned facts, ScrNativePropertyOperation op) {
+  if (op == SCR_NATIVE_DELETE || op == SCR_NATIVE_DELETE_SLOPPY)
+    return !(facts & SCR_NATIVE_OWN) || (facts & SCR_NATIVE_CONFIGURABLE);
+  if (!(facts & SCR_NATIVE_OWN))
+    return *(const size_t *)object != SIZE_MAX && !(scr_native_integrity_flags(object) & SCR_NATIVE_NON_EXTENSIBLE);
+  if (op == SCR_NATIVE_DEFINE) return (facts & SCR_NATIVE_CONFIGURABLE) != 0;
+  return !(facts & SCR_NATIVE_DATA) || (facts & SCR_NATIVE_WRITABLE);
+}
+
+static bool scr_native_property_refuse(const ScrDynNativeObjectOps *ops,
+    const char *key, size_t length, unsigned facts, ScrNativePropertyOperation op) {
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  bool deleting = op == SCR_NATIVE_DELETE;
+  if (op == SCR_NATIVE_DEFINE) scr_jb_puts(&message, "Cannot redefine property: ");
+  else if (deleting) scr_jb_puts(&message, "Cannot delete property '");
+  else if (!(facts & SCR_NATIVE_OWN)) scr_jb_puts(&message, "Cannot add property ");
+  else scr_jb_puts(&message, "Cannot assign to read only property '");
+  scr_jb_write(&message, key, length);
+  if (op != SCR_NATIVE_DEFINE) {
+    if (!deleting && !(facts & SCR_NATIVE_OWN)) scr_jb_puts(&message, ", object is not extensible");
+    else {
+      scr_jb_puts(&message, deleting ? "' of #<" : "' of object '#<");
+      scr_jb_puts(&message, ops->class_name ? ops->class_name : "Object");
+      scr_jb_puts(&message, deleting ? ">" : ">'");
+    }
+  }
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return false;
+}
+
+static bool scr_native_object_check_write_mode(void *object, const ScrDynNativeObjectOps *ops,
+    const char *key, size_t length, ScrNativePropertyOperation op, bool data_only) {
+  if (scr_exc_pending()) return false;
+  ops = scr_native_object_exact(object, ops);
+  unsigned facts = scr_native_object_property(object, ops, key, length);
+  bool admitted = (!(facts & SCR_NATIVE_OWN) || !data_only || (facts & SCR_NATIVE_DATA)) &&
+      scr_native_property_admitted(object, facts, op);
+  if (admitted && op != SCR_NATIVE_DELETE && op != SCR_NATIVE_DELETE_SLOPPY && ops->prepare) {
+    if (!ops->prepare(object) || scr_exc_pending()) return false;
+    /* Prototype/bag initialization can call user code. Reacquire facts;
+     * no field or descriptor address survives that callback boundary. */
+    facts = scr_native_object_property(object, ops, key, length);
+    admitted = (!(facts & SCR_NATIVE_OWN) || !data_only || (facts & SCR_NATIVE_DATA)) &&
+        scr_native_property_admitted(object, facts, op);
+  }
+  if (admitted || op == SCR_NATIVE_SET_SLOPPY || op == SCR_NATIVE_DELETE_SLOPPY) return admitted;
+  return scr_native_property_refuse(ops, key, length, facts, op);
+}
+
+bool scr_native_object_check_write(void *object, const ScrDynNativeObjectOps *ops,
+                                  const char *key, size_t length, ScrNativePropertyOperation op) {
+  return scr_native_object_check_write_mode(object, ops, key, length, op, false);
+}
+
+/* The single native dispose hook serves all observers; each runs only
+ * while it has entries to forget. */
 static void scr_dispose_observers(void *object) {
+  if (scr_native_integrity_count) scr_native_integrity_forget(object);
   if (scr_weak_observing) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
 }
@@ -2479,6 +3117,8 @@ static void scr_record_source_reserve(void) {
 /* The key's position in the shape's declaration order, or count. */
 static size_t scr_record_source_index(const ScrRecordSource *source, const char *key,
                                       size_t key_len) {
+  if (source->ops && scr_native_object_index(source->ops, key, key_len) == source->ops->count)
+    return source->count;
   for (size_t i = 0; i < source->count; i++) {
     size_t len;
     memcpy(&len, source->lens + i * source->len_stride, sizeof len);
@@ -2493,6 +3133,23 @@ static size_t scr_record_source_index(const ScrRecordSource *source, const char 
 static bool scr_record_source_declared(const ScrRecordSource *source, const char *key,
                                        size_t key_len) {
   return scr_record_source_index(source, key, key_len) < source->count;
+}
+
+static ScrDyn *scr_dyn_native_extra_owner(const ScrDyn *value, const ScrStr *key, bool create) {
+  ScrDyn *owner = scr_dyn_native_metadata(value);
+  if (owner) {
+    ScrRecordSource *source = scr_record_source_find(value->v.typed_ref.ptr);
+    const ScrDynNativeObjectOps *ops = value->v.typed_ref.native_object
+        ? scr_native_object_exact(value->v.typed_ref.ptr, value->v.typed_ref.native_object) : NULL;
+    if (ops ? scr_native_object_index(ops, key->data, key->len) != ops->count
+            : scr_record_source_declared(source, key->data, key->len)) return NULL;
+    return create ? scr_dyn_native_write_metadata(value) : owner;
+  }
+  if (!create || !scr_dyn_native_can_prepare(value)) return NULL;
+  const ScrDynNativeObjectOps *ops = value->v.typed_ref.native_object
+        ? scr_native_object_exact(value->v.typed_ref.ptr, value->v.typed_ref.native_object) : NULL;
+  if (scr_native_object_index(ops, key->data, key->len) != ops->count) return NULL;
+  return scr_dyn_native_write_metadata(value);
 }
 
 /* Inserts the entry of a record the caller just built; the table takes
@@ -2519,6 +3176,40 @@ static void scr_record_source_put(const ScrRecordSource *entry) {
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
+bool scr_record_source_prepare(void *rec, const char *const *names, const size_t *lens,
+                               size_t count, const ScrDynNativeObjectOps *ops) {
+  ScrRecordSource *existing = scr_record_source_find(rec);
+  if (existing) {
+    existing->ops = ops;
+    return true;
+  }
+  if (*(const size_t *)rec == SIZE_MAX) return true;
+  ScrDyn *view = scr_dyn_new_obj();
+  for (size_t i = 0; i < ops->count; i++) {
+    unsigned facts = ops->facts(rec, i);
+    if (facts & SCR_NATIVE_OWN)
+      scr_dyn_obj_set(view, ops->names[i], ops->lengths[i], scr_dyn_retain(scr_dyn_undefined()));
+  }
+  ScrRecordSource source = { rec, view, (const char *)names, (const char *)lens,
+                             sizeof *names, sizeof *lens, count, ops };
+  scr_record_source_put(&source);
+  scr_native_object_sync_properties(rec, view);
+  return true;
+}
+
+/* Construction-only append to a fresh table: preserve accessor identities
+ * and descriptor flags without reading a property or invoking user code. */
+static void scr_record_source_copy_entry(ScrDyn *target, const ScrDynEntry *entry) {
+  scr_dyn_obj_set(target, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+  ScrDynEntry *copy = &target->v.obj.entries[target->v.obj.len - 1];
+  copy->accessor = entry->accessor;
+  copy->getter = entry->getter ? scr_dyn_retain(entry->getter) : NULL;
+  copy->setter = entry->setter ? scr_dyn_retain(entry->setter) : NULL;
+  copy->writable = entry->writable;
+  copy->enumerable = entry->enumerable;
+  copy->configurable = entry->configurable;
+}
+
 /* Called by the checked record builder after it filled `rec` from `src`;
  * `names` lists the shape's fields in declaration order. Keeps nothing
  * unless the source has an own property the shape does not declare, or
@@ -2528,7 +3219,7 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
                             const size_t *lens, size_t count) {
   if (!rec || !src || src->kind != SCR_DYN_OBJ || src->v.obj.source_identity) return;
   ScrRecordSource probe = { rec, NULL, (const char *)names, (const char *)lens,
-                            sizeof *names, sizeof *lens, count };
+                            sizeof *names, sizeof *lens, count, NULL };
   bool keep = false;
   size_t next = 0;
   for (size_t i = 0; i < src->v.obj.len && !keep; i++) {
@@ -2543,18 +3234,7 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
     const ScrDynEntry *entry = &src->v.obj.entries[i];
     if (scr_record_source_declared(&probe, entry->key, entry->key_len)) {
       scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(scr_dyn_undefined()));
-    } else if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
-      scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(entry->value));
-    } else {
-      ScrStr *name = scr_str_new(entry->key, entry->key_len);
-      ScrDyn *key = scr_dyn_new_str(name);
-      ScrDyn *descriptor = scr_dyn_own_descriptor(src, name);
-      ScrDyn *defined = descriptor ? scr_dyn_define_property(view, key, descriptor) : NULL;
-      scr_dyn_release(defined);
-      scr_dyn_release(descriptor);
-      scr_dyn_release(key);
-      scr_str_release(name);
-    }
+    } else scr_record_source_copy_entry(view, entry);
   }
   probe.view = view;
   scr_record_source_put(&probe);
@@ -2569,30 +3249,25 @@ static ScrDyn *scr_record_source_merge(const ScrRecordSource *source, const ScrD
   ScrDyn *out = scr_dyn_new_obj();
   for (size_t i = 0; i < cached->v.obj.len; i++) {
     const ScrDynEntry *entry = &cached->v.obj.entries[i];
-    ScrDyn *value = scr_dyn_obj_get(fresh, entry->key, entry->key_len);
-    if (value) {
-      scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(value));
+    const ScrDynEntry *current = scr_dyn_find_entry(fresh, entry->key, entry->key_len);
+    if (current) {
+      scr_record_source_copy_entry(out, current);
       continue;
     }
     if (scr_record_source_declared(source, entry->key, entry->key_len)) continue;
-    if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
-      scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(entry->value));
-      continue;
-    }
-    ScrStr *name = scr_str_new(entry->key, entry->key_len);
-    ScrDyn *key = scr_dyn_new_str(name);
-    ScrDyn *descriptor = scr_dyn_own_descriptor(cached, name);
-    ScrDyn *defined = descriptor ? scr_dyn_define_property(out, key, descriptor) : NULL;
-    scr_dyn_release(defined);
-    scr_dyn_release(descriptor);
-    scr_dyn_release(key);
-    scr_str_release(name);
+    scr_record_source_copy_entry(out, entry);
   }
   for (size_t i = 0; i < fresh->v.obj.len; i++) {
     const ScrDynEntry *entry = &fresh->v.obj.entries[i];
     if (scr_dyn_obj_get(out, entry->key, entry->key_len)) continue;
-    scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+    scr_record_source_copy_entry(out, entry);
   }
+  out->copied_from_native = fresh->copied_from_native;
+  out->prototype = cached->prototype ? scr_dyn_retain(cached->prototype) : NULL;
+  out->null_proto = cached->null_proto;
+  out->symbol_properties = cached->symbol_properties ? scr_dyn_retain(cached->symbol_properties) : NULL;
+  out->symbol_keys = cached->symbol_keys ? scr_dyn_retain(cached->symbol_keys) : NULL;
+  scr_native_object_refresh_descriptors(source->rec, out);
   return out;
 }
 
@@ -2601,9 +3276,31 @@ static ScrDyn *scr_record_source_merge(const ScrRecordSource *source, const ScrD
  * retained view (+1), or the snapshot itself when there is none. */
 ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec) {
   ScrRecordSource *source = scr_record_source_find(rec);
-  if (!source || !snapshot || snapshot->kind != SCR_DYN_OBJ) return snapshot;
+  if (!snapshot || snapshot->kind != SCR_DYN_OBJ) return snapshot;
+  if (!source) {
+    scr_native_object_refresh_descriptors(rec, snapshot);
+    return snapshot;
+  }
   ScrDyn *merged = scr_record_source_merge(source, source->view, snapshot);
   scr_dyn_release(snapshot);
+  /* Copying conversions share property values and symbol identities, never
+   * the mutable descriptor/key tables used by live native aliases. */
+  if (merged->symbol_properties) {
+    ScrDyn *properties = scr_dyn_new_obj_null_proto();
+    ScrDyn *copied = scr_dyn_copy_property_descriptors(properties, merged->symbol_properties);
+    ScrDyn *keys = copied ? scr_dyn_get_own_property_symbols(merged) : NULL;
+    scr_dyn_release(copied);
+    if (!keys) {
+      scr_dyn_release(properties);
+      scr_dyn_release(merged);
+      return NULL;
+    }
+    properties->non_extensible = merged->symbol_properties->non_extensible;
+    scr_dyn_release(merged->symbol_properties);
+    scr_dyn_release(merged->symbol_keys);
+    merged->symbol_properties = properties;
+    merged->symbol_keys = keys;
+  }
   return merged;
 }
 
@@ -2636,7 +3333,10 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
       const ScrDynEntry *entry = &view->v.obj.entries[i];
       size_t index = scr_record_source_index(source, entry->key, entry->key_len);
       if (index < count) {
-        if (!seen[index] && field(b, rec, index, first)) first = false;
+        unsigned facts = scr_native_property_flags(rec, entry->key, entry->key_len,
+                                                   SCR_NATIVE_DEFAULT_DATA);
+        if (!seen[index] && (facts & SCR_NATIVE_ENUMERABLE) && field(b, rec, index, first))
+          first = false;
         seen[index] = true;
         continue;
       }
@@ -2650,7 +3350,13 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
       scr_jb_put_dyn(b, entry->value);
     }
     for (size_t index = 0; index < count && !scr_exc_pending(); index++) {
-      if (!seen[index] && field(b, rec, index, first)) first = false;
+      if (seen[index]) continue;
+      const char *name;
+      size_t length;
+      memcpy(&name, source->names + index * source->name_stride, sizeof name);
+      memcpy(&length, source->lens + index * source->len_stride, sizeof length);
+      unsigned facts = scr_native_property_flags(rec, name, length, SCR_NATIVE_DEFAULT_DATA);
+      if ((facts & SCR_NATIVE_ENUMERABLE) && field(b, rec, index, first)) first = false;
     }
     if (seen != small) free(seen);
   }
@@ -2687,14 +3393,11 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.materialize = materialize;
   d->v.typed_ref.commit = commit;
   d->v.typed_ref.array = NULL;
+  d->v.typed_ref.native_object = NULL;
   d->v.typed_ref.materialized = NULL;
-  /* A record with undeclared properties starts from its retained view
-   * (refreshed on first use), which also keeps the declared-field fast
-   * paths off for it. */
-  if (scr_record_source_count && type_key_len >= 7 && memcmp(type_key, "record:", 7) == 0) {
-    ScrDyn *view = scr_record_source_view(ptr);
-    if (view) d->v.typed_ref.materialized = scr_dyn_retain(view);
-  }
+  /* Source metadata is consulted at each read boundary. A cached snapshot
+   * must never alias its placeholder bag: refreshing it would retain native
+   * children in the referent's otherwise edge-free metadata. */
   d->v.typed_ref.casts = NULL;
   d->v.typed_ref.traced = traced;
   d->v.typed_ref.observed = observed;
@@ -2703,6 +3406,11 @@ static ScrDyn *scr_dyn_typed_ref_new(
   scr_typed_ref_slots[slot] = d; /* the empty slot that ended the probe */
   scr_typed_ref_count++;
   return d;
+}
+
+void scr_dyn_typed_ref_bind_native_object(ScrDyn *value, const ScrDynNativeObjectOps *ops) {
+  if (value && value->kind == SCR_DYN_TYPED_REF && ops)
+    value->v.typed_ref.native_object = ops;
 }
 
 ScrDyn *scr_dyn_new_typed_ref(
@@ -2755,6 +3463,10 @@ static void scr_dyn_typed_ref_preserve_child(
       !scr_dyn_strict_eq(cached_child, fresh_child)) {
     return;
   }
+  /* Identity preservation must also preserve a newly discovered capability;
+   * an older opaque child may predate the adapter that supplies its owner. */
+  if (!cached_child->v.typed_ref.native_object)
+    scr_dyn_typed_ref_bind_native_object(cached_child, fresh_child->v.typed_ref.native_object);
   *fresh_slot = scr_dyn_retain(cached_child);
   scr_dyn_release(fresh_child);
 }
@@ -2795,10 +3507,25 @@ ScrDyn *scr_dyn_class_view_unavailable(void *ptr) {
 
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
   ScrDyn *capsule = (ScrDyn *)d;
+  if (scr_dyn_typed_ref_array_ops(d)) {
+    (void)scr_dyn_array_metadata(d, false);
+    if (scr_exc_pending()) return scr_dyn_retain(scr_dyn_undefined());
+  }
   ScrDyn *fresh = capsule->v.typed_ref.materialize(capsule->v.typed_ref.ptr);
   if (scr_exc_pending()) {
     scr_dyn_release(fresh);
     return scr_dyn_retain(scr_dyn_undefined());
+  }
+  bool record_view = fresh->kind == SCR_DYN_OBJ && capsule->v.typed_ref.type_key_len >= 7 &&
+                     memcmp(capsule->v.typed_ref.type_key, "record:", 7) == 0;
+  ScrRecordSource *source = record_view ? scr_record_source_find(capsule->v.typed_ref.ptr) : NULL;
+  if (source) {
+    /* A mutation can create metadata after either alias was boxed. Always
+     * take order and unknown properties from the canonical source, including
+     * on the first refresh; cached aliases carry values, not policy. */
+    ScrDyn *ordered = scr_record_source_merge(source, source->view, fresh);
+    scr_dyn_release(fresh);
+    fresh = ordered;
   }
   if (!capsule->v.typed_ref.materialized) {
     capsule->v.typed_ref.materialized = fresh;
@@ -2812,16 +3539,7 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     /* Record layouts cannot store properties added through a checked
      * view. Keep those descriptors in the view across native refreshes. */
     ScrDyn *cached = capsule->v.typed_ref.materialized;
-    bool record_view = fresh->kind == SCR_DYN_OBJ && cached->kind == SCR_DYN_OBJ &&
-                       capsule->v.typed_ref.type_key_len >= 7 &&
-                       memcmp(capsule->v.typed_ref.type_key, "record:", 7) == 0;
-    ScrRecordSource *source = record_view ? scr_record_source_find(capsule->v.typed_ref.ptr) : NULL;
-    if (source) {
-      /* Undeclared source properties keep their own-key position. */
-      ScrDyn *ordered = scr_record_source_merge(source, cached, fresh);
-      scr_dyn_release(fresh);
-      fresh = ordered;
-    } else if (record_view) {
+    if (!source && record_view && cached->kind == SCR_DYN_OBJ) {
       for (size_t i = 0; i < cached->v.obj.len; i++) {
         ScrDynEntry *entry = &cached->v.obj.entries[i];
         if (scr_dyn_obj_get(fresh, entry->key, entry->key_len)) continue;
@@ -2835,15 +3553,19 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
         scr_str_release(name);
       }
     }
-    /* A native record stores its own fields, while its checked view owns
-     * prototype changes. Refreshing fields must preserve that prototype. */
-    scr_dyn_release(fresh->prototype);
-    fresh->prototype = capsule->v.typed_ref.materialized->prototype ? scr_dyn_retain(capsule->v.typed_ref.materialized->prototype) : NULL;
-    fresh->null_proto = capsule->v.typed_ref.materialized->null_proto;
-    scr_dyn_release(fresh->symbol_properties);
-    scr_dyn_release(fresh->symbol_keys);
-    fresh->symbol_properties = capsule->v.typed_ref.materialized->symbol_properties ? scr_dyn_retain(capsule->v.typed_ref.materialized->symbol_properties) : NULL;
-    fresh->symbol_keys = capsule->v.typed_ref.materialized->symbol_keys ? scr_dyn_retain(capsule->v.typed_ref.materialized->symbol_keys) : NULL;
+    /* Native owners already supplied their effective prototype and symbols.
+     * Only unbound views retain snapshot-local metadata across refreshes. */
+    if (!scr_dyn_typed_ref_array_ops(capsule) && !source && !scr_dyn_native_class_ops(capsule)) {
+      scr_dyn_release(fresh->prototype);
+      fresh->prototype = capsule->v.typed_ref.materialized->prototype ? scr_dyn_retain(capsule->v.typed_ref.materialized->prototype) : NULL;
+      fresh->null_proto = capsule->v.typed_ref.materialized->null_proto;
+    }
+    if (!scr_dyn_typed_ref_array_ops(capsule) && !source && !scr_dyn_native_class_ops(capsule)) {
+      scr_dyn_release(fresh->symbol_properties);
+      scr_dyn_release(fresh->symbol_keys);
+      fresh->symbol_properties = cached->symbol_properties ? scr_dyn_retain(cached->symbol_properties) : NULL;
+      fresh->symbol_keys = cached->symbol_keys ? scr_dyn_retain(cached->symbol_keys) : NULL;
+    }
     size_t cached_rc = capsule->v.typed_ref.materialized->rc;
     size_t fresh_rc = fresh->rc;
     ScrDyn old = *capsule->v.typed_ref.materialized;
@@ -2853,6 +3575,15 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     fresh->rc = fresh_rc;
     scr_dyn_release(fresh);
   }
+  /* Refresh rebuilds descriptors from the native layout. Reapply the
+   * referent's recorded restrictions only after that reconstruction. */
+  /* Published arrays retain their immutable count after scalar metadata is
+   * retired. Prototype walks must see the same restrictions as direct writes. */
+  if (scr_dyn_typed_ref_array_ops(capsule))
+    scr_dyn_restrict_view(capsule->v.typed_ref.materialized,
+                          scr_arr_integrity_flags(capsule->v.typed_ref.ptr));
+  else scr_native_object_refresh_descriptors(capsule->v.typed_ref.ptr,
+                                             capsule->v.typed_ref.materialized);
   return scr_dyn_retain(capsule->v.typed_ref.materialized);
 }
 
@@ -2869,15 +3600,180 @@ void scr_dyn_typed_ref_commit(ScrDyn *d) {
  * `xs.length`, or iteration step makes a loop over a live array quadratic.
  * The native array is the source of truth (every refresh rebuilds the view
  * from it and keeps only the prototype and symbol properties), so element
- * reads, presence, and in-range writes can consult it directly. Anything
- * whose answer may come from the prototype chain — holes and out-of-range
- * indexes — or needs the snapshot's diagnostics still takes the snapshot. */
-void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops) {
-  if (d && d->kind == SCR_DYN_TYPED_REF) {
-    d->v.typed_ref.array = ops;
-    d->v.typed_ref.record = false;
-    d->v.typed_ref.klass = false;
+ * reads, presence, and indexed writes consult it directly. Missing own
+ * indexes resolve the cached prototype without rebuilding the view; getters
+ * and setters receive the original capsule. Type refusals stop at the write. */
+bool scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops) {
+  if (scr_exc_pending()) return false;
+  if (!d || d->kind != SCR_DYN_TYPED_REF || !ops) {
+    static const char message[] = "Live array binding requires a native capsule and operations";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
   }
+  ScrArr *a = d->v.typed_ref.ptr;
+  /* Published and static template arrays are shared immutable storage.
+   * Binding their capsule cannot write even an otherwise empty extension. */
+  if (a->rc == SIZE_MAX) {
+    d->v.typed_ref.array = ops;
+    d->v.typed_ref.record = d->v.typed_ref.klass = false;
+    return true;
+  }
+  if (!ops->box || !ops->unbox) {
+    static const char message[] = "Live array binding requires an exact element codec";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  ScrArrExt *x = scr_arr_ext(a);
+  if (x->named) {
+    ScrArrNamed *n = x->named;
+    if (n->ops.box != ops->box || n->ops.unbox != ops->unbox ||
+        n->recipe.retain != d->v.typed_ref.retain || n->recipe.release != d->v.typed_ref.release ||
+        n->recipe.type_key_len != d->v.typed_ref.type_key_len ||
+        memcmp(n->key, d->v.typed_ref.type_key, n->recipe.type_key_len)) {
+      static const char message[] = "Incompatible live array element representation";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return false;
+    }
+  } else {
+    size_t length = d->v.typed_ref.type_key_len;
+    ScrArrNamed *n = scr_mem_calloc(sizeof *n + length + 1);
+    if (!n) scr_json_oom();
+    n->ops = *ops;
+    memcpy(n->key, d->v.typed_ref.type_key, length);
+    n->recipe = (ScrDynTypedRefRecipe){d->v.typed_ref.retain, d->v.typed_ref.release,
+      n->key, length, d->v.typed_ref.materialize, d->v.typed_ref.commit,
+      a->cyc ? 2 : d->v.typed_ref.observed ? 1 : 0, 1, &n->ops, NULL};
+    x->named = n;
+  }
+  d->v.typed_ref.array = &x->named->ops;
+  d->v.typed_ref.record = d->v.typed_ref.klass = false;
+  d->v.typed_ref.traced = a->cyc != 0;
+  d->v.typed_ref.observed = true;
+  if (x->named_state != SCR_ARR_NAMES_UNPROMOTED) return true;
+  scr_arr_retain(a);
+  x->named_state = SCR_ARR_NAMES_PROMOTING;
+  ScrDyn *staged = NULL;
+  if (x->prop_len) {
+    staged = scr_dyn_new_obj();
+    if (x->metadata) {
+      scr_dyn_release(scr_dyn_copy_property_descriptors(staged, x->metadata));
+      staged->prototype = x->metadata->prototype ? scr_dyn_retain(x->metadata->prototype) : NULL;
+      staged->null_proto = x->metadata->null_proto;
+    }
+    for (size_t i = 0; i < x->prop_len && !scr_exc_pending(); i++) {
+      const ScrArrProp *property = &x->props[i];
+      ScrDyn *value = property->state == SCR_ARR_UNDEFINED
+          ? scr_dyn_retain(scr_dyn_undefined()) : x->named->ops.box(property->slot);
+      if (!value || scr_exc_pending()) {
+        if (!scr_exc_pending()) scr_dyn_check_fail(NULL, "native array element", NULL);
+        scr_dyn_release(value);
+        break;
+      }
+      scr_dyn_obj_set(staged, property->key, property->key_len, value);
+    }
+  } else if (x->metadata) staged = scr_dyn_retain(x->metadata);
+  if (scr_exc_pending()) {
+    ScrCaught *failure = scr_exc_take();
+    x->named_state = SCR_ARR_NAMES_UNPROMOTED;
+    scr_dyn_release(staged);
+    scr_arr_release(a);
+    scr_rethrow(failure);
+    scr_caught_release(failure);
+    return false;
+  }
+  scr_arr_promote_metadata(a, staged);
+  scr_arr_release(a);
+  return true;
+}
+
+static ScrDyn *scr_dyn_array_receiver(const ScrArr *a) {
+  const ScrArrNamed *n = a->ext ? a->ext->named : NULL;
+  if (!n) {
+    static const char message[] = "Array property read requires a live-view binding";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  const ScrDynTypedRefRecipe *r = &n->recipe;
+  ScrDyn *d = (r->kind == 2 ? scr_dyn_new_typed_ref_traced : r->kind == 1
+      ? scr_dyn_new_typed_ref_observed : scr_dyn_new_typed_ref)((void *)a,
+      r->retain, r->release, r->type_key, r->type_key_len, r->materialize, r->commit);
+  if (!scr_dyn_typed_ref_bind_array(d, &n->ops)) { scr_dyn_release(d); return NULL; }
+  return d;
+}
+
+static ScrStr *scr_dyn_array_number_key(double key) {
+  char text[64];
+  size_t length = scr_f64_to_str(key, text);
+  return scr_str_new(text, length);
+}
+
+ScrDyn *scr_arr_property_get(const ScrArr *a, double key) {
+  ScrDyn *receiver = scr_dyn_array_receiver(a);
+  if (!receiver) return NULL;
+  ScrStr *name = scr_dyn_array_number_key(key);
+  ScrDyn *value = scr_dyn_typed_ref_key_get(receiver, name);
+  scr_str_release(name);
+  scr_dyn_release(receiver);
+  return value;
+}
+
+bool scr_dyn_array_named_has(const ScrArr *a, double key, bool own) {
+  ScrDyn *receiver = scr_dyn_array_receiver(a);
+  if (!receiver) return false;
+  ScrStr *name = scr_dyn_array_number_key(key);
+  bool found = own ? scr_dyn_has_own(receiver, name) : scr_dyn_in(receiver, name);
+  scr_str_release(name);
+  scr_dyn_release(receiver);
+  return found;
+}
+
+double scr_dyn_array_named_state(const ScrArr *a, double key) {
+  ScrDyn *metadata = a->ext->metadata;
+  if (!metadata) return SCR_ARR_HOLE;
+  char text[64];
+  size_t length = scr_f64_to_str(key, text);
+  ScrDynEntry *entry = scr_dyn_find_entry(metadata, text, length);
+  if (!entry) return SCR_ARR_HOLE;
+  return !entry->accessor && entry->value->kind == SCR_DYN_UNDEF
+      ? SCR_ARR_UNDEFINED : SCR_ARR_VALUE;
+}
+
+bool scr_arr_property_unbox(const ScrArr *a, const ScrDyn *value, uint64_t *out) {
+  if (scr_exc_pending()) return false;
+  if (a->ext->named->ops.unbox(value, out)) return !scr_exc_pending();
+  if (!scr_exc_pending()) scr_dyn_check_fail(NULL, "native array element", value);
+  return false;
+}
+
+bool scr_dyn_array_named_set(ScrArr *a, double key, uint64_t slot, uint8_t state, bool strict) {
+  ScrDyn *receiver = scr_dyn_array_receiver(a);
+  if (!receiver) return false;
+  ScrDyn *value = state == SCR_ARR_UNDEFINED ? scr_dyn_retain(scr_dyn_undefined())
+      : a->ext->named->ops.box(slot);
+  ScrStr *name = scr_dyn_array_number_key(key);
+  ScrDyn *property = scr_dyn_new_str(name);
+  bool ok = value && !scr_exc_pending() && scr_dyn_reflect_set(receiver, property, value, receiver);
+  if (!ok && strict && !scr_exc_pending()) {
+    static const char message[] = "Cannot assign to read only property";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  scr_dyn_release(property);
+  scr_str_release(name);
+  scr_dyn_release(value);
+  scr_dyn_release(receiver);
+  return ok;
+}
+
+bool scr_dyn_array_named_delete(ScrArr *a, double key, bool strict) {
+  ScrDyn *receiver = scr_dyn_array_receiver(a);
+  if (!receiver) return false;
+  ScrStr *name = scr_dyn_array_number_key(key);
+  bool before = scr_dyn_has_own(receiver, name);
+  if (!scr_exc_pending()) scr_dyn_key_delete(receiver, name, strict);
+  bool removed = before && !scr_exc_pending() && !scr_dyn_has_own(receiver, name);
+  scr_str_release(name);
+  scr_dyn_release(receiver);
+  return removed;
 }
 
 /* ── live native records: per-field access ───────────────────────────────
@@ -2912,10 +3808,31 @@ static const ScrDynTypedClassOps *scr_typed_ref_class_ops(const ScrDyn *d) {
   return ops->exact ? ops->exact(d->v.typed_ref.ptr) : ops;
 }
 
-const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d) {
+static bool scr_dyn_native_class_custom_prototype(const ScrDyn *d,
+                                                 const ScrDynNativeObjectOps *native) {
+  ScrDyn *owner = native->properties(d->v.typed_ref.ptr);
+  if (!owner || !owner->prototype) return false;
+  /* Restoring the default prototype restores its declaration identity.
+   * Retain the override across the potentially initializing callback. */
+  ScrDyn *override = scr_dyn_retain(owner->prototype);
+  ScrDyn *prototype = native->prototype(d->v.typed_ref.ptr);
+  bool custom = scr_exc_pending() || !scr_dyn_strict_eq(override, prototype);
+  scr_dyn_release(override);
+  scr_dyn_release(prototype);
+  return custom;
+}
+
+const char *scr_dyn_typed_ref_class_name(const ScrDyn *d) {
   if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  const ScrDynNativeObjectOps *native = scr_dyn_native_class_ops(d);
+  if (native) {
+    if (scr_dyn_native_class_custom_prototype(d, native)) return NULL;
+    /* Null prototypes retain the class identity in Node's inspection
+     * prefix; an ordinary custom prototype suppresses it above. */
+    return native->class_name;
+  }
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
-  return ops ? ops->class_name : NULL;
+  return ops && ops->class_name ? ops->class_name->data : NULL;
 }
 
 static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t count) {
@@ -2927,12 +3844,20 @@ static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t
 
 bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
   if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return false;
+  const ScrDynNativeObjectOps *native = scr_dyn_native_class_ops(d);
+  if (native) {
+    ScrDyn *owner = native->properties(d->v.typed_ref.ptr);
+    if ((owner && owner->null_proto) || scr_dyn_native_class_custom_prototype(d, native))
+      return false;
+  }
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
   return ops && scr_dyn_name_in_strs(key, ops->names, ops->count);
 }
 
 static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
-  if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
+  if (!d->v.typed_ref.record || d->v.typed_ref.materialized ||
+      scr_record_source_has(d->v.typed_ref.ptr) ||
+      scr_native_property_metadata(d->v.typed_ref.ptr)) return NULL;
   return (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
 }
 
@@ -2996,13 +3921,13 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
 SCR_TL const ScrEventRefHooks *scr_event_ref_hooks = NULL;
 
 /* d[index] for a numeric index without forming the key string (see the
- * header): dyn arrays answer in-range elements, and live array capsules
+ * header): dyn arrays answer present own elements, and live array capsules
  * their present and explicitly undefined elements. */
 ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
   if (!(index >= 0 && index < 4294967295.0)) return NULL;
   size_t i = (size_t)index;
   if ((double)i != index) return NULL;
-  if (d->kind == SCR_DYN_ARR) return i < d->v.arr.len ? scr_dyn_retain(d->v.arr.items[i]) : NULL;
+  if (d->kind == SCR_DYN_ARR) return scr_dyn_arr_has_index(d, i) ? scr_dyn_retain(d->v.arr.items[i]) : NULL;
   if (d->kind != SCR_DYN_TYPED_REF || scr_event_ref_hooks || !scr_dyn_typed_ref_array_ops(d))
     return NULL;
   return scr_dyn_typed_ref_element(d, i);
@@ -3020,6 +3945,12 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
 }
 
 ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
+  if (scr_dyn_native_class_ops(d)) {
+    ScrDyn *property = scr_dyn_new_str((ScrStr *)key);
+    ScrDyn *result = scr_dyn_reflect_get((ScrDyn *)d, property, (ScrDyn *)d);
+    scr_dyn_release(property);
+    return result;
+  }
   if (d->v.typed_ref.record) return scr_typed_ref_record_get(d, key);
   if (scr_event_ref_hooks) {
     ScrDyn *inherited = scr_event_ref_hooks->get(d, key);
@@ -3028,8 +3959,22 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
   if (!scr_dyn_typed_ref_array_ops(d)) return NULL;
   if (scr_typed_ref_is_length(key)) return scr_dyn_new_num((double)((ScrArr *)d->v.typed_ref.ptr)->len);
   size_t index;
-  if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return NULL;
-  return scr_dyn_typed_ref_element(d, index);
+  if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) {
+    ScrDyn *owner = scr_dyn_array_metadata(d, false);
+    if (scr_exc_pending()) return NULL;
+    if (owner && scr_dyn_find_entry(owner, key->data, key->len))
+      return scr_dyn_obj_read_receiver(owner, key->data, key->len, d);
+    const ScrDyn *prototype = scr_dyn_array_prototype_link(d);
+    if (scr_exc_pending()) return NULL;
+    return prototype ? scr_dyn_obj_read_receiver(prototype, key->data, key->len, d)
+        : scr_dyn_retain(scr_dyn_undefined());
+  }
+  ScrDyn *own = scr_dyn_typed_ref_element(d, index);
+  if (own || scr_exc_pending()) return own;
+  const ScrDyn *prototype = scr_dyn_array_prototype_link(d);
+  if (scr_exc_pending()) return NULL;
+  return prototype ? scr_dyn_obj_read_receiver(prototype, key->data, key->len, d)
+      : scr_dyn_retain(scr_dyn_undefined());
 }
 
 /* An own `length` or element answers `in`/hasOwn without the snapshot. */
@@ -3042,17 +3987,132 @@ static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
   return index < arr->len && scr_arr_state(arr, (double)index) != (double)SCR_ARR_HOLE;
 }
 
-/* Writes an element in place or appends at `length`. False (nothing done)
- * when the value does not fit the element type or the write could grow the
- * array by more than one element: the snapshot path owns those outcomes. */
+static bool scr_dyn_array_check_length(const ScrDyn *recv, bool strict) {
+  if (recv->kind == SCR_DYN_TYPED_REF) return scr_arr_check_length_mode(recv->v.typed_ref.ptr, strict);
+  if (!recv->v.arr.frozen) return true;
+  if (strict) {
+    static const char message[] = "Cannot assign to read only property";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  return false;
+}
+
+static bool scr_dyn_array_set_length(ScrDyn *recv, const ScrDyn *value, bool strict) {
+  /* Set checks writability before coercion. ArraySetLength then converts
+   * twice and rereads current storage: newly frozen same-value definitions
+   * succeed, while callback errors and sealed partial shrink stay observable. */
+  if (!scr_dyn_array_check_length(recv, strict)) return false;
+  double first, number;
+  if (!scr_dyn_number_coerce_js(value, &first)) return false;
+  uint32_t length = scr_to_uint32(first);
+  if (!scr_dyn_number_coerce_js(value, &number)) return false;
+  if ((double)length != number) {
+    static const char message[] = "Invalid array length";
+    scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+    return false;
+  }
+  if (recv->kind == SCR_DYN_TYPED_REF) {
+    ScrArr *arr = recv->v.typed_ref.ptr;
+    return length == arr->len || scr_arr_set_len_mode(arr, (double)length, strict);
+  }
+  if (length == recv->v.arr.len) return true;
+  if (!scr_dyn_array_check_length(recv, strict)) return false;
+  if (length > recv->v.arr.len + 1000000) {
+    static const char message[] = "Checked array growth exceeds the native allocation limit";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  while (recv->v.arr.len < length) scr_dyn_arr_push_hole(recv);
+  while (recv->v.arr.len > length) {
+    if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
+      if (strict) {
+        static const char message[] = "Cannot delete non-configurable property";
+        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      }
+      return false;
+    }
+    scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
+  }
+  return true;
+}
+
+/* The receiver's own element write, after any target/prototype Set policy.
+ * Native conversion may invoke getters, so its adapter rechecks integrity
+ * before moving the converted value. Refusal never retries a snapshot. */
+static bool scr_dyn_array_define_index(ScrDyn *recv, size_t index, const ScrDyn *value, bool strict) {
+  if (recv->kind == SCR_DYN_TYPED_REF) {
+    ScrArr *arr = recv->v.typed_ref.ptr;
+    if (!scr_arr_check_set_mode(arr, (double)index, strict)) return false;
+    if (value->kind == SCR_DYN_UNDEF) {
+      scr_arr_set_undefined(arr, (double)index);
+      return !scr_exc_pending();
+    }
+    const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(recv);
+    ScrDynArrayWrite outcome = ops->set ? ops->set(arr, (double)index, value, strict)
+        : SCR_DYN_ARRAY_TYPE_MISMATCH;
+    if (scr_exc_pending()) return false;
+    if (outcome == SCR_DYN_ARRAY_TYPE_MISMATCH) scr_dyn_check_fail(NULL, "native array element", value);
+    return outcome == SCR_DYN_ARRAY_STORED;
+  }
+  if (recv->v.arr.frozen && index < recv->v.arr.len) {
+    if (strict) {
+      static const char message[] = "Cannot assign to read only property";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    }
+    return false;
+  }
+  if (recv->non_extensible && !scr_dyn_arr_has_index(recv, index)) {
+    if (strict) {
+      static const char message[] = "Cannot add property, object is not extensible";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    }
+    return false;
+  }
+  if (index > recv->v.arr.len + 1000000) {
+    static const char message[] = "Sparse array writes are not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  while (recv->v.arr.len <= index) scr_dyn_arr_push_hole(recv);
+  scr_dyn_region_store(recv, value);
+  ScrDyn *old = recv->v.arr.items[index];
+  recv->v.arr.items[index] = scr_dyn_retain((ScrDyn *)value);
+  if (recv->v.arr.presence) recv->v.arr.presence[index] = 1;
+  scr_dyn_release(old);
+  return true;
+}
+
+static bool scr_dyn_inherited_key_set(const ScrDyn *prototype, const ScrStr *key,
+                                      const ScrDyn *value, const ScrDyn *receiver);
+
+/* Length and indexed writes mutate native storage after inherited Set policy.
+ * Type mismatches throw at this operation; false leaves non-index or unbound
+ * writes to the snapshot path. */
 static bool scr_typed_ref_array_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
   const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(d);
-  if (!ops || !ops->set) return false;
+  if (!ops) return false;
+  if (scr_typed_ref_is_length(key)) {
+    scr_dyn_array_set_length(d, value, true);
+    return true;
+  }
   size_t index;
-  if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
+  if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) {
+    ScrDyn *property = scr_dyn_new_str((ScrStr *)key);
+    bool ok = scr_dyn_reflect_set(d, property, (ScrDyn *)value, d);
+    scr_dyn_release(property);
+    if (!ok && !scr_exc_pending()) {
+      static const char message[] = "Cannot assign to read only property";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    }
+    return true;
+  }
   ScrArr *arr = d->v.typed_ref.ptr;
-  if (index > arr->len) return false;
-  return ops->set(arr, (double)index, value);
+  if (!scr_arr_has(arr, (double)index)) {
+    const ScrDyn *prototype = scr_dyn_array_prototype_link(d);
+    if (scr_exc_pending() || scr_dyn_inherited_key_set(prototype, key, value, d)) return true;
+  }
+  scr_dyn_array_define_index(d, index, value, true);
+  return true;
 }
 
 void *scr_dyn_typed_ref_cached_cast(
@@ -3359,6 +4419,11 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
   return d;
 }
 
+ScrClosure *scr_dyn_func_unbox_exact(const ScrDyn *value, const char *sig) {
+  if (!value || value->kind != SCR_DYN_FUNC || strcmp(value->v.fn.sig, sig) != 0) return NULL;
+  return scr_closure_retain(value->v.fn.clo);
+}
+
 /* A class is function-shaped for typeof and identity, but calling it without
  * new always throws. The closure owns the class object and its lexical boxes. */
 static ScrDyn *scr_dyn_class_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
@@ -3404,6 +4469,14 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
 
 /* The compiler exposes this data view only for named data accesses and
  * guarded writes. Compiled method reflection remains an explicit fence. */
+ScrDyn *scr_dyn_new_class_prototype(ScrDyn *base, const ScrStr *name) {
+  ScrDyn *data = base->kind == SCR_DYN_UNDEF ? scr_dyn_new_obj() : scr_dyn_obj_create(base);
+  /* Preserve the declaration without compiling an unobserved constructor.
+   * A reflected constructor descriptor supersedes this private name. */
+  if (data) data->v.obj.class_name = name->data;
+  return data;
+}
+
 ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
   if (value->kind != SCR_DYN_FUNC || !value->v.fn.class_obj) {
     static const char message[] = "Native class prototype requires a class constructor";
@@ -3412,7 +4485,7 @@ ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
   }
   ScrClassObj *cls = value->v.fn.class_obj;
   if (!cls->prototype_data) {
-    ScrDyn *data = base->kind == SCR_DYN_UNDEF ? scr_dyn_new_obj() : scr_dyn_obj_create(base);
+    ScrDyn *data = scr_dyn_new_class_prototype(base, cls->name);
     if (!data) return NULL;
     cls->prototype_data = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     scr_box_set_ref(cls->prototype_data, data);
@@ -3563,10 +4636,9 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
   case SCR_DYN_PROMISE: d = "an instance of Promise"; break;
 
   case SCR_DYN_TYPED_REF: {
-    /* A class instance's view has no prototype; Node names its class. */
-    const ScrStr *class_name = scr_dyn_typed_ref_class_name(cb);
-    if (class_name && class_name->len) {
-      snprintf(detail, cap, "an instance of %.*s", (int)class_name->len, class_name->data);
+    const char *class_name = scr_dyn_typed_ref_class_name(cb);
+    if (class_name && *class_name) {
+      snprintf(detail, cap, "an instance of %s", class_name);
       break;
     }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(cb);
@@ -4029,12 +5101,18 @@ ScrDyn *scr_dyn_this_get(void) {
                                                r->type_key_len, r->materialize, r->commit)
               : scr_dyn_new_typed_ref(e->ptr, r->retain, r->release, r->type_key,
                                       r->type_key_len, r->materialize, r->commit);
-      if (r->view == 1)
-        scr_dyn_typed_ref_bind_array(e->dv, (const ScrDynTypedArrayOps *)r->ops);
-      else if (r->view == 2)
+      if (r->view == 1) {
+        if (!scr_dyn_typed_ref_bind_array(e->dv, (const ScrDynTypedArrayOps *)r->ops)) {
+          ScrDyn *failed = (ScrDyn *)e->dv;
+          e->dv = NULL;
+          scr_dyn_release(failed);
+          return NULL;
+        }
+      } else if (r->view == 2)
         scr_dyn_typed_ref_bind_record(e->dv, (const ScrDynTypedRecordOps *)r->ops);
       else if (r->view == 3)
         scr_dyn_typed_ref_bind_class(e->dv, (const ScrDynTypedClassOps *)r->ops);
+      scr_dyn_typed_ref_bind_native_object(e->dv, r->native_object);
     }
     if (e->dv) return scr_dyn_retain(e->dv);
     /* An uninstalled tag never binds: a unit that fires without its dyn
@@ -4066,6 +5144,20 @@ void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value
   scr_dyn_obj_put(obj, key, key_len, value);
 }
 
+/* Compiler-owned tables copy descriptors before filling native values or
+ * clearing placeholders. This is construction, never public [[Set]]. */
+static void scr_dyn_table_replace_data(ScrDyn *owner, ScrDynEntry *entry, ScrDyn *value) {
+  if (!entry || entry->accessor) { scr_dyn_release(value); return; }
+  scr_dyn_region_store(owner, value);
+  ScrDyn *old = entry->value;
+  entry->value = value;
+  scr_dyn_release(old);
+}
+
+void scr_dyn_table_set_data(ScrDyn *table, const char *key, size_t length, ScrDyn *value) {
+  scr_dyn_table_replace_data(table, scr_dyn_find_entry(table, key, length), value);
+}
+
 static ScrStr *scr_dyn_property_key(const ScrDyn *key) {
   return scr_dyn_string_coerce_js(key);
 }
@@ -4088,6 +5180,10 @@ static bool scr_dyn_property_same_value(const ScrDyn *a, const ScrDyn *b) {
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right) {
   return scr_dyn_property_same_value(left, right);
 }
+
+static ScrDyn *scr_dyn_copy_keys(const ScrDyn *source);
+static ScrDyn *scr_dyn_copy_value(const ScrDyn *source, ScrDyn *key);
+static ScrDyn *scr_dyn_define_property_fields(ScrDyn *target, ScrDyn *key, ScrDyn **fields);
 
 static void scr_dyn_descriptor_fields_drop(ScrDyn **fields) {
   for (size_t i = 0; i < 6; i++) scr_dyn_release(fields[i]);
@@ -4214,7 +5310,14 @@ static ScrStr *scr_dyn_symbol_storage_key(const ScrDyn *key) {
 }
 
 static ScrDyn *scr_dyn_symbol_receiver(const ScrDyn *value) {
-  if (value->kind == SCR_DYN_TYPED_REF) return scr_dyn_typed_ref_materialize(value);
+  if (scr_dyn_typed_ref_array_ops(value)) {
+    ScrDyn *owner = scr_dyn_array_metadata(value, false);
+    return owner ? scr_dyn_retain(owner) : NULL;
+  }
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *owner = scr_dyn_native_metadata(value);
+    return owner ? scr_dyn_retain(owner) : scr_dyn_typed_ref_materialize(value);
+  }
   if (value->kind == SCR_DYN_FUNC) return scr_dyn_fn_properties(value);
   if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_HANDLE)
     return scr_dyn_retain((ScrDyn *)value);
@@ -4245,6 +5348,15 @@ static ScrDynEntry *scr_dyn_symbol_entry(const ScrDyn *receiver, const ScrDyn *k
 
 ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key) {
   return object->symbol_properties ? scr_dyn_symbol_entry(object, key, true) : NULL;
+}
+
+bool scr_dyn_table_has_symbol_data(const ScrDyn *object, const ScrDyn *key) {
+  const ScrDynEntry *entry = scr_dyn_own_symbol_entry(object, key);
+  return entry && !entry->accessor;
+}
+
+void scr_dyn_table_set_symbol_data(ScrDyn *object, const ScrDyn *key, ScrDyn *value) {
+  scr_dyn_table_replace_data(object->symbol_properties, scr_dyn_own_symbol_entry(object, key), value);
 }
 
 ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key) { return scr_dyn_symbol_storage_key(key); }
@@ -4782,9 +5894,11 @@ ScrDyn *scr_dyn_array_from_iterator(const ScrDyn *source) {
 }
 
 ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool optional) {
+  if (scr_dyn_typed_ref_array_ops(value) || scr_dyn_native_class_ops(value))
+    return scr_dyn_reflect_get((ScrDyn *)value, (ScrDyn *)key, (ScrDyn *)value);
   if (scr_dyn_generator(value)) return scr_dyn_generator_symbol(value, key)
     ? scr_iterator_function(4, &scr_iterator_self_call, "[Symbol.iterator]") : scr_dyn_retain(scr_dyn_undefined());
-  if (value->kind == SCR_DYN_TYPED_REF) {
+  if (value->kind == SCR_DYN_TYPED_REF && !scr_dyn_native_metadata(value)) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_symbol_key_get(view, key, optional);
     scr_dyn_release(view);
@@ -4825,14 +5939,21 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
 /* Native field tables retain presence and attributes without owning a second
  * copy of the field's value. This internal update bypasses writable flags. */
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key) {
-  ScrDynEntry *entry = scr_dyn_symbol_entry(value, key, true);
-  if (!entry || entry->accessor) return;
-  scr_dyn_release(entry->value);
-  entry->value = scr_dyn_retain(scr_dyn_undefined());
+  scr_dyn_table_set_symbol_data(value, key, scr_dyn_retain(scr_dyn_undefined()));
 }
 
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
+  if (scr_dyn_typed_ref_array_ops(value) || scr_dyn_native_class_ops(value)) {
+    if (!scr_dyn_reflect_set(value, key, stored, value) && !scr_exc_pending()) {
+      static const char message[] = "Cannot assign to a read only symbol property";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    }
+    return;
+  }
+  (void)scr_dyn_native_write_metadata(value);
+  if (scr_exc_pending()) return;
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
+  if (scr_exc_pending()) { scr_dyn_release(receiver); return; }
   if (!receiver) {
     if (!scr_exc_pending()) {
       static const char message[] = "Cannot assign a symbol property to a primitive value";
@@ -4859,11 +5980,14 @@ void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
     scr_dyn_key_set(receiver->symbol_properties, name, stored);
     if (!scr_exc_pending() && !present) scr_dyn_arr_push(receiver->symbol_keys, scr_dyn_retain(key));
     scr_str_release(name);
+    /* Data fields commit at Set, before the next callback can observe them.
+     * Accessor effects already belong to the original receiver. */
+    if (!scr_exc_pending() && !scr_dyn_native_metadata(value)) scr_dyn_typed_ref_commit(value);
   }
   scr_dyn_release(receiver);
 }
 
-static ScrDyn *scr_dyn_define_symbol(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
+static ScrDyn *scr_dyn_define_symbol(ScrDyn *target, ScrDyn *key, ScrDyn **fields) {
   ScrDyn *receiver = scr_dyn_symbol_receiver(target);
   if (!receiver) {
     if (!scr_exc_pending()) {
@@ -4876,7 +6000,7 @@ static ScrDyn *scr_dyn_define_symbol(ScrDyn *target, ScrDyn *key, ScrDyn *descri
   scr_dyn_symbol_table(receiver);
   ScrStr *name = scr_dyn_symbol_storage_key(key);
   ScrDyn *encoded = scr_dyn_new_str(name);
-  ScrDyn *defined = scr_dyn_define_property(receiver->symbol_properties, encoded, descriptor);
+  ScrDyn *defined = scr_dyn_define_property_fields(receiver->symbol_properties, encoded, fields);
   if (defined && !present) scr_dyn_arr_push(receiver->symbol_keys, scr_dyn_retain(key));
   scr_dyn_release(defined);
   scr_dyn_release(encoded);
@@ -4898,6 +6022,29 @@ static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_ke
     bool found = mode == 0 && scr_dyn_generator_symbol(value, key);
     scr_dyn_release(key);
     return found;
+  }
+  if (scr_dyn_typed_ref_array_ops(value)) {
+    ScrDyn *owner = scr_dyn_array_metadata(value, false);
+    bool out = owner && scr_dyn_key_probe_computed(owner, key, mode == 0 ? 1 : mode);
+    if (!out && mode == 0 && !scr_exc_pending()) {
+      const ScrDyn *prototype = scr_dyn_array_proto(value);
+      out = prototype && scr_dyn_key_probe_computed(prototype, key, 0);
+    }
+    scr_dyn_release(key);
+    return out;
+  }
+  const ScrDynNativeObjectOps *native = scr_dyn_native_class_ops(value);
+  if (native) {
+    ScrDyn *owner = scr_dyn_native_metadata(value);
+    bool out = owner && scr_dyn_key_probe_computed(owner, key, mode == 0 ? 1 : mode);
+    if (!out && mode == 0 && !scr_exc_pending()) {
+      ScrDyn *prototype = scr_native_object_prototype(value->v.typed_ref.ptr, native);
+      out = !scr_exc_pending() && prototype && prototype->kind != SCR_DYN_NULL &&
+          prototype != scr_builtin_object_prototype && scr_dyn_key_probe_computed(prototype, key, 0);
+      scr_dyn_release(prototype);
+    }
+    scr_dyn_release(key);
+    return out;
   }
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
@@ -4952,9 +6099,11 @@ void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *raw_key, bool stri
     if (!scr_exc_pending() && !scr_dyn_entry(receiver->symbol_properties, name)) {
       for (size_t i = 0; i < receiver->symbol_keys->v.arr.len; i++) {
         if (!scr_dyn_strict_eq(receiver->symbol_keys->v.arr.items[i], key)) continue;
-        scr_dyn_release(receiver->symbol_keys->v.arr.items[i]);
+        ScrDyn *removed = receiver->symbol_keys->v.arr.items[i];
         size_t remaining = --receiver->symbol_keys->v.arr.len - i;
         memmove(&receiver->symbol_keys->v.arr.items[i], &receiver->symbol_keys->v.arr.items[i + 1], remaining * sizeof(ScrDyn *));
+        receiver->symbol_keys->v.arr.items[receiver->symbol_keys->v.arr.len] = NULL;
+        scr_dyn_release(removed);
         break;
       }
     }
@@ -4981,28 +6130,479 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
   return false;
 }
 
-ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
+/* Descriptor callbacks run before acquiring target storage. Keep omitted
+ * fields distinct from undefined, and validate each accessor immediately so
+ * an invalid getter cannot trigger the setter's conversion. */
+static bool scr_dyn_descriptor_fields(const ScrDyn *descriptor, ScrDyn **fields) {
+  if (!scr_dyn_to_primitive_result_is_object(descriptor)) {
+    static const char message[] = "Property description must be an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  if (descriptor->kind == SCR_DYN_PROXY) {
+    scr_dyn_proxy_unsupported("Object.defineProperty");
+    return false;
+  }
+  if (descriptor->kind != SCR_DYN_OBJ && descriptor->kind != SCR_DYN_FUNC &&
+      descriptor->kind != SCR_DYN_ARR && descriptor->kind != SCR_DYN_TYPED_REF) {
+    static const char message[] = "Property descriptors on this native value are not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  static const char *const names[] = {"enumerable", "configurable", "value", "writable", "get", "set"};
+  static const size_t lengths[] = {10, 12, 5, 8, 3, 3};
+  for (size_t i = 0; i < 6; i++) {
+    ScrStr *name = scr_str_new(names[i], lengths[i]);
+    bool present = scr_dyn_has_key(descriptor, name);
+    ScrDyn *key = scr_dyn_new_str(name);
+    scr_str_release(name);
+    ScrDyn *value = present && !scr_exc_pending() ? scr_dyn_copy_value(descriptor, key) : NULL;
+    scr_dyn_release(key);
+    if (scr_exc_pending()) { scr_dyn_release(value); return false; }
+    if (!present) continue;
+    if (i == 0 || i == 1 || i == 3) {
+      fields[i] = scr_dyn_new_bool(scr_dyn_truthy(value));
+      scr_dyn_release(value);
+    } else fields[i] = value;
+    if (i >= 4 && value->kind != SCR_DYN_UNDEF && !scr_dyn_is_callable(value)) {
+      static const char message[] = "Getter and setter must be functions";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return false;
+    }
+  }
+  if ((fields[4] || fields[5]) && (fields[2] || fields[3])) {
+    static const char message[] = "Invalid property descriptor. Cannot both specify accessors and a value or writable attribute";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  return true;
+}
+
+/* Normalization has already run every descriptor callback. Derive omitted
+ * attributes from current facts, so native writers can repeat this after
+ * checked value conversion without retaining a stale entry pointer. */
+static unsigned scr_dyn_descriptor_facts(unsigned prior, ScrDyn *const *fields) {
+  bool accessor = fields[4] || fields[5] ||
+      (!(fields[2] || fields[3]) && (prior & SCR_NATIVE_OWN) && !(prior & SCR_NATIVE_DATA));
+  unsigned facts = SCR_NATIVE_OWN | (accessor ? 0 : SCR_NATIVE_DATA);
+  if (!accessor && (fields[3] ? scr_dyn_truthy(fields[3]) : (prior & SCR_NATIVE_WRITABLE) != 0))
+    facts |= SCR_NATIVE_WRITABLE;
+  if (fields[0] ? scr_dyn_truthy(fields[0]) : (prior & SCR_NATIVE_ENUMERABLE) != 0)
+    facts |= SCR_NATIVE_ENUMERABLE;
+  if (fields[1] ? scr_dyn_truthy(fields[1]) : (prior & SCR_NATIVE_CONFIGURABLE) != 0)
+    facts |= SCR_NATIVE_CONFIGURABLE;
+  return facts;
+}
+
+/* SameValue observes the original descriptor value, never a replacement
+ * produced by native conversion. This policy invokes no user code. */
+static bool scr_dyn_descriptor_compatible(unsigned prior, unsigned next,
+                                         const ScrDyn *value, const ScrDyn *getter,
+                                         const ScrDyn *setter, ScrDyn *const *fields) {
+  if (!(prior & SCR_NATIVE_OWN) || (prior & SCR_NATIVE_CONFIGURABLE)) return true;
+  if ((next & SCR_NATIVE_CONFIGURABLE) ||
+      ((prior ^ next) & (SCR_NATIVE_ENUMERABLE | SCR_NATIVE_DATA))) return false;
+  if (!(prior & SCR_NATIVE_DATA))
+    return (!fields[4] || scr_dyn_property_same_value(fields[4], getter ? getter : scr_dyn_undefined())) &&
+        (!fields[5] || scr_dyn_property_same_value(fields[5], setter ? setter : scr_dyn_undefined()));
+  return (prior & SCR_NATIVE_WRITABLE) ||
+      (!(next & SCR_NATIVE_WRITABLE) && (!fields[2] || scr_dyn_property_same_value(value, fields[2])));
+}
+
+struct ScrNativeMutation {
+  ScrDyn *target, *key, *fields[6];
+  void *object;
+  const ScrDynNativeObjectOps *ops;
+  size_t index;
+  unsigned prior, next;
+  ScrNativePropertyOperation operation;
+  bool write, finished, refused;
+};
+
+bool scr_native_mutation_write(const ScrNativeMutation *mutation) { return mutation->write; }
+
+bool scr_native_mutation_delete(const ScrNativeMutation *mutation) {
+  return mutation->operation == SCR_NATIVE_DELETE || mutation->operation == SCR_NATIVE_DELETE_SLOPPY;
+}
+
+const ScrDyn *scr_native_mutation_value(const ScrNativeMutation *mutation) {
+  return mutation->fields[2] ? mutation->fields[2] : scr_dyn_undefined();
+}
+
+bool scr_native_mutation_refuse(ScrNativeMutation *mutation) {
+  mutation->refused = true;
+  if (!scr_exc_pending() && mutation->operation != SCR_NATIVE_SET_SLOPPY &&
+      mutation->operation != SCR_NATIVE_DELETE_SLOPPY) {
+    if (mutation->operation == SCR_NATIVE_DEFINE) {
+      static const char message[] = "Cannot redefine property";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    } else {
+      const ScrStr *key = mutation->key->v.str;
+      scr_native_property_refuse(mutation->ops, key->data, key->len, mutation->prior, mutation->operation);
+    }
+  }
+  return false;
+}
+
+bool scr_native_mutation_recheck(ScrNativeMutation *mutation) {
+  if (scr_exc_pending()) return false;
+  const ScrStr *key = mutation->key->v.str;
+  unsigned prior = scr_native_property_flags(mutation->object, key->data, key->len,
+      mutation->ops->facts(mutation->object, mutation->index));
+  mutation->prior = prior;
+  if (scr_native_mutation_delete(mutation)) {
+    if ((prior & SCR_NATIVE_OWN) && !(prior & SCR_NATIVE_CONFIGURABLE))
+      return scr_native_mutation_refuse(mutation);
+    mutation->next = 0;
+    mutation->write = (prior & SCR_NATIVE_OWN) != 0;
+    return true;
+  }
+  bool defining = mutation->operation == SCR_NATIVE_DEFINE;
+  unsigned next = defining ? scr_dyn_descriptor_facts(prior, mutation->fields)
+      : prior & SCR_NATIVE_OWN ? prior : SCR_NATIVE_DEFAULT_DATA;
+  /* Receiver definition for Set must reject readonly/accessor properties
+   * even for SameValue. Only Define has the compatible frozen no-op rule. */
+  if (!defining && (prior & SCR_NATIVE_OWN) &&
+      (prior & (SCR_NATIVE_DATA | SCR_NATIVE_WRITABLE)) != (SCR_NATIVE_DATA | SCR_NATIVE_WRITABLE))
+    return scr_native_mutation_refuse(mutation);
+  if (!(prior & SCR_NATIVE_OWN) &&
+      (*(const size_t *)mutation->object == SIZE_MAX ||
+       (scr_native_integrity_flags(mutation->object) & SCR_NATIVE_NON_EXTENSIBLE)))
+    return scr_native_mutation_refuse(mutation);
+  /* Native typed reads still load data slots directly. Accessor replacement
+   * needs that read owner to change too, not a descriptor-only shadow. */
+  if (!(next & SCR_NATIVE_DATA) || ((prior & SCR_NATIVE_OWN) && !(prior & SCR_NATIVE_DATA))) {
+    static const char message[] = "Native accessor replacement is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  ScrDyn *current = (prior & SCR_NATIVE_OWN) && mutation->fields[2]
+      ? mutation->ops->read(mutation->object, mutation->index, 0) : NULL;
+  bool compatible = !scr_exc_pending() &&
+      scr_dyn_descriptor_compatible(prior, next, current, NULL, NULL, mutation->fields);
+  bool same = current && scr_dyn_property_same_value(current, mutation->fields[2]);
+  scr_dyn_release(current);
+  if (!compatible) return scr_native_mutation_refuse(mutation);
+  mutation->next = next;
+  mutation->write = !(prior & SCR_NATIVE_OWN) || (mutation->fields[2] && !same);
+  return true;
+}
+
+static void scr_json_delete_member(ScrDyn *object, const ScrStr *key);
+
+typedef enum {
+  SCR_NATIVE_VALUE_PRESERVE, SCR_NATIVE_VALUE_INSTALLED, SCR_NATIVE_VALUE_DECLARED_UNDEFINED
+} ScrNativeValueDisposition;
+
+static void scr_native_property_finish(void *object, ScrDyn *properties,
+    const ScrStr *key, unsigned next, ScrNativeValueDisposition value) {
+  /* Both typed and checked stores publish metadata before releasing old
+   * children. A declared placeholder never owns the native slot's value. */
+  if (!(next & SCR_NATIVE_OWN)) {
+    scr_native_property_forget(object, key->data, key->len);
+    if (properties) scr_json_delete_member(properties, key);
+    return;
+  }
+  if (properties) {
+    ScrDynEntry *entry = scr_dyn_find_entry(properties, key->data, key->len);
+    if (!entry)
+      entry = scr_dyn_obj_append(properties, key->data, key->len, scr_dyn_retain(scr_dyn_undefined()));
+    entry->writable = (next & SCR_NATIVE_WRITABLE) != 0;
+    entry->enumerable = (next & SCR_NATIVE_ENUMERABLE) != 0;
+    entry->configurable = (next & SCR_NATIVE_CONFIGURABLE) != 0;
+  }
+  ScrNativeAttributes *a = scr_native_property_find(object, key->data, key->len);
+  bool declared_undefined = value == SCR_NATIVE_VALUE_DECLARED_UNDEFINED ||
+      (value == SCR_NATIVE_VALUE_PRESERVE && a && a->declared_undefined);
+  unsigned restrictions = *(const size_t *)object == SIZE_MAX ? SCR_NATIVE_FROZEN
+      : scr_native_integrity_flags(object);
+  /* Default attributes need no context-local override, including after seal.
+   * Keep declaration masks until a real store replaces the masked slot. */
+  if (!declared_undefined &&
+      next == scr_native_property_apply_restrictions(SCR_NATIVE_DEFAULT_DATA, restrictions)) {
+    scr_native_property_forget(object, key->data, key->len);
+    return;
+  }
+  scr_native_property_attributes(object, key->data, key->len, next);
+  a = scr_native_property_find(object, key->data, key->len);
+  if (a) a->declared_undefined = declared_undefined;
+}
+
+void scr_native_object_declare_undefined(void *object, const ScrDynNativeObjectOps *ops,
+                                        const ScrStr *key) {
+  ops = scr_native_object_exact(object, ops);
+  if (!scr_native_object_check_write(object, ops, key->data, key->len, SCR_NATIVE_DEFINE)) return;
+  /* The declaration masks any earlier slot value without releasing it:
+   * physical ownership stays with the slot until its next store/disposal. */
+  scr_native_property_finish(object, ops->properties(object), key, SCR_NATIVE_DEFAULT_DATA,
+      SCR_NATIVE_VALUE_DECLARED_UNDEFINED);
+}
+
+void scr_native_object_finish_write(void *object, const ScrDynNativeObjectOps *ops,
+                                    const ScrStr *key, ScrNativePropertyOperation operation) {
+  ops = scr_native_object_exact(object, ops);
+  /* Class presence lives in the bag, so it cannot be inferred from the new
+   * slot. Typed declaration Define restores defaults; Set retains attributes. */
+  unsigned next = 0;
+  if (operation != SCR_NATIVE_DELETE && operation != SCR_NATIVE_DELETE_SLOPPY) {
+    next = operation == SCR_NATIVE_DEFINE ? SCR_NATIVE_DEFAULT_DATA
+        : scr_native_object_property(object, ops, key->data, key->len);
+    if (!(next & SCR_NATIVE_OWN)) next = SCR_NATIVE_DEFAULT_DATA;
+  }
+  scr_native_property_finish(object, ops->properties(object), key, next, SCR_NATIVE_VALUE_INSTALLED);
+}
+
+void scr_native_mutation_finish(ScrNativeMutation *mutation) {
+  scr_native_property_finish(mutation->object, mutation->ops->properties(mutation->object),
+      mutation->key->v.str, mutation->next,
+      mutation->write ? SCR_NATIVE_VALUE_INSTALLED : SCR_NATIVE_VALUE_PRESERVE);
+  mutation->finished = true;
+}
+
+static bool scr_native_mutation_noop(const ScrNativeMutation *mutation) {
+  return !mutation->write && mutation->prior == mutation->next;
+}
+
+static bool scr_dyn_mutate_native_property(ScrDyn *target, ScrDyn *key, ScrDyn *const *fields,
+    const ScrDynNativeObjectOps *ops, size_t index, ScrNativePropertyOperation operation) {
+  ScrNativeMutation mutation = {
+    .target = scr_dyn_retain(target), .key = scr_dyn_retain(key),
+    .object = target->v.typed_ref.ptr, .ops = ops, .index = index, .operation = operation,
+  };
+  for (size_t i = 0; fields && i < 6; i++) mutation.fields[i] = fields[i] ? scr_dyn_retain(fields[i]) : NULL;
+  bool ok = scr_native_mutation_recheck(&mutation);
+  if (ok && !scr_native_mutation_noop(&mutation)) {
+    /* Delete never needs a new bag. Required-slot refusal happens in apply
+     * before any callback or store; optional slots use their ABSENT sentinel. */
+    if (!scr_native_mutation_delete(&mutation))
+      ok = ops->prepare(mutation.object) && scr_native_mutation_recheck(&mutation);
+    if (ok && !scr_native_mutation_noop(&mutation))
+      ok = ops->apply(mutation.object, index, &mutation) && mutation.finished;
+  }
+  if (!ok && !mutation.refused && !scr_exc_pending()) {
+    static const char message[] = "Native property mutation is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  }
+  scr_dyn_descriptor_fields_drop(mutation.fields);
+  scr_dyn_release(mutation.key);
+  scr_dyn_release(mutation.target);
+  return ok && !scr_exc_pending();
+}
+
+static const ScrDynNativeObjectOps *scr_dyn_native_property(
+    const ScrDyn *target, const ScrStr *key, size_t *index) {
+  if (target->kind != SCR_DYN_TYPED_REF || !target->v.typed_ref.native_object) return NULL;
+  const ScrDynNativeObjectOps *ops = scr_native_object_exact(
+      target->v.typed_ref.ptr, target->v.typed_ref.native_object);
+  *index = scr_native_object_index(ops, key->data, key->len);
+  return *index < ops->count ? ops : NULL;
+}
+
+static const ScrDynNativeObjectOps *scr_dyn_native_property_writer(
+    const ScrDyn *target, const ScrStr *key, size_t *index) {
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_property(target, key, index);
+  return ops && ops->apply ? ops : NULL;
+}
+
+/* Accessor invocation reads a logical descriptor; it does not mutate native
+ * slots. Accessor records deliberately have no raw layout writer. */
+static const ScrDynNativeObjectOps *scr_dyn_native_accessor(
+    const ScrDyn *target, const ScrStr *key, size_t *index) {
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_property(target, key, index);
+  if (!ops) return NULL;
+  unsigned facts = scr_native_property_flags(target->v.typed_ref.ptr,
+      key->data, key->len, ops->facts(target->v.typed_ref.ptr, *index));
+  return (facts & (SCR_NATIVE_OWN | SCR_NATIVE_DATA)) == SCR_NATIVE_OWN ? ops : NULL;
+}
+
+static bool scr_dyn_reflect_set_target(const ScrDyn *target) {
+  if (scr_dyn_to_primitive_result_is_object(target)) return true;
+  static const char message[] = "Reflect.set called on non-object";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return false;
+}
+
+static bool scr_dyn_reflect_set_impl(ScrDyn *target, ScrDyn *key, ScrDyn *value,
+    ScrDyn *receiver, bool *native_store, ScrDyn **getter_only);
+
+/* Strict Set names the descriptor holder, not the original receiver. Read
+ * constructor data without getters; private prototype names stand in only
+ * until the compiler materializes the actual constructor descriptor. */
+static bool scr_dyn_getter_only_set(const ScrStr *key, ScrDyn *holder) {
+  const char *name = NULL;
+  const ScrDyn *current = holder;
+  while (current) {
+    const char *declaration = NULL;
+    if (current->kind == SCR_DYN_TYPED_REF && current->v.typed_ref.native_object) {
+      const ScrDynNativeObjectOps *ops = scr_native_object_exact(
+          current->v.typed_ref.ptr, current->v.typed_ref.native_object);
+      declaration = ops->class_name;
+      current = ops->properties(current->v.typed_ref.ptr);
+      if (!current) { name = declaration ? declaration : "Object"; break; }
+    }
+    if (current->kind != SCR_DYN_OBJ) break;
+    const ScrDynEntry *constructor = scr_dyn_find_entry((ScrDyn *)current, "constructor", 11);
+    if (constructor) {
+      if (!constructor->accessor && constructor->value->kind == SCR_DYN_FUNC)
+        name = constructor->value->v.fn.name;
+      break;
+    }
+    if (current->v.obj.class_name) { name = current->v.obj.class_name; break; }
+    if (!current->prototype) {
+      if (!current->null_proto) name = declaration ? declaration : "Object";
+      break;
+    }
+    current = current->prototype;
+  }
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "Cannot set property ");
+  scr_jb_write(&message, key->data, key->len);
+  scr_jb_puts(&message, " of ");
+  if (name && *name) {
+    scr_jb_puts(&message, "#<");
+    scr_jb_puts(&message, name);
+    scr_jb_puts(&message, ">");
+  } else scr_jb_puts(&message, "[object Object]");
+  scr_jb_puts(&message, " which has only a getter");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return false;
+}
+
+/* Typed callers defer only receiver definition. Setters and proxy traps still
+ * complete here; reentrant public Reflect calls keep their ordinary behavior. */
+static bool scr_dyn_set_receiver(ScrDyn *receiver, ScrDyn *key, ScrDyn *value, bool *native_store) {
+  if (!native_store) return scr_dyn_reflect_define(receiver, key, value);
+  *native_store = true;
+  return true;
+}
+
+static bool scr_dyn_native_property_set(ScrDyn *target, ScrDyn *key, ScrDyn *value,
+    ScrDyn *receiver, const ScrDynNativeObjectOps *ops, size_t index, bool *native_store,
+    ScrDyn **getter_only) {
+  if (scr_exc_pending()) return false;
+  void *object = target->v.typed_ref.ptr;
+  unsigned facts = scr_native_property_flags(object, key->v.str->data,
+      key->v.str->len, ops->facts(object, index));
+  if (facts & SCR_NATIVE_OWN)
+    return (facts & SCR_NATIVE_DATA) && (facts & SCR_NATIVE_WRITABLE) &&
+        scr_dyn_set_receiver(receiver, key, value, native_store);
+  scr_dyn_retain(target);
+  scr_dyn_retain(receiver);
+  bool ok = false;
+  ScrDyn *properties = ops->properties(object);
+  /* Record preparation may change presence. Classes resolve their default
+   * prototype without creating own storage, including after publication. */
+  if (!ops->prototype && !properties && ops->prepare && *(const size_t *)object != SIZE_MAX) {
+    if (!ops->prepare(object) || scr_exc_pending()) goto done;
+    properties = ops->properties(object);
+    facts = scr_native_property_flags(object, key->v.str->data,
+        key->v.str->len, ops->facts(object, index));
+    if (facts & SCR_NATIVE_OWN) {
+      ok = (facts & SCR_NATIVE_DATA) && (facts & SCR_NATIVE_WRITABLE) &&
+          scr_dyn_set_receiver(receiver, key, value, native_store);
+      goto done;
+    }
+  }
+  ScrDyn *prototype = ops->prototype ? scr_native_object_prototype(object, ops)
+      : properties && properties->prototype ? scr_dyn_retain(properties->prototype)
+      : properties && properties->null_proto ? NULL : scr_dyn_object_prototype();
+  if (!scr_exc_pending()) {
+    facts = scr_native_property_flags(object, key->v.str->data,
+        key->v.str->len, ops->facts(object, index));
+    if (facts & SCR_NATIVE_OWN)
+      ok = (facts & SCR_NATIVE_DATA) && (facts & SCR_NATIVE_WRITABLE) &&
+          scr_dyn_set_receiver(receiver, key, value, native_store);
+    else ok = prototype && prototype->kind != SCR_DYN_NULL
+        ? scr_dyn_reflect_set_impl(prototype, key, value, receiver, native_store, getter_only)
+        : scr_dyn_set_receiver(receiver, key, value, native_store);
+  }
+  scr_dyn_release(prototype);
+done:
+  scr_dyn_release(receiver);
+  scr_dyn_release(target);
+  return ok && !scr_exc_pending();
+}
+
+bool scr_native_object_check_set(void *object, const ScrDynNativeObjectOps *ops,
+    const ScrStr *key, ScrNativePropertyOperation op, uint64_t value,
+    ScrDyn *(*box_value)(uint64_t), ScrDyn *(*box_receiver)(uint64_t)) {
+  if (scr_exc_pending()) return false;
+  ops = scr_native_object_exact(object, ops);
+  size_t index = scr_native_object_index(ops, key->data, key->len);
+  unsigned facts = scr_native_object_property(object, ops, key->data, key->len);
+  if (((facts & SCR_NATIVE_OWN) && (facts & SCR_NATIVE_DATA)) || index == ops->count)
+    return scr_native_object_check_write_mode(object, ops, key->data, key->len, op, true);
+  ScrDyn *receiver = box_receiver((uint64_t)(uintptr_t)object);
+  ScrDyn *boxed = scr_exc_pending() ? NULL : box_value(value);
+  ScrDyn *property = scr_dyn_new_str((ScrStr *)key);
+  bool store = false;
+  ScrDyn *getter_only = NULL;
+  bool ok = receiver && boxed && !scr_exc_pending() &&
+      ((facts & SCR_NATIVE_OWN)
+        ? scr_dyn_reflect_set_impl(receiver, property, boxed, receiver, &store, &getter_only)
+        : scr_dyn_native_property_set(receiver, property, boxed, receiver, ops, index, &store, &getter_only));
+  scr_dyn_release(property);
+  scr_dyn_release(boxed);
+  scr_dyn_release(receiver);
+  if (!ok && !scr_exc_pending() && getter_only && op != SCR_NATIVE_SET_SLOPPY)
+    scr_dyn_getter_only_set(key, getter_only);
+  scr_dyn_release(getter_only);
+  if (scr_exc_pending()) return false;
+  if (!ok) return op == SCR_NATIVE_SET_SLOPPY ? false
+      : scr_native_property_refuse(ops, key->data, key->len, SCR_NATIVE_OWN, op);
+  if (!store) return false;
+  /* All callback-capable releases precede final admission. The typed caller
+   * holds receiver/key/RHS snapshots until its immediate store and finish. */
+  return scr_native_object_check_write_mode(object, ops, key->data, key->len, op, true);
+}
+
+static ScrDyn *scr_dyn_define_property_fields(ScrDyn *target, ScrDyn *key, ScrDyn **fields) {
+  if (scr_dyn_typed_ref_array_ops(target)) {
+    size_t index;
+    if (key->kind == SCR_DYN_STR && (scr_typed_ref_is_length(key->v.str) ||
+        scr_typed_ref_canonical_index(key->v.str->data, key->v.str->len, &index))) {
+      static const char message[] = "Object.defineProperty on an array index or length is not supported yet";
+      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      return NULL;
+    }
+    ScrDyn *owner = scr_dyn_array_metadata(target, true);
+    if (!owner) {
+      if (scr_exc_pending()) return NULL;
+      static const char message[] = "Cannot define property, object is not extensible";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    ScrDyn *defined = scr_dyn_define_property_fields(owner, key, fields);
+    scr_dyn_release(defined);
+    return scr_exc_pending() ? NULL : scr_dyn_retain(target);
+  }
   if (target->kind == SCR_DYN_TYPED_REF) {
+    size_t index;
+    const ScrDynNativeObjectOps *ops = key->kind == SCR_DYN_STR
+        ? scr_dyn_native_property_writer(target, key->v.str, &index) : NULL;
+    if (ops) return scr_dyn_mutate_native_property(target, key, fields, ops, index, SCR_NATIVE_DEFINE)
+        ? scr_dyn_retain(target) : NULL;
+    ScrDyn *owner = key->kind == SCR_DYN_SYMBOL ? scr_dyn_native_write_metadata(target)
+        : scr_dyn_native_extra_owner(target, key->v.str, true);
+    if (scr_exc_pending()) return NULL;
+    if (owner) {
+      ScrDyn *defined = scr_dyn_define_property_fields(owner, key, fields);
+      scr_dyn_release(defined);
+      return scr_exc_pending() ? NULL : scr_dyn_retain(target);
+    }
     ScrDyn *view = scr_dyn_typed_ref_materialize(target);
-    ScrDyn *defined = scr_exc_pending() ? NULL : scr_dyn_define_property(view, key, descriptor);
+    ScrDyn *defined = scr_exc_pending() ? NULL : scr_dyn_define_property_fields(view, key, fields);
     if (!scr_exc_pending()) scr_dyn_typed_ref_commit(target);
     scr_dyn_release(defined);
     scr_dyn_release(view);
     return scr_exc_pending() ? NULL : scr_dyn_retain(target);
   }
-  if (descriptor->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *view = scr_dyn_typed_ref_materialize(descriptor);
-    ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_define_property(target, key, view);
-    scr_dyn_release(view);
-    return result;
-  }
-  if (key->kind == SCR_DYN_SYMBOL) return scr_dyn_define_symbol(target, key, descriptor);
-  if (target->kind == SCR_DYN_PROXY || descriptor->kind == SCR_DYN_PROXY) {
+  if (key->kind == SCR_DYN_SYMBOL) return scr_dyn_define_symbol(target, key, fields);
+  if (target->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Object.defineProperty");
     return NULL;
   }
-
-
 
   if (scr_exc_pending()) return NULL;
   /* Values, accessors and array property tables: any of them may close a
@@ -5010,26 +6610,19 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
   scr_dyn_region_store(target, NULL);
   if (target->kind == SCR_DYN_FUNC) {
     if (scr_dyn_class_reflection_fence(target)) return NULL;
-    ScrStr *name = scr_dyn_property_key(key);
-    if (!name) return NULL;
-    if (scr_dyn_fn_property_fence(name)) { scr_str_release(name); return NULL; }
-    ScrDyn *property = scr_dyn_new_str(name);
-    scr_str_release(name);
+    if (scr_dyn_fn_property_fence(key->v.str)) return NULL;
     ScrDyn *table = scr_dyn_fn_properties(target);
-    ScrDyn *defined = scr_dyn_define_property(table, property, descriptor);
-    scr_dyn_release(property);
+    ScrDyn *defined = scr_dyn_define_property_fields(table, key, fields);
     scr_dyn_release(table);
     if (!defined) return NULL;
     scr_dyn_release(defined);
     return scr_dyn_retain(target);
   }
   if (target->kind == SCR_DYN_ARR) {
-    ScrStr *name = scr_dyn_property_key(key);
-    if (!name) return NULL;
+    const ScrStr *name = key->v.str;
     double index;
     bool special = name->len == 6 && memcmp(name->data, "length", 6) == 0;
     special = special || scr_dyn_key_is_index(name->data, name->len, &index);
-    scr_str_release(name);
     if (special) {
       static const char message[] = "Object.defineProperty on an array index or length is not supported yet";
       scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
@@ -5037,7 +6630,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     }
     if (!target->v.arr.properties) target->v.arr.properties = scr_dyn_new_obj();
     target->v.arr.properties->non_extensible = target->non_extensible;
-    ScrDyn *defined = scr_dyn_define_property(target->v.arr.properties, key, descriptor);
+    ScrDyn *defined = scr_dyn_define_property_fields(target->v.arr.properties, key, fields);
     if (!defined) return NULL;
     scr_dyn_release(defined);
     return scr_dyn_retain(target);
@@ -5047,69 +6640,28 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
     return NULL;
   }
-  ScrStr *name = scr_dyn_property_key(key);
+  ScrStr *name = scr_str_retain(key->v.str);
   if (!name) return NULL;
-  if (descriptor->kind != SCR_DYN_OBJ) {
-    scr_str_release(name);
-    static const char msg[] = "Property description must be an object";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-    return NULL;
-  }
-  static const char *const names[] = {"enumerable", "configurable", "value", "writable", "get", "set"};
-  static const size_t lengths[] = {10, 12, 5, 8, 3, 3};
-  ScrDyn *fields[6] = {NULL};
-  for (size_t i = 0; i < 6; i++) {
-    if (!scr_dyn_obj_get(descriptor, names[i], lengths[i])) continue;
-    fields[i] = scr_dyn_obj_read(descriptor, names[i], lengths[i]);
-    if (!fields[i]) {
-      scr_dyn_descriptor_fields_drop(fields);
-      scr_str_release(name);
-      return NULL;
-    }
-  }
-  ScrDyn *e = fields[0], *c = fields[1], *value = fields[2];
-  ScrDyn *w = fields[3], *get = fields[4], *set = fields[5];
+  ScrDyn *value = fields[2], *get = fields[4], *set = fields[5];
   ScrDynEntry *prior = scr_dyn_entry(target, name);
-  bool accessor_descriptor = get || set;
-  bool data_descriptor = value || w;
-  if (accessor_descriptor && data_descriptor) {
-    scr_dyn_descriptor_fields_drop(fields);
-    scr_str_release(name);
-    static const char msg[] = "Invalid property descriptor. Cannot both specify accessors and a value or writable attribute";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-    return NULL;
-  }
-  if ((get && get->kind != SCR_DYN_UNDEF && get->kind != SCR_DYN_FUNC) ||
-      (set && set->kind != SCR_DYN_UNDEF && set->kind != SCR_DYN_FUNC)) {
-    scr_dyn_descriptor_fields_drop(fields);
-    scr_str_release(name);
-    static const char msg[] = "Getter and setter must be functions";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-    return NULL;
-  }
-  bool accessor = accessor_descriptor || (!data_descriptor && prior && prior->accessor);
-  bool writable = w ? scr_dyn_truthy(w) : prior && !prior->accessor && !accessor ? prior->writable : false;
-  bool enumerable = e ? scr_dyn_truthy(e) : prior ? prior->enumerable : false;
-  bool configurable = c ? scr_dyn_truthy(c) : prior ? prior->configurable : false;
+  unsigned prior_facts = scr_dyn_entry_facts(prior);
+  unsigned next_facts = scr_dyn_descriptor_facts(prior_facts, fields);
+  bool accessor = !(next_facts & SCR_NATIVE_DATA);
+  bool writable = (next_facts & SCR_NATIVE_WRITABLE) != 0;
+  bool enumerable = (next_facts & SCR_NATIVE_ENUMERABLE) != 0;
+  bool configurable = (next_facts & SCR_NATIVE_CONFIGURABLE) != 0;
   if (!prior && target->non_extensible) {
     ScrJsonBuf buffer;
     scr_jb_init(&buffer);
     scr_jb_puts(&buffer, "Cannot define property ");
     scr_jb_write(&buffer, name->data, name->len);
     scr_jb_puts(&buffer, ", object is not extensible");
-    scr_dyn_descriptor_fields_drop(fields);
     scr_str_release(name);
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return NULL;
   }
-  if (prior && !prior->configurable &&
-      (configurable || enumerable != prior->enumerable ||
-       accessor != prior->accessor ||
-       (accessor && ((get && !scr_dyn_property_same_value(get, prior->getter ? prior->getter : scr_dyn_undefined())) ||
-                     (set && !scr_dyn_property_same_value(set, prior->setter ? prior->setter : scr_dyn_undefined())))) ||
-       (!accessor && ((!prior->writable && writable) ||
-                     (!prior->writable && value && !scr_dyn_property_same_value(prior->value, value)))))) {
-    scr_dyn_descriptor_fields_drop(fields);
+  if (!scr_dyn_descriptor_compatible(prior_facts, next_facts, prior ? prior->value : NULL,
+                                    prior ? prior->getter : NULL, prior ? prior->setter : NULL, fields)) {
     scr_str_release(name);
     static const char msg[] = "Cannot redefine property";
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
@@ -5156,10 +6708,78 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     entry->enumerable = enumerable;
     entry->configurable = configurable;
   }
-  scr_dyn_descriptor_fields_drop(fields);
   scr_error_sync_cause(target, name);
   scr_str_release(name);
   return scr_dyn_retain(target);
+}
+
+ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *raw_key, ScrDyn *descriptor) {
+  if (!scr_dyn_to_primitive_result_is_object(target)) {
+    static const char message[] = "Object.defineProperty called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrDyn *key = scr_dyn_property_key_value(raw_key);
+  if (!key) return NULL;
+  ScrDyn *fields[6] = {NULL};
+  ScrDyn *result = scr_dyn_descriptor_fields(descriptor, fields)
+      ? scr_dyn_define_property_fields(target, key, fields) : NULL;
+  scr_dyn_descriptor_fields_drop(fields);
+  scr_dyn_release(key);
+  return result;
+}
+
+/* Batch definitions normalize every descriptor first. Applying those owned
+ * facts later preserves the successful prefix if a target definition fails. */
+static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
+  if (!scr_dyn_to_primitive_result_is_object(target)) {
+    static const char message[] = "Object.defineProperties called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrDyn *keys = scr_dyn_copy_keys(descs);
+  if (!keys) return NULL;
+  typedef struct { ScrDyn *key; ScrDyn *fields[6]; } ScrPendingDescriptor;
+  ScrPendingDescriptor *pending = calloc(keys->v.arr.len ? keys->v.arr.len : 1, sizeof *pending);
+  if (!pending) scr_json_oom();
+  size_t count = 0;
+  for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
+    ScrDyn *key = keys->v.arr.items[i];
+    bool enumerable = scr_dyn_property_is_enumerable_computed(descs, key);
+    if (scr_exc_pending()) break;
+    if (!enumerable) continue;
+    ScrDyn *descriptor = scr_dyn_copy_value(descs, key);
+    if (!descriptor || scr_exc_pending()) { scr_dyn_release(descriptor); break; }
+    ScrPendingDescriptor *entry = &pending[count++];
+    entry->key = key; /* borrowed from the retained key snapshot */
+    bool ok = scr_dyn_descriptor_fields(descriptor, entry->fields);
+    scr_dyn_release(descriptor);
+    if (!ok) break;
+  }
+  for (size_t i = 0; i < count && !scr_exc_pending(); i++) {
+    if (protected_keys) for (size_t k = 0; k < protected_keys->v.arr.len; k++) {
+      if (!scr_dyn_strict_eq(pending[i].key, protected_keys->v.arr.items[k])) continue;
+      static const char message[] = "Replacing compiled class prototype members has no native lowering [SC1090]";
+      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      break;
+    }
+    if (scr_exc_pending()) break;
+    ScrDyn *defined = scr_dyn_define_property_fields(target, pending[i].key, pending[i].fields);
+    scr_dyn_release(defined);
+    if (!defined) break;
+  }
+  for (size_t i = 0; i < count; i++) scr_dyn_descriptor_fields_drop(pending[i].fields);
+  free(pending);
+  scr_dyn_release(keys);
+  return scr_exc_pending() ? NULL : scr_dyn_retain(target);
+}
+
+ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs) {
+  return scr_dyn_define_props_internal(target, descs, NULL);
+}
+
+ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
+  return scr_dyn_define_props_internal(target, descs, protected_keys);
 }
 
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
@@ -6563,10 +8183,9 @@ ScrDyn *scr_dyn_bitwise(const ScrDyn *left, const ScrDyn *right, const ScrStr *o
  * ignore the write; this runtime throws in both, SEMANTICS.md). Receiver, key, and
  * value are all BORROWED (the member retains the value in). */
 static const char *scr_dyn_kind_name(const ScrDyn *d);
-/* `key in v` with a RUNTIME key (the compile-time dynHasKey fold, per
- * value): OBJ answers own-member presence, ARR answers 'length' or a
- * valid dense index, every other kind false (tsc admits `in` only on
- * object-typed operands). Proxy traps may throw. Borrows both. */
+/* HasProperty follows each admitted prototype shape without reading values
+ * or invoking accessors. Builtin inherited names are added by scr_dyn_in.
+ * Proxy traps and native prototype materialization may throw. Borrows both. */
 bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   if (scr_dyn_generator(v)) {
     static const char *const inherited[] = { "next", "return", "throw", "constructor", "toString", "valueOf", "hasOwnProperty", "propertyIsEnumerable", "isPrototypeOf", "toLocaleString", "__proto__" };
@@ -6576,9 +8195,26 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   }
   if (scr_dyn_class_reflection_fence(v)) return false;
   if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_has(v, key);
+  const ScrDynNativeObjectOps *native = scr_dyn_native_class_ops(v);
+  if (native) {
+    ScrDyn *owner = scr_dyn_native_metadata(v);
+    if (owner && scr_dyn_find_entry(owner, key->data, key->len)) return true;
+    ScrDyn *prototype = scr_native_object_prototype(v->v.typed_ref.ptr, native);
+    bool out = !scr_exc_pending() && prototype && prototype->kind != SCR_DYN_NULL &&
+        prototype != scr_builtin_object_prototype && scr_dyn_has_key(prototype, key);
+    scr_dyn_release(prototype);
+    return out;
+  }
 
   if (v->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_has_own(v, key)) return true;
+    if (scr_dyn_typed_ref_array_ops(v)) {
+      ScrDyn *owner = scr_dyn_array_metadata(v, false);
+      if (scr_exc_pending()) return false;
+      if (owner && scr_dyn_find_entry(owner, key->data, key->len)) return true;
+      const ScrDyn *prototype = scr_dyn_array_proto(v);
+      return !scr_exc_pending() && prototype && scr_dyn_has_key(prototype, key);
+    }
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) {
       /* With no checked view, the snapshot holds exactly the present fields. */
@@ -6591,13 +8227,19 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
     return out;
   }
   if (v->kind == SCR_DYN_OBJ) {
-    return scr_dyn_property_owner(v, key->data, key->len) != NULL;
+    if (scr_dyn_find_entry(v, key->data, key->len)) return true;
+    const ScrDyn *prototype = scr_dyn_proto_next(v);
+    return !scr_exc_pending() && prototype && scr_dyn_has_key(prototype, key);
   }
   if (v->kind == SCR_DYN_FUNC) {
-    if (scr_dyn_property_owner(v, key->data, key->len)) return true;
     ScrDyn *descriptor = scr_dyn_own_descriptor(v, key);
     bool present = descriptor && descriptor->kind != SCR_DYN_UNDEF;
     scr_dyn_release(descriptor);
+    if (!present && !scr_exc_pending()) {
+      ScrDyn *table = scr_dyn_fn_properties(v);
+      present = scr_dyn_has_key(table, key);
+      scr_dyn_release(table);
+    }
     if (!present && !scr_exc_pending()) {
       static const char *const inherited[] = {
         "name", "length", "call", "apply", "bind", "toString", "valueOf", "toLocaleString",
@@ -6612,19 +8254,12 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_ARR) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return true;
+    size_t index;
+    if (scr_typed_ref_canonical_index(key->data, key->len, &index) && scr_dyn_arr_has_index(v, index))
+      return true;
     if (v->v.arr.properties && scr_dyn_obj_get(v->v.arr.properties, key->data, key->len)) return true;
-    const ScrDyn *prototype = v->prototype ? v->prototype : !v->null_proto && v != scr_builtin_array_prototype ? scr_builtin_array_prototype : NULL;
-    if (prototype && scr_dyn_has_key(prototype, key)) return true;
-    if (key->len == 0 || key->len > 10) return false;
-    size_t idx = 0;
-    for (size_t i = 0; i < key->len; i++) {
-      char c = key->data[i];
-      if (c < '0' || c > '9') return false;
-      if (i > 0 && idx == 0) return false; /* a leading zero is no canonical index */
-      if (idx > (4294967294ULL - (size_t)(c - '0')) / 10) return false;
-      idx = idx * 10 + (size_t)(c - '0');
-    }
-    return scr_dyn_arr_has_index(v, idx);
+    const ScrDyn *prototype = scr_dyn_array_proto(v);
+    return !scr_exc_pending() && prototype && scr_dyn_has_key(prototype, key);
   }
   if (v->kind == SCR_DYN_STR)
     return scr_dyn_canonical_own_index(key, (size_t)scr_str_utf16_len(v->v.str));
@@ -6636,6 +8271,29 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
  * Array.prototype before it for arrays) and, for a class instance seen as
  * `unknown`, its class's compiled methods and accessors. */
 bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
+  const ScrDynNativeObjectOps *native = scr_dyn_native_class_ops(v);
+  if (native) {
+    ScrDyn *owner = scr_dyn_native_metadata(v);
+    if (owner && scr_dyn_find_entry(owner, key->data, key->len)) return true;
+    ScrDyn *prototype = scr_native_object_prototype(v->v.typed_ref.ptr, native);
+    bool out = false;
+    if (!scr_exc_pending() && prototype) {
+      if (prototype == scr_builtin_object_prototype) {
+        const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);
+        out = ((!owner || (!owner->prototype && !owner->null_proto)) && klass &&
+            scr_dyn_name_in_strs(key, klass->names, klass->count)) ||
+            scr_dyn_object_proto_name(key);
+      } else if (prototype->kind != SCR_DYN_NULL) out = scr_dyn_in(prototype, key);
+    }
+    scr_dyn_release(prototype);
+    return out;
+  }
+  if (scr_dyn_typed_ref_array_ops(v)) {
+    if (scr_dyn_has_key(v, key)) return true;
+    if (scr_exc_pending()) return false;
+    const ScrDyn *prototype = scr_dyn_array_proto(v);
+    return !scr_exc_pending() && prototype && scr_dyn_in(prototype, key);
+  }
   /* Generator objects have no checked view; scr_dyn_has_key answers their
    * prototype members. */
   if (v->kind == SCR_DYN_TYPED_REF && !scr_dyn_generator(v)) {
@@ -6665,63 +8323,96 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   if (scr_exc_pending()) return false;
   if (v->kind == SCR_DYN_OBJ) return scr_dyn_builtin_inherited(v, key);
   if (v->kind == SCR_DYN_ARR) {
-    if (v->prototype) return scr_dyn_in(v->prototype, key);
-    return !v->null_proto && (scr_dyn_array_proto_name(key) || scr_dyn_object_proto_name(key));
+    /* Array methods live on the initialized prototype. A name list would
+     * resurrect deleted methods and ignore a replaced prototype chain. */
+    const ScrDyn *prototype = scr_dyn_array_proto(v);
+    return !scr_exc_pending() && scr_dyn_builtin_inherited(prototype ? prototype : v, key);
+  }
+  return false;
+}
+
+static bool scr_dyn_readonly_set(void) {
+  static const char message[] = "Cannot assign to read only property";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return true;
+}
+
+/* True means the descriptor handled or refused Set; writable data leaves
+ * creation/replacement with the receiver's storage owner. Retain a setter
+ * before calling it because it may remove its own descriptor. */
+static bool scr_dyn_entry_set(const ScrDynEntry *entry, const ScrDyn *value,
+                               const ScrDyn *receiver, ScrDyn *holder, const ScrStr *key) {
+  if (entry->accessor && entry->setter) {
+    ScrDyn *args[] = {(ScrDyn *)value};
+    ScrDyn *setter = scr_dyn_retain(entry->setter);
+    scr_dyn_this_push_dyn(receiver);
+    ScrDyn *result = scr_dyn_call(setter, args, 1, "setter");
+    scr_dyn_this_pop();
+    scr_dyn_release(setter);
+    scr_dyn_release(result);
+    return true;
+  }
+  if (entry->accessor) { scr_dyn_getter_only_set(key, holder); return true; }
+  return !entry->writable && scr_dyn_readonly_set();
+}
+
+static bool scr_dyn_inherited_key_set(const ScrDyn *prototype, const ScrStr *key,
+                                      const ScrDyn *value, const ScrDyn *receiver) {
+  for (const ScrDyn *current = prototype; current;) {
+    /* Typed prototypes own logical accessor slots, not snapshot data keys. */
+    if (current->kind == SCR_DYN_TYPED_REF) {
+      ScrDyn *property = scr_dyn_new_str((ScrStr *)key);
+      ScrDyn *getter_only = NULL;
+      bool ok = scr_dyn_reflect_set_impl((ScrDyn *)current, property, (ScrDyn *)value,
+          (ScrDyn *)receiver, NULL, &getter_only);
+      scr_dyn_release(property);
+      if (!ok && !scr_exc_pending()) {
+        if (getter_only) scr_dyn_getter_only_set(key, getter_only);
+        else scr_dyn_readonly_set();
+      }
+      scr_dyn_release(getter_only);
+      return true;
+    }
+    ScrDyn *table = current->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(current) : NULL;
+    const ScrDyn *object = table ? table : current;
+    ScrDynEntry *entry = NULL;
+    if (object->kind == SCR_DYN_ARR) {
+      size_t index;
+      bool own = scr_typed_ref_is_length(key) ||
+          (scr_typed_ref_canonical_index(key->data, key->len, &index) &&
+           scr_dyn_arr_has_index(object, index));
+      if (own) {
+        bool handled = object->v.arr.frozen && scr_dyn_readonly_set();
+        scr_dyn_release(table);
+        return handled;
+      }
+      if (object->v.arr.properties) entry = scr_dyn_entry(object->v.arr.properties, key);
+    } else if (object->kind == SCR_DYN_OBJ) entry = scr_dyn_entry((ScrDyn *)object, key);
+    else { scr_dyn_release(table); break; }
+    if (entry) {
+      bool handled = scr_dyn_entry_set(entry, value, receiver, (ScrDyn *)object, key);
+      scr_dyn_release(table);
+      return handled;
+    }
+    current = object->kind == SCR_DYN_ARR ? scr_dyn_array_prototype_link(object) : object->prototype;
+    scr_dyn_release(table);
+    if (scr_exc_pending()) return true;
   }
   return false;
 }
 
 static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, const ScrDyn *receiver) {
-  for (size_t i = 0; i < recv->v.obj.len; i++) {
-    ScrDynEntry *entry = &recv->v.obj.entries[i];
-    if (entry->key_len != key->len || memcmp(entry->key, key->data, key->len) != 0) continue;
-    if (entry->accessor && entry->setter) {
-      ScrDyn *args[] = {value};
-      ScrDyn *setter = scr_dyn_retain(entry->setter);
-      scr_dyn_this_push_dyn(receiver);
-      ScrDyn *result = scr_dyn_call(setter, args, 1, "setter");
-      scr_dyn_this_pop();
-      scr_dyn_release(setter);
-      scr_dyn_release(result);
-      return;
-    }
-    if (entry->accessor || !entry->writable) {
-      static const char msg[] = "Cannot assign to read only property";
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-      return;
-    }
-  }
-  if (!scr_dyn_entry(recv, key)) {
-    for (const ScrDyn *current = scr_dyn_proto_next(recv); current;) {
-      ScrDyn *table = current->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(current) : NULL;
-      const ScrDyn *object = table ? table : current;
-      if (object->kind != SCR_DYN_OBJ) { scr_dyn_release(table); break; }
-      ScrDynEntry *inherited = scr_dyn_entry((ScrDyn *)object, key);
-      if (!inherited) {
-        current = scr_dyn_proto_next(object);
-        scr_dyn_release(table);
-        continue;
-      }
-      if (inherited->accessor && inherited->setter) {
-        ScrDyn *args[] = {value};
-        ScrDyn *setter = scr_dyn_retain(inherited->setter);
-        scr_dyn_this_push_dyn(receiver);
-        ScrDyn *result = scr_dyn_call(setter, args, 1, "setter");
-        scr_dyn_this_pop();
-        scr_dyn_release(setter);
-        scr_dyn_release(result);
-        scr_dyn_release(table);
-        return;
-      }
-      if (inherited->accessor || !inherited->writable) {
-        static const char message[] = "Cannot assign to read only property";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-        scr_dyn_release(table);
-        return;
-      }
-      scr_dyn_release(table);
-      break;
-    }
+  ScrDynEntry *entry = scr_dyn_entry(recv, key);
+  if (entry) {
+    if (scr_dyn_entry_set(entry, value, receiver, recv, key)) return;
+  } else {
+    const ScrDynNativeObjectOps *ops = scr_dyn_native_class_ops(receiver);
+    ScrDyn *owned = ops ? scr_native_object_prototype(receiver->v.typed_ref.ptr, ops) : NULL;
+    const ScrDyn *prototype = ops ? (owned && owned->kind != SCR_DYN_NULL ? owned : NULL)
+        : recv->prototype;
+    bool handled = scr_exc_pending() || scr_dyn_inherited_key_set(prototype, key, value, receiver);
+    scr_dyn_release(owned);
+    if (handled) return;
   }
   if (recv->non_extensible && !scr_dyn_entry(recv, key)) {
     ScrJsonBuf buffer;
@@ -6743,7 +8434,55 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (recv->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_set(recv, key, value)) return;
     if (scr_event_ref_hooks && scr_event_ref_hooks->set(recv, key, value)) return;
+    size_t index;
+    const ScrDynNativeObjectOps *ops = scr_dyn_native_property_writer(recv, key, &index);
+    if (ops) {
+      ScrDyn *property = scr_dyn_new_str(key);
+      ScrDyn *getter_only = NULL;
+      bool ok = scr_dyn_reflect_set_impl(recv, property, value, recv, NULL, &getter_only);
+      scr_dyn_release(property);
+      if (!ok && !scr_exc_pending()) {
+        if (getter_only) scr_dyn_getter_only_set(key, getter_only);
+        else scr_dyn_readonly_set();
+      }
+      scr_dyn_release(getter_only);
+      return;
+    }
+    if (scr_dyn_native_class_ops(recv) || scr_dyn_native_accessor(recv, key, &index)) {
+      ScrDyn *property = scr_dyn_new_str(key);
+      ScrDyn *getter_only = NULL;
+      bool ok = scr_dyn_reflect_set_impl(recv, property, value, recv, NULL, &getter_only);
+      scr_dyn_release(property);
+      if (!ok && !scr_exc_pending() && getter_only) scr_dyn_getter_only_set(key, getter_only);
+      else if (!ok && !scr_exc_pending()) {
+        ScrDyn *owner = scr_dyn_native_metadata(recv);
+        if ((!owner || !scr_dyn_has_own(owner, key)) &&
+            (*(const size_t *)recv->v.typed_ref.ptr == SIZE_MAX ||
+             (scr_native_integrity_flags(recv->v.typed_ref.ptr) & SCR_NATIVE_NON_EXTENSIBLE))) {
+          ScrJsonBuf message;
+          scr_jb_init(&message);
+          scr_jb_puts(&message, "Cannot add property ");
+          scr_jb_write(&message, key->data, key->len);
+          scr_jb_puts(&message, ", object is not extensible");
+          scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+        } else scr_dyn_readonly_set();
+      }
+      scr_dyn_release(getter_only);
+      return;
+    }
+    ScrDyn *owner = scr_dyn_native_extra_owner(recv, key, true);
+    if (scr_exc_pending()) return;
+    if (owner) {
+      scr_dyn_object_key_set(owner, key, value, recv);
+      return;
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
+    /* Accessors own their effects on the original receiver. Committing the
+     * pre-call snapshot afterwards would overwrite writes through native aliases. */
+    if (scr_exc_pending() || scr_dyn_inherited_key_set(materialized, key, value, recv)) {
+      scr_dyn_release(materialized);
+      return;
+    }
     scr_dyn_key_set(materialized, key, value);
     if (!scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
     scr_dyn_release(materialized);
@@ -6762,76 +8501,30 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   }
   if (recv->kind == SCR_DYN_ARR) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) {
-      if (recv->v.arr.frozen) {
-        static const char message[] = "Cannot assign to read only property";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-        return;
-      }
-      double number;
-      if (!scr_dyn_number_coerce_js(value, &number)) return;
-      if (!isfinite(number) || number < 0 || number > 4294967295.0 || trunc(number) != number) {
-        static const char message[] = "Invalid array length";
-        scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
-        return;
-      }
-      size_t length = (size_t)number;
-      if (length > recv->v.arr.len + 1000000) {
-        static const char message[] = "Checked array growth exceeds the native allocation limit";
-        scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-        return;
-      }
-      while (recv->v.arr.len < length) scr_dyn_arr_push_hole(recv);
-      while (recv->v.arr.len > length) {
-        if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
-          static const char message[] = "Cannot delete non-configurable property";
-          scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-          return;
-        }
-        scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
-      }
+      scr_dyn_array_set_length(recv, value, true);
       return;
     }
     /* Canonical indexes extend the dense portion; other names live in the
      * array's own property table. */
-    size_t idx = 0;
-    int is_index = key->len > 0 && !(key->len > 1 && key->data[0] == '0');
-    for (size_t i = 0; is_index && i < key->len; i++) {
-      if (key->data[i] < '0' || key->data[i] > '9') is_index = 0;
-      else if (idx > (4294967295ULL - (size_t)(key->data[i] - '0')) / 10) is_index = 0;
-      else idx = idx * 10 + (size_t)(key->data[i] - '0');
-    }
-    if (is_index && idx < 4294967295ULL) {
-      if (recv->v.arr.frozen && idx < recv->v.arr.len) {
-        static const char message[] = "Cannot assign to read only property";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-        return;
+    size_t idx;
+    if (scr_typed_ref_canonical_index(key->data, key->len, &idx)) {
+      if (!scr_dyn_arr_has_index(recv, idx)) {
+        const ScrDyn *prototype = scr_dyn_array_prototype_link(recv);
+        if (scr_exc_pending() || scr_dyn_inherited_key_set(prototype, key, value, recv)) return;
       }
-      if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx)) {
-        static const char message[] = "Cannot add property, object is not extensible";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-        return;
-      }
-      if (idx > recv->v.arr.len + 1000000) {
-        static const char message[] = "Sparse array writes are not supported yet";
-        scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-        return;
-      }
-      while (recv->v.arr.len <= idx) {
-        scr_dyn_arr_push_hole(recv);
-      }
-      scr_dyn_region_store(recv, value);
-      ScrDyn *old = recv->v.arr.items[idx];
-      recv->v.arr.items[idx] = scr_dyn_retain(value);
-      if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
-      scr_dyn_release(old);
+      scr_dyn_array_define_index(recv, idx, value, true);
       return;
+    }
+    if (!recv->v.arr.properties || !scr_dyn_entry(recv->v.arr.properties, key)) {
+      const ScrDyn *prototype = scr_dyn_array_prototype_link(recv);
+      if (scr_exc_pending() || scr_dyn_inherited_key_set(prototype, key, value, recv)) return;
     }
     if (!recv->v.arr.properties) {
       scr_dyn_region_store(recv, NULL); /* a table that later holds anything */
       recv->v.arr.properties = scr_dyn_new_obj();
     }
     recv->v.arr.properties->non_extensible = recv->non_extensible;
-    scr_dyn_key_set(recv->v.arr.properties, key, value);
+    scr_dyn_object_key_set(recv->v.arr.properties, key, value, recv);
     return;
   }
   if (recv->kind == SCR_DYN_HANDLE) {
@@ -8233,7 +9926,7 @@ static __attribute__((noinline, cold)) bool scr_jschema_record_kept(
   if (seen != all) goto fail;
   ScrRecordSource entry = { rec, view, (const char *)&s->fields[0].name,
                             (const char *)&s->fields[0].name_len, sizeof *s->fields,
-                            sizeof *s->fields, n };
+                            sizeof *s->fields, n, NULL };
   scr_record_source_put(&entry);
   out->ptr = rec;
   return true;
@@ -8437,9 +10130,9 @@ static ScrStr *scr_json_index_key(size_t index) {
 /* Keys passed here come from our own index formatter or own-key walk. */
 static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key) {
   if (holder->kind == SCR_DYN_TYPED_REF) {
-    /* Bound records and arrays answer present members from the native value. */
+    /* A live indexed getter can throw; do not refresh after that outcome. */
     ScrDyn *live = scr_dyn_typed_ref_key_get(holder, key);
-    if (live) return live;
+    if (live || scr_exc_pending()) return live;
     ScrDyn *view = scr_dyn_typed_ref_materialize(holder);
     ScrDyn *member = scr_exc_pending() ? NULL : scr_json_member(view, key);
     scr_dyn_release(view);
@@ -8452,7 +10145,8 @@ static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key) {
       return index < holder->v.bytes->len ? scr_dyn_new_num(scr_bytes_get(holder->v.bytes, (double)index))
                                          : scr_dyn_retain(scr_dyn_undefined());
     }
-    return scr_dyn_retain(index < holder->v.arr.len ? holder->v.arr.items[index] : scr_dyn_undefined());
+    return scr_dyn_arr_has_index(holder, index) ? scr_dyn_retain(holder->v.arr.items[index])
+        : scr_dyn_arr_named_get(holder, key);
   }
   return scr_dyn_obj_read(holder, key->data, key->len);
 }
@@ -8477,12 +10171,43 @@ static void scr_json_delete_member(ScrDyn *object, const ScrStr *key) {
   }
 }
 
-/* Ordinary native objects carry removable own data properties. Dense
- * arrays, typed references and handles keep their explicit boundary;
- * deleting from a materialized snapshot would lose the mutation. */
+/* Live array properties mutate their storage owner directly; deleting from
+ * a materialized snapshot would lose the mutation on an exceptional path. */
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
   if (scr_dyn_class_reflection_fence(recv)) return;
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_delete(recv, key); return; }
+  size_t native_index;
+  const ScrDynNativeObjectOps *native_ops = scr_dyn_native_property_writer(recv, key, &native_index);
+  if (native_ops) {
+    ScrDyn *property = scr_dyn_new_str((ScrStr *)key);
+    scr_dyn_mutate_native_property(recv, property, NULL, native_ops, native_index,
+        strict ? SCR_NATIVE_DELETE : SCR_NATIVE_DELETE_SLOPPY);
+    scr_dyn_release(property);
+    return;
+  }
+  bool native_array = recv->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(recv);
+  if ((native_array || recv->kind == SCR_DYN_ARR) && scr_typed_ref_is_length(key)) {
+    if (strict) {
+      static const char message[] = "Cannot delete non-configurable property";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    }
+    return;
+  }
+  if (native_array) {
+    size_t index;
+    if (scr_typed_ref_canonical_index(key->data, key->len, &index)) {
+      scr_arr_delete_mode(recv->v.typed_ref.ptr, (double)index, strict);
+      return;
+    }
+    ScrDyn *owner = scr_dyn_array_metadata(recv, false);
+    if (owner) scr_dyn_key_delete(owner, key, strict);
+    return;
+  }
+  ScrDyn *record_owner = scr_dyn_native_extra_owner(recv, key, false);
+  if (record_owner) {
+    scr_dyn_key_delete(record_owner, key, strict);
+    return;
+  }
   if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit &&
       (!strncmp(recv->v.typed_ref.type_key, "record:", 7) ||
        !strncmp(recv->v.typed_ref.type_key, "object:", 7))) {
@@ -8526,13 +10251,18 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
       }
       return;
     }
+    if (entry && key->len == 11 && !memcmp(key->data, "constructor", 11))
+      recv->v.obj.class_name = NULL;
     scr_json_delete_member(recv, key);
     scr_error_sync_cause(recv, key);
     return;
   }
-  if (recv->kind == SCR_DYN_ARR && scr_dyn_canonical_own_index(key, recv->v.arr.len)) {
-    size_t index = 0;
-    for (size_t i = 0; i < key->len; i++) index = index * 10 + (size_t)(key->data[i] - '0');
+  if (recv->kind == SCR_DYN_ARR) {
+    size_t index;
+    if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) {
+      if (recv->v.arr.properties) scr_dyn_key_delete(recv->v.arr.properties, key, strict);
+      return;
+    }
     if (!scr_dyn_arr_has_index(recv, index)) return;
     if (recv->v.arr.sealed) {
       if (strict) {
@@ -8546,14 +10276,12 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
       if (!recv->v.arr.presence) scr_json_oom();
       memset(recv->v.arr.presence, 1, recv->v.arr.len);
     }
-    recv->v.arr.presence[index] = 0;
-    scr_dyn_release(recv->v.arr.items[index]);
+    /* Trace visits every slot below length, including holes. Unlink before
+     * release so threshold collection cannot follow an already-released edge. */
+    ScrDyn *old = recv->v.arr.items[index];
     recv->v.arr.items[index] = scr_dyn_retain(scr_dyn_undefined());
-    return;
-  }
-  if (recv->kind == SCR_DYN_ARR && recv->v.arr.properties &&
-      scr_dyn_obj_get(recv->v.arr.properties, key->data, key->len)) {
-    scr_dyn_key_delete(recv->v.arr.properties, key, strict);
+    recv->v.arr.presence[index] = 0;
+    scr_dyn_release(old);
     return;
   }
   if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL) {
@@ -9338,10 +11066,22 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
 }
 
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
-  for (const ScrDyn *current = d; current; current = scr_dyn_proto_next(current)) {
+  /* Arrays also have an implicit prototype; Get must follow the same chain
+   * as inherited Set while preserving the original accessor receiver. */
+  for (const ScrDyn *current = d; current; current = current->kind == SCR_DYN_ARR
+      ? scr_dyn_array_prototype_link(current) : current->prototype) {
     if (current == scr_builtin_object_prototype) {
       scr_dyn_class_reflection_fence(current);
       return NULL;
+    }
+    /* Keep the original receiver when an ordinary chain reaches a native view. */
+    if (current->kind == SCR_DYN_TYPED_REF) {
+      ScrStr *name = scr_str_new(key, key_len);
+      ScrDyn *property = scr_dyn_new_str(name);
+      scr_str_release(name);
+      ScrDyn *result = scr_dyn_reflect_get((ScrDyn *)current, property, (ScrDyn *)receiver);
+      scr_dyn_release(property);
+      return result;
     }
     if (current->kind == SCR_DYN_FUNC) {
       ScrDyn *table = scr_dyn_fn_properties(current);
@@ -9533,10 +11273,20 @@ ScrDyn *scr_dyn_obj_read_ic(const ScrDyn *d, const ScrStr *key, ScrDynReadIc *ic
 /* Compiler-owned class property tables use their native instance as the
  * receiver of inherited accessors, retaining field updates on that instance. */
 ScrDyn *scr_dyn_bag_get(ScrDyn *bag, ScrStr *key, ScrDyn *receiver) {
+  if (scr_dyn_native_class_ops(receiver)) {
+    ScrDyn *property = scr_dyn_new_str(key);
+    ScrDyn *result = scr_dyn_reflect_get(receiver, property, receiver);
+    scr_dyn_release(property);
+    return result;
+  }
   return scr_dyn_obj_read_receiver(bag, key->data, key->len, receiver);
 }
 
 void scr_dyn_bag_set(ScrDyn *bag, ScrStr *key, ScrDyn *value, ScrDyn *receiver) {
+  if (scr_dyn_native_class_ops(receiver)) {
+    scr_dyn_key_set(receiver, key, value);
+    return;
+  }
   scr_dyn_object_key_set(bag, key, value, receiver);
 }
 
@@ -9552,7 +11302,48 @@ ScrDyn *scr_dyn_reflect_get(ScrDyn *target, ScrDyn *raw_key, ScrDyn *receiver) {
   ScrDyn *key = scr_dyn_property_key_value(raw_key);
   if (!key) return NULL;
   ScrDyn *result = NULL;
-  if (target->kind == SCR_DYN_TYPED_REF) {
+  size_t accessor_index;
+  const ScrDynNativeObjectOps *accessor = key->kind == SCR_DYN_STR
+      ? scr_dyn_native_accessor(target, key->v.str, &accessor_index) : NULL;
+  const ScrDynNativeObjectOps *native = scr_dyn_native_class_ops(target);
+  if (accessor) {
+    ScrDyn *getter = accessor->read(target->v.typed_ref.ptr, accessor_index, 1);
+    if (!scr_exc_pending() && getter && getter->kind != SCR_DYN_UNDEF) {
+      scr_dyn_this_push_dyn(receiver);
+      result = scr_dyn_call(getter, NULL, 0, "getter");
+      scr_dyn_this_pop();
+    } else if (!scr_exc_pending()) result = scr_dyn_retain(scr_dyn_undefined());
+    scr_dyn_release(getter);
+  } else if (native) {
+    ScrDyn *owner = scr_dyn_native_metadata(target);
+    bool own = owner && scr_dyn_has_own_computed(owner, key);
+    if (own && key->kind == SCR_DYN_STR) {
+      size_t index = scr_native_object_index(native, key->v.str->data, key->v.str->len);
+      if (index != native->count) result = native->read(target->v.typed_ref.ptr, index, 0);
+    }
+    if (!result && !scr_exc_pending() && own) result = scr_dyn_reflect_get(owner, key, receiver);
+    if (!result && !scr_exc_pending()) {
+      ScrDyn *prototype = scr_native_object_prototype(target->v.typed_ref.ptr, native);
+      if (!scr_exc_pending()) result = prototype && prototype->kind != SCR_DYN_NULL &&
+          prototype != scr_builtin_object_prototype ? scr_dyn_reflect_get(prototype, key, receiver)
+          : scr_dyn_retain(scr_dyn_undefined());
+      scr_dyn_release(prototype);
+    }
+  } else if (scr_dyn_typed_ref_array_ops(target)) {
+    size_t index;
+    if (key->kind == SCR_DYN_STR && scr_typed_ref_is_length(key->v.str))
+      result = scr_dyn_new_num((double)((ScrArr *)target->v.typed_ref.ptr)->len);
+    else if (key->kind == SCR_DYN_STR &&
+        scr_typed_ref_canonical_index(key->v.str->data, key->v.str->len, &index))
+      result = scr_dyn_typed_ref_element(target, index);
+    if (!result && !scr_exc_pending()) {
+      ScrDyn *owner = scr_dyn_array_metadata(target, false);
+      bool own = owner && scr_dyn_has_own_computed(owner, key);
+      const ScrDyn *base = scr_exc_pending() ? NULL : own ? owner : scr_dyn_array_prototype_link(target);
+      if (!scr_exc_pending()) result = base ? scr_dyn_reflect_get((ScrDyn *)base, key, receiver)
+          : scr_dyn_retain(scr_dyn_undefined());
+    }
+  } else if (target->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(target);
     if (!scr_exc_pending()) result = scr_dyn_reflect_get(view, key, receiver);
     scr_dyn_release(view);
@@ -9578,7 +11369,38 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
   ScrDyn *key = scr_dyn_property_key_value(raw_key);
   if (!key) return false;
   bool ok = false;
-  if (receiver->kind == SCR_DYN_TYPED_REF) {
+  size_t index;
+  bool array = receiver->kind == SCR_DYN_ARR ||
+      (receiver->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(receiver));
+  if (array && key->kind == SCR_DYN_STR && scr_typed_ref_is_length(key->v.str))
+    ok = scr_dyn_array_set_length(receiver, value, false);
+  else if (array && key->kind == SCR_DYN_STR &&
+           scr_typed_ref_canonical_index(key->v.str->data, key->v.str->len, &index))
+    ok = scr_dyn_array_define_index(receiver, index, value, false);
+  else if (scr_dyn_typed_ref_array_ops(receiver)) {
+    ScrDyn *owner = scr_dyn_array_metadata(receiver, true);
+    if (owner) ok = scr_dyn_reflect_define(owner, key, value);
+  } else if (receiver->kind == SCR_DYN_TYPED_REF) {
+    const ScrDynNativeObjectOps *ops = key->kind == SCR_DYN_STR
+        ? scr_dyn_native_property_writer(receiver, key->v.str, &index) : NULL;
+    if (ops) {
+      ScrDyn *fields[6] = {NULL, NULL, value, NULL, NULL, NULL};
+      ok = scr_dyn_mutate_native_property(receiver, key, fields, ops, index, SCR_NATIVE_SET_SLOPPY);
+      scr_dyn_release(key);
+      return ok;
+    }
+    ScrDyn *owner = key->kind == SCR_DYN_SYMBOL ? scr_dyn_native_write_metadata(receiver)
+        : scr_dyn_native_extra_owner(receiver, key->v.str, true);
+    if (scr_exc_pending()) { scr_dyn_release(key); return false; }
+    if (owner) {
+      ok = scr_dyn_reflect_define(owner, key, value);
+      scr_dyn_release(key);
+      return ok && !scr_exc_pending();
+    }
+    if (scr_dyn_native_class_ops(receiver)) {
+      scr_dyn_release(key);
+      return false;
+    }
     ScrDyn *view = scr_dyn_typed_ref_materialize(receiver);
     if (!scr_exc_pending()) ok = scr_dyn_reflect_define(view, key, value);
     if (ok) scr_dyn_typed_ref_commit(receiver);
@@ -9607,7 +11429,7 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
         scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
         scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
         scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
-        ScrDyn *defined = scr_dyn_define_symbol(receiver, key, descriptor);
+        ScrDyn *defined = scr_dyn_define_property(receiver, key, descriptor);
         scr_dyn_release(defined);
         scr_dyn_release(descriptor);
         ok = !scr_exc_pending();
@@ -9615,10 +11437,12 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
         scr_dyn_obj_set(receiver, key->v.str->data, key->v.str->len, scr_dyn_retain(value));
         ok = true;
       } else if (receiver->kind == SCR_DYN_ARR) {
-        if (!receiver->v.arr.frozen) {
-          scr_dyn_key_set(receiver, key->v.str, value);
-          ok = !scr_exc_pending();
+        if (!receiver->v.arr.properties) {
+          scr_dyn_region_store(receiver, NULL);
+          receiver->v.arr.properties = scr_dyn_new_obj();
         }
+        scr_dyn_obj_set(receiver->v.arr.properties, key->v.str->data, key->v.str->len, scr_dyn_retain(value));
+        ok = true;
       }
     }
     scr_dyn_release(symbols);
@@ -9627,22 +11451,64 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
   return ok && !scr_exc_pending();
 }
 
-bool scr_dyn_reflect_set(ScrDyn *target, ScrDyn *raw_key, ScrDyn *value, ScrDyn *receiver) {
-  if (!scr_dyn_to_primitive_result_is_object(target)) {
-    static const char message[] = "Reflect.set called on non-object";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    return false;
-  }
-  ScrDyn *key = scr_dyn_property_key_value(raw_key);
-  if (!key) return false;
+static bool scr_dyn_reflect_set_impl(ScrDyn *target, ScrDyn *key, ScrDyn *value,
+    ScrDyn *receiver, bool *native_store, ScrDyn **getter_only) {
+  if (scr_exc_pending() || !scr_dyn_reflect_set_target(target)) return false;
   bool ok = false;
-  if (target->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *view = scr_dyn_typed_ref_materialize(target);
-    if (!scr_exc_pending()) ok = scr_dyn_reflect_set(view, key, value, receiver);
-    scr_dyn_release(view);
+  ScrDyn *cursor = NULL;
+next_target:;
+  size_t accessor_index;
+  const ScrDynNativeObjectOps *accessor = key->kind == SCR_DYN_STR
+      ? scr_dyn_native_accessor(target, key->v.str, &accessor_index) : NULL;
+  if (accessor) {
+    ScrDyn *setter = accessor->read(target->v.typed_ref.ptr, accessor_index, 2);
+    if (!scr_exc_pending() && setter && setter->kind != SCR_DYN_UNDEF) {
+      scr_dyn_this_push_dyn(receiver);
+      ScrDyn *result = scr_dyn_call(setter, &value, 1, "setter");
+      scr_dyn_this_pop();
+      scr_dyn_release(result);
+      ok = !scr_exc_pending();
+    } else if (!scr_exc_pending() && getter_only) *getter_only = scr_dyn_retain(target);
+    scr_dyn_release(setter);
+  } else if (target->kind == SCR_DYN_TYPED_REF && key->kind == SCR_DYN_STR &&
+      scr_typed_ref_array_has_own(target, key->v.str)) {
+    size_t index = 0;
+    bool length = scr_typed_ref_is_length(key->v.str);
+    if (!length) scr_typed_ref_canonical_index(key->v.str->data, key->v.str->len, &index);
+    bool writable = length ? scr_arr_check_length_mode(target->v.typed_ref.ptr, false)
+        : scr_arr_check_set_mode(target->v.typed_ref.ptr, (double)index, false);
+    if (writable) ok = scr_dyn_set_receiver(receiver, key, value, native_store);
+  } else if (scr_dyn_typed_ref_array_ops(target)) {
+    ScrDyn *owner = scr_dyn_array_metadata(target, false);
+    bool own = owner && scr_dyn_has_own_computed(owner, key);
+    const ScrDyn *base = scr_exc_pending() ? NULL : own ? owner : scr_dyn_array_prototype_link(target);
+    ScrDyn *retained = base ? scr_dyn_retain((ScrDyn *)base) : NULL;
+    if (!scr_exc_pending()) ok = retained ? scr_dyn_reflect_set_impl(retained, key, value, receiver, native_store, getter_only)
+        : scr_dyn_set_receiver(receiver, key, value, native_store);
+    scr_dyn_release(retained);
+  } else if (target->kind == SCR_DYN_TYPED_REF) {
+    size_t index;
+    const ScrDynNativeObjectOps *ops = key->kind == SCR_DYN_STR
+        ? scr_dyn_native_property_writer(target, key->v.str, &index) : NULL;
+    if (ops) {
+      ok = scr_dyn_native_property_set(target, key, value, receiver, ops, index, native_store, getter_only);
+    } else if ((ops = scr_dyn_native_class_ops(target))) {
+      ScrDyn *owner = scr_dyn_native_metadata(target);
+      bool own = owner && scr_dyn_has_own_computed(owner, key);
+      ScrDyn *base = own ? scr_dyn_retain(owner)
+          : scr_native_object_prototype(target->v.typed_ref.ptr, ops);
+      if (!scr_exc_pending()) ok = base && base->kind != SCR_DYN_NULL
+          ? scr_dyn_reflect_set_impl(base, key, value, receiver, native_store, getter_only)
+          : scr_dyn_set_receiver(receiver, key, value, native_store);
+      scr_dyn_release(base);
+    } else {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(target);
+      if (!scr_exc_pending()) ok = scr_dyn_reflect_set_impl(view, key, value, receiver, native_store, getter_only);
+      scr_dyn_release(view);
+    }
   } else if (target->kind == SCR_DYN_PROXY) {
     ScrDyn *trap = scr_dyn_proxy_trap(target, "set");
-    if (!scr_exc_pending() && !trap) ok = scr_dyn_reflect_set(target->v.proxy.target, key, value, receiver);
+    if (!scr_exc_pending() && !trap) ok = scr_dyn_reflect_set_impl(target->v.proxy.target, key, value, receiver, native_store, getter_only);
     else if (trap) {
       ScrDyn *args[] = {target->v.proxy.target, key, value, receiver};
       ScrDyn *result = scr_dyn_proxy_call(target, trap, args, 4);
@@ -9653,17 +11519,38 @@ bool scr_dyn_reflect_set(ScrDyn *target, ScrDyn *raw_key, ScrDyn *value, ScrDyn 
     }
   } else if (target->kind == SCR_DYN_FUNC) {
     ScrDyn *table = scr_dyn_fn_properties(target);
-    ok = scr_dyn_reflect_set(table, key, value, receiver);
+    ok = scr_dyn_reflect_set_impl(table, key, value, receiver, native_store, getter_only);
     scr_dyn_release(table);
   } else {
     ScrDyn *symbols = key->kind == SCR_DYN_SYMBOL ? scr_dyn_symbol_receiver(target) : NULL;
     ScrDynEntry *entry = symbols ? scr_dyn_symbol_entry(symbols, key, false) : NULL;
-    if (key->kind == SCR_DYN_STR) for (const ScrDyn *current = target; current; current = scr_dyn_proto_next(current)) {
-      if (current->kind == SCR_DYN_OBJ) entry = scr_dyn_entry((ScrDyn *)current, key->v.str);
-      else if (current->kind == SCR_DYN_ARR && current->v.arr.properties) entry = scr_dyn_entry(current->v.arr.properties, key->v.str);
-      if (entry) break;
+    bool array_data = false, array_writable = true;
+    if (key->kind == SCR_DYN_STR) {
+      if (target->kind == SCR_DYN_OBJ) entry = scr_dyn_entry(target, key->v.str);
+      else if (target->kind == SCR_DYN_ARR) {
+        size_t index;
+        if (scr_typed_ref_is_length(key->v.str) ||
+            (scr_typed_ref_canonical_index(key->v.str->data, key->v.str->len, &index) &&
+             scr_dyn_arr_has_index(target, index))) {
+          array_data = true;
+          array_writable = !target->v.arr.frozen;
+        }
+        if (!array_data && target->v.arr.properties) entry = scr_dyn_entry(target->v.arr.properties, key->v.str);
+      }
     }
-    if (entry && entry->accessor) {
+    const ScrDyn *link = target->kind == SCR_DYN_ARR
+        ? scr_dyn_array_prototype_link(target) : target->prototype;
+    if (!entry && !array_data && link && !scr_exc_pending()) {
+      /* Preserve exotic links: materializing or walking past a typed/proxy
+       * prototype would skip its Set policy and the original receiver.
+       * Ordinary chains stay iterative, independent of C stack depth. */
+      ScrDyn *next = scr_dyn_retain((ScrDyn *)link);
+      scr_dyn_release(symbols);
+      symbols = NULL;
+      scr_dyn_release(cursor);
+      cursor = target = next;
+      if (!scr_exc_pending()) goto next_target;
+    } else if (entry && entry->accessor) {
       if (entry->setter) {
         ScrDyn *setter = scr_dyn_retain(entry->setter);
         scr_dyn_this_push_dyn(receiver);
@@ -9672,10 +11559,20 @@ bool scr_dyn_reflect_set(ScrDyn *target, ScrDyn *raw_key, ScrDyn *value, ScrDyn 
         scr_dyn_release(result);
         scr_dyn_release(setter);
         ok = !scr_exc_pending();
-      }
-    } else if (!entry || entry->writable) ok = scr_dyn_reflect_define(receiver, key, value);
+      } else if (getter_only) *getter_only = scr_dyn_retain(target);
+    } else if (!scr_exc_pending() && (array_data ? array_writable : !entry || entry->writable))
+      ok = scr_dyn_set_receiver(receiver, key, value, native_store);
     scr_dyn_release(symbols);
   }
+  scr_dyn_release(cursor);
+  return ok && !scr_exc_pending();
+}
+
+bool scr_dyn_reflect_set(ScrDyn *target, ScrDyn *raw_key, ScrDyn *value, ScrDyn *receiver) {
+  if (!scr_dyn_reflect_set_target(target)) return false;
+  ScrDyn *key = scr_dyn_property_key_value(raw_key);
+  if (!key) return false;
+  bool ok = scr_dyn_reflect_set_impl(target, key, value, receiver, NULL, NULL);
   scr_dyn_release(key);
   return ok && !scr_exc_pending();
 }
@@ -9809,7 +11706,7 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
 }
 
 ScrDyn *scr_dyn_get_own_property_symbols(const ScrDyn *value) {
-  if (value->kind == SCR_DYN_TYPED_REF) {
+  if (value->kind == SCR_DYN_TYPED_REF && !scr_dyn_typed_ref_array_ops(value)) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
     ScrDyn *result = scr_dyn_get_own_property_symbols(view);
@@ -10021,10 +11918,30 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     scr_dyn_release(keys);
     return out;
   }
+  if (scr_dyn_typed_ref_array_ops(v)) {
+    ScrDyn *keys = scr_dyn_get_own_property_names(v);
+    if (!keys) return NULL;
+    ScrDyn *out = scr_dyn_new_arr();
+    for (size_t i = 0; i < keys->v.arr.len; i++) {
+      ScrStr *key = keys->v.arr.items[i]->v.str;
+      bool include = scr_dyn_property_is_enumerable(v, key);
+      ScrDyn *value = include && mode != SCR_OBJWALK_KEYS && !scr_exc_pending()
+          ? scr_dyn_typed_ref_key_get(v, key) : NULL;
+      if (scr_exc_pending()) {
+        scr_dyn_release(value); scr_dyn_release(keys); scr_dyn_release(out);
+        return NULL;
+      }
+      if (include) scr_dyn_objwalk_push(out, mode, key->data, key->len, value);
+      scr_dyn_release(value);
+    }
+    scr_dyn_release(keys);
+    return out;
+  }
   if (v->kind == SCR_DYN_TYPED_REF) {
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) return scr_typed_ref_record_walk(v, record, (int)mode);
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
+    if (scr_exc_pending()) { scr_dyn_release(materialized); return NULL; }
     ScrDyn *out = scr_dyn_objwalk(materialized, mode);
     scr_dyn_release(materialized);
     return out;
@@ -10143,10 +12060,42 @@ static ScrDyn *scr_typed_ref_record_walk(const ScrDyn *d, const ScrDynTypedRecor
   return out;
 }
 
+static bool scr_dyn_for_in_collect(ScrDyn *keys, ScrDyn *seen, const ScrDyn *current) {
+  ScrDyn *own = scr_dyn_obj_own_keys(current);
+  if (scr_exc_pending() || !own) { scr_dyn_release(own); return false; }
+  for (size_t i = 0; i < own->v.arr.len && !scr_exc_pending(); i++) {
+    ScrDyn *key = own->v.arr.items[i];
+    ScrStr *name = key->v.str;
+    if (scr_dyn_has_own(seen, name)) continue;
+    scr_dyn_obj_set(seen, name->data, name->len, scr_dyn_retain(scr_dyn_undefined()));
+    if (scr_dyn_obj_enumerable(current, name->data, name->len))
+      scr_dyn_arr_push(keys, scr_dyn_retain(key));
+  }
+  scr_dyn_release(own);
+  return !scr_exc_pending();
+}
+
 /* Snapshot enumerable names from the receiver and each live prototype.
  * Non-enumerable own names shadow names farther up the chain. */
 ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
+  const ScrDynNativeObjectOps *native = scr_dyn_native_class_ops(v);
+  if (native) {
+    ScrDyn *keys = scr_dyn_new_arr(), *seen = scr_dyn_new_obj_null_proto();
+    ScrDyn *owner = scr_dyn_native_metadata(v);
+    bool ok = !owner || scr_dyn_for_in_collect(keys, seen, owner);
+    ScrDyn *prototype = ok ? scr_native_object_prototype(v->v.typed_ref.ptr, native) : NULL;
+    const ScrDyn *current = !scr_exc_pending() && prototype && prototype->kind != SCR_DYN_NULL
+        ? scr_dyn_chain_link(prototype) : NULL;
+    while (ok && current && current != scr_builtin_object_prototype && !scr_exc_pending()) {
+      ok = scr_dyn_for_in_collect(keys, seen, current);
+      current = ok ? scr_dyn_proto_next(current) : NULL;
+    }
+    scr_dyn_release(prototype);
+    scr_dyn_release(seen);
+    if (!ok || scr_exc_pending()) { scr_dyn_release(keys); return NULL; }
+    return keys;
+  }
   if (v->kind == SCR_DYN_TYPED_REF) {
     /* The snapshot has no prototype: for-in visits its own keys. */
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
@@ -10166,19 +12115,10 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
   case SCR_DYN_OBJ: {
     ScrDyn *keys = scr_dyn_new_arr();
     ScrDyn *seen = scr_dyn_new_obj_null_proto();
-    for (const ScrDyn *current = v; current; current = scr_dyn_proto_next(current)) {
-      ScrDyn *own = scr_dyn_obj_own_keys(current);
-      for (size_t i = 0; i < own->v.arr.len; i++) {
-        ScrDyn *key = own->v.arr.items[i];
-        ScrStr *name = key->v.str;
-        if (scr_dyn_has_own(seen, name)) continue;
-        scr_dyn_obj_set(seen, name->data, name->len, scr_dyn_retain(scr_dyn_undefined()));
-        if (scr_dyn_obj_enumerable(current, name->data, name->len))
-          scr_dyn_arr_push(keys, scr_dyn_retain(key));
-      }
-      scr_dyn_release(own);
-    }
+    for (const ScrDyn *current = v; current && !scr_exc_pending(); current = scr_dyn_proto_next(current))
+      if (!scr_dyn_for_in_collect(keys, seen, current)) break;
     scr_dyn_release(seen);
+    if (scr_exc_pending()) { scr_dyn_release(keys); return NULL; }
     return keys;
   }
   case SCR_DYN_ARR:
@@ -10410,117 +12350,82 @@ ScrArr *scr_dyn_obj_value_list(const ScrDyn *v) {
   return scr_dyn_value_list_from(slots, count, stack);
 }
 
-/* One source's own enumerable members onto an OBJ target. OBJ sources
- * snapshot their keys, then check attributes and read values in order so
- * getters can affect later entries. Arrays, strings, and bytes use their
- * index-keyed entries walk. Nullish and scalar sources copy nothing;
- * non-OBJ targets have no property table. */
-static void scr_dyn_copy_property(ScrDyn *target, ScrStr *key, ScrDyn *value, bool define) {
-  if (!define) { scr_dyn_key_set(target, key, value); return; }
+/* Copying snapshots keys, not values: each callback can change the next
+ * source descriptor or native alias. Assign uses Set on the original target;
+ * literal spread defines fresh data properties and never calls setters. */
+static void scr_dyn_copy_property(ScrDyn *target, ScrDyn *key, ScrDyn *value, bool define) {
+  if (!define) { scr_dyn_key_set_computed(target, key, value); return; }
   ScrDyn *descriptor = scr_dyn_new_obj();
   scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
   scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
   scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
   scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
-  ScrDyn *name = scr_dyn_new_str(key);
-  ScrDyn *result = scr_dyn_define_property(target, name, descriptor);
+  ScrDyn *result = scr_dyn_define_property(target, key, descriptor);
   scr_dyn_release(result);
-  scr_dyn_release(name);
   scr_dyn_release(descriptor);
 }
 
-static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool define) {
+static ScrDyn *scr_dyn_copy_value(const ScrDyn *source, ScrDyn *key) {
+  if (source->kind == SCR_DYN_TYPED_REF && key->kind == SCR_DYN_STR) {
+    ScrDyn *value = scr_dyn_typed_ref_key_get(source, key->v.str);
+    if (value || scr_exc_pending()) return value;
+  }
+  ScrDyn *view = source->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(source)
+      : scr_dyn_retain((ScrDyn *)source);
+  ScrDyn *value = NULL;
+  if (!scr_exc_pending()) {
+    if (view->kind == SCR_DYN_STR && key->kind == SCR_DYN_STR) {
+      double index;
+      if (scr_dyn_key_is_index(key->v.str->data, key->v.str->len, &index)) {
+        ScrStr *character = scr_str_char_at(view->v.str, index);
+        value = scr_dyn_new_str(character);
+        scr_str_release(character);
+      } else value = scr_dyn_retain(scr_dyn_undefined());
+    } else if (view->kind == SCR_DYN_BYTES && key->kind == SCR_DYN_STR)
+      value = scr_dyn_bytes_key_get(view, key->v.str);
+    else value = scr_dyn_reflect_get(view, key, (ScrDyn *)source);
+  }
+  scr_dyn_release(view);
+  return value;
+}
+
+static ScrDyn *scr_dyn_copy_keys(const ScrDyn *src) {
+  const ScrDynTypedRecordOps *record =
+      src->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(src) : NULL;
+  /* Handle and promise representations have no enumerable string storage;
+   * attached handle symbols still participate in the key snapshot below. */
+  ScrDyn *keys = record ? scr_typed_ref_record_walk(src, record, SCR_OBJWALK_KEYS)
+      : src->kind == SCR_DYN_HANDLE || src->kind == SCR_DYN_PROMISE
+          ? scr_dyn_new_arr() : scr_dyn_get_own_property_names(src);
+  if (!keys) return NULL;
+  if (!record) {
+    ScrDyn *symbols = scr_dyn_get_own_property_symbols(src);
+    if (!symbols) { scr_dyn_release(keys); return NULL; }
+    for (size_t i = 0; i < symbols->v.arr.len; i++)
+      scr_dyn_arr_push(keys, scr_dyn_retain(symbols->v.arr.items[i]));
+    scr_dyn_release(symbols);
+  }
+  return keys;
+}
+
+static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
   if (target->kind == SCR_DYN_PROXY || src->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Object.assign");
     return;
   }
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC) return;
-  if (src->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *materialized = scr_dyn_typed_ref_materialize(src);
-    if (materialized) scr_dyn_assign_strings_from(target, materialized, define);
-    scr_dyn_release(materialized);
-    return;
-  }
   if (src->kind == SCR_DYN_UNDEF || src->kind == SCR_DYN_NULL) return;
-  if (src->kind == SCR_DYN_OBJ) {
-    ScrDyn *keys = scr_dyn_obj_own_keys(src);
-    if (!keys) return;
-    for (size_t i = 0; i < keys->v.arr.len; i++) {
-      ScrStr *key = keys->v.arr.items[i]->v.str;
-      if (!scr_dyn_obj_enumerable(src, key->data, key->len)) continue;
-      ScrDyn *value = scr_dyn_obj_read(src, key->data, key->len);
-      if (!value) break;
-      scr_dyn_copy_property(target, key, value, define);
-      scr_dyn_release(value);
-      if (scr_exc_pending()) break;
-    }
-    scr_dyn_release(keys);
-    return;
-  }
-  if (src->kind != SCR_DYN_ARR && src->kind != SCR_DYN_STR &&
-      src->kind != SCR_DYN_BYTES) {
-    return;
-  }
-  ScrDyn *pairs = scr_dyn_obj_entries(src); /* +1; never throws here */
-  if (pairs == NULL) return;
-  if (pairs->kind == SCR_DYN_ARR) {
-    for (size_t i = 0; i < pairs->v.arr.len; i++) {
-      const ScrDyn *pair = pairs->v.arr.items[i];
-      if (pair->kind != SCR_DYN_ARR || pair->v.arr.len != 2) continue;
-      const ScrDyn *k = pair->v.arr.items[0];
-      if (k->kind != SCR_DYN_STR) continue;
-      scr_dyn_copy_property(target, k->v.str, pair->v.arr.items[1], define);
-      if (scr_exc_pending()) break;
-    }
-  }
-  scr_dyn_release(pairs);
-}
-
-static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
-  const ScrDynTypedRecordOps *record =
-      src->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(src) : NULL;
-  if (record) {
-    /* The record view has only enumerable string-keyed data fields. */
-    void *rec = src->v.typed_ref.ptr;
-    for (size_t i = 0; i < record->count && !scr_exc_pending(); i++) {
-      if (!record->has(rec, i)) continue;
-      ScrDyn *value = record->get(rec, i);
-      scr_dyn_copy_property(target, record->names[i], value, define);
-      scr_dyn_release(value);
-    }
-    return;
-  }
-  if (src->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *view = scr_dyn_typed_ref_materialize(src);
-    if (view) scr_dyn_assign_from(target, view, define);
-    scr_dyn_release(view);
-    return;
-  }
-  ScrDyn *view = src->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(src) : scr_dyn_retain((ScrDyn *)src);
-  ScrDyn *symbols = scr_dyn_new_arr();
-  if (view->symbol_keys) for (size_t i = 0; i < view->symbol_keys->v.arr.len; i++)
-    scr_dyn_arr_push(symbols, scr_dyn_retain(view->symbol_keys->v.arr.items[i]));
-  scr_dyn_assign_strings_from(target, view, define);
-  for (size_t i = 0; i < symbols->v.arr.len && !scr_exc_pending(); i++) {
-    ScrDyn *key = symbols->v.arr.items[i];
-    ScrDynEntry *entry = scr_dyn_symbol_entry(view, key, true);
-    if (!entry || !entry->enumerable) continue;
-    ScrDyn *value = scr_dyn_symbol_key_get(src, key, false);
-    if (!value) break;
-    if (define) {
-      ScrDyn *descriptor = scr_dyn_new_obj();
-      scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
-      scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
-      scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
-      scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
-      ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
-      scr_dyn_release(defined);
-      scr_dyn_release(descriptor);
-    } else scr_dyn_symbol_key_set(target, key, value);
+  ScrDyn *keys = scr_dyn_copy_keys(src);
+  if (!keys) return;
+  for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
+    ScrDyn *key = keys->v.arr.items[i];
+    bool enumerable = scr_dyn_property_is_enumerable_computed(src, key);
+    if (scr_exc_pending()) break;
+    if (!enumerable) continue;
+    ScrDyn *value = scr_dyn_copy_value(src, key);
+    if (!scr_exc_pending() && value) scr_dyn_copy_property(target, key, value, define);
     scr_dyn_release(value);
   }
-  scr_dyn_release(symbols);
-  scr_dyn_release(view);
+  scr_dyn_release(keys);
 }
 
 /* Object.assign over dyn values: copies `src`'s own members onto `target`
@@ -10534,15 +12439,6 @@ ScrDyn *scr_dyn_assign(ScrDyn *target, const ScrDyn *src) {
     const char *m = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, m, strlen(m));
     return NULL;
-  }
-
-  if (target->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *materialized = scr_dyn_typed_ref_materialize(target);
-    ScrDyn *assigned = scr_dyn_assign(materialized, src);
-    if (!scr_exc_pending()) scr_dyn_typed_ref_commit(target);
-    scr_dyn_release(assigned);
-    scr_dyn_release(materialized);
-    return scr_exc_pending() ? NULL : scr_dyn_retain(target);
   }
 
   scr_dyn_assign_from(target, src, false);
@@ -10601,7 +12497,7 @@ ScrDyn *scr_dyn_object_rest(const ScrDyn *source, const ScrDyn *excluded) {
   return out;
 }
 
-/* Compiler-owned native class views retain every property and its flags,
+/* Compiler-owned native views retain every property and its flags,
  * including nonenumerable data, without invoking accessors. */
 ScrDyn *scr_dyn_copy_property_descriptors(ScrDyn *target, const ScrDyn *src) {
   if (!src || src->kind == SCR_DYN_UNDEF) return scr_dyn_retain(target);
@@ -10777,6 +12673,10 @@ static bool scr_dyn_canonical_own_index(const ScrStr *key, size_t length) {
 }
 
 bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
+  if (scr_dyn_native_class_ops(v)) {
+    ScrDyn *owner = scr_dyn_native_metadata(v);
+    return owner && scr_dyn_find_entry(owner, key->data, key->len);
+  }
   if (v->kind == SCR_DYN_TYPED_REF) {
     /* Own canonical indexes never consult the prototype: a hole is absent. */
     size_t index;
@@ -10785,9 +12685,12 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
       size_t field;
       return scr_typed_ref_record_field(record, key, &field) && record->has(v->v.typed_ref.ptr, field);
     }
-    if (scr_dyn_typed_ref_array_ops(v) &&
-        (scr_typed_ref_is_length(key) || scr_typed_ref_canonical_index(key->data, key->len, &index)))
-      return scr_typed_ref_array_has_own(v, key);
+    if (scr_dyn_typed_ref_array_ops(v)) {
+      if (scr_typed_ref_is_length(key) || scr_typed_ref_canonical_index(key->data, key->len, &index))
+        return scr_typed_ref_array_has_own(v, key);
+      ScrDyn *owner = scr_dyn_array_metadata(v, false);
+      return owner && scr_dyn_find_entry(owner, key->data, key->len);
+    }
     ScrDyn *view = scr_dyn_typed_ref_materialize(v);
     if (!view) return false;
     bool result = scr_dyn_has_own(view, key);
@@ -10841,10 +12744,32 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
 
 bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
   if (scr_dyn_class_reflection_fence(value)) return false;
+  if (scr_dyn_native_class_ops(value)) {
+    ScrDyn *owner = scr_dyn_native_metadata(value);
+    return owner && scr_dyn_obj_enumerable(owner, key->data, key->len);
+  }
   if (value->kind == SCR_DYN_TYPED_REF) {
+    const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(value);
+    size_t field;
+    if (record) return scr_typed_ref_record_field(record, key, &field) &&
+        (record->fixed || record->has(value->v.typed_ref.ptr, field));
+    if (scr_dyn_typed_ref_array_ops(value)) {
+      if (scr_typed_ref_is_length(key)) return false;
+      size_t index;
+      if (scr_typed_ref_canonical_index(key->data, key->len, &index))
+        return scr_typed_ref_array_has_own(value, key);
+      ScrDyn *owner = scr_dyn_array_metadata(value, false);
+      return owner && scr_dyn_obj_enumerable(owner, key->data, key->len);
+    }
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     bool result = !scr_exc_pending() && scr_dyn_property_is_enumerable(view, key);
     scr_dyn_release(view);
+    return result;
+  }
+  if (value->kind == SCR_DYN_FUNC) {
+    ScrDyn *table = scr_dyn_fn_properties(value);
+    bool result = scr_dyn_property_is_enumerable(table, key);
+    scr_dyn_release(table);
     return result;
   }
   if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) {
@@ -12330,23 +14255,23 @@ ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrSt
 
 ScrDyn *scr_dyn_freeze(ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
-  if (value->symbol_properties) scr_dyn_release(scr_dyn_freeze(value->symbol_properties));
-  if (value->kind == SCR_DYN_ARR) {
-    value->non_extensible = true;
-    value->v.arr.sealed = true;
-    value->v.arr.frozen = true;
-    if (value->v.arr.properties) scr_dyn_release(scr_dyn_freeze(value->v.arr.properties));
+  if (scr_dyn_typed_ref_array_ops(value)) {
+    /* Node treats an already nonextensible array with no writable own data
+     * as frozen, even with writable length, and freeze then leaves length alone. */
+    if (scr_dyn_array_is_restricted(value, SCR_NATIVE_FROZEN)) return scr_dyn_retain(value);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_array_restrict(value, SCR_NATIVE_FROZEN);
+  }
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_object_ops(value);
+  if (ops) {
+    scr_native_object_restrict(value->v.typed_ref.ptr, ops, SCR_NATIVE_FROZEN);
     return scr_dyn_retain(value);
   }
-  if (value->kind == SCR_DYN_OBJ && !value->copied_from_native) {
-    value->non_extensible = true;
-    for (size_t i = 0; i < value->v.obj.len; i++) {
-      ScrDynEntry *entry = &value->v.obj.entries[i];
-      entry->configurable = false;
-      if (!entry->accessor) entry->writable = false;
-    }
+  if (value->kind == SCR_DYN_ARR || (value->kind == SCR_DYN_OBJ && !value->copied_from_native)) {
+    scr_dyn_restrict_view(value, SCR_NATIVE_FROZEN);
     return scr_dyn_retain(value);
   }
+  if (value->symbol_properties) scr_dyn_restrict_view(value->symbol_properties, SCR_NATIVE_FROZEN);
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NUM ||
       value->kind == SCR_DYN_BOOL || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL)
     return scr_dyn_retain(value);
@@ -12357,6 +14282,10 @@ ScrDyn *scr_dyn_freeze(ScrDyn *value) {
 
 bool scr_dyn_is_frozen(const ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value)) return false;
+  if (scr_dyn_typed_ref_array_ops(value))
+    return scr_dyn_array_is_restricted(value, SCR_NATIVE_FROZEN);
+  const ScrDynNativeObjectOps *ops = scr_dyn_native_object_ops(value);
+  if (ops) return scr_native_object_is_restricted(value->v.typed_ref.ptr, ops, SCR_NATIVE_FROZEN);
   if (value->symbol_properties && !scr_dyn_is_frozen(value->symbol_properties)) return false;
   if (value->kind == SCR_DYN_ARR)
     return scr_dyn_is_sealed(value) && (value->v.arr.len == 0 || value->v.arr.frozen) &&

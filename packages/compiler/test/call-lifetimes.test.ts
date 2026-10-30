@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 import { analyzeCallLifetimes } from "../src/backend/llvm/call-lifetimes.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
+import { mangleBorrowedFunction } from "../src/backend/mangle.js";
 import { type IrModule, type IrFunction } from "../src/ir/ir.js";
 
 async function lower(source: string): Promise<IrModule> {
@@ -159,7 +160,7 @@ work([0, 1]);
   expect(work).toContain("alloca { %ScrClosure");
 });
 
-test("ordinary source helper parameters admit local array boxes after serialization", async () => {
+test("ordinary source helper parameters borrow owned array reads after serialization", async () => {
   const mod = await lower(`
 class Item { value: number; constructor(value: number) { this.value = value; } }
 function read(item: Item): number { return item.value; }
@@ -171,7 +172,7 @@ function work(items: Item[]): number {
 console.log(work([new Item(7)]));
 
 // Keeps the optional element union a tagged box (Set elements are boxes),
-// so the stack-box paths stay exercised; nullable pointers bypass them.
+// so owned union cleanup stays exercised; nullable pointers bypass it.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
@@ -183,9 +184,19 @@ void keepBoxed;
   expect(facts.parameters.get("relay")).toEqual(new Set([0]));
   const llvm = emitLlvmModule(mod);
   const work = body(llvm, "sc_bf_work");
-  expect(work).toContain("alloca %ScrUnion");
+  const indexRead = mod.functions.find(
+    (item) => item.body[0]?.kind === "return" && item.body[0].value?.kind === "arrayPropertyRead",
+  );
+  expect(indexRead).toBeDefined();
+  const readSymbol = mangleBorrowedFunction(indexRead!.name);
+  // A property Get may invoke a getter. Its owned result survives the relay;
+  // only callback-free raw slot reads qualify for borrowed stack boxes.
+  expect(work).toContain(`@${readSymbol}`);
+  expect(body(llvm, readSymbol)).toContain("@scr_arr_property_get");
+  expect(body(llvm, readSymbol)).toContain("@scr_arr_property_unbox");
   expect(work).toContain("@sc_bf_relay");
-  expect(work).not.toContain("@scr_union_release");
+  expect(work).toContain("@scr_union_release");
+  expect(work).toMatch(/@scr_union_release\(ptr %t\d+\)\n\s+ret (?:i32|double) %t\d+/);
   expect(body(llvm, "sc_bf_relay")).not.toContain("@scr_union_retain");
 });
 
@@ -291,7 +302,7 @@ console.log(work());
   expect(owned).toContain("@scr_arr_release");
 });
 
-test("stable collection operands borrow roots while insertion still transfers payload owners", async () => {
+test("collection calls borrow roots while property writes own their receivers", async () => {
   const mod = await lower(`
 class Item { value = 3; }
 function work(items: Item[], map: Map<string, Item>, keys: Set<string>, bytes: Uint8Array, item: Item, key: string): number {
@@ -307,7 +318,16 @@ console.log(work([], new Map<string, Item>(), new Set<string>(), new Uint8Array(
 `);
   for (const pointerBits of [32, 64] as const) {
     const ir = body(emitLlvmModule(mod, { pointerBits }), "sc_bf_work");
-    expect(ir).not.toMatch(/@scr_(arr|map|bytes|str)_retain_v/);
+    expect(ir).not.toMatch(/@scr_(map|bytes|str)_retain_v/);
+    // The indexed write can invoke a promoted setter. Hold that receiver
+    // through the guard and write, then release it before the next operation.
+    const retainedArrays = [...ir.matchAll(/(%t\d+) = call ptr @scr_arr_retain_v\(/g)];
+    expect(retainedArrays).toHaveLength(1);
+    const retained = retainedArrays[0]![1];
+    expect(ir).toContain(`@scr_arr_check_set(ptr ${retained},`);
+    expect(ir).toMatch(
+      new RegExp(`@scr_arr_release\\(ptr ${retained}\\)\\n\\s+%t\\d+ = load ptr, ptr %sc_l_map_0`),
+    );
     expect(ir.match(/@sc_retain_Item/g)).toHaveLength(3);
     expect(ir).toContain("@scr_bytes_subarray");
     expect(ir).toContain("@scr_bytes_release");

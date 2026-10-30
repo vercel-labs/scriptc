@@ -2,11 +2,9 @@ import * as ts from "../../ts7/adapter.js";
 import {
   BOOL,
   DYN,
-  F64,
   STRING,
   VOID,
   isUnitType,
-  typeEquals,
   type IrExpr,
   type IrStmt,
   type IrType,
@@ -14,7 +12,7 @@ import {
 import { varRef } from "../../../ir/build.js";
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
-import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
+import { arrayValueRead, arrayValueStore } from "../array-values.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { globalSymbolKey } from "./global-symbols.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -23,16 +21,6 @@ import {
   eventAccessorWrite,
   isEventWritableAccessor,
 } from "../lower-event-target.js";
-
-/** Element kinds whose present values are never null or undefined. */
-const NON_NULLISH_ELEMENTS: ReadonlySet<IrType["kind"]> = new Set([
-  "f64",
-  "string",
-  "bool",
-  "bigint",
-  "object",
-  "array",
-]);
 
 /** The reference and its read evaluate once; the write exists only in the
  * selected branch. In particular an accessor setter never runs for a kept value. */
@@ -54,8 +42,6 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
   while (ts.isParenthesizedExpression(target)) target = target.expression;
   let read: IrExpr;
   let storage: IrType;
-  // The right side, when an element fast path already lowered it.
-  let rhs: IrExpr | null = null;
   let write: (value: IrExpr) => IrStmt;
   if (ts.isIdentifier(target)) {
     const binding = lowerer.resolveWritable(target);
@@ -177,43 +163,7 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
         const element = storage;
         write = (value) => arrayValueStore(lowerer, receiver, key, value, element, loc);
         const elementLoc = locOf(target);
-        if (nullish && NON_NULLISH_ELEMENTS.has(element.kind)) {
-          // Only a missing element is nullish: keep the present value or
-          // store the right side, without the optional element value.
-          rhs = lowerer.lowerExprExpecting(expr.right, element);
-          if (typeEquals(rhs.type, element)) {
-            const assigned = lowerer.declareHiddenLocal("%shortCircuitValue", element);
-            const ref = varRef(assigned.id, element, loc);
-            const present: IrExpr = {
-              kind: "bin",
-              op: "===",
-              left: { kind: "arrayState", arr: receiver, index: key, type: F64, loc: elementLoc },
-              right: { kind: "numLit", value: 1, type: F64, loc: elementLoc },
-              type: BOOL,
-              loc: elementLoc,
-            };
-            return finish({
-              kind: "ternary",
-              cond: present,
-              then: { kind: "arrayGet", arr: receiver, index: key, type: element, loc: elementLoc },
-              else_: {
-                kind: "seqExpr",
-                stmts: [{ kind: "varDecl", localId: assigned.id, init: rhs, loc }, write(ref)],
-                result: ref,
-                type: element,
-                loc,
-              },
-              type: element,
-              loc,
-            });
-          }
-        }
-        // `||=` keeps only a truthy number, which is always present; NaN is
-        // falsy exactly like the undefined of a missing element.
-        read =
-          !nullish && !and && element.kind === "f64"
-            ? arrayNumberRead(receiver, key, elementLoc)
-            : arrayValueRead(lowerer, receiver, key, element, elementLoc);
+        read = arrayValueRead(lowerer, receiver, key, element, elementLoc);
       } else {
         lowerer.unsupported(
           "SC1090",
@@ -233,7 +183,7 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
   ) {
     return finish(read);
   }
-  const value = rhs ?? lowerer.lowerExprExpecting(expr.right, storage);
+  const value = lowerer.lowerExprExpecting(expr.right, storage);
   const assigned = lowerer.declareHiddenLocal("%shortCircuitValue", value.type);
   const ref = varRef(assigned.id, value.type, loc);
   const result = lowerer.coerceInto(expr.right, ref, read.type);

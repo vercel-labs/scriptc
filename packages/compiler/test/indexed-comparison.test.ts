@@ -5,7 +5,7 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 
-test("primitive indexed comparisons do not allocate optional-union boxes", async () => {
+test("primitive indexed comparisons preserve separate semantic element reads", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-indexed-comparison-"));
   try {
     const entry = join(dir, "main.ts");
@@ -24,33 +24,30 @@ test("primitive indexed comparisons do not allocate optional-union boxes", async
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     expect(validateModule(mod)).toEqual([]);
-    const visited = new Set<string>();
-    function visit(value: unknown): void {
-      if (!value || typeof value !== "object") return;
-      if (Array.isArray(value)) {
-        value.forEach(visit);
-        return;
+    for (const name of ["strings", "numbers", "bools"]) {
+      const fn = mod.functions.find((item) => item.name === name)!;
+      const returned = fn.body[0]!;
+      if (returned.kind !== "return" || returned.value?.kind !== "unionEq")
+        throw new Error("missing optional-value comparison");
+      const comparison = returned.value;
+      expect(comparison.sameValue).toBe(false);
+      expect(comparison.negated).toBe(name === "numbers");
+      for (const [index, read] of [comparison.left, comparison.right].entries()) {
+        if (read.kind !== "call") throw new Error("missing semantic element read");
+        expect(read.args[0]).toMatchObject({ kind: "varRef", localId: fn.params[index]!.localId });
+        expect(read.args[1]).toMatchObject({ kind: "varRef", localId: fn.params[2]!.localId });
+        const helper = mod.functions.find((item) => item.name === read.callee)!;
+        expect(helper.body[0]).toMatchObject({
+          kind: "return",
+          value: { kind: "arrayPropertyRead", consume: "value" },
+        });
       }
-      const node = value as { kind?: string; callee?: string };
-      expect(node.kind).not.toBe("unionWrap");
-      expect(node.kind).not.toBe("unionEq");
-      if (node.kind === "call" && node.callee) visitFunction(node.callee);
-      Object.values(value).forEach(visit);
     }
-    function visitFunction(name: string): void {
-      if (visited.has(name)) return;
-      visited.add(name);
-      const fn = mod.functions.find((f) => f.name === name);
-      expect(fn).toBeDefined();
-      visit(fn!.body);
-    }
-    visitFunction(mod.entry);
-    const reachable = { ...mod, functions: mod.functions.filter((f) => visited.has(f.name)) };
-    const llvm = emitLlvmModule(reachable);
-
-    expect(llvm).not.toContain("@scr_union_new_");
-
-    expect(llvm.match(/call zeroext i1 @scr_arr_index_eq\(/g)).toHaveLength(3);
+    const llvm = emitLlvmModule(mod);
+    // The left Get may replace the right receiver. A raw two-array lookup
+    // would evaluate both receivers before either observable property read.
+    expect(llvm).not.toContain("@scr_arr_index_eq(");
+    expect(llvm.match(/call ptr @scr_arr_property_get\(/g)).toHaveLength(3);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

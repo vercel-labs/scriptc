@@ -235,8 +235,10 @@ static bool sc_class_to_string(const ScrDyn *value) {
 static void sc_unknown_encoding(const ScrDyn *encoding) {
   ScrDyn *value = (ScrDyn *)encoding;
   ScrStr *text;
+  bool class_to_string = sc_class_to_string(value);
+  if (scr_exc_pending()) return;
   /* Node prints a function's source text and calls a class's toString. */
-  if (value->kind == SCR_DYN_FUNC || sc_class_to_string(value)) {
+  if (value->kind == SCR_DYN_FUNC || class_to_string) {
     static const char message[] = "An output encoding that is a function or an instance of a class defining "
                                   "toString has no lowering; pass the encoding name as a string";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
@@ -333,6 +335,9 @@ static ScrBytes *sc_buffer_or_view(const ScrDyn *value, const char *name, const 
  * throwing. */
 static ScrDyn *sc_unbox(ScrDyn *value) {
   if (value->kind != SCR_DYN_TYPED_REF) return scr_dyn_retain(value);
+  /* Class arguments keep their identity and declaration metadata. A snapshot
+   * can be unavailable even when the encoding refusal needs no field values. */
+  if (value->v.typed_ref.klass) return scr_dyn_retain(value);
   ScrDyn *view = scr_dyn_typed_ref_materialize(value);
   if (!view) return NULL;
   if (view->kind == SCR_DYN_STR || sc_is_view(view) || view->kind == SCR_DYN_HANDLE || scr_buffer_storage_is(view))

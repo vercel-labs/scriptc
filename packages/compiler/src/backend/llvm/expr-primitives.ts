@@ -1,7 +1,8 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
+import { DYN, isRefCounted, typeEquals, type IrExpr, type IrType } from "../../ir/ir.js";
+import { emitUnionWiden } from "./expr-records.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -34,6 +35,218 @@ import {
 } from "./integer-remainder.js";
 import { emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
+
+/** Own slots retain the native fast path. Only a promoted name or missing
+ * canonical slot enters Get; its one owned result survives coercion/unwind. */
+function emitArrayPropertyRead(host: LlvmEmitterContext, e: ExprOf<"arrayPropertyRead">): LlValue {
+  if (e.arr.type.kind !== "array") throw new InternalCompilerError("property read on non-array");
+  const B = host.B,
+    elem = e.arr.type.elem,
+    acc = elemAccess(elem);
+  const table =
+    e.arr.kind === "varRef" && (e.consume === "number" || e.consume === "numberConstructor")
+      ? host.constantNumericTables.get(e.arr.localId)
+      : undefined;
+  // Only the proven private table can borrow; general Get/coercion can replace
+  // the edge from which the receiver was projected.
+  const arr = table ? host.emitStableReceiver(e.arr, [e.index]) : host.emitExpr(e.arr),
+    index = host.emitExpr(e.index);
+  if (table) {
+    // Whole-module analysis proves this table never escapes to a live capsule.
+    // Keep its initialized/index guard and callback-free absent-slot fallback.
+    host.declare("declare double @scr_arr_get_slot_number(ptr, double)");
+    const result = B.tmp();
+    B.line(`${result} = call double @${table.symbol}_get(ptr ${arr.name}, double ${index.name})`);
+    return { name: result, type: e.type };
+  }
+  const outTy = host.llType(e.type),
+    out = B.slot(),
+    dynSlot = B.slot();
+  B.entryAllocas.push(`${out} = alloca ${outTy}`, `${dynSlot} = alloca ptr`);
+  B.line(`store ptr null, ptr ${dynSlot}`);
+  host.ownSlot(dynSlot, DYN);
+  const state = emitDenseArrayState(host, arr.name, index, e.index, "state");
+  host.declare(`declare zeroext i1 @scr_arr_named_promoted(ptr)`);
+  const promoted = B.tmp(),
+    canonical = B.tmp(),
+    present = B.tmp();
+  const own = B.tmp(),
+    raw = B.tmp(),
+    property = B.tmp();
+  B.line(`${promoted} = call zeroext i1 @scr_arr_named_promoted(ptr ${arr.name})`);
+  const integer = exactInteger(host, index, e.index);
+  if (integer) {
+    // Reuse the evaluated key's integer proof, independent of mutable array
+    // state. Unsigned comparison also rejects negative signed indices.
+    B.line(`${canonical} = icmp ult i64 ${widenInteger(host, integer)}, 4294967295`);
+  } else {
+    const rawIndex = B.tmp(),
+      frozen = B.tmp(),
+      back = B.tmp(),
+      exact = B.tmp(),
+      range = B.tmp();
+    B.line(`${rawIndex} = fptoui double ${index.name} to i32`);
+    B.line(`${frozen} = freeze i32 ${rawIndex}`);
+    B.line(`${back} = uitofp i32 ${frozen} to double`);
+    B.line(`${exact} = fcmp oeq double ${back}, ${index.name}`);
+    B.line(`${range} = icmp ult i32 ${frozen}, -1`);
+    B.line(`${canonical} = and i1 ${exact}, ${range}`);
+  }
+  B.line(`${present} = fcmp one double ${state}, ${f64Lit(0)}`);
+  B.line(`${own} = and i1 ${canonical}, ${present}`);
+  B.line(`${raw} = xor i1 ${own}, true`);
+  B.line(`${property} = and i1 ${promoted}, ${raw}`);
+  const slow = B.newLabel("property.get"),
+    native = B.newLabel("property.native");
+  const value = B.newLabel("property.value"),
+    absent = B.newLabel("property.undefined");
+  const join = B.newLabel("property.join");
+  const store = (result: string): void => {
+    B.line(`store ${outTy} ${result}, ptr ${out}`);
+    B.br(join);
+  };
+  const wrap = (result: string): string => {
+    if (typeEquals(elem, e.type)) return result;
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError("property result requires optional union");
+    if (elem.kind === "union")
+      return emitUnionWiden(host, result, elem.unionId, e.type.unionId, true);
+    const tag = host.unionsById.get(e.type.unionId)!.arms.findIndex((arm) => typeEquals(arm, elem));
+    return host.unionNewOwned(e.type.unionId, tag, { name: result, type: elem });
+  };
+  B.condBr(property, slow, native);
+  B.startBlock(native);
+  const hasValue = B.tmp();
+  B.line(`${hasValue} = fcmp oeq double ${state}, ${f64Lit(1)}`);
+  B.condBr(hasValue, value, absent);
+  B.startBlock(value);
+  const nativeValue = emitDenseArrayGet(
+    host,
+    arr.name,
+    index,
+    e.index,
+    acc,
+    elem,
+    `scr_arr_get_slot_${acc}`,
+    true,
+  );
+  if (e.consume === "value" || e.consume === "required") store(wrap(nativeValue));
+  else {
+    let result = nativeValue;
+    if (e.consume === "number" || e.consume === "numberConstructor") {
+      if (elem.kind === "string") {
+        host.declare(`declare double @scr_string_to_number(ptr)`);
+        result = B.tmp();
+        B.line(`${result} = call double @scr_string_to_number(ptr ${nativeValue})`);
+      } else if (elem.kind === "bool") {
+        result = B.tmp();
+        B.line(`${result} = uitofp i1 ${nativeValue} to double`);
+      }
+    } else if (e.consume === "string") {
+      if (elem.kind !== "string")
+        throw new InternalCompilerError("string property read requires string storage");
+    } else if (elem.kind === "f64") {
+      result = B.tmp();
+      B.line(`${result} = fcmp one double ${nativeValue}, ${f64Lit(0)}`);
+    } else if (elem.kind !== "bool")
+      throw new InternalCompilerError("unsupported property truthiness fast path");
+    if (isRefCounted(elem) && e.consume !== "string") host.releaseValue(nativeValue, elem);
+    store(result);
+  }
+  B.startBlock(slow);
+  host.declare(`declare ptr @scr_arr_property_get(ptr, double)`);
+  const dyn = B.tmp();
+  B.line(`${dyn} = call ptr @scr_arr_property_get(ptr ${arr.name}, double ${index.name})`);
+  B.line(`store ptr ${dyn}, ptr ${dynSlot}`);
+  host.emitPendingCheck();
+  if (e.consume !== "value" && e.consume !== "required") {
+    const fn =
+      e.consume === "numberConstructor"
+        ? "scr_dyn_number_constructor"
+        : e.consume === "number"
+          ? "scr_dyn_number_coerce"
+          : e.consume === "boolean"
+            ? "scr_dyn_truthy"
+            : "scr_dyn_string_coerce_js";
+    host.declare(`declare ${e.consume === "boolean" ? "zeroext i1" : outTy} @${fn}(ptr)`);
+    const result = B.tmp();
+    B.line(`${result} = call ${outTy} @${fn}(ptr ${dyn})`);
+    const held = host.own({ name: result, type: e.type });
+    host.emitPendingCheck();
+    if (isRefCounted(e.type)) host.moveTemp(held);
+    store(result);
+  } else if (elem.kind === "dyn") {
+    B.line(`store ptr null, ptr ${dynSlot}`);
+    store(dyn);
+  } else {
+    host.declare(`declare ptr @scr_dyn_undefined()`);
+    const undef = B.tmp(),
+      missing = B.tmp(),
+      convert = B.newLabel("property.convert");
+    B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+    B.line(`${missing} = icmp eq ptr ${dyn}, ${undef}`);
+    if (e.consume === "required") B.br(convert);
+    else B.condBr(missing, absent, convert);
+    B.startBlock(convert);
+    const slot = B.slot(),
+      ok = B.tmp(),
+      bits = B.tmp(),
+      converted = B.tmp();
+    B.entryAllocas.push(`${slot} = alloca i64`);
+    // The installed exact element codec is the only conversion graph needed
+    // here. A non-exposed read never generates adapters for its result union.
+    host.declare(`declare zeroext i1 @scr_arr_property_unbox(ptr, ptr, ptr)`);
+    B.line(
+      `${ok} = call zeroext i1 @scr_arr_property_unbox(ptr ${arr.name}, ptr ${dyn}, ptr ${slot})`,
+    );
+    const loaded = B.newLabel("property.converted"),
+      failed = B.newLabel("property.failed");
+    B.condBr(ok, loaded, failed);
+    B.startBlock(failed);
+    host.emitPendingCheck();
+    B.terminate("unreachable");
+    B.startBlock(loaded);
+    B.line(`${bits} = load i64, ptr ${slot}`);
+    B.line(
+      `${converted} = ${acc === "f64" ? `bitcast i64 ${bits} to double` : acc === "bool" ? `trunc i64 ${bits} to i1` : `inttoptr i64 ${bits} to ptr`}`,
+    );
+    const held = host.own({ name: converted, type: elem });
+    host.emitPendingCheck();
+    if (isRefCounted(elem)) host.moveTemp(held);
+    store(wrap(converted));
+  }
+  B.startBlock(absent);
+  if (e.consume === "required") {
+    const strict = emitDenseArrayGet(
+      host,
+      arr.name,
+      index,
+      e.index,
+      acc,
+      elem,
+      `scr_arr_get_slot_${acc}`,
+      true,
+    );
+    const held = host.own({ name: strict, type: elem });
+    host.emitPendingCheck();
+    if (isRefCounted(elem)) host.moveTemp(held);
+    store(strict);
+  } else if (e.consume === "number" || e.consume === "numberConstructor") store(f64Lit(NaN));
+  else if (e.consume === "boolean") store("false");
+  else if (e.consume === "string") store(host.retainValue(host.internLiteral("undefined"), e.type));
+  else if (e.type.kind === "dyn") {
+    host.declare(`declare ptr @scr_dyn_undefined()`);
+    const undef = B.tmp();
+    B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+    store(undef);
+  } else if (e.type.kind === "union")
+    store(host.unitInstanceRef(e.type.unionId, undefinedArmTag(e.type, host.unionsById)));
+  else throw new InternalCompilerError("property read lacks undefined result");
+  B.startBlock(join);
+  const result = B.tmp();
+  B.line(`${result} = load ${outTy}, ptr ${out}`);
+  return host.own({ name: result, type: e.type });
+}
 
 export function emitLiteralExpr(
   host: LlvmEmitterContext,
@@ -750,6 +963,8 @@ export function emitContainerExpr(
   e: ExprOf<
     | "arrayLit"
     | "arrayNewLen"
+    | "arrayPropertyRead"
+    | "arrayHasProperty"
     | "arrayGet"
     | "arrayHas"
     | "arrayState"
@@ -785,7 +1000,7 @@ export function emitContainerExpr(
           buffer = B.tmp();
           B.entryAllocas.push(`${buffer} = alloca [${Math.min(e.elems.length, 64)} x i64]`);
         }
-        if (pending.length > 0) emitArrayValues(host, arr, acc, pending, false, buffer);
+        if (pending.length > 0) emitArrayValues(host, arr, acc, pending, buffer);
         pending = [];
       };
       e.elems.forEach((el, i) => {
@@ -825,6 +1040,42 @@ export function emitContainerExpr(
       B.countedLoop(bound, () => host.arrPush(arr, acc, fill), "ole");
       return out;
     }
+    case "arrayPropertyRead":
+      return emitArrayPropertyRead(host, e);
+    case "arrayHasProperty": {
+      const arr = host.emitExpr(e.arr),
+        idx = host.emitExpr(e.index);
+      const own = emitDenseArrayState(host, arr.name, idx, e.index, "has");
+      const promoted = B.tmp(),
+        missing = B.tmp(),
+        resolve = B.tmp();
+      host.declare(`declare zeroext i1 @scr_arr_named_promoted(ptr)`);
+      host.declare(`declare zeroext i1 @scr_arr_has_property(ptr, double)`);
+      B.line(`${promoted} = call zeroext i1 @scr_arr_named_promoted(ptr ${arr.name})`);
+      B.line(`${missing} = xor i1 ${own}, true`);
+      B.line(`${resolve} = and i1 ${promoted}, ${missing}`);
+      const inherited = B.newLabel("property.has"),
+        direct = B.newLabel("property.own"),
+        join = B.newLabel("property.has.join");
+      const slot = B.slot();
+      B.entryAllocas.push(`${slot} = alloca i1`);
+      B.condBr(resolve, inherited, direct);
+      B.startBlock(inherited);
+      const found = B.tmp();
+      B.line(
+        `${found} = call zeroext i1 @scr_arr_has_property(ptr ${arr.name}, double ${idx.name})`,
+      );
+      host.emitPendingCheck();
+      B.line(`store i1 ${found}, ptr ${slot}`);
+      B.br(join);
+      B.startBlock(direct);
+      B.line(`store i1 ${own}, ptr ${slot}`);
+      B.br(join);
+      B.startBlock(join);
+      const result = B.tmp();
+      B.line(`${result} = load i1, ptr ${slot}`);
+      return { name: result, type: e.type };
+    }
     case "arrayGet": {
       // Element reads run no user code: a projection receiver (an array in
       // a parameter's field) stays rooted while the index preserves edges.
@@ -843,7 +1094,7 @@ export function emitContainerExpr(
         e.index,
         acc,
         elem,
-        `scr_arr_get_${acc}`,
+        `scr_arr_get_slot_${acc}`,
         true,
       );
       return host.own({ name: t, type: e.type });

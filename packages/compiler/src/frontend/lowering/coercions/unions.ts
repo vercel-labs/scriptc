@@ -227,7 +227,12 @@ export function recordUnionWrapHelper(
   const shape = lowerer.shapes.get(source.shapeId);
   const to = lowerer.unions.get(toId);
   if (!shape || !to) return null;
-  const plan = planRecordUnionWrap(shape, to, (id) => lowerer.shapes.get(id));
+  const plan = planRecordUnionWrap(
+    shape,
+    to,
+    (id) => lowerer.shapes.get(id),
+    (from, target) => lowerer.widthLiftPlan(from, target),
+  );
   if (!plan) return null;
   const key = `recordWrap:${source.shapeId}:${toId}`;
   const existing = lowerer.coercions.retags.get(key);

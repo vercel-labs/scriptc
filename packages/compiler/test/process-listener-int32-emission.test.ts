@@ -13,18 +13,12 @@ async function classLayout(listeners: string): Promise<string> {
       entry,
       `
 class P {
-  kind: number;
-  pos: number;
-  next: P | undefined;
-  constructor(kind: number, pos: number) {
-    this.kind = kind | 0;
-    this.pos = pos | 0;
-    this.next = undefined;
-  }
+  kind = process.argv.length | 0;
+  pos = (process.argv.length * 2) | 0;
+  next: P | undefined = undefined;
 }
 const n = process.argv.length;
-const p = new P(n, n * 2);
-p.next = new P(1, 2);
+const p = new P();
 if (n > 100) console.log(p as unknown);
 const listener = (): void => {
   console.log("signal");

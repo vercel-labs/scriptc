@@ -16,10 +16,9 @@ long scr_closure_live_count(void) { return scr_live_closures; }
  * including the closure that captures it — the canonical cycle). The box's
  * trace visits its payload when the payload type itself carries a header:
  * closures always do; SCR_BOX_OBJ payloads iff the compiler passed a trace
- * (obj_trace doubles as that flag); strings/scalars never. SCR_BOX_ARR
- * holds acyclic arrays only — a CYCLE-CAPABLE array (traced ref elements)
- * rides a SCR_BOX_OBJ box with the array's `_v` adapters + scr_arr_trace_v,
- * so its edge stays visible to the collector. */
+ * (obj_trace doubles as that flag); strings/scalars never. Arrays carry
+ * headers regardless of their indexed element type: named properties can
+ * lead back through the closure capturing the array. */
 
 static void *scr_box_ptr(const ScrBox *b) {
   void *p;
@@ -32,6 +31,7 @@ static void scr_box_trace(void *o, ScrTraceVisit visit, void *ctx) {
   void *p = scr_box_ptr(b);
   if (!p) return; /* freshly-created boxes hold NULL until first write */
   switch (b->kind) {
+  case SCR_BOX_ARR:
   case SCR_BOX_FUNC:
     visit(p, ctx);
     break;
@@ -53,13 +53,10 @@ static void scr_box_gcfree(void *o) {
     case SCR_BOX_STR:
       scr_str_release((ScrStr *)p);
       break;
-    case SCR_BOX_ARR:
-      scr_arr_release((ScrArr *)p);
-      break;
     case SCR_BOX_OBJ:
       if (!b->obj_trace) b->obj_release(p);
       break;
-    default: /* FUNC is traced; scalars own nothing */
+    default: /* ARR and FUNC are traced; scalars own nothing */
       break;
     }
   }

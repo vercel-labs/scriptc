@@ -390,46 +390,55 @@ function presentValue(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
   };
 }
 
-/** Route a helper's callback calls through the split visit: every
- * `f(<arrayValueRead a[i]>, ...)` becomes
- * `state(a, i) === 1 ? fast(a[i], ...) : f(undefined, ...)`. The read is
- * the call's only effectful operand (the rest are the loop's index and
- * array locals), so evaluation order is unchanged. The fast closure is an
- * extra trailing parameter. */
+/** Split known loop-local property reads at their own value state. The slow
+ * branch saves the actual Get once before calling the optional-value closure;
+ * an inherited getter can return a value, throw, or change the source. */
 function withFastCallback(fn: IrFunction, fastT: CallbackType | null, elem: IrType): IrFunction {
   if (!fastT) return fn;
-  const isValueRead = (e: IrExpr): e is IrExpr & { kind: "ternary" } =>
-    e.kind === "ternary" &&
-    e.cond.kind === "bin" &&
-    e.cond.op === "===" &&
-    e.cond.left.kind === "arrayState" &&
-    e.cond.right.kind === "numLit" &&
-    e.cond.right.value === 1;
+  const added: IrLocal[] = [];
+  const localIds = new Set(fn.locals.map((local) => local.id));
+  const isValueRead = (e: IrExpr): e is IrExpr & { kind: "arrayPropertyRead" } =>
+    e.kind === "arrayPropertyRead" &&
+    e.consume === "value" &&
+    e.arr.kind === "varRef" &&
+    e.arr.localId === "a.0" &&
+    e.index.kind === "varRef" &&
+    e.index.localId === "i.0";
   const split = (e: IrExpr): { cond: IrExpr; fast: IrExpr; slow: IrExpr } | null => {
     if (e.kind !== "callValue" || e.callee.kind !== "varRef" || e.callee.localId !== "f.0")
       return null;
     const at = e.args.findIndex(isValueRead);
-    if (at < 0) return null;
+    if (
+      at < 0 ||
+      !e.args.every((arg, i) => i === at || (arg.kind === "varRef" && localIds.has(arg.localId)))
+    )
+      return null;
     const read = e.args[at]!;
-    if (read.kind !== "ternary") return null;
-    const condition = read.cond;
-    if (condition.kind !== "bin") return null;
-    const state = condition.left;
-    if (state.kind !== "arrayState") return null;
+    if (!isValueRead(read)) return null;
     const fastArgs = e.args.slice();
     fastArgs[at] = {
       kind: "arrayGet",
-      arr: state.arr,
-      index: state.index,
+      arr: read.arr,
+      index: read.index,
       type: elem,
       loc: read.loc,
     };
+    const id = "%visit." + added.length;
+    added.push({ id, name: "visit", type: read.type, mutable: false });
     const slowArgs = e.args.slice();
-    slowArgs[at] = read.else_;
+    slowArgs[at] = varRef(id, read.type, read.loc);
     return {
-      cond: read.cond,
+      cond: presentValue(read.arr, read.index, read.loc),
       fast: { ...e, callee: varRef("fast.0", fastT, e.callee.loc), args: fastArgs },
-      slow: { ...e, args: slowArgs },
+      // Preorder traversal revisits replacements. Stabilizing the read also
+      // prevents this slow call from being split again.
+      slow: {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: id, init: read, loc: read.loc }],
+        result: { ...e, args: slowArgs },
+        type: e.type,
+        loc: e.loc,
+      },
     };
   };
   const body = transformStmtList(fn.body, {
@@ -461,7 +470,7 @@ function withFastCallback(fn: IrFunction, fastT: CallbackType | null, elem: IrTy
   return {
     ...fn,
     params: [...fn.params, { localId: "fast.0", name: "fast", type: fastT }],
-    locals: [...fn.locals, { id: "fast.0", name: "fast", type: fastT, mutable: true }],
+    locals: [...fn.locals, ...added, { id: "fast.0", name: "fast", type: fastT, mutable: true }],
     body,
   };
 }
@@ -815,13 +824,13 @@ function buildArrayHofFn(
       { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
   } else if (method === "filter" && fastT) {
-    // Split visit (outElem === elem): a present value goes to the fast
-    // callback as a plain element and is kept as-is; a present undefined
-    // goes to the original callback and is kept as undefined.
+    // Keep the value read before either callback: filter retains that same
+    // value even when the callback changes or deletes the source slot.
     const outT = arrayOf(outElem);
     locals.push(
       { id: "out.0", name: "out", type: outT, mutable: false },
       { id: "e.0", name: "e", type: elem, mutable: false },
+      { id: "v.0", name: "v", type: valueT, mutable: false },
     );
     returnType = outT;
     const a = varRef("a.0", arrT, loc);
@@ -834,7 +843,6 @@ function buildArrayHofFn(
       type: F64,
       loc,
     };
-    const missing = (getElem as IrExpr & { kind: "ternary" }).else_;
     const callFast = (arg: IrExpr): IrExpr => ({
       kind: "callValue",
       callee: varRef("fast.0", fastT, loc),
@@ -883,16 +891,19 @@ function buildArrayHofFn(
                 },
               ],
               else_: [
+                { kind: "varDecl", localId: "v.0", init: getElem, loc },
                 {
                   kind: "if",
-                  cond: filterCond(callF(missing), fnRet, loc),
+                  cond: filterCond(callF(varRef("v.0", valueT, loc)), fnRet, loc),
                   then: [
-                    {
-                      kind: "arraySetUndefined",
-                      arr: varRef("out.0", outT, loc),
-                      index: outLength,
+                    arrayValueStore(
+                      lowerer,
+                      varRef("out.0", outT, loc),
+                      outLength,
+                      varRef("v.0", valueT, loc),
+                      outElem,
                       loc,
-                    },
+                    ),
                   ],
                   else_: null,
                   loc,

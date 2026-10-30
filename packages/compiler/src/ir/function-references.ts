@@ -21,6 +21,7 @@ export function moduleFunctionReferences(mod: IrModule): string[] {
   for (const cls of mod.classes ?? []) {
     if (cls.prototypeDataHelper !== undefined) names.push(cls.prototypeDataHelper);
     if (cls.instancePrototypeHelper !== undefined) names.push(cls.instancePrototypeHelper);
+    if (cls.nativePropertyBagHelper !== undefined) names.push(cls.nativePropertyBagHelper);
   }
   return names;
 }

@@ -1,4 +1,9 @@
 import {
+  objectIntegrityIdentitySource,
+  validateObjectIntegrityOwners,
+  type ObjectIntegrityMember,
+} from "./builtins/object-integrity.js";
+import {
   lifetimeRegionType,
   lowerLifetimeRegionCall,
   lowerLifetimeRegionNew,
@@ -590,6 +595,7 @@ export class PoisonError extends Error {}
 export type StaticCallableProjection =
   | { kind: "declared-function"; signature: FnSig }
   | { kind: "builtin-function"; module: string; member: string }
+  | { kind: "object-integrity"; member: ObjectIntegrityMember }
   | { kind: "promisified-exec-file" }
   | { kind: "promisified-exec" }
   | { kind: "promisified-builtin"; module: string; member: string }
@@ -2810,7 +2816,12 @@ export class Lowerer {
   private classProtocols: ClassProtocols | null = null;
 
   classImplementedProtocol(type: ts.Type): boolean {
-    this.classProtocols ??= new ClassProtocols(this.checker, this.moduleOrder);
+    this.classProtocols ??= new ClassProtocols(
+      this.checker,
+      this.moduleOrder,
+      this.isStdlibFile,
+      (call) => objectIntegrityIdentitySource(this, call),
+    );
     return this.classProtocols.usesCheckedIdentity(type);
   }
 
@@ -6021,6 +6032,7 @@ export class Lowerer {
   finishModule(functions: IrFunction[]): LowerResult {
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
+    validateObjectIntegrityOwners(this, functions);
     trackClassFieldCreation(this, functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
@@ -6114,7 +6126,7 @@ export class Lowerer {
       this.diags.length > 0
         ? null
         : {
-            irVersion: 16,
+            irVersion: 17,
             sourceFile: this.entry.fileName,
             functions,
             classes: artifacts.classes,
@@ -8027,7 +8039,7 @@ export class Lowerer {
       return expr;
     }
     const tag = this.armTag(expected.unionId, expr.type);
-    if (tag >= 0 && expr.type.kind === "record" && expr.kind !== "recordLit") {
+    if (expr.type.kind === "record" && expr.kind !== "recordLit") {
       const helper = this.recordUnionWrapHelper(expr.type, expected.unionId, expr.loc);
       if (helper)
         return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };

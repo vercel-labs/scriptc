@@ -466,10 +466,13 @@ void scr_module_enter(double module_id) {
 void scr_module_link(double parent_id, double child_id) {
   ScrModuleRecord *parent = scr_module_record(parent_id);
   ScrModuleRecord *child = scr_module_record(child_id);
-  if (!child->is_main && child->parent < 0) child->parent = parent_id;
-  if (!scr_arr_includes_f64(parent->children, child_id)) {
+  /* Only cache hits deduplicate. Failed cleanup can leave an old entry,
+   * but a fresh attempt still performs the insertion and may be refused. */
+  if (!child->in_cache || !scr_arr_includes_f64(parent->children, child_id)) {
     scr_arr_push_f64(parent->children, child_id);
+    if (scr_exc_pending()) return;
   }
+  if (!child->is_main && child->parent < 0) child->parent = parent_id;
 }
 
 void scr_module_finish(double module_id) {
@@ -479,18 +482,21 @@ void scr_module_finish(double module_id) {
 
 void scr_module_fail(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
-  if (m->parent >= 0) {
-    ScrModuleRecord *parent = scr_module_record(m->parent);
+  double parent_id = m->parent;
+  /* Eviction precedes observable children cleanup. Its TypeError replaces
+   * the body error without keeping a failed module in the cache. */
+  m->parent = m->is_main ? -1 : -2;
+  m->cache_order = 0;
+  m->in_cache = false;
+  m->loaded = false;
+  if (parent_id >= 0) {
+    ScrModuleRecord *parent = scr_module_record(parent_id);
     double at = scr_arr_index_of_f64(parent->children, module_id);
     if (at >= 0) {
       ScrArr *removed = scr_arr_splice(parent->children, at, 1);
       scr_arr_release(removed);
     }
   }
-  m->parent = m->is_main ? -1 : -2;
-  m->cache_order = 0;
-  m->in_cache = false;
-  m->loaded = false;
 }
 
 ScrStr *scr_module_filename(double module_id) {

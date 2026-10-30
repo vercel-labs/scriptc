@@ -436,6 +436,7 @@ void scr_library_reset(void) {
   for (size_t i = 0; i < scr_library_nresets; i++) scr_library_resets[i]();
   scr_lib_session_cleanup();
   scr_collect_cycles();
+  scr_native_integrity_reset();
 #ifdef SCR_RC_AUDIT
   scr_library_audit_zero();
 #endif

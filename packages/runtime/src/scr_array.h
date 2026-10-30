@@ -63,18 +63,15 @@ typedef struct ScrArrOps {
 } ScrArrOps;
 
 typedef struct ScrArr {
-  size_t rc; /* SIZE_MAX = immortal (unused for arrays; kept per convention) */
+  size_t rc; /* SIZE_MAX = immutable published or template-site array */
   size_t len;
   size_t cap; /* dense capacity; sparse entries cover indices >= cap */
   /* One ScrElemKind. */
   uint8_t elem;
-  /* 1 exactly when ops->trace is non-NULL: the element type carries a cycle
-   * header, so the array is CYCLE-CAPABLE (an element can point back at the
-   * array that owns it) and allocates with the hidden collector header —
-   * its trace visits every element, and the collector teardown frees only
-   * the slot storage (all elements are traced children). Arrays of acyclic
-   * ref elements and the historic element kinds keep the lean 1-word
-   * header. Kept beside `elem` so the RC fast paths test it with one load. */
+  /* Every mutable heap array carries a collector header: named metadata
+   * can point back even when indexed elements are scalars. Immortal static
+   * template arrays remain headerless. Kept beside `elem` for RC fast paths;
+   * element tracing is separately determined by elem and ops->trace. */
   uint8_t cyc;
   uint16_t spare;
   /* A lower bound on the hole-free prefix: filled <= len, filled <= cap,
@@ -105,7 +102,10 @@ typedef struct ScrArrExt {
   size_t prop_len;
   size_t prop_cap;
   struct ScrDyn *metadata; /* heterogeneous named properties of match results */
+  struct ScrArrNamed *named; /* owned immutable live-view recipe; no object edges */
+  uint8_t named_state;
 } ScrArrExt;
+enum { SCR_ARR_NAMES_UNPROMOTED, SCR_ARR_NAMES_PROMOTING, SCR_ARR_NAMES_PROMOTED };
 /* The LLVM backend mirrors ScrArr as %ScrArr: its inline retain/release read
  * `cyc` (field 4, i8) to decide mark-live / candidate buffering exactly like
  * scr_arr_retain and scr_arr_release; its inline element access uses filled
@@ -181,8 +181,7 @@ ScrArr *scr_arr_new(ScrElemKind elem, size_t initial_cap); /* returns +1 */
 /* SCR_ELEM_REF construction: `ops` must outlive the array (a constant; the
  * compiler emits one per element type) and its retain/release must be
  * non-NULL; ops->trace is non-NULL iff the element type carries a cycle
- * header (the array then allocates with the collector header — see the
- * struct comment). Returns +1. */
+ * header. The array itself always carries a collector header. Returns +1. */
 ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap);
 /* An empty array expected to receive a few elements: its first slots live
  * in the array's own block (one allocation; the block of a plain empty
@@ -208,33 +207,60 @@ void scr_arr_release(ScrArr *a);
 void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
 /* The array's out-of-line storage, allocated (zeroed) on first use. */
 ScrArrExt *scr_arr_ext(ScrArr *a);
+/* Commit a fully built named-property table, detaching typed properties before
+ * their releases can collect or observe the referent. Consumes metadata. */
+void scr_arr_promote_metadata(ScrArr *a, struct ScrDyn *metadata);
+bool scr_arr_named_promoted(const ScrArr *a);
+/* Requires a promoted binding. Names and missing own indexes resolve properties;
+ * Get returns one owned value (including undefined), NULL only on pending error.
+ * Has never calls getters. Fresh immutable bindings use their capsule's APIs. */
+struct ScrDyn *scr_arr_property_get(const ScrArr *a, double key);
+bool scr_arr_has_property(const ScrArr *a, double key);
+/* Bound exact codec: borrowed value to owned slot, output untouched on failure. */
+bool scr_arr_property_unbox(const ScrArr *a, const struct ScrDyn *value, uint64_t *out);
 /* Moves inline dense slots (kept in the header block of a small array) to
  * their own allocation, so the storage pointers may be swapped with another
  * array's. No-op for other arrays. */
 void scr_arr_outline(ScrArr *a);
-/* Swaps the sparse slots and numeric properties of two arrays; each keeps
- * its own match metadata (refresh of a cached typed view, llvm/dyn.ts). */
-void scr_arr_swap_indexed_ext(ScrArr *a, ScrArr *b);
+/* Borrow two arrays with the same element/ownership representation and swap
+ * their dense and sparse indexed storage, outlining inline slots first.
+ * No callbacks or RC changes; names, metadata and integrity stay attached
+ * to each referent. Callers own write admission and temporary disposal. */
+void scr_arr_swap_indexed_storage(ScrArr *a, ScrArr *b);
 
-/* Trace entry point for cycle-capable arrays — stored in their collector
+/* Trace entry point for mutable heap arrays — stored in their collector
  * header and passed wherever a container stores an ARRAY payload's RC entry
- * points and the array type is cycle-capable (boxes, union arms, map
+ * points (boxes, union arms, map
  * values, promise payloads), exactly like scr_map_trace_v. */
 void scr_arr_trace_v(void *a, ScrTraceVisit visit, void *ctx);
 
 double scr_arr_len(ScrArr *a);
 /* Shared hole/property query. Canonical indices answer from indexed storage;
- * noncanonical numeric keys answer from the ordinary-property vector. Missing
- * keys and indices >= length answer false without trapping; callers that need
- * a value must still use the proven-presence get accessors below. */
+ * noncanonical numeric keys answer from their referent-owned descriptors after
+ * binding. Presence/state never invoke accessors; VALUE can describe an accessor,
+ * so property Get must use the owned read rather than state followed by a raw read. */
 bool scr_arr_has(const ScrArr *a, double i);
 double scr_arr_state(const ScrArr *a, double i);
 double scr_arr_next_present(const ScrArr *a, double start);
 /* Set Array.prototype.length semantics for the supported native array
  * surface. Growth creates holes without allocating a dense prefix; shrinking
  * releases removed reference elements. Invalid lengths set a catchable
- * RangeError and leave the array unchanged. */
+ * RangeError and leave the array unchanged. Frozen length assignments throw
+ * first; sealed truncation stops just above the highest present element. */
 void scr_arr_set_len(ScrArr *a, double length);
+/* Property-action guards shared with generated stores and publication.
+ * False means a TypeError is pending; no storage or ownership is changed.
+ * Call after operands are evaluated, before moving owned values. */
+/* Includes publication, whose immutable count outlives scalar metadata. */
+unsigned scr_arr_integrity_flags(const ScrArr *a);
+bool scr_arr_check_set(const ScrArr *a, double index);
+bool scr_arr_check_delete(const ScrArr *a, double index);
+bool scr_arr_check_length(const ScrArr *a);
+/* Reflect requests quiet integrity refusal; conversion and representation
+ * errors remain pending exceptions. The same owners back strict stores. */
+bool scr_arr_check_set_mode(const ScrArr *a, double index, bool strict);
+bool scr_arr_check_length_mode(const ScrArr *a, bool strict);
+bool scr_arr_set_len_mode(ScrArr *a, double length, bool strict);
 /* Copy one slot from src into dst, retaining reference elements when the
  * source slot is present. The destination must already have a length that
  * includes dst_index. Holes remain holes. */
@@ -249,7 +275,9 @@ void scr_arr_copy_range_ex(ScrArr *dst, size_t dst_start, const ScrArr *src,
                            size_t src_start, size_t count, bool reverse,
                            bool materialize_holes);
 /* Mutating indexed operations borrow the receiver and value, preserve
- * sparse presence, and return the receiver retained. */
+ * sparse presence, and return the receiver retained. Integrity refusals
+ * stop at the first failed property action and return NULL with a pending
+ * exception; prior successful writes remain visible. */
 ScrArr *scr_arr_copy_within(ScrArr *a, double target, double start, double end);
 ScrArr *scr_arr_fill_f64(ScrArr *a, double value, double start, double end);
 ScrArr *scr_arr_fill_bool(ScrArr *a, bool value, double start, double end);
@@ -273,18 +301,30 @@ double scr_math_imul(double a, double b);
 double scr_math_max(double a, double b);
 double scr_math_random(void);
 
+/* Callback-free compiler storage reads. Canonical own slots and unpromoted
+ * raw names only; promoted names have no raw slot. Strict reads trap for
+ * missing/undefined, optional number reads return NaN, references are +1
+ * unless borrowed. Borrowed reads require the array's owner to stay alive. */
+double scr_arr_get_slot_f64(const ScrArr *a, double i);
+bool scr_arr_get_slot_bool(const ScrArr *a, double i);
+void *scr_arr_get_slot_ref(const ScrArr *a, double i);
+void *scr_arr_borrow_slot_ref(const ScrArr *a, double i);
+double scr_arr_get_slot_number(const ScrArr *a, double i);
+
 double scr_arr_get_f64(ScrArr *a, double i); /* trap missing/hole */
 /* ToNumber(a[i]) for f64 storage: borrows a; missing/hole/undefined -> NaN. */
 double scr_arr_get_number(const ScrArr *a, double i);
-/* Strict equality of ordinary indexed reads on matching primitive arrays.
+/* Strict equality of raw storage reads on matching primitive arrays.
  * Borrows both arrays, preserves undefined vs NaN, and never allocates. */
 bool scr_arr_index_eq(const ScrArr *a, double i, const ScrArr *b, double j);
 bool scr_arr_get_bool(ScrArr *a, double i);  /* trap missing/hole */
 void *scr_arr_get_ref(ScrArr *a, double i);  /* trap missing/hole; +1 */
-void *scr_arr_borrow_ref(ScrArr *a, double i); /* same checks; borrowed */
+/* Borrowed raw-slot reads cannot serve promoted named properties. */
+void *scr_arr_borrow_ref(ScrArr *a, double i);
 /* Borrow a non-null reference element, or NULL for a hole/undefined/missing
  * property. Keep the array alive and retain before removing its element.
- * This read does not invoke retain callbacks or mutate runtime state. */
+ * This read does not invoke retain callbacks or mutate runtime state. Promoted
+ * names return NULL; use the owned property API for their data or accessors. */
 void *scr_arr_peek_ref(const ScrArr *a, double i);
 
 /* i == len appends; the _ref variant releases the old element (when
@@ -293,6 +333,9 @@ void scr_arr_set_f64(ScrArr *a, double i, double v);
 void scr_arr_set_bool(ScrArr *a, double i, bool v);
 void scr_arr_set_ref(ScrArr *a, double i, void *v);
 void scr_arr_set_undefined(ScrArr *a, double i);
+/* Return whether an own property was removed, not the JS Delete result.
+ * Non-strict refusal preserves both the element and any pending exception. */
+bool scr_arr_delete_mode(ScrArr *a, double i, bool strict);
 bool scr_arr_delete(ScrArr *a, double i);
 
 /* slice(start?, end?): a fresh +1 shallow copy of the index range —
@@ -311,30 +354,37 @@ ScrArr *scr_arr_with_bool(ScrArr *a, double index, bool value);
 ScrArr *scr_arr_with_ref(ScrArr *a, double index, void *value);
 ScrArr *scr_arr_with_undefined(ScrArr *a, double index);
 
-/* push returns the new length (JS-exact); _ref takes ownership. */
+/* push/unshift return the new length, or zero with an exception pending.
+ * _ref takes ownership even on failure. The existing maximum-length trap
+ * boundary is unchanged; these checks cover native integrity restrictions. */
 double scr_arr_push_f64(ScrArr *a, double v);
 double scr_arr_push_bool(ScrArr *a, bool v);
 double scr_arr_push_ref(ScrArr *a, void *v);
 /* Compiler-built slot buffers do not alias array storage. Both operations
- * move ownership of every slot and preserve the evaluated argument order. */
+ * consume every slot even when mutation fails before insertion. Pass the
+ * whole call's argument count; zero arguments still perform a length Set. */
 double scr_arr_push_many(ScrArr *a, size_t count, const uint64_t *slots);
 double scr_arr_unshift_many(ScrArr *a, size_t count, const uint64_t *slots);
 /* Append a same-element-kind array through the JS iterator contract: holes
  * become present undefined states. The source is borrowed and self-spread
- * duplicates the original indexed state. */
+ * duplicates the original indexed state. Failure preserves completed
+ * writes and releases temporary copies, leaving the borrowed source owned. */
 double scr_arr_push_spread(ScrArr *a, const ScrArr *src);
 /* Append a concat argument by indexed property copy, preserving holes. */
 double scr_arr_concat_copy(ScrArr *a, const ScrArr *src);
 
 /* unshift returns the new length and _ref takes ownership. The spread form
  * borrows a same-element-kind source, retains copied refs, and snapshots
- * self-spread. reverse mutates in place and returns the receiver at +1. */
+ * self-spread. reverse mutates in place and returns the receiver at +1,
+ * or NULL with a pending exception after an integrity refusal. */
 double scr_arr_unshift_f64(ScrArr *a, double v);
 double scr_arr_unshift_bool(ScrArr *a, bool v);
 double scr_arr_unshift_ref(ScrArr *a, void *v);
 double scr_arr_unshift_spread(ScrArr *a, const ScrArr *src);
 ScrArr *scr_arr_reverse(ScrArr *a);
-/* Default primitive String ordering; stable, borrowed receiver, owned result. */
+/* Default primitive String ordering; stable, borrowed receiver, owned result.
+ * A refused in-place write leaves its completed prefix and returns NULL
+ * with a pending exception. Copies do not inherit receiver restrictions. */
 ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy);
 /* Stable comparator sort of the first `count` slots of a private, compacted
  * snapshot (every slot a value; f64 or reference elements). `f` is a borrowed
@@ -351,10 +401,11 @@ void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t
                          int32_t order, struct ScrClosure *key);
 /* Comparator sort of a dense array in place: `a.sort(f)`, or with `owned`
  * the private copy of `a.toSorted(f)`. Returns false without calling `f`
- * when `a` has holes, storage-level undefined or a sparse tail, or is
- * published; the caller then sorts a compacted snapshot. Otherwise sorts
+ * when `a` has holes, storage-level undefined or a sparse tail (length >= 2);
+ * the caller then sorts a compacted snapshot. Otherwise sorts
  * and returns true; a pending exception from `f` leaves a shared `a`
- * unwritten (an owned copy then holds a permutation of its values). */
+ * unwritten (an owned copy then holds a permutation of its values).
+ * Refused writeback preserves the completed prefix and sets an exception. */
 /* The borrowed 8-byte slots of `a` when every index below its length holds
  * a value in dense storage (length in *len); NULL for holes, storage-level
  * undefined, sparse tails, empty arrays and boolean elements. */
@@ -369,16 +420,18 @@ bool scr_arr_sort_dense(ScrArr *a, struct ScrClosure *f, uint32_t arity, bool ow
 typedef bool (*ScrSortLess)(void *ctx, uint64_t x, uint64_t y, bool *failed);
 bool scr_sort_slots_with(uint64_t *values, size_t n, ScrSortLess less, void *ctx);
 
-/* pop traps on an empty array; _ref transfers ownership out (+1 to the
- * caller, no release). */
+/* Removal state helpers return holes/undefined without trapping and move
+ * value ownership into slot_out; NULL discards and releases the result.
+ * On failure they return HOLE, zero the output, and leave an exception
+ * pending with completed mutations intact. Scalar/ref wrappers trap only
+ * on a successful undefined result; _ref transfers ownership out. */
 double scr_arr_pop_f64(ScrArr *a);
 bool scr_arr_pop_bool(ScrArr *a);
 void *scr_arr_pop_ref(ScrArr *a);
 uint8_t scr_arr_pop_state(ScrArr *a, uint64_t *slot_out);
 
-/* shift: the first element out, tail sliding down. The emitter guards the
- * empty array (JS's undefined — the `elem | undefined` union), so empty
- * here is an internal error; _ref transfers ownership out like pop. */
+/* shift: the first element out, tail sliding down; same ownership and
+ * pending-exception contract as pop. */
 double scr_arr_shift_f64(ScrArr *a);
 bool scr_arr_shift_bool(ScrArr *a);
 void *scr_arr_shift_ref(ScrArr *a);
@@ -387,13 +440,15 @@ uint8_t scr_arr_shift_state(ScrArr *a, uint64_t *slot_out);
 /* splice(start, deleteCount) — the REMOVAL forms: Node-exact
  * relative/clamped start, count clamped to [0, len - start] (+Infinity =
  * to the end). Returns the removed elements in order as a fresh +1 array,
- * ownership MOVED out of the receiver. Borrows a. */
+ * borrowing a (and items for insertion). Failure returns NULL with an
+ * exception pending; completed writes remain visible. */
 ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount);
 ScrArr *scr_arr_splice_insert(ScrArr *a, double start, double deleteCount,
                               const ScrArr *items);
 /* The same splice in statement position: inserts `count` owned value slots
- * (moved in) and releases the removed elements without building a result
- * array. Borrows a. */
+ * (moved in) and releases the removed elements. Consumes every input slot
+ * even on failure, which leaves an exception pending and preserves partial
+ * writes. Borrows a; unrestricted dense calls avoid temporary arrays. */
 void scr_arr_splice_drop(ScrArr *a, double start, double deleteCount, size_t count,
                          const uint64_t *slots);
 ScrArr *scr_arr_flat_copy(const ScrArr *a, ScrArr *out, bool flatten);

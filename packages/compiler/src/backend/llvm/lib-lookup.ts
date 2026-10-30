@@ -33,7 +33,7 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "declare void @scr_arr_release(ptr)",
       "declare double @scr_arr_len(ptr)",
       `declare ptr @scr_arr_new(i32, ${host.sizeType})`,
-      "declare ptr @scr_arr_get_ref(ptr, double)",
+      "declare ptr @scr_arr_get_slot_ref(ptr, double)",
       "declare double @scr_arr_push_ref(ptr, ptr)",
       "declare void @scr_net_lookup_answer(ptr, i1 zeroext, ptr, ptr)",
     ])
@@ -64,7 +64,7 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "  %more = fcmp olt double %index, %length",
       "  br i1 %more, label %body, label %finish",
       "body:",
-      "  %record = call ptr @scr_arr_get_ref(ptr %addresses, double %index)",
+      "  %record = call ptr @scr_arr_get_slot_ref(ptr %addresses, double %index)",
       `  %addressp = getelementptr inbounds %${struct}, ptr %record, i64 0, i32 ${field + 1}`,
       "  %address = load ptr, ptr %addressp",
       "  %owned.address = call ptr @scr_str_retain_v(ptr %address)",

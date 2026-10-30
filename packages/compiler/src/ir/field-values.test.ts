@@ -74,7 +74,7 @@ const grid: IrClassDef = {
   methods: [],
 } as unknown as IrClassDef;
 const moduleOf = (functions: IrFunction[]): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "field-values.ts",
   entry: "%init",
   classes: [grid],

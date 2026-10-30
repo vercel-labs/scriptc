@@ -148,7 +148,7 @@ static void scr_enable_utf8_console_output(void) {
 }
 #endif
 
-void scr_runtime_abi_v22(void) {}
+void scr_runtime_abi_v24(void) {}
 
 void scr_init(void) {
 #ifdef SCR_WORKERS
@@ -188,6 +188,10 @@ void scr_init(void) {
    * cycles the program dropped, so the audit (and ASan's leak check) see
    * them as freed, not leaked. */
   scr_atexit(scr_flush_at_exit);
+#ifndef SCR_WORKERS
+  /* Integrity remains observable through exit callbacks and collection. */
+  scr_atexit(scr_native_integrity_reset);
+#endif
 #ifdef SCR_RC_AUDIT
   scr_atexit(scr_rc_audit_at_exit);
 #endif

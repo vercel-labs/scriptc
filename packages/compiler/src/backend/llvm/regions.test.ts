@@ -23,7 +23,7 @@ const span: IrType = { kind: "record", shapeId: "span" };
  * class that cannot reach any (Label). */
 function module(body: IrExpr[] = [], lifetimeRegions = true): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     ...(lifetimeRegions ? { lifetimeRegions: true as const } : {}),

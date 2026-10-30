@@ -28,7 +28,8 @@ import {
   traceAdapter,
   type ShapeHost,
 } from "./shapes.js";
-import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
+import { recordMayKeepSource } from "../../ir/native-integrity.js";
+import { recordSourceFieldOrder } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
@@ -534,7 +535,7 @@ export class LlWalkers {
     B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
     host.declare(`declare ptr @scr_map_keys_js_order(ptr)`);
     host.declare(`declare double @scr_arr_len(ptr)`);
-    host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+    host.declare(`declare ptr @scr_arr_get_slot_ref(ptr, double)`);
     host.declare(`declare void @scr_str_release(ptr)`);
     const ks = B.tmp();
     const len = B.tmp();
@@ -542,7 +543,7 @@ export class LlWalkers {
     B.line(`${len} = call double @scr_arr_len(ptr ${ks})`);
     B.countedLoop(len, (i, next) => {
       const k = B.tmp();
-      B.line(`${k} = call ptr @scr_arr_get_ref(ptr ${ks}, double ${i}) ; key (+1)`);
+      B.line(`${k} = call ptr @scr_arr_get_slot_ref(ptr ${ks}, double ${i}) ; key (+1)`);
       // The entry value, type-directed off the overflow VALUE type.
       let val: string;
       if (iv.kind === "f64" || iv.kind === "bool") {
@@ -676,16 +677,16 @@ export class LlWalkers {
         const acc = elem.kind;
         const accTy = elem.kind === "f64" ? "double" : "i1";
         host.declare(
-          `declare ${elem.kind === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`,
+          `declare ${elem.kind === "bool" ? "zeroext i1" : accTy} @scr_arr_get_slot_${acc}(ptr, double)`,
         );
         const v = B.tmp();
-        B.line(`${v} = call ${accTy} @scr_arr_get_${acc}(ptr %v, double ${i})`);
+        B.line(`${v} = call ${accTy} @scr_arr_get_slot_${acc}(ptr %v, double ${i})`);
         B.line(`call void @${w}(ptr %b, ${accTy} ${v})`);
       } else {
         // _get_ref returns +1; release after writing.
-        host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+        host.declare(`declare ptr @scr_arr_get_slot_ref(ptr, double)`);
         const v = B.tmp();
-        B.line(`${v} = call ptr @scr_arr_get_ref(ptr %v, double ${i})`);
+        B.line(`${v} = call ptr @scr_arr_get_slot_ref(ptr %v, double ${i})`);
         B.line(`call void @${w}(ptr %b, ptr ${v})`);
         B.line(`call void ${releaseSym(host, elem)}(ptr ${v})`);
       }

@@ -26,7 +26,8 @@ import { corpusSelect, shardSuffix } from "./shard.js";
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
 const corpusDir = join(repoRoot, "tests/corpus");
-const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
+const cacheDir =
+  process.env["SCRIPTC_TEST_OUTPUT_DIR"] || join(repoRoot, "node_modules/.cache/scriptc-tests");
 
 // Flat single-file tests plus directory tests (<name>/main.<ext> as the
 // entry with sibling modules). JavaScript entries (.js/.mjs/.cjs) are

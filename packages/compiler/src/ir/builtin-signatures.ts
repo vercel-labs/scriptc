@@ -3169,6 +3169,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.functionApply": { argTypes: [], result: DYN },
   "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
   "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
+  "dyn.newClassPrototype": { argTypes: [DYN, STRING], result: DYN },
   "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
   "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
   "dyn.classSuper": { argTypes: [DYN, DYN, DYN], result: VOID },

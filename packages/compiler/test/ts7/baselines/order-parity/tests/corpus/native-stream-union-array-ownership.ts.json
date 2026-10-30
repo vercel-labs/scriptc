@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-stream-union-array-ownership.ts"
+ ],
+ "diags": []
+}

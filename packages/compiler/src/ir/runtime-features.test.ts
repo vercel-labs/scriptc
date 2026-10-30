@@ -1,7 +1,23 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
-import { moduleRuntimeFeatures, moduleUsesHttp2, moduleUsesTlsCa } from "./runtime-features.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  STRING,
+  VOID,
+  arrayOf,
+  type IrModule,
+  type IrLibFn,
+  type IrType,
+} from "./ir.js";
+import { computeNativeSetEffects } from "./native-integrity.js";
+import {
+  moduleRuntimeFeatures,
+  moduleUsesDynAsync,
+  moduleUsesHttp2,
+  moduleUsesTlsCa,
+} from "./runtime-features.js";
 
 describe("runtime feature snapshots", () => {
   const loc = { file: "features.ts", start: 0, end: 0 };
@@ -59,6 +75,45 @@ describe("runtime feature snapshots", () => {
       tls: false,
       tlsCa: true,
     });
+  });
+
+  test.each([
+    "dyn.reflectGet",
+    "dyn.bagGet",
+    "dyn.getPrototype",
+    "dyn.hasKey",
+    "dyn.hasKeyComputed",
+    "dyn.in",
+  ] as const)("admits prototype adapters for %s without a method call", (fn) => {
+    const mod = module();
+    expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(false);
+    mod.functions[0]!.body.push(call(fn));
+    expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(true);
+  });
+
+  test("computed reads and literal presence checks admit prototype adapters", () => {
+    const mod = module();
+    const value = { kind: "dynArrLit" as const, elems: [], type: DYN, loc };
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynKeyGet",
+        value,
+        key: { kind: "strLit", value: "push", type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(true);
+    mod.functions[0]!.body[0] = {
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynHasKey", value, key: "push", type: { kind: "bool" }, loc },
+    };
+    expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(true);
+    mod.functions[0]!.body = [call("json.parse"), call("dyn.hasOwn")];
+    expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(false);
   });
 
   test("retains runtime units needed only by nested handle storage", () => {
@@ -137,6 +192,60 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
     mod.records[1]!.fields[0]!.type = { kind: "func", params: [], ret: STRING };
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
+  });
+
+  test("typed class Set links promise adapters through recursive exact descendants", () => {
+    const mod = module();
+    const owner: IrType = { kind: "object", className: "Same" };
+    const promise: IrType = { kind: "promise", inner: STRING };
+    mod.classes = [
+      {
+        name: "Same",
+        fields: [
+          { name: "value", type: F64 },
+          { name: "cycle", type: { kind: "record", shapeId: "Same" } },
+          { name: "privatePromise", type: promise, visibility: "private" },
+        ],
+        loc,
+      },
+      { name: "Child", base: "Same", fields: [{ name: "pending", type: promise }], loc },
+    ];
+    mod.records = [
+      { id: "Same", fields: [{ name: "back", type: { kind: "union", unionId: "Same" } }] },
+    ];
+    mod.unions = [{ id: "Same", arms: [owner, { kind: "undefinedT" }] }];
+    const receiver = { kind: "varRef" as const, localId: "owner", type: owner, loc };
+    const rhs = { kind: "numLit" as const, value: 3, type: F64, loc };
+    const guard = {
+      kind: "intrinsic" as const,
+      name: "native.checkWrite" as const,
+      args: [
+        receiver,
+        { kind: "strLit" as const, value: "value", type: STRING, loc },
+        { kind: "numLit" as const, value: 0, type: F64, loc },
+        rhs,
+      ],
+      type: BOOL,
+      loc,
+    };
+    mod.functions[0]!.locals.push({ id: "owner", name: "owner", type: owner, mutable: false });
+    mod.functions[0]!.body.push({ kind: "exprStmt", expr: guard, loc });
+    expect(computeNativeSetEffects(mod)).toEqual({ callsSetter: true, boxedTypes: [owner, F64] });
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
+    expect(moduleUsesDynAsync(mod)).toBe(true);
+    // Define does not box the receiver/RHS to call an inherited setter.
+    guard.args[2] = { kind: "numLit", value: 2, type: F64, loc };
+    guard.args.pop();
+    expect(computeNativeSetEffects(mod).callsSetter).toBe(false);
+    expect(moduleUsesDynAsync(mod)).toBe(false);
+    guard.args[2] = { kind: "numLit", value: 1, type: F64, loc };
+    guard.args.push(rhs);
+    // Same-named record/union/class identities must not hide a public promise.
+    mod.classes.pop();
+    mod.unions[0]!.arms.push(promise);
+    expect(moduleUsesDynAsync(mod)).toBe(true);
+    mod.unions[0]!.arms.pop();
+    expect(moduleUsesDynAsync(mod)).toBe(false);
   });
 
   test("detects promise boxing through a function's result type", () => {

@@ -2,6 +2,7 @@ import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { narrowStoredClassValue } from "../class-unions.js";
+import { classFieldType } from "../lower-classes.js";
 import {
   BOOL,
   type IrExpr,
@@ -11,6 +12,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { locOf, isJsSourceFile } from "../../program.js";
+import { nativePropertySetOperation } from "./property-strictness.js";
 
 /** One class or record arm of a union receiver and its declared field. */
 interface UnionFieldArm {
@@ -20,13 +22,22 @@ interface UnionFieldArm {
 
 /** The declared data field `name` of a class or record arm, or null when the
  * arm has none (accessors, index signatures and other kinds included). */
-function unionFieldArm(lowerer: Lowerer, arm: IrType, name: string): UnionFieldArm | null {
+function unionFieldArm(
+  lowerer: Lowerer,
+  arm: IrType,
+  name: string,
+  privateName: boolean,
+): UnionFieldArm | null {
   if (arm.kind === "record") {
     const type = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === name)?.type;
     return type ? { receiver: arm, type } : null;
   }
   if (arm.kind === "object") {
-    const type = lowerer.classes.get(arm.className)?.fields.get(name);
+    const type = classFieldType(
+      lowerer.classes.get(arm.className),
+      name,
+      privateName ? "private" : "public",
+    );
     return type ? { receiver: arm, type } : null;
   }
   return null;
@@ -124,7 +135,7 @@ export function lowerUnionFieldRead(
   const name = access.name.text;
   const fields: UnionFieldArm[] = [];
   for (const arm of arms) {
-    const field = unionFieldArm(lowerer, arm, name);
+    const field = unionFieldArm(lowerer, arm, name, ts.isPrivateIdentifier(access.name));
     if (!field || field.type.kind === "void" || isUnitType(field.type)) return null;
     fields.push(field);
   }
@@ -187,7 +198,7 @@ export function lowerUnionFieldWrite(
       fields.push(null);
       continue;
     }
-    const field = unionFieldArm(lowerer, arm, name);
+    const field = unionFieldArm(lowerer, arm, name, ts.isPrivateIdentifier(access.name));
     if (!field) return null;
     fields.push(field);
     present.push(field);
@@ -232,6 +243,7 @@ export function lowerUnionFieldWrite(
         field.receiver.kind === "record"
           ? {
               kind: "recordSet",
+              propertyOp: nativePropertySetOperation(lowerer, access),
               obj,
               shapeId: field.receiver.shapeId,
               field: name,
@@ -240,6 +252,7 @@ export function lowerUnionFieldWrite(
             }
           : {
               kind: "fieldSet",
+              propertyOp: nativePropertySetOperation(lowerer, access),
               obj,
               className: field.receiver.className,
               field: name,

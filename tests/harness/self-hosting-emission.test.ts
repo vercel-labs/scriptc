@@ -10,12 +10,7 @@ import { everyStmtList } from "../../packages/compiler/src/ir/traverse.js";
 import { type IrModule } from "../../packages/compiler/src/ir/ir.js";
 import { analyzeInChild, compileInChild } from "./self-hosting-compiler-process.js";
 import { spawnResult } from "./spawn-result.js";
-import {
-  moduleUsesCopying,
-  moduleUsesDynInvoke,
-  moduleUsesInspect,
-  moduleUsesRegex,
-} from "../../packages/compiler/src/ir/runtime-features.js";
+import { executableLinkFeatures } from "../../packages/compiler/src/backend/executable-features.js";
 import {
   emissionCases,
   emissionModule,
@@ -258,10 +253,7 @@ for (const backend of ["llvm"] as const) {
           cPath: path,
           outPath,
           sanitize,
-          inspect: moduleUsesInspect(mod),
-          dynInvoke: moduleUsesDynInvoke(mod),
-          regex: moduleUsesRegex(mod),
-          copying: moduleUsesCopying(mod),
+          ...executableLinkFeatures(mod),
         });
         const oracle = await spawnResult(process.execPath, [sourcePath], options);
         const program = await spawnResult(outPath, [], options);

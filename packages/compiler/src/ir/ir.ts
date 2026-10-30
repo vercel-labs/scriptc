@@ -906,7 +906,7 @@ export function isRefCounted(t: IrType): boolean {
 
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
-  irVersion: 16;
+  irVersion: 17;
   sourceFile: string;
   functions: IrFunction[];
   /** Class shapes. Constructors and methods are ordinary module functions
@@ -1275,6 +1275,15 @@ export interface IrLibIdentity {
   abiVersion: number;
 }
 
+export interface IrClassField {
+  name: string;
+  type: IrType;
+  /** Source #private and compiler storage are not JavaScript properties.
+   * Ordinary fields, including TypeScript private/protected and quoted
+   * names beginning with # or %, leave this absent. */
+  visibility?: "private" | "internal";
+}
+
 export interface IrClassDef {
   name: string;
   /** Present for a class evaluated inside a function. Each evaluation owns
@@ -1297,8 +1306,11 @@ export interface IrClassDef {
   /** Zero-argument native helper returning the shared prototype data object.
    * Used when materializing an instance's own-property view. */
   prototypeDataHelper?: string;
-  /** Native instance to its actual prototype, including factory captures and subclasses. */
+  /** Native instance to its compiler-default prototype, including factory captures and subclasses. */
   instancePrototypeHelper?: string;
+  /** Exact-layout write preparation. May initialize canonical own-property
+   * storage; integrity predicates never call it. */
+  nativePropertyBagHelper?: string;
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
@@ -1321,7 +1333,7 @@ export interface IrClassDef {
    * IDENTICAL prefix, so an upcast is a pointer reinterpret and base-field
    * offsets agree through any static type — then this class's own fields.
    * The validator enforces the prefix property. */
-  fields: { name: string; type: IrType }[];
+  fields: IrClassField[];
   /** Method names DECLARED on this class (not inherited), in declaration
    * order. Every entry EXCEPT the ones listed in `abstractMethods` has a
    * module function `%<name>.<method>`; the backend derives vtable layout
@@ -1685,6 +1697,20 @@ export interface IrLocal {
 
 /* ── statements ────────────────────────────────────────────────────────── */
 
+/** Property semantics survive lowering into native storage. Omitted operations
+ * keep the strict Set contract of synthesized stores; private layout fields are
+ * not JavaScript properties. Delete is explicit even when its value is ABSENT. */
+export type NativePropertyOperation = "set" | "setSloppy" | "define" | "delete" | "deleteSloppy";
+
+/** Shared with ScrNativePropertyOperation in the runtime ABI. */
+export const NATIVE_PROPERTY_OPERATION: Record<NativePropertyOperation, number> = {
+  set: 0,
+  setSloppy: 1,
+  define: 2,
+  delete: 3,
+  deleteSloppy: 4,
+};
+
 export type IrStmt =
   /** First initialization of a local at its source position. `init: null`
    * means "declared, uninitialized" (`let x: number;`) — the local must be
@@ -1747,11 +1773,9 @@ export type IrStmt =
   | { kind: "arraySet"; arr: IrExpr; index: IrExpr; value: IrExpr; loc: SrcLoc }
   /** Writable `a.length = n`: growth creates holes and truncation releases
    * removed reference elements. Invalid array lengths raise a catchable
-   * RangeError from the runtime. `pop` marks the stores that implement
-   * `pop()`: a frozen (published) array fails with pop's TypeError rather
-   * than the length assignment's, and pop's `length = 0` store on an empty
-   * array is dropped unless the array may be frozen. */
-  | { kind: "arraySetLength"; arr: IrExpr; length: IrExpr; loc: SrcLoc; pop?: boolean }
+   * RangeError from the runtime. Removal methods use their own ordered
+   * property actions rather than lowering to length assignments. */
+  | { kind: "arraySetLength"; arr: IrExpr; length: IrExpr; loc: SrcLoc }
   /** Write an explicit present `undefined` state without shrinking length. */
   | { kind: "arraySetUndefined"; arr: IrExpr; index: IrExpr; loc: SrcLoc }
   /** Delete an indexed/property slot without changing Array.length. */
@@ -1784,11 +1808,27 @@ export type IrStmt =
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
    * of a refcounted new value MOVES into the object. */
-  | { kind: "fieldSet"; obj: IrExpr; className: string; field: string; value: IrExpr; loc: SrcLoc }
+  | {
+      kind: "fieldSet";
+      obj: IrExpr;
+      className: string;
+      field: string;
+      value: IrExpr;
+      propertyOp?: NativePropertyOperation;
+      loc: SrcLoc;
+    }
   /** Record field write `r.f = v` — mirrors `fieldSet` exactly (evaluation
    * order obj then value; old value released; refcounted new value moved
    * in), with a shape id in place of a class name. */
-  | { kind: "recordSet"; obj: IrExpr; shapeId: string; field: string; value: IrExpr; loc: SrcLoc }
+  | {
+      kind: "recordSet";
+      obj: IrExpr;
+      shapeId: string;
+      field: string;
+      value: IrExpr;
+      propertyOp?: NativePropertyOperation;
+      loc: SrcLoc;
+    }
   /** Dynamic-keyed record write `r[k] = v` — index-signature shapes only.
    * `value` has the index signature's value type (dyn included). Declared
    * keys write THROUGH to the struct slot: a dyn value validates against
@@ -1811,6 +1851,7 @@ export type IrStmt =
       key: IrExpr;
       value: IrExpr;
       overflowOnly?: true;
+      propertyOp?: NativePropertyOperation;
       loc: SrcLoc;
     }
   /** Statement-position `delete obj[k]` on a PURE index-signature shape
@@ -1819,7 +1860,14 @@ export type IrStmt =
    * value — exactly a Map delete, insertion order of survivors kept.
    * Deleting an absent key is a no-op, like JS. Evaluation order: obj,
    * key; both borrowed. Never throws. */
-  | { kind: "recordKeyDelete"; obj: IrExpr; shapeId: string; key: IrExpr; loc: SrcLoc }
+  | {
+      kind: "recordKeyDelete";
+      obj: IrExpr;
+      shapeId: string;
+      key: IrExpr;
+      propertyOp?: "delete" | "deleteSloppy";
+      loc: SrcLoc;
+    }
   /** Unlabeled: `break` binds to the innermost enclosing loop OR switch
    * (labeled BLOCK targets are skipped); `continue` to the innermost
    * enclosing loop, skipping any switches in between (validated). With
@@ -1968,8 +2016,21 @@ export type IrArrIntrinsicMethod =
 /** Array intrinsics whose runtime implementation can raise a catchable
  * exception (rather than the static tier's deliberate index traps). */
 export const MAY_THROW_ARR_METHODS: ReadonlySet<IrArrIntrinsicMethod> = new Set([
+  "push",
+  "pushSpread",
+  "unshift",
+  "unshiftSpread",
+  "pop",
+  "shift",
+  "splice",
+  "spliceInsert",
+  "reverse",
+  "copyWithin",
+  "fill",
+  "fillUndefined",
   "with",
   "withUndefined",
+  "sortPrimitive",
   "sortValues",
   "sortDense",
 ]);
@@ -2415,6 +2476,7 @@ export type IrExpr =
       className: string;
       field: string;
       fieldDyn: boolean;
+      propertyOp?: "set" | "setSloppy";
       type: IrType;
       loc: SrcLoc;
     }
@@ -2590,10 +2652,20 @@ export type IrExpr =
    * proven present slot and trap on a hole. For refcounted elements the result
    * is a fresh owned (+1) reference. */
   | { kind: "arrayGet"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
-  /** Presence query for an array index. Invalid/non-index keys and holes
-   * answer false without reading the slot; present undefined answers true.
-   * The ordinary-read lowering must use arrayState before selecting its
-   * undefined arm. */
+  /** Language Get: one owned property value, optionally consumed directly
+   * by ToNumber/ToBoolean. Promoted names and inherited holes may call user code. */
+  | {
+      kind: "arrayPropertyRead";
+      arr: IrExpr;
+      index: IrExpr;
+      consume: "value" | "required" | "number" | "numberConstructor" | "boolean" | "string";
+      type: IrType;
+      loc: SrcLoc;
+    }
+  /** Language numeric-key HasProperty, distinct from own slot presence. */
+  | { kind: "arrayHasProperty"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
+  /** Own property presence without invoking getters or walking the prototype.
+   * Present undefined answers true; arrayHasProperty owns language `in`. */
   | { kind: "arrayHas"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
   /** Array slot state as f64: HOLE=0, VALUE=1, UNDEFINED=2. */
   | { kind: "arrayState"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
@@ -3496,6 +3568,25 @@ export type IrExpr =
         | "promise.resolve"
         | "module.await"
         | "module.tdzCheck"
+        /* Native property owners: integrity predicates/mutators take one
+         * record/class receiver. checkWrite takes receiver, string key and
+         * an operation literal (NativePropertyOperation's runtime ordinal).
+         * Record/class Set also takes its saved typed RHS for inherited setters;
+         * true requests the raw store, false means handled or refused.
+         * propertyReset forgets scalar overrides after a successful delete
+         * or default field definition; neither operation stores a value. */
+        | "native.freeze"
+        | "native.seal"
+        | "native.preventExtensions"
+        | "native.isFrozen"
+        | "native.isSealed"
+        | "native.isExtensible"
+        | "native.checkWrite"
+        | "native.propertyReset"
+        /* Bare declarations publish own undefined without reading a native slot.
+         * Both operations take receiver + string key; the query is callback-free. */
+        | "native.declareUndefined"
+        | "native.isDeclaredUndefined"
         /* @scriptc/threads publish(value): one argument, the result is the
          * same value (and type); its graph becomes immortal and immutable. */
         | "threads.publish"
@@ -3864,12 +3955,15 @@ export function isDynTypedRefType(t: IrType): t is Extract<IrType, { kind: "obje
   return t.kind === "object" && !RUNTIME_ERROR_CLASSES.has(t.className);
 }
 
-/** Whether a class layout field is an ECMAScript own enumerable property.
- * `#private` slots and `%`-prefixed compiler storage exist only in the native
- * layout; TypeScript `private`/`protected` fields keep ordinary names and are
- * observable properties at runtime. */
+/** Legacy method-name filter. Fields carry declaration visibility; their
+ * public string names can start with either of these characters. */
 export function isClassOwnEnumerableFieldName(name: string): boolean {
   return !name.startsWith("#") && !name.startsWith("%");
+}
+
+/** Declaration identity, never the spelling, determines field visibility. */
+export function isClassOwnEnumerableField(field: IrClassField | undefined): boolean {
+  return field !== undefined && field.visibility === undefined;
 }
 
 /** Compiler-owned storage for properties added through untyped references. */
@@ -3877,9 +3971,9 @@ export const DYN_CLASS_PROPERTIES = "%dynProperties";
 
 /** A class capsule can always preserve its exact native identity. Its
  * optional property view additionally needs converters in both directions;
- * fields such as Maps may remain opaque without preventing the round trip. */
+ * unsupported native handles may remain opaque without preventing the round trip. */
 export function classDynViewSupported(
-  fields: readonly { name: string; type: IrType }[],
+  fields: readonly IrClassField[],
   getRecord: (shapeId: string) => IrRecordShape | undefined,
   getUnion: (unionId: string) => IrUnionDef | undefined,
 ): boolean {
@@ -3890,7 +3984,7 @@ export function classDynViewSupported(
   };
   return fields.every(
     (field) =>
-      !isClassOwnEnumerableFieldName(field.name) ||
+      !isClassOwnEnumerableField(field) ||
       (canConvertToDyn(field.type, getRecord, getUnion) && checkable(field.type)),
   );
 }

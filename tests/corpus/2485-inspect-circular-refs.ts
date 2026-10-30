@@ -50,3 +50,12 @@ console.log(inspect(duo, { depth: 4 }));
 
 // Fresh numbering per console.log call.
 console.log(ring);
+
+// Checked-dynamic composites share the same circular identity rules.
+const dynamic: any = JSON.parse('{"label":"dynamic"}');
+dynamic.self = dynamic;
+console.log(inspect(dynamic, { depth: null }));
+const dynamicArray: any = JSON.parse("[]");
+dynamicArray.push(dynamicArray);
+console.log(inspect(dynamicArray, { depth: null }));
+console.log(inspect({ first: dynamic, second: dynamic }, { depth: null }));

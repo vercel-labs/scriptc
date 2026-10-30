@@ -105,7 +105,7 @@ const newOf = (className: string, args: IrExpr[]): IrExpr => ({
   type: obj(className),
 });
 const mod = (classes: IrClassDef[], functions: IrFunction[]): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "test.ts",
   entry: "%main",
   classes,
@@ -258,6 +258,75 @@ test("dynamic stores disqualify the field names they can reach", () => {
   expect([computed.isField("C", "a"), computed.isField("C", "b")]).toEqual([false, false]);
   // Classes that never reach dynamic code are unaffected by dynamic stores.
   expect(computed.isField("Hidden", "c")).toBe(true);
+  const dispatches: IrExpr[] = [
+    {
+      loc,
+      kind: "dynInvoke",
+      recv: view,
+      method: "reverse",
+      calleeName: "view.reverse",
+      args: [],
+      type: DYN,
+    },
+    { loc, kind: "dynCall", callee: view, calleeName: "bound", args: [], type: DYN },
+  ];
+  for (const dispatch of dispatches) {
+    const called = analyzeInt32Slots(program(stmt(dispatch)));
+    expect([
+      dispatch.kind,
+      called.isField("C", "a"),
+      called.isField("C", "b"),
+      called.isField("Hidden", "c"),
+    ]).toEqual([dispatch.kind, false, false, true]);
+  }
+  for (const propertyOp of ["set", "define", "deleteSloppy"] as const) {
+    const source = program(stmt(view));
+    const record: IrType = { kind: "record", shapeId: "SetterOwner" };
+    source.records = [{ id: "SetterOwner", fields: [{ name: "value", type: F64 }] }];
+    source.functions[0]!.body.push(
+      stmt({
+        kind: "intrinsic",
+        name: "native.isFrozen",
+        args: [ref("record", record)],
+        type: BOOL,
+        loc,
+      }),
+      {
+        kind: "recordSet",
+        obj: ref("record", record),
+        shapeId: "SetterOwner",
+        field: "value",
+        value: num(4),
+        propertyOp,
+        loc,
+      },
+    );
+    const slots = analyzeInt32Slots(source);
+    expect([
+      slots.isField("C", "a"),
+      slots.isField("C", "b"),
+      slots.isField("Hidden", "c"),
+    ]).toEqual([propertyOp !== "set", propertyOp !== "set", true]);
+  }
+  for (const operation of [0, 1, 2]) {
+    const source = program(
+      stmt({
+        kind: "intrinsic",
+        name: "native.checkWrite",
+        args: [ref("o", obj("C")), strLit("a"), num(operation), ...(operation < 2 ? [num(4)] : [])],
+        type: BOOL,
+        loc,
+      }),
+    );
+    const slots = analyzeInt32Slots(source);
+    // A class Set exposes the receiver to inherited callbacks before storage.
+    // Define bypasses those callbacks; unrelated hidden layouts remain narrow.
+    expect([
+      slots.isField("C", "a"),
+      slots.isField("C", "b"),
+      slots.isField("Hidden", "c"),
+    ]).toEqual([operation === 2, operation === 2, true]);
+  }
   const readOnly = analyzeInt32Slots(program(write("dyn.typedRefIs", [view, strLit("object:C")])));
   expect([readOnly.isField("C", "a"), readOnly.isField("C", "b")]).toEqual([true, true]);
   // Reflection that only reads the view (Object.keys/values/entries, for-in,
@@ -281,6 +350,7 @@ test("dynamic stores disqualify the field names they can reach", () => {
     "insp.dyn",
     "insp.dynS",
     "dyn.objCreate",
+    "dyn.newClassPrototype",
     "dyn.getPrototype",
     // Registering or removing a process event listener stores nothing either.
     "process.onSignal",
@@ -294,7 +364,8 @@ test("dynamic stores disqualify the field names they can reach", () => {
     "process.onWarning",
     "process.offWarning",
   ]) {
-    const reflected = analyzeInt32Slots(program(write(reader, [view])));
+    const args = reader === "dyn.newClassPrototype" ? [view, strLit("Child")] : [view];
+    const reflected = analyzeInt32Slots(program(write(reader, args)));
     expect([reader, reflected.isField("C", "a"), reflected.isField("C", "b")]).toEqual([
       reader,
       true,

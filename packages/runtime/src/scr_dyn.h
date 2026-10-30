@@ -10,6 +10,9 @@
 #include "scr_symbol.h"
 #include "scr_bigint.h"
 
+typedef struct ScrDynNativeObjectOps ScrDynNativeObjectOps;
+typedef struct ScrNativeMutation ScrNativeMutation;
+
 /* ── JSON + dynamic values (scr_json.c) ─────────────────────────────
  * A dyn value — the compiled form of `unknown` — is a refcounted JSON dyn
  * tree: the result of JSON.parse, inert until a CHECKED CAST validates it
@@ -214,18 +217,27 @@ _Static_assert(sizeof(ScrDynEntry) == (sizeof(void *) == 8 ? 48 : 24),
 _Static_assert(offsetof(ScrDynEntry, value) == 2 * sizeof(void *),
                "LLVM checked-object readers use the third pointer-sized field");
 
-/* Element access for a live typed reference to a native ScrArr, emitted per
- * array type by the compiler. The runtime decides presence and length from
- * the native array itself; these hooks only convert one element.
- *   get: +1 dyn view of the element at a dense index whose state is
- *        SCR_ARR_VALUE, built exactly as the whole-array snapshot builds it.
- *   set: stores `value` at index (index <= length) when it fits the element
- *        type and returns true; returns false with no side effects when it
- *        does not, so the caller can take the snapshot path and report the
- *        mismatch with its usual diagnostic. */
+/* Matching/conversion can run callbacks. Pending exceptions take precedence
+ * over this outcome; a mismatch alone is reported by the runtime caller. */
+typedef enum {
+  SCR_DYN_ARRAY_TYPE_MISMATCH = 0,
+  SCR_DYN_ARRAY_STORED = 1,
+  SCR_DYN_ARRAY_REFUSED = 2,
+} ScrDynArrayWrite;
+
+/* Per-element hooks emitted for live native arrays. get returns +1 for a
+ * present value. set converts one element and rechecks current integrity
+ * before transferring it, releasing converted references on every refusal.
+ * strict requests a TypeError for integrity refusal; false leaves it quiet.
+ * Type/conversion exceptions are never converted into quiet refusal. */
 typedef struct ScrDynTypedArrayOps {
   ScrDyn *(*get)(void *arr, double index);
-  bool (*set)(void *arr, double index, const ScrDyn *value);
+  ScrDynArrayWrite (*set)(void *arr, double index, const ScrDyn *value, bool strict);
+  /* Exact element representation, installed only at a live-view boundary.
+   * box borrows a slot and returns +1 without materializing/calling user code.
+   * unbox borrows value and returns an owned slot; failure leaves out untouched. */
+  ScrDyn *(*box)(uint64_t slot);
+  bool (*unbox)(const ScrDyn *value, uint64_t *out);
 } ScrDynTypedArrayOps;
 
 /* Field access for a live typed reference to a declared-field record,
@@ -307,11 +319,9 @@ struct ScrDyn {
       void *source_identity;
       ScrDyn *(*source_access)(void *, bool materialize);
       struct ScrDynObjectIndex *index; /* optional wide-object lookup; owns no values */
-      /* On a runtime-built class prototype (e.g. url.Url.prototype): the
-       * constructor name (static text) util.inspect prints for objects
-       * inheriting from it (scr_dyn_class_name). NULL otherwise. Only
-       * prototypes that live until their thread exits set it, and they
-       * clear it before release, so freelist reuse never sees it. */
+      /* Prototype declaration name, borrowed from immortal compiler/runtime
+       * text. An explicit constructor descriptor supersedes it; ordinary
+       * clones drop it, and allocation clears it before freelist reuse. */
       const char *class_name;
       struct ScrDynRegion *region; /* see ScrDynRegion */
     } obj; /* owned */
@@ -347,12 +357,14 @@ struct ScrDyn {
        * identity while the source reference remains observable. */
       ScrDyn *materialized;
       ScrDynTypedCast *casts;
-      /* One word keeps this, the largest payload, at its previous size. */
+      /* Pack the key length and view flags into one ABI word. */
       uint32_t type_key_len : 28;
       uint32_t traced : 1; /* native referent has a cycle header */
       uint32_t observed : 1; /* native release reports this identity's disposal */
       uint32_t record : 1; /* `array` holds ScrDynTypedRecordOps */
       uint32_t klass : 1; /* `array` holds ScrDynTypedClassOps */
+      /* Borrowed immutable metadata, independent of optional reflection. */
+      const ScrDynNativeObjectOps *native_object;
     } typed_ref;
     /* SCR_DYN_PROMISE: the retained promise. The boundary contract: it
      * settles with a dyn payload (SCR_EXC_REF ScrDyn fulfillment or a
@@ -378,6 +390,11 @@ _Static_assert(offsetof(ScrDyn, null_proto) == sizeof(size_t) + sizeof(ScrDynKin
                "dyn-to-record conversions read null_proto at byte 13 (9 on wasm32)");
 _Static_assert(offsetof(ScrDyn, v.typed_ref.type_key) == 16 + 3 * sizeof(void *),
                "typed_ref.type_key offset");
+_Static_assert(offsetof(ScrDyn, v.typed_ref.native_object) == (sizeof(void *) == 8 ? 96 : 56),
+               "native object ops offset");
+_Static_assert(offsetof(ScrDyn, prototype) == (sizeof(void *) == 8 ? 104 : 64),
+               "dyn prototype offset");
+_Static_assert(sizeof(ScrDyn) == (sizeof(void *) == 8 ? 128 : 80), "dyn capsule size");
 /* The region links ride in payload space the capsule variant already
  * reserves, so dyn nodes keep their size (and allocation size class). */
 _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref) &&
@@ -479,14 +496,16 @@ void scr_dyn_release(ScrDyn *d); /* releases the tree recursively; NULL-tolerant
  * name, found on its prototype chain), or NULL. */
 static inline const char *scr_dyn_class_name(const ScrDyn *d) {
   for (const ScrDyn *p = d->prototype; p; p = p->prototype)
-    if (p->kind == SCR_DYN_OBJ && p->v.obj.class_name) return p->v.obj.class_name;
+    if (p->kind == SCR_DYN_OBJ && p->v.obj.class_name)
+      return *p->v.obj.class_name ? p->v.obj.class_name : NULL;
   return NULL;
 }
 
 /* The element hooks of a live array capsule, or NULL (including for record
  * and class capsules, which keep their hooks in the same slot). */
 static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDyn *d) {
-  return d->v.typed_ref.record || d->v.typed_ref.klass ? NULL : d->v.typed_ref.array;
+  return !d || d->kind != SCR_DYN_TYPED_REF || d->v.typed_ref.record || d->v.typed_ref.klass
+      ? NULL : d->v.typed_ref.array;
 }
 
 /* BORROWED member lookup on a SCR_DYN_OBJ; NULL when the key is absent. */
@@ -549,11 +568,17 @@ bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key);
 /* Object.assign over dyn values (+1 target back; ToObject TypeError on a
  * nullish target). Sources visit own keys in order and copy entries that
  * are enumerable when reached; ARR/STR/BYTES expose index keys. Nullish
- * and scalar/function/handle sources copy nothing. */
+ * and scalar sources copy nothing; functions copy their own properties.
+ * Each successful Set remains visible if a later property throws. */
 ScrDyn *scr_dyn_assign(ScrDyn *target, const ScrDyn *src);
 ScrDyn *scr_dyn_copy_data_properties(ScrDyn *target, const ScrDyn *src);
 ScrDyn *scr_dyn_object_rest(const ScrDyn *source, const ScrDyn *excluded);
 ScrDyn *scr_dyn_copy_property_descriptors(ScrDyn *target, const ScrDyn *src);
+/* Compiler-owned fresh tables only: fill existing own data without invoking
+ * accessors or changing attributes/order. Values are consumed even on a miss. */
+void scr_dyn_table_set_data(ScrDyn *table, const char *key, size_t length, ScrDyn *value);
+void scr_dyn_table_set_symbol_data(ScrDyn *object, const ScrDyn *key, ScrDyn *value);
+bool scr_dyn_table_has_symbol_data(const ScrDyn *object, const ScrDyn *key);
 /* Variadic Object.assign (the spread-source form): the compiler packs
  * every source into one fresh dyn array — pack_push retains a plain
  * source in (BORROWED), pack_push_spread flattens a spread source through
@@ -600,6 +625,103 @@ ScrDyn *scr_dyn_native_regex(ScrRegex *value);
 bool scr_dyn_native_regex_is(const ScrDyn *value);
 ScrDyn *scr_dyn_freeze(ScrDyn *value);
 bool scr_dyn_is_frozen(const ScrDyn *value);
+/* Recorded restrictions of admitted heap records, classes and arrays.
+ * These are not complete isSealed/isFrozen predicates: empty shapes and
+ * accessor-only objects also need their descriptors. Published objects
+ * use their representation's publication fact, never a thread-local entry. */
+enum { SCR_NATIVE_NON_EXTENSIBLE = 1, SCR_NATIVE_SEALED = 3, SCR_NATIVE_FROZEN = 7 };
+unsigned scr_native_integrity_flags(const void *object);
+void scr_native_integrity_strengthen(void *object, unsigned restrictions);
+bool scr_native_integrity_active(void);
+void scr_native_integrity_forget(const void *object);
+/* Whole-context teardown only, after callbacks and cycle collection. */
+void scr_native_integrity_reset(void);
+/* Native property facts are getter-free and borrowed. Values stay in native
+ * slots; only scalar attribute overrides live beside the integrity flags. */
+enum {
+  SCR_NATIVE_OWN = 1, SCR_NATIVE_DATA = 2, SCR_NATIVE_WRITABLE = 4,
+  SCR_NATIVE_ENUMERABLE = 8, SCR_NATIVE_CONFIGURABLE = 16,
+  SCR_NATIVE_DEFAULT_DATA = 31,
+  SCR_NATIVE_DEFAULT_ACCESSOR = 25
+};
+typedef enum {
+  SCR_NATIVE_SET, SCR_NATIVE_SET_SLOPPY, SCR_NATIVE_DEFINE,
+  SCR_NATIVE_DELETE, SCR_NATIVE_DELETE_SLOPPY
+} ScrNativePropertyOperation;
+struct ScrDynNativeObjectOps {
+  const ScrDynNativeObjectOps *(*exact)(void *);
+  size_t count;
+  const char *const *names;
+  const size_t *lengths;
+  unsigned (*facts)(void *, size_t);
+  /* Peek only: never allocate a bag or invoke its prototype initializer. */
+  ScrDyn *(*properties)(void *);
+  /* A write may initialize its bag after initial admission. The caller
+   * rechecks facts after this potentially callback-bearing preparation. */
+  bool (*prepare)(void *);
+  const char *class_name;
+  /* Owned value/getter/setter (part 0/1/2) from one declared property.
+   * Reads never invoke an accessor or materialize a sibling field. */
+  ScrDyn *(*read)(void *, size_t, unsigned);
+  /* Convert one field, recheck after callbacks, publish its slot and finish
+   * metadata before releasing old values. Never commits a sibling snapshot. */
+  bool (*apply)(void *, size_t, ScrNativeMutation *);
+  /* Owned default class prototype in the current context. Own storage keeps
+   * only explicit overrides, so publication never retains this context edge. */
+  ScrDyn *(*prototype)(void *);
+};
+_Static_assert(offsetof(ScrDynNativeObjectOps, read) == 8 * sizeof(void *),
+               "native property read callback ABI");
+_Static_assert(offsetof(ScrDynNativeObjectOps, apply) == 9 * sizeof(void *),
+               "native property apply callback ABI");
+_Static_assert(offsetof(ScrDynNativeObjectOps, prototype) == 10 * sizeof(void *),
+               "native default prototype callback ABI");
+_Static_assert(sizeof(ScrDynNativeObjectOps) == 11 * sizeof(void *),
+               "native property ops ABI");
+ScrDyn *scr_native_object_prototype(void *object, const ScrDynNativeObjectOps *ops);
+void scr_native_object_snapshot_prototype(void *object, const ScrDynNativeObjectOps *ops, ScrDyn *view);
+void scr_native_property_bag_copy_prototype(ScrDyn *target, const ScrDyn *source);
+/* A synchronous, retained descriptor request. Recheck can change whether a
+ * store is needed; NULL converted pointers are valid until pending says otherwise. */
+bool scr_native_mutation_write(const ScrNativeMutation *mutation);
+bool scr_native_mutation_delete(const ScrNativeMutation *mutation);
+bool scr_native_mutation_refuse(ScrNativeMutation *mutation);
+const ScrDyn *scr_native_mutation_value(const ScrNativeMutation *mutation);
+bool scr_native_mutation_recheck(ScrNativeMutation *mutation);
+void scr_native_mutation_finish(ScrNativeMutation *mutation);
+/* A checked typed store calls this after publishing its slot, before releasing
+ * the old child. Definitions reset attributes; absence retires key order too. */
+void scr_native_object_finish_write(void *object, const ScrDynNativeObjectOps *ops,
+                                    const ScrStr *key, ScrNativePropertyOperation operation);
+/* Binding is callback-free, does not alter interning or cached views, and
+ * never clears a prior capability when a narrower adapter has none. */
+void scr_dyn_typed_ref_bind_native_object(ScrDyn *value, const ScrDynNativeObjectOps *ops);
+unsigned scr_native_property_flags(const void *object, const char *key, size_t length, unsigned facts);
+void scr_native_property_attributes(void *object, const char *key, size_t length, unsigned attributes);
+void scr_native_property_forget(void *object, const char *key, size_t length);
+bool scr_native_property_metadata(const void *object);
+/* Bare class declarations have an own undefined value before a typed store.
+ * Query borrows bytes only; declaration uses checked Define admission. */
+bool scr_native_property_declared_undefined(const void *object, const char *key, size_t length);
+void scr_native_object_declare_undefined(void *object, const ScrDynNativeObjectOps *ops,
+                                        const ScrStr *key);
+/* Context-local metadata has no immutable worker-transfer representation. */
+const char *scr_native_publication_refusal(const void *object);
+/* Class layout callbacks normalize their uninitialized/undefined bag and
+ * read own descriptor bits without boxing values or invoking accessors. */
+ScrDyn *scr_native_property_bag(ScrDyn *properties);
+unsigned scr_native_property_bag_facts(const ScrDyn *properties, const char *key, size_t length);
+void scr_native_object_restrict(void *object, const ScrDynNativeObjectOps *ops, unsigned restrictions);
+void scr_native_object_sync_properties(const void *object, ScrDyn *properties);
+bool scr_native_object_is_restricted(void *object, const ScrDynNativeObjectOps *ops, unsigned restrictions);
+bool scr_native_object_check_write(void *object, const ScrDynNativeObjectOps *ops,
+                                  const char *key, size_t length, ScrNativePropertyOperation operation);
+/* Native record/class Set: borrows all operands; boxers return owned exact views.
+ * True requests an immediate typed store/finish. False means handled/refused;
+ * pending carries exceptions. Existing own data never needs either boxer. */
+bool scr_native_object_check_set(void *object, const ScrDynNativeObjectOps *ops,
+    const ScrStr *key, ScrNativePropertyOperation operation, uint64_t value,
+    ScrDyn *(*box_value)(uint64_t), ScrDyn *(*box_receiver)(uint64_t));
 ScrDyn *scr_dyn_new_bigint(ScrBigInt *value); /* borrows and retains value */
 ScrDyn *scr_dyn_new_symbol(ScrSym *value); /* borrows and retains value */
 ScrSym *scr_sym_well_known(ScrStr *name);
@@ -733,10 +855,16 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
  * inherited @@toStringTag. */
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d);
 void scr_dyn_typed_ref_commit(ScrDyn *d);
-/* Attach per-element access to a live array capsule (idempotent). Indexed
- * reads, `length`, in-range writes, `in`, own-property probes, and array
- * iteration then touch one element instead of rebuilding the snapshot. */
-void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops);
+/* Bind exact element codecs and promote mutable named properties transactionally.
+ * False leaves an exception pending; retry retains the first immutable recipe.
+ * Published arrays attach operations to the capsule without native writes. */
+bool scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops);
+/* Array storage delegates promoted names to the descriptor owner. Set borrows
+ * the typed slot; its raw caller still consumes that slot on every outcome. */
+bool scr_dyn_array_named_has(const ScrArr *a, double key, bool own);
+double scr_dyn_array_named_state(const ScrArr *a, double key);
+bool scr_dyn_array_named_set(ScrArr *a, double key, uint64_t slot, uint8_t state, bool strict);
+bool scr_dyn_array_named_delete(ScrArr *a, double key, bool strict);
 /* Attach per-field access to a live record capsule (idempotent). While the
  * capsule has no cached checked view (nothing has added properties or
  * changed its prototype), keyed reads of declared fields, `in`/hasOwn,
@@ -753,26 +881,38 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
 ScrDyn *scr_record_source_view(const void *rec);
+/* Generated trace owns this edge; collected teardown unlinks without
+ * releasing it. Ordinary disposal releases it through the shared observer. */
+void scr_record_source_trace(void *rec, ScrTraceVisit visit, void *context);
+void scr_record_source_collected(void *rec);
+/* Retire empty context buffers after collection; preserve any live roots. */
+bool scr_record_source_trim_empty(void);
+/* Getter-free, idempotent metadata preparation for data-only native records.
+ * Raw names retain serializer indices; ops names describe visible own keys. */
+bool scr_record_source_prepare(void *rec, const char *const *names, const size_t *lens,
+                               size_t count, const ScrDynNativeObjectOps *ops);
 ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
 /* The constructor name of a class instance capsule's own class, for
  * util.inspect; NULL when the capsule is not a bound class instance, its
- * class is anonymous, or its prototype was replaced. */
-const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d);
-/* Whether a class instance capsule's class prototype chain defines a
- * method or accessor named key; false for other values. */
+ * class is anonymous, or it has a non-default non-null prototype. The
+ * returned UTF-8 name is borrowed program metadata. */
+const char *scr_dyn_typed_ref_class_name(const ScrDyn *d);
+/* Declaration query for class-specific refusals, not property presence.
+ * Null/custom prototypes suppress declarations; restoring the default
+ * restores them. May leave a pending default-prototype initialization error. */
 bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key);
-/* Fast keyed read on a live array capsule: +1 value for `length` and for
- * present or explicitly-undefined elements; NULL when the answer needs the
- * snapshot (holes, out-of-range, non-index names, or no bound ops). */
+/* Keyed read on a bound live array capsule: +1 value (including undefined)
+ * for indices and names, resolving inherited accessors with the original
+ * capsule as receiver. NULL means a pending error or an unbound read. */
 ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key);
 /* +1 view of an own element of a bound live array capsule; NULL for a hole
  * or an index at or past its length. */
 ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index);
 /* d[index] for a numeric index (+1) when the receiver answers it without
- * the property-key string: an in-range element of a dyn array, or a present
+ * the property-key string: a present own element of a dyn array, or a present
  * or explicitly undefined element of a live array capsule. NULL otherwise
  * (other receivers, holes, out-of-range and non-index numbers), and the
  * caller takes the keyed path. Never throws. */
@@ -833,7 +973,8 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key);
 ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
-ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
+/* +1, shared identity; an optional initializer runs once per instance session. */
+ScrDyn *scr_dyn_array_prototype_base(void (*initialize)(ScrDyn *));
 /* The checked-dynamic keyed WRITE (`h.k = v` on a dyn receiver): OBJ sets
  * the member (JS: later writes win, insertion order); undefined/null and
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
@@ -975,18 +1116,20 @@ ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, si
  * for anonymous) and "length" (the boxed arity). Returns +1, or NULL when
  * the key answers nothing (the caller's undefined). Never throws. */
 ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len);
-/* Object.defineProperties over dyn values (targets: OBJ and FUNC): each
- * descriptor's `value` becomes an own data property. OBJ targets preserve
- * writable/enumerable/configurable; FUNC targets still use plain properties.
- * get/set throw the "not supported yet" Error.
- * Returns the target (+1, JS's return), or NULL with a pending catchable
- * TypeError (non-object target/descriptor — Node's messages). */
+/* Object.defineProperties normalizes all enumerable own string/symbol
+ * descriptors before applying them through the single-property definition
+ * boundary. Getter receivers, omitted fields, and completed writes survive
+ * callbacks and failures. Returns target (+1), or NULL with pending exception. */
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys);
 /* Boxes a closure as a callable dyn value. Ownership of `clo` MOVES in
  * (callers retain first when they keep their own reference); `sig`/`name`
  * must be static literals (the box never frees them; name may be NULL). */
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name);
+/* Borrows the box and signature. An exact native signature returns the
+ * original closure (+1); mismatch returns NULL without adapting, invoking
+ * user code, or changing a pending exception. */
+ScrClosure *scr_dyn_func_unbox_exact(const ScrDyn *value, const char *sig);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key);
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key);
@@ -1190,7 +1333,12 @@ typedef struct {
   int kind;
   int view;
   const void *ops;
+  const ScrDynNativeObjectOps *native_object;
 } ScrDynTypedRefRecipe;
+_Static_assert(offsetof(ScrDynTypedRefRecipe, native_object) == (sizeof(void *) == 8 ? 64 : 36),
+               "native object recipe offset");
+_Static_assert(sizeof(ScrDynTypedRefRecipe) == (sizeof(void *) == 8 ? 72 : 40),
+               "typed reference recipe size");
 /* A class instance as the window's receiver, boxed with its recipe only when
  * read. ptr is BORROWED: the caller holds the instance across the window. */
 void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe);

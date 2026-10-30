@@ -16,23 +16,23 @@ contract-acyclic.ts:13:23 - error SC7007: 'Task' is declared Acyclic but can lie
 
   hint: a function, dynamic or promise field can capture the object itself; store plain data instead, or remove Acyclic
 
-contract-acyclic.ts:22:24 - error SC7007: 'Graph' is declared Acyclic but can lie on a reference cycle: Graph.nodes → GraphNode.graph → Graph (Graph.nodes is an array, whose contents can change)
+contract-acyclic.ts:22:24 - error SC7007: 'Graph' is declared Acyclic but can lie on a reference cycle: Graph.nodes can hold an array with mutable named properties, which can reference any object, including a Graph
 
   21 | 
   22 | class Graph implements Acyclic {
      |                        ^~~~~~~
   23 |   readonly nodes: GraphNode[] = [];
 
-  hint: an array, Map or Set can come to hold an object that refers back; make the element type unable to reach this type, or remove Acyclic
+  hint: an array's named properties can reference its owner independently of the element type; remove Acyclic or store fields that cannot refer back
 
-contract-acyclic.ts:33:24 - error SC7007: 'Shape' is declared Acyclic but can lie on a reference cycle: its subclass 'Group' shares its object layout, and Group.members → Group (as a Shape) (Group.members is an array, whose contents can change)
+contract-acyclic.ts:33:24 - error SC7007: 'Shape' is declared Acyclic but can lie on a reference cycle: its subclass 'Group' shares its object layout, and Group.members can hold an array with mutable named properties, which can reference any object, including a Group
 
   32 | 
   33 | class Shape implements Acyclic {
      |                        ^~~~~~~
   34 |   readonly id: number;
 
-  hint: an array, Map or Set can come to hold an object that refers back; make the element type unable to reach this type, or remove Acyclic
+  hint: an array's named properties can reference its owner independently of the element type; remove Acyclic or store fields that cannot refer back
 
 contract-acyclic.ts:44:24 - error SC7007: 'Cell' is declared Acyclic but can lie on a reference cycle: Cell.link → Cell (Cell.link can be assigned after construction, as at contract-acyclic.ts:58:1)
 

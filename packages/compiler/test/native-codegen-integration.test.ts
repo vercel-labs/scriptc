@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { compile, compileC } from "../src/index.js";
 import { MACOS_ARM64_TARGET } from "../src/backend/targets.js";
+import { RUNTIME_ABI_MARKER } from "../src/backend/runtime-abi.js";
 import * as llvmSplit from "../src/backend/llvm/split.js";
 
 const execFileAsync = promisify(execFile);
@@ -312,7 +313,7 @@ ${[0, 1, 2, 3, 4, 5].map((index) => `  call void @add${index}(i64 ${index + 2})`
     expect(await symbols(helperObject, ["-u"])).toEqual(await symbols(clangObject, ["-u"]));
     expect(await symbols(helperObject, ["-gU"])).toEqual(await symbols(clangObject, ["-gU"]));
     expect(await symbols(helperObject, ["-gU"])).toEqual(["0000000000000000 T _main"]);
-    expect(await symbols(helperObject, ["-u"])).toContain("_scr_runtime_abi_v22");
+    expect(await symbols(helperObject, ["-u"])).toContain(`_${RUNTIME_ABI_MARKER}`);
 
     const clangExe = join(dir, "clang-program");
     const linkDriver = join(dir, "clang-driver.c");
@@ -646,7 +647,7 @@ ${[0, 1, 2, 3, 4, 5].map((index) => `  call void @add${index}(i64 ${index + 2})`
       .split("\n");
     expect(undefinedSymbols).toContain("_sf_scale");
     expect(undefinedSymbols).toContain("_sf_callback_mix");
-    expect(undefinedSymbols).toContain("_scr_runtime_abi_v22");
+    expect(undefinedSymbols).toContain(`_${RUNTIME_ABI_MARKER}`);
   });
 
   test("helper and clang object paths retain the same outbound FFI C ABI", async () => {

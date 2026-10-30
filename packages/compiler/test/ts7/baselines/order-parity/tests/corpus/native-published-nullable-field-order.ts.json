@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-published-nullable-field-order.ts"
+ ],
+ "diags": []
+}

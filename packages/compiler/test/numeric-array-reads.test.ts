@@ -5,7 +5,7 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 
-test("ordinary numeric-array arithmetic uses one lookup per read without boxing", async () => {
+test("ordinary numeric-array arithmetic keeps raw fast paths and one owned property Get", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-numeric-array-reads-"));
   try {
     const entry = join(dir, "main.ts");
@@ -33,11 +33,11 @@ test("ordinary numeric-array arithmetic uses one lookup per read without boxing"
         value.forEach(visit);
         return;
       }
-      const node = value as { kind?: string; callee?: string; method?: string };
+      const node = value as { kind?: string; callee?: string; consume?: string };
       expect(node.kind).not.toBe("unionWrap");
       expect(node.kind).not.toBe("arrayState");
       expect(node.kind).not.toBe("arrayGet");
-      if (node.kind === "arrIntrinsic" && node.method === "getNumber") arrayReads++;
+      if (node.kind === "arrayPropertyRead" && node.consume === "number") arrayReads++;
       if (node.kind === "call" && node.callee) visitFunction(node.callee);
       Object.values(value).forEach(visit);
     }
@@ -54,11 +54,12 @@ test("ordinary numeric-array arithmetic uses one lookup per read without boxing"
 
     const llvm = emitLlvmModule(reachable);
 
-    expect(llvm.match(/call double @scr_arr_get_number\(/g)).toHaveLength(3);
-
-    expect(llvm).not.toContain("@scr_arr_state(");
-
-    expect(llvm).not.toContain("@scr_arr_retain_v");
+    expect(llvm.match(/call ptr @scr_arr_property_get\(/g)).toHaveLength(3);
+    expect(llvm.match(/call double @scr_dyn_number_coerce\(/g)).toHaveLength(3);
+    expect(llvm).toContain("@scr_arr_get_slot_f64");
+    expect(llvm).not.toContain("@scr_arr_property_unbox");
+    expect(llvm).not.toContain("slot_box");
+    expect(llvm).not.toContain("slot_unbox");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

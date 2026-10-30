@@ -59,69 +59,6 @@ import {
   requireProducedArrayElement,
 } from "./callback-arguments.js";
 
-/** `a.push(v, ...)` where some argument is a runtime-optional read of the
- * element type (an unchecked array read or a hole-observing iteration
- * binding). Every argument evaluates before the first append; a present
- * value takes the ordinary push (and its inline dense fast path), while a
- * missing one appends a present-undefined slot at the current length,
- * exactly what Node stores. The result is the final length. Pure
- * receivers and arguments are repeated instead of copied into temporaries:
- * appends run no user code, so repeated reads observe the same values. */
-function lowerOptionalArrayPush(
-  lowerer: Lowerer,
-  receiver: IrExpr,
-  values: IrExpr[],
-  elem: IrType,
-  loc: SrcLoc,
-): IrExpr {
-  const stmts: IrStmt[] = [];
-  const pure = isSafeToRepeat(receiver) && values.every(isSafeToRepeat);
-  const stable = (value: IrExpr, name: string): IrExpr => {
-    if (pure) return value;
-    const temp = lowerer.declareHiddenLocal(name, value.type);
-    stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
-    return varRef(temp.id, value.type, loc);
-  };
-  const target = stable(receiver, "%pushTarget");
-  const args = values.map((value) => stable(value, "%pushValue"));
-  const length = (): IrExpr => ({
-    kind: "arrIntrinsic",
-    method: "length",
-    receiver: target,
-    args: [],
-    type: F64,
-    loc,
-  });
-  const push = (value: IrExpr): IrStmt => ({
-    kind: "exprStmt",
-    expr: { kind: "arrIntrinsic", method: "push", receiver: target, args: [value], type: F64, loc },
-    loc,
-  });
-  for (const value of args) {
-    if (value.type.kind === "union" && lowerer.runtimeOptionalWidening(value.type, elem) !== null) {
-      const unionId = value.type.unionId;
-      stmts.push({
-        kind: "if",
-        cond: {
-          kind: "unionIsTag",
-          unionId,
-          tag: lowerer.armTag(unionId, UNDEFINED_T),
-          negated: false,
-          value,
-          type: BOOL,
-          loc,
-        },
-        then: [{ kind: "arraySetUndefined", arr: target, index: length(), loc }],
-        else_: [push(lowerer.coerceToExpected(value, elem))],
-        loc,
-      });
-    } else {
-      stmts.push(push(lowerer.coerceToExpected(value, elem)));
-    }
-  }
-  return { kind: "seqExpr", stmts, result: length(), type: F64, loc };
-}
-
 /** `a.splice(start, count, v)` where v may hold undefined at run time.
  * Receiver, start, count, and v evaluate once, in order; a present v is
  * inserted as a plain element literal (which a statement-position splice
@@ -654,7 +591,7 @@ export function lowerArrayMethodCall(
   // predicate/mapping HOFs take a thisArg. Each unlowered form is fenced
   // per site (SC2020) instead of being truncated to the supported
   // arguments. push/unshift lower every declared form (variadic, 0 args
-  // included — Node returns the unchanged length); reduce/reduceRight
+  // included — the runtime still writes length); reduce/reduceRight
   // lower both declared forms (with and without an initial value).
   const arity = {
     push: [0, Number.MAX_SAFE_INTEGER],
@@ -809,15 +746,6 @@ export function lowerArrayMethodCall(
         (probe) => probe !== null && lowerer.runtimeOptionalWidening(probe.type, elem) !== null,
       )
     ) {
-      if (name === "push") {
-        return lowerOptionalArrayPush(
-          lowerer,
-          receiver,
-          call.arguments.map((arg) => lowerer.lowerExpr(arg)),
-          elem,
-          loc,
-        );
-      }
       const items = lowerArrayValueItems(
         lowerer,
         call.arguments.map((arg) => lowerer.lowerExpr(arg)),
@@ -827,7 +755,7 @@ export function lowerArrayMethodCall(
       );
       return {
         kind: "arrIntrinsic",
-        method: "unshiftSpread",
+        method: name === "push" ? "pushSpread" : "unshiftSpread",
         receiver,
         args: [items],
         type: F64,
@@ -851,19 +779,11 @@ export function lowerArrayMethodCall(
       loc,
     };
   }
-  if (name === "pop") {
-    // An unused result needs no value at all: drop the last slot.
-    if (resultDiscarded(call)) return lowerDiscardedPop(lowerer, access.expression, loc);
-    // Widen a union payload through the normal array-read machinery
-    // before removing it. Reinterpreting the stored union's tag as the
-    // result union would confuse arms when undefined changes their order.
-    if (elem.kind === "union" && lowerer.armTag(elem.unionId, UNDEFINED_T) < 0) {
-      return lowerUnionArrayRemoval(lowerer, access.expression, elem, false, loc);
-    }
+  if (name === "pop" || name === "shift") {
     const receiver = lowerer.lowerExpr(access.expression);
     return {
       kind: "arrIntrinsic",
-      method: "pop",
+      method: name,
       receiver,
       args: [],
       type: arrayValueType(lowerer, elem),
@@ -988,21 +908,6 @@ export function lowerArrayMethodCall(
       loc,
     };
   }
-  if (name === "shift") {
-    // Like pop, a union without undefined needs an explicit tag widening.
-    if (elem.kind === "union" && lowerer.armTag(elem.unionId, UNDEFINED_T) < 0) {
-      return lowerUnionArrayRemoval(lowerer, access.expression, elem, true, loc);
-    }
-    const receiver = lowerer.lowerExpr(access.expression);
-    return {
-      kind: "arrIntrinsic",
-      method: "shift",
-      receiver,
-      args: [],
-      type: arrayValueType(lowerer, elem),
-      loc,
-    };
-  }
   if (name === "join") {
     if (elem.kind === "dyn") {
       const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(access.expression), DYN);
@@ -1066,165 +971,6 @@ export function lowerArrayMethodCall(
   if (name === "flatMap") return lowerArrayFlatMapCall(lowerer, call, access, elem);
   // reduce / reduceRight
   return lowerArrayReduceCall(lowerer, call, access, name as "reduce" | "reduceRight", elem);
-}
-
-/** The call's value is never read: an expression statement, a `void`
- * operand, the left of a comma, or a for-loop initializer or update. */
-function resultDiscarded(call: ts.Expression): boolean {
-  let child: ts.Node = call;
-  let parent = call.parent;
-  while (parent && ts.isParenthesizedExpression(parent)) {
-    child = parent;
-    parent = parent.parent;
-  }
-  if (!parent) return false;
-  if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
-  if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken)
-    return parent.left === child || resultDiscarded(parent);
-  return (
-    ts.isForStatement(parent) && (parent.initializer === child || parent.incrementor === child)
-  );
-}
-
-/** `xs.pop()` whose result is unused: truncate a non-empty array by one
- * slot. Truncation releases the removed element and leaves the length of
- * an empty array at zero, as pop does (pop's own `length = 0` store, a
- * no-op unless the array is frozen). */
-function lowerDiscardedPop(lowerer: Lowerer, source: ts.Expression, loc: SrcLoc): IrExpr {
-  const receiver = lowerer.lowerExpr(source);
-  const arr = lowerer.declareHiddenLocal("%popArray", receiver.type);
-  const arrRef = varRef(arr.id, arr.type, loc);
-  const length = lowerer.declareHiddenLocal("%popLength", F64);
-  const lengthRef = varRef(length.id, F64, loc);
-  return {
-    kind: "seqExpr",
-    stmts: [
-      { kind: "varDecl", localId: arr.id, init: receiver, loc },
-      {
-        kind: "varDecl",
-        localId: length.id,
-        init: {
-          kind: "arrIntrinsic",
-          method: "length",
-          receiver: arrRef,
-          args: [],
-          type: F64,
-          loc,
-        },
-        loc,
-      },
-      {
-        kind: "if",
-        cond: { kind: "bin", op: ">", left: lengthRef, right: numLit(0, loc), type: BOOL, loc },
-        then: [
-          {
-            kind: "arraySetLength",
-            arr: arrRef,
-            length: {
-              kind: "bin",
-              op: "-",
-              left: lengthRef,
-              right: numLit(1, loc),
-              type: F64,
-              loc,
-            },
-            loc,
-            pop: true,
-          },
-        ],
-        else_: [{ kind: "arraySetLength", arr: arrRef, length: numLit(0, loc), loc, pop: true }],
-        loc,
-      },
-    ],
-    // The value is never read; any placeholder scalar keeps it unboxed.
-    result: numLit(0, loc),
-    type: F64,
-    loc,
-  };
-}
-
-/** Read before removal so it cannot destroy the result's owned payload.
- * The source is evaluated once and empty/sparse arrays yield undefined using
- * the same slot-state checks as an indexed read. */
-function lowerUnionArrayRemoval(
-  lowerer: Lowerer,
-  source: ts.Expression,
-  elem: IrType,
-  first: boolean,
-  loc: SrcLoc,
-): IrExpr {
-  const receiver = lowerer.lowerExpr(source);
-  const arr = lowerer.declareHiddenLocal("%removeArray", receiver.type);
-  const arrRef = varRef(arr.id, arr.type, loc);
-  const index = lowerer.declareHiddenLocal("%removeIndex", F64);
-  const indexRef = varRef(index.id, F64, loc);
-  const value = arrayValueRead(lowerer, arrRef, indexRef, elem, loc);
-  const result = lowerer.declareHiddenLocal("%removedValue", value.type);
-  return {
-    kind: "seqExpr",
-    stmts: [
-      { kind: "varDecl", localId: arr.id, init: receiver, loc },
-      {
-        kind: "varDecl",
-        localId: index.id,
-        init: first
-          ? numLit(0, loc)
-          : {
-              kind: "bin",
-              op: "-",
-              left: {
-                kind: "arrIntrinsic",
-                method: "length",
-                receiver: arrRef,
-                args: [],
-                type: F64,
-                loc,
-              },
-              right: numLit(1, loc),
-              type: F64,
-              loc,
-            },
-        loc,
-      },
-      { kind: "varDecl", localId: result.id, init: value, loc },
-      first
-        ? {
-            kind: "exprStmt",
-            expr: {
-              kind: "arrIntrinsic",
-              method: "splice",
-              receiver: arrRef,
-              args: [indexRef, numLit(1, loc)],
-              type: arr.type,
-              loc,
-            },
-            loc,
-          }
-        : {
-            // Removing the last slot is a truncation: no removed-element
-            // array, and an empty array keeps length zero.
-            kind: "if",
-            cond: {
-              kind: "bin",
-              op: ">=",
-              left: indexRef,
-              right: numLit(0, loc),
-              type: BOOL,
-              loc,
-            },
-            then: [{ kind: "arraySetLength", arr: arrRef, length: indexRef, loc, pop: true }],
-            // Pop's `length = 0` store on an empty array (a no-op unless the
-            // array is frozen).
-            else_: [
-              { kind: "arraySetLength", arr: arrRef, length: numLit(0, loc), loc, pop: true },
-            ],
-            loc,
-          },
-    ],
-    result: varRef(result.id, result.type, loc),
-    type: result.type,
-    loc,
-  };
 }
 
 function literalFlatDepth(value: IrExpr): number | null {

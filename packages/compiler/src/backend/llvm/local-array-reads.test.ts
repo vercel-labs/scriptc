@@ -129,7 +129,7 @@ function fixture(): IrModule {
     ],
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [{ id: "cell", fields: [{ name: "x", type: F64 }] }],
@@ -805,7 +805,7 @@ test("lowered inline reads share the sparse-aware optional lookup", () => {
     const ir = workBody(mod, bits);
     expect(ir).toContain("local.array.dense");
     expect(ir).toContain("@scr_arr_peek_ref");
-    expect(ir).not.toContain("@scr_arr_get_ref");
+    expect(ir).not.toContain("@scr_arr_get_slot_ref");
     expect(ir).not.toContain("@scr_union_new_ref");
   }
 });
@@ -919,8 +919,8 @@ test.each([
     );
     expect(ir).toMatch(
       elem.kind === "f64"
-        ? /call double @scr_arr_get_f64\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/
-        : /call zeroext i1 @scr_arr_get_bool\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/,
+        ? /call double @scr_arr_get_slot_f64\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/
+        : /call zeroext i1 @scr_arr_get_slot_bool\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/,
     );
     if (consumer !== "local") expect(ir).toContain("local.array.dense");
   }

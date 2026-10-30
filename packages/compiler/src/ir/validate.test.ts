@@ -88,7 +88,13 @@ function localClassModule(): IrModule {
     {
       name: "Local",
       jsName: "Local",
-      fields: [{ name: "%classEnvironment:Local", type: { kind: "classval", className: "Local" } }],
+      fields: [
+        {
+          name: "%classEnvironment:Local",
+          type: { kind: "classval", className: "Local" },
+          visibility: "internal",
+        },
+      ],
       localCaptures: [{ localId: "shared", name: "value", type: F64 }],
       loc,
     },
@@ -116,18 +122,19 @@ test("serialized field presence tracking requires native property storage", () =
   mod.classes = [
     {
       name: "Value",
-      fields: [{ name: DYN_CLASS_PROPERTIES, type: DYN }],
+      fields: [{ name: DYN_CLASS_PROPERTIES, type: DYN, visibility: "internal" }],
       tracksOwnFields: true,
       loc,
     },
   ];
   expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
-  for (const variant of ["missing", "type", "runtime"]) {
+  for (const variant of ["missing", "type", "runtime", "public"]) {
     const bad = structuredClone(mod);
     const cls = bad.classes![0]!;
     if (variant === "missing") cls.fields = [];
     if (variant === "type") cls.fields[0]!.type = F64;
     if (variant === "runtime") cls.runtime = true;
+    if (variant === "public") delete cls.fields[0]!.visibility;
     expect(
       validateModule(bad).some((error) => error.message.includes("field presence tracking")),
     ).toBe(true);
@@ -216,6 +223,36 @@ test("computed bases retain their constructor globals after serialization", () =
     if (variant === "capture") bad.classes![1]!.localBaseCapture = 0;
     expect(
       validateModule(bad).some((error) => error.message.includes("computed base global")),
+    ).toBe(true);
+  }
+});
+
+test("native property preparation helpers require owned class receiver and bag presence", () => {
+  const mod = localClassModule();
+  const cls = mod.classes![0]!;
+  cls.tracksOwnFields = true;
+  cls.fields.push({ name: DYN_CLASS_PROPERTIES, type: DYN, visibility: "internal" });
+  cls.nativePropertyBagHelper = "prepare.Local";
+  const receiver: IrType = { kind: "object", className: "Local" };
+  mod.functions.push({
+    name: "prepare.Local",
+    params: [{ localId: "this", name: "this", type: receiver }],
+    locals: [{ id: "this", name: "this", type: receiver, mutable: false }],
+    returnType: DYN,
+    body: [{ kind: "return", value: { kind: "dynObjLit", fields: [], type: DYN, loc }, loc }],
+    loc,
+  });
+  expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
+  for (const variant of ["missing", "receiver", "return", "captures", "presence"]) {
+    const bad = structuredClone(mod);
+    const helper = bad.functions.at(-1)!;
+    if (variant === "missing") bad.functions.pop();
+    if (variant === "receiver") helper.params[0]!.type = DYN;
+    if (variant === "return") helper.returnType = F64;
+    if (variant === "captures") helper.captures = [];
+    if (variant === "presence") delete bad.classes![0]!.tracksOwnFields;
+    expect(
+      validateModule(bad).some((error) => error.message.includes("native property bag helper")),
     ).toBe(true);
   }
 });
@@ -316,7 +353,7 @@ function numericReadModule(overrides: Partial<IrExpr & { kind: "arrIntrinsic" }>
     ...overrides,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -400,7 +437,7 @@ test.each(["sortPrimitive", "toSortedPrimitive"] as const)(
 
 function expressionModule(expr: IrExpr, unions: IrUnionDef[]): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions,
@@ -1223,6 +1260,35 @@ test.each([false, true])(
   },
 );
 
+test.each(["pop", "shift"] as const)("array %s validates complete union widening", (method) => {
+  const stored: IrType = { kind: "union", unionId: "stored" };
+  const result: IrType = { kind: "union", unionId: "result" };
+  const operation: IrExpr = {
+    kind: "arrIntrinsic",
+    method,
+    receiver: { kind: "arrayLit", elems: [], type: arrayOf(stored), loc },
+    args: [],
+    type: result,
+    loc,
+  };
+  const mod = expressionModule(operation, [
+    { id: "stored", arms: [F64, STRING] },
+    { id: "result", arms: [STRING, UNDEFINED_T, F64] },
+  ]);
+  expect(validateModule(mod)).toEqual([]);
+  expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
+  for (const arms of [
+    [F64, UNDEFINED_T],
+    [F64, STRING],
+  ]) {
+    const bad = structuredClone(mod);
+    bad.unions![1]!.arms = arms;
+    expect(
+      validateModule(bad).some((error) => error.message.includes("elem|undefined union")),
+    ).toBe(true);
+  }
+});
+
 test("union array reads validate every element layout against the joined result", () => {
   const stored: IrType = { kind: "union", unionId: "stored" };
   const receiver: IrType = { kind: "union", unionId: "arrays" };
@@ -1261,6 +1327,47 @@ test("union array reads validate every element layout against the joined result"
   expect(
     validateModule(mod).some((error) => error.message.includes("element union cannot surface")),
   ).toBe(true);
+});
+
+test("array property consumers validate their exact storage and result ABI", () => {
+  const optional: IrType = { kind: "union", unionId: "optional-number" };
+  const unions: IrUnionDef[] = [{ id: "optional-number", arms: [F64, UNDEFINED_T] }];
+  const read = (
+    consume: Extract<IrExpr, { kind: "arrayPropertyRead" }>["consume"],
+    elem: IrType,
+    type: IrType,
+  ): IrExpr => ({
+    kind: "arrayPropertyRead",
+    consume,
+    arr: { kind: "arrayLit", elems: [], type: arrayOf(elem), loc },
+    index: { kind: "numLit", value: -1, type: F64, loc },
+    type,
+    loc,
+  });
+  for (const expression of [
+    read("value", F64, optional),
+    read("value", DYN, DYN),
+    read("required", F64, F64),
+    read("number", STRING, F64),
+    read("numberConstructor", BOOL, F64),
+    read("boolean", F64, BOOL),
+    read("string", STRING, STRING),
+  ]) {
+    const mod = expressionModule(expression, unions);
+    expect(validateModule(mod)).toEqual([]);
+    expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
+  }
+  for (const expression of [
+    read("required", F64, BOOL),
+    read("value", F64, F64),
+    read("number", DYN, F64),
+    read("numberConstructor", F64, BOOL),
+    read("boolean", STRING, BOOL),
+    read("string", F64, STRING),
+    read("string", STRING, F64),
+    { ...read("value", F64, optional), consume: "invalid" } as unknown as IrExpr,
+  ])
+    expect(validateModule(expressionModule(expression, unions))).not.toEqual([]);
 });
 
 test("numeric array-read intrinsic validates and round-trips", () => {
@@ -1310,7 +1417,7 @@ test.each([
 function tdzModule(mutable = true): IrModule {
   const value: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -1603,7 +1710,7 @@ test("TDZ locals require a shared box", () => {
 
 function discriminatedModule(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", params: [], locals: [], returnType: VOID, body: [], loc }],
@@ -2120,7 +2227,7 @@ test("a caught-typed global records a module error only from a catch binding", (
   const caught: IrType = { kind: "caught" };
   const errorId = "%g.e.%loaded%error";
   const module = (value: IrExpr): IrModule => ({
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [],

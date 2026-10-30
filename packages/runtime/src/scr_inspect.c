@@ -931,16 +931,13 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
 
 /* A class instance's name forms: "Name {}" for an empty instance, "[Name]"
  * past the depth limit (tail NULL). */
-static ScrStr *scr_insp_class_tag(const char *cls, const char *tail) {
+static ScrStr *scr_insp_class_tag(const char *cls, const char *tail, bool null_proto) {
   InspBuf out = {0};
-  if (tail) {
-    ib_cstr(&out, cls);
-    ib_cstr(&out, tail);
-  } else {
-    ib_char(&out, '[');
-    ib_cstr(&out, cls);
-    ib_char(&out, ']');
-  }
+  if (!tail || null_proto) ib_char(&out, '[');
+  ib_cstr(&out, cls ? cls : "Object");
+  if (null_proto) ib_cstr(&out, ": null prototype");
+  if (!tail || null_proto) ib_char(&out, ']');
+  if (tail) ib_cstr(&out, tail);
   return ib_take(&out);
 }
 
@@ -1021,22 +1018,22 @@ static ScrDynEntry *scr_insp_symbol_entry(ScrDyn *d, size_t i) {
 /* An ordinary object: `Name { key: value }` with its constructor name
  * `cls` (NULL for a plain object). Node's default view lists the own
  * enumerable string keys, then the own enumerable symbol keys. */
-static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
+static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls, const void *identity) {
+  double circular = scr_insp_circ_check(identity);
+  if (circular) return scr_insp_circular(circular);
   size_t shown = 0;
   for (size_t i = 0; i < d->v.obj.len; i++) shown += d->v.obj.entries[i].enumerable;
   size_t nsymbols = d->symbol_keys ? d->symbol_keys->v.arr.len : 0;
   for (size_t i = 0; i < nsymbols; i++) shown += scr_insp_symbol_entry(d, i) != NULL;
   if (shown == 0) {
-    if (cls) return scr_insp_class_tag(cls, " {}");
-    return d->null_proto ? scr_str_new("[Object: null prototype] {}", 27)
-                         : scr_str_new("{}", 2);
+    return cls || d->null_proto ? scr_insp_class_tag(cls, " {}", d->null_proto)
+                               : scr_str_new("{}", 2);
   }
   if (recurse > depth) {
-    if (cls) return scr_insp_class_tag(cls, NULL);
-    return d->null_proto ? scr_str_new("[Object: null prototype]", 24)
-                         : scr_str_new("[Object]", 8);
+    return scr_insp_class_tag(cls, NULL, d->null_proto);
   }
   scr_insp_begin(recurse + 1);
+  scr_insp_seen_push(identity);
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
     if (!ent->enumerable) continue;
@@ -1065,16 +1062,49 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     scr_insp_entry(entry, false);
     scr_str_release(entry);
   }
-  ScrStr *base = cls             ? scr_str_new(cls, strlen(cls))
-                 : d->null_proto ? scr_str_new("[Object: null prototype]", 24)
-                                 : scr_str_new("", 0);
+  ScrStr *base = cls || d->null_proto ? scr_insp_class_tag(cls, "", d->null_proto)
+                                    : scr_str_new("", 0);
   ScrStr *b0 = scr_str_new("{", 1);
   ScrStr *b1 = scr_str_new("}", 1);
   ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
   scr_str_release(base);
   scr_str_release(b0);
   scr_str_release(b1);
-  return out;
+  ScrStr *wrapped = scr_insp_ref_wrap(identity, out);
+  scr_str_release(out);
+  return wrapped;
+}
+
+static ScrStr *scr_insp_arr(ScrDyn *d, double recurse, double depth, const void *identity) {
+  double circular = scr_insp_circ_check(identity);
+  if (circular) return scr_insp_circular(circular);
+  if (d->v.arr.len == 0) return scr_str_new("[]", 2);
+  if (recurse > depth) return scr_str_new("[Array]", 7);
+  scr_insp_begin(recurse + 1);
+  scr_insp_seen_push(identity);
+  size_t shown = d->v.arr.len < 100 ? d->v.arr.len : 100;
+  for (size_t i = 0; i < shown; i++) {
+    ScrDyn *item = d->v.arr.items[i];
+    ScrStr *s = scr_insp_dyn(item, recurse + 1, depth);
+    scr_insp_entry(s, item->kind == SCR_DYN_NUM);
+    scr_str_release(s);
+  }
+  bool more = d->v.arr.len > 100;
+  if (more) {
+    ScrStr *m = scr_insp_more_items((double)(d->v.arr.len - 100));
+    scr_insp_entry(m, d->v.arr.items[100]->kind == SCR_DYN_NUM);
+    scr_str_release(m);
+  }
+  ScrStr *base = scr_str_new("", 0);
+  ScrStr *b0 = scr_str_new("[", 1);
+  ScrStr *b1 = scr_str_new("]", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, more);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  ScrStr *wrapped = scr_insp_ref_wrap(identity, out);
+  scr_str_release(out);
+  return wrapped;
 }
 
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
@@ -1094,32 +1124,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       return scr_insp_f64(d->v.num);
     case SCR_DYN_STR:
       return scr_insp_str(d->v.str);
-    case SCR_DYN_ARR: {
-      if (d->v.arr.len == 0) return scr_str_new("[]", 2);
-      if (recurse > depth) return scr_str_new("[Array]", 7);
-      scr_insp_begin(recurse + 1);
-      size_t shown = d->v.arr.len < 100 ? d->v.arr.len : 100;
-      for (size_t i = 0; i < shown; i++) {
-        ScrDyn *item = d->v.arr.items[i];
-        ScrStr *s = scr_insp_dyn(item, recurse + 1, depth);
-        scr_insp_entry(s, item->kind == SCR_DYN_NUM);
-        scr_str_release(s);
-      }
-      bool more = d->v.arr.len > 100;
-      if (more) {
-        ScrStr *m = scr_insp_more_items((double)(d->v.arr.len - 100));
-        scr_insp_entry(m, d->v.arr.items[100]->kind == SCR_DYN_NUM);
-        scr_str_release(m);
-      }
-      ScrStr *base = scr_str_new("", 0);
-      ScrStr *b0 = scr_str_new("[", 1);
-      ScrStr *b1 = scr_str_new("]", 1);
-      ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, more);
-      scr_str_release(base);
-      scr_str_release(b0);
-      scr_str_release(b1);
-      return out;
-    }
+    case SCR_DYN_ARR:
+      return scr_insp_arr(d, recurse, depth, d);
     case SCR_DYN_OBJ: {
       /* An Error carried as a checked-dynamic value (a caught error, an
        * Error stored in an `unknown` slot): the error's own rendering,
@@ -1129,7 +1135,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * with "[Object: null prototype]" (formatValue's constructor-less
        * base), the empty form included, and the beyond-depth answer IS
        * the bare marker (where a plain object says [Object]). */
-      return scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d));
+      return scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d),
+                          d->v.obj.source_identity ? d->v.obj.source_identity : d);
     }
     case SCR_DYN_FUNC: {
       /* Node's function rendering: [Function: name] / [Function
@@ -1193,6 +1200,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
 
     case SCR_DYN_TYPED_REF: {
+      /* Detect native aliases before refresh can replace an outer inspector
+       * frame's borrowed entries. The snapshot and capsule are one node. */
+      const void *identity = d->v.typed_ref.ptr;
+      double circular = scr_insp_circ_check(identity);
+      if (circular) return scr_insp_circular(circular);
       const char *cls = NULL;
       ScrDyn *view = scr_event_ref_hooks ? scr_event_ref_hooks->inspect_view(d, &cls) : NULL;
       if (view) {
@@ -1213,16 +1225,16 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
       /* A class instance prints with its class's name, which the checked
        * view of its fields does not carry. */
-      const ScrStr *name = scr_dyn_typed_ref_class_name(d);
+      const char *name = scr_dyn_typed_ref_class_name(d);
       ScrStr *out;
       if (name && materialized->kind == SCR_DYN_OBJ &&
           scr_dyn_obj_get(materialized, "%error", 6) == NULL) {
-        char *cls = malloc(name->len + 1);
-        if (!cls) scr_trap("scriptc: out of memory\n");
-        memcpy(cls, name->data, name->len);
-        cls[name->len] = '\0';
-        out = scr_insp_obj(materialized, recurse, depth, cls);
-        free(cls);
+        out = scr_insp_obj(materialized, recurse, depth, name, identity);
+      } else if (materialized->kind == SCR_DYN_OBJ &&
+                 scr_dyn_obj_get(materialized, "%error", 6) == NULL) {
+        out = scr_insp_obj(materialized, recurse, depth, scr_dyn_class_name(materialized), identity);
+      } else if (materialized->kind == SCR_DYN_ARR) {
+        out = scr_insp_arr(materialized, recurse, depth, identity);
       } else {
         out = scr_insp_dyn(materialized, recurse, depth);
       }

@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import {
   BOOL,
   DATE_T,
+  DYN,
   F64,
   PROCSTREAM_T,
   STRING,
@@ -71,7 +72,7 @@ function moduleFor(
     loc,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -104,6 +105,55 @@ test("separate LLVM parts preserve complete module bytes in native, WASI, and de
     expect(new LlEmitter(module, options).emitParts().join("\n")).toBe(expected);
     expect(emitLlvmModuleSource(module, options)).toBe(expected);
   }
+});
+
+test.each(["executable", "worker", "library"] as const)(
+  "%s initializes array methods before user code and after session reset",
+  (mode) => {
+    const module = moduleFor([]);
+    module.functions[0]!.body.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "dynHasKey",
+        value: { kind: "dynArrLit", elems: [], type: DYN, loc },
+        key: "push",
+        type: BOOL,
+        loc,
+      },
+      loc,
+    });
+    if (mode === "worker") module.workers = true;
+    if (mode === "library") {
+      module.lib = {
+        profileName: "prototype-startup",
+        prefix: "ps_",
+        initSymbol: "ps_init",
+        sinkRegisterSymbol: "ps_sink",
+        collectSymbol: null,
+        resultResetSymbol: null,
+        threadInstances: true,
+        exports: [],
+        trapOverlays: [],
+      };
+    }
+    const symbol = mode === "library" ? "ps_init" : mode === "worker" ? "sc_context_entry" : "main";
+    const llvm = emitLlvmModule(module);
+    const entry = new RegExp(`^define [^\\n]*@${symbol}\\([^]*?^}`, "m").exec(llvm)?.[0];
+    expect(entry).toBeDefined();
+    const reset = mode === "library" ? "@scr_library_reset()" : "@scr_init()";
+    expect(entry).toContain(reset);
+    const initialized = entry!.indexOf("call ptr @scr_dyn_array_prototype()");
+    expect(initialized).toBeGreaterThan(entry!.indexOf(reset));
+    expect(
+      entry!.indexOf("call void @scr_dyn_release_v(ptr %builtin_array_prototype)"),
+    ).toBeGreaterThan(initialized);
+    expect(entry!.indexOf("call void @sc_f_main()")).toBeGreaterThan(initialized);
+    expect(llvm.match(/^declare ptr @scr_dyn_array_prototype\(\)$/gm)).toHaveLength(1);
+  },
+);
+
+test("an executable without dynamic property observations does not initialize array methods", () => {
+  expect(emitLlvmModule(moduleFor([]))).not.toContain("@scr_dyn_array_prototype");
 });
 
 test("the shared indexed-read helpers carry an inline hint", () => {
@@ -281,7 +331,7 @@ const text = (obj: IrExpr): IrExpr => ({
 
 function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): string {
   const module: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: receiverLoc.file,
     entry: "main",
     records: [
@@ -492,7 +542,7 @@ function sharedFieldModule(prefixes: IrType[][], fieldType: IrType): IrModule {
     ],
   }));
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records,

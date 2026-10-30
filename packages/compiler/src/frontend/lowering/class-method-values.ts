@@ -488,12 +488,15 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
     if (usesThis) continue;
     // A method that never uses this remains callable when detached.
     const name = `%method.receiverless:${target.name}`;
-    functions.push({
+    const receiverless: IrFunction = {
       ...target,
       name,
       params: target.params.slice(1),
       locals: target.locals.filter((local) => local.id !== thisParam.localId),
-    });
+    };
+    // Even an empty class-capture descriptor requires the removed receiver.
+    delete receiverless.classCaptures;
+    functions.push(receiverless);
     fn.body = transformStmtList(fn.body, {
       stmt: (stmt) => stmt,
       expr: (expr) =>

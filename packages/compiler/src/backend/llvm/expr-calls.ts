@@ -782,7 +782,7 @@ export function emitCallExpr(
             recipe = `@sc_trr_${host.typedRefRecipes.size}`;
             host.typedRefRecipes.set(key, recipe);
             host.resolveThunkDefs.push(
-              `${recipe} = internal constant { ptr, ptr, ptr, ${host.sizeType}, ptr, ptr, i32, i32, ptr } { ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit}, i32 ${kind}, i32 ${view?.code ?? 0}, ptr ${view?.ops ?? "null"} }`,
+              `${recipe} = internal constant { ptr, ptr, ptr, ${host.sizeType}, ptr, ptr, i32, i32, ptr, ptr } { ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit}, i32 ${kind}, i32 ${view?.code ?? 0}, ptr ${view?.ops ?? "null"}, ptr ${adapter.nativeObjectOps ?? "null"} }`,
             );
           }
           host.declare("declare void @scr_dyn_this_push_typed(ptr, ptr)");

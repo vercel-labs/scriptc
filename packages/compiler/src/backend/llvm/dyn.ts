@@ -1,6 +1,6 @@
 import { typedRefConstructor } from "./shapes.js";
-import { bindLiveArrayOps } from "./expr-stream-bridges.js";
-import { BYTES_ELEM_NUM, SCR_ARR_FIELD, f64Lit, sizeToDouble } from "./common.js";
+import { bindLiveArrayOps, bindNativeObjectOps } from "./expr-stream-bridges.js";
+import { BYTES_ELEM_NUM, f64Lit, sizeToDouble } from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
@@ -35,9 +35,14 @@ import { InternalCompilerError } from "../../errors.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import {
   DYN_HANDLE_KINDS,
+  canAdaptDynFuncTo,
+  canBoxFuncIntoDyn,
+  canConvertToDyn,
   isDirentShape,
   isDynTypedRefType,
   isRefCounted,
+  recordTextCodecClass,
+  shapeHasAccessorSlots,
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
@@ -48,6 +53,7 @@ import {
   arrNewCall,
   elemAccess,
   llFieldType,
+  loadStructField,
   mapFlagsOffset,
   releaseSym,
   traceAdapter,
@@ -55,7 +61,8 @@ import {
   vAdapters,
 } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
-import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
+import { recordMayKeepSource } from "../../ir/native-integrity.js";
+import { recordSourceFieldOrder } from "./record-sources.js";
 import type { WalkerHost } from "./walkers.js";
 import type { LlStreamTypedRefAdapter } from "./expr-context.js";
 
@@ -119,6 +126,7 @@ export interface DynHost extends WalkerHost {
   /** The shared adapter record: live array capsules read its `arrayOps`, so a
    * narrower return type would hand the native compiler a copy without it. */
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
+  nativeObjectOps(t: IrType): string | null;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
@@ -128,6 +136,7 @@ export interface DynHost extends WalkerHost {
 }
 
 const FN_ATTRS = "#0";
+type DynConversionMode = "structural" | "identity" | "native-slot";
 
 export class LlDyn {
   private readonly dynMatchers = new Map<string, string>();
@@ -138,6 +147,8 @@ export class LlDyn {
   private readonly dynFuncAdapters = new Map<string, string>();
   private readonly promiseDynAdapters = new Map<string, string>();
   private readonly mapDynOps = new Map<string, string>();
+  private readonly nativeSlotUnboxers = new Map<string, string>();
+  private readonly nativeSlotBoxers = new Map<string, string>();
   private dynToStrFn: string | null = null;
   private caughtToDynFn: string | null = null;
   private readonly helperMemo = new Map<string, string>();
@@ -147,6 +158,185 @@ export class LlDyn {
   readonly defs: string[] = [];
 
   constructor(private readonly host: DynHost) {}
+
+  /** Private native leaves can round-trip by their exact capsule, but their
+   * fields are not a structural constructor. Containers recurse through the
+   * shared match/build graph; their unsupported leaves keep this boundary. */
+  private exactNativeOnly(t: IrType, mode: DynConversionMode): boolean {
+    if (t.kind === "record") {
+      const shape = this.host.recordsById.get(t.shapeId);
+      if (!shape)
+        throw new InternalCompilerError(
+          `llvm emitter bug: native slot of unknown record ${t.shapeId}`,
+        );
+      return (
+        recordTextCodecClass(shape) !== null ||
+        (mode === "native-slot" && shapeHasAccessorSlots(shape))
+      );
+    }
+    if (mode !== "native-slot") return false;
+    if (t.kind === "array" || t.kind === "union") return false;
+    const record = (id: string) => this.host.recordsById.get(id);
+    const union = (id: string) => this.host.unionsById.get(id);
+    return t.kind === "func"
+      ? !canBoxFuncIntoDyn(t, record, union)
+      : isRefCounted(t) && !canConvertToDyn(t, record, union);
+  }
+
+  /** Exact slot boxing is generated only by live exposure. Reserve each
+   * symbol before walking children so recursive arrays share one recipe. */
+  nativeSlotBoxHelper(t: IrType): string {
+    const key = typeKey(t);
+    const prior = this.nativeSlotBoxers.get(key);
+    if (prior) return prior;
+    const name = `sc_slot_box_${this.nativeSlotBoxers.size}`;
+    this.nativeSlotBoxers.set(key, name);
+    const host = this.host,
+      B = new BlockBuilder();
+    const ty = this.valTy(t);
+    B.line(
+      `%value = ${ty === "double" ? "bitcast i64 %slot to double" : ty === "i1" ? "trunc i64 %slot to i1" : "inttoptr i64 %slot to ptr"}`,
+    );
+    if (t.kind === "union") {
+      const union = host.unionsById.get(t.unionId)!;
+      const nullable = host.nullableUnions.get(t.unionId);
+      const tag = emitUnionTag(B, nullable, "%value");
+      const bad = B.newLabel("slot.bad"),
+        labels = union.arms.map(() => B.newLabel("slot.arm"));
+      B.terminate(
+        `switch i32 ${tag}, label %${bad} [ ${union.arms.map((_, i) => `i32 ${i}, label %${labels[i]}`).join(" ")} ]`,
+      );
+      union.arms.forEach((arm, i) => {
+        B.startBlock(labels[i]!);
+        if (arm.kind === "undefinedT") {
+          B.terminate(`ret ptr ${this.retainDyn(B, this.undef(B))}`);
+        } else if (arm.kind === "nullT") {
+          host.declare(`declare ptr @scr_dyn_new_null()`);
+          const result = B.tmp();
+          B.line(`${result} = call ptr @scr_dyn_new_null()`);
+          B.terminate(`ret ptr ${result}`);
+        } else {
+          const armTy = this.valTy(arm);
+          let value: string;
+          if (armTy === "double" || armTy === "i1") {
+            const get = armTy === "double" ? "f64" : "bool";
+            host.declare(
+              `declare ${armTy === "i1" ? "zeroext i1" : "double"} @scr_union_get_${get}(ptr)`,
+            );
+            value = B.tmp();
+            B.line(`${value} = call ${armTy} @scr_union_get_${get}(ptr %value)`);
+          } else value = emitUnionPeek(B, nullable, "%value");
+          const slot = B.tmp(),
+            result = B.tmp();
+          B.line(
+            `${slot} = ${armTy === "double" ? `bitcast double ${value} to i64` : armTy === "i1" ? `zext i1 ${value} to i64` : `ptrtoint ptr ${value} to i64`}`,
+          );
+          B.line(`${result} = call ptr @${this.nativeSlotBoxHelper(arm)}(i64 ${slot})`);
+          B.terminate(`ret ptr ${result}`);
+        }
+      });
+      B.startBlock(bad);
+      host.needBadTag();
+      B.line("call void @sc_bad_tag()");
+      B.terminate("unreachable");
+    } else if (this.exactNativeOnly(t, "native-slot")) {
+      const rc = vAdapters(host, t),
+        snapshot = `${name}_unavailable`;
+      const message = "property reflection on this native value is not supported";
+      host.declare(`declare void @scr_throw_error_msg_code(i32, ptr, ${host.sizeType}, ptr)`);
+      this.defs.push(
+        `define internal ptr @${snapshot}(ptr %p) ${FN_ATTRS} {`,
+        "entry:",
+        `  call void @scr_throw_error_msg_code(i32 0, ptr ${host.cstr(message)}, ${host.sizeType} ${Buffer.byteLength(message)}, ptr ${host.cstr("SC1071")})`,
+        "  ret ptr null",
+        "}",
+        "",
+      );
+      B.line(
+        `%result = call ptr ${typedRefConstructor(host, t)}(ptr %value, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key)}, ptr @${snapshot}, ptr null)`,
+      );
+      bindNativeObjectOps(host, B, host.nativeObjectOps(t), "%result");
+      B.terminate("ret ptr %result");
+    } else if (t.kind === "record" || t.kind === "array" || isDynTypedRefType(t)) {
+      const adapter = host.liveDynRefAdapter(t),
+        rc = vAdapters(host, t);
+      B.line(
+        `%result = call ptr ${typedRefConstructor(host, t)}(ptr %value, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key)}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
+      );
+      const bound = bindLiveArrayOps(host, B, adapter, "%result");
+      B.terminate(`ret ptr ${bound}`);
+    } else if (t.kind === "date") {
+      host.declare(`declare ptr @scr_dyn_new_arr()`);
+      host.declare(`declare ptr @scr_dyn_new_num(double)`);
+      host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+      host.declare(`declare ptr @scr_dyn_native_date_new(ptr)`);
+      host.declare(`declare void @scr_dyn_release_v(ptr)`);
+      B.line("%args = call ptr @scr_dyn_new_arr()");
+      B.line("%num = call ptr @scr_dyn_new_num(double %value)");
+      B.line("call void @scr_dyn_arr_push(ptr %args, ptr %num)");
+      B.line("%result = call ptr @scr_dyn_native_date_new(ptr %args)");
+      B.line("call void @scr_dyn_release_v(ptr %args)");
+      B.terminate("ret ptr %result");
+    } else {
+      B.line(`%result = call ptr @${this.toDynHelper(t)}(${ty} %value)`);
+      B.terminate("ret ptr %result");
+    }
+    this.defs.push(`define internal ptr @${name}(i64 %slot) ${FN_ATTRS} {`, B.render(), "}", "");
+    return name;
+  }
+
+  /** Borrowed dyn -> owned native slot on success. Mismatch and pending
+   * exceptions leave the output untouched; failed partial builders are
+   * released before returning. Zero is a valid scalar/nullable slot. */
+  nativeSlotUnboxHelper(t: IrType): string {
+    const key = typeKey(t);
+    const existing = this.nativeSlotUnboxers.get(key);
+    if (existing) return existing;
+    const name = `sc_slot_unbox_${this.nativeSlotUnboxers.size}`;
+    this.nativeSlotUnboxers.set(key, name);
+    const B = new BlockBuilder();
+    const present = B.tmp();
+    const inspect = B.newLabel("slot.inspect");
+    const mismatch = B.newLabel("slot.mismatch");
+    B.line(`${present} = icmp ne ptr %d, null`);
+    B.condBr(present, inspect, mismatch);
+    B.startBlock(inspect);
+    this.pendingBail(B, "slot.pending", () => {}, "i1 false");
+    const matches = B.tmp();
+    B.line(`${matches} = call zeroext i1 @${this.matchHelper(t, "native-slot")}(ptr %d)`);
+    this.pendingBail(B, "slot.match", () => {}, "i1 false");
+    const convert = B.newLabel("slot.convert");
+    B.condBr(matches, convert, mismatch);
+    B.startBlock(mismatch);
+    B.terminate("ret i1 false");
+    B.startBlock(convert);
+    const ty = this.valTy(t);
+    const value = B.tmp();
+    B.line(
+      `${value} = call ${ty === "i1" ? "zeroext i1" : ty} @${this.checkHelper(t, "native-slot")}(ptr %d, ptr null)`,
+    );
+    this.pendingBail(
+      B,
+      "slot.convert",
+      () => {
+        if (isRefCounted(t)) B.line(`call void ${releaseSym(this.host, t)}(ptr ${value})`);
+      },
+      "i1 false",
+    );
+    const slot = B.tmp();
+    B.line(
+      `${slot} = ${ty === "double" ? `bitcast double ${value} to i64` : ty === "i1" ? `zext i1 ${value} to i64` : `ptrtoint ptr ${value} to i64`}`,
+    );
+    B.line(`store i64 ${slot}, ptr %out`);
+    B.terminate("ret i1 true");
+    this.defs.push(
+      `define internal zeroext i1 @${name}(ptr %d, ptr %out) ${FN_ATTRS} { ; extract native slot ${key}`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    return name;
+  }
 
   /** The types a dyn matcher or builder for `t` checks structurally: record
    * fields and index values, array elements and union arms. */
@@ -276,39 +466,123 @@ export class LlDyn {
     tag: number,
     yes: string,
     no: string,
-    preserveRefs = false,
+    mode: DynConversionMode = "structural",
+    failureReturn: "i1 false" | "ptr null" = "i1 false",
   ): void {
     const guard = def.discriminant?.cases.find((candidate) => candidate.tag === tag);
     if (guard && def.discriminant) {
       const structure = B.newLabel("du.shape");
       const field = this.host.internLiteral(def.discriminant.field);
-      guard.values.forEach((value, index) => {
-        const suffix =
-          typeof value === "string" ? "str" : typeof value === "boolean" ? "bool" : "num";
-        const ty = typeof value === "string" ? "ptr" : typeof value === "boolean" ? "i1" : "double";
-        const operand =
-          typeof value === "string"
-            ? this.host.internLiteral(value)
-            : typeof value === "boolean"
-              ? String(value)
-              : f64Lit(value);
-        this.host.declare(
-          `declare zeroext i1 @scr_dyn_field_eq_${suffix}(ptr, ptr, ${ty}${ty === "i1" ? " zeroext" : ""})`,
-        );
-        const matches = B.tmp();
-        B.line(
-          `${matches} = call zeroext i1 @scr_dyn_field_eq_${suffix}(ptr %d, ptr ${field}, ${ty} ${operand})`,
-        );
-        const next = index === guard.values.length - 1 ? no : B.newLabel("du.literal");
-        B.condBr(matches, structure, next);
-        if (index !== guard.values.length - 1) B.startBlock(next);
-      });
+      const literals = (native?: { value: string; type: IrType }): void => {
+        const union =
+          native?.type.kind === "union" ? this.host.unionsById.get(native.type.unionId)! : null;
+        const nullable =
+          native?.type.kind === "union" ? this.host.nullableUnions.get(native.type.unionId) : null;
+        const nativeTag = union ? emitUnionTag(B, nullable, native!.value) : null;
+        guard.values.forEach((value, index) => {
+          const next = index === guard.values.length - 1 ? no : B.newLabel("du.literal");
+          const suffix =
+            typeof value === "string" ? "str" : typeof value === "boolean" ? "bool" : "num";
+          const ty =
+            typeof value === "string" ? "ptr" : typeof value === "boolean" ? "i1" : "double";
+          const operand =
+            typeof value === "string"
+              ? this.host.internLiteral(value)
+              : typeof value === "boolean"
+                ? String(value)
+                : f64Lit(value);
+          let nativeValue = native?.value;
+          if (union) {
+            const arm = union.arms.findIndex(
+              (type) =>
+                type.kind ===
+                (typeof value === "string"
+                  ? "string"
+                  : typeof value === "boolean"
+                    ? "bool"
+                    : "f64"),
+            );
+            if (arm < 0)
+              throw new InternalCompilerError(`llvm emitter bug: invalid literal in ${def.id}`);
+            const correct = B.tmp();
+            const payload = B.newLabel("du.value");
+            B.line(`${correct} = icmp eq i32 ${nativeTag}, ${arm}`);
+            B.condBr(correct, payload, next);
+            B.startBlock(payload);
+            if (typeof value === "string") nativeValue = emitUnionPeek(B, nullable, native!.value);
+            else {
+              const get = typeof value === "boolean" ? "scr_union_get_bool" : "scr_union_get_f64";
+              this.host.declare(`declare ${ty === "i1" ? "zeroext i1" : ty} @${get}(ptr)`);
+              nativeValue = B.tmp();
+              B.line(
+                `${nativeValue} = call ${ty === "i1" ? "zeroext i1" : ty} @${get}(ptr ${native!.value})`,
+              );
+            }
+          }
+          const matches = B.tmp();
+          if (nativeValue === undefined) {
+            this.host.declare(
+              `declare zeroext i1 @scr_dyn_field_eq_${suffix}(ptr, ptr, ${ty}${ty === "i1" ? " zeroext" : ""})`,
+            );
+            B.line(
+              `${matches} = call zeroext i1 @scr_dyn_field_eq_${suffix}(ptr %d, ptr ${field}, ${ty} ${operand})`,
+            );
+            this.pendingBail(B, "du.literal", () => {}, failureReturn);
+          } else if (typeof value === "string") {
+            this.host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
+            B.line(`${matches} = call zeroext i1 @scr_str_eq(ptr ${nativeValue}, ptr ${operand})`);
+          } else {
+            B.line(
+              `${matches} = ${typeof value === "boolean" ? "icmp eq i1" : "fcmp oeq double"} ${nativeValue}, ${operand}`,
+            );
+          }
+          B.condBr(matches, structure, next);
+          if (index !== guard.values.length - 1) B.startBlock(next);
+        });
+      };
+      if (mode === "native-slot") {
+        const arm = def.arms[tag]!;
+        const shape = arm.kind === "record" ? this.host.recordsById.get(arm.shapeId) : undefined;
+        const index =
+          shape?.fields.findIndex((entry) => entry.name === def.discriminant!.field) ?? -1;
+        if (arm.kind !== "record" || !shape || index < 0)
+          throw new InternalCompilerError(`llvm emitter bug: invalid discriminator in ${def.id}`);
+        const opaque = this.exactNativeOnly(arm, mode);
+        const capsule = B.tmp();
+        const check = B.newLabel("du.native");
+        const native = B.newLabel("du.native.value");
+        const plain = opaque ? no : B.newLabel("du.plain");
+        B.line(`${capsule} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.TYPED_REF}`);
+        B.condBr(capsule, check, plain);
+        B.startBlock(check);
+        B.condBr(this.typedRefMatches(B, arm), opaque ? native : plain, no);
+        if (opaque) {
+          B.startBlock(native);
+          // Opaque capsules have no structural view. Borrow their proven
+          // ordinary data tag without touching unrelated accessor slots;
+          // a union tag must select its scalar before reading the payload.
+          const object = this.payloadOf(B, "%d", "ptr");
+          const slot = B.tmp();
+          B.line(
+            `${slot} = getelementptr inbounds %${mangleRecordStruct(arm.shapeId)}, ptr ${object}, i64 0, i32 ${index + 1}`,
+          );
+          const type = shape.fields[index]!.type;
+          literals({
+            value: loadStructField(B, this.S, slot, type, this.host.inlineUnions.record(type)),
+            type,
+          });
+        } else {
+          // Ordinary capsules keep observable property semantics, including
+          // any cached descriptor view, after their layout is admitted.
+          B.startBlock(plain);
+          literals();
+        }
+      } else literals();
       B.startBlock(structure);
     }
     const matches = B.tmp();
-    B.line(
-      `${matches} = call zeroext i1 @${this.dynMatchHelper(def.arms[tag]!, preserveRefs)}(ptr %d)`,
-    );
+    B.line(`${matches} = call zeroext i1 @${this.matchHelper(def.arms[tag]!, mode)}(ptr %d)`);
+    this.pendingBail(B, "du.match", () => {}, failureReturn);
     B.condBr(matches, yes, no);
   }
 
@@ -369,11 +643,12 @@ export class LlDyn {
         B.line(
           `%result = call ptr ${typedRefConstructor(this.host, type)}(ptr %value, ptr ${rc.retain}, ptr ${rc.release}, ptr ${this.host.cstr(typeId)}, ${this.S} ${Buffer.byteLength(typeId, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
         );
-        for (const line of bindLiveArrayOps(this.host, adapter, "%result")) B.line(line);
+        const bound = bindLiveArrayOps(this.host, B, adapter, "%result");
+        B.terminate(`ret ptr ${bound}`);
       } else {
         B.line(`%result = call ptr @${this.toDynHelper(type)}(${ty} %value)`);
       }
-      B.terminate("ret ptr %result");
+      if (!B.isTerminated()) B.terminate("ret ptr %result");
       const unbox = this.dynCheckHelper(type);
       this.defs.push(
         `define internal ptr @${name}_${role}_box(i64 %slot) ${FN_ATTRS} {`,
@@ -732,16 +1007,44 @@ export class LlDyn {
     return matched;
   }
 
-  /** `sc_dm_<n>(ptr d) -> i1` — does this dyn fit T? Never throws. */
+  /** An opaque arm has no structural view. Select its exact capsule before
+   * another arm can materialize it; ordinary/discriminated arms retain their
+   * observable property-read order. `hit` must terminate the selected block. */
+  private exactUnionArmBranches(
+    B: BlockBuilder,
+    def: IrUnionDef,
+    hit: (tag: number) => void,
+  ): void {
+    def.arms.forEach((arm, tag) => {
+      if (
+        !this.exactNativeOnly(arm, "structural") ||
+        def.discriminant?.cases.some((guard) => guard.tag === tag)
+      )
+        return;
+      const selected = B.newLabel("du.exact");
+      const next = B.newLabel("du.next");
+      B.condBr(this.typedRefMatches(B, arm), selected, next);
+      B.startBlock(selected);
+      hit(tag);
+      B.startBlock(next);
+    });
+  }
+
+  /** Does this dyn fit T? A property read may leave a pending exception. */
   dynMatchHelper(t: IrType, preserveRefs = false): string {
+    return this.matchHelper(t, preserveRefs ? "identity" : "structural");
+  }
+
+  private matchHelper(t: IrType, mode: DynConversionMode): string {
     const key = typeKey(t);
-    const matcherKey = preserveRefs ? `identity:${key}` : key;
+    const matcherKey = mode === "structural" ? key : `${mode}:${key}`;
     const existing = this.dynMatchers.get(matcherKey);
     if (existing) return existing;
     const name = `sc_dm_${this.dynMatchers.size}`;
     this.dynMatchers.set(matcherKey, name);
-    const recursive = this.isRecursiveShape(t);
-    const wrapped = recursive || this.holdsRecursiveShape(t);
+    const opaque = this.exactNativeOnly(t, mode);
+    const recursive = !opaque && this.isRecursiveShape(t);
+    const wrapped = !opaque && (recursive || this.holdsRecursiveShape(t));
     const B = new BlockBuilder();
     if (isRefCounted(t) && t.kind !== "dyn") {
       const matched = this.typedRefMatches(B, t);
@@ -752,7 +1055,23 @@ export class LlDyn {
       B.terminate(`ret i1 true`);
       B.startBlock(lNext);
     }
-    if (t.kind !== "dyn") {
+    if (opaque) {
+      B.terminate("ret i1 false");
+      this.defs.push(
+        `define internal zeroext i1 @${name}(ptr %d) ${FN_ATTRS} { ; exact native ${key}`,
+        B.render(),
+        `}`,
+        ``,
+      );
+      return name;
+    }
+    if (mode === "structural" && t.kind === "union") {
+      const def = this.host.unionsById.get(t.unionId);
+      if (!def)
+        throw new InternalCompilerError(`llvm emitter bug: dynMatch of unknown union ${t.unionId}`);
+      this.exactUnionArmBranches(B, def, () => B.terminate("ret i1 true"));
+    }
+    if (t.kind !== "dyn" && !(mode === "native-slot" && t.kind === "union")) {
       const view = this.viewFn(wrapped);
       this.host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const kind = this.kindOf(B, "%d");
@@ -762,12 +1081,18 @@ export class LlDyn {
       const lPlain = B.newLabel("dm.tr.plain");
       B.condBr(capsule, lCapsule, lPlain);
       B.startBlock(lCapsule);
-      if (preserveRefs) {
+      if (mode !== "structural") {
         B.terminate(`ret i1 false`);
       } else {
         const materialized = B.tmp();
         const matched = B.tmp();
         B.line(`${materialized} = call ptr @${view}(ptr %d)`);
+        this.pendingBail(
+          B,
+          "dm.view",
+          () => B.line(`call void @scr_dyn_release_v(ptr ${materialized})`),
+          "i1 false",
+        );
         B.line(`${matched} = call zeroext i1 @${name}(ptr ${materialized})`);
         B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
         B.terminate(`ret i1 ${matched}`);
@@ -861,6 +1186,26 @@ export class LlDyn {
         break;
       }
       case "func":
+        if (
+          mode === "native-slot" &&
+          !canAdaptDynFuncTo(
+            t,
+            (id) => this.host.recordsById.get(id),
+            (id) => this.host.unionsById.get(id),
+          )
+        ) {
+          this.host.declare(`declare ptr @scr_dyn_func_unbox_exact(ptr, ptr)`);
+          this.host.declare(`declare void @scr_closure_release_v(ptr)`);
+          const closure = B.tmp();
+          const matched = B.tmp();
+          B.line(
+            `${closure} = call ptr @scr_dyn_func_unbox_exact(ptr %d, ptr ${this.host.cstr(key)})`,
+          );
+          B.line(`${matched} = icmp ne ptr ${closure}, null`);
+          B.line(`call void @scr_closure_release_v(ptr ${closure})`);
+          B.terminate(`ret i1 ${matched}`);
+          break;
+        }
         this.host.declare(`declare zeroext i1 @scr_dyn_is_callable(ptr)`);
         {
           const matched = B.tmp();
@@ -929,9 +1274,7 @@ export class LlDyn {
           for (const [i, f] of byIndex.entries()) {
             const e = this.itemAt(B, items, `${i}`);
             const m = B.tmp();
-            B.line(
-              `${m} = call zeroext i1 @${this.dynMatchHelper(f.type, preserveRefs)}(ptr ${e})`,
-            );
+            B.line(`${m} = call zeroext i1 @${this.matchHelper(f.type, mode)}(ptr ${e})`);
             const ln = B.newLabel("dm.i");
             B.condBr(m, ln, fail);
             B.startBlock(ln);
@@ -965,7 +1308,7 @@ export class LlDyn {
             "i1 false",
           );
           const ok = B.tmp();
-          B.line(`${ok} = call zeroext i1 @${this.dynMatchHelper(f.type, preserveRefs)}(ptr ${m})`);
+          B.line(`${ok} = call zeroext i1 @${this.matchHelper(f.type, mode)}(ptr ${m})`);
           B.line(`call void @${release}(ptr ${m})`);
           B.condBr(ok, lNext, fail);
           B.startBlock(lNext);
@@ -1004,7 +1347,7 @@ export class LlDyn {
             }
             const ok = B.tmp();
             B.line(
-              `${ok} = call zeroext i1 @${this.dynMatchHelper(shape.indexValue!, preserveRefs)}(ptr ${ent.value})`,
+              `${ok} = call zeroext i1 @${this.matchHelper(shape.indexValue!, mode)}(ptr ${ent.value})`,
             );
             const lOk = B.newLabel("dm.vo");
             B.condBr(ok, lOk, fail);
@@ -1017,7 +1360,7 @@ export class LlDyn {
         break;
       }
       case "array": {
-        const m = this.dynMatchHelper(t.elem, preserveRefs);
+        const m = this.matchHelper(t.elem, mode);
         const fail = B.newLabel("dm.f");
         const kd = this.kindOf(B, "%d");
         const isArr = B.tmp();
@@ -1059,7 +1402,7 @@ export class LlDyn {
         const yes = B.newLabel("dm.y");
         for (let tag = 0; tag < def.arms.length; tag++) {
           const ln = B.newLabel("dm.n");
-          this.unionArmMatch(B, def, tag, yes, ln, preserveRefs);
+          this.unionArmMatch(B, def, tag, yes, ln, mode);
           B.startBlock(ln);
         }
         B.terminate(`ret i1 false`);
@@ -1211,7 +1554,7 @@ export class LlDyn {
    * constant arrays of field-name bytes and byte lengths in declaration
    * order (the order the record serializes), interned per shape. Internal
    * '%'-fields follow, so they never count as undeclared source keys. */
-  private recordNameTable(shapeId: string, shape: IrRecordShape): { names: string; lens: string } {
+  recordNameTable(shapeId: string, shape: IrRecordShape): { names: string; lens: string } {
     const existing = this.recordNameTables.get(shapeId);
     if (existing) return existing;
     const host = this.host;
@@ -1279,14 +1622,20 @@ export class LlDyn {
    * BUILD the typed value (+1), or throw the catchable path-annotated
    * TypeError and return a dummy with the pending flag set. */
   dynCheckHelper(t: IrType, preserveRefs = false): string {
+    return this.checkHelper(t, preserveRefs ? "identity" : "structural");
+  }
+
+  private checkHelper(t: IrType, mode: DynConversionMode): string {
     const key = typeKey(t);
-    const builderKey = preserveRefs ? `identity:${key}` : key;
+    const preserveRefs = mode !== "structural";
+    const builderKey = mode === "structural" ? key : `${mode}:${key}`;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
     const name = `sc_dc_${this.dynBuilders.size}`;
     this.dynBuilders.set(builderKey, name);
-    const recursive = this.isRecursiveShape(t);
-    const memo = !recursive && this.holdsRecursiveShape(t) && this.valTy(t) === "ptr";
+    const opaque = this.exactNativeOnly(t, mode);
+    const recursive = !opaque && this.isRecursiveShape(t);
+    const memo = !opaque && !recursive && this.holdsRecursiveShape(t) && this.valTy(t) === "ptr";
     const host = this.host;
     const retTy = this.valTy(t);
     const dummy =
@@ -1334,6 +1683,17 @@ export class LlDyn {
       B.line(`${ref} = call ptr @scr_dyn_typed_ref_unbox(ptr %d)`);
       B.terminate(`ret ptr ${ref}`);
       B.startBlock(lNext);
+      if (opaque) {
+        B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${want}, ptr %d)`);
+        B.terminate("ret ptr null");
+        this.defs.push(
+          `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} { ; exact native ${key}`,
+          B.render(),
+          `}`,
+          ``,
+        );
+        return name;
+      }
       if (t.kind !== "union" && preserveRefs) {
         const kind = this.kindOf(B, "%d");
         const capsule = B.tmp();
@@ -1414,62 +1774,47 @@ export class LlDyn {
           const lCache = B.newLabel("dc.tr.put");
           B.condBr(hasCached, lRefresh, lCache);
           B.startBlock(lRefresh);
-          if (t.kind !== "record") {
-            // Inline slots live in each header's block; move them out
-            // before the storage pointers change hands.
-            host.declare("declare void @scr_arr_outline(ptr)");
-            B.line(`call void @scr_arr_outline(ptr ${cached})`);
-            B.line(`call void @scr_arr_outline(ptr ${checked})`);
-          }
-          const members =
-            t.kind === "record"
-              ? [
-                  ...shape!.fields.map((field, index) => ({
-                    index: index + 1,
-                    type: llFieldType(field.type, host.inlineUnions.record(field.type)),
-                    name: field.name,
-                  })),
-                  ...(shape!.indexValue
-                    ? [
-                        {
-                          index: shape!.fields.length + 1,
-                          type: "ptr" as const,
-                          name: "[key: string] overflow",
-                        },
-                      ]
-                    : []),
-                ]
-              : [
-                  { index: 1, type: host.sizeType, name: "length" },
-                  { index: 2, type: host.sizeType, name: "capacity" },
-                  { index: SCR_ARR_FIELD.data, type: "ptr" as const, name: "data" },
-                  { index: SCR_ARR_FIELD.present, type: "ptr" as const, name: "presence" },
-                  { index: SCR_ARR_FIELD.filled, type: "i32" as const, name: "filled" },
-                ];
-          members.forEach((member) => {
-            const cachedPtr = B.tmp();
-            const checkedPtr = B.tmp();
-            const oldValue = B.tmp();
-            const newValue = B.tmp();
-            const struct = t.kind === "record" ? `%${mangleRecordStruct(t.shapeId)}` : "%ScrArr";
-            B.line(
-              `${cachedPtr} = getelementptr inbounds ${struct}, ptr ${cached}, i64 0, i32 ${member.index}`,
-            );
-            B.line(
-              `${checkedPtr} = getelementptr inbounds ${struct}, ptr ${checked}, i64 0, i32 ${member.index}`,
-            );
-            B.line(
-              `${oldValue} = load ${member.type}, ptr ${cachedPtr} ; ${llvmCommentText(member.name)}`,
-            );
-            B.line(`${newValue} = load ${member.type}, ptr ${checkedPtr}`);
-            B.line(`store ${member.type} ${newValue}, ptr ${cachedPtr}`);
-            B.line(`store ${member.type} ${oldValue}, ptr ${checkedPtr}`);
-          });
-          if (t.kind !== "record") {
-            // Sparse slots and numeric properties live out of line; each
-            // array keeps its own match metadata.
-            host.declare("declare void @scr_arr_swap_indexed_ext(ptr, ptr)");
-            B.line(`call void @scr_arr_swap_indexed_ext(ptr ${cached}, ptr ${checked})`);
+          if (t.kind === "array") {
+            // Checked conversion rebuilds indices; the cached identity keeps
+            // its named properties independently of the refreshed elements.
+            host.declare("declare void @scr_arr_swap_indexed_storage(ptr, ptr)");
+            B.line(`call void @scr_arr_swap_indexed_storage(ptr ${cached}, ptr ${checked})`);
+          } else {
+            const members = [
+              ...shape!.fields.map((field, index) => ({
+                index: index + 1,
+                type: llFieldType(field.type, host.inlineUnions.record(field.type)),
+                name: field.name,
+              })),
+              ...(shape!.indexValue
+                ? [
+                    {
+                      index: shape!.fields.length + 1,
+                      type: "ptr" as const,
+                      name: "[key: string] overflow",
+                    },
+                  ]
+                : []),
+            ];
+            const struct = `%${mangleRecordStruct(t.shapeId)}`;
+            members.forEach((member) => {
+              const cachedPtr = B.tmp();
+              const checkedPtr = B.tmp();
+              const oldValue = B.tmp();
+              const newValue = B.tmp();
+              B.line(
+                `${cachedPtr} = getelementptr inbounds ${struct}, ptr ${cached}, i64 0, i32 ${member.index}`,
+              );
+              B.line(
+                `${checkedPtr} = getelementptr inbounds ${struct}, ptr ${checked}, i64 0, i32 ${member.index}`,
+              );
+              B.line(
+                `${oldValue} = load ${member.type}, ptr ${cachedPtr} ; ${llvmCommentText(member.name)}`,
+              );
+              B.line(`${newValue} = load ${member.type}, ptr ${checkedPtr}`);
+              B.line(`store ${member.type} ${newValue}, ptr ${cachedPtr}`);
+              B.line(`store ${member.type} ${oldValue}, ptr ${checkedPtr}`);
+            });
           }
           if (recursive) {
             // The memo recorded the record built for the view: later visits
@@ -1770,7 +2115,7 @@ export class LlDyn {
             const e = this.itemAt(B, items, `${i}`);
             const v = B.tmp();
             B.line(
-              `${v} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs)}(ptr ${e}, ptr ${pathSlot})`,
+              `${v} = call ${this.valTy(f.type)} @${this.checkHelper(f.type, mode)}(ptr ${e}, ptr ${pathSlot})`,
             );
             storeInto(f.name, f.type, v);
             releaseInline(f.type, v);
@@ -1829,7 +2174,7 @@ export class LlDyn {
           setPath(f.name, "0");
           const value = B.tmp();
           B.line(
-            `${value} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs)}(ptr ${m}, ptr ${pathSlot})`,
+            `${value} = call ${this.valTy(f.type)} @${this.checkHelper(f.type, mode)}(ptr ${m}, ptr ${pathSlot})`,
           );
           B.line(`call void @${release}(ptr ${m})`);
           storeInto(f.name, f.type, value);
@@ -1922,7 +2267,7 @@ export class LlDyn {
               setPathKeyPtr(ent.key);
               ev = B.tmp();
               B.line(
-                `${ev} = call ${this.valTy(iv)} @${this.dynCheckHelper(iv, preserveRefs)}(ptr ${ent.value}, ptr ${pathSlot})`,
+                `${ev} = call ${this.valTy(iv)} @${this.checkHelper(iv, mode)}(ptr ${ent.value}, ptr ${pathSlot})`,
               );
               this.pendingBail(B, "dcv", releaseR, "ptr null");
             }
@@ -1948,7 +2293,7 @@ export class LlDyn {
       }
       case "array": {
         const elem = t.elem;
-        const c = this.dynCheckHelper(elem, preserveRefs);
+        const c = this.checkHelper(elem, mode);
         requireKind(DYN_KIND.ARR, "dca");
         const n = this.lenOf(B, "%d");
         const a = B.tmp();
@@ -1995,6 +2340,7 @@ export class LlDyn {
             B,
             "dca",
             () => {
+              if (isRefCounted(elem)) B.line(`call void ${releaseSym(host, elem)}(ptr ${v})`);
               host.declare(`declare void @scr_arr_release(ptr)`);
               B.line(`call void @scr_arr_release(ptr ${a})`);
             },
@@ -2014,50 +2360,51 @@ export class LlDyn {
           throw new InternalCompilerError(
             `llvm emitter bug: dynCheck of unknown union ${t.unionId}`,
           );
-        // Arms in CANONICAL order, first FULL match wins. The matched
-        // arm's builder can no longer fail.
+        const hits = def.arms.map(() => B.newLabel("dcu.h"));
+        if (mode === "structural") this.exactUnionArmBranches(B, def, (tag) => B.br(hits[tag]!));
+        // Structural matches keep canonical order. A builder can still fail after a
+        // getter changes state, so release its partial payload before
+        // constructing a union wrapper or trying any later arm.
         def.arms.forEach((arm, i) => {
-          const lHit = B.newLabel("dcu.h");
+          const lHit = hits[i]!;
           const lNext = B.newLabel("dcu.n");
-          this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs);
+          this.unionArmMatch(B, def, i, lHit, lNext, mode, "ptr null");
           B.startBlock(lHit);
           if (arm.kind === "undefinedT" || arm.kind === "nullT") {
-            // A matched unit arm builds nothing: THE interned immortal
-            // instance (rc == SIZE_MAX — no retain owed).
             B.terminate(`ret ptr ${host.unitInstanceRef(t.unionId, i)}`);
-          } else if (arm.kind === "f64" || arm.kind === "procStream") {
-            host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
-            const x = B.tmp();
-            const u = B.tmp();
-            B.line(
-              `${x} = call double @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
-            );
-            B.line(`${u} = call ptr @scr_union_new_f64(i32 ${i}, double ${x})`);
-            B.terminate(`ret ptr ${u}`);
-          } else if (arm.kind === "bool") {
-            host.declare(`declare ptr @scr_union_new_bool(i32, i1 zeroext)`);
-            const x = B.tmp();
-            const u = B.tmp();
-            B.line(
-              `${x} = call zeroext i1 @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
-            );
-            B.line(`${u} = call ptr @scr_union_new_bool(i32 ${i}, i1 ${x})`);
-            B.terminate(`ret ptr ${u}`);
-          } else if (host.nullableUnions.has(t.unionId)) {
-            // A nullable union is its (+1) reference payload.
-            const x = B.tmp();
-            B.line(`${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`);
-            B.terminate(`ret ptr ${x}`);
           } else {
-            const rc = vAdapters(host, arm);
-            host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
-            const x = B.tmp();
-            const u = B.tmp();
-            B.line(`${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`);
+            const ty = this.valTy(arm);
+            const value = B.tmp();
             B.line(
-              `${u} = call ptr @scr_union_new_ref(i32 ${i}, ptr ${x}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host, arm)})`,
+              `${value} = call ${ty === "i1" ? "zeroext i1" : ty} @${this.checkHelper(arm, mode)}(ptr %d, ptr %path)`,
             );
-            B.terminate(`ret ptr ${u}`);
+            this.pendingBail(
+              B,
+              "dcu.arm",
+              () => {
+                if (isRefCounted(arm)) B.line(`call void ${releaseSym(host, arm)}(ptr ${value})`);
+              },
+              "ptr null",
+            );
+            if (host.nullableUnions.has(t.unionId)) {
+              B.terminate(`ret ptr ${value}`);
+            } else {
+              const result = B.tmp();
+              if (arm.kind === "f64" || arm.kind === "procStream") {
+                host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
+                B.line(`${result} = call ptr @scr_union_new_f64(i32 ${i}, double ${value})`);
+              } else if (arm.kind === "bool") {
+                host.declare(`declare ptr @scr_union_new_bool(i32, i1 zeroext)`);
+                B.line(`${result} = call ptr @scr_union_new_bool(i32 ${i}, i1 ${value})`);
+              } else {
+                const rc = vAdapters(host, arm);
+                host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
+                B.line(
+                  `${result} = call ptr @scr_union_new_ref(i32 ${i}, ptr ${value}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host, arm)})`,
+                );
+              }
+              B.terminate(`ret ptr ${result}`);
+            }
           }
           B.startBlock(lNext);
         });
@@ -2173,10 +2520,9 @@ export class LlDyn {
       case "func": {
         // The checked-dynamic function boundary, OUT direction: an
         // IDENTICAL boxed signature unwraps the closure directly;
-        // anything else wraps in the per-target adapter closure whose
-        // caps[0] obj-box owns the dyn value (untraced).
-        const adapter = this.dynFuncAdapterHelper(t);
-        const sigLit = host.cstr(key);
+        // other callables need an adaptable target signature. Typed-rest
+        // callbacks can cross into dyn and return unchanged without
+        // admitting an adapter that cannot implement their native ABI.
         const lWrap = B.newLabel("dcf.w");
         host.declare(`declare zeroext i1 @scr_dyn_is_callable(ptr)`);
         const callable = B.tmp();
@@ -2188,34 +2534,28 @@ export class LlDyn {
         B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${want}, ptr %d)`);
         B.terminate(`ret ${dummy}`);
         B.startBlock(valid);
-        const direct = B.tmp();
-        const lSignature = B.newLabel("dcf.signature");
-        B.line(`${direct} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.FUNC}`);
-        B.condBr(direct, lSignature, lWrap);
-        B.startBlock(lSignature);
-        host.declare(`declare i32 @strcmp(ptr, ptr)`);
-        const sigp = B.tmp();
-        const sig = B.tmp();
-        B.line(
-          `${sigp} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(32, 24)} ; ->v.fn.sig`,
-        );
-        B.line(`${sig} = load ptr, ptr ${sigp}`);
-        const cmp = B.tmp();
+        host.declare(`declare ptr @scr_dyn_func_unbox_exact(ptr, ptr)`);
+        const closure = B.tmp();
         const same = B.tmp();
-        B.line(`${cmp} = call i32 @strcmp(ptr ${sig}, ptr ${sigLit})`);
-        B.line(`${same} = icmp eq i32 ${cmp}, 0`);
+        B.line(`${closure} = call ptr @scr_dyn_func_unbox_exact(ptr %d, ptr ${host.cstr(key)})`);
+        B.line(`${same} = icmp ne ptr ${closure}, null`);
         const lSame = B.newLabel("dcf.s");
         B.condBr(same, lSame, lWrap);
         B.startBlock(lSame);
-        host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
-        const clop = B.tmp();
-        const clo = B.tmp();
-        const r = B.tmp();
-        B.line(`${clop} = getelementptr inbounds i8, ptr %d, i64 16 ; ->v.fn.clo`);
-        B.line(`${clo} = load ptr, ptr ${clop}`);
-        B.line(`${r} = call ptr @scr_closure_retain_v(ptr ${clo})`);
-        B.terminate(`ret ptr ${r}`);
+        B.terminate(`ret ptr ${closure}`);
         B.startBlock(lWrap);
+        if (
+          !canAdaptDynFuncTo(
+            t,
+            (id) => host.recordsById.get(id),
+            (id) => host.unionsById.get(id),
+          )
+        ) {
+          B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${want}, ptr %d)`);
+          B.terminate(`ret ${dummy}`);
+          break;
+        }
+        const adapter = this.dynFuncAdapterHelper(t);
         host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
         host.declare(`declare ptr @scr_box_new_obj(ptr, ptr, ptr)`);
         host.declare(`declare void @scr_box_set_ref(ptr, ptr)`);
@@ -2409,8 +2749,8 @@ export class LlDyn {
         );
         // The same live view as a direct box: class members for `in` and
         // the class name for inspection.
-        for (const line of bindLiveArrayOps(host, adapter, r)) B.line(line);
-        B.terminate(`ret ptr ${r}`);
+        const bound = bindLiveArrayOps(host, B, adapter, r);
+        B.terminate(`ret ptr ${bound}`);
         break;
       }
       case "dyn": {
@@ -2561,7 +2901,7 @@ export class LlDyn {
           const iv = shape.indexValue;
           host.declare(`declare ptr @scr_map_keys_js_order(ptr)`);
           host.declare(`declare double @scr_arr_len(ptr)`);
-          host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+          host.declare(`declare ptr @scr_arr_get_slot_ref(ptr, double)`);
           host.declare(`declare void @scr_str_release(ptr)`);
           host.declare(`declare void @scr_arr_release(ptr)`);
           const ovfp = B.tmp();
@@ -2576,7 +2916,7 @@ export class LlDyn {
           B.line(`${len} = call double @scr_arr_len(ptr ${ks})`);
           B.countedLoop(len, (i) => {
             const k = B.tmp();
-            B.line(`${k} = call ptr @scr_arr_get_ref(ptr ${ks}, double ${i}) ; key (+1)`);
+            B.line(`${k} = call ptr @scr_arr_get_slot_ref(ptr ${ks}, double ${i}) ; key (+1)`);
             const { len: klen, data: kdata } = this.strParts(B, k);
             if (iv.kind === "f64" || iv.kind === "bool") {
               const outTy = iv.kind === "f64" ? "double" : "i8";
@@ -2690,10 +3030,10 @@ export class LlDyn {
             const acc = elem.kind;
             const accTy = elem.kind === "f64" ? "double" : "i1";
             host.declare(
-              `declare ${elem.kind === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`,
+              `declare ${elem.kind === "bool" ? "zeroext i1" : accTy} @scr_arr_get_slot_${acc}(ptr, double)`,
             );
             const e = B.tmp();
-            B.line(`${e} = call ${accTy} @scr_arr_get_${acc}(ptr %v, double ${i})`);
+            B.line(`${e} = call ${accTy} @scr_arr_get_slot_${acc}(ptr %v, double ${i})`);
             const boxed = B.tmp();
             if (elem.kind === "f64") {
               host.declare(`declare ptr @scr_dyn_new_num(double)`);
@@ -2704,9 +3044,9 @@ export class LlDyn {
             }
             B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${boxed})`);
           } else {
-            host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+            host.declare(`declare ptr @scr_arr_get_slot_ref(ptr, double)`);
             const e = B.tmp();
-            B.line(`${e} = call ptr @scr_arr_get_ref(ptr %v, double ${i}) ; +1`);
+            B.line(`${e} = call ptr @scr_arr_get_slot_ref(ptr %v, double ${i}) ; +1`);
             const conv = B.tmp();
             B.line(`${conv} = call ptr @${this.toDynHelper(elem)}(ptr ${e})`);
             B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${conv})`);
@@ -3521,12 +3861,19 @@ export class LlDyn {
       const lNext = B.newLabel("kg.n");
       B.condBr(isTyped, lTyped, lNext);
       B.startBlock(lTyped);
-      // Live arrays answer `length` and own elements from the native array;
-      // rebuilding the snapshot per read would make index loops quadratic.
+      // Live arrays resolve indexed properties with the original receiver.
+      // A getter failure must not enter the snapshot fallback and replace it.
       host.declare(`declare ptr @scr_dyn_typed_ref_key_get(ptr, ptr)`);
+      host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const fast = B.tmp();
       const hit = B.tmp();
       B.line(`${fast} = call ptr @scr_dyn_typed_ref_key_get(ptr %d, ptr %k)`);
+      this.pendingBail(
+        B,
+        "kg.tr.get",
+        () => B.line(`call void @scr_dyn_release_v(ptr ${fast})`),
+        "ptr null",
+      );
       B.line(`${hit} = icmp ne ptr ${fast}, null`);
       const lFast = B.newLabel("kg.tr.fast");
       const lView = B.newLabel("kg.tr.view");
@@ -3535,10 +3882,15 @@ export class LlDyn {
       B.terminate(`ret ptr ${fast}`);
       B.startBlock(lView);
       host.declare(`declare ptr @scr_dyn_typed_ref_materialize(ptr)`);
-      host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const materialized = B.tmp();
       const r = B.tmp();
       B.line(`${materialized} = call ptr @scr_dyn_typed_ref_materialize(ptr %d)`);
+      this.pendingBail(
+        B,
+        "kg.tr.view",
+        () => B.line(`call void @scr_dyn_release_v(ptr ${materialized})`),
+        "ptr null",
+      );
       B.line(`${r} = call ptr @${name}(ptr ${materialized}, ptr %k, i1 %opt)`);
       B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
       B.terminate(`ret ptr ${r}`);

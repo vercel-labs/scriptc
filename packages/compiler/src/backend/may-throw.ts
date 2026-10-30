@@ -196,6 +196,10 @@ export function computeMayThrow(
           if (rec.name === "module.tdzCheck") f.throws = true;
           // publish() throws on an unpublishable dyn value.
           if (rec.name === "threads.publish") f.throws = true;
+          // Admission may initialize a class bag, call user code, or throw
+          // a strict write failure. Callers must unwind before storing.
+          if (rec.name === "native.checkWrite" || rec.name === "native.declareUndefined")
+            f.throws = true;
           // An InternTable array key longer than a table accepts.
           if (
             (rec.name === "itable.find" || rec.name === "itable.insert") &&
@@ -250,6 +254,9 @@ export function computeMayThrow(
           )
             f.throws = true;
           break;
+        case "dynFrom":
+          if (rec.liveRef) f.throws = true;
+          break;
         case "libCall":
           // The may-throw seed hook: throwing library calls (fs.*,
           // json.parse) count exactly like a `throw` statement.
@@ -284,6 +291,11 @@ export function computeMayThrow(
             f.throws = true;
           }
           break;
+        case "arrayPropertyRead":
+        case "arrayHasProperty":
+        case "arraySet":
+        case "arraySetUndefined":
+        case "arrayDelete":
         case "arraySetLength":
           f.throws = true;
           break;
@@ -690,8 +702,12 @@ function describeThrowingNode(rec: IrExpr | IrStmt): string {
     case "mapIntrinsic":
     case "setIntrinsic":
       return `${rec.kind} ${rec.method}`;
+    case "arraySet":
+    case "arraySetUndefined":
+    case "arrayDelete":
+      return "array property mutation (TypeError)";
     case "arraySetLength":
-      return "array length assignment (RangeError)";
+      return "array length assignment (RangeError or TypeError)";
     case "jsonStringify":
       return "JSON.stringify of a possibly circular value (TypeError)";
     case "toString":

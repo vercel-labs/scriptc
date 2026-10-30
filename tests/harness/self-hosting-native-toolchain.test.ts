@@ -8,6 +8,10 @@ import { spawnResult } from "./spawn-result.js";
 import { nativeCodegenTarget } from "../../packages/compiler/src/backend/targets.js";
 import type { NativeLinkFeatures } from "../../packages/compiler/src/backend/native-link-info.js";
 import type { RuntimePackManifest } from "../../packages/compiler/src/backend/runtime-pack-core.js";
+import {
+  RUNTIME_ABI_MARKER,
+  RUNTIME_ABI_VERSION,
+} from "../../packages/compiler/src/backend/runtime-abi.js";
 import type { NativeToolchainManifest } from "../../packages/compiler/src/native/toolchain.js";
 
 const root = join(import.meta.dirname, "../..");
@@ -97,7 +101,7 @@ for (const backend of ["llvm"] as const) {
           object_format: target.objectFormat,
           minimum_os: target.minimumOs,
         },
-        runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
+        runtime_abi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
         compiler: { command: "fixture", identity: "fixture", target: target.llvmTriple },
         macros: { executable: [], excluded: [], sanitizer: "external-toolchain-required" },
         flavors: {

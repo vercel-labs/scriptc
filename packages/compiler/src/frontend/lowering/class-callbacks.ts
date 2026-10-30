@@ -12,7 +12,7 @@ import {
 } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { findMethodOn, type ClassInfo } from "./lower-classes.js";
+import { classNativeIntegrityEligible, findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
@@ -43,7 +43,7 @@ export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string)
   );
 }
 
-function callbackBag(
+function callbackTarget(
   lowerer: Lowerer,
   receiver: IrExpr,
   loc: SrcLoc,
@@ -52,7 +52,13 @@ function callbackBag(
 ): IrExpr {
   const info =
     receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : null;
-  if (info && lowerer.prototypeMethodAccesses.has(name)) classPrototypeData(lowerer, info, loc);
+  if (info && lowerer.prototypeMethodAccesses.has(name)) {
+    const prototype = classPrototypeData(lowerer, info, loc, receiver);
+    // Native bags contain only own properties. The instance owns lookup and
+    // writes; producing its prototype also admits local classes before finalize.
+    if (prototype && classNativeIntegrityEligible(info))
+      return lowerer.coerceToExpected(receiver, DYN);
+  }
   return {
     kind: "call",
     callee: classPropertiesHelper(lowerer, loc, readOnly).name,
@@ -62,8 +68,8 @@ function callbackBag(
   };
 }
 
-/** A read-only bag may still be absent. Reads must not create own storage
- * merely to select an unchanged method, nor read a key from undefined. */
+/** Legacy read-only bags may be absent. Native targets retain the instance,
+ * so selecting its prototype method never requires creating own storage. */
 function callbackPresent(value: IrExpr, key: IrExpr, loc: SrcLoc): IrExpr {
   return {
     kind: "ternary",
@@ -93,7 +99,7 @@ export function lowerClassCallbackAssign(
       kind: "libCall",
       fn: "dyn.keySet",
       args: [
-        callbackBag(lowerer, receiver, loc, access.name.text),
+        callbackTarget(lowerer, receiver, loc, access.name.text),
         { kind: "strLit", value: access.name.text, type: STRING, loc },
         lowerer.lowerExprExpecting(expr.right, DYN),
       ],
@@ -132,7 +138,7 @@ export function classCallbackValue(
       {
         kind: "varDecl",
         localId: bag.id,
-        init: callbackBag(lowerer, receiver, loc, name, true),
+        init: callbackTarget(lowerer, receiver, loc, name, true),
         loc,
       },
     ],
@@ -200,7 +206,7 @@ export function classCallbackCall(
       {
         kind: "varDecl",
         localId: bag.id,
-        init: callbackBag(lowerer, receiver, loc, name, true),
+        init: callbackTarget(lowerer, receiver, loc, name, true),
         loc,
       },
       {

@@ -75,7 +75,7 @@ export function internTableType(lowerer: Lowerer): IrType {
   const info: ClassInfo = {
     def: {
       name: INTERN_TABLE_CLASS,
-      fields: [{ name: TABLE_FIELD, type: F64 }],
+      fields: [{ name: TABLE_FIELD, type: F64, visibility: "private" }],
       loc: BUILTIN_LOC,
     },
     fields: new Map(),

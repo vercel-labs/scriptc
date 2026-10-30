@@ -41,6 +41,8 @@ export function emitExpr(host: LlvmEmitterContext, e: IrExpr): LlValue {
       return host.emitStringExpr(e);
     case "arrayLit":
     case "arrayNewLen":
+    case "arrayPropertyRead":
+    case "arrayHasProperty":
     case "arrayGet":
     case "arrayHas":
     case "arrayState":

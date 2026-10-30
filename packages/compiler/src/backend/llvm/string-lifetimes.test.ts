@@ -73,7 +73,7 @@ function fn(name: string, names: string[], value: IrExpr): IrFunction {
 }
 function mod(...functions: IrFunction[]): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -560,6 +560,10 @@ test("a string field or array-slot self-append lets the container go before the 
   expect(appendField.slice(0, concatAt)).toContain("@scr_str_release");
   const appendSlot = define("slot");
   const slotConcat = appendSlot.indexOf("@scr_str_concat(");
+  const guard = appendSlot.indexOf("@scr_arr_check_set(");
+  expect(guard).toBeGreaterThan(0);
+  expect(guard).toBeLessThan(appendSlot.indexOf("arr.unlink.swap"));
+  expect(appendSlot.slice(guard, appendSlot.indexOf("arr.unlink.swap"))).toMatch(PENDING_CHECK);
   expect(appendSlot.slice(0, slotConcat)).toContain("arr.unlink.swap");
   expect(appendSlot.slice(slotConcat)).toContain("arr.set");
 });

@@ -7,9 +7,11 @@ import {
   DYN_CLASS_PROPERTIES as PROPERTY_BAG,
   STRING,
   VOID,
+  NATIVE_PROPERTY_OPERATION,
   canConvertToDyn,
   canDynCheckTo,
   isClassOwnEnumerableFieldName,
+  isClassOwnEnumerableField,
   isDynTypedRefType,
   isUnitType,
   typeEquals,
@@ -29,6 +31,8 @@ import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
   classValueRef,
+  classFieldType,
+  classNativeIntegrityEligible,
   findGenericMethodOn,
   findGenericStaticOn,
   findMethodOn,
@@ -40,6 +44,7 @@ import {
 import {
   classPrototypeData,
   hasClassPrototypeData,
+  observeClassPrototypeProperty,
   reflectClassPrototype,
 } from "./class-prototypes.js";
 import {
@@ -67,6 +72,16 @@ import { ClassConstructionDispatch } from "./class-construction.js";
 import { emitterRooted } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
 import { STREAM_OPERATORS } from "./lower-stream.js";
+
+/** Match the emitted callback capability; unsupported prototype families
+ * retain their existing bag/view lowering and reflection refusals. */
+function classHasNativePrototype(info: ClassInfo): boolean {
+  return (
+    !!info.decl &&
+    classNativeIntegrityEligible(info) &&
+    !!(info.def.instancePrototypeHelper || info.def.prototypeDataHelper)
+  );
+}
 
 const STREAM_METHODS = new Set([
   "on",
@@ -169,6 +184,7 @@ interface PropertyDispatch {
   fn: IrFunction;
   classes: Set<string>;
   reflect?: boolean;
+  symbol?: boolean;
 }
 
 export function classInstanceOf(
@@ -421,31 +437,77 @@ export function classForInHasKey(
  * in generated member tables. Native values stay in their slots; the bag
  * owns only their property presence, attributes, and insertion position. */
 export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[]): void {
+  const declarations = new Map<string, boolean>();
+  for (const info of lowerer.classes.values()) {
+    if (info.declarationHelper)
+      declarations.set(info.declarationHelper.name, !!info.def.nativePropertyBagHelper);
+  }
+  // Admission is settled. Inline admitted declarations and erase the rest:
+  // even a no-op helper call makes a private scalar constructor look escaping.
+  if (declarations.size) {
+    for (const fn of functions) {
+      fn.body = transformStmtList(fn.body, {
+        stmt: (stmt) => {
+          if (stmt.kind !== "exprStmt" || stmt.expr.kind !== "call") return stmt;
+          const admitted = declarations.get(stmt.expr.callee);
+          if (admitted === undefined) return stmt;
+          return admitted
+            ? {
+                ...stmt,
+                expr: {
+                  kind: "intrinsic",
+                  name: "native.declareUndefined",
+                  args: stmt.expr.args,
+                  type: VOID,
+                  loc: stmt.expr.loc,
+                },
+              }
+            : { kind: "block", body: [], loc: stmt.loc };
+        },
+        expr: (expr) => expr,
+      });
+    }
+    for (let i = functions.length - 1; i >= 0; i--) {
+      if (declarations.has(functions[i]!.name)) functions.splice(i, 1);
+    }
+  }
   if (![...lowerer.classes.values()].some((info) => info.def.tracksOwnFields)) return;
   const loc = functions[0]!.loc;
   const name = "%dyn.class.fieldCreated";
-  const value = varRef("value", DYN, loc),
-    key = varRef("key", DYN, loc);
-  const bag = varRef("bag", DYN, loc);
-  const created = (receiver: IrExpr, className: string, field: string, loc: SrcLoc): IrStmt => ({
-    kind: "exprStmt",
-    expr: {
-      kind: "call",
-      callee: name,
-      args: [
-        lowerer.coerceToExpected(receiver, DYN),
-        symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc) ??
-          lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc }, DYN),
-      ],
-      type: VOID,
+  let needsCreated = false;
+  const created = (
+    receiver: IrExpr,
+    className: string,
+    field: string,
+    define: boolean,
+    loc: SrcLoc,
+  ): IrStmt => {
+    needsCreated = true;
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "call",
+        callee: name,
+        args: [
+          lowerer.coerceToExpected(receiver, DYN),
+          symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc) ??
+            lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc }, DYN),
+          { kind: "boolLit", value: define, type: BOOL, loc },
+        ],
+        type: VOID,
+        loc,
+      },
       loc,
-    },
-    loc,
-  });
+    };
+  };
   const tracked = (className: string, field: string): boolean =>
     !!lowerer.classes.get(className)?.def.tracksOwnFields &&
-    (isClassOwnEnumerableFieldName(field) ||
+    (isClassOwnEnumerableField(
+      lowerer.classes.get(className)?.def.fields.find((f) => f.name === field),
+    ) ||
       symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc) !== null);
+  const guarded = (className: string, field: string): boolean =>
+    !!lowerer.classes.get(className)?.def.nativePropertyBagHelper && tracked(className, field);
   for (const fn of functions) {
     // The transform revisits the replacement it returns. An instrumented
     // write is recognized by its receiver, a temporary created here.
@@ -457,6 +519,47 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
       fn.locals.push({ id, name: id, type, mutable: false });
       return { kind: "varRef", localId: id, type, loc };
     };
+    const save = (value: IrExpr, body: IrStmt[]): Extract<IrExpr, { kind: "varRef" }> => {
+      const result = local(value.type, value.loc);
+      body.push({ kind: "varDecl", localId: result.localId, init: value, loc: value.loc });
+      return result;
+    };
+    const store = (
+      statement: Extract<IrStmt, { kind: "fieldSet" }>,
+      receiver: IrExpr,
+    ): IrStmt[] => {
+      const { className, field, loc } = statement;
+      const operation = statement.propertyOp ?? "set";
+      const body: IrStmt[] = [];
+      const admitted = guarded(className, field);
+      // Conversion can run user code. Finish it before admission. Guarded
+      // stores publish metadata in the backend before releasing old children.
+      const value = admitted ? save(statement.value, body) : statement.value;
+      const success: IrStmt[] = [{ ...statement, obj: receiver, value }];
+      if (!admitted)
+        return [...success, created(receiver, className, field, operation === "define", loc)];
+      const key: IrExpr = { kind: "strLit", value: field, type: STRING, loc };
+      body.push({
+        kind: "if",
+        cond: {
+          kind: "intrinsic",
+          name: "native.checkWrite",
+          args: [
+            receiver,
+            key,
+            { kind: "numLit", value: NATIVE_PROPERTY_OPERATION[operation], type: F64, loc },
+            ...(operation === "set" || operation === "setSloppy" ? [value] : []),
+          ],
+          type: BOOL,
+          loc,
+        },
+        // oxlint-disable-next-line unicorn/no-thenable -- An IR branch contains statements.
+        then: success,
+        else_: null,
+        loc,
+      });
+      return body;
+    };
     fn.body = transformStmtList(fn.body, {
       stmt: (statement) => {
         if (
@@ -467,27 +570,105 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
           return statement;
         const receiver = local(statement.obj.type, statement.loc);
         receivers.add(receiver.localId);
-        const store: Extract<IrStmt, { kind: "fieldSet" }> = { ...statement, obj: receiver };
         return {
           kind: "block",
           body: [
             { kind: "varDecl", localId: receiver.localId, init: statement.obj, loc: statement.loc },
-            store,
-            created(receiver, statement.className, statement.field, statement.loc),
+            ...store(statement, receiver),
           ],
           loc: statement.loc,
         };
       },
       expr: (expression) => {
+        if (expression.kind === "seqExpr") {
+          // Unique-string append temporarily clears its field. Admission can
+          // call user code, so guarded fields keep the old value until commit.
+          const stmts = expression.stmts.filter((stmt, i, body) => {
+            if (
+              stmt.kind !== "fieldSet" ||
+              !guarded(stmt.className, stmt.field) ||
+              stmt.value.kind !== "strLit" ||
+              stmt.value.value !== ""
+            )
+              return true;
+            const concat = body[i + 1],
+              restore = body[i + 2];
+            return !(
+              concat?.kind === "assign" &&
+              concat.value.kind === "strConcat" &&
+              concat.value.left.kind === "varRef" &&
+              concat.value.left.localId === concat.localId &&
+              restore?.kind === "fieldSet" &&
+              restore.className === stmt.className &&
+              restore.field === stmt.field &&
+              restore.value.kind === "varRef" &&
+              restore.value.localId === concat.localId &&
+              stmt.obj.kind === "varRef" &&
+              restore.obj.kind === "varRef" &&
+              stmt.obj.localId === restore.obj.localId
+            );
+          });
+          return stmts.length === expression.stmts.length ? expression : { ...expression, stmts };
+        }
         if (
           expression.kind !== "fieldIncDec" ||
           instrumented(expression.obj) ||
           !tracked(expression.className, expression.field)
         )
           return expression;
-        const receiver = local(expression.obj.type, expression.loc),
-          result = local(expression.type, expression.loc);
+        const receiver = local(expression.obj.type, expression.loc);
         receivers.add(receiver.localId);
+        if (guarded(expression.className, expression.field)) {
+          const loc = expression.loc;
+          const stmts: IrStmt[] = [
+            { kind: "varDecl", localId: receiver.localId, init: expression.obj, loc },
+          ];
+          const read: IrExpr = {
+            kind: "fieldGet",
+            obj: receiver,
+            className: expression.className,
+            field: expression.field,
+            type: expression.fieldDyn ? DYN : F64,
+            loc,
+          };
+          const old = save(
+            expression.fieldDyn ? { kind: "dynCheck", value: read, type: F64, loc } : read,
+            stmts,
+          );
+          const next = save(
+            {
+              kind: "bin",
+              op: expression.op,
+              left: old,
+              right: { kind: "numLit", value: 1, type: F64, loc },
+              type: F64,
+              loc,
+            },
+            stmts,
+          );
+          stmts.push(
+            ...store(
+              {
+                kind: "fieldSet",
+                obj: receiver,
+                className: expression.className,
+                field: expression.field,
+                value: expression.fieldDyn ? lowerer.coerceToExpected(next, DYN) : next,
+                propertyOp: expression.propertyOp ?? "set",
+                loc,
+              },
+              receiver,
+            ),
+          );
+          return {
+            kind: "seqExpr",
+            stmts,
+            result: expression.prefix ? next : old,
+            type: expression.type,
+            loc,
+          };
+        }
+        const result = local(expression.type, expression.loc);
         const update: Extract<IrExpr, { kind: "fieldIncDec" }> = { ...expression, obj: receiver };
         return {
           kind: "seqExpr",
@@ -499,7 +680,7 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
               loc: expression.loc,
             },
             { kind: "varDecl", localId: result.localId, init: update, loc: expression.loc },
-            created(receiver, expression.className, expression.field, expression.loc),
+            created(receiver, expression.className, expression.field, false, expression.loc),
           ],
           result,
           type: expression.type,
@@ -508,16 +689,24 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
       },
     });
   }
+  // An unused mutation helper still affects whole-module effect analysis.
+  // Native admission already owns field creation when no fallback was used.
+  if (!needsCreated) return;
+  const value = varRef("value", DYN, loc),
+    key = varRef("key", DYN, loc),
+    bag = varRef("bag", DYN, loc);
   functions.push({
     name,
     params: [
       { localId: "value", name: "value", type: DYN },
       { localId: "key", name: "key", type: DYN },
+      { localId: "define", name: "define", type: BOOL },
     ],
     returnType: VOID,
     locals: [
       { id: "value", name: "value", type: DYN, mutable: false },
       { id: "key", name: "key", type: DYN, mutable: false },
+      { id: "define", name: "define", type: BOOL, mutable: false },
       { id: "bag", name: "bag", type: DYN, mutable: false },
     ],
     body: [
@@ -536,9 +725,22 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
       {
         kind: "if",
         cond: {
-          kind: "unary",
-          op: "!",
-          operand: { kind: "libCall", fn: "dyn.hasOwnComputed", args: [bag, key], type: BOOL, loc },
+          kind: "logical",
+          op: "||",
+          left: varRef("define", BOOL, loc),
+          right: {
+            kind: "unary",
+            op: "!",
+            operand: {
+              kind: "libCall",
+              fn: "dyn.hasOwnComputed",
+              args: [bag, key],
+              type: BOOL,
+              loc,
+            },
+            type: BOOL,
+            loc,
+          },
           type: BOOL,
           loc,
         },
@@ -608,7 +810,7 @@ export class ClassDynamicDispatch {
       probe: "in" | "own" | "enumerable" | undefined;
     }
   >();
-  private readonly computedClassHelpers = new Map<string, IrFunction>();
+  private readonly computedClassHelpers = new Map<string, { fn: IrFunction; info: ClassInfo }>();
   private normalization: IrFunction | null = null;
   private normalizationKey = "";
   private staticPropertyBag: IrFunction | null = null;
@@ -667,16 +869,37 @@ export class ClassDynamicDispatch {
       if (seenTypes.has(key)) return;
       seenTypes.add(key);
       if (type.kind === "object") {
-        if (isDynTypedRefType(type)) this.boxed.add(type.className);
+        if (isDynTypedRefType(type)) {
+          this.boxed.add(type.className);
+          const info = lowerer.classes.get(type.className);
+          info?.def.fields.forEach((field) => discover(field.type));
+          if (info?.base) discover({ kind: "object", className: info.base.def.name });
+          const descendants = (child: ClassInfo): void => {
+            if (lowerer.classCanBeConstructed(child))
+              discover({ kind: "object", className: child.def.name });
+            child.subclasses.forEach(descendants);
+          };
+          info?.subclasses.forEach(descendants);
+        }
       } else if (type.kind === "classval") this.boxedConstructors.add(type.className);
-      else if (type.kind === "array") discover(type.elem);
-      else if (type.kind === "record") {
+      else if (type.kind === "array" || type.kind === "set") discover(type.elem);
+      else if (type.kind === "map") {
+        discover(type.key);
+        discover(type.value);
+      } else if (type.kind === "record") {
         const shape = lowerer.shapes.get(type.shapeId);
         shape?.fields.forEach((field) => discover(field.type));
         if (shape?.indexValue) discover(shape.indexValue);
       } else if (type.kind === "union") lowerer.unions.get(type.unionId)?.arms.forEach(discover);
-      else if (type.kind === "func") discover(type.ret);
-      else if (type.kind === "promise") discover(type.inner);
+      else if (type.kind === "func") {
+        type.params.forEach(discover);
+        discover(type.ret);
+      } else if (type.kind === "promise") discover(type.inner);
+      else if (type.kind === "generator") {
+        discover(type.yieldT);
+        discover(type.retT);
+        discover(type.nextT);
+      }
     };
     for (const fn of functions)
       everyStmtList(fn.body, {
@@ -686,7 +909,11 @@ export class ClassDynamicDispatch {
           if (
             statement.kind === "fieldSet" &&
             lowerer.classes.get(statement.className)?.def.tracksOwnFields &&
-            isClassOwnEnumerableFieldName(statement.field)
+            isClassOwnEnumerableField(
+              lowerer.classes
+                .get(statement.className)
+                ?.def.fields.find((f) => f.name === statement.field),
+            )
           )
             discover(statement.obj.type);
           return true;
@@ -700,13 +927,31 @@ export class ClassDynamicDispatch {
             this.serializesClasses = true;
           }
           switch (expr.kind) {
+            case "intrinsic":
+              if (
+                [
+                  "native.freeze",
+                  "native.seal",
+                  "native.preventExtensions",
+                  "native.isFrozen",
+                  "native.isSealed",
+                  "native.isExtensible",
+                ].includes(expr.name) &&
+                expr.args[0]
+              )
+                discover(expr.args[0].type);
+              break;
             case "dynFrom":
               discover(expr.value.type);
               break;
             case "fieldIncDec":
               if (
                 lowerer.classes.get(expr.className)?.def.tracksOwnFields &&
-                isClassOwnEnumerableFieldName(expr.field)
+                isClassOwnEnumerableField(
+                  lowerer.classes
+                    .get(expr.className)
+                    ?.def.fields.find((f) => f.name === expr.field),
+                )
               )
                 discover(expr.obj.type);
               break;
@@ -721,6 +966,7 @@ export class ClassDynamicDispatch {
               break;
             case "dynKeyGet":
             case "dynInvoke":
+            case "dynHasKey":
               rewrite.add(fn);
               break;
             case "dynCheck":
@@ -841,7 +1087,16 @@ export class ClassDynamicDispatch {
               type: BOOL,
               loc,
             },
-            then: [{ kind: "return", value: prototype, loc }],
+            then: [
+              {
+                kind: "return",
+                value:
+                  classHasNativePrototype(info) && !info.prototypeReflectionRefusal
+                    ? { kind: "libCall", fn: "dyn.getPrototype", args: [value], type: DYN, loc }
+                    : prototype,
+                loc,
+              },
+            ],
             else_: null,
             loc,
           });
@@ -868,7 +1123,15 @@ export class ClassDynamicDispatch {
               type: BOOL,
               loc,
             },
-            then: [{ kind: "return", value: prototype, loc }],
+            then: [
+              {
+                kind: "return",
+                value: classHasNativePrototype(info)
+                  ? { kind: "libCall", fn: "dyn.getPrototype", args: [value], type: DYN, loc }
+                  : prototype,
+                loc,
+              },
+            ],
             else_: null,
             loc,
           });
@@ -944,6 +1207,10 @@ export class ClassDynamicDispatch {
     for (const plan of this.propertyReceivers(lowerer, false, false)) {
       const info = plan.info;
       const className = info.def.name;
+      if (info.decl && classNativeIntegrityEligible(info)) {
+        const loc = this.propertyBag.loc;
+        classPrototypeData(lowerer, info, loc, this.propertyReceiver(plan, loc).receiver);
+      }
       let instancePrototype = this.instancePrototypes.get(plan.capsule.def.name);
       if (!instancePrototype && hasClassPrototypeData(info)) {
         const name = `%class.instancePrototype:${plan.capsule.def.name}`;
@@ -1019,6 +1286,7 @@ export class ClassDynamicDispatch {
         current.subclasses.some(
           (child) => lowerer.classCanBeConstructed(child) && needsPrototype(child),
         );
+      const ownStorageOnly = classHasNativePrototype(info);
       const prototypeFor = (current: ClassInfo, receiver: IrExpr, loc: SrcLoc): IrExpr | null => {
         const currentReceiver: IrExpr =
           receiver.type.kind === "object" && receiver.type.className !== current.def.name
@@ -1052,7 +1320,7 @@ export class ClassDynamicDispatch {
         return result;
       };
       for (const existingInit of this.bagInitializers.get(className) ?? []) {
-        if (existingInit.value.kind === "dynObjLit" && needsPrototype(info)) {
+        if (!ownStorageOnly && existingInit.value.kind === "dynObjLit" && needsPrototype(info)) {
           const prototype = prototypeFor(info, existingInit.obj, existingInit.loc);
           if (prototype) {
             existingInit.value = {
@@ -1068,8 +1336,8 @@ export class ClassDynamicDispatch {
       }
       if (this.bagClasses.has(plan.key)) continue;
       this.bagClasses.add(plan.key);
-      this.ensurePropertyBag(info);
-      if (info.decl && isJsSourceFile(info.decl.getSourceFile())) {
+      this.ensurePropertyBag(lowerer, info);
+      if (info.decl) {
         let root = info;
         while (root.base && !root.base.def.runtime) root = root.base;
         const track = (current: ClassInfo): void => {
@@ -1089,7 +1357,8 @@ export class ClassDynamicDispatch {
         type: DYN,
         loc,
       };
-      const prototype = needsPrototype(info) ? prototypeFor(info, receiver, loc) : null;
+      const prototype =
+        !ownStorageOnly && needsPrototype(info) ? prototypeFor(info, receiver, loc) : null;
       const initialize: Extract<IrStmt, { kind: "fieldSet" }> = {
         kind: "fieldSet",
         obj: receiver,
@@ -1531,14 +1800,28 @@ export class ClassDynamicDispatch {
               ? expr
               : null;
           const computedProbe =
-            expr.kind === "libCall" &&
-            [
-              "dyn.hasKeyComputed",
-              "dyn.hasOwnComputed",
-              "dyn.propertyIsEnumerableComputed",
-            ].includes(expr.fn)
-              ? expr
-              : null;
+            expr.kind === "dynHasKey"
+              ? {
+                  kind: "libCall" as const,
+                  fn: "dyn.hasKeyComputed" as const,
+                  args: [
+                    expr.value,
+                    lowerer.coerceToExpected(
+                      { kind: "strLit", value: expr.key, type: STRING, loc: expr.loc },
+                      DYN,
+                    ),
+                  ],
+                  type: BOOL,
+                  loc: expr.loc,
+                }
+              : expr.kind === "libCall" &&
+                  [
+                    "dyn.hasKeyComputed",
+                    "dyn.hasOwnComputed",
+                    "dyn.propertyIsEnumerableComputed",
+                  ].includes(expr.fn)
+                ? expr
+                : null;
           if (computedRead || computedWrite || computedProbe) {
             const probe = computedProbe
               ? computedProbe.fn === "dyn.hasKeyComputed"
@@ -1875,7 +2158,7 @@ export class ClassDynamicDispatch {
               lowerer.liftedFns.push(helper);
               changed = true;
             }
-            return {
+            const call: IrExpr = {
               kind: "call",
               callee: dispatch.fn.name,
               args: reflect
@@ -1886,6 +2169,9 @@ export class ClassDynamicDispatch {
               type: dispatch.fn.returnType,
               loc: expr.loc,
             };
+            return expr.kind === "dynHasKey" && expr.negated
+              ? { kind: "unary", op: "!", operand: call, type: BOOL, loc: expr.loc }
+              : call;
           }
           const read = expr.kind === "dynKeyGet" && expr.key.kind === "strLit" ? expr : null;
           const write =
@@ -2336,7 +2622,7 @@ export class ClassDynamicDispatch {
                         kind: "libCall",
                         fn: "dyn.hasKey",
                         args: [
-                          bag,
+                          classHasNativePrototype(info) ? value : bag,
                           { kind: "strLit", value: dispatch.source.method, type: STRING, loc },
                         ],
                         type: BOOL,
@@ -2348,9 +2634,13 @@ export class ClassDynamicDispatch {
                       {
                         key: { kind: "strLit", value: "value", type: STRING, loc },
                         value: {
-                          kind: "dynKeyGet",
-                          value: bag,
-                          key: { kind: "strLit", value: dispatch.source.method, type: STRING, loc },
+                          kind: "libCall",
+                          fn: "dyn.bagGet",
+                          args: [
+                            bag,
+                            { kind: "strLit", value: dispatch.source.method, type: STRING, loc },
+                            value,
+                          ],
                           type: DYN,
                           loc,
                         },
@@ -2492,7 +2782,10 @@ export class ClassDynamicDispatch {
       for (const plan of this.propertyReceivers(lowerer, true)) {
         const { info } = plan;
         if (
-          !isClassOwnEnumerableFieldName(dispatch.name) ||
+          !(
+            classFieldType(info, dispatch.name) !== undefined ||
+            isClassOwnEnumerableFieldName(dispatch.name)
+          ) ||
           (!(info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
             !eventTargetInheritedMember(info, dispatch.name) &&
             !findMethodOn(lowerer, info, dispatch.name) &&
@@ -2537,7 +2830,7 @@ export class ClassDynamicDispatch {
         const receiverType: IrType = { kind: "object", className: info.def.name };
         const receiver = varRef("p.receiver", receiverType, loc);
         const helperKey = JSON.stringify([dispatch.fn.name, info.def.name]);
-        const existingHelper = this.computedClassHelpers.get(helperKey);
+        const existingHelper = this.computedClassHelpers.get(helperKey)?.fn;
         const callHelper = (helper: IrFunction): IrStmt => {
           const call: IrExpr = {
             kind: "call",
@@ -2569,7 +2862,7 @@ export class ClassDynamicDispatch {
           changed = true;
           continue;
         }
-        const memberBody = (name: string): IrStmt[] => {
+        const memberBody = (name: string, isSymbol = false): IrStmt[] => {
           if (
             dispatch.probe &&
             (name === "message" || name === "name") &&
@@ -2614,9 +2907,59 @@ export class ClassDynamicDispatch {
             ];
           if (!dispatch.probe)
             return dispatch.reflect
-              ? this.reflectPropertyBody(lowerer, { ...dispatch, name }, info, receiver)
-              : this.propertyBody(lowerer, { ...dispatch, name }, info, receiver);
+              ? this.reflectPropertyBody(
+                  lowerer,
+                  { ...dispatch, name, symbol: isSymbol },
+                  info,
+                  receiver,
+                )
+              : this.propertyBody(lowerer, { ...dispatch, name, symbol: isSymbol }, info, receiver);
           const prototypeMethod = lowerer.prototypeMethodAccesses.has(name);
+          if (
+            dispatch.probe === "in" &&
+            !isSymbol &&
+            !info.fields.has(name) &&
+            !prototypeMethod &&
+            classHasNativePrototype(info)
+          ) {
+            const instance = lowerer.coerceToExpected(receiver, DYN);
+            const prototype = classPrototypeData(lowerer, info, loc, receiver);
+            // Presence alone must not compile an unobserved method body.
+            // The declaration answer applies only to the default prototype.
+            if (prototype)
+              return [
+                {
+                  kind: "return",
+                  value: {
+                    kind: "ternary",
+                    cond: {
+                      kind: "dynScalarEq",
+                      left: {
+                        kind: "libCall",
+                        fn: "dyn.getPrototype",
+                        args: [instance],
+                        type: DYN,
+                        loc,
+                      },
+                      right: prototype,
+                      type: BOOL,
+                      loc,
+                    },
+                    then: { kind: "boolLit", value: true, type: BOOL, loc },
+                    else_: {
+                      kind: "libCall",
+                      fn: "dyn.in",
+                      args: [instance, { kind: "strLit", value: name, type: STRING, loc }],
+                      type: BOOL,
+                      loc,
+                    },
+                    type: BOOL,
+                    loc,
+                  },
+                  loc,
+                },
+              ];
+          }
           if (info.fields.has(name) || (dispatch.probe === "in" && !prototypeMethod)) {
             if (info.fields.has(name) && info.def.tracksOwnFields) {
               const bag = this.readPropertyBagOrEmpty(
@@ -2637,7 +2980,12 @@ export class ClassDynamicDispatch {
                   value: {
                     kind: "libCall",
                     fn: symbol ? `${fn}Computed` : fn,
-                    args: [bag, symbol ?? { kind: "strLit", value: name, type: STRING, loc }],
+                    args: [
+                      dispatch.probe === "in" && classHasNativePrototype(info)
+                        ? lowerer.coerceToExpected(receiver, DYN)
+                        : bag,
+                      symbol ?? { kind: "strLit", value: name, type: STRING, loc },
+                    ],
                     type: BOOL,
                     loc,
                   },
@@ -2669,7 +3017,9 @@ export class ClassDynamicDispatch {
                 kind: "libCall",
                 fn: symbol ? `${fn}Computed` : fn,
                 args: [
-                  bag,
+                  dispatch.probe === "in" && classHasNativePrototype(info)
+                    ? lowerer.coerceToExpected(receiver, DYN)
+                    : bag,
                   symbol
                     ? varRef("p.key", DYN, loc)
                     : { kind: "strLit", value: name, type: STRING, loc },
@@ -2760,7 +3110,7 @@ export class ClassDynamicDispatch {
             const before = lowerer.diags.length;
             let then: IrStmt[];
             try {
-              then = memberBody(name);
+              then = memberBody(name, true);
             } catch (error) {
               if (!(error instanceof PoisonError) || !info.decl) throw error;
               const fence = lowerer.deferToRuntimeFence(before, info.decl, { kind: "statement" });
@@ -2780,6 +3130,56 @@ export class ClassDynamicDispatch {
               else_: null,
               loc,
             });
+          }
+          if (classHasNativePrototype(info)) {
+            const instance = varRef("p.0", DYN, loc);
+            const key = varRef("p.key", DYN, loc);
+            const reflected: IrExpr = {
+              kind: "libCall",
+              fn: dispatch.write ? "dyn.reflectSet" : "dyn.reflectGet",
+              args: [
+                instance,
+                key,
+                ...(dispatch.write ? [varRef("p.1", DYN, loc)] : []),
+                dispatch.reflect ? varRef("p.reflectReceiver", DYN, loc) : instance,
+              ],
+              type: dispatch.write ? BOOL : DYN,
+              loc,
+            };
+            if (dispatch.write && !dispatch.reflect)
+              branches.push(
+                {
+                  kind: "exprStmt",
+                  expr: {
+                    kind: "libCall",
+                    fn: "dyn.keySetComputed",
+                    args: [instance, key, varRef("p.1", DYN, loc)],
+                    type: VOID,
+                    loc,
+                  },
+                  loc,
+                },
+                { kind: "return", value: null, loc },
+              );
+            else
+              branches.push({
+                kind: "return",
+                value: dispatch.probe
+                  ? {
+                      kind: "libCall",
+                      fn:
+                        dispatch.probe === "in"
+                          ? "dyn.hasKeyComputed"
+                          : dispatch.probe === "own"
+                            ? "dyn.hasOwnComputed"
+                            : "dyn.propertyIsEnumerableComputed",
+                      args: [instance, key],
+                      type: BOOL,
+                      loc,
+                    }
+                  : reflected,
+                loc,
+              });
           }
           if (branches.length) {
             dispatch.fn.body.unshift({
@@ -2817,7 +3217,13 @@ export class ClassDynamicDispatch {
           changed = true;
           continue;
         }
-        const names = new Set([...info.fields.keys()].filter(isClassOwnEnumerableFieldName));
+        const symbolNames = new Set<string>();
+        if (info.symbolFields) for (const name of info.symbolFields.values()) symbolNames.add(name);
+        const names = new Set(
+          info.def.fields
+            .filter((field) => isClassOwnEnumerableField(field) && !symbolNames.has(field.name))
+            .map((f) => f.name),
+        );
         if (info.builtinStream)
           for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
         const inherited = eventTargetApiMembers(info);
@@ -2904,14 +3310,27 @@ export class ClassDynamicDispatch {
                         fn: "dyn.bagSet",
                         args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
                       }
-                    : expression,
+                    : expression.kind === "libCall" &&
+                        info.decl &&
+                        classHasNativePrototype(info) &&
+                        ["dyn.reflectGet", "dyn.reflectSet", "dyn.in", "dyn.hasKey"].includes(
+                          expression.fn,
+                        )
+                      ? {
+                          ...expression,
+                          args: [
+                            lowerer.coerceToExpected(receiver, DYN),
+                            ...expression.args.slice(1),
+                          ],
+                        }
+                      : expression,
             }),
           ],
           loc,
         };
         this.generated.add(helper);
         lowerer.liftedFns.push(helper);
-        this.computedClassHelpers.set(helperKey, helper);
+        this.computedClassHelpers.set(helperKey, { fn: helper, info });
         dispatch.fn.body.splice(dispatch.branchIndex, 0, callHelper(helper));
         changed = true;
       }
@@ -2923,7 +3342,9 @@ export class ClassDynamicDispatch {
         this.enumerationClasses.add(classKey);
         const loc = enumeration.loc;
         const { condition } = this.propertyReceiver(plan, loc);
-        const bag = this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
+        const bag = classHasNativePrototype(plan.info)
+          ? varRef("p.0", DYN, loc)
+          : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
         enumeration.body.unshift({
           kind: "if",
           cond: condition,
@@ -3058,7 +3479,10 @@ export class ClassDynamicDispatch {
     bag: IrExpr,
     key: IrExpr,
     loc: SrcLoc,
+    owner?: IrExpr,
   ): IrExpr {
+    if (owner && fn === "dyn.hasKey")
+      return { kind: "libCall", fn, args: [owner, key], type: BOOL, loc };
     const name = fn === "dyn.hasKey" ? "%dyn.class.bagHas" : "%dyn.class.bagHasComputed";
     let helper = lowerer.liftedFns.find((item) => item.name === name);
     if (!helper) {
@@ -3136,11 +3560,12 @@ export class ClassDynamicDispatch {
     type: Extract<IrType, { kind: "object" }>,
     loc: SrcLoc,
     readOnly: boolean,
+    exact = false,
   ): IrFunction | null {
     // A superclass constructor can be the first code to access this bag.
     // Its receiver still needs the actual subclass's prototype.
-    if (lowerer.classes.get(type.className)?.subclasses.length) return null;
-    const key = `${type.className}:${readOnly}`;
+    if (!exact && lowerer.classes.get(type.className)?.subclasses.length) return null;
+    const key = `${type.className}:${readOnly}:${exact}`;
     const existing = this.typedPropertyBags.get(key);
     if (existing) return existing;
     const initializers = this.bagInitializers.get(type.className);
@@ -3159,15 +3584,14 @@ export class ClassDynamicDispatch {
       obj: receiver,
       value: transformExpr(initializers[0]!.value, {
         stmt: (stmt) => stmt,
-        expr: (expr) =>
-          expr.kind === "dynCheck" && expr.value.kind === "varRef" && expr.value.localId === "p.0"
-            ? receiver
-            : expr,
+        // The initializer shares its complete receiver, including any capsule
+        // downcast. Replacing only its dynCheck would leave a self-downcast.
+        expr: (expr) => (expr === initializers[0]!.obj ? receiver : expr),
       }),
       loc,
     };
     const helper: IrFunction = {
-      name: `%class.${readOnly ? "readProperties" : "properties"}:${type.className}`,
+      name: `%class.${exact ? "nativeProperties" : readOnly ? "readProperties" : "properties"}:${type.className}`,
       params: [{ localId: "p.0", name: "value", type }],
       returnType: DYN,
       locals: [{ id: "p.0", name: "value", type, mutable: false }],
@@ -3197,6 +3621,55 @@ export class ClassDynamicDispatch {
    * prototype-backed bag is produced for this read only. A published object
    * cannot take the store, and Node's reads never write. */
   finalize(lowerer?: Lowerer): void {
+    if (lowerer) {
+      // Reflection can be discovered after a presence helper is cached. Once
+      // the declaring prototype is exposed, its live slots own presence even
+      // when its identity stays unchanged after a computed deletion.
+      for (const { fn, info } of this.computedClassHelpers.values()) {
+        fn.body = transformStmtList(fn.body, {
+          stmt: (statement) => statement,
+          expr: (expression) => {
+            if (
+              expression.kind !== "ternary" ||
+              expression.cond.kind !== "dynScalarEq" ||
+              expression.then.kind !== "boolLit" ||
+              !expression.then.value ||
+              expression.else_.kind !== "libCall" ||
+              expression.else_.fn !== "dyn.in" ||
+              expression.else_.args[1]?.kind !== "strLit"
+            )
+              return expression;
+            const name = expression.else_.args[1].value;
+            for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
+              if (
+                ![name, `get:${name}`, `set:${name}`].some(
+                  (member) =>
+                    (owner!.methods.has(member) && !owner!.methods.get(member)?.abstract) ||
+                    owner!.genericMethods?.has(member),
+                )
+              )
+                continue;
+              return owner.prototypeReflectionReady && !owner.prototypeReflectionRefusal
+                ? expression.else_
+                : expression;
+            }
+            return expression;
+          },
+        });
+      }
+      for (const info of lowerer.classes.values()) {
+        if (!info.def.tracksOwnFields || info.def.runtime || !classNativeIntegrityEligible(info))
+          continue;
+        const helper = this.typedPropertyBag(
+          lowerer,
+          { kind: "object", className: info.def.name },
+          info.def.loc,
+          false,
+          true,
+        );
+        if (helper) info.def.nativePropertyBagHelper = helper.name;
+      }
+    }
     for (const { helper, initialize } of this.readPropertyBags) {
       const absent = helper.body[0];
       if (isEmptyBag(initialize.value)) helper.body.shift();
@@ -3359,15 +3832,30 @@ export class ClassDynamicDispatch {
    * shares it and normal class tracing/disposal owns its values. Insert it
    * at the same prefix offset throughout a hierarchy, including classes
    * collected before this untyped crossing was discovered. */
-  private ensurePropertyBag(info: ClassInfo): void {
-    if (info.fields.has(PROPERTY_BAG)) return;
+  private ensurePropertyBag(lowerer: Lowerer, info: ClassInfo): void {
     let root = info;
     while (root.base && !root.base.def.runtime) root = root.base;
+    const check = (current: ClassInfo): void => {
+      const existing = current.def.fields.find((field) => field.name === PROPERTY_BAG);
+      if (existing && existing.visibility !== "internal" && current.decl)
+        lowerer.unsupported(
+          "SC1090",
+          current.decl,
+          `public field '${PROPERTY_BAG}' colliding with compiler property storage`,
+        );
+      current.subclasses.forEach(check);
+    };
+    check(root);
+    if (info.fields.has(PROPERTY_BAG)) return;
     const index = root.def.fields.length;
     const add = (current: ClassInfo): void => {
       if (!current.fields.has(PROPERTY_BAG)) {
         current.fields.set(PROPERTY_BAG, DYN);
-        current.def.fields.splice(index, 0, { name: PROPERTY_BAG, type: DYN });
+        current.def.fields.splice(index, 0, {
+          name: PROPERTY_BAG,
+          type: DYN,
+          visibility: "internal",
+        });
       }
       current.subclasses.forEach(add);
     };
@@ -3378,19 +3866,16 @@ export class ClassDynamicDispatch {
    * Preorder insertion lets later branches test the most derived layout first. */
   private propertyReceivers(
     lowerer: Lowerer,
-    streams = false,
+    includeRuntime = false,
     normalize = true,
   ): PropertyReceiver[] {
     const plans: PropertyReceiver[] = [];
     const seen = new Set<string>();
     for (const name of this.boxed) {
       const capsule = lowerer.classes.get(name);
-      if (
-        !capsule ||
-        ((capsule.builtinEmitter || capsule.builtinStream) && !streams) ||
-        capsule.builtinError
-      )
-        continue;
+      // Runtime roots own a fixed ABI prefix. Property dispatch may use them,
+      // but compiler property bags must only extend compiled class layouts.
+      if (!capsule || (!includeRuntime && capsule.def.runtime) || capsule.builtinError) continue;
       const canonical = normalize && !capsule.builtinStream && !capsule.builtinEmitter;
       const visit = (info: ClassInfo): void => {
         if (
@@ -3461,7 +3946,7 @@ export class ClassDynamicDispatch {
     const actualReceiver = varRef("p.reflectReceiver", DYN, loc);
     const instance = lowerer.coerceToExpected(receiver, DYN);
     const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
-    const field = info.fields.get(name);
+    const field = classFieldType(info, name, dispatch.symbol ? "symbol" : "public");
     const member = `${write ? "set" : "get"}:${name}`;
     const accessor = field ? null : findMethodOn(lowerer, info, member);
     const bag: IrExpr = {
@@ -3475,7 +3960,7 @@ export class ClassDynamicDispatch {
       kind: "libCall",
       fn: write ? "dyn.reflectSet" : "dyn.reflectGet",
       args: [
-        bag,
+        classHasNativePrototype(info) ? instance : bag,
         lowerer.coerceToExpected(key, DYN),
         ...(write ? [varRef("p.1", DYN, loc)] : []),
         actualReceiver,
@@ -3483,6 +3968,14 @@ export class ClassDynamicDispatch {
       type: write ? BOOL : DYN,
       loc,
     };
+    const prototypeAccessor =
+      accessor ?? findMethodOn(lowerer, info, `${write ? "get" : "set"}:${name}`);
+    if (
+      classHasNativePrototype(info) &&
+      prototypeAccessor &&
+      observeClassPrototypeProperty(lowerer, prototypeAccessor.declarer, name, loc, receiver)
+    )
+      return [{ kind: "return", value: fallback, loc }];
     if (accessor && info.decl) {
       const method = classMethodValue(lowerer, info.decl, info, member, loc);
       if (method) {
@@ -3529,12 +4022,14 @@ export class ClassDynamicDispatch {
                 ...expression,
                 fn: "dyn.reflectGet",
                 args: [
-                  expression.args[0]!,
+                  classHasNativePrototype(info) ? instance : expression.args[0]!,
                   lowerer.coerceToExpected(expression.args[1]!, DYN),
                   actualReceiver,
                 ],
               }
-            : expression,
+            : expression.kind === "libCall" && expression.fn === "dyn.reflectGet"
+              ? { ...expression, args: [expression.args[0]!, expression.args[1]!, actualReceiver] }
+              : expression,
       });
     return [
       {
@@ -3689,7 +4184,7 @@ export class ClassDynamicDispatch {
               loc,
             },
           ];
-    const field = info.fields.get(name);
+    const field = classFieldType(info, name, dispatch.symbol ? "symbol" : "public");
     const member = `${write ? "set" : "get"}:${name}`;
     const accessor = field ? null : findMethodOn(lowerer, info, member);
     const fence = (): IrStmt[] => [
@@ -3702,6 +4197,51 @@ export class ClassDynamicDispatch {
     ];
     const getRecord = (id: string) => lowerer.shapes.get(id);
     const getUnion = (id: string) => lowerer.unions.get(id);
+    const nativePrototype = classHasNativePrototype(info);
+    const prototypeAccessor = field
+      ? null
+      : (accessor ?? findMethodOn(lowerer, info, `${write ? "get" : "set"}:${name}`));
+    if (
+      nativePrototype &&
+      prototypeAccessor &&
+      observeClassPrototypeProperty(lowerer, prototypeAccessor.declarer, name, loc, receiver)
+    ) {
+      const instance = lowerer.coerceToExpected(receiver, DYN);
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      if (!write)
+        return [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.reflectGet",
+              args: [instance, lowerer.coerceToExpected(key, DYN), instance],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      return [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.bagSet",
+            args: [
+              this.readPropertyBagOrEmpty(lowerer, instance, loc),
+              key,
+              varRef("p.1", DYN, loc),
+              instance,
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ];
+    }
     if (!write) {
       if (
         name === "constructor" &&
@@ -3714,6 +4254,26 @@ export class ClassDynamicDispatch {
       ) {
         this.constructors.set(info.def.name, info);
         const cls = lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl), DYN);
+        if (nativePrototype && observeClassPrototypeProperty(lowerer, info, name, loc, receiver)) {
+          const instance = lowerer.coerceToExpected(receiver, DYN);
+          return [
+            {
+              kind: "return",
+              value: {
+                kind: "libCall",
+                fn: "dyn.reflectGet",
+                args: [
+                  instance,
+                  lowerer.coerceToExpected({ kind: "strLit", value: name, type: STRING, loc }, DYN),
+                  instance,
+                ],
+                type: DYN,
+                loc,
+              },
+              loc,
+            },
+          ];
+        }
         const bag = this.readPropertyBag(lowerer, receiver, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
         return [
@@ -3803,6 +4363,7 @@ export class ClassDynamicDispatch {
                 bag,
                 key,
                 loc,
+                nativePrototype ? lowerer.coerceToExpected(receiver, DYN) : undefined,
               ),
               then: [
                 {
@@ -3810,7 +4371,11 @@ export class ClassDynamicDispatch {
                   value: {
                     kind: "libCall",
                     fn: symbol ? "dyn.reflectGet" : "dyn.bagGet",
-                    args: [bag, key, lowerer.coerceToExpected(receiver, DYN)],
+                    args: [
+                      symbol && nativePrototype ? lowerer.coerceToExpected(receiver, DYN) : bag,
+                      key,
+                      lowerer.coerceToExpected(receiver, DYN),
+                    ],
                     type: DYN,
                     loc,
                   },
@@ -3877,7 +4442,26 @@ export class ClassDynamicDispatch {
         ];
       }
       const type = field ?? accessor!.sig.ret;
-      if (!canConvertToDyn(type, getRecord, getUnion)) return fence();
+      if (!canConvertToDyn(type, getRecord, getUnion)) {
+        if (!field || !info.def.tracksOwnFields || symbolMemberKey(lowerer, info, name, loc))
+          return fence();
+        return [
+          {
+            kind: "if",
+            cond: {
+              kind: "intrinsic",
+              name: "native.isDeclaredUndefined",
+              args: [receiver, { kind: "strLit", value: name, type: STRING, loc }],
+              type: BOOL,
+              loc,
+            },
+            then: [{ kind: "return", value: dynUndefinedExpr(loc), loc }],
+            else_: null,
+            loc,
+          },
+          ...fence(),
+        ];
+      }
       const value: IrExpr = field
         ? { kind: "fieldGet", obj: receiver, className: info.def.name, field: name, type, loc }
         : accessorCall(lowerer, info.def.name, member, receiver, [], type, loc);
@@ -3933,11 +4517,26 @@ export class ClassDynamicDispatch {
                 type: BOOL,
                 loc,
               },
-              then: boxed,
+              then: symbol
+                ? boxed
+                : {
+                    kind: "ternary",
+                    cond: {
+                      kind: "intrinsic",
+                      name: "native.isDeclaredUndefined",
+                      args: [receiver, key],
+                      type: BOOL,
+                      loc,
+                    },
+                    then: dynUndefinedExpr(loc),
+                    else_: boxed,
+                    type: DYN,
+                    loc,
+                  },
               else_: {
                 kind: "libCall",
                 fn: symbol ? "dyn.reflectGet" : "dyn.bagGet",
-                args: [bag, key, instance],
+                args: [symbol && nativePrototype ? instance : bag, key, instance],
                 type: DYN,
                 loc,
               },

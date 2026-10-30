@@ -1,5 +1,5 @@
 import { InternalCompilerError } from "../../errors.js";
-import { dynUndefinedExpr, helperLoc, varRef } from "../../ir/build.js";
+import { helperLoc, varRef } from "../../ir/build.js";
 import {
   BOOL,
   F64,
@@ -45,14 +45,7 @@ export function arrayValueType(lowerer: Lowerer, elem: IrType): IrType {
  * ToNumber(undefined). Numeric updates use it in place of the optional
  * element value. */
 export function arrayNumberRead(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
-  return {
-    kind: "arrIntrinsic",
-    method: "getNumber",
-    receiver: arr,
-    args: [index],
-    type: F64,
-    loc,
-  };
+  return { kind: "arrayPropertyRead", arr, index, consume: "number", type: F64, loc };
 }
 
 /** Read one stabilized receiver/index pair. Both a hole and present undefined yield undefined. */
@@ -63,23 +56,12 @@ export function arrayValueRead(
   elem: IrType,
   loc: SrcLoc,
 ): IrExpr {
-  const type = arrayValueType(lowerer, elem);
-  const read: IrExpr = { kind: "arrayGet", arr, index, type: elem, loc };
-  const missing: IrExpr =
-    type.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.wrappedUndefined(type, loc)!;
   return {
-    kind: "ternary",
-    cond: {
-      kind: "bin",
-      op: "===",
-      left: { kind: "arrayState", arr, index, type: F64, loc },
-      right: { kind: "numLit", value: 1, type: F64, loc },
-      type: BOOL,
-      loc,
-    },
-    then: typeEquals(elem, type) ? read : lowerer.coerceToExpected(read, type),
-    else_: missing,
-    type,
+    kind: "arrayPropertyRead",
+    arr,
+    index,
+    consume: "value",
+    type: arrayValueType(lowerer, elem),
     loc,
   };
 }
@@ -373,6 +355,7 @@ export function tryLowerNumericIndexRead(
   lowerer: Lowerer,
   operand: IrExpr,
   loc: SrcLoc,
+  constructor = false,
 ): IrExpr | null {
   if (operand.kind === "call" && isBytesReadHelperCall(lowerer, operand)) {
     // The plain element read: an invalid index reads as NaN, which is
@@ -388,27 +371,17 @@ export function tryLowerNumericIndexRead(
       invalidNaN: true,
     };
   }
-  if (
-    operand.kind !== "call" ||
-    operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(F64)}`)
-  )
-    return null;
+  if (operand.kind !== "call" || operand.args.length !== 2) return null;
   const [arr, index] = operand.args;
-  if (
-    operand.args.length !== 2 ||
-    arr?.type.kind !== "array" ||
-    arr.type.elem.kind !== "f64" ||
-    index?.type.kind !== "f64"
-  )
-    return null;
-  // The intrinsic owns the evaluated receiver through index evaluation,
-  // then borrows it for one slot lookup. No extra helper parameter or
-  // separate state/getter expressions need to retain the array again.
+  if (arr?.type.kind !== "array" || index?.type.kind !== "f64") return null;
+  const elem = arr.type.elem;
+  if (elem.kind !== "f64" && elem.kind !== "string" && elem.kind !== "bool") return null;
+  if (operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(elem)}`)) return null;
   return {
-    kind: "arrIntrinsic",
-    method: "getNumber",
-    receiver: arr,
-    args: [index],
+    kind: "arrayPropertyRead",
+    arr,
+    index,
+    consume: constructor ? "numberConstructor" : "number",
     type: F64,
     loc,
   };
@@ -433,13 +406,8 @@ export function tryLowerBytesReadNumberEquality(
   return tryLowerNumericIndexRead(lowerer, operand, operand.loc);
 }
 
-/** Fuse our own scalar-array read helper with an immediate ToBoolean, so a
- * condition such as `if (flags[i])` never boxes `T | undefined`. Numbers
- * reuse getNumber: a missing slot reads as NaN, which is falsy exactly like
- * undefined. Booleans test the slot state and then read the value; both
- * operands are evaluated twice, so they must be plain bindings/literals
- * (the same proof the indexed-comparison fusion uses). Returns a BOOL
- * expression with the original evaluation order, or null. */
+/** Consume one property Get with ToBoolean. Promoted getters may return a
+ * different runtime type, so truthiness must not pass through ToNumber. */
 export function tryLowerIndexTruthiness(
   lowerer: Lowerer,
   operand: IrExpr,
@@ -457,51 +425,5 @@ export function tryLowerIndexTruthiness(
   const elem = arr.type.elem;
   if (elem.kind !== "f64" && elem.kind !== "bool") return null;
   if (operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(elem)}`)) return null;
-  if (elem.kind === "f64") {
-    const number = tryLowerNumericIndexRead(lowerer, operand, loc);
-    return number ? lowerer.ensureBool(number, node) : null;
-  }
-  return tryFuseIndexRead(lowerer, operand, BOOL, (read) => read, {
-    kind: "boolLit",
-    value: false,
-    type: BOOL,
-    loc,
-  });
-}
-
-/** Fuse our own non-union array read helper with its single consumer:
- * `present` receives the strict element read, `missing` answers holes,
- * present undefined, and absent indices. The receiver and index evaluate
- * once more than in the helper form, so both must be plain bindings or
- * numeric literals (nothing can run between the state test and the read). */
-export function tryFuseIndexRead(
-  lowerer: Lowerer,
-  operand: IrExpr,
-  type: IrType,
-  present: (read: IrExpr) => IrExpr,
-  missing: IrExpr,
-): IrExpr | null {
-  if (operand.kind !== "call" || operand.args.length !== 2) return null;
-  const [arr, index] = operand.args;
-  if (arr?.type.kind !== "array" || index?.type.kind !== "f64") return null;
-  const elem = arr.type.elem;
-  if (elem.kind === "union" || elem.kind === "void") return null;
-  if (operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(elem)}`)) return null;
-  if (arr.kind !== "varRef" || (index.kind !== "varRef" && index.kind !== "numLit")) return null;
-  const loc = operand.loc;
-  return {
-    kind: "ternary",
-    cond: {
-      kind: "bin",
-      op: "===",
-      left: { kind: "arrayState", arr, index, type: F64, loc },
-      right: { kind: "numLit", value: 1, type: F64, loc },
-      type: BOOL,
-      loc,
-    },
-    then: present({ kind: "arrayGet", arr, index, type: elem, loc }),
-    else_: missing,
-    type,
-    loc,
-  };
+  return { kind: "arrayPropertyRead", arr, index, consume: "boolean", type: BOOL, loc };
 }

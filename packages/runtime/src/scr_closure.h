@@ -46,13 +46,14 @@ typedef struct ScrBox {
 } ScrBox;
 
 /* A box can lie on a cycle only when its trace visits its payload: a
- * closure, or a class instance that carries a cycle header. Every other box
+ * closure, array, or a class instance that carries a cycle header. Every other box
  * is a leaf of the object graph, so its releases buffer no candidate. The
  * emitted inline release (llvm/shapes.ts, the box row) mirrors this test,
  * reading `kind` and `obj_trace` at the asserted offsets. */
 static inline bool scr_box_traced(const ScrBox *b) {
-  return b->kind == SCR_BOX_FUNC || b->obj_trace != NULL;
+  return b->kind == SCR_BOX_ARR || b->kind == SCR_BOX_FUNC || b->obj_trace != NULL;
 }
+_Static_assert(SCR_BOX_ARR == 3, "the emitted box release compares kind against 3");
 _Static_assert(SCR_BOX_FUNC == 4, "the emitted box release compares kind against 4");
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(offsetof(ScrBox, kind) == 8 && offsetof(ScrBox, obj_trace) == 32,

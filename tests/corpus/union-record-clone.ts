@@ -69,3 +69,27 @@ function lookup(input: Tree[], index: number): Tree | null {
   return { ...tree, label: "lookup" };
 }
 console.log("lookup", lookup([leaf], 0)?.label, lookup([], 0) === null);
+
+// A replacement record keeps its own identity when its discriminator
+// selects the exact nested union arm, even if smaller layouts also fit.
+type Receiver = { kind: "ref"; id: number } | { kind: "self" };
+type Read =
+  | { kind: "field"; obj: Receiver; field: string }
+  | { kind: "slot"; obj: Receiver; slot: number };
+function replaceLiteral(read: Read): Read {
+  return { ...read, obj: { kind: "ref", id: 7 } };
+}
+function replaceExisting(read: Read, obj: { kind: "ref"; id: number }): Read {
+  return { ...read, obj };
+}
+const receiver: { kind: "ref"; id: number } = { kind: "ref", id: 3 };
+const readCases: Read[] = [
+  { kind: "field", obj: receiver, field: "value" },
+  { kind: "slot", obj: receiver, slot: 2 },
+];
+for (const read of readCases) {
+  const literal = replaceLiteral(read);
+  const existing = replaceExisting(read, receiver);
+  console.log("receiver", literal.kind, literal.obj.kind, literal.obj.kind === "ref" ? literal.obj.id : -1);
+  console.log("alias", existing.obj === receiver, existing.obj.kind, existing.kind === "field" ? existing.field : existing.slot);
+}

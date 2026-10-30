@@ -33,6 +33,7 @@ import type {
 } from "../../ir/ir.js";
 import {
   CAUGHT,
+  DYN_CLASS_PROPERTIES,
   ffiCallbackType,
   isDynTypedRefType,
   isFfiContextParam,
@@ -138,6 +139,8 @@ import {
 } from "../ffi-callbacks.js";
 import { RUNTIME_ABI_MARKER } from "../runtime-abi.js";
 import { computeMayThrow } from "../may-throw.js";
+import { guardNativePropertyWrites } from "../native-property-writes.js";
+import { LlNativeObjects, emitNativeObjectIntrinsic } from "./native-objects.js";
 import {
   mangleArgPack,
   mangleAsyncAdoptCall,
@@ -250,6 +253,11 @@ import { emitIntrinsicExpr, emitSerializationExpr, emitAsyncExpr } from "./expr-
 import { PublishWalkers } from "./publish.js";
 import { computeImmutableFields, stableGlobals, type ImmutableFields } from "../immutability.js";
 import { computePublishedTypes, type PublishedTypes } from "../publication.js";
+import {
+  computeNativeIntegrityTypes,
+  computeRecordMetadataShapes,
+} from "../../ir/native-integrity.js";
+import type { NativeTypes } from "../../ir/native-types.js";
 import { emitExpr } from "./expr-dispatch.js";
 
 import {
@@ -473,7 +481,7 @@ export interface LlvmTargetOptions {
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
-  const mod = unshareNodes(input);
+  const mod = unshareNodes(guardNativePropertyWrites(input));
   // Keep source storage intact for debugger inspection in dev builds.
   return new LlEmitter(
     options.debugSources === undefined
@@ -499,7 +507,7 @@ export function emitLlvmModuleSource(
   input: IrModule,
   options: LlvmTargetOptions = {},
 ): string | readonly string[] {
-  const mod = unshareNodes(input);
+  const mod = unshareNodes(guardNativePropertyWrites(input));
   const parts = new LlEmitter(
     options.debugSources === undefined
       ? addRecordResultEntries(
@@ -718,6 +726,7 @@ export class LlEmitter {
   /** The dyn (ScrDyn dyn) helper registry — dyn.ts's interned ports of
    * walkers.ts's dyn slice. */
   readonly dyn: LlDyn;
+  readonly nativeObjects = new LlNativeObjects(this);
   /** Explicit callback boundary for standalone layout and walker stages. */
   readonly shapeHost: DynHost;
   /** External declarations, in first-use order. */
@@ -820,6 +829,7 @@ export class LlEmitter {
   /** Static types whose values can be published (@scriptc/threads): their
    * stores carry the frozen-object guard. Null without publish calls. */
   readonly publishedTypes: PublishedTypes | null;
+  readonly nativeIntegrityTypes: NativeTypes | null;
   /** Construction-only class and record fields (immutability.ts); null
    * where the facts are disabled. */
   private readonly immutableFields: ImmutableFields | null;
@@ -1147,6 +1157,7 @@ export class LlEmitter {
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
     this.publishedTypes = computePublishedTypes(mod);
+    this.nativeIntegrityTypes = computeNativeIntegrityTypes(mod);
     this.immutableFields = computeImmutableFields(mod);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
     this.indirectMayThrow = mt.indirect || mod.workers === true;
@@ -1274,6 +1285,7 @@ export class LlEmitter {
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
+      recordMetadataShapes: computeRecordMetadataShapes(mod, this.nativeIntegrityTypes),
       tracedUnions: this.tracedUnions,
       nullableUnions: this.nullableUnions,
       inlineUnions: this.inlineUnions,
@@ -1306,6 +1318,7 @@ export class LlEmitter {
       fieldAbsentTestIn: (B, value, unionId) => this.fieldAbsentTestIn(B, value, unionId),
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
+      nativeObjectOps: (type) => this.nativeObjects.optionalOps(type),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
@@ -1922,6 +1935,10 @@ export class LlEmitter {
     // sc_release_globals tail). Only when the dispatch unit is even
     // linked (defineProps is the only writer).
     const runtimeFeatures = moduleRuntimeFeatures(this.mod);
+    if (runtimeFeatures.dynInvoke) {
+      this.declare(`declare ptr @scr_dyn_array_prototype()`);
+      this.declare(`declare void @scr_dyn_release_v(ptr)`);
+    }
     const fnValueProps = [...this.fnValues];
     if (fnValueProps.length > 0) this.declare(`declare void @scr_box_release(ptr)`);
     if (this.classObjs.size > 0) this.declare(`declare void @scr_classobj_clear_properties(ptr)`);
@@ -2161,7 +2178,7 @@ export class LlEmitter {
       ...(this.regions?.moduleDefs() ?? []),
     ];
     if (this.constantNumericTables.size > 0)
-      this.declare(`declare double @scr_arr_get_number(ptr, double)`);
+      this.declare(`declare double @scr_arr_get_slot_number(ptr, double)`);
     // Native matchers of the regex literals inside the compiled subset.
     const regexMatchers = new Map<string, RegexMatcherCode>();
     for (const [key, re] of this.regexInstances) {
@@ -2328,7 +2345,7 @@ export class LlEmitter {
         `  %value = load double, ptr %slot`,
         `  ret double %value`,
         `fallback:`,
-        `  %generic = call double @scr_arr_get_number(ptr %a, double %i)`,
+        `  %generic = call double @scr_arr_get_slot_number(ptr %a, double %i)`,
         `  ret double %generic`,
         `}`,
         ``,
@@ -2491,6 +2508,14 @@ export class LlEmitter {
     // exception escaping top-level code prints and exits 1 (Node).
     // The exception epilogue is emitted when the entry may throw.
     const stamps: string[] = [...errorViews];
+    // Prototype availability is a context-startup fact. This shared path
+    // runs before executable/worker entry and after every library reset.
+    if (runtimeFeatures.dynInvoke) {
+      stamps.push(
+        `  %builtin_array_prototype = call ptr @scr_dyn_array_prototype()`,
+        `  call void @scr_dyn_release_v(ptr %builtin_array_prototype)`,
+      );
+    }
     for (const iv of this.errorIntervals) {
       const fields: [number, number][] = [
         [0, iv.pre],
@@ -5731,16 +5756,18 @@ export class LlEmitter {
 
   /** Overwrites a field with `v` (from emitFieldValue). A reference moves
    * in, and the old value is released AFTER the field is overwritten. */
-  replaceField(ptr: string, type: IrType, inline: boolean, v: LlValue): void {
+  replaceField(ptr: string, type: IrType, inline: boolean, v: LlValue, finish?: () => void): void {
     if (!inline && isRefCounted(type)) {
       this.moveTemp(v);
       const old = this.B.tmp();
       this.B.line(`${old} = load ptr, ptr ${ptr}`);
       this.storeField(ptr, type, v.name, false);
+      finish?.();
       this.releaseValue(old, type);
       return;
     }
     this.storeField(ptr, type, v.name, inline);
+    finish?.();
   }
 
   /** Stores `v` (from emitFieldValue) into a fresh field slot. */
@@ -6018,10 +6045,10 @@ export class LlEmitter {
     B.line(`${cell} = inttoptr i64 ${slotv} to ptr`);
     const accTy = acc === "bool" ? "i1" : "double";
     this.declare(
-      `declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`,
+      `declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_slot_${acc}(ptr, double)`,
     );
     const v = B.tmp();
-    B.line(`${v} = call ${accTy} @scr_arr_get_${acc}(ptr ${cell}, double ${f64Lit(0)})`);
+    B.line(`${v} = call ${accTy} @scr_arr_get_slot_${acc}(ptr ${cell}, double ${f64Lit(0)})`);
     return v;
   }
 
@@ -7668,74 +7695,39 @@ export class LlEmitter {
       case "arraySet": {
         // Evaluation order matches JS: array, index, then value. Ownership
         // of a refcounted value moves into the array (the runtime releases
-        // the replaced element itself). A local receiver that the index and
-        // value cannot rebind is read in place, as for field stores; the
-        // released element cannot reach that binding.
+        // the replaced element itself). A promoted setter can replace the
+        // receiver's last outside owner, so hold it through the guard and write.
         if (this.emitArraySelfConcat(s)) break;
-        const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
+        const arr = this.emitExpr(s.arr);
         const idx = this.emitExpr(s.index);
         const v = this.emitExpr(s.value);
         if (s.arr.type.kind !== "array")
           throw new InternalCompilerError("llvm emitter bug: arraySet on non-array");
         const acc = elemAccess(s.arr.type.elem);
-        this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
+        this.emitArrayWriteGuard(arr.name, idx.name);
         if (acc === "ref") this.moveTemp(v);
         emitDenseArraySet(this, arr.name, idx, s.index, acc, s.arr.type.elem, v.name);
+        this.emitPendingCheck();
         break;
       }
       case "arraySetLength": {
-        // Pop's `length = 0` store on an empty array only matters when the
-        // array can be frozen (published); its operand is a local.
-        if (
-          s.pop === true &&
-          s.length.kind === "numLit" &&
-          s.length.value === 0 &&
-          this.publishedTypes?.containerGuarded(s.arr.type) !== true
-        )
-          break;
         const arr = emitBorrowedInput(this, s.arr);
         const length = this.emitExpr(s.length);
         if (s.arr.type.kind !== "array")
           throw new InternalCompilerError("llvm emitter bug: arraySetLength on non-array");
-        this.emitPublishedArrayGuard(arr.name, s.arr.type, s.pop === true ? 2 : 3);
         this.declare(`declare void @scr_arr_set_len(ptr, double)`);
-        // Assigning the current length (a reused work array reset to where
-        // it already is) changes nothing: the runtime's validation accepts
-        // exactly the value equal to the length (-0 included, NaN never),
-        // and no element is released. Everything else keeps the call.
-        const lenPtr = B.tmp(),
-          len = B.tmp(),
-          lenNumber = B.tmp(),
-          same = B.tmp();
-        const resize = B.newLabel("arr.len.set"),
-          done = B.newLabel("arr.len.done");
-        B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 1`);
-        this.markMemoryPointer(lenPtr, "array:header");
-        B.line(
-          `${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}${this.arrayLengthRange}`,
-        );
-        B.line(`${lenNumber} = ${sizeToDouble(this.sizeType)} ${this.sizeType} ${len} to double`);
-        B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
-        B.condBr(same, done, resize);
-        B.startBlock(resize);
+        // Even an unchanged length is a Set: frozen receivers must refuse
+        // before the runtime decides whether storage needs resizing.
         B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
         this.emitPendingCheck();
-        B.br(done);
-        B.startBlock(done);
         break;
       }
       case "arraySetUndefined":
       case "arrayDelete": {
-        const arr = emitBorrowedInput(this, s.arr);
+        const arr = this.emitExpr(s.arr);
         const idx = this.emitExpr(s.index);
         if (s.arr.type.kind !== "array")
           throw new InternalCompilerError(`llvm emitter bug: ${s.kind} on non-array`);
-        this.emitPublishedArrayGuard(
-          arr.name,
-          s.arr.type,
-          s.kind === "arrayDelete" ? 5 : 0,
-          idx.name,
-        );
         const fn = s.kind === "arraySetUndefined" ? "scr_arr_set_undefined" : "scr_arr_delete";
         this.declare(
           `declare ${s.kind === "arrayDelete" ? "zeroext i1" : "void"} @${fn}(ptr, double)`,
@@ -7743,6 +7735,7 @@ export class LlEmitter {
         if (s.kind === "arrayDelete")
           B.line(`call zeroext i1 @${fn}(ptr ${arr.name}, double ${idx.name})`);
         else B.line(`call void @${fn}(ptr ${arr.name}, double ${idx.name})`);
+        this.emitPendingCheck();
         break;
       }
       case "bytesSet": {
@@ -7778,10 +7771,7 @@ export class LlEmitter {
           s.kind === "fieldSet" ? this.nullableFields.get(s.className, s.field) : null;
         if (nullable && s.kind === "fieldSet") {
           const obj = this.emitStableReceiver(s.obj, [s.value]);
-          // (The guard precedes the value here: the nullable store
-          // evaluates it itself.)
-          this.emitStoreGuard(obj.name, s);
-          this.emitNullableFieldStore(obj.name, s.className, s.field, nullable, s.value);
+          this.emitNullableFieldStore(obj.name, s, nullable);
           break;
         }
         if (s.kind === "fieldSet" && this.int32Slots.isField(s.className, s.field)) {
@@ -7790,6 +7780,12 @@ export class LlEmitter {
           this.emitStoreGuard(obj.name, s);
           const { ptr } = this.classFieldPtr(obj.name, s.className, s.field);
           this.storeInt32Field(ptr, v, s.value);
+          this.nativeObjects.finishWrite(
+            obj.name,
+            { kind: "object", className: s.className },
+            s.field,
+            s.propertyOp,
+          );
           break;
         }
         if (this.emitFieldSelfConcat(s)) break;
@@ -7807,7 +7803,27 @@ export class LlEmitter {
           s.kind === "fieldSet"
             ? this.classFieldPtr(obj.name, s.className, s.field)
             : this.recordFieldPtr(obj.name, s.shapeId, s.field);
-        this.replaceField(ptr, type, inline, v);
+        if (
+          s.kind === "fieldSet" &&
+          s.field === DYN_CLASS_PROPERTIES &&
+          this.classMeta.get(s.className)?.def.fields.find((field) => field.name === s.field)
+            ?.visibility === "internal"
+        ) {
+          // A lazily created bag inherits restrictions before installation.
+          // No observer can see an extensible bag on a frozen owner.
+          this.declare("declare void @scr_native_object_sync_properties(ptr, ptr)");
+          B.line(`call void @scr_native_object_sync_properties(ptr ${obj.name}, ptr ${v.name})`);
+        }
+        this.replaceField(ptr, type, inline, v, () =>
+          this.nativeObjects.finishWrite(
+            obj.name,
+            s.kind === "recordSet"
+              ? { kind: "record", shapeId: s.shapeId }
+              : { kind: "object", className: s.className },
+            s.field,
+            s.propertyOp,
+          ),
+        );
         if (
           s.kind === "fieldSet" &&
           s.field === "name" &&
@@ -7956,14 +7972,32 @@ export class LlEmitter {
           if (inline) {
             // The write owns the moved-in value; the slot copies its bits.
             this.storeField(ptr, type, v.name, true);
+            this.nativeObjects.finishWrite(
+              obj.name,
+              { kind: "record", shapeId: s.shapeId },
+              f.name,
+              s.propertyOp,
+            );
             this.releaseValue(v.name, type);
           } else if (isRefCounted(type)) {
             const old = B.tmp();
             B.line(`${old} = load ptr, ptr ${ptr}`);
             this.storeField(ptr, type, v.name, false);
+            this.nativeObjects.finishWrite(
+              obj.name,
+              { kind: "record", shapeId: s.shapeId },
+              f.name,
+              s.propertyOp,
+            );
             this.releaseValue(old, type);
           } else {
             this.storeField(ptr, type, v.name, false);
+            this.nativeObjects.finishWrite(
+              obj.name,
+              { kind: "record", shapeId: s.shapeId },
+              f.name,
+              s.propertyOp,
+            );
           }
           B.br(join);
           B.startBlock(ln);
@@ -8422,7 +8456,7 @@ export class LlEmitter {
         const borrowedElement = !snapshot && this.loopArrayBorrows.has(s);
         if (!snapshot) {
           const acc = elemAccess(elem);
-          const getter = borrowedElement ? "scr_arr_borrow_ref" : `scr_arr_get_${acc}`;
+          const getter = borrowedElement ? "scr_arr_borrow_slot_ref" : `scr_arr_get_slot_${acc}`;
           cur = emitDenseArrayGet(
             this,
             arr!.name,
@@ -9002,6 +9036,13 @@ export class LlEmitter {
   }
 
   private emitDiscarded(e: IrExpr): void {
+    if (e.kind === "arrIntrinsic" && (e.method === "pop" || e.method === "shift")) {
+      const arr = emitBorrowedInput(this, e.receiver);
+      this.declare(`declare zeroext i8 @scr_arr_${e.method}_state(ptr, ptr)`);
+      this.B.line(`call zeroext i8 @scr_arr_${e.method}_state(ptr ${arr.name}, ptr null)`);
+      this.emitPendingCheck();
+      return;
+    }
     // A statement-position yield never reads the resumed value: it stays
     // in the IN slot until the next resume replaces it.
     if (e.kind === "yieldExpr" && e.captureCompletion === undefined && e.type.kind !== "void") {
@@ -9145,6 +9186,17 @@ export class LlEmitter {
   private emitFieldSelfConcat(s: Extract<IrStmt, { kind: "fieldSet" | "recordSet" }>): boolean {
     const suffix = matchFieldSelfConcat(s);
     if (!suffix || s.value.kind !== "strConcat") return false;
+    // Tracked fields must stay installed until metadata is complete: releasing
+    // the old child can collect cycles that observe presence and slot ownership.
+    if (
+      this.nativeObjects.tracksField(
+        s.kind === "fieldSet"
+          ? { kind: "object", className: s.className }
+          : { kind: "record", shapeId: s.shapeId },
+        s.field,
+      )
+    )
+      return false;
     let fieldType: IrType | undefined;
     if (s.kind === "fieldSet") {
       if (
@@ -9225,14 +9277,14 @@ export class LlEmitter {
       return false;
     const elem = s.arr.type.elem;
     const B = this.B;
-    const arr = this.emitStableReceiver(s.arr, [s.index, s.value]);
+    const arr = this.emitExpr(s.arr);
     const idx = this.emitExpr(s.index);
     const snapshot = this.emitExpr(value.left);
     const parts = stringParts(value.right);
     const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
     const inputs = mixed ? emitConcatInputs(this, parts) : [];
     const right = mixed ? null : this.emitExpr(value.right);
-    this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
+    this.emitArrayWriteGuard(arr.name, idx.name);
     if (this.ownsSnapshot(snapshot.name))
       emitDenseSlotUnlink(
         this,
@@ -9252,6 +9304,7 @@ export class LlEmitter {
       B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
     }
     emitDenseArraySet(this, arr.name, idx, s.index, "ref", elem, raw);
+    this.emitPendingCheck();
     return true;
   }
 
@@ -9311,6 +9364,8 @@ export class LlEmitter {
     e: ExprOf<
       | "arrayLit"
       | "arrayNewLen"
+      | "arrayPropertyRead"
+      | "arrayHasProperty"
       | "arrayGet"
       | "arrayHas"
       | "arrayState"
@@ -9398,6 +9453,7 @@ export class LlEmitter {
   }
 
   emitIntrinsicExpr(e: ExprOf<"intrinsic">): LlValue {
+    if (e.name.startsWith("native.")) return emitNativeObjectIntrinsic(this, e);
     if (e.name === "threads.publish") return this.emitPublish(e);
     if (
       e.name === "region.create" ||
@@ -9687,28 +9743,40 @@ export class LlEmitter {
     B.startBlock(ok);
   }
 
-  /** The frozen-array guard (scr_throw_published_array's ops): `index` and
-   * `count` are doubles (the written index, the argument count). */
-  emitPublishedArrayGuard(
-    arr: string,
-    arrType: IrType,
-    op: number,
-    index = f64Lit(0),
-    count = f64Lit(0),
-  ): void {
-    if (this.publishedTypes?.containerGuarded(arrType) !== true) return;
+  /** Guard after RHS evaluation, before moving its reference or unlinking
+   * the old slot. Refusal must leave both owners available to unwinding. */
+  private emitArrayWriteGuard(arr: string, index: string): void {
     const B = this.B;
-    const ok = this.emitPublishedTest(arr);
-    this.declare(`declare zeroext i1 @scr_throw_published_array(i32, ptr, double, double)`);
-    const threw = B.tmp();
-    B.line(
-      `${threw} = call zeroext i1 @scr_throw_published_array(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
-    );
-    const unwind = B.newLabel("pub.throw");
-    B.condBr(threw, unwind, ok);
-    B.startBlock(unwind);
-    this.emitUnwind();
-    B.startBlock(ok);
+    const promoted = B.tmp(),
+      integer = B.tmp(),
+      frozen = B.tmp(),
+      back = B.tmp();
+    const exact = B.tmp(),
+      range = B.tmp(),
+      canonical = B.tmp(),
+      name = B.tmp(),
+      resolve = B.tmp();
+    this.declare(`declare zeroext i1 @scr_arr_named_promoted(ptr)`);
+    B.line(`${promoted} = call zeroext i1 @scr_arr_named_promoted(ptr ${arr})`);
+    B.line(`${integer} = fptoui double ${index} to i32`);
+    B.line(`${frozen} = freeze i32 ${integer}`);
+    B.line(`${back} = uitofp i32 ${frozen} to double`);
+    B.line(`${exact} = fcmp oeq double ${back}, ${index}`);
+    B.line(`${range} = icmp ult i32 ${frozen}, -1`);
+    B.line(`${canonical} = and i1 ${exact}, ${range}`);
+    B.line(`${name} = xor i1 ${canonical}, true`);
+    B.line(`${resolve} = and i1 ${promoted}, ${name}`);
+    const guard = B.newLabel("array.write.guard"),
+      ready = B.newLabel("array.write.ready");
+    // A named accessor setter remains callable on a frozen referent. Its
+    // descriptor owner checks integrity after resolving the actual action.
+    B.condBr(resolve, ready, guard);
+    B.startBlock(guard);
+    this.declare(`declare zeroext i1 @scr_arr_check_set(ptr, double)`);
+    B.line(`call zeroext i1 @scr_arr_check_set(ptr ${arr}, double ${index})`);
+    this.emitPendingCheck();
+    B.br(ready);
+    B.startBlock(ready);
   }
 
   /** The published Map/Set guard: "Cannot modify a published Map/Set". */
@@ -10022,13 +10090,13 @@ export class LlEmitter {
    * every field store. */
   emitNullableFieldStore(
     obj: string,
-    className: string,
-    field: string,
+    store: Extract<IrStmt, { kind: "fieldSet" }>,
     nullable: NullableRefField,
-    value: IrExpr,
   ): void {
     const B = this.B;
+    const value = store.value;
     let next: string;
+    let owned: LlValue | null = null;
     if (
       value.kind === "unionWrap" &&
       value.unionId === nullable.unionId &&
@@ -10038,7 +10106,7 @@ export class LlEmitter {
     ) {
       if (value.tag === nullable.refTag) {
         const inner = this.emitExpr(value.value);
-        this.moveTemp(inner);
+        owned = inner;
         next = inner.name;
       } else {
         // Unit payloads carry nothing; a void payload runs for effects.
@@ -10047,13 +10115,25 @@ export class LlEmitter {
       }
     } else if (value.kind === "varRef" && !this.canBorrowReceiver(value)) {
       next = this.unionToNullable(this.emitExpr(value).name, nullable);
+      owned = this.own({ name: next, type: nullable.arm });
     } else {
       next = this.unionToNullable(this.emitUnionProjection(value).name, nullable);
+      owned = this.own({ name: next, type: nullable.arm });
     }
-    const { ptr } = this.classFieldPtr(obj, className, field);
+    // The RHS may publish the receiver or throw before the store. Keep its
+    // retained payload frame-owned until the guard permits the transfer.
+    this.emitStoreGuard(obj, store);
+    if (owned) this.moveTemp(owned);
+    const { ptr } = this.classFieldPtr(obj, store.className, store.field);
     const old = B.tmp();
     B.line(`${old} = load ptr, ptr ${ptr}`);
     B.line(`store ptr ${next}, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
+    this.nativeObjects.finishWrite(
+      obj,
+      { kind: "object", className: store.className },
+      store.field,
+      store.propertyOp,
+    );
     this.releaseValue(old, nullable.arm);
   }
 

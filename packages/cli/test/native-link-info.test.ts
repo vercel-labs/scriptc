@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 import type { NativeLinkInfo } from "@scriptc/compiler";
+import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "../../compiler/src/backend/runtime-abi.js";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -72,7 +73,7 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
         minimum_os: "14.0",
       },
       program: { object, entry_symbol: "main" },
-      runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
+      runtime_abi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
       runtime_pack: {
         kind: "precompiled",
         package: "@scriptc/runtime-darwin-arm64",
@@ -137,14 +138,15 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
     });
   }, 30_000);
 
-  test("a mismatched runtime ABI fails at link time through the versioned marker", async () => {
+  test("adjacent runtime ABIs cannot link in either direction", async () => {
     const { dir, entry, object } = await fixture();
-    await cli(["build", entry, "--emit=obj", "-o", object]);
+    const { stdout } = await cli(["build", entry, "--print=native-link-info", "-o", object]);
+    const info = JSON.parse(stdout) as NativeLinkInfo;
     const stub = join(dir, "wrong-runtime.c");
     await writeFile(
       stub,
       [
-        "void scr_runtime_abi_v1(void) {} /* previous ABI */",
+        "void scr_runtime_abi_v22(void) {} /* previous allocation/tracing ABI */",
         "void scr_console_log(void) {}",
         "void scr_init(void) {}",
         "void scr_lib_init(void) {}",
@@ -165,6 +167,21 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
       () => null,
       (failure: { stderr?: string }) => failure,
     );
-    expect(error?.stderr).toContain("scr_runtime_abi_v22");
+    expect(error?.stderr).toContain(RUNTIME_ABI_MARKER);
+
+    const oldProgram = join(dir, "old-program.c");
+    await writeFile(
+      oldProgram,
+      "void scr_runtime_abi_v22(void);\nint main(void) { scr_runtime_abi_v22(); return 0; }\n",
+    );
+    await expect(
+      execFileAsync("clang", [
+        ...info.link.driver_flags,
+        ...info.link.input_order.map((input) => (input === object ? oldProgram : input)),
+        ...info.link.system_libraries.map((name) => `-l${name}`),
+        "-o",
+        join(dir, "old-program"),
+      ]),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining("scr_runtime_abi_v22") });
   });
 });

@@ -15,7 +15,8 @@ import { corpusSelect, shardSuffix } from "./shard.js";
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
 const corpusDir = join(repoRoot, "tests/corpus");
-const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
+const cacheDir =
+  process.env["SCRIPTC_TEST_OUTPUT_DIR"] || join(repoRoot, "node_modules/.cache/scriptc-tests");
 
 // Same corpus, same SCRIPTC_TEST_SHARD slice as differential.test.ts (the
 // two files split identically, so a shard's compile cache serves both lanes).

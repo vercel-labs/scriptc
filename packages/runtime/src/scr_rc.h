@@ -8,20 +8,20 @@
 
 /* ── cycle collection (scr_cycle.c) ───────────────────────────────────
  * Reference counting alone cannot free cycles, so every object that can
- * participate in one — capture boxes, heap closures, unions, promises, and
+ * participate in one — arrays, capture boxes, heap closures, unions, promises, and
  * compiler-emitted class/record shapes with cycle-capable fields — is
  * allocated with a hidden 8-byte header directly BEFORE the object: the
  * registry id of its type's descriptor (a trace function enumerating the
  * object's cycle-capable children, and a teardown function freeing the
  * object WITHOUT releasing traced children) and the trial-deletion
  * bookkeeping (color, generation and candidate-root buffer state). Types
- * that can never be in a cycle — strings above all, plus arrays of scalar/
- * string/bytes elements and shapes whose fields are all acyclic — keep the
+ * that can never be in a cycle — strings above all and shapes whose fields
+ * are all acyclic — keep the
  * lean 1-word `rc` header and pay nothing. Heap dyn nodes all carry the
  * header (one uniform tracing ABI for unknown values); parsed documents
- * avoid candidate buffering through intact regions instead (ScrDynRegion). Arrays and maps are
- * cycle-capable exactly when their element/value type is (a record element
- * can point back at the array holding it).
+ * avoid candidate buffering through intact regions instead (ScrDynRegion).
+ * Arrays can close cycles through named metadata independently of their
+ * element types; maps remain cycle-capable when their key/value type is.
  *
  * The collector is synchronous Bacon–Rajan trial deletion: a release that
  * leaves a candidate's rc above zero buffers it as a possible cycle root;
@@ -46,7 +46,7 @@
  * the runtime owns its own): trace(obj) visits exactly the strong
  * references to children that themselves carry a cycle header (visit
  * callbacks tolerate NULL and immortal children); the teardown releases
- * exactly the complement (strings, arrays, acyclic shapes), frees internal
+ * exactly the complement (strings, bytes, acyclic shapes), frees internal
  * buffers, and frees the block via scr_cyc_free. Every heap object's
  * FIRST member is `size_t rc`, which is what lets the collector adjust
  * counts generically.
@@ -511,11 +511,8 @@ void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem);
 void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val);
 void scr_publish_refuse(const char *message);
 /* Writes into published objects (emitted guards): Node's frozen-object
- * TypeErrors. scr_throw_published_array answers false (and throws nothing)
- * when Node's operation would not write the array. */
-struct ScrArr;
+ * TypeErrors. Arrays enforce integrity through their property operations. */
 SCR_COLD void scr_throw_published_field(const char *prop, const char *owner);
-bool scr_throw_published_array(int op, const struct ScrArr *a, double index, double n);
 SCR_COLD void scr_throw_published_collection(bool set);
 
 #endif /* SCR_RC_H */

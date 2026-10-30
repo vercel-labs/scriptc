@@ -11,11 +11,61 @@ import {
 import type { Node, Program, SourceFile, Symbol, Type } from "../ts7/adapter.js";
 import { Lowerer } from "./lowerer.js";
 import { classMethodValue } from "./class-method-values.js";
+import { classFieldType, type ClassInfo } from "./lower-classes.js";
+import { internTableType } from "./intern-tables.js";
+import { lifetimeRegionType } from "./lifetime-regions.js";
 
 const loc = { file: "island.ts", start: 0, end: 1 };
 const record = (shapeId: string): IrType => ({ kind: "record", shapeId });
 const context = () =>
   new Lowerer({ getTypeChecker: () => ({}) } as Program, { fileName: loc.file } as SourceFile, []);
+
+test("class field lookup separates public strings, private names, and symbols", () => {
+  const info = {
+    def: {
+      fields: [
+        { name: "#public", type: STRING },
+        { name: "%public", type: STRING },
+        { name: "#private", type: F64, visibility: "private" },
+        { name: "%bag", type: F64, visibility: "internal" },
+        { name: "%symbol:key", type: F64 },
+        { name: "overridden", type: F64 },
+      ],
+    },
+    fields: new Map<string, IrType>([
+      ["#public", STRING],
+      ["%public", STRING],
+      ["#private", F64],
+      ["%bag", F64],
+      ["%symbol:key", F64],
+    ]),
+    symbolFields: new Map([[{} as Symbol, "%symbol:key"]]),
+  } as unknown as ClassInfo;
+  expect(classFieldType(info, "#public")).toEqual(STRING);
+  expect(classFieldType(info, "%public")).toEqual(STRING);
+  expect(classFieldType(info, "#private")).toBeUndefined();
+  expect(classFieldType(info, "%bag")).toBeUndefined();
+  expect(classFieldType(info, "%symbol:key")).toBeUndefined();
+  expect(classFieldType(info, "#private", "private")).toEqual(F64);
+  expect(classFieldType(info, "%symbol:key", "symbol")).toEqual(F64);
+  expect(classFieldType(info, "#public", "private")).toBeUndefined();
+  expect(classFieldType(info, "%public", "symbol")).toBeUndefined();
+  // A subclass accessor retains the inherited storage slot, not the field.
+  expect(classFieldType(info, "overridden")).toBeUndefined();
+});
+
+test.each([
+  { name: "InternTable", register: internTableType },
+  { name: "LifetimeRegion", register: lifetimeRegionType },
+])("synthetic $name handles retain private field provenance", ({ register }) => {
+  const lowerer = context();
+  const type = register(lowerer);
+  if (type.kind !== "object") throw new Error("missing synthetic class");
+  const info = lowerer.classes.get(type.className)!;
+  expect(info.def.fields).toHaveLength(1);
+  expect(info.def.fields[0]!.visibility).toBe("private");
+  expect(classFieldType(info, info.def.fields[0]!.name)).toBeUndefined();
+});
 
 test("reuses complete copy routes without repeating discriminator planning", () => {
   const lowerer = context();

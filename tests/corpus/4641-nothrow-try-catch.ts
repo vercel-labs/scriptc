@@ -6,7 +6,8 @@ import type { NoThrow } from "@scriptc/types";
 class Stats {
   caught = 0;
   finals = 0;
-  events: string[] = [];
+  // Logging in catch/finally must itself be NoThrow; array pushes can refuse.
+  events = "";
 }
 
 function parseDigit(ch: number): number {
@@ -24,14 +25,14 @@ function digitOr(text: string, i: number, fallback: number): NoThrow<number> {
 
 function logged(text: string, stats: Stats): NoThrow<number> {
   try {
-    stats.events.push(`try ${text}`);
+    stats.events += `try ${text}\n`;
     return parseDigit(text.charCodeAt(0));
   } catch (error) {
-    stats.events.push(error instanceof RangeError ? "catch RangeError" : "catch other");
+    stats.events += (error instanceof RangeError ? "catch RangeError" : "catch other") + "\n";
     stats.caught++;
     return -1;
   } finally {
-    stats.events.push("finally");
+    stats.events += "finally\n";
     stats.finals++;
   }
 }
@@ -56,10 +57,10 @@ function nested(text: string, stats: Stats): NoThrow<number> {
     try {
       return parseDigit(text.charCodeAt(0)) * 10;
     } finally {
-      stats.events.push("inner finally");
+      stats.events += "inner finally\n";
     }
   } catch {
-    stats.events.push("outer catch");
+    stats.events += "outer catch\n";
     return -3;
   }
 }
@@ -78,7 +79,7 @@ function propagates(text: string, stats: Stats): number {
   try {
     return parseDigit(text.charCodeAt(0));
   } finally {
-    stats.events.push(`propagates finally ${text}`);
+    stats.events += `propagates finally ${text}\n`;
   }
 }
 
@@ -96,4 +97,4 @@ for (const text of ["3", "?"]) {
   }
 }
 console.log(stats.caught, stats.finals);
-console.log(stats.events.join("\n"));
+console.log(stats.events.slice(0, -1));

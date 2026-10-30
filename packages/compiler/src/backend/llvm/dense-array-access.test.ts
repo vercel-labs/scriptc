@@ -3,6 +3,7 @@ import {
   BOOL,
   F64,
   STRING,
+  UNDEFINED_T,
   VOID,
   arrayOf,
   type IrExpr,
@@ -25,7 +26,7 @@ const index = ref("i", F64);
 
 function module(name: string, returnType: IrExpr["type"], body: IrStmt[]): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [
@@ -58,6 +59,69 @@ function body(llvm: string, name: string): string {
   )![0];
 }
 
+test.each([32, 64] as const)(
+  "property reads own one Get and use only the installed element codec (%i-bit)",
+  (bits) => {
+    const optional = { kind: "union" as const, unionId: "optional-number" };
+    const read: IrExpr = {
+      kind: "arrayPropertyRead",
+      arr: ref("a", nums),
+      index,
+      consume: "value",
+      type: optional,
+      loc,
+    };
+    const input = module("property", optional, [{ kind: "return", value: read, loc }]);
+    input.unions = [{ id: optional.unionId, arms: [F64, UNDEFINED_T] }];
+    const llvm = emitLlvmModule(input, { pointerBits: bits });
+    const fn = body(llvm, "property");
+    expect(fn.match(/call ptr @scr_arr_property_get\(/g)).toHaveLength(1);
+    expect(fn).toContain("@scr_arr_named_promoted(");
+    expect(fn).toContain("@scr_arr_property_unbox(");
+    expect(fn).toContain("property.undefined");
+    expect(fn).toContain("property.converted");
+    expect(fn).toMatch(/load double, ptr /);
+    expect(fn).not.toContain("@scr_arr_borrow_slot_ref");
+    expect(llvm).not.toContain("define internal ptr @sc_slot_box_");
+    expect(llvm).not.toContain("define internal zeroext i1 @sc_slot_unbox_");
+  },
+);
+
+test.each([32, 64] as const)(
+  "property consumers preserve Get coercion and getter-free presence (%i-bit)",
+  (bits) => {
+    for (const consume of ["number", "numberConstructor", "boolean", "string"] as const) {
+      const type = consume === "boolean" ? BOOL : consume === "string" ? STRING : F64;
+      const arr = consume === "string" ? ref("s", words) : ref("a", nums);
+      const read: IrExpr = { kind: "arrayPropertyRead", arr, index, consume, type, loc };
+      const fn = body(
+        emitLlvmModule(module("coerce", type, [{ kind: "return", value: read, loc }]), {
+          pointerBits: bits,
+        }),
+        "coerce",
+      );
+      expect(fn.match(/call ptr @scr_arr_property_get\(/g)).toHaveLength(1);
+      const callee = {
+        number: "scr_dyn_number_coerce",
+        numberConstructor: "scr_dyn_number_constructor",
+        boolean: "scr_dyn_truthy",
+        string: "scr_dyn_string_coerce_js",
+      }[consume];
+      expect(fn).toContain(`@${callee}(`);
+      expect(fn).not.toContain("@scr_arr_property_unbox(");
+    }
+    const has: IrExpr = { kind: "arrayHasProperty", arr: ref("a", nums), index, type: BOOL, loc };
+    const fn = body(
+      emitLlvmModule(module("present", BOOL, [{ kind: "return", value: has, loc }]), {
+        pointerBits: bits,
+      }),
+      "present",
+    );
+    expect(fn).toContain("@scr_arr_has_property(");
+    expect(fn).not.toContain("@scr_arr_property_get(");
+  },
+);
+
 test.each([32, 64] as const)("strict scalar reads check dense storage inline (%i-bit)", (bits) => {
   const read: IrExpr = { kind: "arrayGet", arr: ref("a", nums), index, type: F64, loc };
   const llvm = emitLlvmModule(module("get", F64, [{ kind: "return", value: read, loc }]), {
@@ -72,7 +136,7 @@ test.each([32, 64] as const)("strict scalar reads check dense storage inline (%i
   expect(fn).toMatch(/icmp eq i8 .*, 1$/m);
   expect(fn).toMatch(/load double, ptr /);
   expect(fn).toMatch(
-    /call double @scr_arr_get_f64\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/,
+    /call double @scr_arr_get_slot_f64\(.*\) cold memory\(read, inaccessiblemem: readwrite\)/,
   );
   if (bits === 32) expect(fn).toContain("trunc i64");
 });
@@ -90,7 +154,7 @@ test.each([32, 64] as const)("boolean reads load one byte per element (%i-bit)",
     ),
   );
   expect(fn).not.toMatch(/getelementptr inbounds i64/);
-  expect(fn).toMatch(/call i1 @scr_arr_get_bool\(.*\) cold/);
+  expect(fn).toMatch(/call i1 @scr_arr_get_slot_bool\(.*\) cold/);
 });
 
 test("reference reads retain inline and keep a cold +1 runtime fallback", () => {
@@ -110,10 +174,10 @@ test("reference reads retain inline and keep a cold +1 runtime fallback", () => 
   expect(fn).toMatch(/icmp ne ptr .*, null/);
   expect(fn).toContain("@scr_str_retain_v(");
   // The retaining getter writes reference counts, so it gets no read-only effect.
-  expect(fn).toMatch(/call ptr @scr_arr_get_ref\(.*\) cold$/m);
+  expect(fn).toMatch(/call ptr @scr_arr_get_slot_ref\(.*\) cold$/m);
 });
 
-test("element writes store inline, extend the length, and release replaced references", () => {
+test.each([32, 64] as const)("element writes guard before inline storage (%i-bit)", (bits) => {
   const set = (arr: IrExpr, value: IrExpr): IrStmt => ({
     kind: "arraySet",
     arr,
@@ -127,6 +191,7 @@ test("element writes store inline, extend the length, and release replaced refer
       set(ref("b", flags), { kind: "boolLit", value: true, type: BOOL, loc }),
       set(ref("s", words), { kind: "strLit", value: "x", type: STRING, loc }),
     ]),
+    { pointerBits: bits },
   );
   const fn = body(llvm, "store");
   expect(fn).toMatch(/store double 0x4004000000000000, ptr /);
@@ -135,44 +200,42 @@ test("element writes store inline, extend the length, and release replaced refer
     /getelementptr inbounds i8, ptr .*\n  %t\d+ = zext i1 .* to i8\n  store i8 %t\d+, ptr /,
   );
   expect(fn).toMatch(/store i8 1, ptr /);
-  expect(fn).toMatch(/icmp uge i64 .*/);
+  expect(fn).toMatch(new RegExp(`icmp uge i${bits} .*`));
+  const guards = [...fn.matchAll(/call zeroext i1 @scr_arr_check_set\([^\n]+/g)];
+  expect(guards).toHaveLength(3);
+  for (let i = 0; i < guards.length; i++) {
+    const guarded = fn.slice(guards[i]!.index! + guards[i]![0].length, guards[i + 1]?.index);
+    const pending = guarded.search(/@scr_exc_(?:active|pending)\b| = load i32, ptr %exc\.cell\b/);
+    expect(pending).toBeGreaterThanOrEqual(0);
+    expect(pending).toBeLessThan(guarded.indexOf("arr.set."));
+  }
   expect(fn).toContain("call void @scr_str_release(");
   for (const acc of ["f64", "bool", "ref"]) {
     expect(fn).toMatch(new RegExp(`call void @scr_arr_set_${acc}\\(.*\\) cold$`, "m"));
   }
 });
 
-test.each([32, 64] as const)(
-  "push appends inline below the capacity and keeps a cold runtime append (%i-bit)",
-  (bits) => {
-    const push = (receiver: IrExpr, value: IrExpr): IrStmt => ({
-      kind: "exprStmt",
-      expr: { kind: "arrIntrinsic", method: "push", receiver, args: [value], type: F64, loc },
-      loc,
-    });
-    const llvm = emitLlvmModule(
-      module("append", VOID, [
-        push(ref("a", nums), { kind: "numLit", value: 2.5, type: F64, loc }),
-        push(ref("b", flags), { kind: "boolLit", value: true, type: BOOL, loc }),
-        push(ref("s", words), { kind: "strLit", value: "x", type: STRING, loc }),
-      ]),
-      { pointerBits: bits },
+test.each([32, 64] as const)("fresh construction keeps dense append storage (%i-bit)", (bits) => {
+  const cases: [IrExpr["type"], IrExpr, string][] = [
+    [nums, { kind: "numLit", value: 2.5, type: F64, loc }, "f64"],
+    [flags, { kind: "boolLit", value: true, type: BOOL, loc }, "bool"],
+    [words, { kind: "strLit", value: "x", type: STRING, loc }, "ref"],
+  ];
+  for (const [type, value, access] of cases) {
+    const fresh: IrExpr = { kind: "arrayLit", elems: [value], type, loc };
+    const fn = body(
+      emitLlvmModule(module("fresh", type, [{ kind: "return", value: fresh, loc }]), {
+        pointerBits: bits,
+      }),
+      "fresh",
     );
-    const fn = body(llvm, "append");
-    const size = bits === 32 ? "i32" : "i64";
-    expect(fn.match(new RegExp(`icmp ult ${size} `, "g"))).toHaveLength(3);
-    expect(fn).toMatch(/store double 0x4004000000000000, ptr /);
-    expect(fn).toMatch(/zext i1 .* to i8/);
-    expect(fn.match(/getelementptr inbounds i8, ptr /g)).toHaveLength(4);
-    expect(fn.match(/store i8 1, ptr /g)).toHaveLength(3);
-    expect(fn.match(new RegExp(`add nuw ${size} .*, 1$`, "gm"))).toHaveLength(3);
-    // Appends never release: the slot past the length holds no value.
-    expect(fn).not.toContain("_release(");
-    for (const acc of ["f64", "bool", "ref"]) {
-      expect(fn).toMatch(new RegExp(`call double @scr_arr_push_${acc}\\(.*\\) cold$`, "m"));
-    }
-  },
-);
+    expect(fn).toContain("arr.push.dense");
+    expect(fn).toMatch(new RegExp(`call double @scr_arr_push_${access}\\(.*\\) cold$`, "m"));
+    expect(fn).toContain("store i8 1, ptr ");
+    expect(fn).not.toContain("@scr_arr_check_set");
+    expect(fn).not.toContain("@scr_str_release(");
+  }
+});
 
 test.each([32, 64] as const)(
   "indices below the hole-free prefix bound skip the state bytes (%i-bit)",
@@ -265,7 +328,7 @@ test("state and presence queries answer dense slots inline", () => {
   expect(fn).toMatch(/uitofp i8 .* to double/);
   expect(fn).toMatch(/icmp ne i8 .*, 0/);
   expect(fn).toMatch(/call double @scr_arr_state\(.*\) cold memory\(read/);
-  expect(fn).toMatch(/call i1 @scr_arr_has\(.*\) cold memory\(read/);
+  expect(fn).toMatch(/call i1 @scr_arr_has\(.*\) cold$/m);
 });
 
 test("statement-position splices insert values without result or item arrays", () => {
@@ -301,16 +364,49 @@ test("statement-position splices insert values without result or item arrays", (
   expect(fn).not.toContain("@scr_arr_release");
 });
 
-test("length assignments skip the runtime when the length is unchanged", () => {
+test("length assignments always reach the runtime integrity boundary", () => {
   const llvm = emitLlvmModule(
     module("reset", VOID, [{ kind: "arraySetLength", arr: ref("s", words), length: index, loc }]),
   );
   const fn = body(llvm, "reset");
-  expect(fn).toMatch(/sitofp i64 .* to double/);
-  expect(fn).toMatch(/fcmp oeq double %p?\S*, %t\d+/);
   expect(fn.match(/call void @scr_arr_set_len\(/g)).toHaveLength(1);
-  expect(fn).toMatch(/br i1 %t\d+, label %arr\.len\.done\d*, label %arr\.len\.set\d*/);
+  expect(fn).not.toContain("arr.len.done");
+  expect(fn.slice(fn.indexOf("call void @scr_arr_set_len("))).toMatch(
+    /@scr_exc_(?:active|pending)\b| = load i32, ptr %exc\.cell\b/,
+  );
 });
+
+test.each([
+  { workers: false, targetTriple: "x86_64-unknown-linux-gnu" },
+  { workers: true, targetTriple: "x86_64-unknown-linux-gnu" },
+  { workers: true, targetTriple: "arm64-apple-macosx14.0.0" },
+])(
+  "undefined and delete unwind after runtime refusal ($targetTriple, workers=$workers)",
+  ({ workers, targetTriple }) => {
+    for (const kind of ["arraySetUndefined", "arrayDelete"] as const) {
+      const mod = module("mutate", VOID, [{ kind, arr: ref("a", nums), index, loc }]);
+      mod.workers = workers;
+      const fn = body(emitLlvmModule(mod, { targetTriple }), "mutate");
+      const callee = kind === "arrayDelete" ? "scr_arr_delete" : "scr_arr_set_undefined";
+      const call = new RegExp(`call (?:zeroext i1|void) @${callee}\\([^\\n]+`).exec(fn);
+      expect(call).not.toBeNull();
+      const after = fn.slice(call!.index + call![0].length);
+      if (!workers) expect(after).toContain(" = load i32, ptr %exc.cell");
+      else if (targetTriple.includes("linux")) {
+        expect(after).toContain("load atomic i32, ptr @scr_exc_flag unordered");
+        expect(after).not.toContain("@scr_exc_pending");
+      } else {
+        expect(after).toContain("load atomic i32, ptr @scr_exc_alert monotonic");
+        expect(after).toContain("call zeroext i1 @scr_exc_pending()");
+      }
+      const branch = /br i1 [^,]+, label %(exc\.u\d+), label %exc\.k\d+/.exec(after);
+      expect(branch).not.toBeNull();
+      const unwind = after.split(`${branch![1]}:\n`)[1]!.split(/^\w[\w.]*:/m)[0]!;
+      expect(unwind).toContain("@scr_arr_release(");
+      expect(unwind).toContain("ret void");
+    }
+  },
+);
 
 test("a discarded conditional splice drops the result of its literal arm", () => {
   const insert = (items: IrExpr): IrExpr => ({

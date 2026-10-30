@@ -96,6 +96,29 @@ async function compileAndRun(
 }
 
 describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})`, () => {
+  test("text codec casts reject forged private fields without reading them", async () => {
+    const r = await compileAndRun(
+      "forged-codec-fields",
+      `
+      let reads = 0;
+      const value: unknown = JSON.parse('{"%TextEncoder":0,"%TextDecoder":0,"%fatal":false,"%ignoreBOM":false,"%state":null}');
+      Object.defineProperty(value, "%TextEncoder", { get() { reads++; return 0; }, enumerable: true });
+      Object.defineProperty(value, "%TextDecoder", { get() { reads++; return 0; }, enumerable: true });
+      try { const encoder = value as TextEncoder; console.log("accepted", typeof encoder); }
+      catch (error) { console.log(error instanceof TypeError); }
+      try { const decoder = value as TextDecoder; console.log("accepted", typeof decoder); }
+      catch (error) { console.log(error instanceof TypeError); }
+      const nested: unknown = { decoder: value };
+      try { const checked = nested as { decoder: TextDecoder }; console.log("accepted", typeof checked.decoder); }
+      catch (error) { console.log(error instanceof TypeError); }
+      console.log(reads);
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n0\n");
+    expect(r.stderr).toBe("");
+  });
+
   test("promise and codec checked casts reject unrelated values", async () => {
     const r = await compileAndRun(
       "promise-codec-casts",

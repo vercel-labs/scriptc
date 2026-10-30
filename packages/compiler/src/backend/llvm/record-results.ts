@@ -1,4 +1,6 @@
 import { constructorEscapePoint } from "../cycle-mutability.js";
+import { computePublishedTypes } from "../publication.js";
+import { computeNativeIntegrityTypes } from "../../ir/native-integrity.js";
 import {
   VOID,
   type IrClassDef,
@@ -116,6 +118,8 @@ export function constructorInitializesFields(cls: IrClassDef, ctor: IrFunction):
  * function stays as it is; the backend calls the entry only where the
  * result is proven to be consumed by projections, passing frame storage. */
 export function addRecordResultEntries(mod: IrModule): IrModule {
+  const published = computePublishedTypes(mod);
+  const integrity = computeNativeIntegrityTypes(mod);
   const shapes = new Map((mod.records ?? []).map((shape) => [shape.id, shape]));
   // Scalar unions are always tagged boxes, so the full union table decides
   // inline fields exactly as the emitter's boxed table does.
@@ -326,6 +330,7 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
     if (fn.async || fn.generator || fn.captures !== undefined || fn.classCaptures !== undefined)
       return false;
     const ret = fn.returnType;
+    if (published?.requiresHeapIdentity(ret) || integrity?.requiresHeapIdentity(ret)) return false;
     return (
       (ret.kind === "record" && scalarRecordShape(shapes.get(ret.shapeId), inline)) ||
       (ret.kind === "object" && stackClass(ret.className))

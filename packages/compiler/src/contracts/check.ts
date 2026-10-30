@@ -417,7 +417,9 @@ class ContractChecker {
                 ? "a caught exception"
                 : why.holds === "promise"
                   ? "a promise"
-                  : "a class object";
+                  : why.holds === "array"
+                    ? "an array with mutable named properties"
+                    : "a class object";
         const field =
           why.field === "%dynProperties"
             ? `${this.unitText(why.owner)} instances reach dynamic code, whose properties`
@@ -449,6 +451,8 @@ class ContractChecker {
 
   private cycleHint(why: CycleExplanation): string {
     const inner = why.kind === "hierarchy" ? why.because : why;
+    if (inner.kind === "intrinsic" && inner.holds === "array")
+      return "an array's named properties can reference its owner independently of the element type; remove Acyclic or store fields that cannot refer back";
     if (inner.kind === "intrinsic")
       return "a function, dynamic or promise field can capture the object itself; store plain data instead, or remove Acyclic";
     if (
@@ -1025,6 +1029,8 @@ const OBSERVE = new Set<IrExpr["kind"]>([
   "recordOvfHas",
   "recordNullProto",
   "arrayHas",
+  "arrayHasProperty",
+  "arrayPropertyRead",
   "arrayState",
   "jsonStringify",
   "toString",
@@ -1191,7 +1197,13 @@ class ImmutableContracts {
           e.receiver.kind === "varRef"
         )
           allowed.add(e.receiver);
-        if ((e.kind === "arrayGet" || e.kind === "arrayHas") && e.arr.kind === "varRef")
+        if (
+          (e.kind === "arrayGet" ||
+            e.kind === "arrayHas" ||
+            e.kind === "arrayPropertyRead" ||
+            e.kind === "arrayHasProperty") &&
+          e.arr.kind === "varRef"
+        )
           allowed.add(e.arr);
         if ((e.kind === "fieldGet" || e.kind === "recordGet") && e.obj.kind === "varRef")
           allowed.add(e.obj);
@@ -1559,7 +1571,12 @@ class ImmutableContracts {
     let root = e;
     for (let steps = 0; steps < 16; steps++) {
       if (root.kind === "fieldGet" || root.kind === "recordGet") root = root.obj;
-      else if (root.kind === "arrayGet") root = root.arr;
+      else if (
+        root.kind === "arrayGet" ||
+        (root.kind === "arrayPropertyRead" &&
+          (root.consume === "value" || root.consume === "required"))
+      )
+        root = root.arr;
       else if (
         root.kind === "upcast" ||
         root.kind === "downcast" ||
@@ -1611,6 +1628,11 @@ class ImmutableContracts {
           this.mayHold.has(
             `s:${e.obj.type.kind === "record" ? e.obj.type.shapeId : ""}\0${e.field}`,
           ) || derived(e.obj)
+        );
+      case "arrayPropertyRead":
+        return (
+          (e.consume === "value" || e.consume === "required") &&
+          (this.mayHold.has(`e:${typeKey(e.arr.type)}`) || derived(e.arr))
         );
       case "arrayGet":
         return this.mayHold.has(`e:${typeKey(e.arr.type)}`) || derived(e.arr);

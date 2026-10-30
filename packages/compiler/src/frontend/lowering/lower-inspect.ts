@@ -22,11 +22,12 @@ import {
   canDynCheckTo,
   isDirentShape,
   isDynTypedRefType,
+  isClassOwnEnumerableField,
   recordTextCodecClass,
   shapeHasAccessorSlots,
   typeKey,
 } from "../../ir/ir.js";
-import type { ClassInfo } from "./lower-classes.js";
+import { classNativeIntegrityEligible, type ClassInfo } from "./lower-classes.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { symbolFieldDisplayName } from "./symbol-fields.js";
 import { eventTargetRootOf } from "./lower-event-target.js";
@@ -108,7 +109,7 @@ function errorRenderable(info: ClassInfo): boolean {
   // fields are own properties the runtime rendering would miss. #private
   // fields are NOT own properties — Node never prints them — so they
   // don't disqualify.
-  if (!info.builtinError && info.def.fields.some((f) => !f.name.startsWith("#"))) return false;
+  if (!info.builtinError && info.def.fields.some(isClassOwnEnumerableField)) return false;
   return info.subclasses.every((s) => errorRenderable(s));
 }
 
@@ -226,7 +227,7 @@ function inspectSupport(
         ];
         for (const member of hierarchy(info))
           for (const f of member.def.fields) {
-            if (f.name.startsWith("#") || f.name.startsWith("%")) continue;
+            if (!isClassOwnEnumerableField(f)) continue;
             const why = inspectSupport(lowerer, f.type, visiting, out);
             if (why !== null) return why;
           }
@@ -241,7 +242,7 @@ function inspectSupport(
       // #private fields never print (Node omits them — not own
       // properties), so their types don't gate support.
       for (const f of info.def.fields) {
-        if (f.name.startsWith("#")) continue;
+        if (!isClassOwnEnumerableField(f)) continue;
         const why = inspectSupport(lowerer, f.type, visiting, out);
         if (why !== null) return why;
       }
@@ -344,7 +345,12 @@ export function inspectExpr(
           loc,
         };
       }
-      if (lowerer.classes.get(t.className)?.subclasses.length) {
+      // Ordinary class inspection observes live descriptors and declaration
+      // order, including bare fields before their first typed assignment.
+      if (
+        lowerer.classes.get(t.className)?.subclasses.length ||
+        classNativeIntegrityEligible(lowerer.classes.get(t.className)!)
+      ) {
         return {
           kind: "libCall",
           fn: "insp.dyn",
@@ -1166,7 +1172,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // #private fields never render: they are not properties in any
       // observable way — Node's inspect omits them entirely (verified),
       // so a class whose only fields are private prints as `C {}`.
-      const visible = info.def.fields.filter((f) => !f.name.startsWith("#"));
+      const visible = info.def.fields.filter(isClassOwnEnumerableField);
       if (visible.length === 0) {
         body = [ret(strLit(display === "" ? "{}" : `${display} {}`, loc))];
         break;

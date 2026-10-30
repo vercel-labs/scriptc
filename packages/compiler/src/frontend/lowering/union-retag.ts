@@ -39,50 +39,38 @@ export interface RecordUnionWrapPlan {
   routes: UnionRetagRoute[];
 }
 
-/** Recursive variants can retain distinct ids for the same field layout.
- * An independently inferred record may intern to either id, so that id
- * alone cannot select its semantic destination when wrapping into a union. */
+/** A record's discriminator selects its union layout, including optional
+ * field completion. Structural width alone can select a smaller, unrelated
+ * variant while leaving the original discriminator in its payload. */
 export function planRecordUnionWrap(
   source: IrRecordShape,
   to: IrUnionDef,
   shapeOf: (id: string) => IrRecordShape | undefined,
+  widthLift: (src: IrType, dst: IrType) => WidthLift | null,
 ): RecordUnionWrapPlan | null {
   const discriminant = to.discriminant;
   if (!discriminant || source.tuple || source.indexValue || shapeHasAccessorSlots(source))
     return null;
   const fieldType = discriminantField(source, discriminant.field);
-  if (!fieldType) return null;
+  if (!fieldType || discriminantOwners(to, shapeOf) === null) return null;
+  const sourceType: IrType = { kind: "record", shapeId: source.id };
   const routes: UnionRetagRoute[] = [];
   for (let tag = 0; tag < to.arms.length; tag++) {
     const arm = to.arms[tag]!;
     if (arm.kind !== "record") continue;
     const target = shapeOf(arm.shapeId);
-    if (
-      !target ||
-      target.tuple ||
-      target.indexValue ||
-      target.fields.length !== source.fields.length
-    )
-      continue;
-    let same = true;
-    for (let i = 0; i < source.fields.length; i++) {
-      const a = source.fields[i]!,
-        b = target.fields[i]!;
-      if (a.name !== b.name || !typeEquals(a.type, b.type)) {
-        same = false;
-        break;
-      }
-    }
-    if (!same) continue;
+    if (!target || target.tuple || target.indexValue) continue;
+    const lift = widthLift(sourceType, arm);
+    if (!lift) continue;
     const entry = discriminant.cases.find((candidate) => candidate.tag === tag);
     if (!entry) return null;
     routes.push({
       tag,
-      lift: { how: arm.shapeId === source.id ? "copy" : "width" },
+      lift,
       values: entry.values,
     });
   }
-  if (routes.length < 2 || discriminantOwners(to, shapeOf) === null) return null;
+  if (routes.length === 0) return null;
   return { field: discriminant.field, fieldType, routes };
 }
 
@@ -167,12 +155,19 @@ export function planUnionRetag(
       else result.push({ kind: "discriminant", field: discriminant.field, fieldType, routes });
       continue;
     }
+    // A source without semantic metadata can still carry a destination's
+    // discriminator. Read it from the source layout before choosing a tag.
+    const sourceShape = source.kind === "record" ? shapeOf(source.shapeId) : undefined;
+    const recordPlan = sourceShape && planRecordUnionWrap(sourceShape, to, shapeOf, widthLift);
+    if (recordPlan) {
+      result.push({ kind: "discriminant", ...recordPlan });
+      continue;
+    }
     if (identity >= 0) {
       result.push({ kind: "direct", route: { tag: identity, lift: { how: "copy" }, values: [] } });
       continue;
     }
-    // Unannotated unions retain the unique-width-arm rule. A discriminant
-    // present on just one side cannot establish correspondence.
+    // Without a usable discriminator, retain the unique-width-arm rule.
     const lift = widthLift(source, target);
     if (!lift || lift.how !== "liftWrap") return null;
     const inner = widthLift(source, lift.arm);

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
 
-async function layouts(body: string): Promise<string[]> {
+async function layouts(body: string, fallback = '"nonobject"', exposed = true): Promise<string[]> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-property-bag-"));
   try {
     const entry = join(dir, "main.ts");
@@ -32,11 +32,11 @@ class Derived extends Base {
   }
 }
 function debug(x: unknown): string {
-  if (typeof x !== "object" || x === null) return String(x);
+  if (typeof x !== "object" || x === null) return ${fallback};
   ${body}
 }
 const values: Base[] = [new Base(1), new Derived(2)];
-for (const value of values) console.log(debug(value), value.describe());
+for (const value of values) console.log(${exposed ? "debug(value), " : ""}value.describe());
 `,
     );
     const result = await compile(entry, { outDir: dir, outPath, outputKind: "llvm" });
@@ -48,11 +48,17 @@ for (const value of values) console.log(debug(value), value.describe());
   }
 }
 
-test("instances read through unknown keep no property bag without dynamic stores", async () => {
+test("instances read through unknown retain their own-property metadata", async () => {
   const types = await layouts(`
   let keys = "";
   for (const key in x) keys += key;
   return keys + Object.keys(x).join(",") + Object.prototype.toString.call(x);`);
+  expect(types).toHaveLength(2);
+  for (const type of types) expect(type).toContain("%dynProperties");
+});
+
+test("unexposed typed class hierarchies keep no property bag", async () => {
+  const types = await layouts('return "";', '"nonobject"', false);
   expect(types).toHaveLength(2);
   for (const type of types) expect(type).not.toContain("%dynProperties");
 });
@@ -61,6 +67,12 @@ test("a dynamic store keeps the property bag of the classes it can reach", async
   const types = await layouts(`
   (x as Record<string, unknown>)[String(Object.keys(x)[0])] = 1;
   return Object.keys(x).join(",");`);
+  expect(types).toHaveLength(2);
+  for (const type of types) expect(type).toContain("%dynProperties");
+});
+
+test("String of unknown retains reachable property bags", async () => {
+  const types = await layouts('return "";', "String(x)");
   expect(types).toHaveLength(2);
   for (const type of types) expect(type).toContain("%dynProperties");
 });

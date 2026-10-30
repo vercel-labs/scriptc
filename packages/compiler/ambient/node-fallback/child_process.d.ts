@@ -29,7 +29,9 @@ declare module "child_process" {
    * the signal, never a throw), killSignal (a signal NAME literal),
    * stdio ("ignore"/"inherit"/"pipe" or a 3-tuple of those — captures
    * read "" for non-piped streams), env (replaces the child's
-   * environment), and windowsHide (a POSIX no-op). */
+   * environment), cwd (the child's directory), input (the string piped
+   * to its stdin — `| undefined` means the option is absent, "" pipes an
+   * empty stdin), and windowsHide (a POSIX no-op). */
   export function spawnSync(
     command: string,
     args?: string[],
@@ -39,6 +41,11 @@ declare module "child_process" {
       killSignal?: string;
       stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
       env?: { [k: string]: string | undefined };
+      cwd?: string;
+      /* Piped to the child's stdin. undefined is an ABSENT option (no
+       * pipe, fd 0 is /dev/null or inherited per stdio); "" is an EMPTY
+       * stdin, which the child reads as immediate EOF — Node's reading. */
+      input?: string | undefined;
       windowsHide?: boolean;
     },
   ): SpawnSyncReturns;

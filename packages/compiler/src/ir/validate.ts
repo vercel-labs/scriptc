@@ -5213,7 +5213,7 @@ function validateFunction(
   }
 
   function checkLibProcessCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "cp.execFile") {
+    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
       const cb = e.args[2]?.type;
       if (
         cb?.kind !== "func" ||
@@ -5222,7 +5222,7 @@ function validateFunction(
         cb.ret.kind !== "void"
       ) {
         err(
-          `libCall cp.execFile callback must be a non-rest void function with at most three parameters`,
+          `libCall ${e.fn} callback must be a non-rest void function with at most three parameters`,
           e.loc,
         );
       } else {
@@ -5235,16 +5235,16 @@ function validateFunction(
             !def.arms.some((arm) => arm.kind === "nullT") ||
             !def.arms.some((arm) => arm.kind === "object" && arm.className === "%Error")
           ) {
-            err(`libCall cp.execFile callback error parameter must be Error | null`, e.loc);
+            err(`libCall ${e.fn} callback error parameter must be Error | null`, e.loc);
           }
         }
         const stdout = cb.params[1];
         if (stdout !== undefined && stdout.kind !== "string") {
-          err(`libCall cp.execFile callback stdout parameter must be string`, e.loc);
+          err(`libCall ${e.fn} callback stdout parameter must be string`, e.loc);
         }
         const stderr = cb.params[2];
         if (stderr !== undefined && stderr.kind !== "string") {
-          err(`libCall cp.execFile callback stderr parameter must be string`, e.loc);
+          err(`libCall ${e.fn} callback stderr parameter must be string`, e.loc);
         }
       }
     }

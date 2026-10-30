@@ -461,6 +461,8 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_child.c's spawnSync and exec/execFile-callback `cwd`/`input` entries.
+  { define: "SCR_CHILD_CP_OPTIONS", when: (opts) => opts.childOptionExt },
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },

@@ -28,6 +28,21 @@ ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
                                 double err_mode, ScrArr *env_pairs);
+/* The cwd/input forms (cp.spawnSyncExt / cp.spawnSyncExtEnv): the options
+ * entry with the child started in `cwd` (NULL or "" = the parent's
+ * directory) and `input` written to its stdin, with has_input false
+ * leaving fd 0 to the stdio mode ("input: undefined" is an ABSENT option,
+ * "" pipes an empty stdin). Built only into programs that name these
+ * entries (SCR_CHILD_CP_OPTIONS: the compiler's childOptionExt feature),
+ * so the default object stays byte identical. */
+ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
+                                 ScrStr *killsignal, double in_mode, double out_mode,
+                                 double err_mode, ScrStr *cwd, ScrStr *input,
+                                 bool has_input);
+ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
+                                     ScrStr *killsignal, double in_mode, double out_mode,
+                                     double err_mode, ScrStr *cwd, ScrStr *input,
+                                     bool has_input, ScrArr *env_pairs);
 /* The runtime-string stdio entry: the compiler proved the value is
  * "pipe" | "ignore" | "inherit" by type; the mode mapping happens here. */
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
@@ -169,6 +184,11 @@ void scr_child_on_spawn(ScrChild *child, ScrClosure *cb); /* moves zero-argument
  * the command, as for scr_exec_sync. */
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                         ScrExecFileFn fn, bool shell);
+/* The same with the `cwd` option: the child starts in cwd (NULL or "" =
+ * the parent's directory). Built only into programs that name it
+ * (SCR_CHILD_CP_OPTIONS), like the spawnSync cwd/input entries. */
+ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
+                            ScrExecFileFn fn, bool shell, ScrStr *cwd);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);

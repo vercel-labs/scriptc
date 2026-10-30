@@ -1596,6 +1596,36 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING],
       result: SPAWNRES_T,
     },
+    /** spawnSync with the `cwd` and `input` options (the
+     * SCR_CHILD_CP_OPTIONS build of scr_child.c): the cp.spawnSyncOpts
+     * contract plus the child's working directory ("" = inherit) and
+     * stdin input (has_input false leaves fd 0 to the stdio mode — an
+     * absent `input` option; "" pipes an empty stdin), exactly Node's
+     * reading of the member. Args (cmd, argv, timeout, killSignal,
+     * inMode, outMode, errMode, cwd, input, hasInput). Never throws, like
+     * every spawnSync form. */
+    "cp.spawnSyncExt": {
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL],
+      result: SPAWNRES_T,
+    },
+    /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
+     * replace the child's environment. */
+    "cp.spawnSyncExtEnv": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        STRING,
+        F64,
+        F64,
+        F64,
+        STRING,
+        STRING,
+        BOOL,
+        arrayOf(STRING),
+      ],
+      result: SPAWNRES_T,
+    },
     // node:net (scr_net.c). Listener slots are program-dependent closures —
     // null slots, checked in the libCall case (the child.onExit precedent);
     // the zero-param callbacks pin the exact func type here. The trailing
@@ -2905,6 +2935,13 @@ function buildLibFnSignatures() {
      * by the validator/backends. The last argument is exec's shell flag:
      * the argv is ["-c", command] and failure messages show the command. */
     "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null, BOOL], result: CHILD_T },
+    /** The same callback slice with the `cwd` option (the
+     * SCR_CHILD_CP_OPTIONS build): the child starts in cwd.
+     * (cmd, argv, callback, shell, cwd). */
+    "cp.execFileCwd": {
+      argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING],
+      result: CHILD_T,
+    },
     // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
     // 2 fd) with the out/err fds for mode 2, detached, env replacement
     // pairs, cwd ("" = inherit).

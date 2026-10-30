@@ -4334,6 +4334,7 @@ export class Lowerer {
       checkedTable("genericFnsBySymbol", () => this.genericFnsBySymbol.size),
       checkedTable("objLitGenericFns", () => this.objLitGenericFns.size),
       checkedTable("bindingGenericFns", () => this.bindingGenericFns.size),
+      checkedTable("genericAliasPresence", () => this.genericAliasPresence.size),
       checkedTable("bindingIdentifiers", () => this.bindingIdentifiers.size),
       checkedTable("ownToStringTargets", () => this.ownToStringTargets.size),
       checkedTable("neverReassignedCache", () => this.neverReassignedCache.size),

@@ -15,10 +15,12 @@ import {
   arrayOf,
   BYTES_U8,
   funcOf,
+  PROCSTREAM_T,
 } from "../../../ir/ir.js";
 import { boolLit, dynUndefinedExpr, numLit } from "../../../ir/build.js";
 import { READLINE_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "../surfaces.js";
 import { streamSidesOf } from "../lower-stream.js";
+import { stdioIntoGeneralStream } from "../general-streams.js";
 import type { IrLibFn } from "../../../ir/builtin-signatures.js";
 import { voidizedCallback } from "../lower-server.js";
 import { builtinImportOf } from "./module-bindings.js";
@@ -96,25 +98,35 @@ function returnsPromise(lowerer: Lowerer, call: ts.CallExpression): boolean {
 }
 
 /** The `{ signal }` options argument of the promise question: the signal
- * expression, or null when absent. Other members fence by name. */
-function questionSignal(lowerer: Lowerer, node: ts.Expression | undefined): ts.Expression | null {
+ * value, or null when absent. Other members of an object literal fence by
+ * name. Any other options value (a variable, a call, a conditional) is
+ * read the way Node reads it — one optional `signal` member, undefined
+ * for a nullish receiver and for a primitive — and the runtime's
+ * `scr_rl_ask` then applies Node's truthy check and validateAbortSignal. */
+function questionSignal(lowerer: Lowerer, node: ts.Expression | undefined): IrExpr | null {
   if (node === undefined) return null;
   if (!ts.isObjectLiteralExpression(node)) {
-    lowerer.noLowering(
-      "readline/promises question options that are not an object literal",
-      node,
-      "write the options inline: question(query, { signal })",
-    );
+    const loc = locOf(node);
+    const value = lowerer.lowerExpr(node);
+    return {
+      kind: "dynKeyGet",
+      key: { kind: "strLit", value: "signal", type: STRING, loc },
+      optional: true,
+      value: value.type.kind === "dyn" ? value : lowerer.coerceInto(node, value, DYN),
+      type: DYN,
+      loc,
+    };
   }
-  let signal: ts.Expression | null = null;
+  let signalNode: ts.Expression | null = null;
   for (const p of node.properties.nodes) {
-    if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "signal") {
-      signal = p.initializer;
-      continue;
-    }
-    // `{ signal }` — the shorthand names the local whose value is the signal.
-    if (ts.isShorthandPropertyAssignment(p) && p.name.text === "signal") {
-      signal = p.name as ts.Identifier;
+    if (
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+      ts.isIdentifier(p.name) &&
+      p.name.text === "signal"
+    ) {
+      // `{ signal }` reads the binding of the same name, like Node's
+      // one property read of the options object.
+      signalNode = ts.isShorthandPropertyAssignment(p) ? p.name : p.initializer;
       continue;
     }
     lowerer.noLowering(
@@ -123,7 +135,7 @@ function questionSignal(lowerer: Lowerer, node: ts.Expression | undefined): ts.E
       "signal is the supported question option",
     );
   }
-  return signal;
+  return signalNode === null ? null : lowerer.lowerExprExpecting(signalNode, DYN);
 }
 
 /** True when `node`'s checker type is readline/promises' Readline. */
@@ -412,13 +424,12 @@ export function lowerReadlineMethodCall(
   ) {
     const recv = receiver();
     const query = lowerPromptArg(lowerer, args[0]!);
-    const signal = questionSignal(lowerer, args[1]);
+    const sig = questionSignal(lowerer, args[1]);
     const type = { kind: "promise", inner: STRING } as const;
-    if (signal === null) {
+    if (sig === null) {
       const fn = query.dyn ? "rl.questionAsyncDyn" : "rl.questionAsync";
       return { kind: "libCall", fn, args: [recv, query.value], type, loc };
     }
-    const sig = lowerer.lowerExprExpecting(signal, DYN);
     const fn = query.dyn ? "rl.questionAsyncSignalDyn" : "rl.questionAsyncSignal";
     return { kind: "libCall", fn, args: [recv, query.value, sig], type, loc };
   }
@@ -1055,18 +1066,47 @@ function lowerInput(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
   return v;
 }
 
-/** The interface's output: "stdout", a writable stream, or "none". */
-function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" | "none" {
-  if (
-    ts.isPropertyAccessExpression(node) &&
-    lowerer.stdlibGlobalMember(node, "process") === "stdout"
-  ) {
-    return "stdout";
+/** The interface's output: the direct process.stdout fast path, none, or
+ * a writable stream (a direct process.stderr is the general
+ * representation's fd-backed Writable). */
+type LoweredOutput =
+  | { kind: "stdout" }
+  | { kind: "none" }
+  /** ttyFd is the process descriptor of a direct process.stderr output,
+   * whose isTTY (Node's terminal default) the terminal flag mirrors. */
+  | { kind: "stream"; value: IrExpr; ttyFd?: number };
+
+/** process.stderr as the interface output: the general representation's
+ * fd-backed Writable for descriptor 2. Its _write takes the synchronous
+ * stdio path, so prompts reach descriptor 2 in the same order as direct
+ * stderr writes. The readline stream representation needs the general
+ * node streams mode; a program that is not in it is re-lowered once (the
+ * requestGeneralStreamSurface pattern). */
+function stderrOutput(lowerer: Lowerer, node: ts.Expression): LoweredOutput {
+  const loc = locOf(node);
+  const proc: IrExpr = { kind: "numLit", value: 2, type: PROCSTREAM_T, loc };
+  const writable: IrType = { kind: "object", className: "%Writable" };
+  const value = stdioIntoGeneralStream(lowerer, proc, writable);
+  if (value === null) {
+    if (!lowerer.generalNodeStreams) lowerer.requiresGeneralNodeStreams = true;
+    lowerer.noLowering(
+      "createInterface with this output",
+      node,
+      "process.stdout, process.stderr and writable streams are the supported outputs",
+    );
   }
-  if (node.kind === ts.SyntaxKind.NullKeyword) {
-    return "none";
-  }
-  if (ts.isIdentifier(node) && node.text === "undefined") return "none";
+  return { kind: "stream", value, ttyFd: 2 };
+}
+
+function lowerOutput(lowerer: Lowerer, node: ts.Expression): LoweredOutput {
+  const directFd = processOutputOf(lowerer, node);
+  if (directFd === 1) return { kind: "stdout" };
+  if (node.kind === ts.SyntaxKind.NullKeyword) return { kind: "none" };
+  if (ts.isIdentifier(node) && node.text === "undefined") return { kind: "none" };
+  // process.stderr (both a TypeScript procStream scalar and a JavaScript
+  // process.stdio(2) handle): the fd-backed Writable, not rl.outputFromDyn,
+  // which only accepts boxed streams.
+  if (directFd === 2) return stderrOutput(lowerer, node);
   const v = streamFromDyn(lowerer, node, true);
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   const sides = streamSidesOf(lowerer, info);
@@ -1074,22 +1114,24 @@ function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" |
     lowerer.noLowering(
       "createInterface with this output",
       node,
-      "process.stdout and writable streams are the supported outputs",
+      "process.stdout, process.stderr and writable streams are the supported outputs",
     );
   }
-  return v;
+  return { kind: "stream", value: v };
 }
 
 /** createInterface({ input, output?, terminal?, crlfDelay?, prompt?,
  * signal?, ... }) or createInterface(input, output?, completer?,
  * terminal?), from node:readline or node:readline/promises. The input is process.stdin or a readable
- * stream; the output process.stdout, a writable stream, or absent
- * (prompts are then not written). rl.create's arguments: the mode literal
+ * stream; the output process.stdout, process.stderr, a writable stream,
+ * or absent (prompts are then not written). rl.create's arguments: the
+ * mode literal
  * (1 stream input, 2 stream output, 4 stdout output, 8 signal, 16
  * prompt, 32 node:readline/promises), then the input and output streams
  * when present, crlfDelay, the prompt and the signal when present. An interface that can be a
- * terminal one (a `terminal` option that is not false, or none with
- * process.stdout as the output, which is a terminal when it is a TTY)
+ * terminal one (a `terminal` option that is not false, or none with a
+ * direct process.stdout or process.stderr output, whose isTTY it then
+ * mirrors)
  * goes through rl.terminal with the completer. */
 export function lowerReadlineCreateCall(
   lowerer: Lowerer,
@@ -1100,7 +1142,7 @@ export function lowerReadlineCreateCall(
   const argNodes = expr.arguments?.nodes ?? [];
   const what = ts.isNewExpression(expr) ? "new Interface" : "createInterface";
   let input: IrExpr | null = null;
-  let output: IrExpr | "stdout" | "none" = "none";
+  let output: LoweredOutput = { kind: "none" };
   let crlf: IrExpr = numLit(0, loc);
   let prompt: IrExpr | null = null;
   let signal: IrExpr | null = null;
@@ -1268,14 +1310,14 @@ export function lowerReadlineCreateCall(
   }
   const mode =
     (input !== null ? 1 : 0) |
-    (typeof output === "object" ? 2 : 0) |
-    (output === "stdout" ? 4 : 0) |
+    (output.kind === "stream" ? 2 : 0) |
+    (output.kind === "stdout" ? 4 : 0) |
     (signal !== null ? 8 : 0) |
     (prompt !== null ? 16 : 0) |
     (promises ? 32 : 0);
   const args: IrExpr[] = [numLit(mode, loc)];
   if (input !== null) args.push(input);
-  if (typeof output === "object") args.push(output);
+  if (output.kind === "stream") args.push(output.value);
   args.push(crlf);
   if (prompt !== null) args.push(prompt);
   if (signal !== null) args.push(signal);
@@ -1286,8 +1328,28 @@ export function lowerReadlineCreateCall(
     type: F64,
     loc,
   };
-  // terminal mode: 0 the option's value, 2 output.isTTY of process.stdout
-  const terminalMode = terminal !== null ? 0 : !terminalFalse && output === "stdout" ? 2 : null;
+  // terminal mode: 0 the option's value, 2 output.isTTY of process.stdout.
+  // Node's default for an output process stream is that stream's isTTY, so
+  // a direct process.stderr output passes process.isTTY(2) as the value.
+  let terminalMode: number | null;
+  if (terminal !== null) {
+    terminalMode = 0;
+  } else if (terminalFalse) {
+    terminalMode = null;
+  } else if (output.kind === "stdout") {
+    terminalMode = 2;
+  } else if (output.kind === "stream" && output.ttyFd !== undefined) {
+    terminalMode = 0;
+    terminal = {
+      kind: "libCall",
+      fn: "process.isTTY",
+      args: [numLit(output.ttyFd, loc)],
+      type: BOOL,
+      loc,
+    };
+  } else {
+    terminalMode = null;
+  }
   // The completer is kept as a checked-dynamic value when the interface
   // can be a terminal one; a function is otherwise only evaluated.
   let completerChecked = false;

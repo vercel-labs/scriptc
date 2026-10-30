@@ -11,18 +11,44 @@ import { classOfRule, ruleInfo, ruleOfReason } from "./rules.js";
 import type { RefusalRecord } from "./scan.js";
 import type { NodeIslandReason, NodeIslandReasonSource } from "./summary.js";
 
-/** Message shapes of refusal sites that predate reason ids. */
-const MESSAGE_REASONS: { code: string; pattern: RegExp; reason: string }[] = [
+/** Message shapes of refusal sites that predate reason ids. A shape that
+ * one refusal site reports as SC1090 and another as SC2020 names both. */
+const MESSAGE_REASONS: { code: string | readonly string[]; pattern: RegExp; reason: string }[] = [
   { code: "SC2010", pattern: /./, reason: "code-from-string" },
   { code: "SC1010", pattern: /'(?:node:)?vm'/, reason: "vm" },
   { code: "SC1090", pattern: /^dynamic import\(\) of computed/, reason: "dynamic-import" },
+  {
+    code: "SC1090",
+    pattern: /^dynamic import of the program's own CommonJS module /,
+    reason: "cjs-namespace",
+  },
   { code: "SC1090", pattern: /require\(\) with a computed specifier/, reason: "dynamic-require" },
+  {
+    code: ["SC1090", "SC2020"],
+    pattern: /^'import\.meta\.resolve with a runtime-computed specifier'/,
+    reason: "dynamic-resolve",
+  },
+  {
+    code: ["SC1090", "SC2020"],
+    pattern: /^'?this Worker entry point/,
+    reason: "worker-entry",
+  },
+  {
+    code: "SC1090",
+    pattern: /^extending classes not declared in the program/,
+    reason: "host-class-base",
+  },
   { code: "SC1090", pattern: /'with' statement/, reason: "with" },
   { code: "SC1090", pattern: /sloppy-mode parameter aliases/, reason: "sloppy-arguments" },
   { code: "SC2020", pattern: /^'(?:eval|Function)'/, reason: "code-from-string" },
   {
     code: "SC2020",
-    pattern: /createRequire's require with this argument shape/,
+    pattern: /createRequire's require with (?:a computed specifier or )?this argument shape/,
+    reason: "dynamic-require",
+  },
+  {
+    code: "SC2020",
+    pattern: /^'require' is typed by @types\/node/,
     reason: "dynamic-require",
   },
   { code: "SC2020", pattern: /^native addon /, reason: "native-addon" },
@@ -43,7 +69,8 @@ const MESSAGE_REASONS: { code: string; pattern: RegExp; reason: string }[] = [
 function reasonIdOf(d: ScrDiagnostic): string | null {
   if (d.reason !== undefined) return d.reason;
   for (const entry of MESSAGE_REASONS) {
-    if (entry.code === d.code && entry.pattern.test(d.message)) return entry.reason;
+    const codes = typeof entry.code === "string" ? [entry.code] : entry.code;
+    if (codes.includes(d.code) && entry.pattern.test(d.message)) return entry.reason;
   }
   return null;
 }

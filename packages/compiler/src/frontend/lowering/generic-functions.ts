@@ -23,7 +23,7 @@ import {
 } from "../../ir/ir.js";
 import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { typeKey } from "../type-mapper.js";
+import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
@@ -1513,6 +1513,13 @@ export function lowerGenericFnValue(
       if (callable.length === 1) target = callable[0]![0]!;
     }
   }
+  // Stored as a generic member of an object literal (`{ object:
+  // objectOf }`, `{ objectOf }`), with no slot type or with a slot that
+  // keeps a generic signature (an annotated or `satisfies`-checked
+  // literal): the member's runtime value is the erased instance, as for
+  // generic methods and arrow properties.
+  if ((!target || target.getTypeParameters().length > 0) && storedAsGenericMember(lowerer, ref))
+    return guardEarlyBindingValue(lowerer, info, ref, erasedGenericClosure(lowerer, ref, info));
   if (!target) fenceUnpinned();
   return guardEarlyBindingValue(
     lowerer,
@@ -1520,6 +1527,34 @@ export function lowerGenericFnValue(
     ref,
     pinnedGenericClosure(lowerer, ref, info, target, fenceUnpinned),
   );
+}
+
+/** `ref` is the whole value of an object-literal property (`{ m: ref }` or
+ * the shorthand `{ ref }`) whose member keeps the generic signature. */
+function storedAsGenericMember(lowerer: Lowerer, ref: ts.Expression): boolean {
+  let value: ts.Node = ref;
+  while (value.parent !== undefined && ts.isParenthesizedExpression(value.parent))
+    value = value.parent;
+  const prop = value.parent;
+  if (prop === undefined) return false;
+  const stored =
+    (ts.isPropertyAssignment(prop) && prop.initializer === value) ||
+    (ts.isShorthandPropertyAssignment(prop) && prop.name === value);
+  if (!stored || !ts.isObjectLiteralExpression(prop.parent)) return false;
+  const member = lowerer.checker.getSymbolAtLocation(prop.name);
+  return (
+    member !== undefined &&
+    isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(member), lowerer.checker)
+  );
+}
+
+/** The zero-capture closure of the erased instance of `info`. */
+function erasedGenericClosure(lowerer: Lowerer, ref: ts.Expression, info: GenericFnInfo): IrExpr {
+  const inst = erasedGenericInstance(lowerer, ref, info);
+  const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
+  lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
+  lowerer.noteEdge(inst.name);
+  return { kind: "closure", fnName: inst.name, captures: [], type: funcType, loc: locOf(ref) };
 }
 
 /** The value a generic binding declared inside a function stores when a

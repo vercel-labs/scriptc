@@ -1193,13 +1193,29 @@ bool scr_emitter_has_typed(ScrEmitter *em, ScrStr *name) {
   return false;
 }
 
-/* Node's ERR_UNHANDLED_ERROR for a non-Error payload: the message quotes
- * util.inspect of the payload. This unit renders the primitive payloads
- * inspect prints plainly; others report that they are not supported. */
-static void scr_ee_unhandled_error(const ScrDyn *er) {
+/* Throws Node's ERR_UNHANDLED_ERROR for a non-Error payload: the message
+ * quotes `shown` (util.inspect of the payload) and `context` is the
+ * payload. */
+SCR_COLD static void scr_ee_throw_unhandled(const char *shown, size_t len, const ScrDyn *er) {
   ScrJsonBuf text;
   scr_jb_init(&text);
   scr_jb_puts(&text, "Unhandled error. (");
+  scr_jb_write(&text, shown, len);
+  scr_jb_putc(&text, ')');
+  ScrStr *message = scr_jb_finish(&text);
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(err, "ERR_UNHANDLED_ERROR");
+  scr_error_set_prop(err, "context", 7, scr_dyn_retain((ScrDyn *)er));
+  scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* ERR_UNHANDLED_ERROR through an untyped value. This unit renders the
+ * primitive payloads inspect prints plainly; others report that they are
+ * not supported. */
+static void scr_ee_unhandled_error(const ScrDyn *er) {
+  ScrJsonBuf text;
+  scr_jb_init(&text);
   bool shown = true;
   switch (er->kind) {
   case SCR_DYN_UNDEF: scr_jb_puts(&text, "undefined"); break;
@@ -1233,13 +1249,7 @@ static void scr_ee_unhandled_error(const ScrDyn *er) {
   }
   ScrStr *message = scr_jb_finish(&text);
   if (shown) {
-    ScrJsonBuf full;
-    scr_jb_init(&full);
-    scr_jb_write(&full, message->data, message->len);
-    scr_jb_putc(&full, ')');
-    ScrStr *rendered = scr_jb_finish(&full);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, rendered->data, rendered->len, "ERR_UNHANDLED_ERROR");
-    scr_str_release(rendered);
+    scr_ee_throw_unhandled(message->data, message->len, er);
   } else {
     const char *refusal =
         "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet";
@@ -1251,21 +1261,51 @@ static void scr_ee_unhandled_error(const ScrDyn *er) {
 /* emit('error', ...) through an untyped value: errorMonitor first; with no
  * 'error' listener an Error payload throws itself and anything else throws
  * ERR_UNHANDLED_ERROR, Node's contract; otherwise listeners receive the
- * arguments as given, and typed listeners the payload as an Error. */
-static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc) {
+ * arguments as given, and typed listeners the payload as an Error. `render`
+ * (util.inspect, when the call site links it) quotes the payload in the
+ * ERR_UNHANDLED_ERROR message; without it only primitive payloads render. */
+static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc,
+                                  ScrStr *(*render)(ScrDyn *, double, double)) {
   const ScrDyn *er = argc ? args[0] : scr_dyn_undefined();
   ScrError *err = scr_dyn_err_instanceof(er, SCR_ERR_ERROR) ? scr_errdyn_err_of(er) : NULL;
   bool had = false;
   if (!scr_ee_has(em->reg, "error")) {
     scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, err != NULL, err);
     if (!scr_exc_pending()) {
-      if (err) scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
-      else scr_ee_unhandled_error(er);
+      if (err) {
+        scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
+      } else if (render) {
+        ScrStr *shown = render((ScrDyn *)er, 0, 2);
+        if (scr_exc_pending()) {
+          /* A throwing inspect: Node quotes the payload's string conversion
+           * instead, whose own throw propagates. */
+          if (shown) scr_str_release(shown);
+          scr_exc_clear();
+          shown = scr_dyn_string_coerce_js(er);
+        }
+        if (shown) {
+          scr_ee_throw_unhandled(shown->data, shown->len, er);
+          scr_str_release(shown);
+        }
+      } else {
+        scr_ee_unhandled_error(er);
+      }
     }
   } else {
     had = scr_ee_emit_mixed_va(em, name, args, argc, err != NULL, err);
   }
   scr_error_release(err);
+  return had;
+}
+
+/* emit('error', ...args) from typed code whose payload is not statically
+ * an Error (the arguments boxed): scr_ee_emit_error_dyn, quoting the
+ * payload with `render`. */
+bool scr_emitter_emit_error_value(ScrEmitter *em, ScrDyn *const *args, size_t argc,
+                                  ScrStr *(*render)(ScrDyn *, double, double)) {
+  ScrStr *name = scr_str_new("error", 5);
+  bool had = scr_ee_emit_error_dyn(em, name, args, argc, render);
+  scr_str_release(name);
   return had;
 }
 
@@ -1288,7 +1328,7 @@ bool scr_emitter_emit_message(ScrEmitter *em, ScrStr *name, const struct ScrMess
  * typed listeners with a string name. */
 bool scr_emitter_emit_any(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc) {
   if (!scr_ee_is_error_monitor(name)) {
-    if (scr_ee_is_name(name, "error")) return scr_ee_emit_error_dyn(em, name, args, argc);
+    if (scr_ee_is_name(name, "error")) return scr_ee_emit_error_dyn(em, name, args, argc, NULL);
     if (scr_ee_is_name(name, "newListener") || scr_ee_is_name(name, "removeListener")) {
       ScrStr *s = argc && args[0]->kind == SCR_DYN_STR ? args[0]->v.str : NULL;
       return scr_ee_emit_mixed_va(em, name, args, argc, s != NULL, s);

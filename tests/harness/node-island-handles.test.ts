@@ -1,12 +1,20 @@
 /* Island object handles (scope-B NI-4) where a differential corpus program
  * cannot show it: handles to Node objects the program dropped are released,
  * so the import table does not grow with the work a program does (acyclic
- * garbage; cycles across both heaps wait for NI-8). The corpus (6812-6815)
- * pins handle semantics against Node. An island package ships with the
- * program, so the executable runs without the tree it was built from.
- * Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
+ * garbage; node-island-gc.test.ts covers cycles across both heaps). The
+ * corpus (6812-6815) pins handle semantics against Node. An island package
+ * ships with the program, so the executable runs without the tree it was
+ * built from. Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile } from "node:child_process";
-import { cpSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  copyFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
@@ -174,6 +182,58 @@ describe.skipIf(skip)("Node island handles", () => {
       expect((result.warnings ?? []).map((d) => d.code)).not.toContain("SC8001");
       expect(await refusal(result.binaryPath), name).toMatch(code);
     }
+  }, 300_000);
+
+  test("an island array that contradicts its declaration throws at the crossing", async () => {
+    // The crossing copies the island's array element-wise, and the checked
+    // conversion throws on an element of the wrong type: `lie()` declares
+    // string[] and hands back numbers, so no number reaches a native
+    // string[]. (A corpus program cannot pin this: Node prints the numbers.)
+    const root = join(outDir, "declared-arrays-lie");
+    rmSync(root, { recursive: true, force: true });
+    cpSync(join(repoRoot, "tests/corpus/6897-node-island-declared-arrays"), root, {
+      recursive: true,
+    });
+    copyFileSync(
+      join(repoRoot, "tests/fixtures/node-island/declared-arrays-lie.ts"),
+      join(root, "main.ts"),
+    );
+    const result = await compile(join(root, "main.ts"), {
+      outPath: join(root, "main"),
+      outDir: root,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    expect(await refusal(result.binaryPath)).toContain(
+      "TypeError: expected string at $[0], got number",
+    );
+  }, 300_000);
+
+  test("an island record that contradicts its declaration throws at the crossing", async () => {
+    // A record the island hands back crosses as a deep checked copy:
+    // `unsafe<T>` declares the caller's own record type and hands back a
+    // JSON object whose `fg` is a number, so the copy's conversion throws
+    // before a number reaches a native string field.
+    const root = join(outDir, "unsafe-record-lie");
+    rmSync(root, { recursive: true, force: true });
+    cpSync(join(repoRoot, "tests/corpus/6899-node-island-unsafe-record"), root, {
+      recursive: true,
+    });
+    copyFileSync(
+      join(repoRoot, "tests/fixtures/node-island/unsafe-record-lie.ts"),
+      join(root, "main.ts"),
+    );
+    const result = await compile(join(root, "main.ts"), {
+      outPath: join(root, "main"),
+      outDir: root,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    expect(await refusal(result.binaryPath)).toContain(
+      "TypeError: expected string at $.fg, got number",
+    );
   }, 300_000);
 
   test("an island package ships with the program", async () => {

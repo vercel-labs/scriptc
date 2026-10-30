@@ -1,5 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
-import { globalMemberValue } from "../global-values.js";
+import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
@@ -24,6 +24,7 @@ import {
   funcOf,
   isUnitType,
   recordTextCodecClass,
+  typeEquals,
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
@@ -95,6 +96,42 @@ import { fenceEnumObjectValue } from "../lower-enums.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
+import { envSnapshotHelper, heldEnvValueType } from "../builtins/environment.js";
+
+/** Whether this identifier is the RECEIVER of a member access — the dotted
+ * or bracketed `held.X` / `held[k]`, read or written, through any erasure
+ * wrapper. Those uses answer through the live environment table themselves
+ * (heldEnvValueType); every other use of a held value is a bare one and
+ * reads the environment as it is at that site. */
+function memberReceiverUse(expr: ts.Identifier): boolean {
+  let node: ts.Node = expr;
+  for (;;) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isSatisfiesExpression(parent)
+    ) {
+      node = parent;
+      continue;
+    }
+    return (
+      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+      parent.expression === node
+    );
+  }
+}
+
+/** A JavaScript binding with checked-dynamic storage because the program
+ * stores values outside its declared type (analyzeJsWidenedBindings): the
+ * checker's narrowing at a read does not describe the stored value. */
+function isJsWidenedBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
+  if (lowerer.jsWidenedBindings.size === 0) return false;
+  const symbol = lowerer.resolveValueSymbol(expr);
+  return symbol !== null && symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);
+}
 
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
   if (lowerer.isStdlibGlobal(expr, "console")) {
@@ -183,6 +220,29 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
   const local = lowerer.resolveLocal(expr);
+  // A BARE use of a value HELD from process.env (`{ ...env }`, Object.keys,
+  // an argument, a return) reads the environment as it is HERE: Node's hold
+  // IS the environment object, so its contents at use time are the live
+  // table's. Member accesses (`env.X`, `env[k]`, their writes) reroute to
+  // getenv/setenv directly (heldEnvValueType) and never come through a bare
+  // read, so they materialize no snapshot; every other use takes a fresh
+  // one at this site instead of the copy the hold was given.
+  {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (
+      mapped?.kind === "record" &&
+      !memberReceiverUse(expr) &&
+      heldEnvValueType(lowerer, expr) !== null
+    ) {
+      const helper = envSnapshotHelper(lowerer, mapped.shapeId, loc);
+      if (helper !== null) return { kind: "call", callee: helper, args: [], type: mapped, loc };
+    }
+  }
+  {
+    const slot = local ?? lowerer.globalOf(expr);
+    const closureRead = slot ? closureDynRead(lowerer, expr, slot.id, slot.type, loc) : null;
+    if (closureRead) return closureRead;
+  }
   // A Date local holding its time value reads as that Date: only uses
   // that read the time value reach here (date-values.ts).
   if (local && lowerer.timeValueDateLocals.has(local)) {
@@ -236,6 +296,21 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     if (active || captured) {
       const use = runtimeOptionalUseOf(expr);
       if (use?.complex) {
+        // A DECLARED absent arm is honest storage: when the checker itself
+        // types this use with a unit arm (an optional property read, an
+        // optional parameter, a `T | undefined` local), the read needs no
+        // narrowing aid — the union value flows into the surrounding
+        // logical/conditional operator, which handles the absent arm
+        // itself (`(entries ?? []).map(...)`, `x?.y ?? z`). Only a hidden
+        // absence the checker does not admit needs the refusal below.
+        const checked = lowerer.mapTypeOf(lowerer.typeOf(expr));
+        if (
+          checked?.kind === "union" &&
+          local.type.kind === "union" &&
+          lowerer.armTag(checked.unionId, UNDEFINED_T) >= 0 &&
+          lowerer.armTag(local.type.unionId, UNDEFINED_T) >= 0
+        )
+          return { kind: "varRef", localId: local.id, type: local.type, loc };
         lowerer.unsupported(
           "SC1090",
           expr,
@@ -286,6 +361,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     }
+    if (local.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr))
+      return { kind: "varRef", localId: local.id, type: local.type, loc };
     const narrowed = lowerer.maybeNarrow(
       { kind: "varRef", localId: local.id, type: local.type, loc },
       expr,
@@ -401,6 +478,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (use?.kind === "call") return runtimeOptionalReceiverRead(lowerer, expr, g, null, loc);
       return ref;
     }
+    if (g.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr)) return ref;
     return lowerer.maybeNarrow(ref, expr);
   }
   // `undefined` — tsc's intrinsic global (a local shadowing the name
@@ -844,6 +922,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
       }
+      const untyped = tsUntypedGlobalValue(lowerer, expr, canonical, loc);
+      if (untyped !== null) return untyped;
       // The families with a WHY: each hint states what makes the
       // surface genuinely non-static (or what to use instead).
       const globalHints: Record<string, string | undefined> = {
@@ -851,7 +931,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "Proxy constructor values have no native lowering; use a direct new Proxy with checked-native plain objects",
         Reflect:
           "reflective property access has no static lowering — read and call members directly",
-        Intl: 'native Intl supports default Unicode grapheme segmentation and the composed new Intl.NumberFormat("en-US").format(x); locale negotiation and other ICU-backed operations remain unsupported',
+        Intl: 'native Intl supports Intl.Segmenter with grapheme or word granularity and the composed new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and x.toLocaleString(); formatter objects, locale negotiation and the other Intl constructors remain unsupported',
         SharedArrayBuffer: "use direct new SharedArrayBuffer(length) for fixed shared storage",
         ArrayBuffer:
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",
@@ -1060,6 +1140,27 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       );
     }
   }
+  // A `.js` READ of a name NOTHING declares. Node resolves such a name at
+  // run time: the access throws the catchable `ReferenceError: <name> is not
+  // defined` (a `typeof` test lowers earlier, in expressions/typeof.ts, and
+  // answers "undefined" — exactly Node's rule), so the read compiles to that
+  // throw and never yields a value. The value is checked-dynamic (the
+  // checker's error-any), which every use site carries or fences — and the
+  // read always unwinds before any of them observes it. A WRITE to the same
+  // name is not a read: it reaches rejectUnresolved and its SC1091 story.
+  // Typed sources keep the compile error (preflight's JS relaxation is
+  // `isJsSourceFileName`-gated, so no TS file reaches this branch).
+  // In shorthand position (`{ x }`) `resolveValueSymbol` answers the
+  // PROPERTY symbol, so the declaration test there is the checker's
+  // shorthand-VALUE symbol.
+  const parent = expr.parent;
+  const undeclared =
+    parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
+      ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
+      : lowerer.resolveValueSymbol(expr) === null;
+  if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    return nsUndefRead(lowerer, expr.text, expr, contextualUndefReadType(lowerer, expr) ?? DYN);
+  }
   // Preflight guarantees no unresolved identifiers; anything else here
   // is a blocked declaration's binding (the SC2004 cascade) or a
   // binding form we don't model yet.
@@ -1201,4 +1302,61 @@ export function uriFunctionValue(lowerer: Lowerer, which: string, loc: SrcLoc): 
     });
   }
   return { kind: "closure", fnName: name, captures: [], type, loc };
+}
+
+/** A read of a captured handle `let` (Lowerer.closureDynLets) inside a
+ * function nested in the binding's scope. The checker types it as the
+ * handle, but the closure can run before the first write. As a member
+ * receiver (`c.address()`, `child.stdin`) it reads the handle and throws
+ * Node's TypeError when the binding is still undefined; elsewhere it reads
+ * the checked-dynamic value of the handle or undefined. Null for other
+ * reads. */
+function closureDynRead(
+  lowerer: Lowerer,
+  expr: ts.Identifier,
+  id: string,
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (type.kind !== "union" || lowerer.closureDynLets.size === 0) return null;
+  const symbol = lowerer.resolveValueSymbol(expr);
+  if (!symbol || !lowerer.closureDynLets.has(symbol)) return null;
+  const decl = symbol.valueDeclaration;
+  if (!decl) return null;
+  const scopeOf = (node: ts.Node): ts.Node | undefined => {
+    let at = node.parent;
+    while (at !== undefined && !ts.isFunctionLike(at) && !ts.isSourceFile(at)) at = at.parent;
+    return at;
+  };
+  if (scopeOf(expr) === scopeOf(decl)) return null;
+  const parent = expr.parent;
+  const handle = lowerer.unions.get(type.unionId)?.arms.find((arm) => !isUnitType(arm));
+  // Only a use the checker types as the handle narrows: inside a function
+  // declared before the first write the binding reads as `any`.
+  const typedAsHandle =
+    handle !== undefined && typeEquals(lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN, handle);
+  if (typedAsHandle && ts.isPropertyAccessExpression(parent) && parent.expression === expr) {
+    // An optional read (`c?.address`) tests the tagged value: undefined
+    // short-circuits and the handle arm narrows.
+    if (parent.questionDotToken) return { kind: "varRef", localId: id, type, loc };
+    const helper = lowerer.narrowedArmHelper(
+      type.unionId,
+      handle,
+      loc,
+      `Cannot read properties of undefined (reading '${parent.name.text}')`,
+    );
+    if (helper)
+      return lowerer.checkedNarrowCall(
+        helper,
+        { kind: "varRef", localId: id, type, loc },
+        handle,
+        loc,
+      );
+  }
+  return {
+    kind: "dynFrom",
+    value: { kind: "varRef", localId: id, type, loc },
+    type: DYN,
+    loc,
+  };
 }

@@ -58,10 +58,15 @@ export function lldLinkerArgs(
  * libm needed, and it keeps every regular definition of a name that a needed
  * shared library also defines, hidden or not: the unit would add all of its
  * code to every executable and save nothing. Its functions answer what
- * glibc's do, so linking glibc's own instead is equivalent.
+ * glibc's do, so linking glibc's own instead is equivalent. A musl
+ * executable is static and has no libm.so to keep needed, so its links keep
+ * the unit, which replaces the libc's slower definitions there.
  */
-export function inputsWithoutLld(platform: string, inputs: readonly string[]): string[] {
-  return platform === "linux"
+export function inputsWithoutLld(
+  target: { readonly platform: string; readonly name: string },
+  inputs: readonly string[],
+): string[] {
+  return target.platform === "linux" && !target.name.endsWith("-musl")
     ? inputs.filter((input) => basename(input) !== "scr_glibc_math.o")
     : [...inputs];
 }

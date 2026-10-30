@@ -2183,3 +2183,54 @@ test("a caught-typed global records a module error only from a catch binding", (
     'in main: assign to catch binding "%error" (frontend must reject)',
   ]);
 });
+
+test("a record arm without the literal key answers undefined in unionKeyGet", () => {
+  const uX: IrType = { kind: "union", unionId: "uX" };
+  const uS: IrType = { kind: "union", unionId: "uS" };
+  const rA: IrType = { kind: "record", shapeId: "rA" };
+  const module = (answer: IrType): IrModule => ({
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    records: [
+      { id: "rA", fields: [{ name: "x", type: uX }] },
+      { id: "rE", fields: [] },
+    ],
+    unions: [
+      { id: "uX", arms: [STRING, UNDEFINED_T] },
+      { id: "uS", arms: [rA, { kind: "record", shapeId: "rE" }] },
+    ],
+    functions: [
+      {
+        name: "main",
+        params: [{ localId: "p", name: "p", type: uS }],
+        locals: [{ id: "p", name: "p", type: uS, mutable: false }],
+        returnType: answer,
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "unionKeyGet",
+              unionId: "uS",
+              key: { kind: "strLit", value: "x", type: STRING, loc },
+              value: { kind: "varRef", localId: "p", type: uS, loc },
+              type: answer,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      },
+    ],
+  });
+  // The empty arm lacks "x": it has no such own property, so it answers
+  // the result's undefined arm.
+  expect(validateModule(module(uX))).toEqual([]);
+  // Without an undefined arm in the result there is no answer to give.
+  expect(
+    validateModule(module(STRING)).some((d) =>
+      d.message.includes("unionKeyGet: arm 1 of uS has no answer for the key"),
+    ),
+  ).toBe(true);
+});

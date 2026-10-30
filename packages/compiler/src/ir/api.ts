@@ -28,6 +28,7 @@ export {
   moduleUsesQs,
   moduleUsesParseArgs,
   moduleUsesFsWatch,
+  moduleUsesFsWatchFile,
   moduleUsesNodeTest,
   moduleUsesDgram,
   moduleUsesHttpServer,

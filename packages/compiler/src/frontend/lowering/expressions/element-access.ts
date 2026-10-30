@@ -26,12 +26,14 @@ import {
   canDynCheckTo,
   isDynTypedRefType,
   isUnitType,
+  recordTextCodecClass,
   shapeHasAccessorSlots,
   typeEquals,
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { heldEnvValueType } from "../builtins/environment.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
 import { lowerEnumAccess } from "../lower-enums.js";
 import { fenceNodeModuleMutation, lowerRequireCacheElement } from "../lower-node-module.js";
@@ -84,7 +86,13 @@ import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { withInheritedMethods } from "../record-inherited.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
-import { isKeyedFieldAccess } from "./keyed-field-targets.js";
+import {
+  isKeyedFieldAccess,
+  keyedFieldRead,
+  keyedFieldWrite,
+  sameTypedFieldKeys,
+  type KeyedFieldTarget,
+} from "./keyed-field-targets.js";
 import { lowerFieldCompoundValue } from "./updates.js";
 import { readsHeldEvolvingArray } from "../lower-stmts.js";
 import {
@@ -234,6 +242,25 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     };
     return lowerer.maybeNarrow(get, expr);
   }
+  // `held[expr]` for a value HELD from process.env (`const env =
+  // process.env`): the hold aliases the live table, so the read is the same
+  // getenv the direct spelling uses.
+  {
+    const live = heldEnvValueType(lowerer, expr.expression);
+    if (live !== null) {
+      const key = lowerEnvironmentKey(lowerer, expr.argumentExpression);
+      if (key.type.kind === "string") {
+        const get: IrExpr = {
+          kind: "libCall",
+          fn: "process.envGet",
+          args: [key],
+          type: live,
+          loc: locOf(expr),
+        };
+        return lowerer.maybeNarrow(get, expr);
+      }
+    }
+  }
   // Expando function members in element clothing (`foo[strMem]`,
   // `foo[_private]` where foo is a module-level function/callable const
   // and the key folds or is a unique-symbol const): the member's module
@@ -253,6 +280,28 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const target = symbolFieldTarget(lowerer, expr);
     if (target) return lowerer.maybeNarrow(lowerer.fieldGetExpr(target, locOf(expr), expr), expr);
     let receiver = lowerer.lowerExpr(expr.expression);
+    // TextEncoder and TextDecoder define Symbol.toStringTag on their
+    // prototypes as the class name.
+    const codec =
+      receiver.type.kind === "record"
+        ? recordTextCodecClass(lowerer.shapes.get(receiver.type.shapeId)!)
+        : null;
+    const key = expr.argumentExpression;
+    if (
+      codec !== null &&
+      ts.isPropertyAccessExpression(key) &&
+      key.name.text === "toStringTag" &&
+      lowerer.isStdlibGlobal(key.expression, "Symbol")
+    ) {
+      const loc = locOf(expr);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+        result: { kind: "strLit", value: codec, type: STRING, loc },
+        type: STRING,
+        loc,
+      };
+    }
     const classInfo =
       receiver.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
     if (
@@ -1534,6 +1583,50 @@ export function lowerRecordKeyRead(
     recordKeyResultOk(lowerer, shape, DYN)
   )
     declared = DYN;
+  // A `keyof` read over a record that holds an 'unknown' member: the
+  // checker's answer collapses to 'unknown' (the union of every field
+  // type absorbs into it), so there is no typed join to dispatch into.
+  // Each declared field still reads through its checked-dynamic slot —
+  // the very value the checker's 'unknown' can hold — so dispatch per
+  // declared key and answer a checked-dynamic read. The key type is the
+  // record's own `keyof`, so the answer is present whenever the read is.
+  if (
+    !declared &&
+    (lowerer.typeOf(expr).flags & ts.TypeFlags.Unknown) !== 0 &&
+    !shape.indexValue &&
+    recordKeyResultOk(lowerer, shape, DYN)
+  )
+    declared = DYN;
+  // A key whose literal type names only declared fields of one type, on a
+  // record whose other fields have other types, reads the field it names.
+  // A called access (`r[key]()`) keeps the refusal.
+  const named =
+    !declared && litKey === null && !isCalledAccess(expr)
+      ? sameTypedFieldKeys(lowerer, shape, keyNode)
+      : null;
+  if (named) {
+    const stmts: IrStmt[] = [];
+    const settle = (value: IrExpr, name: string, force = false): IrExpr => {
+      if (!force && isSafeToRepeat(value)) return value;
+      const temp = lowerer.declareHiddenLocal(name, value.type);
+      stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
+      return varRef(temp.id, temp.type, loc);
+    };
+    const receiver = settle(obj, "%keyedReceiver", !isSafeToDiscard(key));
+    const target: KeyedFieldTarget = {
+      container: "recordKeyed",
+      obj: receiver,
+      shapeId,
+      field: named.keys[0]!,
+      keys: named.keys,
+      key: settle(key, "%keyedKey"),
+      fieldType: named.fieldType,
+    };
+    const get = keyedFieldRead(lowerer, target, loc, true);
+    const read: IrExpr =
+      stmts.length === 0 ? get : { kind: "seqExpr", stmts, result: get, type: get.type, loc };
+    return includeUndefined ? read : lowerer.maybeNarrow(read, expr);
+  }
   if (!declared) {
     lowerer.unsupported(
       "SC1090",
@@ -2217,8 +2310,14 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     };
   }
   // `process.env[key] = v` — the computed twin of the dotted env write:
-  // setenv(3), string keys and string values only.
-  if (lowerer.isProcessEnv(target.expression) && !target.questionDotToken) {
+  // setenv(3), string keys and string values only. A key write through a
+  // value HELD from process.env takes the same path: the hold aliases the
+  // live table.
+  if (
+    !target.questionDotToken &&
+    (lowerer.isProcessEnv(target.expression) ||
+      heldEnvValueType(lowerer, target.expression) !== null)
+  ) {
     const loc = locOf(expr);
     const key = lowerEnvironmentKey(lowerer, target.argumentExpression);
     if (key.type.kind !== "string") {
@@ -2556,6 +2655,48 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
             loc: locOf(expr),
           };
         }
+      }
+      // A key whose literal type names only declared fields of one type
+      // writes the field it names. JavaScript evaluates the receiver, then
+      // the key, then the value; the dispatch reads the saved receiver and
+      // key once per named field. Locals are saved too, because the key or
+      // the value can reassign them.
+      const named =
+        litKey === null ? sameTypedFieldKeys(lowerer, shape, target.argumentExpression) : null;
+      if (named && !shape.fields.every((f) => typeEquals(f.type, named.fieldType))) {
+        const loc = locOf(expr);
+        const body: IrStmt[] = [];
+        const save = (value: IrExpr, name: string): IrExpr => {
+          const temp = lowerer.declareHiddenLocal(name, value.type);
+          body.push({ kind: "varDecl", localId: temp.id, init: value, loc });
+          return varRef(temp.id, temp.type, loc);
+        };
+        const obj = save(lowerer.lowerExpr(target.expression), "%keyedReceiver");
+        const rawKey = lowerRecordPropertyKey(
+          lowerer,
+          lowerer.lowerExpr(target.argumentExpression),
+          target.argumentExpression,
+        );
+        if (rawKey.type.kind !== "string") {
+          lowerer.unsupported(
+            "SC1090",
+            target.argumentExpression,
+            "indexing records with non-string or non-number keys",
+          );
+        }
+        const key = save(rawKey, "%keyedKey");
+        const value = lowerer.lowerExprExpecting(expr.right, named.fieldType);
+        const keyed: KeyedFieldTarget = {
+          container: "recordKeyed",
+          obj,
+          shapeId: receiverIr.shapeId,
+          field: named.keys[0]!,
+          keys: named.keys,
+          key,
+          fieldType: named.fieldType,
+        };
+        body.push(keyedFieldWrite(lowerer, keyed, value, loc));
+        return { kind: "block", body, loc };
       }
       if (!shape.indexValue) {
         // A SIGNATURE-FREE shape whose declared fields share ONE type

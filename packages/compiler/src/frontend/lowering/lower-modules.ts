@@ -4,6 +4,7 @@ import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
+import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -24,7 +25,12 @@ import {
   sharedModuleRegistrations,
 } from "./lower-shared-modules.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
-import { packageNameOfPath, probeNodeImportRefusal } from "../npm.js";
+import {
+  packageNameOfPath,
+  probeNodeFileImportRefusal,
+  probeNodeImportRefusal,
+  type NodeImportRefusal,
+} from "../npm.js";
 import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
@@ -135,6 +141,7 @@ import { funcTypeFromParamShapes, registerOverloadedCallableAlias } from "./call
 import {
   jsBindingHasOpenWrites,
   hasJsTypeAnnotation,
+  inferredEvolvingLetType,
   isVarDeclared,
   numericIteratorSourceOf,
   provenanceElidedConstDecl,
@@ -332,7 +339,15 @@ function appendEntryModules(
  * (tests, coverage on broken files) may arrive with an empty order — fall
  * back to the entry alone. */
 export function splitFiles(lowerer: Lowerer): FileParts[] {
-  const files = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
+  // A declaration file is never a runtime module: it carries no
+  // implementation, so it has no %init to lower and its imports never load
+  // anything. Preflight keeps declarations out of the module order (a
+  // specifier that resolves only to declarations is refused at its own
+  // statement); this filter is the invariant that keeps a stray declaration
+  // from being lowered as code.
+  const files = (lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry]).filter(
+    (sf) => !sf.isDeclarationFile,
+  );
   return files.map((sf) => {
     const fp: FileParts = { sf, fnDecls: [], classDecls: [], topStmts: [] };
     const rebindable = collectRebindableFunctions(lowerer, sf);
@@ -667,8 +682,21 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       if (
         reexport === null &&
         (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier))
-      )
+      ) {
+        // A star or namespace re-export (`export * from "pkg"`) names
+        // nothing the re-exporting module could bind: an island package's
+        // is refused at the boundary instead of silently dropped. Any
+        // other module keeps the previous skip, and a type-only one is
+        // erased like the type-only named re-export above.
+        if (
+          ts.isExportDeclaration(stmt) &&
+          !stmt.isTypeOnly &&
+          stmt.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(stmt.moduleSpecifier)
+        )
+          collectIslandImport(lowerer, fp.sf, stmt, stmt.moduleSpecifier.text);
         continue;
+      }
       const specNode =
         ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)
           ? stmt.moduleSpecifier
@@ -694,6 +722,10 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // graph: resolveImport follows its node_modules link to the loaded
       // TypeScript entry. Its internal `.js` spellings have already been
       // resolved to `.ts` by that graph.
+      // A relative import of a program module the pre-scan put in a Node
+      // island (DESIGN.md note 1 §3.2): the island loads at this module's
+      // position and its bindings are island values.
+      if (lowerer.nodeIslands !== null && collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
       const projectDep = isRelativeSpecifier(spec)
         ? null
         : resolveImport(lowerer.program, fp.sf, spec);
@@ -782,23 +814,38 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
  * runtime-computed name). */
 /** The refusal a literal import() rejects with, or null when it loads:
  * Node's ERR_MODULE_NOT_FOUND for a package the project marks never loaded
- * (package-shims.ts), or the first refusal in the static graph of a module
- * only import() loads (LoadResult.dynamicImportRejections). */
+ * (package-shims.ts), the first refusal in the static graph of a module
+ * only import() loads (LoadResult.dynamicImportRejections), or Node's
+ * resolution refusal for a specifier nothing resolves (a package nothing
+ * installed provides, a relative path to a file that does not exist). */
 function dynamicImportRejectionOf(
   lowerer: Lowerer,
   sf: ts.SourceFile,
   spec: string,
   call: ts.CallExpression,
 ): StartupCrash | null {
-  if (isUnloadedPackage(spec)) {
-    const refusal = probeNodeImportRefusal(sf.fileName, spec);
-    if (refusal === null) return null;
-    return { message: refusal.message, className: "%Error", code: refusal.code, loc: locOf(call) };
-  }
-  if (lowerer.dynamicImportRejections.size === 0) return null;
+  const rejection = (refusal: NodeImportRefusal | null): StartupCrash | null =>
+    refusal === null
+      ? null
+      : {
+          message: refusal.message,
+          className: "%Error",
+          code: refusal.code,
+          ...(refusal.url === undefined ? {} : { url: refusal.url }),
+          loc: locOf(call),
+        };
+  if (isUnloadedPackage(spec)) return rejection(probeNodeImportRefusal(sf.fileName, spec));
   const root =
     resolveImport(lowerer.program, sf, spec) ?? npmStaticDepSf7(lowerer.program, sf, spec);
-  return root === null ? null : (lowerer.dynamicImportRejections.get(root) ?? null);
+  if (root !== null) return lowerer.dynamicImportRejections.get(root) ?? null;
+  // Builtins, and URL specifiers (file:, data:), are not package names.
+  if (canonicalBuiltinModule(spec) !== null || /^[a-z][a-z0-9+.-]*:/i.test(spec)) return null;
+  return rejection(
+    probeNodeFileImportRefusal(sf.fileName, spec) ??
+      (spec.startsWith(".") || spec.startsWith("/")
+        ? null
+        : probeNodeImportRefusal(sf.fileName, spec)),
+  );
 }
 
 function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
@@ -807,7 +854,7 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
   // file must never claim their key. A literal "./a.js" the checker mapped
   // to a.ts keeps that answer, whatever a bounded value of the same text
   // resolves to at run time.
-  const computed: { node: ts.CallExpression; arg: ts.Expression }[] = [];
+  const computed: { node: ts.CallExpression; arg: ts.Expression; spec: string | null }[] = [];
   ts.walkPreorder(sf, (node) => {
     if (
       ts.isCallExpression(node) &&
@@ -817,14 +864,28 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
     ) {
       const arg = node.arguments.nodes[0];
       if (ts.isStringLiteralLike(arg)) collectOneDynamicImport(lowerer, sf, arg.text, node);
-      else computed.push({ node, arg: arg as ts.Expression });
+      else {
+        // A constant expression (`import("node:" + "fs")`, `import(FS)`)
+        // names its module at build time as surely as a literal, and the
+        // lowering keys the table by that same folded text.
+        computed.push({ node, arg: arg as ts.Expression, spec: staticString(lowerer, arg) });
+      }
     }
     return undefined;
   });
-  // Then one literal edge per value each computed site's bounder proves
-  // (SPEC §3.1). Top and the unimplemented glob form contribute nothing
-  // here: the per-site lowering reports the refusal.
-  for (const { node, arg } of computed) {
+  // Then one literal edge per value each computed site may take (SPEC §3.1).
+  // A folded constant contributes its text; any other form needs the bounder.
+  // The argument's SHAPE still decides how a relative value resolves: a
+  // written literal above asked the checker (which already mapped
+  // "./helper.js" to helper.ts), while a folded or otherwise computed value
+  // names its module at run time and follows Node's exact-file rules. Top and
+  // the unimplemented glob form contribute nothing here: the per-site
+  // lowering reports the refusal.
+  for (const { node, arg, spec } of computed) {
+    if (spec !== null) {
+      collectOneDynamicImport(lowerer, sf, spec, node, true);
+      continue;
+    }
     const bound = boundSpecifier(lowerer, arg);
     if (bound.kind !== "set") continue;
     for (const value of bound.values) collectOneDynamicImport(lowerer, sf, value, node, true);
@@ -1292,8 +1353,8 @@ function deferJsCollectionDiags(lowerer: Lowerer, sf: ts.SourceFile, diagsBefore
   if (!isJsSourceFile(sf)) return;
   const captured = lowerer.diags.splice(diagsBefore);
   const ice = captured.filter((d) => d.code === "SC9001");
-  if (ice.length > 0) lowerer.diags.push(...ice);
-  lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
+  for (const d of ice) lowerer.diags.push(d);
+  for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
 }
 
 /** A scalar-literal expression a single-value `module.exports =` can carry
@@ -2541,10 +2602,16 @@ export function collectGlobals(
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              // An initializer-less `let` whose writes all agree keeps
+              // their type, as a function's local does (lowerVarDecl).
+              const evolved =
+                isLet && !isVarDeclared(decl) && decl.initializer === undefined
+                  ? inferredEvolvingLetType(lowerer, decl)
+                  : null;
               const g: IrGlobal = {
                 id: `%g.${tag}${nsPrefix}${nameNode.text}`,
                 name: nameNode.text,
-                type: DYN,
+                type: evolved ?? DYN,
                 mutable: isLet,
                 source: bindingSource(nameNode),
               };
@@ -2553,7 +2620,7 @@ export function collectGlobals(
               // Mutable dyn globals hold the dyn undefined from module
               // entry (the main path's rule below): a closure called
               // above the declaration reads undefined instead of
-              // faulting on NULL.
+              // faulting on NULL. An undefined-armed union does the same.
               if (g.mutable) noteVarGlobalEntryInit(lowerer, sf, g);
             }
             continue;
@@ -3307,7 +3374,14 @@ export function lowerFileInit(
       });
       ctx.hoistedFnDecls.add(stmt);
     }
+    const islandActions = lowerer.islandImportActions.get(sf);
+    const islandPlaced = new Set<ts.Statement>();
     for (const { stmt, dep } of orderedImportsOf(lowerer.program, sf)) {
+      const island = islandActions?.get(stmt);
+      if (island !== undefined) {
+        header.push(...island);
+        islandPlaced.add(stmt);
+      }
       const npm = lowerer.npmInitActions.get(sf)?.get(stmt);
       if (npm !== undefined && npm.length > 0) {
         header.push(...npm);
@@ -3376,6 +3450,11 @@ export function lowerFileInit(
         }
       }
     }
+    // An island load whose statement the import order leaves out keeps the
+    // prelude's place.
+    const islandUnplaced: IrStmt[] = [];
+    for (const [stmt, actions] of islandActions ?? [])
+      if (!islandPlaced.has(stmt)) islandUnplaced.push(...actions);
     if (asyncDeps.length === 1) {
       const dep = asyncDeps[0]!;
       const promiseT: IrType = { kind: "promise", inner: VOID };
@@ -3514,7 +3593,7 @@ export function lowerFileInit(
       if (ms && ms.sf === sf) statics.push({ pos: ms.pos, info: c });
     }
     statics.sort((a, b) => a.pos - b.pos);
-    const body = [...header, ...prelude];
+    const body = [...header, ...islandUnplaced, ...prelude];
     let at = 0;
     for (const stmt of stmts) {
       // `<=`: a mixin instantiation's position IS its statement's start

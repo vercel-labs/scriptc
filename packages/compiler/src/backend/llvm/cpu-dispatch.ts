@@ -12,17 +12,18 @@ export const CPU_DISPATCH_TIERS: readonly TargetCpu[] = ["x86-64-v3"];
 const LEVEL = "@sc_cpu_level";
 
 /** The attribute groups of the x86-64-v3 copies: #0's and #2's (see
- * emit-module.ts functionAttributes) with the level's `target-cpu`. */
+ * emit-module.ts functionAttributes) with the level's `target-cpu`, and
+ * `scriptc-cpu-copy`, by which the LLVM helper finds the copies. After
+ * optimization, a copy whose code gains nothing from x86-64-v3 takes its
+ * baseline copy's code (native/llvm-codegen/src/cpu-copies.h). */
 const COPY_GROUPS: ReadonlyMap<string, string> = new Map([
   ["0", "3"],
   ["2", "4"],
 ]);
 
 export function cpuDispatchAttributes(common: string): string[] {
-  return [
-    `attributes #3 = {${common} "target-cpu"="x86-64-v3" }`,
-    `attributes #4 = { noinline${common} "target-cpu"="x86-64-v3" }`,
-  ];
+  const copy = `"target-cpu"="x86-64-v3" "scriptc-cpu-copy"`;
+  return [`attributes #3 = {${common} ${copy} }`, `attributes #4 = { noinline${common} ${copy} }`];
 }
 
 /** Bits of CPUID leaf 1's ECX that x86-64-v3 needs: SSE3 (0), SSSE3 (9),

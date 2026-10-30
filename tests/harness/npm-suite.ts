@@ -98,7 +98,16 @@ const KNOWN: Record<string, Known> = {
   "node24-style-text": { run: "SC2020" },
   "node24-system-errors": { run: "SC1090" },
   "node24-text-encoding": { run: "SC2020" },
-  "node24-text-utilities": { run: "SC2020" },
+  // The fixture builds a String and a Number wrapper, which used to refuse
+  // with SC2020 and now compile: the case runs, but Node's
+  // ERR_INVALID_ARG_TYPE names a wrapper's class (`an instance of String`)
+  // where the error formatter prints `Object`, and the program's own
+  // `String(functionValue)` prints `function () { [native code] }` for a
+  // named function where Node prints its source.
+  "node24-text-utilities": {
+    divergence:
+      "wrapper objects reach the text utilities now, but ERR_INVALID_ARG_TYPE names them `Object` instead of `String`/`Number`, and function values print without their source",
+  },
   "node24-timers-unref": { run: "SC2020" },
   "node24-url-factories": { run: "SC2020" },
   "node24-url-mutation": { run: "SC1090" },
@@ -107,7 +116,6 @@ const KNOWN: Record<string, Known> = {
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
-  "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },

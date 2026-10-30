@@ -104,9 +104,9 @@ test(
     expect(rewrittenIfAny(debug, join(pkg, "coerce.js")) ?? "").not.toContain(
       "class __ns_shapes_Box",
     );
-    // loops.js's methods store from for-in and for-of heads into an
-    // undeclared name and into a property of a string, which throws in a
-    // class body.
+    // loops.js's methods store from for-in and for-of heads into the
+    // read-only global `undefined` and into a property of a string, which
+    // throws in a class body.
     const loops = rewrittenIfAny(debug, join(pkg, "loops.js")) ?? "";
     expect(loops).not.toContain("class __ns_shapes_Bag");
     expect(loops).not.toContain("class __ns_shapes_Cell");

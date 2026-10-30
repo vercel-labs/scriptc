@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/assign-typed-record-sources.ts"
+ ],
+ "diags": []
+}

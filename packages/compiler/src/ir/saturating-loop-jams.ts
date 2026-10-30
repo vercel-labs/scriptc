@@ -329,7 +329,14 @@ function matchJam(
  * elements that answer NaN out of range, and write their own locals. `pre`
  * and the inner loop read nothing `post` writes, so running later `pre`s
  * and inner loops first changes no value. Independent iterations then
- * overlap their dependence chains. */
+ * overlap their dependence chains.
+ *
+ * For the same reason the jammed loop may run past the iteration where every
+ * accumulator is full: when the inner loop starts at an int32 literal, it
+ * tests that every fourth iteration (`j & 3` is 3), and it keeps the inner
+ * loop's own bound. The copies' statements alternate,
+ * and each local's copies are added next to each other, so the vectorizer
+ * packs one copy per lane. */
 export function jamSaturatingLoops(mod: IrModule): IrModule {
   let changed = false;
   const functions = mod.functions.map((fn): IrFunction => {
@@ -376,11 +383,16 @@ function emitJam(
   const { inner, pre, post, values, counter } = jam;
   const loc = inner.loc;
   const own = declared([...pre, ...inner.body]);
-  const j = (inner.init as IrStmt & { kind: "varDecl" }).localId;
+  const init = inner.init as IrStmt & { kind: "varDecl" };
+  const j = init.localId;
   own.delete(j);
+  // Each local's copies are added next to each other: the vectorizer pairs
+  // neighboring values of the loop's header, so one copy per lane.
+  const renames = values.map(() => new Map<string, string>());
+  for (const id of own)
+    for (const [copy, rename] of renames.entries()) rename.set(id, fresh(locals.get(id)!, copy));
   const copies = values.map((value, copy) => {
-    const rename = new Map<string, string>();
-    for (const id of own) rename.set(id, fresh(locals.get(id)!, copy));
+    const rename = renames[copy]!;
     const rewrite = (list: readonly IrStmt[]): IrStmt[] =>
       transformStmtList(list as IrStmt[], {
         expr: (e) => {
@@ -428,11 +440,38 @@ function emitJam(
         ? full
         : { kind: "logical", op: "&&", left: allFull, right: full, type: BOOL, loc };
   }
+  const three: IrExpr = { kind: "numLit", value: 3, type: F64, loc };
+  const counter3: IrExpr = {
+    kind: "bin",
+    op: "&",
+    left: { kind: "varRef", localId: j, type: F64, loc },
+    right: three,
+    type: F64,
+    loc,
+  };
+  // `(j & 3) === 3`
+  const fourth: IrExpr = { kind: "bin", op: "===", left: counter3, right: three, type: BOOL, loc };
+  // `j` reaches a value whose low bits are 3 within four iterations when it
+  // starts at an int32 literal: it then takes consecutive integer values,
+  // which stay exact for more than 2^52 iterations. From another start (NaN,
+  // an infinity, a value where `j + 1` is `j`), the exit is tested every
+  // iteration.
+  const start = intLit(init.init);
+  const everyFourth = start !== null && start >= -0x80000000 && start <= 0x7fffffff;
   const jammed: IrStmt = {
     ...inner,
     body: [
-      ...copies.flatMap((copy) => copy.body),
-      { kind: "if", cond: allFull!, then: [{ kind: "break", loc }], else_: null, loc },
+      // The copies take turns statement by statement.
+      ...copies[0]!.body.flatMap((_, k) => copies.map((copy) => copy.body[k]!)),
+      {
+        kind: "if",
+        cond: everyFourth
+          ? { kind: "logical", op: "&&", left: fourth, right: allFull!, type: BOOL, loc }
+          : allFull!,
+        then: [{ kind: "break", loc }],
+        else_: null,
+        loc,
+      },
     ],
   };
   return {

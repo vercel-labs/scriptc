@@ -31,7 +31,9 @@ export function lowerChildMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // A `?.` in the chain re-dispatches here with the receiver bound to the
+  // chain (optional-chains.ts), so only an UNHANDLED token declines.
+  if (lowerer.chainBlocked(call, access)) return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "child") return null;
   if (!isChildSurfaceMember(lowerer, access)) return null;
   const name = access.name.text;
@@ -822,6 +824,32 @@ function childStreamEncodedAt(
   return before;
 }
 
+/** Whether the program calls `setEncoding` on the stream `receiver`
+ * names: a call whose receiver has the same access path, anywhere in the
+ * file. Its 'data' chunks can then be strings. */
+export function childStreamSetsEncoding(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  const key = accessPathOf(lowerer, receiver);
+  if (key === null) return false;
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "setEncoding"
+    ) {
+      const path = accessPathOf(lowerer, node.expression.expression);
+      if (path !== null && path.root === key.root && path.path === key.path) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.getSourceFileOfNode(receiver));
+  return found;
+}
+
 /** An inline 'exit'/'close' listener may declare `(code: number, signal:
  * string)`: TypeScript accepts it through ChildProcess's catch-all `on`
  * overload, while Node passes `number | null` and `Signals | null`. Those
@@ -848,7 +876,7 @@ function narrowedExitListenerParams(lowerer: Lowerer, listener: ts.Expression): 
 
 /** Lowers an inline listener with the given parameters bound as
  * checked-dynamic values typed `unknown` for the body. */
-function lowerWithCheckedParams(
+export function lowerWithCheckedParams(
   lowerer: Lowerer,
   listener: ts.Expression,
   symbols: readonly ts.Symbol[],

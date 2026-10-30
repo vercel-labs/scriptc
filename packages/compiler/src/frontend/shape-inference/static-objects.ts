@@ -377,8 +377,15 @@ function writesBinding(id: ts.Identifier): boolean {
 }
 
 function enclosingFunctionLike(n: Node): Node | null {
-  for (let p = n.parent; p !== undefined; p = p.parent) if (ts.isFunctionLike(p)) return p;
+  for (let c = n, p = n.parent; p !== undefined; c = p, p = p.parent)
+    if (runsWithFunction(p, c)) return p;
   return null;
+}
+
+/** Whether `child` of `p` runs when the function `p` runs: a method's or
+ * accessor's computed name runs with its object literal or class. */
+function runsWithFunction(p: Node, child: Node): boolean {
+  return ts.isFunctionLike(p) && (p as { name?: Node }).name !== child;
 }
 
 function primitiveLiteralText(e: ts.Expression): string | null {
@@ -1306,8 +1313,8 @@ export function planStaticObjectRewrites(
   /** Whether `node` sits inside a function of its top-level statement. */
   const insideFunction = (node: Node): boolean => {
     const top = topStatement(node);
-    for (let p: Node | undefined = node.parent; p !== undefined && p !== top; p = p.parent)
-      if (ts.isFunctionLike(p)) return true;
+    for (let c = node, p = node.parent; p !== undefined && p !== top; c = p, p = p.parent)
+      if (runsWithFunction(p, c)) return true;
     return false;
   };
   /** The nodes whose statements must have run for an effect-free receiver
@@ -1359,8 +1366,8 @@ export function planStaticObjectRewrites(
     const top = topStatement(read)!;
     if (!insideFunction(read)) return stmts.indexOf(top) > last;
     let fn: Node | undefined;
-    for (let p: Node | undefined = read.parent; p !== undefined && p !== top; p = p.parent)
-      if (ts.isFunctionLike(p)) fn = p;
+    for (let c = read, p = read.parent; p !== undefined && p !== top; c = p, p = p.parent)
+      if (runsWithFunction(p, c)) fn = p;
     const from = fn !== undefined && ts.isFunctionDeclaration(fn) ? 0 : stmts.indexOf(top);
     return stmts.slice(from, last + 1).every(definitionOnly);
   };

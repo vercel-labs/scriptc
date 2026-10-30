@@ -20,7 +20,7 @@
  * keep their lines. */
 import * as ts from "../ts7/adapter.js";
 import type { Atom } from "./domain.js";
-import type { ShapeAnalysis } from "./analyze.js";
+import { isPackageJsFile, type Op, type ShapeAnalysis } from "./analyze.js";
 import type { SiteVerdict } from "./report.js";
 
 export interface ShapeOverlay {
@@ -112,6 +112,15 @@ const MAX_RECORD_ARMS = Number(process.env.SCRIPTC_SHAPE_RECORD_ARMS ?? 1);
 /** The most class or record arms an inferred union may have. */
 const MAX_ARMS = 6;
 
+/** Operations whose receivers' class instances keep the dynamic representation. */
+const REFLECTIVE_OPS: ReadonlySet<Op["kind"]> = new Set<Op["kind"]>([
+  "computedWrite",
+  "delete",
+  "defineProperty",
+  "setPrototypeOf",
+  "proxy",
+]);
+
 function list<T extends ts.Node>(arr: { readonly nodes: readonly T[] } | undefined): readonly T[] {
   return arr?.nodes ?? [];
 }
@@ -153,6 +162,17 @@ export function planShapeOverlay(
     }
   const pSites = new Map<Atom, SiteVerdict>();
   const siteVerdicts = new Set<Atom>(verdicts.map((v) => v.site.atom));
+  // Class instances that a computed write, `delete`, a property
+  // definition, a prototype change or a proxy reaches keep the dynamic
+  // representation in the program's own files: the typed lowering of a
+  // class instance does not support those operations.
+  const reflectedInstances = new Set<Atom>();
+  for (const o of analysis.ops) {
+    if (!REFLECTIVE_OPS.has(o.kind)) continue;
+    for (const a of analysis.nodes[o.recv]!.atoms)
+      if (a.kind === "instance" && a.node !== undefined && !isPackageJsFile(a.node.getSourceFile()))
+        reflectedInstances.add(a);
+  }
   const dynHeld = dynHeldSites(analysis, verdicts);
   // Records and arrays print only for sites whose objects never escape: a
   // native record that reached untyped code would be seen as a copy.
@@ -208,13 +228,32 @@ export function planShapeOverlay(
     // annotation's id (its position), so a refused lowering can name it and
     // the next load drop it. `close`: the text that closes a type cast.
     const patchedSpans = protectedSpansOf(sf.fileName);
+    // The checker reads a declaration's last JSDoc comment only, so an
+    // annotation placed after the program's own comment repeats that
+    // comment's text.
+    const ownDocBefore = (pos: number): string => {
+      if (isPackageJsFile(sf)) return "";
+      let end = pos;
+      while (end > 0 && /\s/.test(sf.text[end - 1]!)) end--;
+      if (end < 5 || sf.text.slice(end - 2, end) !== "*/") return "";
+      const start = sf.text.lastIndexOf("/*", end - 3);
+      if (start < 0 || sf.text[start + 2] !== "*") return "";
+      const comment = sf.text.slice(start, end);
+      if (comment.includes(MARK)) return "";
+      return comment
+        .slice(3, -2)
+        .replace(/^\s*\*/gm, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    };
     const annotate = (pos: number, tags: string, close?: number): void => {
       // A declaration a project type patch edited keeps the patch alone.
       if (declarationPatched(sf, pos, patchedSpans)) return;
+      const own = close === undefined ? ownDocBefore(pos) : "";
       edits.push({
         pos,
         id: pos,
-        text: `/** ${tags} ${MARK} #${pos} */ ${close !== undefined ? "(" : ""}`,
+        text: `/** ${own === "" ? "" : `${own} `}${tags} ${MARK} #${pos} */ ${close !== undefined ? "(" : ""}`,
       });
       if (close !== undefined) edits.push({ pos: close, id: pos, text: ")" });
     };
@@ -277,7 +316,7 @@ export function planShapeOverlay(
                 : null;
             break;
           case "instance":
-            t = a.node !== undefined ? className(a.node) : null;
+            t = a.node !== undefined && !reflectedInstances.has(a) ? className(a.node) : null;
             break;
           case "object": {
             const v = pSites.get(a);
@@ -620,12 +659,42 @@ export function planShapeOverlay(
       return out;
     };
 
+    // A constructor parameter the constructor stores in a field (`this.value
+    // = value`) types the field: the checker types a JavaScript field from
+    // its constructor assignments alone. When other writes give the field
+    // more values than the parameter's, the parameter stays untyped in the
+    // program's own files, so the field keeps the dynamic representation.
+    const storedIntoWiderField = (
+      fn: ts.FunctionLikeDeclaration,
+      param: string,
+      t: string,
+    ): boolean => {
+      if (!ts.isConstructorDeclaration(fn) || fn.body === undefined || isPackageJsFile(sf))
+        return false;
+      const cls = fn.parent;
+      if (cls === undefined) return false;
+      return list(fn.body.statements).some((st) => {
+        if (!ts.isExpressionStatement(st) || !ts.isBinaryExpression(st.expression)) return false;
+        const b = st.expression;
+        return (
+          b.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isPropertyAccessExpression(b.left) &&
+          b.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+          ts.isIdentifier(b.left.name) &&
+          ts.isIdentifier(b.right) &&
+          b.right.text === param &&
+          fieldType(cls, b.left.name.text) !== t
+        );
+      });
+    };
+
     const paramTags = (fn: ts.FunctionLikeDeclaration): string | null => {
       const tags: string[] = [];
       // The package's JSDoc declares types: the overlay adds none where it
       // has one, and none at all for a signature it types as a whole.
       const doc = packageDocOf(fn);
       if (doc.whole) return null;
+      let opaqueResult = false;
       if (!ts.isConstructorDeclaration(fn) && !constructed.has(fn) && !doc.returns) {
         const ret = returnValues(fn);
         const t = ret !== undefined && ret.size > 0 ? typeOf(ret, false, 0) : null;
@@ -642,7 +711,17 @@ export function planShapeOverlay(
             `[shape-overlay-why] ${fn.name.text}: ${[...ret].map((a) => `${a.kind}:${a.label}${analysis.escaped.has(a) ? "(escaped)" : ""}`).join(" | ")}\n`,
           );
         if (t !== null) tags.push(`@returns {${t}}`);
+        // The checker types an unannotated method's result from its own
+        // body, which an override in the program's own files may not match
+        // (`method(value = 1)` overridden by one returning a string): a
+        // family whose results print as no type returns `any`.
+        else if (familyOf(fn).length > 1 && !isPackageJsFile(sf)) tags.push("@returns {any}");
+        else
+          opaqueResult =
+            ret !== undefined &&
+            [...ret].some((a) => a.kind === "object" || a.kind === "array" || a.kind === "top");
       }
+      const typedParams = tags.length;
       list(fn.parameters).forEach((p, index) => {
         if (
           !ts.isIdentifier(p.name) ||
@@ -658,13 +737,44 @@ export function planShapeOverlay(
         // lowering refuses: such a parameter stays untyped.
         if (t !== null && typeofTestsOutside(fn, p.name.text, values)) return;
         if (doc.params.has(p.name.text)) return;
+        if (t !== null && storedIntoWiderField(fn, p.name.text, t)) return;
         if (t !== null) tags.push(`@param {${t}} ${p.name.text}`);
       });
+      // With typed parameters the checker infers the result from them: an
+      // object or array the analysis does not type (a `__proto__` literal,
+      // a prototype change) would become a record the lowering checks, so
+      // in the program's own files the result stays `any`.
+      if (opaqueResult && tags.length > typedParams && !isPackageJsFile(sf))
+        tags.push("@returns {any}");
       return tags.length > 0 ? tags.join(" ") : null;
     };
 
+    // Getters of one name in several classes of the program's own file: an
+    // override can return what the base's body does not (`get value()`
+    // returning a string over one returning a number), and the checker
+    // types a read from the getter it resolves, so they return `any`.
+    const getterClasses = new Map<string, number>();
+    if (!isPackageJsFile(sf)) {
+      const countGetters = (node: ts.Node): void => {
+        if (ts.isGetAccessorDeclaration(node) && ts.isIdentifier(node.name))
+          getterClasses.set(node.name.text, (getterClasses.get(node.name.text) ?? 0) + 1);
+        ts.forEachChild(node, (c) => {
+          countGetters(c);
+          return undefined;
+        });
+      };
+      countGetters(sf);
+    }
+
     const visit = (node: ts.Node): void => {
       if (ts.isMethodDeclaration(node)) receiverCasts(node);
+      if (
+        ts.isGetAccessorDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        (getterClasses.get(node.name.text) ?? 0) > 1 &&
+        node.type === undefined
+      )
+        annotate(ts.tokenStartOfNode(node), "@returns {any}");
       if (
         ts.isMethodDeclaration(node) ||
         ts.isConstructorDeclaration(node) ||
@@ -744,6 +854,10 @@ export function planShapeOverlay(
         const id = analysis.fields.get(a)?.get(name);
         if (id !== undefined) for (const x of analysis.nodes[id]!.atoms) atoms.add(x);
       }
+      // In the program's own files, code that sees an instance before the
+      // constructor stores the field reads undefined from it.
+      if (atoms.size > 0 && !isPackageJsFile(sf) && !analysis.fieldSurelyPresent(cls, name))
+        atoms.add(analysis.prim("undefined"));
       return typeOf(atoms, false, 0);
     };
 

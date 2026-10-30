@@ -70,3 +70,29 @@ for (const v of inputs) console.log(width(v));
     expect(result.stderr.toString()).toBe(UNION_TRAP);
   },
 );
+
+test.skipIf(process.platform === "win32")(
+  "a lying filter predicate throws the checked-extraction TypeError",
+  async () => {
+    const result = await run(`
+interface Cat {
+  kind: "cat";
+  meows: number;
+}
+interface Dog {
+  kind: "dog";
+}
+type Pet = Cat | Dog;
+const pets: Pet[] = [{ kind: "cat", meows: 2 }, { kind: "dog" }];
+const alwaysCat = (p: Pet): p is Cat => p !== undefined;
+try {
+  console.log("kept", pets.filter(alwaysCat).length);
+} catch (e) {
+  console.log("caught", (e as Error).name);
+}
+`);
+    expect(result.error).toBeUndefined();
+    // Node keeps the Dog and reports 2; the checked projection throws on it.
+    expect(result.stdout.toString()).toBe("caught TypeError\n");
+  },
+);

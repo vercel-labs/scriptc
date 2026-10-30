@@ -630,6 +630,41 @@ export function checkDefaultParamBodyType(
   }
 }
 
+/** Whether a lambda's OWN signature maps to its completed ABI position for
+ * position — the contract its reads carry (mapType spells `x?: T` as the
+ * `T | undefined` slot). Two positions can escape the mapped-TYPE
+ * comparison in requireExactArityValue: a parameter the checker spells
+ * `any` holds the checked-dynamic value that mapType leaves unmapped when
+ * its spelling is context-free, and a *contextually* typed lambda's own
+ * signature need not be the slot's (a comparator with a surplus optional
+ * parameter under a two-parameter slot). */
+function lambdaSpellsCompletedAbi(
+  lowerer: Lowerer,
+  lambda: ts.ArrowFunction | ts.FunctionExpression,
+  funcType: IrType,
+): boolean {
+  if (funcType.kind !== "func" || funcType.rest === true) return false;
+  const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(lambda));
+  if (sigs.length !== 1) return false;
+  const sig = sigs[0]!;
+  const params = sig.getParameters();
+  if (params.length !== funcType.params.length) return false;
+  for (let i = 0; i < params.length; i++) {
+    const pTs = lowerer.checker.getTypeOfSymbol(params[i]!);
+    const slot = funcType.params[i]!;
+    if ((pTs.flags & ts.TypeFlags.Any) !== 0) {
+      if (slot.kind !== "dyn") return false;
+      continue;
+    }
+    const mappedParam = lowerer.mapTypeOf(pTs);
+    if (!mappedParam || !typeEquals(mappedParam, slot)) return false;
+  }
+  const retTs = lowerer.checker.getReturnTypeOfSignature(sig);
+  if ((retTs.flags & ts.TypeFlags.Any) !== 0) return funcType.ret.kind === "dyn";
+  const mappedRet = lowerer.mapTypeOf(retTs);
+  return mappedRet !== null && typeEquals(mappedRet, funcType.ret);
+}
+
 /** DECISION (docs/ir.md): function VALUES carry one completed native ABI.
  * Optional/default parameters appear as literal `T | undefined` slots;
  * typed rest parameters appear as one trailing typed-array slot plus the
@@ -675,6 +710,20 @@ export function requireExactArityValue(
       ? lowerer.mapTypeOf(lowerer.typeOf(contextual))
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
+  // A lambda whose OWN signature already spells the completed ABI is a
+  // value: every read of it types it that way, and its slot converts it
+  // (the surplus-parameter and undefined-arm adapters). The mapped-type
+  // comparison above misses two such lambdas — one whose `any` parameter
+  // mapType leaves unmapped (`(a: any, b: any, loose?: boolean) => number`
+  // beside a two-parameter slot), and one whose signature is wider than
+  // the contextual slot it is written under.
+  if (
+    contextual !== null &&
+    (ts.isArrowFunction(contextual) || ts.isFunctionExpression(contextual)) &&
+    lambdaSpellsCompletedAbi(lowerer, contextual, funcType)
+  ) {
+    return;
+  }
   // An 'any' slot (`C.prototype.m = function (a, b) {…}` through an
   // untyped receiver), or a slot whose type maps to a checked-dynamic
   // value (a member of a literal lowered with a generic function's type
@@ -1062,6 +1111,9 @@ export function lambdaSignature(
         type: DYN,
         mode: "required",
       }));
+      // `arguments` holds the call's own tuple: a console line passes one
+      // or two arguments whatever the replacement declares.
+      appendArgumentsParameter(lowerer, node, shapes, "arguments");
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
   }
@@ -1148,6 +1200,15 @@ export function lambdaSignature(
   // is the one the adoption block below takes for mappable inferred
   // returns, so this only changes programs that do not compile today.
   //
+  // A lambda RETURNED from the function being lowered flows into that
+  // function's result type, which OBSERVES its value — the checker's void
+  // contextual type at such a site comes from an outer assignment target
+  // that would discard the enclosing function's own result. So the void
+  // adoption below must not fire there: `{ on: (h) => () => seen.push("y") }`
+  // against a `(h) => void` field types the inner arrow `() => number`
+  // (its own type) while its contextual type is the discarded `() => void`,
+  // and the outer arrow's result is the `() => number` that must return it.
+  const returnedValue = returnedIntoValueSlot(lowerer, node);
   // The contextual signature is looked up at most once per lambda: both
   // this decision and the adoption block below need it, and the checker
   // call is not free in a compile this hot.
@@ -1165,6 +1226,7 @@ export function lambdaSignature(
     ts.isArrowFunction(node) && !ts.isBlock(node.body) && isStreamUndefCallExpr(lowerer, node.body)
       ? VOID
       : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+          !returnedValue &&
           voidContextualSlot(lowerer, node, contextualSigs)
         ? VOID
         : lowerer.declaredReturnType(node, node);
@@ -1292,6 +1354,7 @@ export function lambdaSignature(
     if (
       !literalMethod &&
       !isAsyncLike &&
+      !returnedValue &&
       !node.type &&
       !inferredLiteral &&
       ret.kind !== "void" &&
@@ -1350,6 +1413,20 @@ function voidContextualSlot(
     sigs.length === 1 &&
     (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0
   );
+}
+
+/** Whether `node` is the expression of a `return` in the function being
+ * lowered, and that function's result is a function type promising a
+ * value (`() => number`, not `() => void`). Such a lambda's value reaches
+ * the caller of the enclosing function, so its own return type is kept
+ * even when the checker's contextual type for it is `void` (see the ABI
+ * decision in lambdaSignature). */
+function returnedIntoValueSlot(lowerer: Lowerer, node: ts.Node): boolean {
+  let parent: ts.Node | undefined = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+  if (parent === undefined || !ts.isReturnStatement(parent) || !parent.expression) return false;
+  const result = lowerer.ctx.returnType;
+  return result.kind === "func" && result.ret.kind !== "void";
 }
 
 /** The type of the property an object-literal method fills on the

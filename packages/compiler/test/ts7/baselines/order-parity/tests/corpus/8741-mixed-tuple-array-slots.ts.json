@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8741-mixed-tuple-array-slots.ts"
+ ],
+ "diags": []
+}

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { AstFile } from "./ast-node.js";
+import { AstFile, SOURCE_PHASE_MODIFIER } from "./ast-node.js";
 import { AstWireFile, PROTOCOL_VERSION_7_1 } from "./ast-wire.js";
 import {
   AstKind,
@@ -118,6 +118,12 @@ test("protocol 9 nodes that TypeScript 7.0 has no form for are rejected", () => 
     view.setUint32(at + NODE_OFFSET_DATA, view.getUint32(at + NODE_OFFSET_DATA, true) | 4, true),
   );
   expect(() => new AstWireFile(attributes)).toThrow("import attributes on a module declaration");
+  const version = bytes("protocol9", "main.ts");
+  version[3] = 6;
+  expect(() => new AstWireFile(version)).toThrow("unsupported protocol version 6");
+});
+
+test("protocol 9 import source clauses decode with the source phase", () => {
   const source = changed("main.ts", AstKind.ImportClause, (view, at) =>
     view.setUint32(
       at + NODE_OFFSET_DATA,
@@ -125,8 +131,13 @@ test("protocol 9 nodes that TypeScript 7.0 has no form for are rejected", () => 
       true,
     ),
   );
-  expect(() => new AstWireFile(source)).toThrow("`import source`");
-  const version = bytes("protocol9", "main.ts");
-  version[3] = 6;
-  expect(() => new AstWireFile(version)).toThrow("unsupported protocol version 6");
+  const file = new AstFile(source);
+  let sourceClauses = 0;
+  for (let index = 1; index < file.wire.nodeCount; index++)
+    if (
+      file.wire.kind(index) === AstKind.ImportClause &&
+      file.node(index).phaseModifier === SOURCE_PHASE_MODIFIER
+    )
+      sourceClauses++;
+  expect(sourceClauses).toBe(1);
 });

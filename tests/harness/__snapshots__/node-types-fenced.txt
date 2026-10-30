@@ -43,18 +43,18 @@ fenced.ts:31:21 - error SC2020: 'ReadableStream.from() over Set<number> iterable
 
   hint: arrays, Uint8Array, and strings are supported — spread other synchronous iterables into an array first: [...iterable]
 
-fenced.ts:38:1 - error SC2020: 'fs.watchFile' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:38:1 - error SC2020: 'fs.openAsBlob' is typed by @types/node but has no scriptc lowering yet
 
   37 | import { win32 } from "path";
-  38 | watchFile("x", () => {});
-     | ^~~~~~~~~~~~~~~~~~~~~~~~
+  38 | openAsBlob("x");
+     | ^~~~~~~~~~~~~~~
   39 | on(new EventEmitter(), "tick");
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 fenced.ts:39:1 - error SC2020: 'events.on' is typed by @types/node but has no scriptc lowering yet
 
-  38 | watchFile("x", () => {});
+  38 | openAsBlob("x");
   39 | on(new EventEmitter(), "tick");
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   40 | console.log(win32.sep);
@@ -142,41 +142,23 @@ fenced.ts:80:3 - error SC2020: 'RequestInit option 'integrity' in a static build
 
   hint: the compiler does not preserve this RequestInit member's conversion or transport behavior
 
-fenced.ts:84:3 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
-
-  83 |   const body = (await fetch(url)).body!;
-  84 |   body.tee();
-     |   ^~~~~~~~
-  85 |   const tee = body.tee;
-
-  hint: this operation is outside the native readable-stream implementation
-
-fenced.ts:85:15 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:85:15 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
 
   84 |   body.tee();
   85 |   const tee = body.tee;
      |               ^~~~~~~~
   86 |   body["tee"]();
 
-  hint: this operation is outside the native readable-stream implementation
+  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
 
-fenced.ts:86:3 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
-
-  85 |   const tee = body.tee;
-  86 |   body["tee"]();
-     |   ^~~~~~~~~~~
-  87 |   const bracketTee = body["tee"];
-
-  hint: this operation is outside the native readable-stream implementation
-
-fenced.ts:87:22 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:87:22 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
 
   86 |   body["tee"]();
   87 |   const bracketTee = body["tee"];
      |                      ^~~~~~~~~~~
   88 | }
 
-  hint: this operation is outside the native readable-stream implementation
+  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
 
 fenced.ts:93:23 - error SC2020: 'util.callbackify into a callback whose error parameter excludes null' is part of the standard library types but has no scriptc lowering yet
 

@@ -58,7 +58,7 @@ export {};
   expect(validateModule(result.module)).toEqual([]);
 });
 
-test("a void-returning map callback still has no element to store", async () => {
+test("a void-returning map callback stores undefined elements", async () => {
   const result = await lower(`
 const items = [1, 2];
 const out = items.map((n) => {
@@ -67,8 +67,8 @@ const out = items.map((n) => {
 console.log(out.length);
 export {};
 `);
-  // `void[]` stays unrepresentable: a void value is erased before it could
-  // be written. Only the CLOSURE element became an ordinary element.
-  expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.codes).toEqual(["SC2009"]);
+  // A discarding mapper's answer is undefined, which the result array
+  // stores as its element (as Node's map does).
+  if (!result.ok) throw new Error(`fenced: ${result.codes.join(", ")}`);
+  expect(validateModule(result.module)).toEqual([]);
 });

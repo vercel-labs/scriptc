@@ -15,7 +15,15 @@
  * checked conversion can produce (the closure of dynCheck targets), and
  * some other record type whose values reach untyped code as live capsules
  * (the closure of live dynFrom types) has all of B's fields. A program
- * without checked conversions has none, so its code is unchanged. */
+ * without checked conversions has none, so its code is unchanged.
+ *
+ * A PARTIAL view (`dynCheck.partialView`) pairs a record literal's shape A
+ * with the wider record B it was asserted to, though A lacks some of B's
+ * fields. The view is a B value whose record-source entry names A, with
+ * the sentinel SIZE_MAX for every B field A does not declare: a slot lookup
+ * answers NULL there (scr_record_view_slot), so a presence test answers false
+ * and an address lookup stops the program. The frontend's checked reads of
+ * those fields throw their TypeError first. */
 import {
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -34,9 +42,28 @@ export interface RecordViews {
   readonly targets: ReadonlySet<string>;
   /** The record shapes whose capsules convert to a view of `target`. */
   sources(target: string): readonly string[];
+  /** Whether `target` may be a PARTIAL view of `source`: some of its
+   * fields are absent, because `source` does not declare them (a partial
+   * record literal asserted to a wider type). */
+  partial(target: string, source: string): boolean;
+  /** Shape ids a partial record assertion may produce a view of. */
+  readonly partialTargets: ReadonlySet<string>;
+  /** Whether some partial source of view target `target` lacks `field`. */
+  partialMissing(target: string, field: string): boolean;
 }
 
-export const NO_RECORD_VIEWS: RecordViews = { targets: new Set(), sources: () => [] };
+/** The trap of an internal reader of a field a partial view's viewed record
+ * lacks (a width copy, say): a source-level read of the field threw first. */
+export const PARTIAL_VIEW_ABSENT =
+  "scriptc: a value asserted as a wider record has no property at this field (copy it explicitly)\n";
+
+export const NO_RECORD_VIEWS: RecordViews = {
+  targets: new Set(),
+  sources: () => [],
+  partial: () => false,
+  partialTargets: new Set(),
+  partialMissing: () => false,
+};
 
 interface ViewOptions {
   readonly traced: (shapeId: string) => boolean;
@@ -156,16 +183,41 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   };
   const checked: IrType[] = [];
   const boxed: IrType[] = [];
+  // (target B, source A) of a partial record assertion's checked cast.
+  const partialPairs: { target: string; source: string }[] = [];
   for (const fn of mod.functions)
     everyStmtList(fn.body, {
       stmt: () => true,
       expr: (e) => {
-        if (e.kind === "dynCheck") checked.push(e.type);
-        else if (e.kind === "dynFrom" && e.liveRef === true) boxed.push(e.value.type);
+        if (e.kind === "dynCheck") {
+          checked.push(e.type);
+          if (
+            e.partialView === true &&
+            e.type.kind === "record" &&
+            e.value.kind === "dynFrom" &&
+            e.value.value.type.kind === "record"
+          )
+            partialPairs.push({
+              target: e.type.shapeId,
+              source: e.value.value.type.shapeId,
+            });
+        } else if (e.kind === "dynFrom" && e.liveRef === true) boxed.push(e.value.type);
+        else if (e.kind === "libCall" && /^(transform|passthrough)\.(new|init)$/.test(e.fn)) {
+          // A transform or flush callback's typed completion data
+          // (pinTypedDataCompletion) reaches untyped consumers as a live
+          // capsule: scr_stream_push_typed boxes it for them.
+          for (const arg of e.args) {
+            if (arg.type.kind !== "func") continue;
+            for (const param of arg.type.params)
+              if (param.kind === "func" && param.params[1] !== undefined)
+                boxed.push(param.params[1]);
+          }
+        }
         return true;
       },
     });
-  if (checked.length === 0 || boxed.length === 0) return NO_RECORD_VIEWS;
+  if ((checked.length === 0 || boxed.length === 0) && partialPairs.length === 0)
+    return NO_RECORD_VIEWS;
   const reachable = closure(checked);
   const live = closure(boxed);
   if (reachable.size === 0) return NO_RECORD_VIEWS;
@@ -182,6 +234,24 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
       if (covers(source, target)) found.push(source.id);
     }
     if (found.length > 0) sources.set(id, found);
+  }
+  // Partial pairs join the plan before the cycle analysis, which owns their
+  // view's capsule reference like any other. A pair whose source has every
+  // target field is an ordinary full view and is already planned above.
+  const partials = new Map<string, Set<string>>();
+  for (const pair of partialPairs) {
+    const target = shapes.get(pair.target);
+    const source = shapes.get(pair.source);
+    if (!target || !source || !plainShape(target) || !plainShape(source)) continue;
+    if (target.freezable === true || source.freezable === true) continue;
+    if (options.traced(pair.target) || options.excluded(pair.target)) continue;
+    if (covers(source, target)) continue;
+    const list = sources.get(pair.target) ?? [];
+    if (!list.includes(pair.source)) list.push(pair.source);
+    sources.set(pair.target, list);
+    const set = partials.get(pair.target);
+    if (set) set.add(pair.source);
+    else partials.set(pair.target, new Set([pair.source]));
   }
   // A view's record-source entry owns the source's capsule, an edge the
   // cycle analysis does not see. A view stays off every cycle only when its
@@ -200,11 +270,34 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
       changed = true;
       if (kept.length > 0) sources.set(id, kept);
       else sources.delete(id);
+      const partial = partials.get(id);
+      if (!partial) continue;
+      for (const source of [...partial]) if (!kept.includes(source)) partial.delete(source);
+      if (partial.size === 0) partials.delete(id);
     }
   }
   if (sources.size === 0) return NO_RECORD_VIEWS;
   const targets = new Set(sources.keys());
-  return { targets, sources: (target) => sources.get(target) ?? [] };
+  // The target fields some partial source lacks: their presence test is a
+  // runtime view probe, and their slot lookup traps.
+  const missing = new Map<string, Set<string>>();
+  for (const [id, list] of partials) {
+    const absent = new Set<string>();
+    const target = shapes.get(id);
+    for (const source of list) {
+      const declared = new Set((shapes.get(source)?.fields ?? []).map((field) => field.name));
+      for (const field of target?.fields ?? [])
+        if (!declared.has(field.name)) absent.add(field.name);
+    }
+    missing.set(id, absent);
+  }
+  return {
+    targets,
+    sources: (target) => sources.get(target) ?? [],
+    partial: (target, source) => partials.get(target)?.has(source) === true,
+    partialTargets: new Set(partials.keys()),
+    partialMissing: (target, field) => missing.get(target)?.has(field) === true,
+  };
 }
 
 /** Lines setting `dest` (i1) to whether the record `obj` of a view target
@@ -229,7 +322,12 @@ export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: 
  * `obj` of view-target shape `struct`: the slot itself, or the viewed
  * record's slot when `obj` is a view. Optimized builds test the mark
  * inline and look the slot up out of line; unoptimized builds, which give
- * every value a frame slot, make the address one call. */
+ * every value a frame slot, make the address one call.
+ *
+ * `partial` names a shape a PARTIAL view may present: its viewed record can
+ * lack the field, and the slot lookup answers NULL there (scr_record_view_slot),
+ * so the address stops with `scr_trap` and `cstr(PARTIAL_VIEW_ABSENT)`. The
+ * message is the program's own constant; the runtime carries none. */
 export function recordViewFieldPtr(
   B: BlockBuilder,
   sizeType: "i32" | "i64",
@@ -239,13 +337,25 @@ export function recordViewFieldPtr(
   position: number,
   declare: (decl: string) => void,
   outOfLine: boolean,
+  cstr: (text: string) => string,
+  partial = false,
 ): string {
   if (outOfLine) {
-    declare(`declare ptr @scr_record_view_field(ptr, ${sizeType}, ${sizeType})`);
+    const field = "scr_record_view_field";
+    declare(`declare ptr @${field}(ptr, ${sizeType}, ${sizeType})`);
     const ptr = B.tmp();
     B.line(
-      `${ptr} = call ptr @scr_record_view_field(ptr ${obj}, ${sizeType} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${slotIndex}) to ${sizeType}), ${sizeType} ${position})`,
+      `${ptr} = call ptr @${field}(ptr ${obj}, ${sizeType} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${slotIndex}) to ${sizeType}), ${sizeType} ${position})`,
     );
+    if (!partial) return ptr;
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${ptr}, null`);
+    const trap = B.newLabel("rv.absent");
+    const join = B.newLabel("rv.present");
+    B.condBr(absent, trap, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+    B.startBlock(trap);
+    absentTrapLines(B, cstr, declare);
+    B.startBlock(join);
     return ptr;
   }
   const own = B.tmp();
@@ -261,9 +371,34 @@ export function recordViewFieldPtr(
   declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType})`);
   const viewed = B.tmp();
   B.line(`${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${sizeType} ${position})`);
+  let viewFrom = view;
+  if (partial) {
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${viewed}, null`);
+    const trap = B.newLabel("rv.absent");
+    const present = B.newLabel("rv.present");
+    B.condBr(absent, trap, present);
+    B.startBlock(trap);
+    absentTrapLines(B, cstr, declare);
+    viewFrom = present;
+    B.startBlock(present);
+  }
   B.br(join);
   B.startBlock(join);
   const ptr = B.tmp();
-  B.line(`${ptr} = phi ptr [ ${own}, %${from} ], [ ${viewed}, %${view} ]`);
+  B.line(`${ptr} = phi ptr [ ${own}, %${from} ], [ ${viewed}, %${viewFrom} ]`);
   return ptr;
+}
+
+/** The block of an address lookup of a field a partial view lacks: the
+ * program stops with its own message (PARTIAL_VIEW_ABSENT) and does not
+ * return. */
+export function absentTrapLines(
+  B: BlockBuilder,
+  cstr: (text: string) => string,
+  declare: (decl: string) => void,
+): void {
+  declare(`declare void @scr_trap(ptr)`);
+  B.line(`call void @scr_trap(ptr ${cstr(PARTIAL_VIEW_ABSENT)})`);
+  B.terminate("unreachable");
 }

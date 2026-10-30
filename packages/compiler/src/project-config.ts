@@ -66,6 +66,10 @@ export interface NodeIslandsSetting {
   nodeVersion: string | null;
   packaging: "embedded" | "beside";
   speculativeStart: boolean;
+  /** Environment variables whose build-time values a deferred island
+   * module's boot guards may record in the executable (snapshot.ts). A
+   * deferred load that reads any other variable stays eager. */
+  publicEnv: string[];
 }
 
 /** One declaration patch: a selector and the type text it maps to. */
@@ -131,6 +135,7 @@ const NODE_ISLANDS_KEYS = [
   "nodeVersion",
   "packaging",
   "speculativeStart",
+  "publicEnv",
 ];
 
 function defaultPackageSetting(): PackageSetting {
@@ -153,6 +158,7 @@ function defaultNodeIslands(): NodeIslandsSetting {
     nodeVersion: null,
     packaging: "embedded",
     speculativeStart: false,
+    publicEnv: [],
   };
 }
 
@@ -338,6 +344,22 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
               `write "modules": ["src/plugins/loader.ts"]`,
             );
           } else setting.modules = list;
+        } else if (key === "publicEnv") {
+          const list: string[] = [];
+          let ok = Array.isArray(v);
+          if (Array.isArray(v)) {
+            for (const entry of v as unknown[]) {
+              if (typeof entry === "string" && entry !== "") list.push(entry);
+              else ok = false;
+            }
+          }
+          if (!ok) {
+            problem(
+              ["nodeIslands", key],
+              `must be an array of environment variable names, not ${shown(v)}`,
+              `write "publicEnv": ["NODE_ENV"]`,
+            );
+          } else setting.publicEnv = list;
         } else if (key === "packaging") {
           if (v !== "embedded" && v !== "beside") {
             problem(

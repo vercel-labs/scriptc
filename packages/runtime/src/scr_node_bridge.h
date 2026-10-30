@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 9u
+#define SCR_NODE_BRIDGE_ABI 10u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -74,10 +74,12 @@ typedef struct ScrNodeIoState {
 /* ── object handles (scope-B NI-4) ────────────────────────────────────────
  * A value crossing between the runtime and V8. Primitives, strings and
  * BigInt are copies; objects are handles: ids into the bridge's import
- * table of v8::Global references, one id per V8 object while the runtime
+ * table of V8 references, one id per V8 object while the runtime
  * holds it (the bridge answers the same id for the same object), released
- * with `drop`. Typed arrays and Buffers coming out of V8 also carry their
- * backing store's memory (BYTES), which the runtime aliases.
+ * with `drop`. The table holds v8::TracedReferences that V8 marks only
+ * while the runtime may still use them (NI-8, gc_analyze). Typed arrays and
+ * Buffers coming out of V8 also carry their backing store's memory (BYTES),
+ * which the runtime aliases.
  *
  * Out-values the bridge writes hold bridge-owned string data valid until
  * the next bridge entry; the runtime copies it at once. In-values are
@@ -155,6 +157,38 @@ typedef struct ScrNodeErrorInfo {
   const char *arrow;
   size_t arrow_len;
 } ScrNodeErrorInfo;
+
+/* ── cross-heap cycle collection (scope-B NI-8) ────────────────────────────
+ * Before V8's major GC marks, the runtime answers which exports its own
+ * roots still hold and, for each other export, what its native subgraph
+ * reaches across the boundary (gc_analyze). V8 then marks from its roots,
+ * the exports native roots hold and the imports they hold, and through each
+ * representative it marks into what that export reaches. Exports V8 did not
+ * reach lose their representative (export_release), imports it did not
+ * reach are collected, and the runtime's cycle collector frees the native
+ * half. Reach entries are import ids, or export ids with SCR_NODE_GC_EXPORT
+ * set. All arrays are runtime-owned until the next host call. */
+#define SCR_NODE_GC_EXPORT 0x80000000u
+typedef struct ScrNodeGcResult {
+  const uint32_t *free_imports; /* import ids no native root holds */
+  size_t nfree_imports;
+  const uint8_t *rooted;        /* per analyzed export: native roots hold it */
+  const uint32_t *reach_start;  /* per analyzed export: its first entry in `reach` */
+  const uint32_t *reach_len;
+  const uint32_t *reach;
+  size_t visited;               /* native objects the analysis walked */
+} ScrNodeGcResult;
+/* What the bridge counted, for the trace and the leak tests. */
+typedef struct ScrNodeGcStats {
+  uint64_t major_gcs;      /* V8 major GCs since Node started */
+  uint64_t analyses;       /* of which the runtime analyzed (the others traced everything) */
+  uint64_t freed_exports;  /* representatives V8 collected */
+  uint64_t freed_imports;  /* imports V8 collected */
+  uint64_t analysis_ns;    /* time spent in gc_analyze, in total */
+  uint64_t max_analysis_ns;
+  uint32_t live_exports;   /* representatives alive now */
+  uint32_t live_imports;   /* import-table entries alive now */
+} ScrNodeGcStats;
 
 /* What the runtime provides to the bridge. */
 typedef struct ScrNodeBridgeHost {
@@ -241,6 +275,11 @@ typedef struct ScrNodeBridgeHost {
    * of a Map, the values of a Set. */
   int (*export_op)(uint32_t id, uint32_t op, const ScrNodeValue *args, size_t argc,
                    ScrNodeValue *out);
+  /* NI-8: the analysis before a major GC, over the `nexports` exports that
+   * have a representative. 0: *out holds the answer; 1: the runtime cannot
+   * answer now (V8 then treats every handle as a root for this GC). Runs
+   * inside V8's GC prologue: it must not call into the bridge. */
+  int (*gc_analyze)(const uint32_t *exports, size_t nexports, ScrNodeGcResult *out);
 } ScrNodeBridgeHost;
 
 typedef struct ScrNodeBridge {
@@ -325,7 +364,7 @@ typedef struct ScrNodeBridge {
   int (*then)(const ScrNodeValue *value, uint32_t token, ScrNodeValue *out);
   /* The own name, message, stack and string code of an error handle. */
   void (*error_info)(uint32_t h, ScrNodeErrorInfo *out);
-  /* Releases handle h's Global. */
+  /* Releases handle h. */
   void (*drop)(uint32_t h);
   /* The number of live import-table entries (leak tests). */
   uint32_t (*live_handles)(void);
@@ -334,6 +373,8 @@ typedef struct ScrNodeBridge {
   /* NI-6: the native value of shared export (mod, slot) changed: the
    * generated module's binding takes `value`. */
   void (*shared_push)(uint32_t mod, uint32_t slot, const ScrNodeValue *value);
+  /* NI-8: the cross-heap collector's counters. */
+  void (*gc_stats)(ScrNodeGcStats *out);
 } ScrNodeBridge;
 
 #endif /* SCR_NODE_BRIDGE_H */

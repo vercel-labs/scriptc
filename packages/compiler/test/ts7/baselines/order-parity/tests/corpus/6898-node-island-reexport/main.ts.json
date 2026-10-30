@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6898-node-island-reexport/barrel.ts",
+  "<repo>/tests/corpus/6898-node-island-reexport/barrel2.ts",
+  "<repo>/tests/corpus/6898-node-island-reexport/main.ts"
+ ],
+ "diags": []
+}

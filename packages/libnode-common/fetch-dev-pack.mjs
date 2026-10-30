@@ -9,7 +9,7 @@
  *   node packages/libnode-common/fetch-dev-pack.mjs --out <pack directory> */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,19 +58,24 @@ async function fetchVerified({ urls, sha256 }, name) {
   throw new Error(`no source for ${name} matched its pin:\n${failures.join("\n")}`);
 }
 
-await fetchVerified(pins.libnode, "libnode.tar.gz");
-await fetchVerified(pins.headers, "headers.tar.gz");
-mkdirSync(resolve(values.out), { recursive: true });
-execFileSync(
-  process.execPath,
-  [
-    join(here, "build-pack.mjs"),
-    "--libnode",
-    join(work, pins.libnode.file),
-    "--headers",
-    join(work, pins.headers.dir),
-    "--out",
-    resolve(values.out),
-  ],
-  { stdio: "inherit" },
-);
+// The downloads and their unpacked trees are removed once the pack is built.
+try {
+  await fetchVerified(pins.libnode, "libnode.tar.gz");
+  await fetchVerified(pins.headers, "headers.tar.gz");
+  mkdirSync(resolve(values.out), { recursive: true });
+  execFileSync(
+    process.execPath,
+    [
+      join(here, "build-pack.mjs"),
+      "--libnode",
+      join(work, pins.libnode.file),
+      "--headers",
+      join(work, pins.headers.dir),
+      "--out",
+      resolve(values.out),
+    ],
+    { stdio: "inherit" },
+  );
+} finally {
+  rmSync(work, { recursive: true, force: true });
+}

@@ -24,6 +24,7 @@ struct ScrSharedBytes {
   atomic_size_t references;
   size_t length;
   uint8_t *data;
+  size_t held; /* the owner's count, moved to the shared bytes (scr_array_buffers_share) */
 };
 
 void scr_shared_load(void *dst, const void *src, size_t n) {
@@ -56,6 +57,7 @@ ScrSharedBytes *scr_shared_retain(ScrSharedBytes *storage) {
 
 void scr_shared_release(ScrSharedBytes *storage) {
   if (!storage || atomic_fetch_sub_explicit(&storage->references, 1, memory_order_acq_rel) != 1) return;
+  scr_array_buffers_sub(true, storage->held);
   free(storage->data);
   free(storage);
 }
@@ -67,6 +69,9 @@ void scr_bytes_make_shared(ScrBytes *bytes) {
   atomic_init(&storage->references, 1);
   storage->length = bytes->len * scr_bytes_elem_size(bytes->elem);
   storage->data = bytes->data;
+  storage->held = scr_bytes_held(bytes);
+  scr_array_buffers_share(storage->held);
+  scr_bytes_set_held(bytes, 0);
   bytes->shared = storage;
 }
 

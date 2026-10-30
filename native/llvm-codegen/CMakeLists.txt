@@ -84,6 +84,7 @@ endif()
 
 add_executable(scriptc-llvm-codegen
   src/cache.cpp
+  src/cpu-copies.cpp
   src/diagnostics.cpp
   src/emit.cpp
   src/main.cpp

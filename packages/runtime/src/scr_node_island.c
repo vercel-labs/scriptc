@@ -1212,6 +1212,7 @@ static const ScrNodeBridgeHost ni_host = {
     &scr_ni_host_shared_get,
     &scr_ni_host_shared_tdz,
     &scr_ni_host_export_op,
+    &scr_ni_host_gc_analyze,
 };
 
 typedef struct {
@@ -1256,9 +1257,29 @@ static void ni_stop_atexit(void) {
     fflush(stdout);
     fprintf(stderr, "[node-islands] live handles %u\n", scr_ni_live_handles());
   }
+  /* SCRIPTC_NODE_ISLANDS_TRACE=gc: the cross-heap collector's counters at
+   * exit (NI-8; each major GC is traced by the bridge as it ends). */
+  if (trace != NULL && strstr(trace, "gc") != NULL) {
+    /* The native halves of cycles V8 already freed are cyclic garbage the
+     * exit sweep would free anyway: count what is left after it. */
+    scr_collect_cycles();
+    ScrNodeGcStats stats;
+    memset(&stats, 0, sizeof stats);
+    ni_bridge->gc_stats(&stats);
+    fflush(stdout);
+    fprintf(stderr,
+            "[node-islands] gc totals: major %llu, analyzed %llu, freed exports %llu, freed "
+            "imports %llu, representatives %u, import entries %u, held exports %u, held handles "
+            "%u, analysis max %.3f ms total %.3f ms\n",
+            (unsigned long long)stats.major_gcs, (unsigned long long)stats.analyses,
+            (unsigned long long)stats.freed_exports, (unsigned long long)stats.freed_imports,
+            stats.live_exports, stats.live_imports, scr_ni_live_exports(), scr_ni_live_handles(),
+            (double)stats.max_analysis_ns / 1e6, (double)stats.analysis_ns / 1e6);
+  }
   ni_on_node_stack(ni_stop_job, NULL);
   /* Node is gone: no representative can call in again. */
   scr_ni_exports_release_all();
+  scr_ni_gc_cleanup();
 }
 
 /* The hosted loop's run_loop on Node's stack. */
@@ -1397,10 +1418,11 @@ static void ni_start(void) {
              ni_node_version, bridge->node_version, bridge->module_version, dir);
     ni_fatal(message);
   }
-  ScrStr *self = scr_process_exec_path();
-  char argv0[4096];
-  snprintf(argv0, sizeof argv0, "%.*s", (int)self->len, self->data);
-  scr_str_release(self);
+  /* Node's argv[0] is "node": island process.argv0 reads it, and Node's
+   * warning hint is built from it ("(Use `node --trace-deprecation ...`"),
+   * which the runtime's own warnings print too. process.execPath stays the
+   * executable (libuv's exepath). */
+  char argv0[] = "node";
   /* Flush first: Node writes to the same stdout. */
   fflush(stdout);
   ni_bridge = bridge;

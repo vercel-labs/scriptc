@@ -10756,6 +10756,9 @@ export class Lowerer {
       this.recordSourcesPossible = true;
       break;
     }
+    // A declared spread merge that kept the copy's own order holds a source
+    // view too, so the captures that consult one must be active for it.
+    if (this.keyOrder.keptDeclaredMerges > 0) this.recordSourcesPossible = true;
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     this.settleSharedHelperLocations([
       ...orderedUnits,

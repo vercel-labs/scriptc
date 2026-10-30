@@ -5008,6 +5008,14 @@ function buildLibFnSignatures() {
      * (key-order-witness.ts ordered spreads). Both are record types. Never
      * throws. */
     "record.sourceSpread": { argTypes: [null, null], result: VOID },
+    /** `record.sourceNote(built, keys)`: the record a declared spread merge
+     * just built (`{ ...a, ...b }` into one declared shape) keeps `keys` —
+     * the declared keys its sources supplied, in the order the spreads
+     * created them — as its kept source when it holds them in another order
+     * than it serializes them (scr_record_source_note;
+     * key-order-witness.ts declared merges). The first is a record type, the
+     * second dyn (borrowed). Never throws. */
+    "record.sourceNote": { argTypes: [null, DYN], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

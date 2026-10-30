@@ -98,7 +98,7 @@ import {
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
-import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { isJsSourceFile, isNodeEsmFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
@@ -477,11 +477,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (inlineValue) return inlineValue;
   }
   // `require("path/posix")` of a builtin as a value: the module's
-  // namespace, as a `const posix = require("path/posix")` binding is.
+  // namespace, as a `const posix = require("path/posix")` binding is. An ES
+  // module has no `require`, so there the call reads the binding and throws
+  // Node's ReferenceError (lowerIdentifierExpr).
   if (
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "require" &&
-    isCjsRequireGlobal(lowerer, expr.expression)
+    isCjsRequireGlobal(lowerer, expr.expression) &&
+    !isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
   ) {
     const module = lowerer.builtinNamespaceModuleOf(expr);
     // The platform namespaces are the path module objects.

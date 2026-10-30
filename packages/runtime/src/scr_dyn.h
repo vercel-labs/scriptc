@@ -543,7 +543,11 @@ struct ScrDyn {
     ScrBigInt *bigint; /* owned (SCR_DYN_BIGINT) */
     /* Callbacks keep the optional symbol unit out of symbol-free binaries. */
     struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); } symbol;
-    struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; unsigned char *presence; struct ScrDynRegion *region; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
+    /* `length_readonly` is Object.defineProperty's writable:false on an
+     * array's length (SCR_ARRAY_ATTRS); zero means writable, so every
+     * construction path keeps the default by zeroing. It sits in the
+     * padding after the two integrity bits, so no offset moves. */
+    struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; bool length_readonly; unsigned char *presence; struct ScrDynRegion *region; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
     struct {
       size_t len; /* own string-keyed properties, in both modes */
       size_t cap; /* capacity of entries (dictionary mode) or slots (layout mode) */
@@ -1206,6 +1210,30 @@ ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read)
 ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
+#ifdef SCR_ARRAY_ATTRS
+/* The element-attribute bits an array's presence byte carries: bit 0 is
+ * presence (so a byte of 1 is exactly what other units write when a hole
+ * becomes present), the others an element's deviation from the default
+ * writable, enumerable, configurable data property. */
+#define SCR_ARR_PRESENT 1u
+#define SCR_ARR_NONWRITABLE 2u
+#define SCR_ARR_NONENUM 4u
+#define SCR_ARR_NONCONF 8u
+/* Whether an element's own attributes allow a plain write, a delete and
+ * an own-key walk (scr_json.c). A sealed array clears configurability and
+ * a frozen one clears writability, as Object.seal/Freeze do without
+ * walking; a hole that a defined element left behind answers the same
+ * separately. */
+bool scr_dyn_arr_index_writable(const ScrDyn *arr, size_t index);
+bool scr_dyn_arr_index_configurable(const ScrDyn *arr, size_t index);
+bool scr_dyn_arr_index_enumerable(const ScrDyn *arr, size_t index);
+/* The first write a mutating array method would perform that a non-writable
+ * or non-configurable element refuses, thrown as Node's TypeError (the
+ * op codes are scr_array_frozen_error's). Answers false when every write
+ * the operation performs is allowed. */
+bool scr_dyn_arr_attrs_refuse(const ScrDyn *arr, int op, size_t len, double x, double y,
+                              double z);
+#endif
 ScrDyn *scr_dyn_new_obj(void);
 ScrDyn *scr_dyn_iterator(const ScrDyn *value, const ScrStr *spell);
 /* for await over a checked-dynamic value (scr_dyn_for_await.c). */

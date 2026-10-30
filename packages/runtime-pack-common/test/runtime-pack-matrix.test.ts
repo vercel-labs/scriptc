@@ -103,3 +103,43 @@ test("the BigIntStats unit follows its own member-read gate, not bigint", () => 
   // name bigstats, so a bigint program keeps this unit out of its binary.
   expect(unit.predicate).toBe("bigstats");
 });
+
+test("an array defineProperty build carries every feature the program also needs", () => {
+  const plain = {
+    workers: false,
+    dynTier: false,
+    nodeIsland: false,
+    webStreams: false,
+    recordViewPartial: false,
+    dynArrayAttrs: false,
+  };
+  // The per-element attribute bits select their own build of the dynamic
+  // tree, alone...
+  expect(selected("scr_json.c", { ...plain, dynArrayAttrs: true }).defines).toEqual([
+    "SCR_ARRAY_ATTRS",
+  ]);
+  // ...and beside each feature that already has a build of the unit.
+  expect(
+    selected("scr_json.c", { ...plain, dynArrayAttrs: true, recordViewPartial: true }).defines,
+  ).toEqual(["SCR_RECORD_VIEW_PARTIAL", "SCR_ARRAY_ATTRS"]);
+  expect(
+    selected("scr_json.c", {
+      ...plain,
+      dynArrayAttrs: true,
+      dynTier: true,
+      nodeIsland: true,
+      webStreams: true,
+    }).defines,
+  ).toEqual(["SCR_JS_TIER", "SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS", "SCR_ARRAY_ATTRS"]);
+  // A program that never defines an array element keeps the default object,
+  // byte for byte.
+  expect(selected("scr_json.c", plain).defines).toEqual([]);
+  expect(selected("scr_json.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  // scr_dyn_invoke.c has one build of its own for the same feature.
+  expect(selected("scr_dyn_invoke.c", { ...plain, dynArrayAttrs: true }).defines).toEqual([
+    "SCR_ARRAY_ATTRS",
+  ]);
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+});

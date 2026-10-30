@@ -19,6 +19,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.dynArrayAttrs ? { dynArrayAttrs: true } : {}),
     ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),

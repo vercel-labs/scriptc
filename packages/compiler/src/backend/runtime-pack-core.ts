@@ -109,6 +109,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   builtinValues: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
+  dynArrayAttrs: boolean;
   recordViewPartial: boolean;
   stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
@@ -333,6 +334,7 @@ export function effectiveRuntimeFeatures(
     builtinValues: features.builtinValues === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
+    dynArrayAttrs: features.dynArrayAttrs === true,
     recordViewPartial: features.recordViewPartial === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,

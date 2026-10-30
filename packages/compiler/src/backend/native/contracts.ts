@@ -170,6 +170,9 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_ARRAY_ATTRS: Object.defineProperty on a checked-dynamic array's
+   * index or length (per-element attributes, a read-only length). */
+  dynArrayAttrs?: boolean;
   /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
    * NULL for a field a partial record view does not have. */
   recordViewPartial?: boolean;

@@ -55,6 +55,7 @@ import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/
 import * as ts from "../ts7/adapter.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
+import { isExecErrorMemberRead } from "./builtins/errors.js";
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
@@ -6681,6 +6682,18 @@ export function lowerVarDecl(
   ) {
     type = init.type;
     notePreservedLayout(lowerer, decl);
+  }
+  // An unannotated binding holding an exec/execFile callback error's
+  // metadata member (`const signal = error.signal`) stores the value the
+  // read answers: Node's runtime type, which the checker's declaration can
+  // narrow (@types/node types `code` as a number, `signal` as a signal
+  // name, yet an ordinary failure answers null). An explicit annotation
+  // keeps its own checked slot.
+  if (type !== null && !decl.type && !hasJsTypeAnnotation(decl) && !typeEquals(type, init.type)) {
+    let read: ts.Expression = decl.initializer;
+    while (ts.isParenthesizedExpression(read)) read = read.expression;
+    if (ts.isPropertyAccessExpression(read) && isExecErrorMemberRead(lowerer, read))
+      type = init.type;
   }
   // A JavaScript binding assigned values outside its declared type
   // (analyzeJsWidenedBindings in lowerer.ts) holds them as checked-dynamic.

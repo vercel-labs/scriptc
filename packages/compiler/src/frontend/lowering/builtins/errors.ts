@@ -84,6 +84,27 @@ function execErrorMemberType(lowerer: Lowerer, member: string): IrType {
   }
 }
 
+/** Whether `expr` addresses one of the metadata members of an exec/execFile
+ * callback error: the surface `lowerExecErrorMember` lowers, at the
+ * receiver type and stdlib provenance that lowering requires. The
+ * checker's declared member type can be narrower than the value Node
+ * stores (@types/node types `code` as a number and `signal` as a signal
+ * name), so anything that would otherwise trust a narrowed checker type
+ * consults this. */
+export function isExecErrorMemberRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): boolean {
+  if (!EXEC_ERROR_DYNAMIC_MEMBERS.has(expr.name.text) || !lowerer.isStdlibMember(expr))
+    return false;
+  const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+  return (
+    recvT?.kind === "object" &&
+    recvT.className === "%Error" &&
+    isExecExceptionType(lowerer, lowerer.typeOf(expr.expression))
+  );
+}
+
 /** `err.code`/`err.killed`/`err.signal`/`err.cmd` on an exec/execFile
  * callback error: the own property of the error's checked-dynamic node,
  * wrapped at the member's runtime type. Null for every other read. */
@@ -97,11 +118,9 @@ function lowerExecErrorMember(
   if (
     recvT.kind !== "object" ||
     recvT.className !== "%Error" ||
-    !EXEC_ERROR_DYNAMIC_MEMBERS.has(expr.name.text) ||
-    !lowerer.isStdlibMember(expr)
+    !isExecErrorMemberRead(lowerer, expr)
   )
     return null;
-  if (!isExecExceptionType(lowerer, lowerer.typeOf(expr.expression))) return null;
   const receiver = lowerer.lowerExpr(expr.expression);
   const loc = locOf(expr);
   return lowerer.coerceToExpected(

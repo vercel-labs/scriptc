@@ -19,6 +19,15 @@ exec("exit 3", (error) => {
   console.log("compare", error.code === 3, error.signal === null);
   console.log("cmd", error.cmd, "message", JSON.stringify(error.message));
   console.log("keys", keys(error), "has code", "code" in error);
+  // @types/node declares code a number and signal a signal name, but an
+  // ordinary failure answers the exit status and a null signal: an
+  // inferred binding holds what the read answered, and a presence guard
+  // does not turn the value into the declared arm.
+  const exitedCode = error.code;
+  const exitedSignal = error.signal;
+  console.log("locals", typeof exitedCode, exitedCode, typeof exitedSignal, exitedSignal);
+  if (error.code !== undefined) console.log("guarded code", error.code, typeof error.code);
+  if (error.signal !== undefined) console.log("guarded signal", error.signal, typeof error.signal);
   execFile("/bin/sh", ["-c", "kill -TERM $$"], (signalled) => {
     if (signalled === null) {
       console.log("execFile signal: no error");
@@ -32,6 +41,17 @@ exec("exit 3", (error) => {
       signalled.signal,
       keys(signalled),
     );
+    const signalledCode = signalled.code;
+    const signalledSignal = signalled.signal;
+    console.log(
+      "execFile signal locals",
+      typeof signalledCode,
+      signalledCode,
+      typeof signalledSignal,
+      signalledSignal,
+    );
+    if (signalled.code !== undefined) console.log("guarded code", signalled.code);
+    if (signalled.signal !== undefined) console.log("guarded signal", signalled.signal);
     execFile("/nonexistent-scriptc-probe", [], (missing) => {
       if (missing === null) {
         console.log("execFile ENOENT: no error");
@@ -46,6 +66,10 @@ exec("exit 3", (error) => {
         keys(missing),
       );
       console.log("errno", missing.errno, "syscall", missing.syscall, "path", missing.path);
+      // A spawn failure's `code` is the errno name, not a number: the
+      // binding holds the string the read answered.
+      const missingCode = missing.code;
+      console.log("execFile ENOENT locals", typeof missingCode, missingCode);
     });
   });
 });

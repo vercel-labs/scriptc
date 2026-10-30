@@ -453,6 +453,12 @@ function isArgumentsReference(node: ts.Identifier): boolean {
   // no binding, so only a shorthand binding (`const { arguments } = src`)
   // reaches the rule above.
   if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  // `get arguments() {}` and `set arguments(v) {}` name an accessor.
+  if (
+    (ts.isGetAccessorDeclaration(parent) || ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
   if (ts.isFunctionDeclaration(parent) && parent.name === node) return false;
   if (ts.isFunctionExpression(parent) && parent.name === node) return false;
   if (ts.isClassDeclaration(parent) && parent.name === node) return false;

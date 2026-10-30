@@ -328,6 +328,18 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
 const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "readable.op"];
 
+/** The Set.prototype entry points of scr_dyn_set.c. The unit delegates
+ * prototype members through the dyn-invoke unit and interns
+ * Symbol.toStringTag through the symbol unit, so every rule that selects
+ * this unit also selects those two. */
+const DYN_SET_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "dyn.setMethod",
+  "dyn.setPrototypeObject",
+  "dyn.setGetPrototype",
+  "dyn.setCombine",
+  "dyn.setForEach",
+]);
+
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
@@ -348,6 +360,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNativePipe",
   "stream.pipeDyn",
   "stream.unpipeDyn",
+  ...DYN_SET_LIB_FNS,
 ]);
 
 /** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
@@ -402,6 +415,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.constructor",
   "buffer.staticValue",
   "buffer.prototypeMember",
+  ...DYN_SET_LIB_FNS,
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -1017,6 +1031,11 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** Set.prototype as a value and the ES2025 Set compositions over a
+   * set-like (scr_dyn_set.c). The unit calls into the dyn-invoke unit for
+   * prototype members and the symbol unit for Symbol.toStringTag, so each
+   * of those rules lists these entry points too. */
+  dynSet: rule({ fns: [...DYN_SET_LIB_FNS] }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -1411,6 +1430,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
+    dynSet: false,
     dynBuffer: false,
     builtinValues: false,
     computedRequire: false,

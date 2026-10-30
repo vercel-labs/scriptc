@@ -4186,6 +4186,21 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A Set.prototype method value (scr_dyn_set.c): one interned function
+     * per name, so `Set.prototype.union.call(receiver, other)` brand-checks
+     * and runs the ES2025 composition. */
+    "dyn.setMethod": { argTypes: [STRING], result: DYN },
+    /** %Set.prototype%, the object `Object.getPrototypeOf(new Set())`
+     * answers. */
+    "dyn.setPrototypeObject": { argTypes: [], result: DYN },
+    /** Object.getPrototypeOf for a value that may be a native Set. */
+    "dyn.setGetPrototype": { argTypes: [DYN], result: DYN },
+    /** The ES2025 Set compositions over a set-like argument. */
+    "dyn.setCombine": { argTypes: [DYN, STRING, DYN], result: DYN },
+    /** Set.prototype.forEach with a callback that is not statically a
+     * function: Node's `<value> is not a function` for a non-callable,
+     * and (value, value, set) visits otherwise. */
+    "dyn.setForEach": { argTypes: [DYN, DYN, DYN], result: VOID },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },

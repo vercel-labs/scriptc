@@ -99,6 +99,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   declAdopt: boolean;
   typeOrigins: boolean;
   dynForAwait: boolean;
+  dynSet: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -322,6 +323,7 @@ export function effectiveRuntimeFeatures(
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
+    dynSet: features.dynSet === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,

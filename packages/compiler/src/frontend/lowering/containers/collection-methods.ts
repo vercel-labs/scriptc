@@ -1,6 +1,14 @@
 import { keyedHelperName } from "../stable-names.js";
 import { primitiveElement } from "../array-values.js";
-import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  nodeThrowExpr,
+  boolLit,
+  countedFor,
+  dynUndefinedExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
@@ -644,7 +652,7 @@ export function lowerSetMethodCall(
     return lowerCollectionIteratorCall(lowerer, call, receiver, name);
   }
   if (SET_COMBINE_METHODS.has(name)) {
-    return lowerSetCombineCall(lowerer, call, name, receiver, receiverIr);
+    return lowerSetCombineCall(lowerer, call, name, receiver, receiverIr, access.expression);
   }
   if (name === "add") {
     const v = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.elem);
@@ -701,6 +709,36 @@ export function lowerSetForEachCall(
     fnArg.type.params.length > 2 ||
     !fnArg.type.params.every((p) => typeEquals(p, setT.elem))
   ) {
+    // A JavaScript source lowers the call anyway: a non-callable callback
+    // throws Node's `<value> is not a function`, and a callback of another
+    // shape is called with (value, value, set) at run time.
+    if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const receiverNode = ts.isPropertyAccessExpression(call.expression)
+        ? call.expression.expression
+        : call.expression;
+      const rtReceiver =
+        receiver.type.kind === "dyn" ? receiver : lowerer.coerceInto(receiverNode, receiver, DYN);
+      if (rtReceiver.type.kind === "dyn") {
+        const rtCallback =
+          fnArg.type.kind === "dyn" ? fnArg : lowerer.coerceInto(argNode, fnArg, DYN);
+        if (rtCallback.type.kind === "dyn") {
+          // forEach's optional thisArg crosses too, so a callback reading
+          // `this` sees what Node passes.
+          const thisNode = call.arguments.nodes[1];
+          const rtThis =
+            thisNode === undefined
+              ? dynUndefinedExpr(loc)
+              : lowerer.coerceInto(thisNode, lowerer.lowerExpr(thisNode), DYN);
+          return {
+            kind: "libCall",
+            fn: "dyn.setForEach",
+            args: [rtReceiver, rtCallback, rtThis],
+            type: VOID,
+            loc,
+          };
+        }
+      }
+    }
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   const arity = fnArg.type.params.length;
@@ -729,6 +767,7 @@ function lowerSetCombineCall(
   name: string,
   receiver: IrExpr,
   setT: IrType & { kind: "set" },
+  receiverNode: ts.Expression,
 ): IrExpr {
   const loc = locOf(call);
   const argNode = call.arguments.nodes[0];
@@ -740,15 +779,35 @@ function lowerSetCombineCall(
     );
   }
   const other = lowerer.lowerExpr(argNode);
-  if (other.type.kind !== "set" && other.type.kind !== "map") {
-    lowerer.noLowering(
-      `Set.prototype.${name} over a set-like argument of type '${lowerer.checker.typeToString(lowerer.typeOf(argNode))}'`,
-      argNode,
-      "only a real Set or Map lowers (the argument's has/size/keys must be the builtins) — build one first: new Set(...)",
-    );
-  }
   const otherT = other.type;
-  if (!typeEquals(otherT.kind === "set" ? otherT.elem : otherT.key, setT.elem)) {
+  const staticArgument =
+    (otherT.kind === "set" || otherT.kind === "map") &&
+    typeEquals(otherT.kind === "set" ? otherT.elem : otherT.key, setT.elem);
+  if (!staticArgument) {
+    // A JavaScript source lowers the spec's set-like protocol instead: the
+    // runtime reads size/has/keys off the argument and may call a user
+    // `has`, which the typed desugar cannot express.
+    if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const rtReceiver =
+        receiver.type.kind === "dyn" ? receiver : lowerer.coerceInto(receiverNode, receiver, DYN);
+      const rtOther = otherT.kind === "dyn" ? other : lowerer.coerceInto(argNode, other, DYN);
+      if (rtReceiver.type.kind === "dyn" && rtOther.type.kind === "dyn") {
+        return {
+          kind: "libCall",
+          fn: "dyn.setCombine",
+          args: [rtReceiver, strLit(name, loc), rtOther],
+          type: DYN,
+          loc,
+        };
+      }
+    }
+    if (otherT.kind !== "set" && otherT.kind !== "map") {
+      lowerer.noLowering(
+        `Set.prototype.${name} over a set-like argument of type '${lowerer.checker.typeToString(lowerer.typeOf(argNode))}'`,
+        argNode,
+        "only a real Set or Map lowers (the argument's has/size/keys must be the builtins) — build one first: new Set(...)",
+      );
+    }
     lowerer.noLowering(
       `Set.prototype.${name} across element types`,
       call,

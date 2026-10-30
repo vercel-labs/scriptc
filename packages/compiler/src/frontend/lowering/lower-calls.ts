@@ -8081,6 +8081,24 @@ function lowerObjectStaticCall(
         ...(fnName !== null ? { fnName } : {}),
       };
     }
+    // A JavaScript source asks about a native Set: the runtime answers
+    // %Set.prototype% so Symbol.toStringTag and the prototype's methods
+    // are reachable (a typed source keeps the refusal below).
+    if (
+      member === "getPrototypeOf" &&
+      object.type.kind === "set" &&
+      isJsSourceFile(ts.getSourceFileOfNode(call))
+    ) {
+      const boxed = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
+      if (boxed.type.kind === "dyn")
+        return {
+          kind: "libCall",
+          fn: "dyn.setGetPrototype",
+          args: [boxed],
+          type: DYN,
+          loc: locOf(call),
+        };
+    }
     if (
       object.type.kind !== "dyn" &&
       canConvertToDyn(

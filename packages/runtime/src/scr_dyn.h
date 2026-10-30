@@ -1051,6 +1051,20 @@ ScrDyn *scr_dyn_new_num(double n);
 ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed);
 ScrDyn *scr_dyn_native_set(ScrMap *value); /* borrowed backing, +1 box */
 bool scr_dyn_native_set_is(const ScrDyn *value);
+/* The ES2025 compositions over a set-like argument (scr_dyn_set.c): the
+ * receiver is brand-checked, `other` runs GetSetRecord and the keys
+ * iterator. +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_set_combine(ScrDyn *receiver, const ScrStr *name, ScrDyn *other);
+/* Set.prototype.forEach with an unchecked callback: Node's
+ * `<value> is not a function` for a non-callable one. +1 undefined or NULL. */
+ScrDyn *scr_dyn_set_for_each(ScrDyn *receiver, ScrDyn *callback, ScrDyn *this_arg);
+/* The interned method value of one Set.prototype member, and the interned
+ * %Set.prototype% object itself (+1). */
+ScrDyn *scr_dyn_set_method(const ScrStr *name);
+ScrDyn *scr_dyn_set_prototype_object(void);
+/* Object.getPrototypeOf: %Set.prototype% for a native Set handle, else the
+ * ordinary prototype read. +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_set_get_prototype(ScrDyn *value);
 ScrDyn *scr_dyn_native_map(ScrMap *value); /* borrowed backing, +1 box */
 /* `new Map(entries)` over a checked-dynamic seed: +1, or NULL with the
  * exception pending. */

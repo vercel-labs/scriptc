@@ -449,6 +449,10 @@ function isArgumentsReference(node: ts.Identifier): boolean {
   if (ts.isVariableDeclaration(parent) && parent.name === node) return false;
   if (ts.isParameter(parent) && parent.name === node) return false;
   if (ts.isBindingElement(parent) && parent.name === node) return false;
+  // `const { arguments: a } = src` NAMES the property `arguments`; it reads
+  // no binding, so only a shorthand binding (`const { arguments } = src`)
+  // reaches the rule above.
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
   if (ts.isFunctionDeclaration(parent) && parent.name === node) return false;
   if (ts.isFunctionExpression(parent) && parent.name === node) return false;
   if (ts.isClassDeclaration(parent) && parent.name === node) return false;

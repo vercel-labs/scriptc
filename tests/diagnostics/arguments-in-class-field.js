@@ -13,3 +13,16 @@ class Fields {
     return arguments.length;
   };
 }
+
+// A DESTRUCTURED property named `arguments` is not a reference: `{ arguments:
+// a }` names the property and binds `a`, which Node accepts in both places.
+class Destructured {
+  field = (() => {
+    const { arguments: fieldLocal } = { arguments: 5 };
+    return fieldLocal;
+  })();
+  static {
+    const { arguments: blockLocal } = { arguments: 7 };
+    console.log(blockLocal);
+  }
+}

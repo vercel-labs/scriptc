@@ -34,9 +34,15 @@ const literal = {
 };
 const described = Symbol('described');
 const undescribed = Symbol();
+// `Symbol('')` HAS the description "" and names its function "[]"; only an
+// absent description names it "" (SetFunctionName, ECMA-262 7.3.24 step 2).
+const emptyDescription = Symbol('');
+const registeredEmpty = Symbol.for('');
 const symbolLiteral = {
   [described]: () => {},
   [undescribed]: () => {},
+  [emptyDescription]: () => {},
+  [registeredEmpty]: () => {},
 };
 
 const copy = fromAssignment;
@@ -68,6 +74,8 @@ describe('literalFn', literal.fn);
 describe('literalKeyed', literal.keyed);
 describe('symbolLiteralDescribed', symbolLiteral[described]);
 describe('symbolLiteralUndescribed', symbolLiteral[undescribed]);
+describe('symbolLiteralEmpty', symbolLiteral[emptyDescription]);
+describe('symbolLiteralRegisteredEmpty', symbolLiteral[registeredEmpty]);
 describe('copied', copy);
 describe('reassigned', reassigned);
 describe('executorParameter', executorParameter);

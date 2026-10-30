@@ -216,9 +216,11 @@ function propertyFunctionName(lowerer: Lowerer, name: ts.PropertyName): string |
     const symbol = classSymbolKeyOf(lowerer, key);
     if (symbol) {
       const description = symbolFieldDisplayName(symbol.fieldName).slice("Symbol(".length, -1);
-      if (description.length > 0) return `[${description}]`;
-      // An undescribed symbol names its function "" (ECMA-262 7.3.24 step 2);
-      // a typed source keeps the "[]" spelling its IR always carried.
+      // `Symbol("")` HAS the description "" and names its function "[]";
+      // only an absent description (`Symbol()`) names it "" (SetFunctionName,
+      // ECMA-262 7.3.24 step 2). Both print `Symbol()`.
+      if (symbol.described) return `[${description}]`;
+      // A typed source keeps the "[]" spelling its IR always carried.
       return isJsSourceFile(ts.getSourceFileOfNode(name)) ? "" : "[]";
     }
     const wellKnown = ts.isPropertyAccessExpression(key)

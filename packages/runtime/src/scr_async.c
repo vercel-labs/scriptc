@@ -6227,6 +6227,36 @@ bool scr_loop_run(ScrPromise *top_level) {
  * listener threw (the uncaught crash path). */
 SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p) = NULL;
 
+#ifdef SCR_PROMISE_REJECT_DYN
+/* Prints a checked-dynamic rejection reason for the default unhandled-
+ * rejection report: a boxed native Error as "name: message", a string as
+ * its text, and a number, boolean, null or undefined by its name. Returns
+ * false for any other value, which the report prints as "[object]". */
+static bool scr_unhandled_print_dyn(const ScrDyn *d) {
+  ScrError *error = scr_errdyn_err_of(d);
+  if (error != NULL) {
+    ScrStr *s = scr_error_to_string(error);
+    fwrite(s->data, 1, s->len, stderr);
+    scr_str_release(s);
+    scr_error_release(error);
+    return true;
+  }
+  switch (d->kind) {
+  case SCR_DYN_STR: fwrite(d->v.str->data, 1, d->v.str->len, stderr); return true;
+  case SCR_DYN_NUM: {
+    char buf[32];
+    size_t len = scr_f64_to_str(d->v.num, buf);
+    fwrite(buf, 1, len, stderr);
+    return true;
+  }
+  case SCR_DYN_BOOL: fputs(d->v.b ? "true" : "false", stderr); return true;
+  case SCR_DYN_NULL: fputs("null", stderr); return true;
+  case SCR_DYN_UNDEF: fputs("undefined", stderr); return true;
+  default: return false;
+  }
+}
+#endif
+
 /* Unhandled rejections at a completed nextTick/microtask checkpoint:
  * Node prints an error and exits 1 when no listener handles the event.
  * Snapshot the ledger: a listener can reject another promise, but that
@@ -6288,7 +6318,17 @@ bool scr_report_unhandled_rejections(void) {
             break;
           }
           /* fall through */
-        default: fputs("[object]", stderr); break;
+        default:
+#ifdef SCR_PROMISE_REJECT_DYN
+          /* A checked-dynamic reason renders like the uncaught path renders
+           * `throw reason`: a boxed native Error as "name: message", a
+           * primitive by its text. */
+          if (p->release_fn == scr_dyn_release_v && p->payload != NULL &&
+              scr_unhandled_print_dyn((const ScrDyn *)p->payload))
+            break;
+#endif
+          fputs("[object]", stderr);
+          break;
         }
         fputc('\n', stderr);
       }

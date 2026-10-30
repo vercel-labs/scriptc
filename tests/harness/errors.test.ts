@@ -179,6 +179,53 @@ console.log("sync done");
     expect(r.stdout).toBe("sync done\n");
     expect(r.stderr).toBe("Unhandled promise rejection: RangeError: nobody awaits this\n");
   });
+
+  // A promise whose settled value is unknown rejects with the value the
+  // program passed; the report renders it like the uncaught path does.
+  test.each([
+    ["error", `reject(new Error("boom"))`, "Error: boom"],
+    [
+      "subclass",
+      `reject(new MyError("custom"))`,
+      "MyError: custom",
+      `class MyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MyError";
+  }
+}
+`,
+    ],
+    ["number", `reject(42)`, "42"],
+    ["string", `reject("plain")`, "plain"],
+    ["undefined", `reject()`, "undefined"],
+  ])(
+    "an unhandled checked-dynamic %s rejection renders its reason",
+    async (name, call, reason, prelude = "") => {
+      const r = await compileAndRun(
+        `unhandled-dyn-rejection-${name}`,
+        `${prelude}new Promise((resolve, reject) => ${call});
+console.log("sync done");
+`,
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("sync done\n");
+      expect(r.stderr).toBe(`Unhandled promise rejection: ${reason}\n`);
+    },
+  );
+
+  test("an unhandled Promise.withResolvers rejection renders its Error reason", async () => {
+    const r = await compileAndRun(
+      "unhandled-with-resolvers-rejection",
+      `const { reject } = Promise.withResolvers();
+reject(new TypeError("from resolvers"));
+console.log("sync done");
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("sync done\n");
+    expect(r.stderr).toBe("Unhandled promise rejection: TypeError: from resolvers\n");
+  });
 });
 
 // `x as Sub` on a class value is a CHECKED downcast, and `x!` / `u as Arm`

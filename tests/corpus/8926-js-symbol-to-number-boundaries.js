@@ -66,3 +66,43 @@ report('string offset', () => view.getInt8('2'));
 report('undefined offset', () => view.getInt16(undefined));
 view.setFloat64(0, 1.5);
 console.log('roundtrip: ' + view.getFloat64(0));
+
+// Node evaluates a member call's receiver and every argument before any
+// conversion runs, so the later effects happen even though the Symbol
+// offset's ToIndex throws. The BigInt kinds convert the same way.
+function sequence(label, fn) {
+  const steps = [];
+  try {
+    fn(steps);
+    steps.push('no throw');
+  } catch (e) {
+    steps.push(e.name + ': ' + e.message);
+  }
+  console.log(label + ': ' + steps.join(','));
+}
+
+sequence('bigint getter littleEndian effect', (steps) =>
+  view.getBigInt64((steps.push('offset'), Symbol('1')), (steps.push('le'), true)),
+);
+sequence('bigint setter littleEndian effect', (steps) =>
+  view.setBigInt64((steps.push('offset'), Symbol('1')), 1n, (steps.push('le'), true)),
+);
+sequence('bigint setter value effect', (steps) =>
+  view.setBigUint64((steps.push('offset'), Symbol('1')), (steps.push('value'), 1n)),
+);
+sequence('bigint getter fresh view', (steps) =>
+  new DataView(buffer).getBigInt64((steps.push('offset'), Symbol('1')), (steps.push('le'), false)),
+);
+sequence('numeric setter receiver effect', (steps) => {
+  const pick = () => (steps.push('receiver'), view);
+  pick().setFloat64(Symbol('1'), (steps.push('value'), 1));
+});
+sequence('numeric getter receiver effect', (steps) => {
+  const pick = () => (steps.push('receiver'), view);
+  pick().getInt16((steps.push('offset'), Symbol('1')), (steps.push('le'), true));
+});
+sequence('numeric setter value effect', (steps) => {
+  const pick = () => (steps.push('receiver'), view);
+  pick().setInt32((steps.push('offset'), 0), (steps.push('value'), Symbol('1')));
+});
+console.log('view intact: ' + view.getFloat64(0));

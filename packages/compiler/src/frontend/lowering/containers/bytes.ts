@@ -44,11 +44,7 @@ import {
   lowerStaticallyUndefinedArgument,
 } from "../optional-arguments.js";
 import { lowerArraySpreadItems, lowerCheckedArrayFrom } from "./array-construction.js";
-import {
-  lowerOptionalNumber,
-  lowerToNumberArgument,
-  lowerToNumberArguments,
-} from "../lower-exprs.js";
+import { lowerOptionalNumber, lowerToNumberArguments } from "../lower-exprs.js";
 import { lowerBytesIteratorValue } from "../iterator-adapters.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
 import { callbackSite, findPredicateOk, predicateToBoolean } from "./array-callbacks.js";
@@ -1588,19 +1584,28 @@ export function lowerBytesMethodCall(
     if (nArgs < 1 || nArgs > 2) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     // ToIndex(byteOffset): the same ToNumber conversion as the other
-    // getters (a Symbol value throws Node's TypeError).
-    const offset = lowerToNumberArgument(lowerer, call.arguments.nodes[0]!);
+    // getters (a Symbol value throws Node's TypeError). Node evaluates the
+    // littleEndian argument before it converts the offset, so both evaluate
+    // into temporaries when the conversion can throw late.
     const sign: IrExpr = { kind: "boolLit", value: dvBigGetter.sign, type: BOOL, loc };
-    const le: IrExpr = call.arguments.nodes[1]
-      ? lowerer.lowerExprExpecting(call.arguments.nodes[1], BOOL)
-      : { kind: "boolLit", value: false, type: BOOL, loc };
-    return {
+    const leNode = call.arguments.nodes[1] ?? null;
+    const offsetNode = call.arguments.nodes[0]!;
+    const { stmts, values } = lowerToNumberArguments(
+      lowerer,
+      leNode ? [offsetNode, leNode] : [offsetNode],
+      leNode
+        ? (node) => (node === leNode ? lowerer.lowerExprExpecting(node, BOOL) : null)
+        : undefined,
+    );
+    const offset = values[0]!;
+    const le: IrExpr = values[1] ?? { kind: "boolLit", value: false, type: BOOL, loc };
+    return sequenceWithReceiver(lowerer, receiver, stmts, BIGINT_T, loc, (recv) => ({
       kind: "libCall",
       fn: "bigint.dataViewGet",
-      args: [receiver, offset, sign, le],
+      args: [recv, offset, sign, le],
       type: BIGINT_T,
       loc,
-    };
+    }));
   }
   const dvGetter = own(DV_GETTERS, name);
   if (dvGetter !== undefined && receiverIr.elem === "u8") {
@@ -1621,15 +1626,17 @@ export function lowerBytesMethodCall(
         ? (node) => (node === leNode ? lowerer.lowerExprExpecting(node, BOOL) : null)
         : undefined,
     );
-    const getter: IrExpr = {
+    const build = (recv: IrExpr): IrExpr => ({
       kind: "bytesIntrinsic",
       method: dvGetter.method,
-      receiver,
+      receiver: recv,
       args: values,
       type: F64,
       loc,
-    };
-    return stmts.length === 0 ? getter : { kind: "seqExpr", stmts, result: getter, type: F64, loc };
+    });
+    return stmts.length === 0
+      ? build(receiver)
+      : sequenceWithReceiver(lowerer, receiver, stmts, F64, loc, build);
   }
   // DataView setters — the getters' mirror: (byteOffset, value) plus the
   // optional littleEndian bool on the multi-byte kinds. Void results;
@@ -1642,19 +1649,30 @@ export function lowerBytesMethodCall(
     if (nArgs < 2 || nArgs > 3) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     // The offset is ToIndex, as for the numeric setters; the value is
-    // ToBigInt and keeps its own lowering.
-    const offset = lowerToNumberArgument(lowerer, call.arguments.nodes[0]!);
-    const value = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, BIGINT_T);
-    const le: IrExpr = call.arguments.nodes[2]
-      ? lowerer.lowerExprExpecting(call.arguments.nodes[2], BOOL)
-      : { kind: "boolLit", value: false, type: BOOL, loc };
-    return {
+    // ToBigInt and keeps its own lowering. Node evaluates the value and the
+    // littleEndian flag before it converts the offset, so they evaluate into
+    // temporaries when the offset's conversion can throw late.
+    const offsetNode = call.arguments.nodes[0]!;
+    const valueNode = call.arguments.nodes[1]!;
+    const leNode = call.arguments.nodes[2] ?? null;
+    const { stmts, values } = lowerToNumberArguments(
+      lowerer,
+      leNode ? [offsetNode, valueNode, leNode] : [offsetNode, valueNode],
+      (node) =>
+        node === offsetNode
+          ? null
+          : lowerer.lowerExprExpecting(node, node === leNode ? BOOL : BIGINT_T),
+    );
+    const offset = values[0]!;
+    const value = values[1]!;
+    const le: IrExpr = values[2] ?? { kind: "boolLit", value: false, type: BOOL, loc };
+    return sequenceWithReceiver(lowerer, receiver, stmts, VOID, loc, (recv) => ({
       kind: "libCall",
       fn: "bigint.dataViewSet",
-      args: [receiver, offset, value, le],
+      args: [recv, offset, value, le],
       type: VOID,
       loc,
-    };
+    }));
   }
   if (dvSetter !== undefined && receiverIr.elem === "u8") {
     const maxArgs = dvSetter.le ? 3 : 2;
@@ -1679,19 +1697,44 @@ export function lowerBytesMethodCall(
         : undefined,
     );
     const values = valueNode ? lowered : [lowered[0]!, numLit(NaN, loc)];
-    const setter: IrExpr = {
+    const build = (recv: IrExpr): IrExpr => ({
       kind: "bytesIntrinsic",
       method: dvSetter.method,
-      receiver,
+      receiver: recv,
       args: values,
       type: VOID,
       loc,
-    };
+    });
     return stmts.length === 0
-      ? setter
-      : { kind: "seqExpr", stmts, result: setter, type: VOID, loc };
+      ? build(receiver)
+      : sequenceWithReceiver(lowerer, receiver, stmts, VOID, loc, build);
   }
   return null;
+}
+
+/** Build a DataView call whose arguments were lowered into temporaries
+ * (`stmts`). Node evaluates a member call's receiver before its arguments,
+ * and the temporaries run before the call, so the receiver evaluates into
+ * the first temporary and the call reads it back. Without temporaries the
+ * receiver stays in the call and keeps its own position. */
+function sequenceWithReceiver(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  stmts: IrStmt[],
+  type: IrType,
+  loc: SrcLoc,
+  build: (receiver: IrExpr) => IrExpr,
+): IrExpr {
+  if (stmts.length === 0) return build(receiver);
+  const saved = lowerer.declareHiddenLocal("%dataViewReceiver", receiver.type);
+  stmts.unshift({ kind: "varDecl", localId: saved.id, init: receiver, loc });
+  const savedRef: IrExpr = {
+    kind: "varRef",
+    localId: saved.id,
+    type: receiver.type,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result: build(savedRef), type, loc };
 }
 
 /** Node's Buffer encoding names → the runtime's canonical spelling (every

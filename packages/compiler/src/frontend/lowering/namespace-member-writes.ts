@@ -12,7 +12,8 @@ const NAMESPACES: ReadonlySet<string> = new Set(["Math", "JSON", "Reflect"]);
  * The namespace object holds its members in a live property table, so a
  * write or `delete` that reaches the object (`verifyProperty(Math, "abs",
  * ...)` writes through `Math[name]`, `Math[key] = ...`) can land on it. A
- * *spelled* member read (`Math.abs`, `Math.abs(x)`) keeps its static
+ * *spelled* member read (`Math.abs`, `Math.abs(x)`, `(Math).abs`,
+ * `globalThis.Math.abs`, `M.abs` after `const M = Math`) keeps its static
  * lowering — the interned function value, which a replacement of the
  * object's member does not change — so it would answer the original after
  * the member changed. A program with any such read or call therefore keeps
@@ -56,15 +57,37 @@ export class NamespaceMemberWrites {
           if (name !== null && NAMESPACES.has(name)) scan.named.add(name);
           return;
         }
-        if (!ts.isPropertyAccessExpression(node)) return;
-        const receiver = node.expression;
-        if (!ts.isIdentifier(receiver) || !NAMESPACES.has(receiver.text)) return;
-        const name = stdlibGlobalNameOf(this.lowerer, receiver);
-        if (name === null || !NAMESPACES.has(name)) return;
-        if (!isMemberWriteTarget(node)) scan.spelled.add(name);
+        if (!ts.isPropertyAccessExpression(node) || isMemberWriteTarget(node)) return;
+        const name = this.receiverNamespace(node.expression);
+        if (name !== null) scan.spelled.add(name);
       });
     }
     return scan;
+  }
+
+  /** The namespace a member access's receiver is, in every spelling the
+   * static lowering resolves: `Math`, `(Math)`, `globalThis.Math`, a cast of
+   * the global object, and a binding of one (`const M = Math`), whose alias
+   * the lowering may not have recorded yet when the scan runs. Null for any
+   * other receiver. */
+  private receiverNamespace(receiver: ts.Expression, depth = 0): string | null {
+    const name = stdlibGlobalNameOf(this.lowerer, receiver);
+    if (name !== null) return NAMESPACES.has(name) ? name : null;
+    let inner = receiver;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    if (!ts.isIdentifier(inner)) return null;
+    const decl = this.lowerer.checker.getSymbolAtLocation(inner)?.declarations[0];
+    if (
+      decl === undefined ||
+      !ts.isVariableDeclaration(decl) ||
+      !ts.isIdentifier(decl.name) ||
+      decl.initializer === undefined ||
+      decl.initializer === receiver
+    )
+      return null;
+    // A binding of a binding (`const N = M`) resolves the same way, a few
+    // levels deep.
+    return depth < 4 ? this.receiverNamespace(decl.initializer, depth + 1) : null;
   }
 }
 

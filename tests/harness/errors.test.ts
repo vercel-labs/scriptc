@@ -620,6 +620,69 @@ process.on('__proto__', () => {});
   });
 });
 
+// A generator whose return channel carries no value takes `.return(value)`
+// while no generator of the program yields in a finally block. Here one
+// does: the return suspends at that yield, and the `.next()` that completes
+// it would read the value through the generator's own record, which has no
+// value field, so the call throws the SC1071 fence instead of dropping it.
+describe(".return(value) beside a generator that yields in a finally block", () => {
+  test("the call throws the SC1071 fence", async () => {
+    const r = await compileAndRun(
+      "generator-return-finally-yield",
+      `function* g() {
+  try {
+    yield 1;
+  } finally {
+    yield 2;
+  }
+}
+const it = g();
+it.next();
+console.log(it.return(5), it.next());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: \.return\(value\) on a generator whose return type carries no value, in a program with a generator that yields in a finally block \(call \.return\(\) with no argument\) is not supported yet \[SC1071 at .*generator-return-finally-yield\.cjs:10\]\n$/,
+    );
+  });
+});
+
+// A spelled read of a namespace member keeps its static lowering, the
+// original function, so a program with one keeps the members fenced: the
+// write throws the SC1090 fence instead of the read answering the original.
+// A parenthesized receiver, globalThis.Math and a binding of the namespace
+// are spelled reads too.
+describe("namespace member writes beside a spelled read", () => {
+  test.each([
+    ["a parenthesized receiver", "parenthesized", "console.log((Math).abs(3));"],
+    ["globalThis.Math", "global-qualified", "console.log(globalThis.Math.abs(3));"],
+    ["a binding of the namespace", "aliased", "const M = Math;\nconsole.log(M.abs(3));"],
+    [
+      "a binding of a binding",
+      "aliased-twice",
+      "const M = Math;\nconst N = M;\nconsole.log(N.abs(3));",
+    ],
+  ])("a read through %s keeps the members fenced", async (_title, name, read) => {
+    const r = await compileAndRun(
+      `namespace-spelled-read-${name}`,
+      `Math["abs"] = function (value) {
+  return value * 7;
+};
+${read}
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught Error: Replacing or deleting a Math, JSON or Reflect member is not supported [SC1090]\n",
+    );
+  });
+});
+
 // Node's CJS named-import LINK error: a named import of an export the CJS
 // lexer cannot detect kills the graph before ANY module evaluates, and
 // scriptc compiles the program to exactly that startup throw. The corpus

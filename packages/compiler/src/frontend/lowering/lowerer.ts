@@ -2742,6 +2742,9 @@ export class Lowerer {
    * spells no member read or call that the object's live table would not
    * answer (namespace-member-writes.ts). */
   readonly namespaceMemberWrites = new NamespaceMemberWrites(this);
+  /** Whether a generator of the program yields in a finally block
+   * (lower-generators.ts programYieldsInFinally); null until asked. */
+  generatorYieldsInFinally: boolean | null = null;
   /** All storage slots widened for runtime absence, including slots whose
    * current control-flow branch has temporarily narrowed the value. */
   readonly runtimeOptionalStorageLocals = new Set<IrLocal>();

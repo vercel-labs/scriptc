@@ -55,6 +55,43 @@ export function widenedReturnRecord(lowerer: Lowerer, genT: GenType): IrType & {
   return rec;
 }
 
+/** Whether a generator of the program yields in a finally block, where a
+ * `.return(value)` suspends before it completes. Computed once per lowering
+ * over the program's source files; nested functions are their own. */
+function programYieldsInFinally(lowerer: Lowerer): boolean {
+  if (lowerer.generatorYieldsInFinally !== null) return lowerer.generatorYieldsInFinally;
+  let found = false;
+  const yieldsIn = (block: ts.Node): boolean => {
+    let yields = false;
+    ts.walkPreorder(block, (node) => {
+      if (node !== block && ts.isFunctionLike(node)) return "skip";
+      if (ts.isYieldExpression(node)) {
+        yields = true;
+        return "stop";
+      }
+      return undefined;
+    });
+    return yields;
+  };
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (found) break;
+    if (file.isDeclarationFile) continue;
+    ts.walkPreorder(file, (node) => {
+      if (
+        ts.isTryStatement(node) &&
+        node.finallyBlock !== undefined &&
+        yieldsIn(node.finallyBlock)
+      ) {
+        found = true;
+        return "stop";
+      }
+      return undefined;
+    });
+  }
+  lowerer.generatorYieldsInFinally = found;
+  return found;
+}
+
 /** The undefined value coerced into a yield/return channel — `yield;`,
  * `.return()`'s absent argument evaluated as a value. Null when the
  * channel cannot hold undefined. */
@@ -177,7 +214,7 @@ export function lowerGenMethodCall(
   } else if (name === "return") {
     if (argNode === undefined) {
       arg = null; // undefined done-value
-    } else if (genT.retT.kind === "void" && !genT.async) {
+    } else if (genT.retT.kind === "void" && !genT.async && !programYieldsInFinally(lowerer)) {
       // A generator whose body never returns a value still completes with
       // the value `.return(v)` supplies: ECMAScript has no valueless return
       // channel, and the runtime parks this in the type-erased RET slot and
@@ -185,14 +222,19 @@ export function lowerGenMethodCall(
       // record widens to a checked value; the generator's own type does not,
       // so a program that never supplies one keeps its IR. An async
       // generator settles through its declaration's record, which the call
-      // site cannot widen, so it keeps the refusal below.
+      // site cannot widen, so it keeps the refusal below. So does a program
+      // with a generator that yields in a finally block: there the return
+      // suspends, and the `.next()` that completes it reads the value
+      // through the generator's own record, which has no value field.
       arg = lowerer.lowerExprExpecting(argNode, DYN);
       resultT = widenedReturnRecord(lowerer, genT);
     } else if (genT.retT.kind === "void") {
       lowerer.unsupported(
         "SC1071",
         call,
-        ".return(value) on an async generator whose return type carries no value (call .return() with no argument)",
+        genT.async
+          ? ".return(value) on an async generator whose return type carries no value (call .return() with no argument)"
+          : ".return(value) on a generator whose return type carries no value, in a program with a generator that yields in a finally block (call .return() with no argument)",
       );
     } else {
       arg = lowerer.lowerExprExpecting(argNode, genT.retT);

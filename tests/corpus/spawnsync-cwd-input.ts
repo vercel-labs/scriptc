@@ -121,3 +121,23 @@ const optionalInput = (): string | undefined => {
 };
 const viaCall = spawnSync("cat", [], { input: optionalInput(), encoding: "utf8" });
 console.log(`optional call: ${calls} ${JSON.stringify(viaCall.stdout)}`);
+
+// Options evaluate in source order: an earlier option that changes the
+// value a later `input` reads is seen, as the options object sees it.
+let pending: string | undefined = "old\n";
+const pendingInput = (): string | undefined => pending;
+const reordered = spawnSync("cat", [], {
+  timeout: ((pending = "new\n"), 5000),
+  input: pendingInput(),
+  encoding: "utf8",
+});
+let plainInput = "old\n";
+const plainValue = (): string => plainInput;
+const reorderedPlain = spawnSync("cat", [], {
+  timeout: ((plainInput = "new\n"), 5000),
+  input: plainValue(),
+  encoding: "utf8",
+});
+console.log(
+  `source order: ${JSON.stringify(reordered.stdout)} ${JSON.stringify(reorderedPlain.stdout)}`,
+);

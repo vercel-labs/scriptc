@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Free lifetime regions held only by the metadata of number or string arrays, while preserving regions that outside references still reach.
+
 <!-- release:start -->
 
 ## 0.4.6

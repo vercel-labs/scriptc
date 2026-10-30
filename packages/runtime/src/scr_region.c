@@ -801,6 +801,8 @@ static void *scr_rgn_slot_ptr(uint64_t slot) {
 }
 
 static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
+  /* Metadata can hold region objects even when the element type cannot. */
+  if (scr_arr_ext_of(a)) scr_rgn_enter(w, scr_arr_ext_of(a)->metadata, SCR_RGN_W_DYN, NULL);
   if (a->elem != SCR_ELEM_REF && a->elem != SCR_ELEM_ARR) return;
   ScrRgnSlotKind k = a->elem == SCR_ELEM_ARR ? (ScrRgnSlotKind){SCR_RGN_W_ARR, NULL}
                                              : scr_rgn_slot_kind(scr_arr_ops(a) ? scr_arr_ops(a)->release : NULL);
@@ -813,7 +815,6 @@ static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
     if (scr_arr_ext_of(a)->sparse[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(scr_arr_ext_of(a)->sparse[i].slot), k);
   for (size_t i = 0; i < scr_arr_ext_of(a)->prop_len; i++)
     if (scr_arr_ext_of(a)->props[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(scr_arr_ext_of(a)->props[i].slot), k);
-  scr_rgn_enter(w, scr_arr_ext_of(a)->metadata, SCR_RGN_W_DYN, NULL);
 }
 
 static void scr_rgn_walk_map(ScrRgnWalk *w, ScrMap *m) {

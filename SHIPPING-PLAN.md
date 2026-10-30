@@ -40,7 +40,7 @@ Statuses: not started → in progress → ready for review → approved → comm
 
 ## How we ship
 
-**All work is committed** on `lfades/react-node-ssr`: the latest sessions' changes are in `0ef856f5f`. A patch of that work also exists at `/Users/lfades/all/vercel/scriptc-react-unstaged-2026-10-28.patch`.
+**All work is committed** on `lfades/react-node-ssr`: the latest sessions' changes are in `0ef856f5f`.
 
 **One worktree per PR.** Each PR has its own agent and its own working folder, backed by the same `.git` (no copies), so agents work in parallel without touching each other's files. This folder (`scriptc-react`) stays the source: `lfades/react-node-ssr` with all the work, left unchanged while shipping.
 

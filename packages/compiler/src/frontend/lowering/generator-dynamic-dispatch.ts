@@ -47,8 +47,11 @@ export class GeneratorDynamicDispatch {
   private readonly generators = new Map<string, GeneratorType>();
   private readonly dispatches = new Map<
     string,
-    { fn: IrFunction; source: Invoke; types: Set<string> }
+    { fn: IrFunction; source: Invoke; types: Set<string>; widens: boolean }
   >();
+  /** The `%dyn.generator.method.*` members the runtime closes a capsule
+   * through; their call site takes no value a program supplied. */
+  private readonly capsuleMembers = new Set<IrFunction>();
   private readonly generated = new Set<IrFunction>();
   private readonly properties = new Map<string, { fn: IrFunction; types: Set<string> }>();
   /** Whether %main registers the next/return getters with the runtime. */
@@ -77,7 +80,7 @@ export class GeneratorDynamicDispatch {
     // The runtime's own helper functions answer the helper methods.
     if (HELPER_METHODS.has(method)) return fn;
     lowerer.shareHelper(`%dyn.generator.method.${method}`);
-    lowerer.liftedFns.push({
+    const member: IrFunction = {
       name: `%dyn.generator.method.${method}`,
       params: [{ localId: "arg", name: "arg", type: DYN }],
       returnType: DYN,
@@ -98,7 +101,12 @@ export class GeneratorDynamicDispatch {
         },
       ],
       loc,
-    });
+    };
+    // The runtime's close protocol calls this member with no value; keeping
+    // the call site un-widened (see `widens` in process) leaves that path's
+    // IR unchanged. Only a call the program spells takes a value.
+    this.capsuleMembers.add(member);
+    lowerer.liftedFns.push(member);
     return fn;
   }
 
@@ -160,7 +168,12 @@ export class GeneratorDynamicDispatch {
             };
           }
           if (expr.kind !== "dynInvoke" || !GENERATOR_STEP_METHODS.has(expr.method)) return expr;
-          const key = JSON.stringify([expr.method, expr.args.length, expr.calleeName]);
+          // A call the program spells may supply a completion value; the
+          // runtime's close protocol reaches the capsule's member helper with
+          // none, so that site keeps the plain record and the same IR as
+          // before the widening, and gets a dispatch of its own.
+          const widens = !this.capsuleMembers.has(fn);
+          const key = JSON.stringify([expr.method, expr.args.length, expr.calleeName, widens]);
           let dispatch = this.dispatches.get(key);
           if (!dispatch) {
             const loc = expr.loc;
@@ -192,7 +205,7 @@ export class GeneratorDynamicDispatch {
               ],
               loc,
             };
-            dispatch = { fn: helper, source: expr, types: new Set() };
+            dispatch = { fn: helper, source: expr, types: new Set(), widens };
             this.dispatches.set(key, dispatch);
             this.generated.add(helper);
             lowerer.liftedFns.push(helper);
@@ -309,10 +322,16 @@ export class GeneratorDynamicDispatch {
         // A supplied value through a void return channel completes the
         // generator with it (see widenedReturnRecord): the runtime parks it
         // in the type-erased RET slot, so the record widens rather than
-        // refusing. `.return()` with no argument keeps the plain record.
+        // refusing. `.return()` with no argument keeps the plain record, and
+        // so does the capsule member the runtime closes through (widens).
         // An async generator settles through the declaration's record, which
         // this call site cannot widen, so it keeps the fence.
-        const widened = mode === "return" && type.retT.kind === "void" && supplied && !type.async;
+        const widened =
+          dispatch.widens &&
+          mode === "return" &&
+          type.retT.kind === "void" &&
+          supplied &&
+          !type.async;
         const result = (
           widened
             ? genResultRecord(type.yieldT, DYN, lowerer.shapes, lowerer.unions)

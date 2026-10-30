@@ -6,8 +6,8 @@ import { stdlibGlobalNameOf } from "./surfaces.js";
  * (builtin-namespaces.ts): `Math`, `JSON` and `Reflect`. */
 const NAMESPACES: ReadonlySet<string> = new Set(["Math", "JSON", "Reflect"]);
 
-/** Whether a program's writes to a namespace's members stay observable
- * everywhere it reads them.
+/** Whether a program names a namespace object and never spells a read of
+ * its members: only then does its property table stay live.
  *
  * The namespace object holds its members in a live property table, so a
  * write or `delete` that reaches the object (`verifyProperty(Math, "abs",
@@ -22,42 +22,57 @@ const NAMESPACES: ReadonlySet<string> = new Set(["Math", "JSON", "Reflect"]);
  * they don't disqualify. */
 export class NamespaceMemberWrites {
   private files: readonly ts.SourceFile[] | null = null;
-  private spelled: Set<string> | null = null;
+  private scan: NamespaceScan | null = null;
 
   constructor(private readonly lowerer: Lowerer) {}
 
   setFiles(files: readonly ts.SourceFile[]): void {
     this.files = files;
-    this.spelled = null;
+    this.scan = null;
   }
 
   /** Whether a write or delete of a member of `canonical` through the
-   * namespace object stays observable where the program reads it. */
+   * namespace object stays observable where the program reads it. The
+   * program must name the namespace itself: one a generated helper only
+   * materializes keeps the fence, so its IR does not change. */
   allowsMemberWrites(canonical: string): boolean {
-    return !this.spelledMembers().has(canonical);
+    const scan = this.scanFiles();
+    return scan.named.has(canonical) && !scan.spelled.has(canonical);
   }
 
-  /** The namespaces the program spells a member read or call of, in any
-   * file. Queried before the program's files are known (an early builtin
-   * lookup), every namespace counts as spelled: the fence stays. */
-  private spelledMembers(): ReadonlySet<string> {
-    if (this.spelled !== null) return this.spelled;
-    if (this.files === null) return NAMESPACES;
-    const spelled = new Set<string>();
-    this.spelled = spelled;
+  /** What the program's files say about each namespace. Queried before the
+   * program's files are known (an early builtin lookup), no namespace is
+   * named: the fence stays. */
+  private scanFiles(): NamespaceScan {
+    if (this.scan !== null) return this.scan;
+    const scan: NamespaceScan = { named: new Set(), spelled: new Set() };
+    this.scan = scan;
+    if (this.files === null) return scan;
     for (const file of this.files) {
       if (file.isDeclarationFile) continue;
       ts.walkPreorder(file, (node) => {
+        if (ts.isIdentifier(node) && NAMESPACES.has(node.text)) {
+          const name = stdlibGlobalNameOf(this.lowerer, node);
+          if (name !== null && NAMESPACES.has(name)) scan.named.add(name);
+          return;
+        }
         if (!ts.isPropertyAccessExpression(node)) return;
         const receiver = node.expression;
         if (!ts.isIdentifier(receiver) || !NAMESPACES.has(receiver.text)) return;
         const name = stdlibGlobalNameOf(this.lowerer, receiver);
         if (name === null || !NAMESPACES.has(name)) return;
-        if (!isMemberWriteTarget(node)) spelled.add(name);
+        if (!isMemberWriteTarget(node)) scan.spelled.add(name);
       });
     }
-    return spelled;
+    return scan;
   }
+}
+
+/** The namespaces the program names, and the ones it spells a member read or
+ * call of. */
+interface NamespaceScan {
+  named: Set<string>;
+  spelled: Set<string>;
 }
 
 /** Whether the property access `node` only writes or deletes the member

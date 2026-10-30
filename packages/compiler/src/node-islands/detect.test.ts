@@ -302,17 +302,28 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
     "fs.readFileSync",
   ]);
   expect(reads("import * as fs from 'node:fs'; fs.readFileSync(p);", "mjs")).toEqual([]);
-  // Destructuring the CommonJS object reads each member it binds, and a
-  // require() read directly is a read through the object too.
-  expect(reads("const { readFileSync } = require('fs'); readFileSync(p);")).toEqual([
+  // Bracket notation: a literal key names the member, a computed one reads
+  // a member the scan cannot name.
+  expect(reads("const fs = require('fs'); fs['readFileSync'](p);")).toEqual(["fs.readFileSync"]);
+  expect(reads("const fs = require('fs'); fs[name](p);")).toEqual(["fs.*"]);
+  expect(reads("const fs = require('fs'); fs['readFileSync'] = f;")).toEqual([]);
+  // A require() read directly is a read through the object too.
+  expect(reads("require('fs').readFileSync(p);")).toEqual(["fs.readFileSync"]);
+  // Destructuring reads each property it takes when it runs.
+  expect(reads("const { readFileSync } = require('node:fs');")).toEqual(["fs.readFileSync"]);
+  expect(reads("const fs = require('fs'); const { readFileSync: read, ...rest } = fs;")).toEqual([
     "fs.readFileSync",
+    "fs.*",
+  ]);
+  expect(reads("const { promises: { readFile } } = require('fs');")).toEqual([
+    "fs.promises",
+    "fs.promises.readFile",
   ]);
   expect(
-    reads("const { readFileSync: read, promises: { readFile } } = require('node:fs');"),
-  ).toEqual(["fs.readFileSync", "fs.promises", "fs.promises.readFile"]);
-  expect(reads("const fs = require('fs'); const { statSync } = fs;")).toEqual(["fs.statSync"]);
-  expect(reads("require('fs').readFileSync(p);")).toEqual(["fs.readFileSync"]);
-  expect(reads("const { helper } = require('./local');")).toEqual([]);
+    reads("import fs from 'node:fs'; let readFileSync; ({ readFileSync } = fs);", "mjs"),
+  ).toEqual(["fs.readFileSync"]);
+  // A namespace import is not the CommonJS object.
+  expect(reads("import * as fs from 'node:fs'; const { readFileSync } = fs;", "mjs")).toEqual([]);
 });
 
 test("markers come back in source order with their locations", () => {

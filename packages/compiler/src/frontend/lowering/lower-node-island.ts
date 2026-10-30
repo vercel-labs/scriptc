@@ -32,6 +32,7 @@ import {
   VOID,
   type IrExpr,
   type IrGlobal,
+  type IrLocal,
   type IrStmt,
   type IrType,
   type SrcLoc,
@@ -43,11 +44,13 @@ import { resolveBareModule } from "../resolve.js";
 import {
   nativeSubclassOfIslandDiag,
   nodeIslandBoundaryDiag,
+  nodeIslandDataFileDiag,
   nodeIslandModuleDiag,
 } from "../../diagnostics/diagnostic.js";
 import {
   crossingOf,
   isForeignType,
+  isIslandProgramModule,
   isIslandSubclassDecl,
   markIslandSubclass,
   islandOwnerOfFile,
@@ -139,7 +142,10 @@ export function lowerNodeApiCall(
   const caller = callerPath(call);
   const problem = lowerer.nodeIslandModules.add(caller, specifierNode.text);
   if (problem !== null) {
-    lowerer.pushDiag(nodeIslandModuleDiag(`${surface}: ${problem}`, locOf(specifierNode)));
+    const diag = lowerer.nodeIslandModules.isDataFileProblem(problem)
+      ? nodeIslandDataFileDiag
+      : nodeIslandModuleDiag;
+    lowerer.pushDiag(diag(`${surface}: ${problem}`, locOf(specifierNode)));
     throw new PoisonError();
   }
   const specifier = lowerer.lowerExprExpecting(specifierNode, STRING);
@@ -374,7 +380,10 @@ function islandLoadPath(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
   }
   const problem = lowerer.nodeIslandModules.addLoaded(real);
   if (problem !== null) {
-    lowerer.pushDiag(nodeIslandModuleDiag(problem, loc));
+    const diag = lowerer.nodeIslandModules.isDataFileProblem(problem)
+      ? nodeIslandDataFileDiag
+      : nodeIslandModuleDiag;
+    lowerer.pushDiag(diag(problem, loc));
     throw new PoisonError();
   }
   lowerer.nodeIslandLoads.push({ literal, path: real });
@@ -404,8 +413,16 @@ function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
 /** A static import's load: `nodeIsland.defer(path, snapshot)`, which the
  * build decides after lowering (node-islands/snapshot.ts, scope-B NI-7):
  * a module proved effect-free at load keeps it with its interface snapshot
- * and evaluates on first use; any other becomes nodeIsland.require. */
+ * and evaluates on first use; any other becomes nodeIsland.require.
+ *
+ * A program module that runs in an island loads eagerly
+ * (`nodeIsland.require`): deciding a deferral means evaluating the module
+ * in the build-time probe, and the build never runs the program's own
+ * source. */
 function deferIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
+  const islands = lowerer.nodeIslands;
+  if (islands !== null && isIslandProgramModule(islands, path))
+    return loadIslandModule(lowerer, path, loc);
   return {
     kind: "libCall",
     fn: "nodeIsland.defer",
@@ -426,9 +443,26 @@ function runsAtModuleEvaluation(node: ts.Node): boolean {
   return false;
 }
 
+/** The %init statements that run in `stmt`'s place in its file's %init
+ * header (Lowerer.islandImportActions). */
+function islandStatementActions(lowerer: Lowerer, sf: ts.SourceFile, stmt: ts.Statement): IrStmt[] {
+  let byStatement = lowerer.islandImportActions.get(sf);
+  if (byStatement === undefined) {
+    byStatement = new Map();
+    lowerer.islandImportActions.set(sf, byStatement);
+  }
+  let actions = byStatement.get(stmt);
+  if (actions === undefined) {
+    actions = [];
+    byStatement.set(stmt, actions);
+  }
+  return actions;
+}
+
 /** A static import (or re-export) of an island package: loads the module
- * in the importer's %init prelude. Returns false when `spec` is not an
- * island module. */
+ * in the importer's %init header, in the statement's place among the
+ * dependencies' %init calls, as Node evaluates it in source order. Returns
+ * false when `spec` is not an island module. */
 export function collectIslandImport(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -440,16 +474,48 @@ export function collectIslandImport(
   const path = islandModuleFile(islands, sf.fileName, spec, "import");
   if (path === null) return false;
   if (ts.isExportDeclaration(stmt)) {
-    lowerer.pushDiag(
-      nodeIslandBoundaryDiag(`re-exporting the Node island module '${spec}'`, locOf(stmt)),
-    );
+    // `export { Type } from "typebox"`: the re-exporting module loads the
+    // island module and every name it re-exports binds the island's own
+    // export, so importers of this module reach it through the alias chain
+    // (islandBindingOf). A namespace or star re-export has no name to bind.
+    const clause = stmt.exportClause;
+    if (stmt.isTypeOnly || clause === undefined || !ts.isNamedExports(clause)) {
+      lowerer.pushDiag(
+        nodeIslandBoundaryDiag(`re-exporting the Node island module '${spec}'`, locOf(stmt)),
+      );
+      return true;
+    }
+    lowerer.usesNodeIsland = true;
+    const exportLoc = locOf(stmt);
+    const exported = islandModuleGlobal(lowerer, path);
+    const initActions = islandStatementActions(lowerer, sf, stmt);
+    initActions.push({
+      kind: "assign",
+      localId: exported.global.id,
+      value: deferIslandModule(lowerer, path, exportLoc),
+      loc: exportLoc,
+    });
+    for (const el of clause.elements.nodes) {
+      if (el.isTypeOnly) continue;
+      const name = el.propertyName?.text ?? el.name.text;
+      // CommonJS named exports are the namespace's snapshot (below).
+      if (!exported.esm && name !== "default")
+        initActions.push(islandSnapshotAssign(lowerer, exported, name, exportLoc));
+      registerIslandReexport(
+        lowerer,
+        stmt,
+        el,
+        name === "default"
+          ? { kind: "default", module: exported }
+          : { kind: "named", module: exported, name },
+      );
+    }
     return true;
   }
   lowerer.usesNodeIsland = true;
   const loc = locOf(stmt);
   const binding = islandModuleGlobal(lowerer, path);
-  const actions = lowerer.jsonInitActions.get(sf) ?? [];
-  lowerer.jsonInitActions.set(sf, actions);
+  const actions = islandStatementActions(lowerer, sf, stmt);
   actions.push({
     kind: "assign",
     localId: binding.global.id,
@@ -484,29 +550,34 @@ export function collectIslandImport(
       return undefined;
     });
   }
-  {
-    for (const name of snapshotNames) {
-      if (name === "default") continue;
-      let g = binding.snapshots.get(name);
-      if (g === undefined) {
-        g = {
-          id: `%g.island.${lowerer.globalsList.length}`,
-          name,
-          type: DYN,
-          mutable: true,
-        };
-        lowerer.globalsList.push(g);
-        binding.snapshots.set(name, g);
-      }
-      actions.push({
-        kind: "assign",
-        localId: g.id,
-        value: islandGet(varRef(binding.global.id, DYN, loc), name, loc),
-        loc,
-      });
-    }
+  for (const name of snapshotNames) {
+    if (name === "default") continue;
+    actions.push(islandSnapshotAssign(lowerer, binding, name, loc));
   }
   return true;
+}
+
+/** A CommonJS island name's snapshot global and the %init action that
+ * assigns it once the module evaluated (Node's namespace snapshots named
+ * exports). */
+function islandSnapshotAssign(
+  lowerer: Lowerer,
+  binding: IslandModuleBinding,
+  name: string,
+  loc: SrcLoc,
+): IrStmt {
+  let g = binding.snapshots.get(name);
+  if (g === undefined) {
+    g = { id: `%g.island.${lowerer.globalsList.length}`, name, type: DYN, mutable: true };
+    lowerer.globalsList.push(g);
+    binding.snapshots.set(name, g);
+  }
+  return {
+    kind: "assign",
+    localId: g.id,
+    value: islandGet(varRef(binding.global.id, DYN, loc), name, loc),
+    loc,
+  };
 }
 
 function islandGet(target: IrExpr, key: string, loc: SrcLoc): IrExpr {
@@ -519,11 +590,54 @@ function islandGet(target: IrExpr, key: string, loc: SrcLoc): IrExpr {
   };
 }
 
-type IslandBinding =
+export type IslandBinding =
   | { kind: "required"; module: IslandModuleBinding }
   | { kind: "namespace"; module: IslandModuleBinding }
   | { kind: "default"; module: IslandModuleBinding }
   | { kind: "named"; module: IslandModuleBinding; name: string };
+
+/** Records that `specifier`'s exported name binds `binding`: importers of
+ * the re-exporting module reach the island's own export through the alias
+ * chain, whatever they spell it (`export { Num as NumberSchema }`). The
+ * island's export symbol is the key a chain ends on, so it is registered
+ * beside the specifier's own symbol. */
+function registerIslandReexport(
+  lowerer: Lowerer,
+  stmt: ts.ExportDeclaration,
+  specifier: ts.ExportSpecifier,
+  binding: IslandBinding,
+): void {
+  const named = lowerer.checker.getSymbolAtLocation(specifier.name);
+  if (named !== undefined) lowerer.islandReexports.set(named, binding);
+  const moduleSpecifier = stmt.moduleSpecifier;
+  if (moduleSpecifier === undefined) return;
+  const moduleSymbol = lowerer.checker.getSymbolAtLocation(moduleSpecifier);
+  if (moduleSymbol === undefined) return;
+  const exported = lowerer.checker.getExportsOfModule(moduleSymbol);
+  const found = exported.find(
+    (s) => ts.symbolName(s) === (specifier.propertyName?.text ?? specifier.name.text),
+  );
+  if (found === undefined) return;
+  lowerer.islandReexports.set(found, binding);
+  if ((found.flags & ts.SymbolFlags.Alias) !== 0)
+    lowerer.islandReexports.set(lowerer.checker.getAliasedSymbol(found), binding);
+}
+
+/** The island binding an alias chain reaches, or null: a name re-exported
+ * by a native module resolves to the island's export symbol itself. */
+function islandReexportOf(lowerer: Lowerer, symbol: ts.Symbol | undefined): IslandBinding | null {
+  if (symbol === undefined || lowerer.islandReexports.size === 0) return null;
+  const seen = new Set<ts.Symbol>();
+  let s: ts.Symbol | undefined = symbol;
+  while (s !== undefined && !seen.has(s)) {
+    seen.add(s);
+    const bound = lowerer.islandReexports.get(s);
+    if (bound !== undefined) return bound;
+    if ((s.flags & ts.SymbolFlags.Alias) === 0) return null;
+    s = lowerer.checker.getAliasedSymbol(s);
+  }
+  return null;
+}
 
 function moduleSpecifierOf(decl: ts.Node | undefined): string | null {
   return ts.isImportDeclaration(decl) && ts.isStringLiteral(decl.moduleSpecifier)
@@ -542,6 +656,10 @@ function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding 
   const islands = lowerer.nodeIslands;
   if (islands === null) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(ident);
+  // A name a native module re-exports from an island package binds the
+  // island's own export: the import's alias chain reaches it.
+  const reexport = islandReexportOf(lowerer, symbol);
+  if (reexport !== null) return reexport;
   const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined) return null;
   let importDecl: ts.Node | undefined;
@@ -631,12 +749,19 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   if ((tsType.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 && isDiscarded(node))
     return raw;
   const mapped = lowerer.mapTypeOf(tsType);
-  if (mapped === null)
+  if (mapped === null) {
+    // An intersection of containers (`Choice[] & GenChoice[]`: the
+    // island's array extended by the caller's own type) has no native
+    // representation of its own. Where the program only uses it through
+    // island operations it stays a handle, like an array the island does
+    // not declare.
+    if (containerType(lowerer, tsType) && handleUseOk(lowerer, node)) return raw;
     boundaryFail(
       lowerer,
       `an island value of type '${lowerer.checker.typeToString(tsType)}'`,
       node,
     );
+  }
   if (mapped.kind === "dyn") return raw;
   if (mapped.kind === "void") return raw;
   // An island promise is the same promise on both sides (the runtime keeps
@@ -679,7 +804,7 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   if (!copiedType(lowerer, mapped) && containerType(lowerer, tsType) && handleUseOk(lowerer, node))
     return raw;
   // Otherwise an array of copied values is a copy (above).
-  if (copiedArrayType(lowerer, mapped)) {
+  if (copyableArrayType(lowerer, mapped)) {
     const copy: IrExpr = {
       kind: "libCall",
       fn: "nodeIsland.copyArrays",
@@ -689,7 +814,7 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     };
     return lowerer.coerceToExpected(copy, mapped);
   }
-  if (!copiedType(lowerer, mapped) && exportedByReference(lowerer, tsType))
+  if (!copiedType(lowerer, mapped) && copiedRecordType(lowerer, tsType))
     return lowerer.coerceToExpected(raw, mapped);
   if (!copiedType(lowerer, mapped))
     boundaryFail(
@@ -704,6 +829,31 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
 function copiedArrayType(lowerer: Lowerer, t: IrType): boolean {
   if (t.kind !== "array") return false;
   return copiedType(lowerer, t.elem) || copiedArrayType(lowerer, t.elem);
+}
+
+/** An array of copied values, or a union of one with null and/or
+ * undefined (`string[] | undefined`): the copy converts whatever the
+ * island value holds (a non-array crosses as itself, so a nullish value
+ * stays nullish) and the checked conversion throws on an element of the
+ * wrong type. */
+function copyableArrayType(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind !== "union") return copiedArrayType(lowerer, t);
+  const def = lowerer.unions.get(t.unionId);
+  if (def === undefined) return false;
+  let arrays = 0;
+  for (const arm of def.arms) {
+    if (arm.kind === "nullT" || arm.kind === "undefinedT") continue;
+    if (!copiedArrayType(lowerer, arm)) return false;
+    arrays++;
+  }
+  return arrays > 0;
+}
+
+/** The IR type an island value crosses as when it is a copyable array
+ * (`copyableArrayType`), or null when the declared type is not one. */
+function copyableCrossing(lowerer: Lowerer, node: ts.Expression): IrType | null {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return mapped !== null && copyableArrayType(lowerer, mapped) ? mapped : null;
 }
 
 /** Whether a value of IR type `t` is copied at the boundary: primitives,
@@ -812,9 +962,18 @@ function builtinHandleClass(type: ts.Type): boolean {
 
 /** Arrays, tuples, Maps and Sets (every arm of a union, nullish arms
  * aside), and the builtin classes of builtinHandleClass: the object types
- * an island hands back without declaring them. */
+ * an island hands back without declaring them. An intersection of those
+ * (`Choice[] & GenChoice[]`) is a container too: it is a value of each. */
 function containerType(lowerer: Lowerer, type: ts.Type): boolean {
   if (type.isUnionType())
+    return ts
+      .constituentTypes(type)
+      .every(
+        (t) =>
+          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
+          containerType(lowerer, t),
+      );
+  if ((type.flags & ts.TypeFlags.Intersection) !== 0)
     return ts
       .constituentTypes(type)
       .every(
@@ -1151,10 +1310,22 @@ export function classConstructHelper(
 /** Native values NI-5 exports into the island by reference: functions,
  * promises, and object types other than arrays, tuples, Maps and Sets
  * (records, interfaces, class instances). A union qualifies when every
- * arm does or is copied. */
+ * arm does or is copied, and an intersection of them qualifies: a merged
+ * generic record (`Omit<Base, "k"> & Extras`, the `Type.Object(props)`
+ * shape) is one native object, and the island reads the program's own
+ * object, not a copy of it. An intersection with a primitive arm
+ * (`string & {brand}`) is a primitive value, which the runtime copies. */
 function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
   const checker = lowerer.checker;
   if (type.isUnionType())
+    return ts
+      .constituentTypes(type)
+      .every(
+        (t) =>
+          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
+          exportedByReference(lowerer, t),
+      );
+  if ((type.flags & ts.TypeFlags.Intersection) !== 0)
     return ts
       .constituentTypes(type)
       .every(
@@ -1168,6 +1339,25 @@ function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
   const name = type.getSymbol()?.escapedName;
   if (name === "WeakMap" || name === "WeakSet") return false;
   return true;
+}
+
+/** A record type an island object crosses OUT into as a deep checked
+ * copy: the object types exportedByReference names, and intersections of
+ * them — a mapped pair (`{[K in Fg]: V} & {[K in Bg]?: V}`) or a merged
+ * generic record (`Omit<Base, "k"> & Extras`) is one record, so the
+ * island's object converts into the native one the same way a plain
+ * record's does. An intersection with a primitive arm (`string & {brand}`)
+ * is a primitive value, which copies as its arm. */
+function copiedRecordType(lowerer: Lowerer, type: ts.Type): boolean {
+  if ((type.flags & ts.TypeFlags.Intersection) !== 0)
+    return ts
+      .constituentTypes(type)
+      .every(
+        (t) =>
+          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
+          copiedRecordType(lowerer, t),
+      );
+  return exportedByReference(lowerer, type);
 }
 
 /** A fresh object or array literal crosses as a copy (a plain dyn object
@@ -1377,6 +1567,16 @@ function lowerIslandChain(
   return stmts.length > 0 ? { kind: "seqExpr", stmts, result, type: result.type, loc } : result;
 }
 
+/** The local an island handle binding reads here: its own binding, retyped
+ * checked-dynamic, or, inside a closure, the capture of an enclosing
+ * function's binding, which resolveLocal registers. */
+function islandHandleLocal(lowerer: Lowerer, ident: ts.Identifier): IrLocal | null {
+  const origin = lowerer.peekLocal(ident);
+  if (origin === null) return null;
+  origin.type = DYN;
+  return lowerer.resolveLocal(ident);
+}
+
 /** Expressions on island values (the lowerExpr hook; null: not an island
  * expression, the ordinary lowering applies). */
 export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
@@ -1391,17 +1591,30 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
     const b = islandBindingOf(lowerer, expr);
     if (b === null) {
       if (!islandHandleBinding(lowerer, expr)) return null;
-      if (!handleUseOk(lowerer, expr))
+      // The DECLARED type decides the crossing, not the use: an island
+      // handle whose type is an array of copied values crosses as a copy of
+      // its elements wherever native code needs a native value, and the
+      // checked conversion throws on an element of the wrong type. Every
+      // other native use stays refused (the value is a handle).
+      const ok = handleUseOk(lowerer, expr);
+      const copy = ok ? null : copyableCrossing(lowerer, expr);
+      if (!ok && copy === null)
         boundaryFail(
           lowerer,
           `an island value of type '${lowerer.checker.typeToString(lowerer.typeOf(expr))}' used as a native value (island arrays, Maps and Sets stay handles: read members, call methods, index or spread them)`,
           expr,
         );
       lowerer.usesNodeIsland = true;
-      const g = lowerer.globalOf(expr);
-      if (g === null) return null; // the local is declared dyn
-      g.type = DYN;
-      return varRef(g.id, DYN, loc);
+      const slot = lowerer.globalOf(expr) ?? islandHandleLocal(lowerer, expr);
+      if (slot === null) return null; // the local is declared dyn
+      slot.type = DYN;
+      const ref = varRef(slot.id, DYN, loc);
+      return copy === null
+        ? ref
+        : lowerer.coerceToExpected(
+            { kind: "libCall", fn: "nodeIsland.copyArrays", args: [ref], type: DYN, loc },
+            copy,
+          );
     }
     lowerer.usesNodeIsland = true;
     return fromIsland(lowerer, islandBindingValue(lowerer, b, expr, loc), expr);

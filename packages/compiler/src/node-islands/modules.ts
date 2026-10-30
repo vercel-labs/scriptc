@@ -202,6 +202,14 @@ export class NodeIslandModuleCollector {
   /** Fresh files whose subtree is already traced (fresh reaches further
    * than the island-side trace: it also runs through placeholders). */
   private readonly freshTraced = new Set<string>();
+  /** The problems addNamedData reported (isDataFileProblem). */
+  private readonly dataProblems = new Set<string>();
+
+  /** Whether `problem`, returned by add or addLoaded, is a data file the
+   * build does not ship (addNamedData) rather than a module. */
+  isDataFileProblem(problem: string): boolean {
+    return this.dataProblems.has(problem);
+  }
 
   constructor(private readonly hooks: NodeIslandModuleHooks = {}) {}
 
@@ -380,7 +388,8 @@ export class NodeIslandModuleCollector {
     if (!TRACED.test(file)) return null;
     const text = trackedReadFile(file);
     if (text === null) return `cannot read ${file}`;
-    this.addNamedData(file, text);
+    const dataProblem = this.addNamedData(file, text);
+    if (dataProblem !== null) return dataProblem;
     const scan = scanModuleSpecifiers(text);
     if (scan.computed.length > 0) {
       const first = scan.computed[0]!;
@@ -404,28 +413,77 @@ export class NodeIslandModuleCollector {
   /** Data files beside a program module that runs in an island: the module
    * resolves them from its own directory (photon redirects a package's
    * read to the wasm next to the patching module), and the island runs from
-   * the shipped tree, so a file the module names by a string literal ships
-   * with it. Files the source does not name stay out, and module sources
-   * ship through the traced walk, never as data. */
-  private addNamedData(moduleFile: string, text: string): void {
-    const names = new Set<string>();
-    for (const token of moduleTokens(text))
-      if (token.kind === "string" && !token.value.includes("${")) names.add(basename(token.value));
-    if (names.size === 0) return;
+   * the shipped tree, so a file the module names by its path relative to
+   * the module's directory ships with it (namedDataPaths). Only the exact
+   * path ships, and module sources ship through the traced walk, never as
+   * data. A named path stays inside the module's directory: one that leads
+   * outside it, through `..` or a symbolic link, or into node_modules or
+   * .git, is not shipped, so nothing from elsewhere on the machine is
+   * embedded.
+   *
+   * Returns the reason the build cannot ship the module when it names a
+   * file by a path where there is none while a file of that name is inside
+   * its directory: the island would read a file the build left out. */
+  private addNamedData(moduleFile: string, text: string): string | null {
+    const root = dirname(moduleFile);
+    const inside = (path: string): boolean => {
+      const rel = relative(root, path);
+      return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+    };
+    const unresolved: { name: string; at: number }[] = [];
+    /** The names of the files this module's named paths ship. */
+    const shippedNames = new Set<string>();
+    for (const [name, at] of namedDataPaths(text)) {
+      if (isAbsolute(name) || name.includes("\0")) continue;
+      const path = resolve(root, name);
+      if (!inside(path) || path === moduleFile || TRACED.test(path)) continue;
+      const parts = relative(root, path).split(sep);
+      if (parts.includes("node_modules") || parts.includes(".git")) continue;
+      if (!trackedFileExists(path)) {
+        if (basename(name).includes(".")) unresolved.push({ name, at });
+        continue;
+      }
+      const target = trackedRealpath(path);
+      if (target === null || !inside(target)) continue;
+      // A link inside the directory stays a link in the tree (placed).
+      this.files.add(this.placed(path));
+      shippedNames.add(basename(path));
+    }
+    if (unresolved.length === 0) return null;
+    // The files of the module's directory by name, links leading outside it
+    // not followed.
+    const byName = new Map<string, string>();
+    const visited = new Set<string>();
     const walk = (dir: string): void => {
+      const real = trackedRealpath(dir);
+      if (real === null || (real !== root && !inside(real)) || visited.has(real)) return;
+      visited.add(real);
       const entries = trackedAccessibleEntries(dir);
       if (entries === null) return;
       for (const file of entries.files) {
         const path = join(dir, file);
-        if (!names.has(file) || TRACED.test(file) || path === moduleFile) continue;
-        this.files.add(path);
+        if (byName.has(file) || TRACED.test(file) || path === moduleFile) continue;
+        const target = trackedRealpath(path);
+        if (target !== null && inside(target)) byName.set(file, path);
       }
-      for (const sub of entries.directories) {
-        if (sub === "node_modules" || sub === ".git") continue;
-        walk(join(dir, sub));
-      }
+      for (const sub of entries.directories)
+        if (sub !== "node_modules" && sub !== ".git") walk(join(dir, sub));
     };
-    walk(dirname(moduleFile));
+    walk(root);
+    for (const { name, at } of unresolved) {
+      // A name of a file another named path ships (`"payload.txt"` beside
+      // `join(here, "fallback", "payload.txt")`) is not missing, wherever
+      // other files of that name are.
+      if (shippedNames.has(basename(name))) continue;
+      const found = byName.get(basename(name));
+      if (found === undefined || this.files.has(trackedRealpath(found) ?? found)) continue;
+      const line = text.slice(0, at).split("\n").length;
+      const there = portable(relative(root, found));
+      const problem = `${moduleFile}:${line} names the file '${name}', which is not at that path beside the module; the build ships a module's data files by their exact path, so '${there}' does not ship with the Node island. Name the file by its path relative to the module ('${there}')`;
+      this.dataProblems.add(problem);
+      return problem;
+    }
+    return null;
   }
 
   /** A package: its whole directory, then its dependencies. */
@@ -679,6 +737,59 @@ export interface ModuleSpecifierScan {
   specifiers: string[];
   /** Loads whose module the source does not name with a string literal. */
   computed: { at: number; form: string }[];
+}
+
+/** The relative paths a module's source names by string literals, with the
+ * offset of the first literal that names each: each
+ * literal (`"data/table.json"`), and the literals passed as consecutive
+ * arguments of one call joined with `/`, as `path.join(here, "fallback",
+ * "payload.txt")` names `fallback/payload.txt`. Comments and template
+ * literals with substitutions name nothing; `__dirname + "/data.json"` names
+ * `data.json`. */
+export function namedDataPaths(text: string): Map<string, number> {
+  const tokens = moduleTokens(text);
+  const names = new Map<string, number>();
+  const add = (name: string, at: number): void => {
+    if (!names.has(name)) names.set(name, at);
+  };
+  /** The open brackets around the current token. */
+  const open: string[] = [];
+  let run: Token[] = [];
+  const end = (): void => {
+    if (run.length > 1) add(run.map((t) => t.value).join("/"), run[0]!.at);
+    run = [];
+  };
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k]!;
+    if (t.kind === "string") {
+      if (t.value.includes("${")) {
+        end();
+        continue;
+      }
+      add(t.value, t.at);
+      const before = tokens[k - 1];
+      const after = tokens[k + 1];
+      // `__dirname + "/data.json"` names data.json beside the module.
+      if (before?.kind === "punct" && before.value === "+" && t.value.startsWith("/"))
+        add(t.value.slice(1), t.at);
+      const argument =
+        open[open.length - 1] === "(" &&
+        before?.kind === "punct" &&
+        (before.value === "(" || before.value === ",") &&
+        after?.kind === "punct" &&
+        (after.value === ")" || after.value === ",");
+      if (!argument) end();
+      else run.push(t);
+      continue;
+    }
+    if (t.kind === "punct") {
+      if (t.value === "(" || t.value === "[" || t.value === "{") open.push(t.value);
+      else if (t.value === ")" || t.value === "]" || t.value === "}") open.pop();
+    }
+    if (t.kind !== "punct" || t.value !== ",") end();
+  }
+  end();
+  return names;
 }
 
 /** The string-literal arguments of `requireModule(...)` calls in source

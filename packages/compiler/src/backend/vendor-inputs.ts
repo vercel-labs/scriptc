@@ -10,7 +10,8 @@ export const BROTLI_VERSION = "1.2.0";
  * (`process.versions.icu` there), from the `release-78.3` tag. ICU is not
  * vendored: the build fetches the release's own source tarball and data zip
  * from unicode-org/icu's GitHub release, pinning each by version and sha256,
- * and caches the download. Its data file icudt78l.dat (33,107,232 B) ships
+ * and caches the download. The runtime packs ship its data file icudt78l.dat
+ * (33,107,232 B) without the categories no Intl form reads (11,653,984 B),
  * beside the executable; see packages/runtime-pack-common/scripts/
  * icu-data.mjs. */
 export const ICU_VERSION = "78.3";

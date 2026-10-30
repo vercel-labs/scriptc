@@ -263,6 +263,7 @@ export function prepareIsland(source, asyncTest = false, marker = completion, in
     "globalThis.assert = assert;",
     "globalThis.compareArray = compareArray;",
     "globalThis.Test262Error = Test262Error;",
+    ...(asyncTest ? ["globalThis.$DONE = $DONE;"] : []),
   ];
   return [
     'const { readFileSync } = require("node:fs");',

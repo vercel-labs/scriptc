@@ -246,6 +246,34 @@ void scr_signal_on(ScrStr *name, ScrDyn *cb, bool once) {
 #endif
 }
 
+#ifdef SCR_PROCESS_EXTRAS
+/* process.prependListener(<signal>, cb): the same listener in FRONT of the
+ * signal's existing registrations (Node's EventEmitter order). The append
+ * path above registers it and the new entry then moves to the front, so the
+ * two share one registration; a refused or inert registration (a throw, a
+ * non-main context) left the list alone and nothing moves. */
+void scr_signal_prepend(ScrStr *name, ScrDyn *cb) {
+#ifdef __wasi__
+  scr_signal_on(name, cb, false); /* traps, exactly as the append form does */
+#else
+  int sig = scr_signal_from_name(name);
+  if (sig < 0) sig = 0;
+  ScrSigReg *reg = scr_sig_regs;
+  while (reg && reg->sig != sig) reg = reg->next;
+  size_t before = reg ? reg->n : 0;
+  scr_signal_on(name, cb, false);
+  if (!reg) {
+    reg = scr_sig_regs;
+    while (reg && reg->sig != sig) reg = reg->next;
+  }
+  if (!reg || reg->n != before + 1) return;
+  ScrSigListener entry = reg->ls[reg->n - 1];
+  memmove(reg->ls + 1, reg->ls, (reg->n - 1) * sizeof *reg->ls);
+  reg->ls[0] = entry;
+#endif
+}
+#endif
+
 static void scr_sig_reg_drop(ScrSigReg *reg) {
   if (reg->sig > 0) {
 #ifdef _WIN32
@@ -1064,7 +1092,6 @@ static const char *const scr_stdio_names[] = {
 #endif
 static SCR_TL ScrDyn *scr_stdio_methods[STDIO_METHOD_COUNT];
 static SCR_TL bool scr_stdio_initialized;
-static SCR_TL bool scr_stdio_raw;
 
 static ScrDyn *scr_stdio_refusal(const char *name) {
   char message[192];
@@ -1496,7 +1523,7 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     result = scr_stdio_read(arg);
   } else if (stream->fd == 0 && method == STDIO_RAW) {
     scr_process_stdin_set_raw_mode(scr_dyn_truthy(arg));
-    if (!scr_exc_pending()) { scr_stdio_raw = scr_dyn_truthy(arg); result = scr_dyn_retain(self); }
+    if (!scr_exc_pending()) result = scr_dyn_retain(self);
 #ifdef SCR_STDIO_EXTENDED
   } else if (stream->fd == 0 && method == STDIO_SET_ENCODING) {
     ScrStr *enc = scr_strdec_encoding(arg);
@@ -1527,7 +1554,7 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
   if (stream->fd == 0 && length == 14 && memcmp(key, "readableLength", 14) == 0)
     return scr_dyn_new_num((double)scr_stdin_buffered);
   if (stream->fd == 0 && length == 5 && memcmp(key, "isRaw", 5) == 0)
-    return scr_process_is_tty(0) ? scr_dyn_new_bool(scr_stdio_raw) : scr_dyn_retain(scr_dyn_undefined());
+    return scr_process_is_tty(0) ? scr_dyn_new_bool(scr_process_stdin_raw()) : scr_dyn_retain(scr_dyn_undefined());
   if (stream->fd == 0 && length == 9 && memcmp(key, "destroyed", 9) == 0) return scr_dyn_new_bool(scr_stdin_destroyed);
   if (length == 3 && memcmp(key, "off", 3) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_OFF]);
   if (length == 11 && memcmp(key, "addListener", 11) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_ON]);
@@ -1791,6 +1818,31 @@ void scr_process_on_exit(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, doub
 #endif
   scr_exit_n++;
 }
+
+#ifdef SCR_PROCESS_EXTRAS
+/* process.stdin.isRaw: the raw-mode flag of a TTY stdin (1/0); a
+ * pipe-backed stdin has no such flag and answers Node's undefined, which
+ * the emitter's union construction spells -1. */
+double scr_process_stdin_is_raw(void) {
+  if (!scr_context_is_main()) return -1;
+  if (!scr_process_is_tty(0)) return -1;
+  return scr_process_stdin_raw() ? 1.0 : 0.0;
+}
+
+/* process.prependListener("exit", cb): the same listener in FRONT of the
+ * registry's existing entries (Node's EventEmitter order). The append path
+ * above registers it and the new entry then moves to the front, so the two
+ * share one registration; a registry already swept at exit released the
+ * closure and left the list empty, and nothing moves. */
+void scr_process_prepend_exit(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, double)) {
+  size_t before = scr_exit_n;
+  scr_process_on_exit(cb, fn, false);
+  if (scr_exit_n != before + 1) return;
+  ScrExitListener entry = scr_exit_ls[scr_exit_n - 1];
+  memmove(scr_exit_ls + 1, scr_exit_ls, (scr_exit_n - 1) * sizeof *scr_exit_ls);
+  scr_exit_ls[0] = entry;
+}
+#endif
 
 #ifdef SCR_NODE_ISLANDS
 /* Island code's 'exit' listeners, at their registration position among

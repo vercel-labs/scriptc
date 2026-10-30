@@ -149,6 +149,11 @@ export interface ShapeAnalysis {
   declValues(decl: Node): Set<Atom>;
   /** The classes a class declaration's chain contains, base last. */
   classChain(decl: Node): Node[];
+  /** Whether every instance of a class has the own field `name` before
+   * any code can observe the instance. */
+  fieldSurelyPresent(decl: Node, name: string): boolean;
+  /** The atom of a primitive type (`undefined`, `number`, …). */
+  prim(name: string): Atom;
   /** `if` statements in walked code whose condition is known: the branch
    * whose condition values never allowed it is absent from `walkedBranches`. */
   readonly branchIfs: ReadonlySet<ts.IfStatement>;
@@ -336,6 +341,16 @@ function propertyNameText(name: Node): string | null {
     if (ts.isNumericLiteral(e)) return String(Number(e.text));
   }
   return null;
+}
+
+/** Whether an object literal has a spread or a key not known statically. */
+function hasUnknownKeys(node: Node): boolean {
+  if (!ts.isObjectLiteralExpression(node)) return false;
+  return list(node.properties).some((p) => {
+    if (ts.isSpreadAssignment(p)) return true;
+    const name = (p as { name?: Node }).name;
+    return name !== undefined && propertyNameText(name) === null;
+  });
 }
 
 const shortFiles = new Map<string, string>();
@@ -615,6 +630,8 @@ class Analyzer {
       fnOfInstance: this.fnOfInstance,
       declValues: (decl) => this.declValues(decl),
       classChain: (decl) => this.classChain(decl),
+      fieldSurelyPresent: (decl, name) => this.fieldSurelyPresent(decl, name),
+      prim: (name) => this.prim(name),
       branchIfs: this.branchIfs,
       walkedBranches: this.walkedBranches,
     };
@@ -943,7 +960,11 @@ class Analyzer {
     this.escapedFunctionCalls.add(info);
     this.activate(info);
     for (const p of info.params) this.add(p, this.top);
-    if (!info.isArrow && info.ownerClass === null) this.add(info.thisNode, this.top);
+    // Unknown code can call a class's method with any receiver too (through
+    // `Reflect.get` with a proxy as the receiver); in the program's own
+    // files its receiver is ⊤.
+    if (!info.isArrow && (info.ownerClass === null || !isPackageJsFile(info.node.getSourceFile())))
+      this.add(info.thisNode, this.top);
     this.sink(info.ret, reason);
   }
 
@@ -1063,6 +1084,53 @@ class Analyzer {
       }
     }
     return out;
+  }
+
+  /** Whether every instance of a class has the own field `name` before any
+   * code can observe the instance. Construction runs from the base class
+   * down, each class's field initializers and then its constructor body:
+   * the field counts when a declaration or a `this.name = …` statement of
+   * the constructor body defines it ahead of anything that reads `this` or
+   * passes it on (a call with `this`, a method call on it, a closure, a
+   * field initializer or right-hand side that reads it) and ahead of an
+   * early `return`. */
+  fieldSurelyPresent(decl: Node, name: string): boolean {
+    for (const c of this.classChain(decl).reverse()) {
+      const members = list((c as ts.ClassLikeDeclaration).members);
+      for (const m of members) {
+        if (isStatic(m) || !ts.isPropertyDeclaration(m)) continue;
+        if (m.initializer !== undefined && observesThis(m.initializer)) return false;
+        if (propertyNameText(m.name) === name) return true;
+      }
+      const ctor = members.find(
+        (m): m is ts.ConstructorDeclaration =>
+          ts.isConstructorDeclaration(m) && m.body !== undefined,
+      );
+      for (const st of ctor === undefined ? [] : list(ctor.body!.statements)) {
+        const e = ts.isExpressionStatement(st) ? st.expression : undefined;
+        if (
+          e !== undefined &&
+          ts.isBinaryExpression(e) &&
+          e.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isPropertyAccessExpression(e.left) &&
+          e.left.expression.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+          if (observesThis(e.right)) return false;
+          if (e.left.name.text === name) return true;
+          continue;
+        }
+        // `super(…)` runs the base constructor, walked above.
+        if (
+          e !== undefined &&
+          ts.isCallExpression(e) &&
+          e.expression.kind === ts.SyntaxKind.SuperKeyword &&
+          !list(e.arguments).some(observesThis)
+        )
+          continue;
+        if (observesThis(st) || returnsEarly(st)) return false;
+      }
+    }
+    return false;
   }
 
   lookupMember(
@@ -1719,7 +1787,12 @@ class Analyzer {
         const src = this.expr(s.expression);
         const target = this.newNode();
         if (ts.isForInStatement(s)) this.add(target, this.prim("string"));
-        else this.iterateInto(src, target, s);
+        else if (s.awaitModifier !== undefined) {
+          // `for await` awaits each value a sync iterable yields.
+          const yielded = this.newNode();
+          this.iterateInto(src, yielded, s);
+          this.awaitInto(yielded, target);
+        } else this.iterateInto(src, target, s);
         const init = s.initializer;
         if (ts.isVariableDeclarationList(init)) {
           for (const d of list(init.declarations)) {
@@ -1836,9 +1909,13 @@ class Analyzer {
     this.on(src, (a) => {
       if (a.kind === "array" || a.kind === "collection") this.edge(this.element(a), dst);
       else if (a.kind === "prim" && a.label === "string") this.add(dst, this.prim("string"));
-      else if (a.kind === "prim" || a.kind === "object" || a.kind === "dictionary") {
-        /* not iterable (a TypeError): no value. Literals with a
-           Symbol.iterator member have a computed key; they are G sites. */
+      else if (a.kind === "object" && a.node !== undefined && hasUnknownKeys(a.node)) {
+        // An object literal with a computed key or a spread may have a
+        // Symbol.iterator or Symbol.asyncIterator member.
+        this.add(dst, this.top);
+        this.escape(a, `iterated at ${this.loc(site)}`);
+      } else if (a.kind === "prim" || a.kind === "object" || a.kind === "dictionary") {
+        /* not iterable (a TypeError): no value. */
       } else {
         this.add(dst, this.top);
         if (a.kind !== "top") this.escape(a, `iterated at ${this.loc(site)}`);
@@ -2712,6 +2789,15 @@ class Analyzer {
         }
         if (this.classChain(decl).some((c) => this.baseClass(c) === undefined))
           this.add(dst, this.top);
+        // A field the instance may lack reads undefined (`Late` sets `x`
+        // only on one branch). In the program's own files only.
+        if (
+          member === null &&
+          !OBJECT_PROTOTYPE_MEMBERS.has(name) &&
+          !isPackageJsFile(decl.getSourceFile()) &&
+          !this.fieldSurelyPresent(decl, name)
+        )
+          this.add(dst, this.prim("undefined"));
         this.edge(this.field(a, name), dst);
         this.unknownKeysInto(a, dst);
         return;
@@ -3467,8 +3553,12 @@ class Analyzer {
           this.add(this.element(out), this.prim("undefined"));
           this.add(dst, out);
           this.add(dst, this.prim("null"));
-        } else if (r !== undefined) prim(r);
-        else if (method === "replace" || method === "replaceAll") prim("string");
+        } else if (method === "valueOf") prim(path.slice(0, path.indexOf(".")));
+        else if (r !== undefined) {
+          prim(r);
+          // An index out of range reads undefined.
+          if (method === "at" || method === "codePointAt") prim("undefined");
+        } else if (method === "replace" || method === "replaceAll") prim("string");
         else escapeAll();
         if (method === "replace" || method === "replaceAll")
           callback(1, [this.constNode(this.prim("string"))], null);
@@ -4160,4 +4250,19 @@ function mayBeFalsy(a: Atom): boolean {
   if (a.kind === "top") return true;
   if (a.kind !== "prim") return false;
   return a.literal !== true;
+}
+
+/** Whether code reads `this` or `super`, at any depth. */
+function observesThis(node: Node): boolean {
+  if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword)
+    return true;
+  return ts.forEachChild(node, (child) => (observesThis(child) ? true : undefined)) === true;
+}
+
+/** Whether a constructor statement can end the constructor: a `return`
+ * outside the functions it declares. */
+function returnsEarly(node: Node): boolean {
+  if (ts.isReturnStatement(node)) return true;
+  if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return false;
+  return ts.forEachChild(node, (child) => (returnsEarly(child) ? true : undefined)) === true;
 }

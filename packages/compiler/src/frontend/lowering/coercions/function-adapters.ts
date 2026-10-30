@@ -143,6 +143,8 @@ export function cleanFuncAdaptable(
 ): boolean {
   if (restPackingAdapterFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
+  // In checked mode (a method field's adapter, WidthLift funcAdaptChecked)
+  // the width conversions below include checked retags.
   // Recursive function types (`type Handler = (h: Handler) => void`) reach
   // the same pair again one parameter down: assume it converts, the same
   // coinductive answer recordWidthPlan gives its own back-edges.
@@ -482,7 +484,7 @@ export function funcCoerceAdapter(
     strandRet = false;
   // A record result the slot's result is a structural width of.
   if (strandRet && lowerer.widthLiftPlan(fromT.ret, toT.ret)) strandRet = false;
-  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}${lowerer.coercions.checkedRetags > 0 ? ":checked" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%fn.adapt", key);

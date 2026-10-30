@@ -170,8 +170,20 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
+   * NULL for a field a partial record view does not have. */
+  recordViewPartial?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
+  /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
+   * (scr_fs_flags.c and that build of scr_fs_cp.c). */
+  fsFlags?: boolean;
+  /** string_decoder's checked-dynamic chunk forms: compiles
+   * scr_bytes_strdec_dyn.c. */
+  strdecDyn?: boolean;
+  /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
+   * stdin.isRaw and server.off. */
+  processExtras?: boolean;
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
@@ -282,6 +294,11 @@ export interface CcOptions {
    * unit under the same precedent, so polling-free binaries keep their
    * exact link line. */
   watchFile?: boolean;
+  /** A typed fs read whose bytes value the program can observe as a Buffer
+   * (moduleUsesFsBufferBrand on the IR): compiles scr_lib.c's
+   * SCR_FS_BUFFER_BRAND build, so programs that never see the brand keep the
+   * default object byte for byte. */
+  fsBufferBrand?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

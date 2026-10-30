@@ -1,7 +1,10 @@
+import { join } from "node:path";
+import ts from "typescript";
 import { expect, test } from "vitest";
 import { boundedRun } from "../test262/execute.js";
 import {
   compileFailureStatus,
+  directory,
   exclusion,
   matchesParseNegative,
   metadata,
@@ -130,6 +133,40 @@ test("a lifted script-environment variant keeps the script shape inside its isla
   // `host:script-environment` also names ESM syntax, which cannot be replayed
   // as a script.
   expect(scriptEnvironment("export default 1;")).toBe(false);
+});
+
+test("the harness declares each name once and exports every name the island prelude reads", () => {
+  const file = join(directory, "harness.ts");
+  const program = ts.createProgram([file], {
+    noEmit: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    allowImportingTsExtensions: true,
+  });
+  const sf = program.getSourceFile(file)!;
+  // Duplicate identifier, redeclared block-scoped variable or export, and
+  // duplicate function implementation: each fails every executable variant.
+  const duplicates = program
+    .getSemanticDiagnostics(sf)
+    .filter((d) => [2300, 2323, 2393, 2451].includes(d.code))
+    .map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
+  expect(duplicates).toEqual([]);
+  const checker = program.getTypeChecker();
+  const exported = new Set(
+    checker.getExportsOfModule(checker.getSymbolAtLocation(sf)!).map((symbol) => symbol.name),
+  );
+  const prelude = prepareIsland(source("description: names"), true, "MARK", [], true);
+  const read = [...prelude.matchAll(/(?<![./\w])harness\.([A-Za-z_$][\w$]*)/g)].map(
+    (match) => match[1]!,
+  );
+  expect(read.length).toBeGreaterThan(0);
+  expect(read.filter((name) => !exported.has(name))).toEqual([]);
+  // The bare compareArray and the assertion are different functions.
+  expect(prelude).toContain("assert.compareArray = harness.assertCompareArray;");
+  expect(prelude).toContain("const compareArray = harness.compareArray;");
+  expect(prelude).toContain("globalThis.compareArray = compareArray;");
 });
 
 test("the property helper only admits direct inline descriptor checks", () => {

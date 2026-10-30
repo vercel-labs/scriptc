@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../../index.js";
-import type { IrModule } from "../../ir/ir.js";
+import { DYN } from "../../ir/ir.js";
+import type { IrExpr, IrModule } from "../../ir/ir.js";
 import { computeTraced } from "../cycle-analysis.js";
+import { everyStmtList } from "../../ir/traverse.js";
+import { emitLlvmModule } from "./emitter.js";
 import { planRecordViews } from "./record-views.js";
 
 /** The views planned for `source`'s module, as target field names → source
@@ -127,4 +130,99 @@ const wide: Wide = { a: 1, b: "x", c: true };
 ${conversions}
 Object.freeze(wide);`);
   expect(views).toEqual(new Map());
+});
+
+/** `source`'s module shaped the way the frontend lowers a partial
+ * assertion (C2): the checked cast of the source record literal carries
+ * `partialView` over a `dynFrom{liveRef}` of that literal. */
+async function partialModule(
+  source: string,
+  sourceFields: string,
+  targetFields: string,
+): Promise<IrModule> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-record-views-"));
+  try {
+    const entry = join(dir, "main.ts"),
+      outPath = join(dir, "main.ir.json");
+    await writeFile(entry, source);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod: IrModule = deserializeModule(await readFile(outPath, "utf8"));
+    const idOf = (fields: string): string =>
+      (mod.records ?? []).find((shape) => shape.fields.map((f) => f.name).join(",") === fields)!.id;
+    const exprs: IrExpr[] = [];
+    for (const fn of mod.functions)
+      everyStmtList(fn.body, {
+        stmt: () => true,
+        expr: (e) => {
+          exprs.push(e);
+          return true;
+        },
+      });
+    const lit = exprs.find(
+      (e) =>
+        e.kind === "recordLit" && e.type.kind === "record" && e.type.shapeId === idOf(sourceFields),
+    );
+    const check = exprs.find(
+      (e) =>
+        e.kind === "dynCheck" && e.type.kind === "record" && e.type.shapeId === idOf(targetFields),
+    );
+    if (!lit || !check || check.kind !== "dynCheck") throw new Error("shapes not found");
+    check.partialView = true;
+    check.value = { kind: "dynFrom", liveRef: true, value: lit, type: DYN, loc: check.loc };
+    return mod;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a partial assertion plans a partial view with an absent-field sentinel", async () => {
+  const mod = await partialModule(
+    `
+type Wide = { a: number; b: string };
+type Narrow = { a: number; z: boolean };
+const wide: Wide = { a: 1, b: "x" };
+const o: unknown = wide;
+const v = o as Narrow;
+console.log(v.a);
+`,
+    "a,b",
+    "a,z",
+  );
+  const idOf = (fields: string): string =>
+    (mod.records ?? []).find((shape) => shape.fields.map((f) => f.name).join(",") === fields)!.id;
+  const target = idOf("a,z");
+  const source = idOf("a,b");
+  const views = planRecordViews(mod, { traced: () => false, excluded: () => false });
+  expect(views.targets.has(target)).toBe(true);
+  expect(views.sources(target)).toEqual([source]);
+  expect(views.partial(target, source)).toBe(true);
+  expect(views.partialTargets.has(target)).toBe(true);
+  expect(views.partialMissing(target, "z")).toBe(true);
+  expect(views.partialMissing(target, "a")).toBe(false);
+  // The offset table marks the target field the source does not declare
+  // with the all-ones sentinel.
+  const llvm = emitLlvmModule(mod);
+  expect(llvm).toMatch(/@sc_rv_\d+_0 = internal constant \[2 x i64\] \[i64 ptrtoint .*, i64 -1\]/);
+});
+
+test("a full source keeps an ordinary view, not a partial one", async () => {
+  const mod = await partialModule(
+    `
+type Wide = { a: number; b: string };
+type Narrow = { a: number };
+const wide: Wide = { a: 1, b: "x" };
+const o: unknown = wide;
+const v = o as Narrow;
+console.log(v.a);
+`,
+    "a,b",
+    "a",
+  );
+  const idOf = (fields: string): string =>
+    (mod.records ?? []).find((shape) => shape.fields.map((f) => f.name).join(",") === fields)!.id;
+  const views = planRecordViews(mod, { traced: () => false, excluded: () => false });
+  expect(views.sources(idOf("a"))).toEqual([idOf("a,b")]);
+  expect(views.partial(idOf("a"), idOf("a,b"))).toBe(false);
+  expect(views.partialTargets.size).toBe(0);
 });

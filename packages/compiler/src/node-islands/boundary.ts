@@ -14,6 +14,7 @@
  * calls. A union is foreign when every arm that is not null or undefined
  * is foreign (the dyn representation holds null and undefined). */
 import * as ts from "../frontend/ts7/adapter.js";
+import { trackedRealpath } from "../frontend/input-tracker.js";
 import { packageDirOf } from "./origin.js";
 
 /** One package the build runs in a Node island. */
@@ -58,6 +59,15 @@ function normalizePath(file: string): string {
 export function islandModuleOfFile(islands: NodeIslandSet, file: string): IslandModule | null {
   if (islands.modules.size === 0) return null;
   return islands.modules.get(file) ?? islands.modules.get(normalizePath(file)) ?? null;
+}
+
+/** Whether `file` (a path as the checker spells it, or its real path) is a
+ * program module of the island set. */
+export function isIslandProgramModule(islands: NodeIslandSet, file: string): boolean {
+  if (islandModuleOfFile(islands, file) !== null) return true;
+  for (const module of islands.modules.values())
+    if ((trackedRealpath(module.file) ?? module.file) === file) return true;
+  return false;
 }
 
 /** The island (package or module) that owns a declaration or JavaScript

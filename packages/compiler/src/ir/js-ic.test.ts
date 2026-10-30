@@ -305,10 +305,18 @@ test("a function holds a site when it calls a classified helper or dispatches a 
   expect(hasJsIcSite(caller, sites)).toBe(true);
   expect(hasJsIcSite(invoker, sites)).toBe(true);
   expect(hasJsIcSite(plain, sites)).toBe(false);
-  // Module initializers keep plain method dispatch (top-level handle
-  // wiring), while their property sites still cache.
+  // Module initializers keep plain method dispatch at top level (handle
+  // wiring), while their property sites still cache, and so do method
+  // sites in their loops.
   expect(hasJsIcSite({ ...invoker, name: "%init.0" }, sites)).toBe(false);
   expect(hasJsIcSite({ ...caller, name: "%init.0" }, sites)).toBe(true);
+  const looped: IrStmt = {
+    kind: "while",
+    cond: { kind: "boolLit", value: false, type: BOOL, loc },
+    body: invoker.body,
+    loc,
+  };
+  expect(hasJsIcSite({ ...invoker, name: "%init.0", body: [looped] }, sites)).toBe(true);
 });
 
 test("a function holds a site when an object literal has a constant-key member", () => {

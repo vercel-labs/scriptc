@@ -124,15 +124,16 @@ export function stripProblem(program: ts.Program, sf: ts.SourceFile): StripProbl
       return undefined;
     }
     if (ts.isImportDeclaration(node)) {
+      const clause = node.importClause;
+      // `import type` is erased whole, so Node never resolves its specifier.
+      if (clause?.phaseModifier === ts.SyntaxKind.TypeKeyword) return undefined;
       const spec = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : null;
       if (spec !== null && isRelativeSpecifier(spec) && !hasResolvedExtension(spec)) {
         report(`the relative import '${spec}' without a file extension`);
         return undefined;
       }
-      const clause = node.importClause;
       if (
         clause === undefined ||
-        clause.phaseModifier === ts.SyntaxKind.TypeKeyword ||
         clause.namedBindings === undefined ||
         !ts.isNamedImports(clause.namedBindings)
       )
@@ -152,7 +153,9 @@ export function stripProblem(program: ts.Program, sf: ts.SourceFile): StripProbl
     }
     if (ts.isExportDeclaration(node)) {
       const specifier = node.moduleSpecifier;
+      // `export type { T } from` and `export type * from` are erased whole.
       if (
+        !node.isTypeOnly &&
         specifier !== undefined &&
         ts.isStringLiteral(specifier) &&
         isRelativeSpecifier(specifier.text) &&

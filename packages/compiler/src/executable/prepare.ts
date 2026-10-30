@@ -108,6 +108,7 @@ export function prepareExecutableModule(
   }
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
+  let contractWarnings: ScrDiagnostic[] = [];
   let disposed = false;
   let fenceGrown: Map<string, IslandPackage> | null = null;
   const fenceSure = new Set<string>();
@@ -281,6 +282,7 @@ export function prepareExecutableModule(
       timing("contracts");
       if (checked.diagnostics.length > 0) return fail(checked.diagnostics);
       if (checked.contracts) lowered.module.contracts = checked.contracts;
+      contractWarnings = checked.warnings;
     }
     if (retryFences)
       fenceGrown = fenceIslands(entryPath, opts, fe, lowered, lowerIslands, true, fenceSure);
@@ -302,6 +304,7 @@ export function prepareExecutableModule(
       ...(fe.warnings ?? []),
       ...(lowered.divergences ?? []),
       ...(lowered.performance ?? []),
+      ...contractWarnings,
     ],
     ...(islandDecision === null
       ? {}
@@ -660,14 +663,24 @@ function decideNodeIslands(
  * "fs.readFileSync"). */
 function builtinModuleOf(member: string | undefined): string {
   if (member === undefined) return "";
-  const dot = member.indexOf(".");
-  return dot < 0 ? member : member.slice(0, dot);
+  const end = /[.[]/.exec(member);
+  return end === null ? member : member.slice(0, end.index);
 }
 
 /** The island module that patches `member`, matching an exact member or a
- * whole-module patch ("fs.*"). */
+ * whole-module patch ("fs.*"). A read the scan cannot name ("fs.*", a
+ * computed key or a rest element) matches every patch of its module, and so
+ * does a patch through a computed key ("fs[…]"). */
 function patchFileOf(patched: ReadonlyMap<string, string>, member: string): string | undefined {
-  return patched.get(member) ?? patched.get(`${builtinModuleOf(member)}.*`);
+  const module = builtinModuleOf(member);
+  const exact = patched.get(member) ?? patched.get(`${module}.*`);
+  if (exact !== undefined) return exact;
+  const unnamedRead = member === `${module}.*`;
+  for (const [patch, file] of patched) {
+    if (builtinModuleOf(patch) !== module) continue;
+    if (unnamedRead || patch.includes("[")) return file;
+  }
+  return undefined;
 }
 
 /** The island set grown by the npm packages whose own modules refused to

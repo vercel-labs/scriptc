@@ -4405,10 +4405,23 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
   return view;
 }
 
-/* The slot of field `position` of a view (emitted view guards, cold). */
+/* The slot of field `position` of a view (emitted view guards, cold). A
+ * PARTIAL view (a record literal asserted to a wider record type) holds
+ * SIZE_MAX for every field its viewed record does not declare: the
+ * SCR_RECORD_VIEW_PARTIAL build of this unit answers NULL for it, the guard
+ * that gets NULL stops with scr_trap and the program's own message, and a
+ * presence test asks for the same slot and answers by it. Only a program
+ * with such an assertion links that build (runtime-pack-matrix.mjs); every
+ * other program links this default object, whose bytes are unchanged. */
 void *scr_record_view_slot(void *view, size_t position) {
   ScrRecordSource *entry = scr_record_source_slot(view);
+#ifdef SCR_RECORD_VIEW_PARTIAL
+  size_t offset = entry->offsets[position];
+  if (offset == SIZE_MAX) return NULL;
+  return (char *)entry->viewed + offset;
+#else
   return (char *)entry->viewed + entry->offsets[position];
+#endif
 }
 
 /* The address of field `position` of a value of a view target type, whose
@@ -5525,10 +5538,26 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
     return -1;
   /* A native Date, or an instance of a class declared `extends Date`. */
   if (strcmp(callee->v.fn.name, "Date") == 0) return scr_dyn_date_instance_is(value);
+  if (strcmp(callee->v.fn.name, "DataView") == 0) return scr_dyn_data_view_is(value);
+  /* No value is a BigInt64Array or BigUint64Array: neither is constructed. */
+  if (strcmp(callee->v.fn.name, "BigInt64Array") == 0 || strcmp(callee->v.fn.name, "BigUint64Array") == 0)
+    return 0;
+  /* Proxy has no prototype: false for a primitive, Node's TypeError for an
+   * object. */
+  if (strcmp(callee->v.fn.name, "Proxy") == 0) {
+    if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_BOOL ||
+        value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT ||
+        value->kind == SCR_DYN_SYMBOL)
+      return 0;
+    static const char message[] = "Function has non-object prototype 'undefined' in instanceof check";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return 0;
+  }
   static const struct { const char *name; int tag; } kinds[] = {
     {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
     {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
+    {"SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER},
   };
   bool promise = strcmp(callee->v.fn.name, "Promise") == 0;
   int tag = -1;
@@ -6417,10 +6446,15 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
  * bodies — the overwhelming test shape — are exact. */
 static SCR_TL bool scr_dyn_chunk_utf8;
 void scr_dyn_chunk_enc(bool utf8) { scr_dyn_chunk_utf8 = utf8; }
+/* A firing site that decodes with a StringDecoder (net sockets) names
+ * the decoded string instead (borrowed; NULL closes the window). */
+static SCR_TL ScrStr *scr_dyn_chunk_str;
+void scr_dyn_chunk_text(ScrStr *text) { scr_dyn_chunk_str = text; }
 
 /* One 'data' payload as the dyn value the current window dictates:
  * a Buffer-flavored bytes box, or a string inside a setEncoding window. */
 ScrDyn *scr_dyn_new_chunk(const ScrBytes *b) {
+  if (scr_dyn_chunk_str != NULL) return scr_dyn_new_str(scr_dyn_chunk_str);
   if (scr_dyn_chunk_utf8) {
     ScrStr *s = scr_bytes_string(b, 0, b->len);
     ScrDyn *d = scr_dyn_new_str(s);
@@ -6456,7 +6490,18 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
   d->v.fn.arity = clo->identity != NULL ? clo->identity_length : arity;
   d->v.fn.class_obj = NULL;
   d->v.fn.message = NULL;
+  d->v.fn.js = NULL;
   return d;
+}
+
+/* The emitted fast path loads the entry at this offset (64-bit targets). */
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.fn.js) == 72,
+               "ScrDyn.v.fn.js moved: update the dynamic tier's call sites");
+
+void scr_dyn_func_set_js(ScrDyn *fn, ScrDynThunk thunk, ScrDynJsEntry entry) {
+  /* As scr_dyn_func_set_message: an adapted function's original box keeps
+   * its own entries. */
+  if (fn && fn->kind == SCR_DYN_FUNC && fn->v.fn.thunk == thunk) fn->v.fn.js = entry;
 }
 
 void scr_dyn_func_set_message(ScrDyn *fn, ScrDynThunk thunk, ScrDynMessageListener listener) {
@@ -9379,6 +9424,25 @@ static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_ke
 
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 0); }
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 1); }
+
+/* Reflect.has's target check: Node's TypeError for a primitive target. */
+void scr_dyn_reflect_has_target(const ScrDyn *target) {
+  switch (target->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL: {
+    static const char message[] = "Reflect.has called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return;
+  }
+  default:
+    return;
+  }
+}
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 2); }
 
 static void scr_json_delete_member(ScrDyn *object, const ScrStr *key);
@@ -10774,6 +10838,20 @@ void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *va
   scr_dyn_release(view);
 }
 
+/* scr_throw_node_coded with Node's `url` own property: the
+ * ERR_MODULE_NOT_FOUND of an import() whose relative target does not
+ * exist carries the target's file URL. Borrows the strings; always throws
+ * (catchably — call sites are compiler-emitted pending checks). */
+void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg, const ScrStr *url) {
+  ScrError *e = scr_error_new((int)kind, (ScrStr *)msg); /* borrowed in */
+  if (code->len > 0) {
+    scr_str_release(e->code); /* NULL-safe */
+    e->code = scr_str_retain((ScrStr *)code);
+  }
+  scr_error_set_prop(e, "url", 3, scr_dyn_new_str((ScrStr *)url));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* The error's checked-dynamic node when it has one (borrowed), else NULL:
  * util.inspect reads its extra own properties. */
 ScrDyn *scr_errdyn_view_of(const ScrError *e) {
@@ -11996,7 +12074,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
     const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);
     bool out;
-    if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
+    if (klass && scr_dyn_name_in_strs(key, klass->names, klass->count)) {
+      /* a compiled method or accessor of the class or a base class, also
+       * on a view whose snapshot has a prototype (an Error subclass's view
+       * carries Error.prototype) */
+      out = true;
+    } else if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
       /* An instance view keeps only own fields; its class prototype chain
        * contributes the compiled methods and accessors. */
       out = scr_dyn_property_owner(materialized, key->data, key->len) ||

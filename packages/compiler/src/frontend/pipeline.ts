@@ -922,8 +922,9 @@ function loadFrontend(
     lower: (opts, valid) => {
       // The module order without the island modules, computed once per load:
       // a reload keeps the array the lowering appends its dynamic import
-      // modules to.
-      const islandFiltered = new WeakMap<readonly SourceFile[], SourceFile[]>();
+      // modules to. The map lives as long as this lowering, which owns the
+      // loads it keys.
+      const islandFiltered = new Map<readonly SourceFile[], SourceFile[]>();
       const lowerOrder = (l: typeof finalLoad): SourceFile[] => {
         if (islandModules === null) return l.moduleOrder;
         let kept = islandFiltered.get(l.moduleOrder);

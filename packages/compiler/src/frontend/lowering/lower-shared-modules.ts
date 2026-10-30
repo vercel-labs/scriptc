@@ -417,15 +417,22 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
     packageJsFiles(island.dir, queue);
   // A program module the build runs in a Node island is loaded by Node, so
   // the program modules IT imports are shared with it like an island
-  // package's (DESIGN.md note 1 §3.2).
-  for (const module of lowerer.nodeIslands?.modules.values() ?? []) queue.push(real(module.file));
+  // package's (DESIGN.md note 1 §3.2). It may be TypeScript (Node strips
+  // its types), so it is scanned whatever its extension.
+  const islandModules = new Set<string>();
+  for (const module of lowerer.nodeIslands?.modules.values() ?? []) {
+    const file = real(module.file);
+    islandModules.add(file);
+    queue.push(file);
+  }
   if (queue.length === 0 && candidates.size === 0) return plans;
   const seen = new Set<string>();
   // Classes island code extends, by the compiled module that exports them.
   const extended = new Map<ts.SourceFile, string>();
   while (queue.length > 0 && seen.size < MAX_ISLAND_FILES) {
     const file = queue.pop()!;
-    if (seen.has(file) || compiled.has(file) || !isJsFile(file)) continue;
+    if (seen.has(file) || compiled.has(file)) continue;
+    if (!isJsFile(file) && !islandModules.has(file)) continue;
     seen.add(file);
     let text: string;
     try {

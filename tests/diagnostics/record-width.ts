@@ -12,9 +12,9 @@ const loose: Loose = { a: 1 };
 const picked: PickedA = loose;
 console.log(picked);
 
-// A method field whose parameter shapes relate only BIVARIANTLY: neither
-// parameter type converts into the other mechanically, so the field does
-// not lift.
+// A method field whose parameter shapes relate only BIVARIANTLY: the field
+// lifts as a checked adapter, so only the console.log below refuses (a
+// function value has no inspect lowering).
 type SrcM = { m(x: { a: number }): void; extra: number };
 type DstM = { m(x: { a: number; b: number }): void };
 const srcM: SrcM = {

@@ -24,15 +24,6 @@
   },
   {
    "code": "SC0001",
-   "message": "Cannot find name 'last'.",
-   "loc": {
-    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
-    "start": 252,
-    "end": 256
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "'with' statements are not allowed in strict mode.",
    "loc": {
     "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
@@ -92,15 +83,6 @@
     "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
     "start": 548,
     "end": 552
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Cannot find name 'inner'.",
-   "loc": {
-    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
-    "start": 576,
-    "end": 581
    }
   }
  ]

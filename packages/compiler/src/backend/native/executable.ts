@@ -160,6 +160,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
+  // writeFile's `flag` option and the fs/promises twins; the copyFile mode
+  // argument is the SCR_FS_FLAGS build of scr_fs_cp.c.
+  unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
+  // string_decoder's checked-dynamic chunk forms, beside their typed twins.
+  unit((u) => u.opts.strdecDyn === true, "scr_bytes_strdec_dyn.c"),
   // BigIntStats member reads (`statSync(p, { bigint: true })` integers and
   // `*Ns`/`*Ms` members). Gated on the reads themselves (the bigstats
   // feature), not on bigint: every bigint value or wasm conversion turns
@@ -445,7 +450,17 @@ const RUNTIME_DEFINES: readonly {
   // programs with dynamic-tier code select it.
   { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
+  // scr_json.c's view slot answers NULL for a field a partial record view
+  // does not have; only a program with a partial assertion selects it.
+  { define: "SCR_RECORD_VIEW_PARTIAL", when: (opts) => opts.recordViewPartial },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
+  // The wave's prepend registrations and stdin.isRaw (scr_events.c,
+  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
+  // (scr_fs_cp.c). The source build compiles these units from source, so the
+  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
+  { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
+  { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
@@ -459,6 +474,8 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
   // scr_lib.c's path stat and zero Stats for the fs.watchFile poll.
   { define: "SCR_FS_WATCH_FILE", when: (opts) => opts.watchFile },
+  // scr_lib.c's file reads brand their bytes as Node's Buffer answers.
+  { define: "SCR_FS_BUFFER_BRAND", when: (opts) => opts.fsBufferBrand },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

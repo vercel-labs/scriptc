@@ -31,9 +31,22 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
+  /** The program asserts a record literal to a wider record type (a partial
+   * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
+   * Absent for every program without one, so their objects stay identical. */
+  recordViewPartial?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
+  /** writeFile's `flag` disposition or copyFile's mode argument:
+   * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
+  fsFlags?: boolean;
+  /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
+  strdecDyn?: boolean;
+  /** process.prependListener, stdin.isRaw or server.off: the
+   * SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and the
+   * SCR_NET_SERVER_OFF build of scr_net.c. */
+  processExtras?: boolean;
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
@@ -131,6 +144,10 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
+  /** A typed fs read whose bytes value the program can observe as a Buffer:
+   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
+   * brand keep the default object. */
+  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;

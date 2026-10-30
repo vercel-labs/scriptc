@@ -293,6 +293,8 @@ export class LlWalkers {
         index - base,
         (decl) => this.host.declare(decl),
         this.host.rcMode === undefined,
+        (text) => this.host.cstr(text),
+        this.host.recordViews?.partialTargets.has(shapeId) === true,
       );
     } else {
       p = B.tmp();

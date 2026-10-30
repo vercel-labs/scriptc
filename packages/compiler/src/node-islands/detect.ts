@@ -162,6 +162,14 @@ function literalText(node: ts.Node | undefined): string | null {
   return null;
 }
 
+/** A property name the scan can spell: an identifier, a string or number
+ * literal, or a computed literal key. */
+function staticKey(node: ts.Node): string | null {
+  if (ts.isIdentifier(node) || ts.isNumericLiteral(node)) return node.text;
+  if (ts.isComputedPropertyName(node)) return literalText(stripWrappers(node.expression));
+  return literalText(node);
+}
+
 /** A specifier that folds at build time: a literal, or a concatenation of
  * literals. */
 function isFoldableSpecifier(node: ts.Node): boolean {
@@ -384,11 +392,8 @@ class ModuleScanner {
       return;
     }
     if (ts.isObjectBindingPattern(name)) {
+      this.recordCjsPatternReads(name, init);
       const base = init === undefined ? null : this.builtinOf(init);
-      // Destructuring a builtin's CommonJS object reads each member it
-      // binds (H3.4), as `fs.readFileSync` does.
-      if (base !== null && !base.includes(".") && this.isCjsObjectValue(stripWrappers(init!)))
-        this.recordPatternReads(name, base);
       for (const element of name.elements.nodes) {
         if (!ts.isBindingElement(element)) continue;
         const local = element.name;
@@ -610,9 +615,11 @@ class ModuleScanner {
   private visit(node: ts.Node): void {
     if (ts.isCallExpression(node)) this.visitCall(node);
     else if (ts.isNewExpression(node)) this.visitNew(node);
-    else if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind))
+    else if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
       this.visitWrite(node.left, node, "write");
-    else if (ts.isDeleteExpression(node)) this.visitDelete(node);
+      if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+        this.recordCjsPatternReads(node.left, node.right);
+    } else if (ts.isDeleteExpression(node)) this.visitDelete(node);
     else if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
       if (
         node.operator === ts.SyntaxKind.PlusPlusToken ||
@@ -637,6 +644,8 @@ class ModuleScanner {
       if ((text === "arguments.callee" || text === "arguments.caller") && !this.isStrict(node))
         this.add("R2.4", "sloppy-arguments", `'${text}'`, node);
       this.recordCjsRead(node);
+    } else if (ts.isElementAccessExpression(node)) {
+      this.recordCjsRead(node);
     } else if (node.kind === ts.SyntaxKind.ThisKeyword) {
       this.visitThis(node);
     } else if (ts.isObjectLiteralExpression(node)) {
@@ -652,32 +661,31 @@ class ModuleScanner {
     }
   }
 
-  /** Records the members an object binding pattern reads from `base`, a
-   * builtin module's CommonJS object or a member of one: each element's
-   * property, and the members a nested pattern reads from it. */
-  private recordPatternReads(pattern: ts.ObjectBindingPattern, base: string): void {
-    for (const element of pattern.elements.nodes) {
-      if (!ts.isBindingElement(element) || element.dotDotDotToken !== undefined) continue;
-      const key = element.propertyName ?? element.name;
-      const member =
-        key !== undefined && (ts.isIdentifier(key) || ts.isStringLiteral(key)) ? key.text : null;
-      if (member === null) continue;
-      this.cjsReads.push({
-        member: `${base}.${member}`,
-        loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(element), end: element.end },
-      });
-      if (element.name !== undefined && ts.isObjectBindingPattern(element.name))
-        this.recordPatternReads(element.name, `${base}.${member}`);
-    }
-  }
-
   /** Records a read of a member of a builtin module's CommonJS object, so
    * a patch installed by an island module can be checked against it
    * (H3.4). The left of an assignment (and a delete or ++/-- target) is a
-   * write, not a read. */
-  private recordCjsRead(node: ts.PropertyAccessExpression): void {
-    const member = this.cjsMemberOf(node);
-    if (member === null) return;
+   * write, not a read. A computed key reads a member the scan cannot name,
+   * so it is recorded as the whole module ("fs.*"). */
+  private recordCjsRead(node: ts.PropertyAccessExpression | ts.ElementAccessExpression): void {
+    const root = chainRoot(node);
+    const text = chainText(node);
+    let member: string;
+    if (root === null) {
+      // A require() of the builtin read directly
+      // (`require("fs").readFileSync`): the chain starts at the call.
+      let base = stripWrappers(node.expression);
+      while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base))
+        base = stripWrappers(base.expression);
+      if (!this.isCjsObjectValue(base)) return;
+      const module = this.builtinOf(base);
+      if (module === null) return;
+      member = this.builtinOf(node) ?? `${module.split(".")[0]}.*`;
+    } else {
+      if (!this.cjsBuiltinObjects.has(root.text)) return;
+      const module = this.builtinBindings.get(root.text);
+      if (module === undefined) return;
+      member = text === null ? `${module}.*` : module + text.slice(root.text.length);
+    }
     const parent = node.parent;
     if (parent !== undefined) {
       if (
@@ -693,27 +701,76 @@ class ModuleScanner {
       )
         return;
     }
+    this.pushCjsRead(member, node);
+  }
+
+  private pushCjsRead(member: string, node: ts.Node): void {
     this.cjsReads.push({
       member,
       loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(node), end: node.end },
     });
   }
 
-  /** The `module.member` a property read names through a builtin module's
-   * CommonJS object: a name bound to one, or a require() of the builtin
-   * read directly (`require("fs").readFileSync`). Null for any other read. */
-  private cjsMemberOf(node: ts.PropertyAccessExpression): string | null {
-    const root = chainRoot(node);
-    if (root !== null) {
-      if (!this.cjsBuiltinObjects.has(root.text)) return null;
-      const module = this.builtinBindings.get(root.text);
-      const text = chainText(node);
-      return module === undefined || text === null ? null : module + text.slice(root.text.length);
+  /** The reads of a destructuring whose source is a builtin module's
+   * CommonJS object (`const { readFileSync } = require("fs")`,
+   * `({ readFileSync } = fs)`): each property it takes is read when the
+   * destructuring runs, so it sees a patch installed before. A rest element
+   * or a computed key reads members the scan cannot name ("fs.*"). */
+  private recordCjsPatternReads(pattern: ts.Node, source: ts.Node | undefined): void {
+    if (source === undefined) return;
+    const value = stripWrappers(source);
+    if (!this.isCjsObjectValue(value)) return;
+    const module = this.builtinOf(value);
+    if (module === null || module.includes(".")) return;
+    this.recordPatternReads(pattern, module);
+  }
+
+  private recordPatternReads(pattern: ts.Node, base: string): void {
+    const target = stripWrappers(pattern);
+    const elements: {
+      key: ts.Node | undefined;
+      value: ts.Node | undefined;
+      rest: boolean;
+      node: ts.Node;
+    }[] = [];
+    if (ts.isObjectBindingPattern(target)) {
+      for (const element of target.elements.nodes) {
+        if (!ts.isBindingElement(element)) continue;
+        elements.push({
+          key: element.propertyName ?? element.name,
+          value: element.name,
+          rest: element.dotDotDotToken !== undefined,
+          node: element,
+        });
+      }
+    } else if (ts.isObjectLiteralExpression(target)) {
+      for (const prop of target.properties.nodes) {
+        if (ts.isPropertyAssignment(prop))
+          elements.push({ key: prop.name, value: prop.initializer, rest: false, node: prop });
+        else if (ts.isShorthandPropertyAssignment(prop))
+          elements.push({ key: prop.name, value: undefined, rest: false, node: prop });
+        else if (ts.isSpreadAssignment(prop))
+          elements.push({ key: undefined, value: undefined, rest: true, node: prop });
+      }
+    } else return;
+    for (const element of elements) {
+      const key = element.rest || element.key === undefined ? null : staticKey(element.key);
+      if (key === null) {
+        this.pushCjsRead(`${base.split(".")[0]}.*`, element.node);
+        continue;
+      }
+      const member = `${base}.${key}`;
+      this.pushCjsRead(member, element.node);
+      // A nested pattern reads the member's own properties too.
+      if (element.value !== undefined) {
+        let inner = stripWrappers(element.value);
+        // `{ readFileSync = fallback }` (a default) and `{ a: { b } = {} }`.
+        if (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+          inner = stripWrappers(inner.left);
+        if (ts.isObjectBindingPattern(inner) || ts.isObjectLiteralExpression(inner))
+          this.recordPatternReads(inner, member);
+      }
     }
-    let base = stripWrappers(node.expression);
-    while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base))
-      base = stripWrappers(base.expression);
-    return ts.isCallExpression(base) && this.isCjsObjectValue(base) ? this.builtinOf(node) : null;
   }
 
   private visitSpecifier(spec: string, node: ts.Node): void {

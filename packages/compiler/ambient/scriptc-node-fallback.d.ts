@@ -341,6 +341,12 @@ declare var process: {
    * (chunks stay bytes; decode with TextDecoder). */
   stdin: {
     readonly isTTY: boolean;
+    /* The descriptor the stream is built over (Node reports 0 here and
+     * 1/2 on stdout/stderr, whatever the underlying file is). */
+    readonly fd: 0;
+    /* True while a TTY stdin runs in raw mode; Node's own property is
+     * undefined on a non-TTY stdin (the `x || false` idiom). */
+    readonly isRaw: boolean;
     on(event: "data", listener: (chunk: Uint8Array) => void): void;
     on(event: "end", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
@@ -375,6 +381,12 @@ declare var process: {
    * removal see the same value. */
   on(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   on(event: "exit", listener: (code: number) => void): void;
+  /* prependListener — the same registration at the FRONT of the event's
+   * listener list (Node's EventEmitter order), for the registries that
+   * own a prepend entry ('exit' and the signal family). prependOnceListener
+   * has no lowering. */
+  prependListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
+  prependListener(event: "exit", listener: (code: number) => void): void;
   /* 'warning' — Node's process-warning channel: listeners receive the
    * warning Error (as a dyn value); emitWarning and the runtime's
    * deprecation sites dispatch synchronously (SEMANTICS.md). */
@@ -1765,6 +1777,8 @@ declare module "tty" {
     /* The bytes queued behind the last write: the compiled binary's fd
      * 1/2 writes are synchronous, so it is always 0. */
     readonly writableLength: number;
+    /* The descriptor behind the stream (1 for stdout, 2 for stderr). */
+    readonly fd: number;
     /* Node's default for the process streams (65536 for a pipe, a file and a
      * TTY): a constant, because nothing is ever queued. */
     readonly writableHighWaterMark: number;

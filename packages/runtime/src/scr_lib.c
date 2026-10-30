@@ -3466,7 +3466,15 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
   int error = scr_file_read_all(f, -1, false, &out);
   fclose(f);
   if (error) { scr_fs_throw(error, "read", path); return NULL; }
+#ifdef SCR_FS_BUFFER_BRAND
+  /* Node answers a Buffer: the brand is observable (Buffer.isBuffer,
+   * .constructor, instanceof, inspect), so the read's bytes carry it. */
+  ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+#else
   return scr_bytes_take_data(out.bytes, out.len);
+#endif
 }
 
 /* readFileSync(path, "utf8") and fs.promises.readFile(path, "utf8"): the
@@ -4768,6 +4776,69 @@ static int scr_fs_win_errno(DWORD error) {
     return EIO;
   }
 }
+
+/* libuv's fs__stat_impl_from_path identity comparison (volume serial and
+ * file index): the same-file CopyFileW failure below is a success. */
+static bool scr_fs_win_same_file(const WCHAR *a, const WCHAR *b) {
+  BY_HANDLE_FILE_INFORMATION first, second;
+  HANDLE handle = CreateFileW(a, 0,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  BOOL ok = GetFileInformationByHandle(handle, &first);
+  CloseHandle(handle);
+  if (!ok) return false;
+  handle = CreateFileW(b, 0,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                       OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  ok = GetFileInformationByHandle(handle, &second);
+  CloseHandle(handle);
+  if (!ok) return false;
+  return first.dwVolumeSerialNumber == second.dwVolumeSerialNumber &&
+         first.nFileIndexHigh == second.nFileIndexHigh &&
+         first.nFileIndexLow == second.nFileIndexLow;
+}
+
+/* The Win32 arm of copyFile's mode form (scr_fs_cp.c's SCR_FS_FLAGS build
+ * has the POSIX one; writeFile's flag form is portable and lives in
+ * scr_fs_flags.c). It sits here because the wide-path and errno helpers
+ * above are this file's; _WIN32 excludes it from the POSIX builds, so every
+ * other platform's scr_lib.c object is unchanged. */
+
+/* copyFileSync(src, dest, mode) and copyFile(src, dest, mode): libuv's
+ * fs__copyfile in src/win/fs.c. CopyFileW carries only COPYFILE_EXCL (its
+ * bFailIfExists flag); COPYFILE_FICLONE (2) falls back to a plain copy and
+ * COPYFILE_FICLONE_FORCE (4) is the ENOSYS uv_fs_copyfile reports. The
+ * POSIX arm lives in scr_fs_cp.c with its reflink handling. */
+void scr_fs_copyfile_flags(ScrStr *src, ScrStr *dest, double mode) {
+  if (!(mode >= 0 && mode <= 7)) {
+    static const char text[] = "mode is out of range: >= 0 && <= 7";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  if (!scr_fs_path_ok(src, "src")) return;
+  if (!scr_fs_path_ok(dest, "dest")) return;
+  if (((int)mode & 4) != 0) {
+    scr_fs_throw2(ENOSYS, "copyfile", src, dest);
+    return;
+  }
+  WCHAR *from = scr_fs_win_wide(src);
+  WCHAR *to = scr_fs_win_wide(dest);
+  if (!from || !to) {
+    DWORD error = GetLastError();
+    free(from);
+    free(to);
+    scr_fs_throw2(scr_fs_win_errno(error), "copyfile", src, dest);
+    return;
+  }
+  BOOL ok = CopyFileW(from, to, ((int)mode & 1) ? TRUE : FALSE);
+  int error = ok ? 0 : scr_fs_win_errno(GetLastError());
+  if (!ok && error == EBUSY && scr_fs_win_same_file(from, to)) error = 0;
+  free(from);
+  free(to);
+  if (error != 0) scr_fs_throw2(error, "copyfile", src, dest);
+}
 #endif
 
 int scr_fs_rename_raw(const ScrStr *oldpath, const ScrStr *newpath) {
@@ -5236,7 +5307,15 @@ ScrBytes *scr_fs_read_fd_bytes(double fd) {
   ScrFileRead out;
   int error = scr_file_read_all(NULL, (int)fd, false, &out);
   if (error) { scr_fs_throw_nopath(error, "read"); return NULL; }
+#ifdef SCR_FS_BUFFER_BRAND
+  /* Node answers a Buffer here too (the fd form of readFileSync and
+   * FileHandle#readFile). */
+  ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+#else
   return scr_bytes_take_data(out.bytes, out.len);
+#endif
 }
 
 /* ── the tty probes ──────────────────────────────────────────────────── */
@@ -5284,7 +5363,12 @@ double scr_process_rows(double fd) { return scr_process_dimension(fd, true); }
  * setRawMode(false) restores the termios saved at the first raw entry
  * (libuv's orig_termios), a no-op when raw mode was never entered.
  * NON-TTY stdin: Node's process.stdin is a Socket with no setRawMode
- * member at all, so the call throws Node's exact catchable TypeError. */
+ * member at all, so the call throws Node's exact catchable TypeError.
+ * A TTY call records the mode for process.stdin.isRaw. */
+static SCR_TL bool scr_stdin_raw;
+
+bool scr_process_stdin_raw(void) { return scr_stdin_raw; }
+
 #ifdef _WIN32
 static SCR_TL DWORD scr_stdin_cooked;
 static SCR_TL bool scr_stdin_cooked_saved = false;
@@ -5295,6 +5379,7 @@ void scr_process_stdin_set_raw_mode(bool raw) {
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
     return;
   }
+  scr_stdin_raw = raw;
   /* libuv's uv_tty_set_mode(UV_TTY_MODE_RAW) console half: drop line
    * buffering, echo, and Ctrl-C cooking; restore the entry mode on the
    * way back — the termios save/restore shape, translated. */
@@ -5328,6 +5413,7 @@ void scr_process_stdin_set_raw_mode(bool raw) {
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
     return;
   }
+  scr_stdin_raw = raw;
   if (raw) {
     struct termios t;
     if (tcgetattr(0, &t) != 0) return;

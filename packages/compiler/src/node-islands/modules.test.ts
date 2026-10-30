@@ -298,6 +298,41 @@ describe("modules the program provides", () => {
     expect(files.some((f) => f.path.endsWith("internal.mjs"))).toBe(false);
   });
 
+  test("a runtime-filesystem require ships the generated module and its guard", () => {
+    const root = project({ "src/main.ts": "", "src/helper.cjs": "" });
+    const collector = new NodeIslandModuleCollector();
+    // A program whose only island need is the runtime require still ships a
+    // tree: the caller anchors it, and the generated pair stands in it.
+    collector.enableDynload(
+      [join(root, "src/main.ts"), join(root, "src/helper.cjs")],
+      [join(root, "src/main.ts")],
+    );
+    const tree = collector.tree()!;
+    // The pair is the whole tree: the caller only anchors its root, and the
+    // duplicate guard names the compiled modules by build path (and by the
+    // tree path they would have, for the ones inside the root).
+    expect(tree.files.map((f) => f.path)).toEqual([
+      ".scriptc/dynload.cjs",
+      ".scriptc/owned-modules.json",
+    ]);
+    expect(tree.root).toBe(join(root, "src"));
+    const owned = tree.files.find((f) => f.path === ".scriptc/owned-modules.json")!;
+    expect(JSON.parse(owned.content!)).toEqual([
+      join(root, "src/helper.cjs"),
+      join(root, "src/main.ts"),
+      "helper.cjs",
+      "main.ts",
+    ]);
+    const generated = tree.files.find((f) => f.path === ".scriptc/dynload.cjs")!;
+    expect(generated.content).toContain("ERR_SCRIPTC_DUPLICATE_MODULE");
+    expect(generated.content).toContain("registerHooks");
+  });
+
+  test("a tree with no load and no runtime require is not shipped", () => {
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.tree()).toBeNull();
+  });
+
   test("requireModule specifiers come from code, not comments or strings", () => {
     expect(
       requireModuleSpecifiers(`

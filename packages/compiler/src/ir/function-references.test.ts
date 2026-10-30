@@ -234,6 +234,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "nodeIsland.modules.location": "other",
   "nodeIsland.modules.files[].path": "other",
   "nodeIsland.modules.files[].sha256": "other",
+  "nodeIsland.modules.files[].content": "other",
   "nodeIsland.modules.links[].path": "other",
   "nodeIsland.modules.links[].target": "other",
   "sloppyDynWrites[]": "other",

@@ -6,6 +6,7 @@ import {
   strLit,
   varRef,
 } from "../../../ir/build.js";
+import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
@@ -51,6 +52,7 @@ import {
 } from "./module-bindings.js";
 import { stripTypeCasts } from "./arguments.js";
 import { boundSpecifier } from "../../specifier-bounds.js";
+import { DYNLOAD_MODULE_PATH } from "../../../node-islands/dynload.js";
 import { keyedHelperName } from "../stable-names.js";
 
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
@@ -347,8 +349,11 @@ export function lowerCreateRequireCall(
     const surface = "createRequire's require with a computed specifier or this argument shape";
     const hint =
       'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded';
-    if (!isJsSourceFile(ts.getSourceFileOfNode(call)))
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      if (lowerer.nodeIslandsEnabled)
+        return lowerRuntimeFilesystemRequire(lowerer, call, loc, surface, hint, cr.baseFile);
       lowerer.noLowering(surface, call, hint, undefined, "dynamic-require");
+    }
     // Spread arguments have no run-time resolution: they run, then the
     // call throws the fence.
     if (args.some((a) => ts.isSpreadElement(a)))
@@ -475,6 +480,83 @@ export function lowerCreateRequireCall(
   }
 }
 
+/** SPEC §5.4: a createRequire() require whose specifier the build cannot
+ * name loads a file that exists only when the program runs. One generated
+ * island module (.scriptc/dynload.cjs, node-islands/dynload.ts) resolves the
+ * specifier from the createRequire base's place in the shipped tree with
+ * Node's own loader, and refuses to load a module the program compiled (a
+ * second instance would not be the program's). The arguments are evaluated
+ * in source order, as Node evaluates them, before the call. */
+function lowerRuntimeFilesystemRequire(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+  surface: string,
+  hint: string,
+  baseFile: ts.SourceFile,
+): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.some((a) => ts.isSpreadElement(a)))
+    lowerer.noLowering(surface, call, hint, undefined, "dynamic-require");
+  const stmts: IrStmt[] = [];
+  let specifier = args.length > 0 ? lowerer.lowerExpr(args[0]!) : dynUndefinedExpr(loc);
+  if (args.length > 1) {
+    const slot = lowerer.declareHiddenLocal("%require.id", DYN);
+    stmts.push({ kind: "varDecl", localId: slot.id, init: specifier, loc });
+    for (const arg of args.slice(1))
+      stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc: locOf(arg) });
+    specifier = varRef(slot.id, DYN, loc);
+  }
+  let caller = baseFile.fileName;
+  try {
+    caller = realpathSync(caller);
+  } catch {
+    /* the source path */
+  }
+  lowerer.usesNodeIsland = true;
+  lowerer.usesDynamicRequire = true;
+  // The caller's tree path, set once every site is collected (Lowerer). The
+  // dynload module resolves from its directory, as createRequire(base) does.
+  const callerLiteral: IrExpr & { kind: "strLit" } = {
+    kind: "strLit",
+    value: caller,
+    type: STRING,
+    loc,
+  };
+  lowerer.nodeIslandCallers.push({ literal: callerLiteral, caller });
+  const dynload: IrExpr & { kind: "strLit" } = {
+    kind: "strLit",
+    value: DYNLOAD_MODULE_PATH,
+    type: STRING,
+    loc,
+  };
+  lowerer.nodeIslandDynloads.push({ literal: dynload, caller });
+  const load: IrExpr = {
+    kind: "libCall",
+    fn: "nodeIsland.invoke",
+    args: [
+      { kind: "libCall", fn: "nodeIsland.require", args: [dynload], type: DYN, loc },
+      { kind: "strLit", value: "load", type: STRING, loc },
+      {
+        kind: "dynArrLit",
+        elems: [
+          lowerer.coerceToExpected(callerLiteral, DYN),
+          lowerer.coerceToExpected(specifier, DYN),
+        ],
+        type: DYN,
+        loc,
+      },
+    ],
+    type: DYN,
+    loc,
+  };
+  return lowerer.coerceInto(
+    call,
+    stmts.length === 0 ? load : { kind: "seqExpr", stmts, result: load, type: DYN, loc },
+    lowerer.irTypeOf(call),
+  );
+}
+
 function staticString(node: ts.Expression | undefined): string | null {
   if (node === undefined) return null;
   const value = stripTypeCasts(node);
@@ -512,7 +594,8 @@ export function lowerImportMetaResolveCall(
     );
   }
   const specifier = staticString(call.arguments.nodes[0]);
-  if (specifier === null) return lowerBoundedImportMetaResolve(lowerer, call, call.arguments.nodes[0]!);
+  if (specifier === null)
+    return lowerBoundedImportMetaResolve(lowerer, call, call.arguments.nodes[0]!);
   const result = resolveImportMetaRuntime(
     ts.getSourceFileOfNode(call).fileName,
     specifier,

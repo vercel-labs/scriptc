@@ -50,6 +50,9 @@ const KNOWN: Record<string, Known> = {
   "bytes-exit": { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
+  // The package's own CommonJS entry, loaded at run time, shares the
+  // singleton its compiled core.js opened (SPEC §5.6).
+  "cjs-registry": { island: true },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
   "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },

@@ -31,6 +31,7 @@ import { classifyDiagnostic, isIslandReasonCode } from "../node-islands/classify
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
+import { trackedReadFile } from "../frontend/input-tracker.js";
 import { isEsmFile } from "../frontend/lowering/lower-node-island.js";
 import type { PackageEdge } from "../node-islands/scan.js";
 
@@ -59,8 +60,8 @@ export function prepareExecutableModule(
   unitStore: UnitStore | null = null,
 ): PreparedExecutableModule | CompileFailure {
   // The island decision reads the detector's scan unless islands are off.
-  const islandScan =
-    nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode !== "off";
+  const islandMode = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode;
+  const islandScan = islandMode !== "off";
   let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
   timing("frontend-load");
   // Node islands (scope-B NI-4): packages refused natively run in Node,
@@ -72,6 +73,7 @@ export function prepareExecutableModule(
     fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
       islandPackages: new Set(islandDecision.packages.keys()),
       islandScan,
+      islandTypeRoots: islandTypeRootsOf(entryPath, islandDecision.packages),
     });
     timing("frontend-island-reload");
   }
@@ -130,6 +132,7 @@ export function prepareExecutableModule(
       lowered = fe.lower(
         {
           ...(islandDecision !== null ? { nodeIslands: islandDecision } : {}),
+          nodeIslandMode: islandMode,
           targetPlatform: buildPlatform,
           ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
           ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
@@ -151,14 +154,18 @@ export function prepareExecutableModule(
       // Packages whose own modules refused to lower run in Node islands
       // too (the authoritative lowering, DESIGN.md §1.4): build again with
       // them as islands.
-      const grown = loweringIslands(
-        entryPath,
-        opts,
-        fe,
-        lowered.diagnostics,
-        lowerIslands,
-        fe.nodeIslandScan?.({ userJs: false }).edges,
-      );
+      // A computed import() of the program's own CommonJS module names a
+      // package that runs in an island whole (SPEC §5.6).
+      const grown =
+        cjsNamespaceIslands(entryPath, opts, fe, lowered.diagnostics, lowerIslands) ??
+        loweringIslands(
+          entryPath,
+          opts,
+          fe,
+          lowered.diagnostics,
+          lowerIslands,
+          fe.nodeIslandScan?.({ userJs: false }).edges,
+        );
       if (grown !== null) {
         fe.dispose();
         frontendDisposed();
@@ -474,6 +481,71 @@ function loweringIslands(
       });
       added = true;
     }
+  }
+  return grown.size === known.size ? null : grown;
+}
+
+/** The declaration entries the island packages need rooted: a package whose
+ * declarations are ambient `declare module "<pkg>/..."` blocks in one file
+ * (highlight.js 10.7.3 ships only types/index.d.ts, naming its subpaths)
+ * types its subpath imports only when that file is part of the program. A
+ * root of that shape adds declarations of the islanded package alone,
+ * never a runtime module and never another package's surface. */
+function islandTypeRootsOf(
+  entryPath: string,
+  packages: ReadonlyMap<string, IslandPackage>,
+): string[] {
+  const roots: string[] = [];
+  for (const name of packages.keys()) {
+    const resolved = resolveBareModule(entryPath, name, "types-only");
+    if (resolved === null || resolved.packageName !== name) continue;
+    if (!/\.d\.(?:ts|mts|cts)$/.test(resolved.typesFile)) continue;
+    const text = trackedReadFile(resolved.typesFile);
+    if (text === null) continue;
+    const ambient = new RegExp(
+      `declare module\\s+["']${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`,
+    );
+    if (ambient.test(text)) roots.push(resolved.typesFile);
+  }
+  return roots.sort();
+}
+
+/** The packages whose CommonJS modules a computed `import()` of the
+ * program's own graph names (`--node-islands=auto` only, SPEC §5.6): the
+ * module's namespace comes from module.exports through Node's CJS lexer, so
+ * the package that owns it runs in an island whole, and the import() becomes
+ * a namespace import of an island package. Null when there are none. */
+function cjsNamespaceIslands(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  fe: ReturnType<FrontendFactory>,
+  diagnostics: readonly ScrDiagnostic[],
+  known: ReadonlyMap<string, IslandPackage>,
+): Map<string, IslandPackage> | null {
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  if (policy.mode !== "auto" || known.size > 16) return null;
+  const compiled = new Set(fe.npmStatic.filter((e) => e.status === "static").map((e) => e.package));
+  if (compiled.size === 0) return null;
+  const grown = new Map(known);
+  for (const d of diagnostics) {
+    if (d.code !== "SC1090") continue;
+    const named = /^dynamic import of the program's own CommonJS module '([^']+)'/.exec(d.message);
+    if (named === null) continue;
+    const spec = named[1]!;
+    const js =
+      resolveBareModule(d.loc.file, spec, "js-only") ??
+      resolveBareModule(d.loc.file, spec, "js-only", "require");
+    const at = js === null ? null : packageDirOf(js.typesFile);
+    if (at === null || !compiled.has(at.name) || grown.has(at.name)) continue;
+    if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
+    const reason = classifyDiagnostic(d, "refusal");
+    grown.set(at.name, {
+      name: at.name,
+      version: packageVersionOf(at.dir),
+      dir: at.dir,
+      class: reason.class,
+      reason: describe(reason),
+    });
   }
   return grown.size === known.size ? null : grown;
 }

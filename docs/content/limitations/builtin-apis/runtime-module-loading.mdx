@@ -1,0 +1,5 @@
+- **Runtime module loading:** Compiled program code can call a `createRequire` require with a computed specifier, and the program resolves and loads that file from the filesystem when it runs.
+  A specifier that resolves to nothing throws Node.js's `MODULE_NOT_FOUND`.
+  A computed specifier that resolves to a module the program compiled throws `ERR_SCRIPTC_DUPLICATE_MODULE`, where Node.js would load a second instance of it: the program's own module is the one instance, and a second one would not share its state.
+  Such a call makes the program load a Node.js engine at run time.
+  With `--node-islands=off` the call keeps its compile-time refusal instead.

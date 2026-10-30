@@ -54,8 +54,10 @@ import {
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
+  activeNodeIslandMode,
   activeNodeIslands,
   isForeignType,
+  setActiveNodeIslandMode,
   setActiveNodeIslands,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
@@ -268,6 +270,7 @@ export { newFnCtx, type FnCtx } from "./function-context.js";
  * - Lexical scoping is resolved here: locals get function-unique ids
  *   ("x.0", "x.1" for shadowing); the IR is scope-flat.
  */
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
 import { compilerOwnedFileName, tsgoPath } from "../dts-paths.js";
@@ -790,6 +793,7 @@ import {
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
 import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
+import { DYNLOAD_MODULE_PATH } from "../../node-islands/dynload.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -976,6 +980,10 @@ export interface LowerOptions {
   /** Packages that run in Node islands (scope-B NI-4): their imports lower
    * to island loads and their values to island handles. */
   nodeIslands?: NodeIslandSet | null;
+  /** The build's Node island policy mode: under "auto" and "explicit" a
+   * createRequire() require the build cannot resolve lowers through the
+   * generated island module (SPEC §5.4); under "off" it keeps its refusal. */
+  nodeIslandMode?: "auto" | "explicit" | "off";
   /** Parser/checker services owned by the load; required for npm graph analysis. */
   frontendServices?: FrontendServices | undefined;
   /** Where reachable emit stores its units' records and finds an earlier
@@ -1222,12 +1230,14 @@ export function lowerToIr(
   options: LowerOptions = {},
 ): LowerResult {
   setActiveNodeIslands(options.nodeIslands ?? null);
+  setActiveNodeIslandMode(options.nodeIslandMode !== undefined && options.nodeIslandMode !== "off");
   try {
     const result = lowerToIrWithIslands(program, entry, moduleOrder, options);
     markModuleInitFences(program, result.runtimeFences);
     return result;
   } finally {
     setActiveNodeIslands(null);
+    setActiveNodeIslandMode(false);
   }
 }
 
@@ -3753,11 +3763,22 @@ export class Lowerer {
   usesNodeIsland = false;
   /** The program's Node island packages (scope-B NI-4), or null. */
   readonly nodeIslands: NodeIslandSet | null = activeNodeIslands();
+  /** SPEC §5.4: the build may run islands (its policy mode is not off), so
+   * a runtime-filesystem require lowers through the generated island
+   * module even when no package runs in an island. */
+  readonly nodeIslandsEnabled: boolean = activeNodeIslandMode();
   /** Island module loads, by the importing file and specifier: the module
    * global holding what the import form sees (lower-node-island.ts). */
   readonly islandModules = new Map<string, IslandModuleBinding>();
   /** The modules Node island calls load (lower-node-island.ts). */
   readonly nodeIslandModules = new NodeIslandModuleCollector();
+  /** SPEC §5.4: the program has a runtime-filesystem require. Its generated
+   * island module joins the tree, with the program's modules as its
+   * duplicate guard. */
+  usesDynamicRequire = false;
+  /** Each runtime-filesystem require's dynload specifier literal, set to the
+   * generated module's path relative to the caller when lowering ends. */
+  readonly nodeIslandDynloads: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
   /** Each call's caller literal, set to its tree path when lowering ends. */
   readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
   /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
@@ -11191,7 +11212,26 @@ export class Lowerer {
    * call's caller literal and each load's path literal set to its path in
    * that tree. The executable build fills in the libnode pack (index.ts). */
   private nodeIslandRecord(): NonNullable<IrModule["nodeIsland"]> {
+    if (this.usesDynamicRequire) {
+      // SPEC §5.4: every module the program compiled, as a build path (an
+      // absolute specifier the native code computed names it so).
+      const owned: string[] = [];
+      for (const file of this.initNameOf.keys()) {
+        try {
+          owned.push(realpathSync(file.fileName));
+        } catch {
+          owned.push(file.fileName);
+        }
+      }
+      this.nodeIslandModules.enableDynload(
+        owned,
+        this.nodeIslandDynloads.map((d) => d.caller),
+      );
+    }
     const modules = this.nodeIslandModules.tree();
+    // The generated module's specifier is relative to the tree ROOT (the
+    // runtime resolves a `./` specifier under it), not to the caller.
+    for (const { literal } of this.nodeIslandDynloads) literal.value = `./${DYNLOAD_MODULE_PATH}`;
     for (const { literal, caller } of this.nodeIslandCallers)
       literal.value = NodeIslandModuleCollector.callerPath(modules, caller);
     for (const { literal, caller, target } of this.nodeIslandSpecifiers)

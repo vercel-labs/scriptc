@@ -41,6 +41,12 @@ import {
 } from "../frontend/input-tracker.js";
 import type { IrNodeIslandModules } from "../ir/ir.js";
 import { packageDirOf } from "./origin.js";
+import {
+  DYNLOAD_MODULE_PATH,
+  DYNLOAD_OWNED_PATH,
+  dynloadModuleSource,
+  ownedModulesJson,
+} from "./dynload.js";
 
 export type NodeIslandModuleTree = IrNodeIslandModules;
 type NodeIslandModuleFile = IrNodeIslandModules["files"][number];
@@ -176,6 +182,9 @@ export class NodeIslandModuleCollector {
   private readonly loaded = new Set<string>();
   /** Program modules whose source the program provides (addProvided). */
   private readonly provided = new Set<string>();
+  /** SPEC §5.4: the modules a generated runtime-filesystem require must not
+   * load (their build paths), or null when the program has no such site. */
+  private dynloadOwned: readonly string[] | null = null;
 
   /** Collects the module `specifier` names from `caller` (a real path).
    * Returns null, or the reason the build cannot ship it. */
@@ -214,9 +223,20 @@ export class NodeIslandModuleCollector {
     }
   }
 
+  /** SPEC §5.4: the program has a runtime-filesystem require. `owned` lists
+   * the modules it compiled (build paths): the generated dynload module
+   * refuses to load any of them at run time. `callers` are the requiring
+   * modules' real paths: they anchor the tree so each one has a tree path,
+   * and a program with no island module besides the generated pair still
+   * ships a tree. */
+  enableDynload(owned: readonly string[], callers: readonly string[]): void {
+    this.dynloadOwned = owned;
+    for (const caller of callers) this.callers.add(caller);
+  }
+
   /** The collected tree, or null when no call loads a file. */
   tree(): NodeIslandModuleTree | null {
-    if (this.files.size === 0 && this.links.size === 0) return null;
+    if (this.files.size === 0 && this.links.size === 0 && this.dynloadOwned === null) return null;
     const anchors = [
       ...this.files,
       ...this.links.keys(),
@@ -241,6 +261,26 @@ export class NodeIslandModuleCollector {
       const bytes = trackedReadBytes(file);
       if (bytes === null) continue;
       files.push({ path, size: bytes.length, sha256: sha256(bytes) });
+    }
+    if (this.dynloadOwned !== null) {
+      // SPEC §5.4: the runtime require's module and its duplicate guard.
+      const owned = new Set<string>();
+      for (const file of this.dynloadOwned) {
+        owned.add(file);
+        const inside = relative(root, file);
+        if (inside !== "" && !inside.startsWith("..") && !isAbsolute(inside))
+          owned.add(portable(inside));
+      }
+      for (const file of this.provided) owned.add(portable(relative(root, file)));
+      const generated: [string, string][] = [
+        [DYNLOAD_MODULE_PATH, dynloadModuleSource()],
+        [DYNLOAD_OWNED_PATH, ownedModulesJson([...owned])],
+      ];
+      for (const [path, content] of generated) {
+        const bytes = new TextEncoder().encode(content);
+        files.push({ path, size: bytes.length, sha256: sha256(bytes), content });
+      }
+      files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     }
     const links: NodeIslandModuleLink[] = [...this.links]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -751,7 +791,8 @@ export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array 
   for (const file of modules.files) {
     const path = join(modules.root, ...file.path.split("/"));
     let bytes: Uint8Array;
-    if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
+    if (file.content !== undefined) bytes = new TextEncoder().encode(file.content);
+    else if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
     else
       try {
         bytes = new Uint8Array(readFileSync(path));

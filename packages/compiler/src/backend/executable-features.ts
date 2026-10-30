@@ -78,6 +78,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     watch: features.fsWatch,
     watchFile: features.fsWatchFile,
     readlineStderr: features.readlineStderr,
+    fsBufferBrand: features.fsBufferBrand,
     foreignFfi: hasForeignFfiCallback(mod.ffiImports ?? []),
     nodeTest: features.nodeTest,
     tls: features.tls,

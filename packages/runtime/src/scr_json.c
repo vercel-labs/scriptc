@@ -12074,7 +12074,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
     const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);
     bool out;
-    if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
+    if (klass && scr_dyn_name_in_strs(key, klass->names, klass->count)) {
+      /* a compiled method or accessor of the class or a base class, also
+       * on a view whose snapshot has a prototype (an Error subclass's view
+       * carries Error.prototype) */
+      out = true;
+    } else if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
       /* An instance view keeps only own fields; its class prototype chain
        * contributes the compiled methods and accessors. */
       out = scr_dyn_property_owner(materialized, key->data, key->len) ||

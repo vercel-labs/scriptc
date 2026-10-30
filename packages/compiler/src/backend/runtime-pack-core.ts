@@ -313,6 +313,7 @@ export function effectiveRuntimeFeatures(
   const tlsCaEffective = features.tlsCa || tlsEffective;
   return {
     ...features,
+    fsBufferBrand: features.fsBufferBrand === true,
     workers: features.workers === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,

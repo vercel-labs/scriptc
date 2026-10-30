@@ -65,6 +65,7 @@ export async function warmNativeCaches(
         watch: false,
         watchFile: false,
         readlineStderr: false,
+        fsBufferBrand: false,
         foreignFfi: false,
         nodeTest: false,
         tls: false,

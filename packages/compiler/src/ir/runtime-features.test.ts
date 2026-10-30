@@ -1,6 +1,16 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { DYN, F64, STRING, VOID, arrayOf, type IrLibFn, type IrModule, type IrStmt } from "./ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  STRING,
+  VOID,
+  arrayOf,
+  type IrLibFn,
+  type IrModule,
+  type IrStmt,
+} from "./ir.js";
 import { moduleRuntimeFeatures, moduleUsesHttp2, moduleUsesTlsCa } from "./runtime-features.js";
 
 describe("runtime feature snapshots", () => {
@@ -200,5 +210,115 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
     mod.unions[0]!.arms[0] = STRING;
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
+  });
+
+  test("gates the fs read's Buffer brand on a typed read plus an observable brand", () => {
+    const bytes = { kind: "bytes" as const, elem: "u8" as const };
+    const data = { kind: "varRef" as const, localId: "data", type: bytes, loc };
+    const withRead = (): IrModule => {
+      const mod = module();
+      mod.functions[0]!.locals.push({ id: "data", name: "data", mutable: false, type: bytes });
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "libCall", fn: "fs.readFileSyncBytes", args: [], type: bytes, loc },
+      });
+      return mod;
+    };
+    // A read alone keeps the default scr_lib.c object.
+    expect(moduleRuntimeFeatures(withRead()).fsBufferBrand).toBe(false);
+    // Buffer.isBuffer on bytes reads the brand.
+    const branded = withRead();
+    branded.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "libCall", fn: "buffer.isBranded", args: [data], type: BOOL, loc },
+    });
+    expect(moduleRuntimeFeatures(branded).fsBufferBrand).toBe(true);
+    // inspect of a Uint8Array-typed bytes value renders the Buffer form.
+    const inspected = withRead();
+    inspected.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "libCall", fn: "insp.bytes", args: [data], type: STRING, loc },
+    });
+    expect(moduleRuntimeFeatures(inspected).fsBufferBrand).toBe(true);
+    // Boxing to dyn (unknown, .constructor, instanceof) carries the brand.
+    const boxed = withRead();
+    boxed.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynFrom", type: DYN, loc, value: data },
+    });
+    expect(moduleRuntimeFeatures(boxed).fsBufferBrand).toBe(true);
+    // A function returning bytes boxed into dyn: its call thunk boxes the
+    // result.
+    const reader = { kind: "func" as const, params: [], ret: bytes };
+    const boxedReader = withRead();
+    boxedReader.functions[0]!.locals.push({
+      id: "reader",
+      name: "reader",
+      mutable: false,
+      type: reader,
+    });
+    boxedReader.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynFrom",
+        type: DYN,
+        loc,
+        value: { kind: "varRef", localId: "reader", type: reader, loc },
+      },
+    });
+    expect(moduleRuntimeFeatures(boxedReader).fsBufferBrand).toBe(true);
+    // A checked-dynamic function typed to take bytes: its thunk boxes the
+    // argument.
+    const consumer = { kind: "func" as const, params: [bytes], ret: VOID };
+    const checkedConsumer = withRead();
+    checkedConsumer.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynCheck",
+        type: consumer,
+        loc,
+        value: { kind: "varRef", localId: "callback", type: DYN, loc },
+      },
+    });
+    expect(moduleRuntimeFeatures(checkedConsumer).fsBufferBrand).toBe(true);
+  });
+
+  test("gates the Buffer brand off without a typed read", () => {
+    const bytes = { kind: "bytes" as const, elem: "u8" as const };
+    // A dynamic read brands through scr_dyn_new_buffer already.
+    const dynamic = module();
+    dynamic.functions[0]!.body.push(call("fs.readFileSyncDyn"));
+    dynamic.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynTest",
+        test: "buffer",
+        value: { kind: "varRef", localId: "data", type: DYN, loc },
+        type: BOOL,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(dynamic).fsBufferBrand).toBe(false);
+    // Observing bytes that no typed read produced selects nothing.
+    const observationOnly = module();
+    observationOnly.functions[0]!.locals.push({
+      id: "data",
+      name: "data",
+      mutable: false,
+      type: bytes,
+    });
+    observationOnly.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "libCall", fn: "buffer.isBranded", args: [], type: BOOL, loc },
+    });
+    expect(moduleRuntimeFeatures(observationOnly).fsBufferBrand).toBe(false);
   });
 });

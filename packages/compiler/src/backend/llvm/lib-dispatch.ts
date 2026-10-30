@@ -291,6 +291,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
     return { name: "", type: e.type };
   }
+  if (e.fn === "record.sourceNote") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const keys = emitBorrowedInput(host, e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceNote of a non-record");
+    host.dyn.emitRecordSourceNote(B, built.name, keys.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "array.speciesCreate") {
     // The receiver is borrowed; the call answers a new reference.
     const receiver = emitBorrowedInput(host, e.args[0]!);

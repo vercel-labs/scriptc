@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8630-dyn-hof-narrow-callback-params.ts"
+ ],
+ "diags": []
+}

@@ -14,6 +14,7 @@ import {
   VOID,
   arrayOf,
   BYTES_U8,
+  funcOf,
 } from "../../../ir/ir.js";
 import { boolLit, dynUndefinedExpr, numLit } from "../../../ir/build.js";
 import { READLINE_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "../surfaces.js";
@@ -424,7 +425,12 @@ export function lowerReadlineMethodCall(
   if (name === "question" && args.length === 2) {
     const recv = receiver();
     const query = lowerPromptArg(lowerer, args[0]!);
-    const cb = lowerer.lowerExpr(args[1]!);
+    let cb = lowerer.lowerExpr(args[1]!);
+    // A checked-dynamic callback answers through a dynCheck to (answer:
+    // string) => void; a returned value is discarded.
+    if (cb.type.kind === "dyn")
+      cb = { kind: "dynCheck", value: cb, type: funcOf([STRING], VOID), loc };
+    cb = voidizedCallback(lowerer, cb, loc);
     if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
       lowerer.unsupported(
         "SC1090",
@@ -550,7 +556,7 @@ export function lowerReadlineMethodCall(
       recvLocal === undefined
         ? receiver()
         : { kind: "varRef", localId: recvLocal.id, type: F64, loc };
-    const cb = lowerer.lowerExpr(args[1]!);
+    let cb = lowerer.lowerExpr(args[1]!);
     const want =
       event === "line"
         ? "string"
@@ -559,6 +565,20 @@ export function lowerReadlineMethodCall(
           : event === "history"
             ? "history"
             : null;
+    // A checked-dynamic listener (test/common's mustCall wrapper) is called
+    // through a dynCheck to the event's signature, and a listener's return
+    // value is discarded, as Node does.
+    const payload: IrType[] =
+      want === "string"
+        ? [STRING]
+        : want === "history"
+          ? [arrayOf(STRING)]
+          : want === "error"
+            ? [DYN]
+            : [];
+    if (cb.type.kind === "dyn")
+      cb = { kind: "dynCheck", value: cb, type: funcOf(payload, VOID), loc };
+    cb = voidizedCallback(lowerer, cb, loc);
     const param = cb.type.kind === "func" ? cb.type.params[0] : undefined;
     const paramOk =
       param === undefined ||

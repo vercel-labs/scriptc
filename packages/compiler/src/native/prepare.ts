@@ -289,6 +289,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "watch",
     "watchFile",
     "readlineStderr",
+    "fsBufferBrand",
     "foreignFfi",
     "nodeTest",
     "tls",

@@ -323,6 +323,18 @@ export function variantsFor(source) {
       when: { watchFile: true },
       defines: ["SCR_FS_WATCH_FILE"],
     });
+    // Node answers a Buffer from a file read, and its brand is observable
+    // (Buffer.isBuffer, instanceof, inspect): a program that can observe it
+    // links the build that sets it. Combined with every variant above so a
+    // program that also polls keeps scr_watch_file's stat entry points
+    // (selectVariant takes the variant with the most conditions).
+    for (const { id, when, defines } of variants.slice()) {
+      variants.push({
+        id: `${id}-fs-buffer-brand`,
+        when: { ...when, fsBufferBrand: true },
+        defines: [...defines, "SCR_FS_BUFFER_BRAND"],
+      });
+    }
   }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.

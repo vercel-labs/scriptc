@@ -161,6 +161,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "arrayBuffer.viewF64",
   "arrayBuffer.viewDV",
   "bytes.bufferSource",
+  "text.decoderInput",
+  "text.decoderFlag",
+  "text.decodeStreamOption",
+  "text.decoderEncodingOptions",
   "text.decodeBufferSource",
 
   "bigint.parse",

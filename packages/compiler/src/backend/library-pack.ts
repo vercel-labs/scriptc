@@ -58,6 +58,7 @@ export async function compilePackedLibrary(
     watch: false,
     watchFile: false,
     readlineStderr: false,
+    fsBufferBrand: false,
     foreignFfi: false,
     nodeTest: false,
     tls: false,

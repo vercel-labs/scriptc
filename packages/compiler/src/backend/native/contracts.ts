@@ -305,6 +305,11 @@ export interface CcOptions {
    * scr_readline_tty.c, whose interfaces write to fd 2. Every other program
    * links the default objects, byte for byte. */
   readlineStderr?: boolean;
+  /** A typed fs read whose bytes value the program can observe as a Buffer
+   * (moduleUsesFsBufferBrand on the IR): compiles scr_lib.c's
+   * SCR_FS_BUFFER_BRAND build, so programs that never see the brand keep the
+   * default object byte for byte. */
+  fsBufferBrand?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

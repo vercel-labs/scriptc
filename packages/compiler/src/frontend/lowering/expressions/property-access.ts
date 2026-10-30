@@ -1256,7 +1256,7 @@ export function lowerPropertyAccessExpr(
       // A binding boxes under the function's own JavaScript identity when
       // the read site cannot name it (`ref.name` of `var ref; ref = function
       // () {}`): jsValueIdentities answers what the binding holds.
-      const identity = lowerer.functionIdentity(probed);
+      const identity = lowerer.functionIdentityOfValue(probed, expr.expression);
       const fnName =
         builtinValueNameOf(expr.expression, lowerer) ??
         jsFuncNameOf(expr.expression, lowerer) ??
@@ -1268,6 +1268,9 @@ export function lowerPropertyAccessExpr(
         type: DYN,
         ...(fnName !== null ? { fnName } : {}),
         ...(fnLength !== undefined ? { fnLength } : {}),
+        // The type names more than one function (a union of function
+        // types): the value's own closure answers `length`.
+        ...(identity.fnLengthFromValue === true ? { fnLengthFromValue: true as const } : {}),
         loc,
       };
       const key: IrExpr = {

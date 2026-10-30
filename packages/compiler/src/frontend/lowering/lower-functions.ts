@@ -355,8 +355,9 @@ export function lowerLambda(
   // are lowered: record it for every box of this closure. JavaScript sources
   // only — a typed TypeScript module keeps the count its IR signature
   // spells, so this compatibility surface costs typed code nothing.
+  let jsLength: number | null = null;
   if (isJsSourceFile(ts.getSourceFileOfNode(node))) {
-    const jsLength = jsFuncLengthOf(node);
+    jsLength = jsFuncLengthOf(node);
     if (jsLength !== null) lowerer.jsCallableLengths.set(fnName, jsLength);
     const jsName = jsFuncNameOf(node, lowerer);
     if (jsName !== null) lowerer.jsCallableNames.set(fnName, jsName);
@@ -547,6 +548,7 @@ export function lowerLambda(
     const lifted: IrFunction = {
       name: fnName,
       sourceName: jsFuncNameOf(node) ?? "<anonymous>",
+      ...(jsLength !== null ? { jsLength } : {}),
       ...(!isAsync &&
       !isGenerator &&
       (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node))
@@ -665,8 +667,9 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(decl));
     // JavaScript's `length` of this function value (ExpectedArgumentCount),
     // for JavaScript sources only (see lowerLambda).
+    let jsLength: number | null = null;
     if (isJsSourceFile(ts.getSourceFileOfNode(decl))) {
-      const jsLength = jsFuncLengthOf(decl);
+      jsLength = jsFuncLengthOf(decl);
       if (jsLength !== null) lowerer.jsCallableLengths.set(sig.name, jsLength);
       const jsName = jsFuncNameOf(decl, lowerer);
       if (jsName !== null) lowerer.jsCallableNames.set(sig.name, jsName);
@@ -674,6 +677,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     const fn: IrFunction = {
       name: sig.name,
       sourceName: decl.name?.text ?? "<anonymous>",
+      ...(jsLength !== null ? { jsLength } : {}),
       ...(!sig.isAsync && !sig.generator ? { ownsPrototype: true as const } : {}),
       params,
       returnType: bodyReturn,

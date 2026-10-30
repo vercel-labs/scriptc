@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "046d50de1884ed1e";
+export const IR_CODEC_LAYOUT = "df2014517e79c83e";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -25,7 +25,7 @@ export function decodeIrFunction(r: IrReader): IrFunction {
 }
 
 const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","threadSlotKeys","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
-const KEYS1: readonly string[] = ["name","sourceName","displayName","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
+const KEYS1: readonly string[] = ["name","sourceName","displayName","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","jsLength","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
 const KEYS2: readonly string[] = ["libnode","nodeVersion","modules"];
 const KEYS3: readonly string[] = ["profileName","prefix","initSymbol","sinkRegisterSymbol","collectSymbol","resultResetSymbol","threadInstances","callbackRegisterSymbol","callbacks","exports","trapOverlays","identity"];
 const KEYS4: readonly string[] = ["int32Fields","int32Params","int32Returns","int32Locals","int32Elements","noThrow","acyclic","immortalGlobals","programLifetime","inlineArrays"];
@@ -152,7 +152,7 @@ const KEYS124: readonly string[] = ["kind","elems","type","loc"];
 const KEYS125: readonly string[] = ["kind","callee","receiver","calleeName","calleeNameValue","args","spreads","type","loc"];
 const KEYS126: readonly string[] = ["kind","value","preserveRefs","adopt","exact","partialView","inferredSite","origin","type","loc"];
 const KEYS127: readonly string[] = ["kind","value","spelling","firstProp","type","loc"];
-const KEYS128: readonly string[] = ["kind","value","type","loc","liveRef","fnName","fnLength"];
+const KEYS128: readonly string[] = ["kind","value","type","loc","liveRef","fnName","fnLength","fnLengthFromValue"];
 const KEYS129: readonly string[] = ["kind","key","negated","value","type","loc"];
 const KEYS130: readonly string[] = ["kind","recv","method","calleeName","calleeNameValue","args","type","loc"];
 const KEYS131: readonly string[] = ["kind","value","count","notIterableMessage","type","loc"];
@@ -434,6 +434,11 @@ function encIrFunction(w: IrWriter, v: IrFunction): void {
     w.byte(1);
     w.str(v.jsEntry);
   }
+  if (v.jsLength === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.num(v.jsLength);
+  }
   if (v.tier === undefined) w.byte(0);
   else {
     w.byte(1);
@@ -488,15 +493,16 @@ function decIrFunction(r: IrReader): IrFunction {
   const f9 = decT19(r);
   const f10 = decSrcLoc(r);
   const f11 = r.tag(2, "IrFunction.jsEntry") === 0 ? undefined : r.str();
-  const f12 = r.tag(2, "IrFunction.tier") === 0 ? undefined : (r.str() as NonNullable<IrFunction["tier"]>);
-  const f13 = r.tag(2, "IrFunction.speculativeDispatch") === 0 ? undefined : r.bool();
-  const f14 = r.tag(2, "IrFunction.fastRead") === 0 ? undefined : (r.str() as NonNullable<IrFunction["fastRead"]>);
-  const f15 = r.tag(2, "IrFunction.plainLoops") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["plainLoops"]>);
-  const f16 = r.tag(2, "IrFunction.async") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["async"]>);
-  const f17 = r.tag(2, "IrFunction.generator") === 0 ? undefined : decT21(r);
-  const f18 = r.tag(2, "IrFunction.asyncCacheGlobal") === 0 ? undefined : r.str();
-  const f19 = r.tag(2, "IrFunction.asyncCycleCacheGlobal") === 0 ? undefined : r.str();
-  const o: IrFunction = { name: f0, ...(f1 !== undefined ? { sourceName: f1 } : {}), ...(f2 !== undefined ? { displayName: f2 } : {}), ...(f3 !== undefined ? { ownsPrototype: f3 } : {}), params: f4, returnType: f5, locals: f6, ...(f7 !== undefined ? { captures: f7 } : {}), ...(f8 !== undefined ? { classCaptures: f8 } : {}), body: f9, loc: f10, ...(f11 !== undefined ? { jsEntry: f11 } : {}), ...(f12 !== undefined ? { tier: f12 } : {}), ...(f13 !== undefined ? { speculativeDispatch: f13 } : {}), ...(f14 !== undefined ? { fastRead: f14 } : {}), ...(f15 !== undefined ? { plainLoops: f15 } : {}), ...(f16 !== undefined ? { async: f16 } : {}), ...(f17 !== undefined ? { generator: f17 } : {}), ...(f18 !== undefined ? { asyncCacheGlobal: f18 } : {}), ...(f19 !== undefined ? { asyncCycleCacheGlobal: f19 } : {}) };
+  const f12 = r.tag(2, "IrFunction.jsLength") === 0 ? undefined : r.num();
+  const f13 = r.tag(2, "IrFunction.tier") === 0 ? undefined : (r.str() as NonNullable<IrFunction["tier"]>);
+  const f14 = r.tag(2, "IrFunction.speculativeDispatch") === 0 ? undefined : r.bool();
+  const f15 = r.tag(2, "IrFunction.fastRead") === 0 ? undefined : (r.str() as NonNullable<IrFunction["fastRead"]>);
+  const f16 = r.tag(2, "IrFunction.plainLoops") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["plainLoops"]>);
+  const f17 = r.tag(2, "IrFunction.async") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["async"]>);
+  const f18 = r.tag(2, "IrFunction.generator") === 0 ? undefined : decT21(r);
+  const f19 = r.tag(2, "IrFunction.asyncCacheGlobal") === 0 ? undefined : r.str();
+  const f20 = r.tag(2, "IrFunction.asyncCycleCacheGlobal") === 0 ? undefined : r.str();
+  const o: IrFunction = { name: f0, ...(f1 !== undefined ? { sourceName: f1 } : {}), ...(f2 !== undefined ? { displayName: f2 } : {}), ...(f3 !== undefined ? { ownsPrototype: f3 } : {}), params: f4, returnType: f5, locals: f6, ...(f7 !== undefined ? { captures: f7 } : {}), ...(f8 !== undefined ? { classCaptures: f8 } : {}), body: f9, loc: f10, ...(f11 !== undefined ? { jsEntry: f11 } : {}), ...(f12 !== undefined ? { jsLength: f12 } : {}), ...(f13 !== undefined ? { tier: f13 } : {}), ...(f14 !== undefined ? { speculativeDispatch: f14 } : {}), ...(f15 !== undefined ? { fastRead: f15 } : {}), ...(f16 !== undefined ? { plainLoops: f16 } : {}), ...(f17 !== undefined ? { async: f17 } : {}), ...(f18 !== undefined ? { generator: f18 } : {}), ...(f19 !== undefined ? { asyncCacheGlobal: f19 } : {}), ...(f20 !== undefined ? { asyncCycleCacheGlobal: f20 } : {}) };
   return o;
 }
 
@@ -2989,6 +2995,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.num(v.fnLength);
       }
+      if (v.fnLengthFromValue === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.fnLengthFromValue);
+      }
       return;
     }
     case "dynHasKey": {
@@ -3999,7 +4010,8 @@ function decIrExpr(r: IrReader): IrExpr {
       const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynFrom>.liveRef") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynFrom" }>["liveRef"]>);
       const f4 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynFrom>.fnName") === 0 ? undefined : r.str();
       const f5 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynFrom>.fnLength") === 0 ? undefined : r.num();
-      const o: Extract<IrExpr, { kind: "dynFrom" }> = { kind: "dynFrom", value: f0, type: f1, loc: f2, ...(f3 !== undefined ? { liveRef: f3 } : {}), ...(f4 !== undefined ? { fnName: f4 } : {}), ...(f5 !== undefined ? { fnLength: f5 } : {}) };
+      const f6 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynFrom>.fnLengthFromValue") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynFrom" }>["fnLengthFromValue"]>);
+      const o: Extract<IrExpr, { kind: "dynFrom" }> = { kind: "dynFrom", value: f0, type: f1, loc: f2, ...(f3 !== undefined ? { liveRef: f3 } : {}), ...(f4 !== undefined ? { fnName: f4 } : {}), ...(f5 !== undefined ? { fnLength: f5 } : {}), ...(f6 !== undefined ? { fnLengthFromValue: f6 } : {}) };
       return o;
     }
     case 28: {

@@ -4496,14 +4496,19 @@ export function fieldTarget(
   // parameter's constraint declares the member (so tsc admits the read),
   // while the record the parameter was instantiated with has no such slot —
   // a generic options bag read through its constraint (`options.sessionId`
-  // under an `"sessionId" in options` guard) at a call site whose options
-  // literal omits the optional member. Node reads the property off the
-  // object it actually has: undefined when the caller omitted it, the extra
-  // property when a JavaScript caller supplied one. So the read is the
-  // checked-dynamic keyed read of the stored record, entering the static
-  // code at the type the checker gave the read.
+  // under an `"sessionId" in options` guard, or `options?.apiKey` with the
+  // guarded spelling) at a call site whose options literal omits the
+  // optional member. Node reads the property off the object it actually
+  // has: undefined when the caller omitted it, the extra property when a
+  // JavaScript caller supplied one. So the read is the checked-dynamic
+  // keyed read of the stored record, entering the static code at the type
+  // the checker gave the read.
+  //
+  // Inside a `?.` chain this lowering runs on the re-dispatch, with the
+  // receiver node bound to the chain's present (non-nullish) arm, so the
+  // stored value is already the record and the chain supplies the guard.
   if (
-    !access.questionDotToken &&
+    (!access.questionDotToken || lowerer.chainHandled.has(access)) &&
     readOnlyAccess(access) &&
     typeParameterReceiver(lowerer.typeOf(access.expression))
   ) {

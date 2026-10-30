@@ -207,6 +207,7 @@ typedef enum {
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
   X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
   X(NET_SOCKET_ADDRESS, 47) /* net.SocketAddress (scr_net.c) */ \
+  X(NODE_ISLAND, 84) /* a Node island value (scr_node_island_handle.c) */ \
   X(PRIVATE_KEY, 65) /* node:crypto PrivateKeyObject (scr_pki.c) */ \
   X(PUBLIC_KEY, 66) /* node:crypto PublicKeyObject (scr_pki.c) */ \
   X(REGEXP, 26) /* native RegExp, shared compiled pattern */ \
@@ -236,23 +237,24 @@ typedef enum {
   X(WEB_TRANSFORM, 73) /* native identity TransformStream (scr_fetch.c) */ \
   X(WEB_WRITABLE, 74) /* a TransformStream's WritableStream (scr_fetch.c) */ \
   X(WEB_WRITER, 75) /* WritableStreamDefaultWriter (scr_fetch.c) */ \
-  X(WORKER, 35)
+  X(WORKER, 35) \
+  X(WS_BYTE_STRATEGY, 85) /* ByteLengthQueuingStrategy (scr_webstreams.c) */ \
+  X(WS_COUNT_STRATEGY, 86) /* CountQueuingStrategy (scr_webstreams.c) */ \
+  X(WS_RCONTROLLER, 87) /* ReadableStreamDefaultController (scr_webstreams.c) */ \
+  X(WS_READABLE, 88) /* ReadableStream for checked-dynamic code (scr_webstreams.c) */ \
+  X(WS_READER, 89) /* ReadableStreamDefaultReader (scr_webstreams.c) */ \
+  X(WS_TCONTROLLER, 90) /* TransformStreamDefaultController (scr_webstreams.c) */ \
+  X(WS_TEXT_DECODER, 91) /* TextDecoderStream (scr_webstreams.c) */ \
+  X(WS_TEXT_ENCODER, 92) /* TextEncoderStream (scr_webstreams.c) */ \
+  X(WS_TRANSFORM, 93) /* TransformStream for checked-dynamic code (scr_webstreams.c) */ \
+  X(WS_WCONTROLLER, 94) /* WritableStreamDefaultController (scr_webstreams.c) */ \
+  X(WS_WRITABLE, 95) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
+  X(WS_WRITER, 96) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
 /* Tags added since the last pin, by name only (see above). */
 #define SCR_DYNH_NEW_TAGS(Y) \
-  Y(NODE_ISLAND) /* a Node island value (scr_node_island_handle.c) */ \
-  Y(WS_BYTE_STRATEGY) /* ByteLengthQueuingStrategy (scr_webstreams.c) */ \
-  Y(WS_COUNT_STRATEGY) /* CountQueuingStrategy (scr_webstreams.c) */ \
-  Y(WS_RCONTROLLER) /* ReadableStreamDefaultController (scr_webstreams.c) */ \
-  Y(WS_READABLE) /* ReadableStream for checked-dynamic code (scr_webstreams.c) */ \
-  Y(WS_READER) /* ReadableStreamDefaultReader (scr_webstreams.c) */ \
-  Y(WS_TCONTROLLER) /* TransformStreamDefaultController (scr_webstreams.c) */ \
-  Y(WS_TEXT_DECODER) /* TextDecoderStream (scr_webstreams.c) */ \
-  Y(WS_TEXT_ENCODER) /* TextEncoderStream (scr_webstreams.c) */ \
-  Y(WS_TRANSFORM) /* TransformStream for checked-dynamic code (scr_webstreams.c) */ \
-  Y(WS_WCONTROLLER) /* WritableStreamDefaultController (scr_webstreams.c) */ \
-  Y(WS_WRITABLE) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
-  Y(WS_WRITER) /* WritableStreamDefaultWriter (scr_webstreams.c) */
+  Y(SEGMENTER_WORD) /* ICU word-granularity Segmenter (scr_intl.c) */ \
+  Y(SEGMENTS_WORD) /* its word segmentation result (scr_intl.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -326,6 +328,12 @@ typedef struct ScrDynTypedCast {
  * with the exception pending), calls through the closure, and returns the
  * result as an owned (+1) dyn value. `args` entries are BORROWED. */
 typedef ScrDyn *(*ScrDynThunk)(ScrClosure *clo, ScrDyn *const *args, size_t argc);
+
+/* A compiled closure's jsval entry (scr_js.h words): calls the closure's
+ * jsval body with `args` (BORROWED words; a missing argument is undefined)
+ * and returns the result as an owned word. With an exception pending the
+ * word is undefined; callers test the exception cell, not the word. */
+typedef void *(*ScrDynJsEntry)(ScrClosure *clo, void *const *args, size_t argc);
 
 /* A compiled 'message' listener's typed entry: builds the closure's
  * parameter from the message's nodes (the readers below) and calls
@@ -575,7 +583,7 @@ struct ScrDyn {
      * and `name` are static compiler-emitted literals (never freed); name
      * may be NULL (anonymous — inspect prints [Function (anonymous)]).
      * The dyn→closure ownership edge is traced by the cycle collector. */
-    struct { ScrClosure *clo; ScrDynThunk thunk; const char *sig; const char *name; uint32_t arity; ScrClassObj *class_obj; ScrDynMessageListener message; } fn;
+    struct { ScrClosure *clo; ScrDynThunk thunk; const char *sig; const char *name; uint32_t arity; ScrClassObj *class_obj; ScrDynMessageListener message; ScrDynJsEntry js; } fn;
     /* Native handles normally keep conservative ownership edges. Sets
      * backed by cycle-capable maps expose their edge to the collector.
      * Cache that allocation property: during collection the map may be
@@ -1148,6 +1156,8 @@ void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_field_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
+/* Reflect.has's target check: Node's TypeError pending for a primitive. */
+void scr_dyn_reflect_has_target(const ScrDyn *target);
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key);
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *key, bool strict);
@@ -1361,6 +1371,9 @@ typedef struct {
   size_t key_len;
   const size_t *offsets;
 } ScrRecordViewSource;
+/* The slot of field `position` of a view. The SCR_RECORD_VIEW_PARTIAL build
+ * of scr_json.c, which only a program with a partial record assertion links,
+ * answers NULL for a field the viewed record does not declare (record-views.ts). */
 void *scr_record_view_slot(void *view, size_t position);
 void *scr_record_view_field(void *value, size_t offset, size_t position);
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
@@ -1430,6 +1443,12 @@ void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *o
  * exception pending, when the prototype hook threw. Never runs user
  * code. */
 ScrDyn *scr_dyn_typed_ref_bag_method(const ScrDyn *d, const char *key, size_t key_len);
+/* The own data property `key` of a class instance's capsule, +1, as its
+ * view holds it; NULL when the instance has no such own data property, or
+ * when `key` names a member of its class's prototype or of
+ * Object.prototype. NULL with an exception pending when building the view
+ * threw. */
+ScrDyn *scr_dyn_typed_ref_own_member(const ScrDyn *d, const char *key, size_t key_len);
 /* The constructor name of a class instance capsule's own class, for
  * util.inspect; NULL when the capsule is not a bound class instance, its
  * class is anonymous, or its prototype was replaced. */
@@ -1742,6 +1761,10 @@ void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */
 void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+/* scr_throw_node_coded with an own `url` property (error.nodeThrow's
+ * fourth argument). Borrows the strings; always throws. */
+SCR_COLD void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg,
+                                       const ScrStr *url);
 ScrDyn *scr_errdyn_view_of(const ScrError *e); /* borrowed or NULL */
 /* ToBoolean over the dyn kind (JS-exact); borrowed, never throws. */
 bool scr_dyn_truthy(const ScrDyn *d);
@@ -1815,6 +1838,9 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
 /* Gives a function box made with thunk its typed message entry (an
  * EventEmitter listener registered from it keeps the entry). */
 void scr_dyn_func_set_message(ScrDyn *fn, ScrDynThunk thunk, ScrDynMessageListener listener);
+/* Gives a function box made with thunk its jsval entry. Emitted call sites
+ * of the dynamic tier load v.fn.js directly (at byte 72 on 64-bit targets). */
+void scr_dyn_func_set_js(ScrDyn *fn, ScrDynThunk thunk, ScrDynJsEntry entry);
 /* Sets a freshly boxed function's `length` (a builtin function value whose
  * length is not its adapter's parameter count). */
 void scr_dyn_function_set_length(ScrDyn *fn, uint32_t length);
@@ -2022,6 +2048,19 @@ typedef struct ScrDynHandleOps {
    * (+1); NULL = the class has no inspection, and util.inspect throws the
    * "not supported yet" Error. */
   ScrDyn *(*inspect_view)(void *h);
+  /* util.inspect's text for the instance within the depth limit (+1),
+   * for a class whose inspector ignores util.inspect's options
+   * (TextDecoder's); past the limit util.inspect prints `[cls]`. Takes
+   * precedence over inspect_view. */
+  ScrStr *(*inspect_text)(void *h);
+  /* util.inspect prints the view alone, without the class name (the
+   * inspector's view object names no constructor: TextEncoder's). */
+  bool inspect_view_bare;
+  /* The view is what the class's custom inspector prints. With
+   * customInspect: false Node prints the instance's internal slots, which
+   * the runtime does not model: util.inspect throws the "not supported yet"
+   * Error there, and prints `[cls]` past the depth limit as Node does. */
+  bool inspect_custom_only;
   /* structuredClone of the handle (+1 new box); NULL = DataCloneError. */
   ScrDyn *(*clone)(void *h);
   /* JSON.stringify writes `{}` (the class keeps its state in internal
@@ -2284,6 +2323,7 @@ ScrDyn *scr_gen_receiver(void);
  * firing site opens/closes it around a 'data' pass; scr_dyn_new_chunk
  * answers a Buffer-flavored bytes box, or a string inside the window. */
 void scr_dyn_chunk_enc(bool utf8);
+void scr_dyn_chunk_text(ScrStr *text); /* a decoded string instead; borrowed, NULL closes */
 ScrDyn *scr_dyn_new_chunk(const ScrBytes *b);
 
 /* The JSON text of a dyn value: the JSON.stringify text (+1),

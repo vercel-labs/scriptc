@@ -84,6 +84,9 @@ import {
   vendorBuildCacheRoot,
   tlsArchivePath,
   brotliArchivePath,
+  ensureIcuSources,
+  icuArchivePath,
+  ensureIcuArchive,
   lreObjectPaths,
   zlibObjectPaths,
   stageVendorInputs,
@@ -124,6 +127,10 @@ interface RuntimeUnitContext {
   zlibObjects: readonly string[];
   tlsArchive: string | null;
   brotliArchive: string | null;
+  icuArchive: string | null;
+  /** The include roots of the ICU headers scr_intl.c compiles against: the
+   * runtime pack's, or the fetched release's common/ and i18n/. */
+  icuIncludeDirs: readonly string[];
 }
 
 /** An optional runtime input: runtime sources compiled when `when` holds,
@@ -153,6 +160,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
+  // writeFile's `flag` option and the fs/promises twins; the copyFile mode
+  // argument is the SCR_FS_FLAGS build of scr_fs_cp.c.
+  unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
+  // string_decoder's checked-dynamic chunk forms, beside their typed twins.
+  unit((u) => u.opts.strdecDyn === true, "scr_bytes_strdec_dyn.c"),
   // BigIntStats member reads (`statSync(p, { bigint: true })` integers and
   // `*Ns`/`*Ms` members). Gated on the reads themselves (the bigstats
   // feature), not on bigint: every bigint value or wasm conversion turns
@@ -256,6 +268,20 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           u.brotliArchive,
         ]
       : [],
+  ),
+  // Intl over ICU (scr_intl.c): ICU's C API only, at the default locale,
+  // reading its data file from beside the executable. The ICU headers come
+  // from the installed runtime pack beside its archive, or, when ICU is
+  // built from its fetched release, from that source tree (common/unicode
+  // for the core API, i18n/unicode for udat.h and unumberformatter.h).
+  unitArgs((u) =>
+    u.icuIncludeDirs.length === 0 || u.icuArchive === null
+      ? []
+      : [
+          ...u.icuIncludeDirs.flatMap((dir) => ["-I", dir]),
+          u.rt(join(u.rtDir, "scr_intl.c")),
+          u.icuArchive,
+        ],
   ),
   unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
   // readline's terminal mode: rl.terminal sets the regex unit it
@@ -424,7 +450,22 @@ const RUNTIME_DEFINES: readonly {
   // programs with dynamic-tier code select it.
   { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
+  // scr_json.c's view slot answers NULL for a field a partial record view
+  // does not have; only a program with a partial assertion selects it.
+  { define: "SCR_RECORD_VIEW_PARTIAL", when: (opts) => opts.recordViewPartial },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
+  // The wave's prepend registrations and stdin.isRaw (scr_events.c,
+  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
+  // (scr_fs_cp.c). The source build compiles these units from source, so the
+  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
+  { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
+  { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_stream.c's write-callback error publication, which the compiler's
+  // error-first write adapter reads.
+  { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
+  // scr_events.c's typed process output write slot.
+  { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,
   // scr_json.c's and scr_dyn_builtin_class.c's instanceof over its classes,
   // and scr_fetch.c's bodies of its streams.
@@ -465,6 +506,7 @@ export async function compileCInternal(
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
   const brotli = (opts.zlib ?? false) && opts.brotli === true;
+  const icu = opts.intl ?? false;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -707,6 +749,24 @@ export async function compileCInternal(
   let brotliArchive = brotli
     ? brotliArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
+  // The installed runtime pack's ICU archive is the one this path would
+  // build (uninstrumented either way), so a pack that ships it and its
+  // headers spares the Zig C++ build and the source download.
+  const icuPack = icu ? (opts.icuPack ?? null) : null;
+  let icuArchive = icu
+    ? (icuPack?.archive ?? icuArchivePath(driver, vendorBuildIdentity, vendorCacheRoot))
+    : null;
+  // scr_intl.c's ICU headers. They are known before the runtime-object flags
+  // are: those flags compile every runtime unit, so without them a cached
+  // scr_intl.o would take whatever ICU headers the host has.
+  const icuSource =
+    icu && icuPack === null ? join(await ensureIcuSources(vendorCacheRoot), "source") : null;
+  const icuIncludeDirs: readonly string[] =
+    icuPack !== null
+      ? [icuPack.include]
+      : icuSource !== null
+        ? [join(icuSource, "common"), join(icuSource, "i18n")]
+        : [];
 
   // ours would collide; see scr_regex.c) — the standalone objects are for
   // static builds only.
@@ -760,6 +820,18 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "brotli"));
       brotliArchive = paths[0]!;
+    }
+    if (icu && icuPack === null) {
+      const cachedArchive = icuArchivePath(driver, vendorBuildIdentity, materializeCacheRoot);
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureIcuArchive(driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "icu"));
+      icuArchive = paths[0]!;
     }
     if (regex) {
       for (const object of lreObjectPaths(
@@ -848,6 +920,8 @@ export async function compileCInternal(
       zlibObjects,
       tlsArchive,
       brotliArchive,
+      icuArchive,
+      icuIncludeDirs,
     }),
     // A .ll program TU (the LLVM backend) deliberately carries no target
     // triple (byte-stable output; clang supplies the host/SCRIPTC_TARGET
@@ -896,6 +970,7 @@ export async function compileCInternal(
     ...(regex ? ["-I", vendorEngineDir()] : []),
     ...(zlibObjects.length > 0 ? ["-I", vendorZlibDir()] : []),
     ...(tlsArchive !== null ? ["-I", join(vendorTlsDir(), "include")] : []),
+    ...icuIncludeDirs.flatMap((dir) => ["-I", dir]),
   ];
   // Keep sanitizer runtime objects optimized in both postures. Large dev
   // programs still compile at O0, avoiding an expensive LLVM optimization

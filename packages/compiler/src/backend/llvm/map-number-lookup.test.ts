@@ -212,23 +212,27 @@ test("a key with an integer view tests the direct index on the integer", () => {
         integral.module,
       )![0];
     // An unsigned compare also rejects negative keys; the hashed probe takes
-    // the integer.
+    // the integer and its double.
     expect(helper).toContain("icmp ult i64 %ki, %nd");
     expect(helper).toContain(`getelementptr inbounds i32, ptr %dense, ${sz} %i`);
-    expect(helper).toContain("call ptr @sc_map_entry_f64_hashed_int(ptr %m, i64 %ki)");
+    expect(helper).toContain("call ptr @sc_map_entry_f64_hashed_int(ptr %m, i64 %ki, double %k)");
     expect(helper).toContain("br i1 %inside, label %slot, label %slow");
     expect(helper).not.toContain("fptosi");
-    // Its key word is the integer's double, which needs no NaN or -0
-    // normalization; the runtime lookup gets that double.
+    // Its key word is the bits of the integer's double, which needs no NaN
+    // normalization and is +0 for the integer 0; the runtime lookup gets
+    // that double. The probe converts nothing itself (cvtsi2sd would wait
+    // for its register's last value).
     const hashed =
-      /^define internal ptr @sc_map_entry_f64_hashed_int\(ptr %m, i64 %ki\) noinline [^]*?^}/m.exec(
+      /^define internal ptr @sc_map_entry_f64_hashed_int\(ptr %m, i64 %ki, double %k\) noinline [^]*?^}/m.exec(
         integral.module,
       )![0];
-    expect(hashed).toContain("sitofp i64 %ki to double");
+    expect(hashed).toContain("bitcast double %k to i64");
+    expect(hashed).toContain("select i1 %kzero, i64 0, i64 %kbits");
+    expect(hashed).not.toContain("sitofp");
     expect(hashed).not.toContain("fcmp");
     expect(hashed).toContain("mul i64 %x1, -4658895280553007687");
     expect(hashed).toContain(
-      "call ptr @scr_map_entry_f64(ptr %m, double %kf) memory(read) nounwind willreturn",
+      "call ptr @scr_map_entry_f64(ptr %m, double %k) memory(read) nounwind willreturn",
     );
     // A fractional key and a key without a proof keep the double lookup.
     for (const key of [{ kind: "numLit", value: 0.5, type: F64, loc } as IrExpr, ref("k", F64)]) {

@@ -107,6 +107,25 @@ function wantsTransformTypes(file: string): boolean {
   return programInputs(file).some((f) => /\benum\s+[A-Za-z_$]/.test(readFileSync(f, "utf8")));
 }
 
+/** `// @env: NAME=VALUE[,NAME=VALUE]` in the entry file's directive head:
+ * the variables are set for BOTH sides — the Node oracle and the compiled
+ * binary — so a program can pin the ambient state that decides Intl output
+ * (TZ for the time zone, LC_ALL/LANG for the default locale). The directive
+ * lives in the program bytes the oracle cache key hashes, so a recorded
+ * verdict can never be replayed under different variables. */
+function programEnv(file: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of directiveHead(file)) {
+    const m = /^\/\/ @env:\s*(.+?)\s*$/.exec(line);
+    if (m === null) continue;
+    for (const pair of m[1]!.split(",")) {
+      const eq = pair.indexOf("=");
+      if (eq > 0) env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+    }
+  }
+  return env;
+}
+
 /** `// @tsc-decorators` in the entry file's directive head: the Node side
  * runs tsc's ES-decorator downlevel of the program (target ES2022) —
  * decorators are the one supported construct Node cannot execute AT ALL
@@ -156,6 +175,20 @@ function wantsNoDeprecation(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l));
 }
 
+/** `// @requires-icu` in the directive head: the program's Intl forms are
+ * answered by ICU, which the runtime packs build only for the Linux x64
+ * target in this slice. Other lanes (the macOS-native contracts, the wasm
+ * and Windows packs) skip these programs instead of failing: the compiler
+ * refuses the forms there with SC3002. */
+function requiresIcu(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @requires-icu\s*$/.test(l));
+}
+
+/** Whether this machine's runtime pack can link ICU (see requiresIcu). */
+function icuAvailable(): boolean {
+  return process.platform === "linux" && process.arch === "x64";
+}
+
 /** `// @normalize-pid` in the directive head: Node's process warnings
  * ("(node:<pid>) [DEP0040] ...") are compared with the pid replaced on both
  * sides — for island programs, where Node itself prints the warning in the
@@ -199,7 +232,11 @@ function nodeOracleArgs(file: string): string[] {
  * (readFileSync(0)), and the default open pipe would block both sides
  * forever — this way Node and the native binary see the same empty,
  * closed stream. */
-async function runBinary(cmd: string, args: string[]): Promise<RunResult> {
+async function runBinary(
+  cmd: string,
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<RunResult> {
   // Linux fork/exec race (observed on the sandbox lane, llvm flavor): a
   // sibling worker's fork can inherit the freshly-linked binary's write
   // fd across its own spawn window, and exec answers ETXTBSY until that
@@ -207,7 +244,13 @@ async function runBinary(cmd: string, args: string[]): Promise<RunResult> {
   // briefly, the npm/cargo stance. (No-op on macOS: exec there never
   // answers ETXTBSY.)
   for (let attempt = 0; ; attempt++) {
-    const pending = execFileAsync(cmd, args, { encoding: "buffer" });
+    const pending = execFileAsync(cmd, args, {
+      encoding: "buffer",
+      // The program's `// @env:` pins layer over the inherited environment,
+      // so both sides see the same TZ/locale as the rest of the corpus sees
+      // SCRIPTC_TEST_ENV.
+      env: { ...process.env, ...env },
+    });
     pending.child.stdin?.end();
     try {
       const { stdout, stderr } = await pending;
@@ -361,7 +404,7 @@ async function runNode(file: string): Promise<RunResult> {
   // Node 24 strips types natively; the supported subset is erasable by
   // construction — except `// @transform-types` programs (namespaces),
   // which run under Node's transform mode.
-  const res = await runBinary("node", nodeOracleArgs(file));
+  const res = await runBinary("node", nodeOracleArgs(file), programEnv(file));
   if (cachePath !== null) {
     try {
       const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}`;
@@ -408,7 +451,7 @@ async function compileAndRun(file: string): Promise<RunResult> {
         result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
     );
   }
-  return runBinary(result.binaryPath, []);
+  return runBinary(result.binaryPath, [], programEnv(file));
 }
 
 describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
@@ -424,6 +467,7 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
       // `// @requires-libnode`: the binary loads Node from a libnode pack,
       // required in the Linux CI lanes (libnode.ts), else skipped without one.
       if (requiresLibnode(file) && libnodePack() === null) skip();
+      if (requiresIcu(file) && !icuAvailable()) skip();
       const [nodeRes, nativeRes] = await Promise.all([runNode(file), compileAndRun(file)]);
       // Compare as bytes; decode only for the failure diff.
       if (!nodeRes.stdout.equals(nativeRes.stdout)) {

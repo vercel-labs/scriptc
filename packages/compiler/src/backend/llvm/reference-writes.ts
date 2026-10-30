@@ -103,6 +103,7 @@ const INERT_LIB_CALLS = new Set([
   "json.parse",
   "process.stderrWrite",
   "process.stdoutWrite",
+  "process.stdioWriteDyn",
   "process.envGet",
   "process.envPairs",
   "regex.groupEquals",

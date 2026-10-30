@@ -1,10 +1,12 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { type IrType, isRefCounted, STRING, typeKey } from "../../ir/ir.js";
+import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { FN_ATTRS, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { unionPeekLines, unionTagLines } from "./union-repr.js";
 import { registerReplay } from "./emit-journal.js";
+import { streamTypedDesc } from "./expr-stream-bridges.js";
 
 export function streamDataAdapter(
   host: LlvmEmitterContext,
@@ -259,6 +261,31 @@ export function streamDoneFnFor(
       strTag = def!.arms.findIndex((a) => a.kind === "string");
     }
   }
+  // data of one record type or nothing (a typed completion,
+  // pinTypedDataCompletion): a record with a typed-chunk descriptor
+  // completes as a typed chunk, and another record boxes by reference
+  // (the conversion a dyn `data` parameter receives).
+  let typedTag = -1;
+  let typedDesc: string | null = null;
+  let liveData = false;
+  if (valueData && dataT?.kind === "union") {
+    const arms = host.unionsById.get(dataT.unionId)?.arms ?? [];
+    const record = arms.findIndex((a) => a.kind === "record");
+    if (arms.length === 2 && record >= 0 && arms.some((a) => a.kind === "undefinedT")) {
+      typedDesc = streamTypedDesc(host, arms[record]!);
+      if (typedDesc !== null) typedTag = record;
+      else {
+        // the records a conversion to dyn keeps by reference (Lowerer's
+        // liveReference)
+        const armT = arms[record]!;
+        const shape = armT.kind === "record" ? host.recordsById.get(armT.shapeId) : undefined;
+        liveData =
+          streamTypedRefEligible(armT) &&
+          shape !== undefined &&
+          (shape.fields.length > 0 || shape.indexValue !== undefined);
+      }
+    }
+  }
   const entry =
     kind === "c"
       ? "scr_stream_construct_done"
@@ -269,15 +296,19 @@ export function streamDoneFnFor(
           : kind === "d"
             ? "scr_stream_destroy_done"
             : kind === "t"
-              ? valueData
-                ? "scr_stream_transform_done_value"
-                : "scr_stream_transform_done"
-              : valueData
-                ? "scr_stream_flush_done_value"
-                : "scr_stream_flush_done";
+              ? typedDesc !== null
+                ? "scr_stream_transform_done_typed"
+                : valueData
+                  ? "scr_stream_transform_done_value"
+                  : "scr_stream_transform_done"
+              : typedDesc !== null
+                ? "scr_stream_flush_done_typed"
+                : valueData
+                  ? "scr_stream_flush_done_value"
+                  : "scr_stream_flush_done";
   const twoSlot = (kind === "t" || kind === "l") && !valueData;
   host.declare(
-    `declare void @${entry}(ptr, ptr${twoSlot ? ", ptr, ptr" : valueData ? ", ptr" : ""})`,
+    `declare void @${entry}(ptr, ptr${typedDesc !== null ? ", ptr, ptr" : twoSlot ? ", ptr, ptr" : valueData ? ", ptr" : ""})`,
   );
   host.declare(`declare ptr @scr_error_retain_v(ptr)`);
   host.declare(`declare void @scr_union_release(ptr)`);
@@ -291,6 +322,7 @@ export function streamDoneFnFor(
     `entry:`,
     `  %eslot = alloca ptr`,
     ...(twoSlot ? [`  %bslot = alloca ptr`, `  %sslot = alloca ptr`] : []),
+    ...(typedDesc !== null ? [`  %tslot = alloca ptr`] : []),
     `  %capsp = getelementptr inbounds %ScrClosure, ptr %self, i64 1`,
     `  %bx = load ptr, ptr %capsp`,
     // the stream, borrowed: the box holds it, and the closure (alive for
@@ -299,10 +331,12 @@ export function streamDoneFnFor(
     `  %s = load ptr, ptr %sp`,
     `  store ptr null, ptr %eslot`,
     ...(twoSlot ? [`  store ptr null, ptr %bslot`, `  store ptr null, ptr %sslot`] : []),
+    ...(typedDesc !== null ? [`  store ptr null, ptr %tslot`] : []),
   ];
-  // A tag-guarded retained peek out of a union argument into a slot.
+  // A tag-guarded peek out of a union argument into a slot, retained
+  // unless retain is null.
   let arm = 0;
-  const unwrap = (u: string, tag: number, retain: string, slot: string): void => {
+  const unwrap = (u: string, tag: number, retain: string | null, slot: string): void => {
     const a = arm++;
     const union = u === "%e" ? errT : dataT;
     const nullable = union?.kind === "union" ? host.nullableUnions.get(union.unionId) : null;
@@ -315,8 +349,9 @@ export function streamDoneFnFor(
       `  br i1 %hit${a}, label %yes${a}, label %done${a}`,
       `yes${a}:`,
       ...unionPeekLines(nullable, u, `%pv${a}`),
-      `  %rt${a} = call ptr ${retain}(ptr %pv${a})`,
-      `  store ptr %rt${a}, ptr ${slot}`,
+      ...(retain !== null
+        ? [`  %rt${a} = call ptr ${retain}(ptr %pv${a})`, `  store ptr %rt${a}, ptr ${slot}`]
+        : [`  store ptr %pv${a}, ptr ${slot}`]),
       `  br label %done${a}`,
       `done${a}:`,
     );
@@ -330,8 +365,21 @@ export function streamDoneFnFor(
     host.declare(`declare ptr @scr_str_retain_v(ptr)`);
     unwrap("%d", strTag, "@scr_str_retain_v", "%sslot");
   }
+  if (typedDesc !== null) unwrap("%d", typedTag, null, "%tslot");
   d.push(`  %ev = load ptr, ptr %eslot`);
-  if (valueData) {
+  if (typedDesc !== null) {
+    d.push(
+      `  %tv = load ptr, ptr %tslot`,
+      `  call void @${entry}(ptr %s, ptr %ev, ptr %tv, ptr ${typedDesc}) ; moves err; borrows s and the record`,
+    );
+  } else if (liveData) {
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    d.push(
+      `  %dv = call ptr @${host.liveDynUnionRefAdapter(dataT as IrType & { kind: "union" })}(ptr %d)`,
+      `  call void @${entry}(ptr %s, ptr %ev, ptr %dv) ; moves err; borrows s and the value`,
+      `  call void @scr_dyn_release(ptr %dv)`,
+    );
+  } else if (valueData) {
     const conv = host.dyn.toDynHelper(dataT!);
     host.declare(`declare void @scr_dyn_release(ptr)`);
     d.push(
@@ -840,18 +888,42 @@ export function streamCbThunkFor(
       host.declare(`declare void @scr_dyn_release(ptr)`);
       host.declare(`declare zeroext i1 @scr_exc_pending()`);
       if (hasThis) host.declare(`declare void @scr_stream_release_v(ptr)`);
+      // A typed chunk of the declared record type (scr_stream_push_typed)
+      // is the record itself; any other chunk converts.
+      const desc = streamTypedDesc(host, p);
+      if (desc !== null) {
+        host.declare(`declare ptr @scr_stream_chunk_typed(ptr, ptr, ptr)`);
+        d.push(
+          `  br label %ctchk${i}`,
+          `ctchk${i}:`,
+          `  %ctt${i} = call ptr @scr_stream_chunk_typed(ptr %s, ptr %chunk, ptr ${desc})`,
+          `  %cthit${i} = icmp ne ptr %ctt${i}, null`,
+          `  br i1 %cthit${i}, label %ctok${i}, label %ctconv${i}`,
+          `ctconv${i}:`,
+        );
+      }
       d.push(
         `  %cv${i} = call ptr @scr_stream_chunk_value(ptr %s, ptr %chunk)`,
         `  %ct${i} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr %cv${i}, ptr null)`,
         `  call void @scr_dyn_release(ptr %cv${i})`,
         `  %ctbad${i} = call zeroext i1 @scr_exc_pending()`,
-        `  br i1 %ctbad${i}, label %ctfail${i}, label %ctok${i}`,
+        `  br i1 %ctbad${i}, label %ctfail${i}, label %${desc !== null ? "ctconvok" : "ctok"}${i}`,
         `ctfail${i}:`,
         ...(hasThis ? [`  call void @scr_stream_release_v(ptr %sr)`] : []),
         `  ret void`,
-        `ctok${i}:`,
       );
-      passed.push(`${ty} %ct${i}`);
+      if (desc !== null) {
+        d.push(
+          `ctconvok${i}:`,
+          `  br label %ctok${i}`,
+          `ctok${i}:`,
+          `  %ctv${i} = phi ptr [ %ctt${i}, %ctchk${i} ], [ %ct${i}, %ctconvok${i} ]`,
+        );
+        passed.push(`ptr %ctv${i}`);
+      } else {
+        d.push(`ctok${i}:`);
+        passed.push(`${ty} %ct${i}`);
+      }
     } else if (isEncPos && p.kind === "string") {
       // Node's encoding for decoded (Buffer) chunks is 'buffer'; an
       // object-mode side passes the write's encoding argument ("" for

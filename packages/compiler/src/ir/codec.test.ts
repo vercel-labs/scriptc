@@ -17,7 +17,8 @@ import { F64, STRING, VOID, type IrFunction, type IrModule } from "./ir.js";
 import { deserializeModuleBytes } from "./serialize.js";
 
 // Programs with many node kinds: classes, closures, async, generators,
-// dynamic values, streams, records, regexes, lone surrogates and BigIntStats.
+// dynamic values, closures with jsval entries, streams, records, regexes,
+// lone surrogates and BigIntStats.
 const PROGRAMS = [
   "1003-json-parse-unions.ts",
   "114-live-record-delete.ts",
@@ -29,6 +30,7 @@ const PROGRAMS = [
   "7018-bigint-stats.ts",
   "7110-als-completion-callbacks.ts",
   "7321-speculative-loop-bail-sites.ts",
+  "8601-dynamic-function-value-numbers.js",
 ];
 
 /** Whether `a` and `b` hold the same data: the same keys with defined
@@ -135,6 +137,21 @@ test("absent optional fields stay absent", () => {
   const back = decodeModuleBinary(encodeModuleBinary(source));
   expect(Object.keys(back).sort()).toEqual(["entry", "functions", "irVersion", "sourceFile"]);
   expect(Object.keys(back.functions[0]!).sort()).toEqual(Object.keys(source.functions[0]!).sort());
+});
+
+test("a closure body keeps the name of its jsval entry", () => {
+  const source: IrFunction = {
+    name: "%fn.add",
+    params: [],
+    returnType: VOID,
+    locals: [],
+    body: [{ kind: "return", value: null, loc }],
+    loc,
+    jsEntry: "%js.%fn.add",
+  };
+  expect(decodeFunctionBinary(encodeFunctionBinary(source)).jsEntry).toBe("%js.%fn.add");
+  const back = decodeFunctionBinary(encodeFunctionInOrder(source)!);
+  expect(JSON.stringify(back)).toBe(JSON.stringify(source));
 });
 
 test("a function whose objects follow the declared field order reads back with its key order", () => {

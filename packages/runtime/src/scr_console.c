@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#if !defined(_WIN32) && !defined(__wasi__)
+#include <signal.h>
+#endif
 #ifdef _WIN32
 #include <fcntl.h> /* _O_BINARY */
 #include <io.h>    /* _setmode, _fileno */
@@ -148,7 +151,7 @@ static void scr_enable_utf8_console_output(void) {
 }
 #endif
 
-void scr_runtime_abi_v47(void) {}
+void scr_runtime_abi_v48(void) {}
 
 void scr_init(void) {
 #ifdef SCR_WORKERS
@@ -179,6 +182,15 @@ void scr_init(void) {
    * stream immediately. */
   static char outbuf[1 << 16];
   setvbuf(stdout, outbuf, _IOFBF, sizeof outbuf);
+#if !defined(_WIN32) && !defined(__wasi__)
+  /* Node ignores SIGPIPE and SIGXFSZ: a write to a closed pipe or past
+   * RLIMIT_FSIZE fails with EPIPE or EFBIG, on any thread, instead of
+   * ending the process. A process.on listener replaces the disposition
+   * while it is registered (scr_events.c), and spawned children start with
+   * both at their default actions (scr_spawn_command). */
+  signal(SIGPIPE, SIG_IGN);
+  signal(SIGXFSZ, SIG_IGN);
+#endif
 #ifdef SCR_WORKERS
   }
 #endif

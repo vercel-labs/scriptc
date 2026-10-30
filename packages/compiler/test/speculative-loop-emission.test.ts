@@ -177,11 +177,36 @@ console.log(key(new Uint8Array([1, 2, 3, 0]), 6));
   expect(fast.length).toBeLessThan(fn.length);
   // trim(k, bits): the low `bits` bits; * 4: a shift by two.
   expect(fast).toMatch(/= sub i64 %\S+, 1\n\s+%\S+ = and i64 %\S+, %\S+\n/);
-  expect(fast).toMatch(/= shl nsw i64 %\S+, 2\n/);
+  expect(fast).toMatch(/= shl (nuw )?nsw i64 %\S+, 2\n/);
   // No floor division of k (an arithmetic shift of it) and no checked
   // multiply remain.
   expect(fast).not.toMatch(/ashr i64 %/);
   expect(fast).not.toContain("@llvm.smul.with.overflow.i64");
+});
+
+test("a masked value's shift and its sum with a byte test only the mask's exponent", async () => {
+  const llvm = await emitLlvm(`
+function trim(value: number, bits: number): number {
+  return value - Math.floor(value / Math.pow(2, bits)) * Math.pow(2, bits);
+}
+function key(bytes: Uint8Array, bits: number): number {
+  let k = 0;
+  for (let i = 0; i < bytes.length; i++) k = trim(k, bits) * 4 + bytes[i]!;
+  return k;
+}
+console.log(key(new Uint8Array([1, 2, 3, 0]), 6));
+`);
+  const fn = /^define internal double @sc_bf_\w*key[\w.]*\([^]*?^}/m.exec(llvm)?.[0] ?? "";
+  const fast = fn.slice(fn.search(/^spec\.fast\d+:/m));
+  // trim(k, bits) is below 2^bits: times 4 it is safe for bits <= 51, and
+  // plus a byte (0 to 255) for bits <= 50. Only the exponent is tested.
+  const exponent = /= icmp sgt i64 (%\S+), 51\n/.exec(fast)?.[1];
+  expect(exponent).toBeDefined();
+  expect(fast).toContain(`= icmp sgt i64 ${exponent}, 50\n`);
+  expect(fast).toMatch(/= shl nuw nsw i64 %\S+, 2\n/);
+  // No magnitude test of the masked value and no safe-range test of the sum.
+  expect(fast).not.toContain("@llvm.abs.i64");
+  expect(fast).not.toContain("18014398509481982");
 });
 
 test("a speculative loop reads its views' header fields once, before its copies", async () => {

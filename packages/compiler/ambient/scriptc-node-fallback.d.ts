@@ -246,12 +246,13 @@ declare var process: {
   /* "v" plus versions.node: the compatibility target's release. */
   readonly version: string;
   /* The build-configuration snapshot Node exposes from its gyp config.
-   * A scriptc binary has no V8 and no gyp, so `variables` answers the
-   * honest capability record (v8_enable_i18n_support: 0 — no ICU; asan
-   * mirrors the sanitizer build flag) and `target_defaults` is absent —
-   * probe code takes its documented fallbacks. Reads of undeclared
-   * variables go through the index signature (string | number | boolean
-   * | undefined) and answer undefined. */
+   * A scriptc binary has no V8 and no gyp, so `variables` answers what is
+   * true of a compiled binary: v8_enable_i18n_support is 1 like Node's
+   * (the read links ICU, which the binary then carries), while the gyp
+   * variables it cannot answer (icu_path, asan, …) read undefined through
+   * the index signature (string | number | boolean | undefined), and
+   * `target_defaults` is absent — probe code takes its documented
+   * fallbacks. */
   readonly config: {
     readonly variables: { readonly [name: string]: string | number | boolean | undefined };
     readonly target_defaults?: { readonly default_configuration: string };
@@ -340,6 +341,12 @@ declare var process: {
    * (chunks stay bytes; decode with TextDecoder). */
   stdin: {
     readonly isTTY: boolean;
+    /* The descriptor the stream is built over (Node reports 0 here and
+     * 1/2 on stdout/stderr, whatever the underlying file is). */
+    readonly fd: 0;
+    /* True while a TTY stdin runs in raw mode; Node's own property is
+     * undefined on a non-TTY stdin (the `x || false` idiom). */
+    readonly isRaw: boolean;
     on(event: "data", listener: (chunk: Uint8Array) => void): void;
     on(event: "end", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
@@ -374,6 +381,12 @@ declare var process: {
    * removal see the same value. */
   on(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   on(event: "exit", listener: (code: number) => void): void;
+  /* prependListener — the same registration at the FRONT of the event's
+   * listener list (Node's EventEmitter order), for the registries that
+   * own a prepend entry ('exit' and the signal family). prependOnceListener
+   * has no lowering. */
+  prependListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
+  prependListener(event: "exit", listener: (code: number) => void): void;
   /* 'warning' — Node's process-warning channel: listeners receive the
    * warning Error (as a dyn value); emitWarning and the runtime's
    * deprecation sites dispatch synchronously (SEMANTICS.md). */
@@ -1764,6 +1777,20 @@ declare module "tty" {
     /* The bytes queued behind the last write: the compiled binary's fd
      * 1/2 writes are synchronous, so it is always 0. */
     readonly writableLength: number;
+    /* The descriptor behind the stream (1 for stdout, 2 for stderr). */
+    readonly fd: number;
+    /* Node's default for the process streams (65536 for a pipe, a file and a
+     * TTY): a constant, because nothing is ever queued. */
+    readonly writableHighWaterMark: number;
+    /* Always false: a synchronous write never returns false, so no 'drain'
+     * is ever pending. */
+    readonly writableNeedDrain: boolean;
+    /* 'drain' and the other events by name. Node returns the stream. */
+    on(event: string, listener: (...args: any[]) => void): this;
+    once(event: string, listener: (...args: any[]) => void): this;
+    addListener(event: string, listener: (...args: any[]) => void): this;
+    off(event: string, listener: (...args: any[]) => void): this;
+    removeListener(event: string, listener: (...args: any[]) => void): this;
     getWindowSize(): [number, number];
   }
   export function isatty(fd: number): boolean;

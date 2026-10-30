@@ -48,6 +48,16 @@ show("object-undefined", () => {
   const { name } = items.find((item) => item.size > 5);
   console.log("never", name);
 });
+// A default on the first element: V8 reads that key without checking
+// the source first, so the read's TypeError is the one thrown.
+show("object-first-default", () => {
+  const { name = "none", size } = items.find((item) => item.size > 5);
+  console.log("never", name, size);
+});
+show("object-later-default", () => {
+  const { name, size = 0 } = items.find((item) => item.size > 5);
+  console.log("never", name, size);
+});
 function firstMatch(text) {
   return text.match(/q/);
 }

@@ -116,7 +116,6 @@ const KNOWN: Record<string, Known> = {
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
-  "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },

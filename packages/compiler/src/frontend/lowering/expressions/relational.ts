@@ -47,6 +47,7 @@ import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
+import { partialFieldPresence } from "../partial-assertions.js";
 import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -2034,6 +2035,13 @@ export function lowerInExpression(
   if (!shape) throw new InternalCompilerError(`lowerer bug: unknown shape ${recv.type.shapeId}`);
   const field = shape.fields.find((f) => f.name === key);
   if (field) {
+    // A field some partial record assertion leaves unwritten (a partial
+    // record view, partial-assertions.ts): the answer is the view's, not
+    // the declared type's.
+    {
+      const viewPresence = partialFieldPresence(lowerer, recv, recv.type.shapeId, key, loc);
+      if (viewPresence) return viewPresence;
+    }
     if (
       !OBJECT_PROTOTYPE_KEYS.has(key) &&
       field.type.kind === "union" &&
@@ -2076,7 +2084,12 @@ export function lowerInExpression(
       loc,
     };
   }
-  return staticAnswerAfter(recv, inherited, loc);
+  // A kept record source can hold a key the shape does not declare (a
+  // checked conversion's undeclared keys, a width spread's extras), so the
+  // static `false` answer is registered for the key-order pass to answer
+  // through the record's own source table when the program keeps one.
+  const answer = staticAnswerAfter(recv, inherited, loc);
+  return inherited ? answer : lowerer.keyOrder.sourceProbe(answer, recv, key);
 }
 
 /** A statically-decided `in` answer: a side-effect-free receiver folds away,

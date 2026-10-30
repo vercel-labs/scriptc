@@ -1,8 +1,8 @@
 // The Intl surface. What lowers: the COMPOSED en-US NumberFormat forms
 // with default options — new Intl.NumberFormat("en-US").format(x) and
-// x.toLocaleString("en-US"). Everything else fences by NAME: the
-// environment-default locale a compiled binary cannot carry, other
-// locales (ICU data the binary does not embed), options bags, formatter
+// x.toLocaleString("en-US") — plus the default locale's own forms over ICU
+// (x.toLocaleString(), d.toLocaleString()). Everything else fences by
+// NAME: other locales (ICU locale negotiation), options bags, formatter
 // VALUES, and the rest of the Intl namespace (DurationFormat,
 // DateTimeFormat, PluralRules, getCanonicalLocales).
 
@@ -14,7 +14,6 @@ const hoisted = new Intl.NumberFormat("en-US");
 const viaValue = hoisted.format(1234.5);
 
 // toLocaleString's unlowered variants.
-const envDefault = (1234.5).toLocaleString();
 const german = (1234.5).toLocaleString("de-DE");
 const grouped = (1234.5).toLocaleString("en-US", { useGrouping: false });
 

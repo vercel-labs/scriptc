@@ -15,7 +15,6 @@ import { promisify } from "node:util";
 import { beforeEach, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
 import { skipUnownedTest } from "./shard.js";
-import { libnodePack } from "./libnode.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -636,14 +635,18 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
-  // The package builds its segmenter at module load, a run-time fence that
-  // surely fires, so the package runs in its Node island and segments as
-  // Node does.
-  test("a word segmenter a package builds at load runs in its Node island", async () => {
+  // The package builds its word segmenter at module load. Word segmentation
+  // lowers to ICU now, so nothing fences: the package compiles into the
+  // program itself (no Node island) and splits words as Node does. The ICU
+  // supporting units live in the linux-x64 runtime pack only in this slice,
+  // so other machines check the analysis and stop before the link.
+  test("a word segmenter a package builds at load compiles statically", async () => {
     const entry = join(pilotRoot, "word-segments-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: "auto" });
     expect(coverage.npmStatic).toEqual([{ package: "word-segments", status: "static" }]);
     expect(coverage.diagnostics).toHaveLength(0);
+    expect(coverage.runtimeFences ?? []).toHaveLength(0);
+    if (process.platform !== "linux" || process.arch !== "x64") return;
     const outDir = join(cacheDir, "word-segments", sanitize ? "san" : "plain");
     const result = await compile(entry, {
       backend: "llvm",
@@ -652,11 +655,6 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       outDir,
       outPath: join(outDir, "program"),
     });
-    if (libnodePack() === null) {
-      expect(result.ok, "no libnode pack: the compile stops").toBe(false);
-      if (!result.ok) expect(result.diagnostics.map((d) => d.code)).toContain("SC8005");
-      return;
-    }
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const nativeRes = await runBinary(result.binaryPath, []);

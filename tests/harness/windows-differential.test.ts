@@ -101,6 +101,9 @@ const WINDOWS_SKIPS: Record<string, string> = {
   // spawns succeed, exposed here where every one fails.
   "process-named-signals.cjs":
     "POSIX signal delivery: Windows Node cannot send SIGWINCH or register SIGSTOP",
+  "write-signals-ignored.ts":
+    "POSIX signals: Windows has no SIGPIPE or SIGXFSZ, and the children are /bin/sh",
+  "write-signals-listener.mjs": "POSIX signals: Windows has no SIGPIPE or SIGXFSZ",
   "1360-spawn-sync.ts":
     'posix-shaped: every spawn is ENOENT on Windows Node too, exposing the documented spawn-failure ""-vs-null stdout stance (1644 covers spawnSync here)',
   "1361-spawn-events.ts":

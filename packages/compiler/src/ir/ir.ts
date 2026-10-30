@@ -1966,6 +1966,10 @@ export interface IrFunction {
   name: string;
   /** Source function name for native error stack frames. */
   sourceName?: string;
+  /** The function's JavaScript `name` when it differs from sourceName: an
+   * object literal's method. Present only in modules that box function
+   * values into checked values (function-names.ts). */
+  displayName?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
   params: IrParam[];
@@ -1984,6 +1988,10 @@ export interface IrFunction {
   classCaptures?: (IrParam & { slot: number })[];
   body: IrStmt[];
   loc: SrcLoc;
+  /** A closure body's jsval entry (ir/jsval.ts): a function with the same
+   * captures that takes jsval parameters. The backend gives each function
+   * value boxed from this closure a jsval call entry into it. */
+  jsEntry?: string;
   /** The function's execution tier (ir/tiers.ts). Absent means static: the
    * function may use dynamic values only through boundary operations
    * (dynFrom, dynCheck, kind tests) and moves, which the validator enforces
@@ -2000,6 +2008,11 @@ export interface IrFunction {
    * `index`: a computed read `(value, key)` whose callers pass a number
    * converted to a string as the key. */
   fastRead?: "index";
+  /** The body of a function whose parameter version takes its calls with
+   * int32 arguments (parameter-versions.ts). It runs for other arguments
+   * only, so the backend emits each of its loops once, as in the copy a
+   * failed version guard runs. */
+  plainLoops?: true;
   /** Async: the body runs on a fiber; `returnType` is the INNER type T (a
    * `return v` fulfills with v) while ordinary call sites receive
    * Promise<T>. With `generator` present, call sites receive the lazy
@@ -3533,7 +3546,10 @@ export type IrExpr =
    * message exactly). A function callee calls through the boxed thunk:
    * per-arg validation against the boxed signature (mismatches throw the
    * path-annotated TypeError), result converted back to dyn. Callee and
-   * args are borrowed; the result is owned (+1). MAY THROW.
+   * args are borrowed; the result is owned (+1). MAY THROW. In a
+   * dynamic-tier function the jsval pass may make an argument of the
+   * fixed-arity form a jsval (ir/jsval.ts): a callee with a jsval entry
+   * takes it as is, any other callee gets it boxed.
    *
    * `spreads` (the runtime-arity form — `f(...args)`, the rest-forwarding
    * idiom): entries name indices into `args` whose dyn values FLATTEN into
@@ -3565,7 +3581,8 @@ export type IrExpr =
    * the kind's prototype lacks throws Node's catchable "<calleeName> is
    * not a function"; OBJ receivers call the own member (own properties
    * shadow prototypes in JS too); undefined/null receivers throw Node's
-   * "Cannot read properties of ...". Arguments are already dyn.
+   * "Cannot read properties of ...". Arguments are already dyn, or jsvals
+   * as for dynCall.
    * `calleeName` is the source spelling for the error texts. Receiver and
    * args are borrowed; the result is owned (+1). MAY THROW. */
   | {
@@ -4109,6 +4126,13 @@ export type IrExpr =
   /** `exact`: the value is known to be a capsule this program boxed from
    * exactly the class `type` names (a `dyn.typedRefKeyIs` test guards the
    * expression), so the check is one load of the capsule's instance. */
+  /** `partialView`: `value` is `dynFrom{liveRef}` of a record whose fields
+   * are a SUBSET of `type`'s, with equal types — a partial record literal
+   * asserted to a wider record type (`{ truncated: true } as
+   * TruncationResult`). The conversion answers a partial record view
+   * (record-views.ts): a `type` value whose fields the source lacks are
+   * absent, so presence tests answer false and reads of them throw the
+   * catchable TypeError. */
   /** `adopt`: the declaration-typed boundary's cast (decl-projection.ts).
    * The conversion preserves identity: a source object or array that
    * something else still references (reference count above one) is
@@ -4127,6 +4151,7 @@ export type IrExpr =
       preserveRefs?: true;
       adopt?: true;
       exact?: true;
+      partialView?: true;
       /** Shape inference's overlay: this conversion checks an
        * analysis-proven fact ("<package> <file>:<line>"); a failure is a
        * compiler analysis bug and reports itself as one. */

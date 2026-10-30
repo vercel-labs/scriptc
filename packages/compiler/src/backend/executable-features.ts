@@ -19,7 +19,13 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.strdecDyn ? { strdecDyn: true } : {}),
+    ...(features.processExtras ? { processExtras: true } : {}),
+    ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
+    ...(features.stdioWriteSlot ? { stdioWriteSlot: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
@@ -81,5 +87,6 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
+    ...(features.icu ? { intl: true } : {}),
   };
 }

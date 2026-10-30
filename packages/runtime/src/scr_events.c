@@ -246,6 +246,34 @@ void scr_signal_on(ScrStr *name, ScrDyn *cb, bool once) {
 #endif
 }
 
+#ifdef SCR_PROCESS_EXTRAS
+/* process.prependListener(<signal>, cb): the same listener in FRONT of the
+ * signal's existing registrations (Node's EventEmitter order). The append
+ * path above registers it and the new entry then moves to the front, so the
+ * two share one registration; a refused or inert registration (a throw, a
+ * non-main context) left the list alone and nothing moves. */
+void scr_signal_prepend(ScrStr *name, ScrDyn *cb) {
+#ifdef __wasi__
+  scr_signal_on(name, cb, false); /* traps, exactly as the append form does */
+#else
+  int sig = scr_signal_from_name(name);
+  if (sig < 0) sig = 0;
+  ScrSigReg *reg = scr_sig_regs;
+  while (reg && reg->sig != sig) reg = reg->next;
+  size_t before = reg ? reg->n : 0;
+  scr_signal_on(name, cb, false);
+  if (!reg) {
+    reg = scr_sig_regs;
+    while (reg && reg->sig != sig) reg = reg->next;
+  }
+  if (!reg || reg->n != before + 1) return;
+  ScrSigListener entry = reg->ls[reg->n - 1];
+  memmove(reg->ls + 1, reg->ls, (reg->n - 1) * sizeof *reg->ls);
+  reg->ls[0] = entry;
+#endif
+}
+#endif
+
 static void scr_sig_reg_drop(ScrSigReg *reg) {
   if (reg->sig > 0) {
 #ifdef _WIN32
@@ -1064,7 +1092,6 @@ static const char *const scr_stdio_names[] = {
 #endif
 static SCR_TL ScrDyn *scr_stdio_methods[STDIO_METHOD_COUNT];
 static SCR_TL bool scr_stdio_initialized;
-static SCR_TL bool scr_stdio_raw;
 
 static ScrDyn *scr_stdio_refusal(const char *name) {
   char message[192];
@@ -1311,6 +1338,57 @@ static void scr_stdio_resize_listener(ScrStdio *stream, ScrDyn *listener, bool r
 }
 
 #endif
+
+#ifdef SCR_STDIO_WRITE_SLOT
+/* stream.write(chunk[, encoding][, callback]) on a process output stream:
+ * Node's Writable.write validation, then a synchronous descriptor write.
+ * Returns +1 (true/false) or NULL with an exception pending. The typed
+ * write-slot build factors it out of scr_stdio_method so the dynamic-chunk
+ * entry point below shares it; every other build keeps the method's own
+ * body, byte for byte. */
+static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_t argc) {
+  ScrDyn *arg = argc ? args[0] : scr_dyn_undefined();
+  ScrDyn *result = NULL;
+  ScrDyn *encoding = argc > 1 ? args[1] : scr_dyn_undefined();
+  ScrDyn *callback = argc > 2 ? args[2] : scr_dyn_undefined();
+  if (encoding->kind == SCR_DYN_FUNC) { callback = encoding; encoding = scr_dyn_undefined(); }
+  if (callback->kind != SCR_DYN_UNDEF && callback->kind != SCR_DYN_NULL && callback->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("cb", "of type function", callback);
+    return NULL;
+  }
+  if (arg->kind == SCR_DYN_NULL) {
+    const char *m = "May not write null values to stream";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, m, strlen(m), "ERR_STREAM_NULL_VALUES");
+    return NULL;
+  }
+  if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem != SCR_BYTES_U8)
+    return scr_stdio_refusal("write of a typed array other than Uint8Array");
+  ScrBytes *bytes = NULL;
+  if (arg->kind == SCR_DYN_STR) {
+    if (encoding->kind != SCR_DYN_UNDEF && encoding->kind != SCR_DYN_NULL && encoding->kind != SCR_DYN_STR) {
+      return scr_stdio_refusal("write encoding");
+    }
+    ScrStr *enc = encoding->kind == SCR_DYN_STR ? scr_str_retain(encoding->v.str) : scr_str_new("utf8", 4);
+    bytes = scr_bytes_from_str(arg->v.str, enc);
+    scr_str_release(enc);
+  } else if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem == SCR_BYTES_U8) {
+    bytes = arg->v.bytes->shared ? scr_bytes_copy(arg->v.bytes) : scr_bytes_retain(arg->v.bytes);
+  } else {
+    scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer, TypedArray, or DataView", arg);
+    return NULL;
+  }
+  if (!bytes) return NULL;
+  int error = scr_stdio_write_raw(stream->fd, bytes->data, bytes->len);
+  scr_bytes_release(bytes);
+  if (error) {
+    scr_stdio_queue_write_error(stream, callback, error);
+    return scr_dyn_new_bool(false);
+  }
+  if (callback->kind == SCR_DYN_FUNC) scr_next_tick(scr_stdio_callback(callback, (void *)scr_stdio_write_done));
+  return scr_dyn_new_bool(true);
+}
+#endif
+
 static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
   int method = (int)scr_box_get_f64(cb->caps[0]);
   ScrDyn *self = scr_dyn_this_get();
@@ -1328,6 +1406,9 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     scr_dyn_arr_push(result, columns);
     scr_dyn_arr_push(result, rows);
   } else if (method == STDIO_WRITE && stream->fd != 0) {
+#ifdef SCR_STDIO_WRITE_SLOT
+    result = scr_stdio_write_call(stream, args, argc);
+#else
     ScrDyn *encoding = argc > 1 ? args[1] : scr_dyn_undefined();
     ScrDyn *callback = argc > 2 ? args[2] : scr_dyn_undefined();
     if (encoding->kind == SCR_DYN_FUNC) { callback = encoding; encoding = scr_dyn_undefined(); }
@@ -1360,6 +1441,7 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     }
     if (callback->kind == SCR_DYN_FUNC) scr_next_tick(scr_stdio_callback(callback, (void *)scr_stdio_write_done));
     result = scr_dyn_new_bool(true);
+#endif
   } else if (method == STDIO_ON || method == STDIO_ONCE || method == STDIO_OFF) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     if (listener->kind != SCR_DYN_FUNC) {
@@ -1441,7 +1523,7 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     result = scr_stdio_read(arg);
   } else if (stream->fd == 0 && method == STDIO_RAW) {
     scr_process_stdin_set_raw_mode(scr_dyn_truthy(arg));
-    if (!scr_exc_pending()) { scr_stdio_raw = scr_dyn_truthy(arg); result = scr_dyn_retain(self); }
+    if (!scr_exc_pending()) result = scr_dyn_retain(self);
 #ifdef SCR_STDIO_EXTENDED
   } else if (stream->fd == 0 && method == STDIO_SET_ENCODING) {
     ScrStr *enc = scr_strdec_encoding(arg);
@@ -1472,7 +1554,7 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
   if (stream->fd == 0 && length == 14 && memcmp(key, "readableLength", 14) == 0)
     return scr_dyn_new_num((double)scr_stdin_buffered);
   if (stream->fd == 0 && length == 5 && memcmp(key, "isRaw", 5) == 0)
-    return scr_process_is_tty(0) ? scr_dyn_new_bool(scr_stdio_raw) : scr_dyn_retain(scr_dyn_undefined());
+    return scr_process_is_tty(0) ? scr_dyn_new_bool(scr_process_stdin_raw()) : scr_dyn_retain(scr_dyn_undefined());
   if (stream->fd == 0 && length == 9 && memcmp(key, "destroyed", 9) == 0) return scr_dyn_new_bool(scr_stdin_destroyed);
   if (length == 3 && memcmp(key, "off", 3) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_OFF]);
   if (length == 11 && memcmp(key, "addListener", 11) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_ON]);
@@ -1605,7 +1687,14 @@ ScrDyn *scr_process_stdio(double fd) {
       ScrClosure *cb = scr_closure_new(NULL, 1);
       cb->caps[0] = scr_box_new(SCR_BOX_F64);
       scr_box_set_f64(cb->caps[0], i);
+#ifdef SCR_STDIO_WRITE_SLOT
+      // Node's process.stdout.write is an anonymous (bound) function:
+      // .name is "" there, while the other stream methods carry their names.
+      scr_stdio_methods[i] = scr_dyn_new_func(
+          cb, scr_stdio_method, i == STDIO_WRITE ? 3 : 1, "", i == STDIO_WRITE ? "" : scr_stdio_names[i]);
+#else
       scr_stdio_methods[i] = scr_dyn_new_func(cb, scr_stdio_method, i == STDIO_WRITE ? 3 : 1, "", scr_stdio_names[i]);
+#endif
     }
     scr_stdio_console_handler = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_stdio_console_error_handler, 1, "", "");
     scr_stdio_write_hook = scr_stdio_intercept;
@@ -1621,6 +1710,21 @@ double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path) {
   ScrStdio *stream = scr_dyn_handle_unbox(value, SCR_DYNH_STDIO, path, "ProcessStream");
   return stream ? stream->fd : 0;
 }
+
+#ifdef SCR_STDIO_WRITE_SLOT
+/* process.stdout/stderr.write(chunk) with a run-time chunk: the stream
+ * method's own validation and write, without creating the stream value
+ * or installing the write hook. False with an exception pending when the
+ * chunk is invalid. */
+bool scr_process_stdio_write_dyn(double fd, ScrDyn *chunk) {
+  ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
+  ScrDyn *result = scr_stdio_write_call(stream, &chunk, 1);
+  if (!result) return false;
+  bool accepted = scr_dyn_truthy(result);
+  scr_dyn_release(result);
+  return accepted;
+}
+#endif
 
 /* ── the process 'exit' event ─────────────────────────────────────────
  * Listeners run SYNCHRONOUSLY when the process exits: at the end of a
@@ -1714,6 +1818,31 @@ void scr_process_on_exit(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, doub
 #endif
   scr_exit_n++;
 }
+
+#ifdef SCR_PROCESS_EXTRAS
+/* process.stdin.isRaw: the raw-mode flag of a TTY stdin (1/0); a
+ * pipe-backed stdin has no such flag and answers Node's undefined, which
+ * the emitter's union construction spells -1. */
+double scr_process_stdin_is_raw(void) {
+  if (!scr_context_is_main()) return -1;
+  if (!scr_process_is_tty(0)) return -1;
+  return scr_process_stdin_raw() ? 1.0 : 0.0;
+}
+
+/* process.prependListener("exit", cb): the same listener in FRONT of the
+ * registry's existing entries (Node's EventEmitter order). The append path
+ * above registers it and the new entry then moves to the front, so the two
+ * share one registration; a registry already swept at exit released the
+ * closure and left the list empty, and nothing moves. */
+void scr_process_prepend_exit(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, double)) {
+  size_t before = scr_exit_n;
+  scr_process_on_exit(cb, fn, false);
+  if (scr_exit_n != before + 1) return;
+  ScrExitListener entry = scr_exit_ls[scr_exit_n - 1];
+  memmove(scr_exit_ls + 1, scr_exit_ls, (scr_exit_n - 1) * sizeof *scr_exit_ls);
+  scr_exit_ls[0] = entry;
+}
+#endif
 
 #ifdef SCR_NODE_ISLANDS
 /* Island code's 'exit' listeners, at their registration position among

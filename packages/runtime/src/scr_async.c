@@ -58,6 +58,9 @@
 #include <sys/mman.h>
 #include <ucontext.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <sys/event.h>
+#endif
 #endif
 
 #if defined(__has_feature)
@@ -1050,6 +1053,44 @@ double scr_now_ms(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+/* The loop's sleep to its next timer when nothing else can wake it. macOS
+ * gives nanosleep the timer slack of the thread's QoS class: a 5 ms sleep
+ * takes about 38 ms at utility QoS and 180 ms at background QoS, which is
+ * where launchd services, CI jobs among them, run. A kevent timeout keeps
+ * its deadline at every QoS, as libuv's loop does. */
+#if defined(__APPLE__)
+/* One queue with no events for every thread that sleeps (worker loops
+ * included), created on first use. */
+static _Atomic int scr_sleep_kq = -1;
+#endif
+static void scr_loop_sleep(double wait_ms) {
+  struct timespec ts = {(time_t)(wait_ms / 1000.0),
+                        (long)((wait_ms - (double)((time_t)(wait_ms / 1000.0)) * 1000.0) * 1e6)};
+#if defined(__APPLE__)
+  int kq = atomic_load_explicit(&scr_sleep_kq, memory_order_acquire);
+  if (kq < 0) {
+    int created = kqueue();
+    if (created >= 0) {
+      (void)fcntl(created, F_SETFD, FD_CLOEXEC);
+      int none = -1;
+      if (atomic_compare_exchange_strong(&scr_sleep_kq, &none, created)) {
+        kq = created;
+      } else {
+        close(created);
+        kq = none;
+      }
+    }
+  }
+  if (kq >= 0) {
+    /* An interrupted wait returns early, as nanosleep does. */
+    struct kevent ignored;
+    (void)kevent(kq, NULL, 0, &ignored, 1, &ts);
+    return;
+  }
+#endif
+  nanosleep(&ts, NULL);
 }
 
 static bool scr_timer_before(const ScrTimer *a, const ScrTimer *b) {
@@ -3764,9 +3805,10 @@ static DWORD WINAPI scr_fs_rename_worker(LPVOID payload) {
 #else
 static void *scr_fs_rename_worker(void *payload) {
   (void)payload;
-  /* A pool thread keeps SIGPIPE and SIGXFSZ blocked: its file writes then
-   * report EPIPE and EFBIG without changing the signal mask per write
-   * (scr_fs_write_once). */
+#ifdef SCR_LIB
+  /* In a library, a pool thread keeps SIGPIPE and SIGXFSZ blocked: its file
+   * writes then report EPIPE and EFBIG without changing the signal mask per
+   * write (scr_fs_write_once). Executables ignore both signals (scr_init). */
   sigset_t write_set;
   sigemptyset(&write_set);
 #ifdef SIGPIPE
@@ -3776,6 +3818,7 @@ static void *scr_fs_rename_worker(void *payload) {
   sigaddset(&write_set, SIGXFSZ);
 #endif
   (void)pthread_sigmask(SIG_BLOCK, &write_set, NULL);
+#endif
   scr_fs_rename_worker_loop();
   return NULL;
 }
@@ -5960,9 +6003,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       } else
 #endif
       if (due > now) {
-        double wait = due - now;
-        struct timespec ts = {(time_t)(wait / 1000.0), (long)((wait - (double)((time_t)(wait / 1000.0)) * 1000.0) * 1e6)};
-        nanosleep(&ts, NULL);
+        scr_loop_sleep(due - now);
         now = due;
       }
     }
@@ -5984,13 +6025,16 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         scr_firing_reffed = t.reffed; /* unref/ref during the callback lands here */
         scr_firing_refresh = false;
       }
+      double started = t.id != 0 && t.repeat_ms > 0 ? scr_now_ms() : 0;
       ((void (*)(ScrClosure *))t.cb->fn)(t.cb);
       if (t.id != 0 && t.repeat_ms > 0 && !scr_firing_cleared) {
-        /* Re-arm relative to the post-callback clock (libuv's uv_timer
-         * repeat behavior: no catch-up bursts after a slow callback). The
-         * ref state carries across ticks (a self-unref'd interval stays
-         * unref'd). */
-        ScrTimer again = {scr_now_ms() + t.repeat_ms, scr_timer_seq++, t.cb, t.repeat_ms, t.id, scr_firing_reffed, t.delay_ms};
+        /* Re-arm relative to the time the callback started, as Node's
+         * listOnTimeout does (getLibuvNow() before _onTimeout): a slow
+         * callback does not push the next tick back by its own duration.
+         * One slower than the interval makes the next tick due on the next
+         * turn, without catch-up bursts. The ref state carries across
+         * ticks (a self-unref'd interval stays unref'd). */
+        ScrTimer again = {started + t.repeat_ms, scr_timer_seq++, t.cb, t.repeat_ms, t.id, scr_firing_reffed, t.delay_ms};
         scr_timer_push(again);
       } else if (t.id != 0 && scr_firing_refresh && !scr_firing_cleared) {
         /* refresh() from inside the one-shot's own callback: re-arm to

@@ -1,7 +1,7 @@
 // The assert surface's honest fences: loose deep equality over recursive
 // types (equal/notEqual, deepEqual/notDeepEqual and assert/strict's aliases lower),
-// reference-equality strictEqual on objects,
-// union operands (narrow first), mismatched or uncomparable deep types
+// reference-equality strictEqual on objects, union operands with object
+// arms (narrow first), mismatched or uncomparable deep types
 // (typed arrays, class instances), namespace-object calls, unsupported
 // throws/rejects expectations (properties outside the static error
 // surface, empty shapes, non-literal objects, doesNotReject shapes —
@@ -19,9 +19,9 @@ assert.notDeepEqual([1], [2]);
 const box = { n: 1 };
 assert.strictEqual(box, box); // reference equality — deepStrictEqual hint
 
-let maybe: string | undefined = "x";
+let maybe: { n: number } | undefined = box;
 if ("x".length === 0) maybe = undefined;
-assert.strictEqual(maybe, "x"); // union operand — narrow first
+assert.strictEqual(maybe, box); // union operand with an object arm — narrow first
 
 const unk: unknown = JSON.parse("{}");
 assert.strictEqual(unk, { n: 1 }); // strict + composite static side: reference identity does not survive the unknown boundary

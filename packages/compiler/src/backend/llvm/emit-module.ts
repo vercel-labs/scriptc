@@ -1463,14 +1463,18 @@ function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
     `miss:`,
     `  ret ptr null`,
     `slow:`,
-    `  %hashed = call ptr @sc_map_entry_f64_hashed_int${flavor}(ptr %m, i64 %ki)`,
+    `  %hashed = call ptr @sc_map_entry_f64_hashed_int${flavor}(ptr %m, i64 %ki, double %k)`,
     `  ret ptr %hashed`,
     `}`,
     ``,
     // Hashing (scr_map_find_f64): the SameValueZero key word and its
-    // scr_key_mix hash. sc_map_entry_f64_int's probe converts the integer
-    // view to the key word, which is never NaN or -0, and so skips the
-    // normalization.
+    // scr_key_mix hash. sc_map_entry_f64_int's probe takes the key's double
+    // with its integer view: its bits are the key word, never NaN, and +0
+    // for the integer 0. The caller converts the integer: cvtsi2sd writes
+    // only the low half of its register, so in a function entry, where
+    // LLVM cannot clear the register first, it waits for the register's
+    // last value, in a loop of lookups often a value the previous
+    // iteration loaded.
     ...hashedNumberProbe(
       `sc_map_entry_f64_hashed${flavor}`,
       loop,
@@ -1488,10 +1492,14 @@ function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
     ...hashedNumberProbe(
       `sc_map_entry_f64_hashed_int${flavor}`,
       loop,
-      "i64 %ki",
+      "i64 %ki, double %k",
       sz,
-      [`  %kf = sitofp i64 %ki to double`, `  %kb = bitcast double %kf to i64`],
-      "%kf",
+      [
+        `  %kzero = icmp eq i64 %ki, 0`,
+        `  %kbits = bitcast double %k to i64`,
+        `  %kb = select i1 %kzero, i64 0, i64 %kbits`,
+      ],
+      "%k",
     ),
   ];
 }

@@ -67,6 +67,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqH2StreamOrThrow": "scr_http_req_h2_stream_or_throw",
   "intl.segmenterNew": "scr_intl_segmenter_new",
   "intl.segmenterRefusing": "scr_intl_segmenter_refusing",
+  "icu.segmenterWord": "scr_intl_segmenter_word_new",
+  "icu.numFormatDefault": "scr_intl_num_format_default",
+  "icu.i18nSupport": "scr_intl_i18n_support",
+  "icu.dateLocaleString": "scr_intl_date_locale_string",
+  "icu.dateLocaleTimeString": "scr_intl_date_locale_time_string",
   "weakMap.is": "scr_weak_map_is",
   "weakSet.is": "scr_weak_set_is",
   "weakMap.new": "scr_weak_map_new",
@@ -391,9 +396,14 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.envPairs": "scr_env_pairs",
   "process.stdoutWrite": "scr_process_stdout_write",
   "process.stdio": "scr_process_stdio",
+  "process.stdioSlot": "scr_process_stdio",
+  "process.stdioWriteDyn": "scr_process_stdio_write_dyn",
   "process.stderrWrite": "scr_process_stderr_write",
   "process.isTTY": "scr_process_is_tty",
   "process.isTTYValue": "scr_process_is_tty_value",
+  // A promise that never settles (events.once of an event a synchronous
+  // stream never emits); a fresh pending promise is its owned result.
+  "events.pendingForever": "scr_promise_new",
   "date.now": "scr_date_now",
   "date.newNow": "scr_date_now",
   "date.newMs": "scr_date_new_ms",
@@ -463,6 +473,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.unlinkSync": "scr_fs_unlink",
   "fs.chmodSync": "scr_fs_chmod",
   "fs.copyFileSync": "scr_fs_copyfile",
+  "fs.copyFileFlagsSync": "scr_fs_copyfile_flags",
   "fs.renameSync": "scr_fs_rename",
   "fs.accessSync": "scr_fs_access",
   // node:assert (scr_assert.c): all args borrowed; failures throw the
@@ -611,6 +622,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // string_decoder (scr_bytes.c): stateless helpers over (enc, pending,
   // chunk) — never throw.
   "strdec.write": "scr_strdec_write",
+  "strdec.writeDyn": "scr_strdec_write_dyn",
+  "strdec.nextDyn": "scr_strdec_next_dyn",
   "strdec.next": "scr_strdec_next",
   "strdec.end": "scr_strdec_end",
   "strdec.encoding": "scr_strdec_encoding",
@@ -670,6 +683,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bigstats.birthtime": "scr_stats_big_birthtime",
   "text.decode": "scr_text_decode",
   "bytes.bufferSource": "scr_bytes_buffer_source",
+  "text.decoderInput": "scr_text_decoder_input",
+  "text.decoderFlag": "scr_text_decoder_flag",
+  "text.decodeStreamOption": "scr_text_decode_stream_option",
+  "text.decoderEncodingOptions": "scr_text_decoder_encoding_options",
   "bytes.copyBrand": "scr_bytes_copy_brand",
   "text.decodeBufferSource": "scr_text_decode_buffer_source",
   "text.decodeOptions": "scr_text_decode_options",
@@ -802,6 +819,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
   "record.sourceSpread": "scr_record_source_spread",
+  "record.sourceNote": "scr_record_source_note",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -886,6 +904,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // identity); registration is special-cased above (ownership moves).
   "process.offSignal": "scr_signal_off",
   "process.offExit": "scr_process_off_exit",
+  // Front-of-list registrations (process.prependListener): the signal and
+  // uncaught-exception registries. prependExit is special-cased below with
+  // the exit adapters, like onExit.
+  "process.prependSignal": "scr_signal_prepend",
+  "process.prependUncaughtException": "scr_process_prepend_uncaught_exception",
   // child_process (scr_child.c): spawnSync/exec forms are synchronous
   // (execSync/execCapture throw — the may-throw check); handle getters
   // are pure reads. Registration forms are special-cased (moves + per-
@@ -926,6 +949,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.readFileBytes": "scr_fsp_read_file_bytes",
   "fsp.writeFile": "scr_fsp_write_file",
   "fsp.writeFileMode": "scr_fsp_write_file_mode",
+  "fsp.writeFileFlags": "scr_fsp_write_file_flags",
+  "fsp.copyFileFlags": "scr_fsp_copyfile_flags",
   "fsp.mkdir": "scr_fsp_mkdir",
   "fsp.mkdirMode": "scr_fsp_mkdir_mode",
   "fsp.mkdirRecursive": "scr_fsp_mkdir_recursive",
@@ -1131,6 +1156,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.keyDelete": "scr_dyn_key_delete",
   "dyn.keyDeleteComputed": "scr_dyn_key_delete_computed",
   "dyn.reflectDeleteProperty": "scr_dyn_reflect_delete_property",
+  "dyn.reflectHasTarget": "scr_dyn_reflect_has_target",
   "dyn.hasKeyComputed": "scr_dyn_has_key_computed",
   "dyn.hasOwnComputed": "scr_dyn_has_own_computed",
   "dyn.propertyIsEnumerableComputed": "scr_dyn_property_is_enumerable_computed",
@@ -1280,6 +1306,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.x509Verify": "scr_crypto_x509_verify",
   "crypto.x509CheckPrivateKey": "scr_crypto_x509_check_private_key",
   "fs.writeFileModeSync": "scr_fs_write_file_mode",
+  "fs.writeFileFlagsSync": "scr_fs_write_file_flags",
   "fs.chownSync": "scr_fs_chown",
   "fs.lchownSync": "scr_fs_lchown",
   "fs.fchownSync": "scr_fs_fchown",
@@ -1466,8 +1493,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // the client request forms have non-generic shapes — special-cased.
   "net.serverPort": "scr_net_server_port",
   "net.serverListening": "scr_net_server_listening",
+  "net.listenPortDyn": "scr_net_listen_port_dyn",
   "net.sockSetRef": "scr_net_sock_set_ref",
   "net.serverSetRef": "scr_net_server_set_ref",
+  "net.serverOff": "scr_net_server_off",
   "net.sockWrite": "scr_net_sock_write_str",
   "net.sockWriteBytes": "scr_net_sock_write_bytes",
   "net.sockEnd": "scr_net_sock_end",
@@ -1914,6 +1943,11 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "worker.receiveMessageOnPort",
   "worker.broadcastChannel",
   "process.stdio",
+  // The typed write slot and the run-time-typed chunk write keep the loop
+  // live for the write callbacks they queue: both reach the same stream
+  // object as process.stdio and call back from a nextTick.
+  "process.stdioSlot",
+  "process.stdioWriteDyn",
   "fetch.start",
   "fetch.input",
   "fetch.function",
@@ -1999,6 +2033,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "writable.writeU",
   "writable.writeDyn",
   "writable.writeEnc",
+  "writable.writeEcb",
   "writable.end",
   "writable.uncork",
   "stream.destroy",

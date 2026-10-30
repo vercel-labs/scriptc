@@ -1,0 +1,4 @@
+{
+  "entry": "workloads/stream-buffered-drain.ts",
+  "args": []
+}

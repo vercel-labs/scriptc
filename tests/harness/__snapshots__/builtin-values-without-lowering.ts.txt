@@ -3,7 +3,7 @@ builtin-values-without-lowering.ts:7:7 - error SC2009: values of type '{ json: J
   6 | 
   7 | const inferred = { json: JSON };
     |       ^~~~~~~~
-  8 | const loose: any = { intl: Intl, proxy: Proxy };
+  8 | const loose: any = { atomics: Atomics };
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
@@ -12,22 +12,22 @@ builtin-values-without-lowering.ts:7:18 - error SC2009: values of type '{ json: 
   6 | 
   7 | const inferred = { json: JSON };
     |                  ^~~~~~~~~~~~~~
-  8 | const loose: any = { intl: Intl, proxy: Proxy };
+  8 | const loose: any = { atomics: Atomics };
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-builtin-values-without-lowering.ts:8:28 - error SC2020: 'Intl' is part of the standard library types but has no scriptc lowering yet
+builtin-values-without-lowering.ts:8:31 - error SC2020: 'Atomics' is part of the standard library types but has no scriptc lowering yet
 
   7 | const inferred = { json: JSON };
-  8 | const loose: any = { intl: Intl, proxy: Proxy };
-    |                            ^~~~
+  8 | const loose: any = { atomics: Atomics };
+    |                               ^~~~~~~
   9 | const timers: Record<string, unknown> = { setTimeout };
 
-  hint: native Intl supports default Unicode grapheme segmentation and the composed new Intl.NumberFormat("en-US").format(x); locale negotiation and other ICU-backed operations remain unsupported
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 builtin-values-without-lowering.ts:9:43 - error SC2020: 'setTimeout' is part of the standard library types but has no scriptc lowering yet
 
-   8 | const loose: any = { intl: Intl, proxy: Proxy };
+   8 | const loose: any = { atomics: Atomics };
    9 | const timers: Record<string, unknown> = { setTimeout };
      |                                           ^~~~~~~~~~
   10 | const list: any[] = [Array, parseInt];

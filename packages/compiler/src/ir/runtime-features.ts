@@ -100,6 +100,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offWarning",
   "process.onRejectionHandled",
   "process.onUncaughtException",
+  "process.prependUncaughtException",
   "process.onUnhandledRejection",
   "process.onWarning",
   "process.setDeprecationFlag",
@@ -646,7 +647,12 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offSignal",
   "process.onExit",
   "process.onSignal",
+  "process.prependExit",
+  "process.prependSignal",
   "process.stdio",
+  "process.stdinIsRaw",
+  "process.stdioSlot",
+  "process.stdioWriteDyn",
   "stdin.nextChunk",
   "stdin.onData",
   "stdin.onEnd",
@@ -1102,6 +1108,12 @@ const RUNTIME_FEATURE_RULES = {
     libCall: (node) => node.fn.startsWith("http2.") && !HTTP2_LEGACY_FNS.has(node.fn),
     types: ["http2Session", "http2Stream"],
   }),
+  /** Intl over ICU: scr_intl.c plus the ICU archive and the data
+   * file that ships beside the executable. The prefix is `icu.` because the
+   * `intl.` libCalls are the engine-free fast paths — the embedded en-US
+   * number format and the table-driven grapheme segmenter — which must keep
+   * linking no ICU code. */
+  icu: rule({ prefixes: ["icu."] }),
   /** scr_test.c renders thrown strings with the inspect unit's string
    * formatting; scr_util_callable.c wraps the inspect unit; readline's
    * terminal unit prints completion errors through it when there is a
@@ -1113,6 +1125,8 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.class",
       "webstream.install",
       "util.styleText",
+      // ERR_UNHANDLED_ERROR quotes util.inspect of a non-Error payload.
+      "emitter.emitErrorValue",
       "crypto.cipherNew",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
@@ -1208,6 +1222,18 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynInvoke" && STDIO_EXTENDED_NAMES.has(node.method)) ||
       (node.kind === "strLit" && STDIO_EXTENDED_NAMES.has(node.value)),
   }),
+  /** A write completion callback that takes the error argument lowers
+   * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
+   * publishes the error the adapter delivers. */
+  streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  /** The program reaches the process output streams' write slot — the
+   * write method as a value (process.stdioSlot), its replacement, a patched
+   * program's typed writes, or a run-time-typed chunk
+   * (process.stdioWriteDyn): the SCR_STDIO_WRITE_SLOT build of the events
+   * unit carries the shared write body, the dynamic-chunk entry point and
+   * Node's anonymous write function. Every other program links the default
+   * object, byte for byte. */
+  stdioWriteSlot: rule({ fns: ["process.stdioSlot", "process.stdioWriteDyn"] }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1229,6 +1255,12 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** A record literal asserted to a wider record type answers a partial
+   * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
+   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c. */
+  recordViewPartial: rule({
+    expr: (node) => node.kind === "dynCheck" && node.partialView === true,
+  }),
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
@@ -1267,6 +1299,33 @@ const RUNTIME_FEATURE_RULES = {
       // getPeerCertificate and getCertificate build with scr_x509.c too.
       "tls.sockGetPeerCertificate",
       "tls.sockGetCertificate",
+    ],
+  }),
+  /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode
+   * argument: scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c.
+   * Programs that never pass either keep both units' default objects. */
+  fsFlags: rule({
+    fns: [
+      "fs.copyFileFlagsSync",
+      "fs.writeFileFlagsSync",
+      "fsp.copyFileFlags",
+      "fsp.writeFileFlags",
+    ],
+  }),
+  /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
+   * scr_bytes_strdec_dyn.c. */
+  strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
+  /** The process and stream event registries' extras — prependListener for
+   * signals, 'exit' and uncaught exceptions, stdin.isRaw, and server.off:
+   * the SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and
+   * the SCR_NET_SERVER_OFF build of scr_net.c. */
+  processExtras: rule({
+    fns: [
+      "net.serverOff",
+      "process.prependExit",
+      "process.prependSignal",
+      "process.prependUncaughtException",
+      "process.stdinIsRaw",
     ],
   }),
   zlib: rule({ prefixes: ["zlib."] }),
@@ -1311,10 +1370,12 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsFlags: false,
     fsWatch: false,
     fsWatchFile: false,
     http2: false,
     http: false,
+    icu: false,
     inspect: false,
     legacyTextDecoder: false,
     mime: false,
@@ -1331,15 +1392,19 @@ function noRuntimeFeatures(): RuntimeFeatures {
     pki: false,
     ed25519: false,
     processEvents: false,
+    processExtras: false,
     qs: false,
     regex: false,
     searchParams: false,
     urlIdna: false,
     stdioExtended: false,
+    stdioWriteSlot: false,
+    streamWriteErrors: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
     stream: false,
+    strdecDyn: false,
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
@@ -1354,6 +1419,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
+    recordViewPartial: false,
     wasm: false,
     webcrypto: false,
     zlib: false,
@@ -1445,6 +1511,13 @@ function scanRuntimeFeatures(
     const sites = new JsIcSites(mod);
     features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));
   }
+  // A jsval parameter or result (ir/jsval.ts) is retained and released
+  // through the tier's word reference counting, with or without a js.*
+  // operation in the body.
+  if (!features.dynTier)
+    features.dynTier = mod.functions.some(
+      (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
+    );
   return features;
 }
 

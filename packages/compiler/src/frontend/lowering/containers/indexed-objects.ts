@@ -22,12 +22,14 @@ import {
   type SrcLoc,
   UNDEFINED_T,
   arrayOf,
+  canDynCheckTo,
   isRefCounted,
   isSupportedIndexValue,
   isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
+import { recordMayKeepSource, recordSourceTest } from "../record-sources.js";
 import { locOf } from "../../program.js";
 import { typeKey } from "../../type-mapper.js";
 import { type WidthLift } from "../lowerer.js";
@@ -1221,8 +1223,47 @@ export function lowerRecordOvfCaptureHelper(
       ),
     );
   }
+  // A CLOSED source can still hold own keys its shape does not declare: a
+  // record built from the checked-dynamic tree keeps them beside it (the
+  // record-sources.ts view), and every JS copy — spread, Object.assign,
+  // JSON — carries them. The field-by-field rebuild above cannot see
+  // them, so when the source kept such a view, rebuild the target from
+  // that live view instead: the validated keyed conversion the checked
+  // record builder performs, which copies exactly the keys Node copies.
+  // The declared-field copies before this branch are pure writes into a
+  // fresh local, so the redone work is only wasted slot stores on the
+  // rare path where the view exists.
+  // The conversion is only honest when the checked-dynamic tree can check it,
+  // and the view can only exist if the program converts something into a
+  // closed record at all. Both facts are settled before the shape helpers
+  // finalize their bodies, so the tail is chosen there.
+  const sourcedFromView =
+    fIv === null &&
+    recordMayKeepSource(lowerer, fromT) &&
+    canDynCheckTo(
+      toT,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    );
   body.push({ kind: "return", value: outRef, loc });
   const suffix = body.slice(1 + fieldStmts.size);
+  const keptSourceTail = (): IrStmt[] => {
+    const fromView: IrExpr = {
+      kind: "dynCheck",
+      value: { kind: "dynFrom", value: sRef, type: DYN, loc },
+      type: toT,
+      loc,
+    };
+    const fromViewReturn: IrStmt = { kind: "return", value: fromView, loc };
+    const fromViewBranch: IrStmt = {
+      kind: "if",
+      cond: recordSourceTest(sRef, loc),
+      then: [fromViewReturn],
+      else_: null,
+      loc,
+    };
+    return [fromViewBranch, ...suffix];
+  };
   const fn: IrFunction = {
     name,
     params: [{ localId: "s.0", name: "s", type: fromT }],
@@ -1244,13 +1285,15 @@ export function lowerRecordOvfCaptureHelper(
   lowerer.shapeOrderHelperFinalizers.push(() => {
     const current = lowerer.shapes.get(fromId) ?? from;
     const currentOrder = current.declaredOrder ?? current.fields.map((f) => f.name);
+    let tail: IrStmt[] = suffix;
+    if (sourcedFromView && lowerer.recordSourcesPossible) tail = keptSourceTail();
     fn.body = [
       body[0]!,
       ...currentOrder.flatMap((field) => {
         const stmt = fieldStmts.get(field);
         return stmt ? [stmt] : [];
       }),
-      ...suffix,
+      ...tail,
     ];
   });
   lowerer.liftedFns.push(fn);

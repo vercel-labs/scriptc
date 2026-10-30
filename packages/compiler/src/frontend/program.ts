@@ -43,6 +43,7 @@ import { isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
+import { isSourcePhaseImport } from "./ts7/ast-node.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
   commonJsModuleSyntaxDiag,
@@ -161,6 +162,7 @@ import {
   captureShapeOverlayState,
   type ShapeOverlayLoadState,
 } from "./shape-inference/index.js";
+import { jsInferenceEnabled } from "./js-inference.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -556,6 +558,9 @@ export interface StartupCrash {
   loc: { file: string; start: number; end: number };
   /** Node's error code, for the refusals that carry one. */
   code?: string;
+  /** The error's own `url` property: the missing file's URL, for Node's
+   * ERR_MODULE_NOT_FOUND of an import() whose target does not exist. */
+  url?: string;
 }
 
 /** True when a coverage mapping names one exact bare host module. TypeScript
@@ -1401,7 +1406,10 @@ export function loadProgram(
       externalTypes,
       npmStaticPackages.length > 0,
       projector,
-      npmStaticPackages.length > 0 && shapeOverlayEnabled() ? shapeOverlayer : undefined,
+      (npmStaticPackages.length > 0 && shapeOverlayEnabled()) ||
+        (jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0")
+        ? shapeOverlayer
+        : undefined,
     );
     // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
     const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
@@ -5532,6 +5540,23 @@ export function checkPreflightTs7(
   }
 }
 
+/** Whether a declaration file has the runtime file TypeScript pairs it
+ * with (`x.d.ts` with `x.js`, `x.d.mts` with `x.mjs`, `x.d.cts` with
+ * `x.cjs`): a specifier that resolves to the declaration then still names a
+ * module Node can load. */
+function declarationHasRuntimeFile(declaration: ts.SourceFile): boolean {
+  const name = declaration.fileName;
+  const pairs: [string, string][] = [
+    [".d.ts", ".js"],
+    [".d.mts", ".mjs"],
+    [".d.cts", ".cjs"],
+  ];
+  for (const [declared, runtime] of pairs)
+    if (name.endsWith(declared))
+      return trackedFileExists(name.slice(0, -declared.length) + runtime);
+  return false;
+}
+
 function preflight7(load: LoadResult): {
   diags: ScrDiagnostic[];
   moduleOrder: ts.SourceFile[];
@@ -6060,6 +6085,21 @@ function preflight7(load: LoadResult): {
             continue;
           }
         }
+        // A re-export whose specifier resolves ONLY to a declaration file
+        // has no runtime module to link (Node throws
+        // ERR_MODULE_NOT_FOUND), and a declaration file is not a program
+        // module: an edge to it would lower the declarations' own imports
+        // as code.
+        if (reDep !== null && reDep.isDeclarationFile && !declarationHasRuntimeFile(reDep)) {
+          diags.push(
+            unsupportedDiag(
+              "SC1010",
+              locOf7(stmt),
+              `the '${fromSpec}' re-export (it resolves only to type declarations — there is no runtime implementation to compile)`,
+            ),
+          );
+          continue;
+        }
         if (reDep && !reDep.fileName.endsWith(".json")) {
           deps.push({ dep: reDep, stmt });
           depPositions.get(sf)!.push({ dep: reDep, pos: ts.tokenStartOfNode(stmt) });
@@ -6068,6 +6108,14 @@ function preflight7(load: LoadResult): {
       }
       if (!ts.isImportDeclaration(stmt)) continue;
       if (erasedTypeOnlyImport(stmt)) continue;
+      // `import source x from "./x.wasm"` (TypeScript 7.1) binds the module's source object, such
+      // as a WebAssembly.Module; compiled programs do not support it yet.
+      if (isSourcePhaseImport(stmt.importClause)) {
+        diags.push(
+          unsupportedDiag("SC1090", locOf7(stmt), "source phase imports (`import source`)"),
+        );
+        continue;
+      }
 
       // Import-like nodes whose specifier the parse could not shape into a
       // string literal — the jsdoc `/** @import x = require(...) */`
@@ -6250,6 +6298,22 @@ function preflight7(load: LoadResult): {
       const clause = stmt.importClause;
       const dep = isRelative ? resolveImport7(program, sf, spec) : (npmStaticDep ?? projDep);
       const isJson = dep !== null && dep.fileName.endsWith(".json");
+      // A specifier that resolves ONLY to a declaration file has no runtime
+      // module to link: Node throws ERR_MODULE_NOT_FOUND at this import.
+      // Declarations are not program modules — taking one as a module-order
+      // edge would lower its imports as if it were code (SC2013 for every
+      // specifier inside a package's `.d.ts`). Type-only imports were
+      // already erased above; this is the value form.
+      if (dep !== null && dep.isDeclarationFile && !isJson && !declarationHasRuntimeFile(dep)) {
+        diags.push(
+          unsupportedDiag(
+            "SC1010",
+            locOf7(stmt),
+            `the '${spec}' import (it resolves only to type declarations — there is no runtime implementation to compile)`,
+          ),
+        );
+        continue;
+      }
       // SELF-imports: the bindings alias this module's OWN declarations,
       // so a TOP-LEVEL read lexically above the aliased declaration is
       // Node's TDZ ReferenceError at runtime (exactly what tsc's TS2448
@@ -6532,6 +6596,10 @@ function preflight7(load: LoadResult): {
             }
           }
           if (earlyRequireFence(req, bindingKind, loc)) continue;
+          // A declaration file is never a runtime module (see the import
+          // arm): the require throws MODULE_NOT_FOUND in Node, so it is not
+          // a module-order edge.
+          if (dep !== null && dep.isDeclarationFile) continue;
           if (dep) deps.push({ dep });
         }
       }
@@ -6610,7 +6678,8 @@ function preflight7(load: LoadResult): {
             lazy ? { dep, lazy: true, call } : { dep, call };
           const projectDep = resolveImport7(program, sf, spec, "require");
           if (projectDep !== null) {
-            if (!projectDep.fileName.endsWith(".json")) deps.push(edgeTo(projectDep));
+            if (!projectDep.fileName.endsWith(".json") && !projectDep.isDeclarationFile)
+              deps.push(edgeTo(projectDep));
             continue;
           }
           if (isRelativeSpecifier(spec) || spec.startsWith("#")) continue;

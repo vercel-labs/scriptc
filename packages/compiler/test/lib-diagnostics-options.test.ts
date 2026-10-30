@@ -88,7 +88,7 @@ test("noUnusedLocals and noUnusedParameters report nothing in declaration files"
   const codes = (extension: string, text: string): string[] =>
     checkPreflightTs7(
       project(options, {
-        "main.ts": 'import "./extra.js";\nexport {};\n',
+        "main.ts": 'export type {} from "./extra.js";\n',
         [`extra.${extension}`]: text,
       }),
     ).diags.map((d) => d.message);

@@ -69,6 +69,10 @@ ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors);
 void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
 void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
 ScrDyn *scr_process_stdio(double fd);
+/* process.stdout/stderr.write(chunk) with a run-time chunk: Node's Writable
+ * validation, then a synchronous write. false with an exception pending when
+ * the chunk is invalid. */
+bool scr_process_stdio_write_dyn(double fd, ScrDyn *chunk);
 bool scr_dyn_process_stdio_is(const ScrDyn *value);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);
 

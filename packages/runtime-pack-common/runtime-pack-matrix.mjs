@@ -62,6 +62,12 @@ export const BASE_RUNTIME_SOURCES = [
 export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
+  // writeFile's `flag` disposition and the fs/promises twins; the copyFile
+  // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
+  ["scr_fs_flags.c", "fsFlags"],
+  // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
+  // typed twins so a typed program keeps that object byte for byte.
+  ["scr_bytes_strdec_dyn.c", "strdecDyn"],
   // BigIntStats member reads (`statSync(p, { bigint: true })` members). The
   // bigstats gate is narrower than bigint, which every bigint value turns on.
   ["scr_stats_bigint.c", "bigstats"],
@@ -108,6 +114,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
+  // Intl over ICU (scr_intl.c): the default-locale number/date formats and
+  // word segmentation, over the packed ICU archive and its data file.
+  // Every engine-free Intl form (the en-US fast paths, default grapheme
+  // clusters) keeps its own unit and links none of this.
+  ["scr_intl.c", "intl"],
   ["scr_events.c", "events"],
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
@@ -258,6 +269,21 @@ export function variantsFor(source) {
       when: { dynTier: true, webStreams: true, nodeIsland: true },
       defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
     });
+    // A program with a partial record assertion (record-views.ts) links the
+    // build whose view slot answers NULL for a field the viewed record does
+    // not declare, so the emitted guard, clone helper and presence test can
+    // stop with the program's message instead of reading a bogus slot. The
+    // selector takes the variant with the most conditions, so each of the
+    // builds above needs its counterpart; every other program keeps the
+    // default object, byte for byte.
+    for (const { id, when, defines } of variants.slice()) {
+      const suffix = id === "default" ? "" : `-${id}`;
+      variants.push({
+        id: `record-view-partial${suffix}`,
+        when: { ...when, recordViewPartial: true },
+        defines: [...defines, "SCR_RECORD_VIEW_PARTIAL"],
+      });
+    }
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
@@ -297,6 +323,37 @@ export function variantsFor(source) {
       id: "warning-replace",
       when: { warningReplace: true },
       defines: ["SCR_WARNING_REPLACE"],
+    });
+    // The process-prepend registries (processExtras) add
+    // scr_process_prepend_uncaught_exception, in a build of its own so the
+    // default object stays put for every program.
+    variants.push({
+      id: "process-extras",
+      when: { processExtras: true },
+      defines: ["SCR_PROCESS_EXTRAS"],
+    });
+    variants.push({
+      id: "warning-replace-process-extras",
+      when: { warningReplace: true, processExtras: true },
+      defines: ["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS"],
+    });
+  }
+  // copyFileSync's mode argument reuses scr_fs_cp.c's reflink walk, so the
+  // entry lives in a build of this unit rather than a unit of its own.
+  if (source === "scr_fs_cp.c") {
+    variants.push({
+      id: "flags",
+      when: { fsFlags: true },
+      defines: ["SCR_FS_FLAGS"],
+    });
+  }
+  // server.off / removeListener: the listener-removal entry, in a build of
+  // its own so a program that never removes a listener keeps the default.
+  if (source === "scr_net.c") {
+    variants.push({
+      id: "server-off",
+      when: { processExtras: true },
+      defines: ["SCR_NET_SERVER_OFF"],
     });
   }
   // Programs with web streams link the promise unit with native promise
@@ -351,6 +408,77 @@ export function variantsFor(source) {
       when: { stdioExtended: true, nodeIsland: true },
       defines: ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
     });
+    // processExtras adds the prepend registrations and stdin's raw-mode
+    // flag; the combinations above then need their own builds, since the
+    // variant with the most conditions is the one selected.
+    variants.push({
+      id: "process-extras",
+      when: { processExtras: true },
+      defines: ["SCR_PROCESS_EXTRAS"],
+    });
+    variants.push({
+      id: "process-extras-stdio-extended",
+      when: { processExtras: true, stdioExtended: true },
+      defines: ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED"],
+    });
+    variants.push({
+      id: "process-extras-node-island",
+      when: { processExtras: true, nodeIsland: true },
+      defines: ["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"],
+    });
+    variants.push({
+      id: "process-extras-stdio-extended-node-island",
+      when: { processExtras: true, stdioExtended: true, nodeIsland: true },
+      defines: ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
+    });
+    // The typed process output write slot (the write method as a value, its
+    // replacement, run-time-typed chunks): the shared write body, the
+    // dynamic-chunk entry point and Node's anonymous write function. Every
+    // other program keeps the default object, byte for byte.
+    for (const [id, when, defines] of [
+      ["stdio-write-slot", { stdioWriteSlot: true }, ["SCR_STDIO_WRITE_SLOT"]],
+      [
+        "stdio-extended-write-slot",
+        { stdioExtended: true, stdioWriteSlot: true },
+        ["SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "node-island-write-slot",
+        { nodeIsland: true, stdioWriteSlot: true },
+        ["SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "stdio-extended-node-island-write-slot",
+        { stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
+        ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+    ])
+      variants.push({ id, when, defines });
+    // A program with both the process extras and the write slot needs both
+    // defines in one build.
+    for (const [id, when, defines] of [
+      [
+        "process-extras-write-slot",
+        { processExtras: true, stdioWriteSlot: true },
+        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "process-extras-stdio-extended-write-slot",
+        { processExtras: true, stdioExtended: true, stdioWriteSlot: true },
+        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "process-extras-node-island-write-slot",
+        { processExtras: true, nodeIsland: true, stdioWriteSlot: true },
+        ["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "process-extras-stdio-extended-node-island-write-slot",
+        { processExtras: true, stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
+        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // Programs with Node islands link the event loop with the Node island slot;
   // every other program keeps the default object, byte for byte.
@@ -359,6 +487,16 @@ export function variantsFor(source) {
       id: "node-island",
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
+    });
+  }
+  // Error-taking write completion callbacks: the stream unit publishes the
+  // error each callback receives; every other program keeps the default
+  // object, byte for byte.
+  if (source === "scr_stream.c") {
+    variants.push({
+      id: "write-errors",
+      when: { streamWriteErrors: true },
+      defines: ["SCR_STREAM_WRITE_ERRORS"],
     });
   }
   if (source === "scr_cycle.c") {
@@ -388,6 +526,7 @@ export function createRuntimePackMatrix({
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];
   const matrix = withLibraryRuntimeFlavors(

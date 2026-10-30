@@ -67,16 +67,51 @@ function expectedExitCode(file: string): number {
   return 0;
 }
 
-async function runBinary(cmd: string, args: string[], cpuLevel?: string): Promise<RunResult> {
+/** `// @env: NAME=VALUE[,NAME=VALUE]` (differential.test.ts's twin): the
+ * variables are set for BOTH sides, so a program can pin the ambient state
+ * that decides Intl output (TZ, LC_ALL/LANG) and the oracle and the binary
+ * read the same one. */
+function programEnv(file: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of directiveHead(file)) {
+    const m = /^\/\/ @env:\s*(.+?)\s*$/.exec(line);
+    if (m === null) continue;
+    for (const pair of m[1]!.split(",")) {
+      const eq = pair.indexOf("=");
+      if (eq > 0) env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+    }
+  }
+  return env;
+}
+
+/** `// @requires-icu` (differential.test.ts's twin): the program's Intl
+ * forms are answered by ICU, which only the linux-x64 runtime pack carries
+ * in this slice; other lanes skip instead of hitting the refusal. */
+function requiresIcu(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @requires-icu\s*$/.test(l));
+}
+
+function icuAvailable(): boolean {
+  return process.platform === "linux" && process.arch === "x64";
+}
+
+async function runBinary(
+  cmd: string,
+  args: string[],
+  cpuLevel?: string,
+  extraEnv: Record<string, string> = {},
+): Promise<RunResult> {
   // Linux fork/exec race (observed on the sandbox lane): a sibling
   // worker's fork can inherit the freshly-linked binary's write fd across
   // its own spawn window, and exec answers ETXTBSY until that fd closes.
   // The condition is transient by construction — retry briefly, the
   // npm/cargo stance.
   for (let attempt = 0; ; attempt++) {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
+    if (cpuLevel !== undefined) env["SCRIPTC_CPU_LEVEL"] = cpuLevel;
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
-      ...(cpuLevel === undefined ? {} : { env: { ...process.env, SCRIPTC_CPU_LEVEL: cpuLevel } }),
+      ...(cpuLevel === undefined && Object.keys(extraEnv).length === 0 ? {} : { env }),
     });
     pending.child.stdin?.end();
     try {
@@ -214,7 +249,13 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
     async ([rel, file], { skip }) => {
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();
-      const oracle = await runBinary(process.execPath, nodeOracleArgs(file));
+      if (requiresIcu(file) && !icuAvailable()) skip();
+      const oracle = await runBinary(
+        process.execPath,
+        nodeOracleArgs(file),
+        undefined,
+        programEnv(file),
+      );
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);
       for (const optimization of optimizationModes) {
@@ -227,7 +268,7 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
         expect(result.backend).toBe("llvm");
         expect(result.llvmPath.endsWith(".ll")).toBe(true);
         for (const level of cpuLevels) {
-          const actual = await runBinary(result.binaryPath, [], level);
+          const actual = await runBinary(result.binaryPath, [], level, programEnv(file));
           const lane = level === undefined ? optimization : `${optimization} level ${level}`;
           expect(actual.stdout, `${lane} stdout`).toEqual(oracle.stdout);
           if (expectedExit === 0)

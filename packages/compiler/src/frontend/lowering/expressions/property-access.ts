@@ -211,10 +211,12 @@ import { InternalCompilerError } from "../../../errors.js";
 import { lowerUnionFieldRead } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
+import { partialAssertionFields, partialFieldRead } from "../partial-assertions.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
 import { isWebCryptoReceiver } from "../builtins/crypto.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
+import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
 import { lowerChildPropertyRead } from "../handle-properties.js";
 
@@ -718,7 +720,9 @@ export function lowerPropertyAccessExpr(
       };
     }
   }
-  if ((expr.name.text === "index" || expr.name.text === "input") && !expr.questionDotToken) {
+  // `re.exec(s)?.index` takes the same read: the chain lowering binds the
+  // guarded receiver (non-nullish inside the guard) before re-dispatching.
+  if (expr.name.text === "index" || expr.name.text === "input") {
     const represented = tryLowerExpression(lowerer, expr.expression);
     if (
       represented &&
@@ -4836,6 +4840,21 @@ export function fieldGetExpr(
   // construction), typed as the index value armed with undefined
   // (mirroring lowerRecordKeyRead).
   if (target.container === "recordOvf") {
+    // A dot read through a value HELD from process.env (`const env =
+    // process.env; env.X`): the hold aliases the live table, so the read is
+    // the same getenv the direct spelling lowers to.
+    if (ts.isPropertyAccessExpression(blame)) {
+      const live = heldEnvValueType(lowerer, blame.expression);
+      if (live !== null) {
+        return {
+          kind: "libCall",
+          fn: "process.envGet",
+          args: [{ kind: "strLit", value: target.field, type: STRING, loc }],
+          type: live,
+          loc,
+        };
+      }
+    }
     let obj = target.obj;
     if (obj.type.kind === "union" && ts.isPropertyAccessExpression(blame)) {
       const present = lowerer.stripUndefinedArm(obj.type);
@@ -4929,6 +4948,23 @@ export function fieldGetExpr(
     }
     return read;
   }
+  // A field some partial record assertion leaves unwritten (a partial
+  // record view, partial-assertions.ts): a read of an absent field throws
+  // the catchable TypeError instead of reading a slot the view lacks.
+  if (partialAssertionFields(lowerer, target.shapeId).has(target.field)) {
+    const obj = target.obj;
+    if (isSafeToRepeat(obj))
+      return partialFieldRead(lowerer, obj, target.shapeId, target.field, target.fieldType, loc)!;
+    const stable = lowerer.declareHiddenLocal("%partialRecv", obj.type);
+    const ref = varRef(stable.id, obj.type, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: stable.id, init: obj, loc }],
+      result: partialFieldRead(lowerer, ref, target.shapeId, target.field, target.fieldType, loc)!,
+      type: target.fieldType,
+      loc,
+    };
+  }
   return {
     kind: "recordGet",
     obj: target.obj,
@@ -4982,7 +5018,10 @@ const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
  * constructor, and dynamic values answer `.constructor` with the same one,
  * so `o.constructor === Object` and `err.constructor === TypeError` are
  * exact identity tests, and `err.constructor.name` is the constructor's
- * name. */
+ * name. SharedArrayBuffer, DataView, BigInt64Array, BigUint64Array and
+ * Proxy have values with Node's name, length and instanceof answers;
+ * calling one throws Node's TypeError, and constructing through the value
+ * is fenced. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -4994,6 +5033,11 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "WeakMap",
   "WeakSet",
   "FinalizationRegistry",
+  "SharedArrayBuffer",
+  "DataView",
+  "BigInt64Array",
+  "BigUint64Array",
+  "Proxy",
   ...ERROR_CONSTRUCTOR_VALUES,
 ]);
 

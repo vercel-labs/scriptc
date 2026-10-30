@@ -55,10 +55,14 @@ $ git -C ~/all/vercel/scriptc-react worktree add ../scriptc-pr-01 -b pr/01-corre
 
 Each worktree needs its own `pnpm install` (fast: pnpm hard-links from a shared store) and build. When a PR doesn't change them, copy the slow native pieces (`packages/llvm-darwin-arm64/bin/`, the runtime pack artifacts) from the source worktree instead of rebuilding. Agents running tests at the same time should cap workers (`SCRIPTC_TEST_WORKERS=2`).
 
-**Bringing changes in, unstaged.** The agent brings every change relevant to its PR into its worktree and leaves it unstaged. No commits until you've reviewed.
-- whole files that belong to the PR: `git restore --source=lfades/react-node-ssr --worktree -- <path>` (`git checkout <branch> -- <path>` would also stage them);
-- pieces of `4d60d90ea`, or files shared by several PRs: `git restore -p --source=lfades/react-node-ssr --worktree -- <file>`, choosing this PR's hunks;
-- focused commits: `git cherry-pick -n <hash>`, then `git reset` to unstage.
+**Bringing changes in, unstaged.** PR branches start from `origin/main` (chained ones from their predecessor's branch), never from `lfades/react-node-ssr`. That branch is only the source of the changes. The agent brings every change relevant to its PR into its worktree and leaves it unstaged. No commits until you've reviewed.
+
+`main` has moved a lot since the work branched off at `828ea84dc` (Oct 25): over 1,300 commits. So carry over the *changes*, never whole files. `git restore --source=lfades/react-node-ssr -- <path>` would replace the file with our older version and silently undo everything `main` changed in it since. The changes to carry are `git diff 828ea84dc lfades/react-node-ssr`:
+- a file whose changes all belong to the PR: `git diff 828ea84dc lfades/react-node-ssr -- <path> | git apply -3`;
+- a file shared by several PRs (most of `4d60d90ea`): write its diff to a file, keep only this PR's hunks, and apply that with `git apply -3`;
+- files that are new on our branch are the one case where copying is safe: `git restore --source=lfades/react-node-ssr --worktree -- <path>`.
+
+`git apply -3` falls back to a 3-way merge and leaves conflict markers where `main` changed the same lines. Resolve them by keeping `main`'s change and redoing ours on top. If ours no longer fits, or `main` already fixed the same problem, note it in the report. When done, `git reset -q` unstages everything (`-3` stages what it applies cleanly). Because the code underneath has moved, re-measure performance changes on `main` rather than reusing the report's numbers.
 
 **Chains** (2 → 3 → 4, 5 → 6 → 9, 7 → 10, 8 → 11): stack them. Cut the later PR's branch from the earlier one and open it with that branch as its base (`gh pr create --base pr/02-react-compat`). When the earlier PR merges, retarget the later one to `main` and rebase:
 

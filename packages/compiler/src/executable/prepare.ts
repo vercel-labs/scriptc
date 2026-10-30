@@ -25,7 +25,8 @@ import {
   targetRefusalDiag,
 } from "../backend/target-diagnostics.js";
 import type { LowerResult, LowerStats } from "../frontend/lowering/lowerer.js";
-import type { FrontendFactory } from "../frontend/pipeline.js";
+import type { Frontend, FrontendFactory } from "../frontend/pipeline.js";
+import { shapeOverlayEnabled } from "../frontend/shape-inference/index.js";
 import type { UnitStore } from "../frontend/lowering/unit-reuse.js";
 import type { CompilationTiming } from "../timing.js";
 import { readProjectConfig } from "../project-config.js";
@@ -63,6 +64,76 @@ export interface PreparedExecutableModule {
   islands?: { packages: string[]; modules: string[] };
 }
 
+/** The parts of a frontend `decideNodeIslands` reads. */
+type IslandDecisionInputs = Pick<Frontend, "npmStatic" | "npmImportSites" | "nodeIslandScan">;
+
+/** What the island rounds of one compile share. Every round's first
+ * frontend is the same call — createFrontend(entryPath, opts.npmStatic,
+ * undefined, undefined, { islandScan }) with the compile's own entry and
+ * options — and a round after the first reads it only to decide its
+ * islands. So the first round captures what that decision reads, and the
+ * later rounds decide from the capture instead of loading and checking the
+ * whole program again (on pi a 7-load npm-static ladder per round). */
+interface RoundState {
+  /** The first load's island-decision inputs, captured once per compile;
+   * null while the first load has not run, or when rounds may not reuse
+   * it (see firstLoadReusable). */
+  firstLoad: IslandDecisionInputs | null;
+  /** False only through the internal round options (the island-round
+   * tests compare a compile with and without reuse). */
+  reuseFirstLoad: boolean;
+}
+
+/** Whether rounds may reuse the first load. Off with the shape overlay,
+ * whose fallback state and memo (shape-inference/) a round's lowering
+ * writes and the next load reads. */
+function firstLoadReusable(state: RoundState): boolean {
+  return state.reuseFirstLoad && !shapeOverlayEnabled();
+}
+
+/** A copy of `fe`'s island-decision inputs that outlives `fe`: the status
+ * list and the import sites copied, and each scan kept by its arguments.
+ * `seal()` drops the reference to `fe` once the decision is made, so the
+ * copy never keeps a disposed program alive. decideNodeIslands asks for the
+ * same scan in every round, so a sealed copy asked for another one is a
+ * compiler bug. */
+function captureIslandInputs(fe: Frontend): { inputs: IslandDecisionInputs; seal: () => void } {
+  const scans = new Map<string, NodeIslandScan>();
+  const source: { scan: Frontend["nodeIslandScan"] } = { scan: fe.nodeIslandScan };
+  const inputs: IslandDecisionInputs = {
+    npmStatic: [...fe.npmStatic],
+    npmImportSites: new Map(fe.npmImportSites),
+    nodeIslandScan:
+      fe.nodeIslandScan === undefined
+        ? undefined
+        : (scanOpts) => {
+            const key = JSON.stringify([scanOpts.userJs]);
+            const known = scans.get(key);
+            if (known !== undefined) return known;
+            const scan = source.scan;
+            if (scan === undefined)
+              throw new Error(
+                `island round inputs: no scan for ${key} after the load was released`,
+              );
+            const scanned = scan(scanOpts);
+            scans.set(key, scanned);
+            return scanned;
+          },
+  };
+  return {
+    inputs,
+    seal: () => {
+      source.scan = undefined;
+    },
+  };
+}
+
+/** Internal round options, a test seam: the island-round tests turn the
+ * first-load reuse off to compare a compile with and without it. */
+export interface PrepareRoundOptions {
+  reuseFirstLoad?: boolean;
+}
+
 /** Release the parser/checker before native object generation begins.
  * `unitStore` keeps the lowered units of this build for the next one
  * (unit-reuse.ts). */
@@ -77,26 +148,77 @@ export function prepareExecutableModule(
   retryFences = true,
   unitStore: UnitStore | null = null,
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
+  roundOptions: PrepareRoundOptions = {},
+): PreparedExecutableModule | CompileFailure {
+  return prepareRound(
+    { firstLoad: null, reuseFirstLoad: roundOptions.reuseFirstLoad !== false },
+    entryPath,
+    opts,
+    ffi,
+    buildPlatform,
+    createFrontend,
+    timing,
+    lowerIslands,
+    retryFences,
+    unitStore,
+    lowerModules,
+  );
+}
+
+function prepareRound(
+  state: RoundState,
+  entryPath: string,
+  opts: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  buildPlatform: string,
+  createFrontend: FrontendFactory,
+  timing: CompilationTiming,
+  lowerIslands: ReadonlyMap<string, IslandPackage>,
+  retryFences: boolean,
+  unitStore: UnitStore | null,
+  lowerModules: ReadonlyMap<string, IslandModule>,
 ): PreparedExecutableModule | CompileFailure {
   // The island decision reads the detector's scan unless islands are off.
   const islandScan =
     nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode !== "off";
-  let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
-  timing("frontend-load");
-  // Node islands (scope-B NI-4): packages refused natively run in Node,
-  // unless the policy says otherwise. The frontend reloads without them,
-  // so their declarations type the program.
-  const islandDecision = decideNodeIslands(entryPath, opts, fe, lowerIslands, lowerModules);
+  // A round after the first decides from the first round's capture of the
+  // no-island load (RoundState). A decision that needs the frontend itself
+  // loads it as before: none (this round lowers the no-island program) or
+  // errors (whose failure reports its source texts).
+  let first: Frontend | null = null;
+  let islandDecision: ReturnType<typeof decideNodeIslands> =
+    state.firstLoad === null
+      ? null
+      : decideNodeIslands(entryPath, opts, state.firstLoad, lowerIslands, lowerModules);
+  if (state.firstLoad === null || islandDecision === null || islandDecision.errors.length > 0) {
+    first = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
+    timing("frontend-load");
+    const captured = captureIslandInputs(first);
+    // Node islands (scope-B NI-4): packages refused natively run in Node,
+    // unless the policy says otherwise. The frontend reloads without them,
+    // so their declarations type the program.
+    islandDecision = decideNodeIslands(
+      entryPath,
+      opts,
+      captured.inputs,
+      lowerIslands,
+      lowerModules,
+    );
+    captured.seal();
+    if (state.firstLoad === null && firstLoadReusable(state)) state.firstLoad = captured.inputs;
+  }
   // A patched builtin the native build cannot represent (an entry module
   // patch, or a native read of a patched member) fails here.
   if (islandDecision !== null && islandDecision.errors.length > 0) {
+    // Errors always come from a fresh load (above), so `first` is set.
     const diagnostics = islandDecision.errors;
-    const sourceTexts = fe.sourceTexts();
-    fe.dispose();
+    const sourceTexts = first!.sourceTexts();
+    first!.dispose();
     return { ok: false, diagnostics, sourceTexts };
   }
+  let fe: Frontend;
   if (islandDecision !== null) {
-    fe.dispose();
+    first?.dispose();
     fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
       islandPackages: new Set(islandDecision.packages.keys()),
       ...(islandDecision.modules.size > 0
@@ -105,6 +227,9 @@ export function prepareExecutableModule(
       islandScan,
     });
     timing("frontend-island-reload");
+  } else {
+    // A null decision always comes from a fresh load (above).
+    fe = first!;
   }
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
@@ -143,7 +268,8 @@ export function prepareExecutableModule(
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareExecutableModule(
+        return prepareRound(
+          state,
           entryPath,
           opts,
           ffi,
@@ -200,7 +326,8 @@ export function prepareExecutableModule(
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareExecutableModule(
+        return prepareRound(
+          state,
           entryPath,
           opts,
           ffi,
@@ -227,7 +354,8 @@ export function prepareExecutableModule(
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareExecutableModule(
+        return prepareRound(
+          state,
           entryPath,
           opts,
           ffi,
@@ -324,7 +452,8 @@ export function prepareExecutableModule(
     if (sure.size > lowerIslands.size && sure.size < fenceGrown.size) attempts.push(sure);
     let firstError: ScrDiagnostic | null = null;
     for (const islands of attempts) {
-      const islanded = prepareExecutableModule(
+      const islanded = prepareRound(
+        state,
         entryPath,
         opts,
         ffi,
@@ -453,7 +582,7 @@ function moduleIslands(
 function decideNodeIslands(
   entryPath: string,
   opts: CompileRequestOptions,
-  fe: ReturnType<FrontendFactory>,
+  fe: IslandDecisionInputs,
   lowerIslands: ReadonlyMap<string, IslandPackage>,
   lowerModules: ReadonlyMap<string, IslandModule>,
 ): (NodeIslandSet & { notes: ScrDiagnostic[]; errors: ScrDiagnostic[] }) | null {

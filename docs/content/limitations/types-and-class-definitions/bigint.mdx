@@ -1,4 +1,5 @@
-- **BigInt:** `BigInt64Array`, `BigUint64Array`, BigInt filesystem stats are unsupported.
+- **BigInt:** BigInt filesystem stats are unsupported.
+  Typed code cannot construct `BigInt64Array` or `BigUint64Array`; JavaScript that names either one gets the checked-dynamic element kinds, where elements are BigInts.
   Arbitrary-precision BigInts otherwise support literals, operators, conversions, arrays, records, classes, closures, unions, promises, typed Map keys and Set elements, Buffer 64-bit reads/writes, and DataView 64-bit access.
   Native `unknown` and JavaScript `any` storage preserve BigInts, including checked Map keys and Set elements.
   JSON serialization throws a `TypeError` unless a replacer converts the value.

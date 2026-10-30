@@ -1,4 +1,12 @@
-import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } from "./ir.js";
+import {
+  BIGINT_BYTES_NAMES,
+  type IrClassDef,
+  type IrExpr,
+  type IrModule,
+  type IrRecordShape,
+  type IrType,
+  type IrUnionDef,
+} from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
@@ -1042,6 +1050,18 @@ function fsBufferBrandScan(mod: IrModule): RuleScan {
  * of every unit they touch instead of one build column per feature. */
 export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]);
 
+/** The JavaScript object model build's program facts (t262-da §J): every
+ * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
+ * (BigInt views today, array attributes and handle property tables next), so
+ * pack selection and the source build (RUNTIME_DEFINES, the library's
+ * cflags) agree on when the build is on. */
+export function jsObjectModelFact(features: {
+  jsObjectModel?: boolean;
+  bigintBytes?: boolean;
+}): boolean {
+  return features.jsObjectModel === true || features.bigintBytes === true;
+}
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -1501,9 +1521,23 @@ const RUNTIME_FEATURE_RULES = {
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
   /** A record literal asserted to a wider record type answers a partial
    * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
-   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c. */
+   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c, so neither program
+   * links the other's code. */
   recordViewPartial: rule({
     expr: (node) => node.kind === "dynCheck" && node.partialView === true,
+  }),
+  /** A BigInt typed-array constructor read as a value (BigInt64Array,
+   * BigUint64Array): their element kinds, which no double represents, live
+   * in the JavaScript object model build (t262-da §J) of scr_bytes.c,
+   * scr_json.c, scr_dyn_invoke.c and the assert, inspect and console units.
+   * The fact ORs into jsObjectModel (jsObjectModelFact), so it selects no
+   * build column of its own. Every other program keeps the byte-for-byte
+   * default objects. */
+  bigintBytes: rule({
+    libCall: (node) =>
+      node.fn === "bytes.constructor" &&
+      node.args[0]?.kind === "strLit" &&
+      BIGINT_BYTES_NAMES.has(node.args[0].value),
   }),
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
@@ -1672,6 +1706,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     utilPromisify: false,
     warningReplace: false,
     recordViewPartial: false,
+    bigintBytes: false,
     wasm: false,
     webcrypto: false,
     zlib: false,

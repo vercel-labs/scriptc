@@ -39,8 +39,21 @@ typedef enum ScrBytesElem {
   SCR_BYTES_I16, /* Int16Array */
   SCR_BYTES_U8C, /* Uint8ClampedArray */
   SCR_BYTES_F16, /* Float16Array (IEEE 754 binary16 storage) */
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The 64-bit BigInt kinds (BigInt64Array, BigUint64Array). An element is
+   * never representable as a double, so its element accesses go through
+   * scr_bytes_get_bigint / scr_bytes_set_bigint and the double-based
+   * accessors (compiled code never reaches these kinds) trap. Appended so
+   * every existing kind keeps its number. */
+  SCR_BYTES_I64, /* BigInt64Array (reads sign-extend; writes ToBigInt64) */
+  SCR_BYTES_U64, /* BigUint64Array (reads zero-extend; writes ToBigUint64) */
+#endif
 } ScrBytesElem;
+#ifdef SCR_JS_OBJECT_MODEL
+#define SCR_BYTES_ELEM_COUNT 12
+#else
 #define SCR_BYTES_ELEM_COUNT 10
+#endif
 
 /* Float16Array's element conversions: one round-to-nearest-even step from
  * the double (Float16Array stores, Math.f16round and DataView.setFloat16
@@ -176,6 +189,21 @@ ScrDyn *scr_ffi_argument(ScrDyn *value, ScrStr *type);
 size_t scr_bytes_elem_size(ScrBytesElem elem); /* 1, 2, 4, or 8 */
 const char *scr_bytes_elem_name(ScrBytesElem elem);
 double scr_bytes_to_u8_clamp(double value);
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The BigInt element kinds: every element access of a view whose elem is one
+ * of them goes through these, because a double cannot hold the element (see
+ * ScrBytesElem). Only the SCR_JS_OBJECT_MODEL build carries them (t262-da
+ * §J); a program selects that build by naming BigInt64Array or
+ * BigUint64Array, which ORs into its jsObjectModel fact. */
+bool scr_bytes_elem_is_bigint(ScrBytesElem elem);
+ScrDyn *scr_bytes_get_bigint(const ScrBytes *b, double i); /* +1; index checked like scr_bytes_get */
+bool scr_bytes_set_bigint(ScrBytes *b, double i, const ScrDyn *value); /* ToBigInt; false = exception pending */
+/* fill() over a BigInt view: the already-coerced ToBigInt(value) (borrowed),
+ * then the range store — the spec converts the fill value before it reads
+ * start and end. */
+ScrBytes *scr_bytes_fill_bigint(ScrBytes *b, ScrBigInt *value, double start, double end); /* +1 */
+#endif
 
 /* node:string_decoder's StringDecoder (scr_bytes.c, beside the decoders
  * it shares): the decoder value is a record holding the CANONICAL

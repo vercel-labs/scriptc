@@ -33,6 +33,7 @@ const native: EarlyExecutableNativeFeatures = {
   regex: false,
   copying: false,
   textDecoderLegacy: false,
+  bigintBytes: false,
   fileHandle: false,
   fetch: true,
   zlib: false,

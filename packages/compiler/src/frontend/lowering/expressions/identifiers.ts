@@ -9,6 +9,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
+  BIGINT_BYTES_NAMES,
   BOOL,
   BYTES_ELEMENT_NAME,
   DATE_T,
@@ -815,7 +816,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.isStdlibGlobal(expr, "Array"))
     return { kind: "libCall", fn: "dyn.arrayConstructor", args: [], type: DYN, loc };
   if (
-    Object.values(BYTES_ELEMENT_NAME).includes(expr.text) &&
+    (Object.values(BYTES_ELEMENT_NAME).includes(expr.text) || BIGINT_BYTES_NAMES.has(expr.text)) &&
     lowerer.isStdlibGlobal(expr, expr.text)
   ) {
     return {

@@ -27,6 +27,7 @@ export async function compilePackedLibrary(
     regex: options.regex ?? false,
     copying: options.copying ?? false,
     textDecoderLegacy: options.textDecoderLegacy ?? false,
+    bigintBytes: options.bigintBytes ?? false,
     fileHandle: false,
     fetch: false,
     zlib: options.zlib ?? false,

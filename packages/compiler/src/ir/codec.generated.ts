@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "46cc838e13f57309";
+export const IR_CODEC_LAYOUT = "878519fe68b5e8ce";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -172,7 +172,7 @@ const KEYS144: readonly string[] = ["kind","value","className","type","loc"];
 const KEYS145: readonly string[] = ["kind","value","classValue","type","loc"];
 const KEYS146: readonly string[] = ["kind","name","args","type","loc"];
 const KEYS147: readonly string[] = ["kind","value","indent","circular","type","loc"];
-const KEYS148: readonly string[] = ["kind","fn","args","type","loc","prototypeIdentityOnly","realTimer","assertOptions","bindsThis"];
+const KEYS148: readonly string[] = ["kind","fn","args","type","loc","prototypeIdentityOnly","realTimer","assertOptions","bindsThis","mayTargetArray"];
 const KEYS149: readonly string[] = ["kind","op","left","right","type","loc"];
 const KEYS150: readonly string[] = ["kind","method","receiver","args","type","loc"];
 const KEYS151: readonly string[] = ["kind","seed","type","loc"];
@@ -3294,6 +3294,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.bool(v.bindsThis);
       }
+      if (v.mayTargetArray === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.mayTargetArray);
+      }
       return;
     }
     case "logical": {
@@ -4228,7 +4233,8 @@ function decIrExpr(r: IrReader): IrExpr {
       const f5 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.realTimer") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["realTimer"]>);
       const f6 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.assertOptions") === 0 ? undefined : decT70(r);
       const f7 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.bindsThis") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["bindsThis"]>);
-      const o: Extract<IrExpr, { kind: "libCall" }> = { kind: "libCall", fn: f0, args: f1, type: f2, loc: f3, ...(f4 !== undefined ? { prototypeIdentityOnly: f4 } : {}), ...(f5 !== undefined ? { realTimer: f5 } : {}), ...(f6 !== undefined ? { assertOptions: f6 } : {}), ...(f7 !== undefined ? { bindsThis: f7 } : {}) };
+      const f8 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.mayTargetArray") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["mayTargetArray"]>);
+      const o: Extract<IrExpr, { kind: "libCall" }> = { kind: "libCall", fn: f0, args: f1, type: f2, loc: f3, ...(f4 !== undefined ? { prototypeIdentityOnly: f4 } : {}), ...(f5 !== undefined ? { realTimer: f5 } : {}), ...(f6 !== undefined ? { assertOptions: f6 } : {}), ...(f7 !== undefined ? { bindsThis: f7 } : {}), ...(f8 !== undefined ? { mayTargetArray: f8 } : {}) };
       return o;
     }
     case 46: {

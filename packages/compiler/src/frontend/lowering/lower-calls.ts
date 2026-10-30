@@ -9056,6 +9056,7 @@ function lowerObjectStaticCall(
       args: [target, key, descriptor],
       type: DYN,
       loc: locOf(call),
+      mayTargetArray: true,
     };
   }
   // Object.defineProperties over a CHECKED-DYNAMIC target (test/common's
@@ -9259,6 +9260,9 @@ function lowerObjectStaticCall(
         args: [value],
         type: member.startsWith("is") ? BOOL : DYN,
         loc: locOf(call),
+        // The value may be a dynamic array, which these calls make
+        // non-extensible through the array-attribute build.
+        ...(member.startsWith("is") ? {} : { mayTargetArray: true as const }),
       };
     }
   }
@@ -9333,7 +9337,14 @@ function lowerObjectStaticCall(
         : lowerer.lowerExpr(argNode);
     if (value.type.kind === "dyn") {
       noteUntypedIntegrity(lowerer, argNode);
-      return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
+      return {
+        kind: "libCall",
+        fn: "dyn.freeze",
+        args: [value],
+        type: DYN,
+        loc: locOf(call),
+        mayTargetArray: true,
+      };
     }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
       // A fresh literal can still reach untyped code, which observes and

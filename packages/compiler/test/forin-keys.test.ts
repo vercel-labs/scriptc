@@ -36,7 +36,7 @@ console.log(count(row), count(JSON.parse('{"b":1}')));
   expect(llvm).not.toContain("@scr_dyn_for_in_keys(");
   // Fully required record shapes are marked fixed for the stable walk.
   expect(llvm).toMatch(
-    /_rops = internal global \{ i64, ptr, ptr, ptr, i8, ptr, ptr \} \{[^}]*i8 1, ptr null, ptr null \}/,
+    /_rops = internal global \{ i64, ptr, ptr, ptr, i8, ptr, ptr, ptr \} \{[^}]*i8 1, ptr null, ptr null, ptr null \}/,
   );
 });
 

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8326-never-promise-instanceof.ts"
+ ],
+ "diags": []
+}

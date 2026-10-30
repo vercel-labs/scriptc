@@ -45,6 +45,15 @@ function lastUse(
   const { extent, derived } = extentOf(stmts, index, localId, rebound);
   const last = extent[extent.length - 1];
   if (last === undefined) return null;
+  return lastUseIn(last, localId, derived);
+}
+
+/** The binding's read in `last`, the last statement of its extent, whose derived bindings are `derived`. */
+function lastUseIn(
+  last: IrStmt,
+  localId: string,
+  derived: ReadonlySet<string>,
+): { read: IrExpr; stored: boolean } | null {
   const state: { read: IrExpr | null; stored: boolean; ok: boolean } = {
     read: null,
     stored: false,
@@ -181,6 +190,109 @@ function collectAssignedExpr(e: IrExpr, assigned: Set<string>): boolean {
     (c) => collectAssignedExpr(c, assigned),
     (s) => collectAssignedStmt(s, assigned),
   );
+}
+
+/**
+ * `storedLastUseRead(stmts, -1, localId, true)` for every parameter of one function body, from one walk of the
+ * body instead of a walk per binding. With `index` -1 and `rebound`, no binding is excluded as assigned, so a
+ * binding is derived when one of its definitions mentions a derived binding (reachability over "definition
+ * mentions") and the extent ends at the last statement that mentions one (`absentStmt`). The walk records, for
+ * each top-level statement, the bindings it mentions, and for each definition, the bindings its value mentions.
+ */
+export class BodyLastUses {
+  private readonly stmts: readonly IrStmt[];
+  /** The bindings each top-level statement mentions, as `absentStmt` reads them. */
+  private readonly mentions: Set<string>[] = [];
+  /** For each binding, the bindings whose definitions mention it. */
+  private readonly definedFrom = new Map<string, string[]>();
+
+  constructor(stmts: readonly IrStmt[]) {
+    this.stmts = stmts;
+    for (const s of stmts) {
+      const mentioned = new Set<string>();
+      this.stmt(s, mentioned);
+      this.mentions.push(mentioned);
+    }
+  }
+
+  /** What `storedLastUseRead(stmts, -1, localId, true)` answers. */
+  storedRead(localId: string): IrExpr | null {
+    const derived = new Set<string>([localId]);
+    const queue = [localId];
+    while (queue.length > 0) {
+      for (const target of this.definedFrom.get(queue.pop()!) ?? [])
+        if (!derived.has(target)) {
+          derived.add(target);
+          queue.push(target);
+        }
+    }
+    let last = -1;
+    for (let i = this.mentions.length - 1; i >= 0 && last < 0; i--)
+      for (const id of derived)
+        if (this.mentions[i]!.has(id)) {
+          last = i;
+          break;
+        }
+    if (last < 0) return null;
+    const use = lastUseIn(this.stmts[last]!, localId, derived);
+    return use !== null && use.stored ? use.read : null;
+  }
+
+  /** Adds the bindings `s` mentions to `into`, and records the definitions in it. */
+  private stmt(s: IrStmt, into: Set<string>): boolean {
+    if (s.kind === "varDecl" || s.kind === "assign") into.add(s.localId);
+    if (s.kind === "varDecl" || s.kind === "forOf" || s.kind === "assign") {
+      const value = s.kind === "varDecl" ? s.init : s.kind === "assign" ? s.value : s.iterable;
+      if (value !== null) this.define(s.localId, value);
+    }
+    everyStmtChild(
+      s,
+      (e) => this.expr(e, into),
+      (c) => this.stmt(c, into),
+    );
+    return true;
+  }
+
+  private expr(e: IrExpr, into: Set<string>): boolean {
+    if (e.kind === "varRef" || e.kind === "assignExpr" || e.kind === "incDec") into.add(e.localId);
+    else if (e.kind === "closure" || e.kind === "classRef")
+      for (const id of e.captures ?? []) into.add(id);
+    if (e.kind === "assignExpr") this.define(e.localId, e.value);
+    everyExprChild(
+      e,
+      (c) => this.expr(c, into),
+      (c) => this.stmt(c, into),
+    );
+    return true;
+  }
+
+  /** A definition of `target` whose value is `value`: every binding the value mentions derives `target`. */
+  private define(target: string, value: IrExpr): void {
+    const mentioned = new Set<string>();
+    mentionsOf(value, mentioned);
+    for (const id of mentioned) {
+      let targets = this.definedFrom.get(id);
+      if (targets === undefined) this.definedFrom.set(id, (targets = []));
+      targets.push(target);
+    }
+  }
+}
+
+/** The bindings an expression mentions, as `absentExpr` reads them. */
+function mentionsOf(e: IrExpr, into: Set<string>): void {
+  const expr = (x: IrExpr): boolean => {
+    if (x.kind === "varRef" || x.kind === "assignExpr" || x.kind === "incDec") into.add(x.localId);
+    else if (x.kind === "closure" || x.kind === "classRef")
+      for (const id of x.captures ?? []) into.add(id);
+    everyExprChild(x, expr, stmt);
+    return true;
+  };
+  const stmt = (s: IrStmt): boolean => {
+    if (s.kind === "varDecl" || s.kind === "assign") into.add(s.localId);
+    everyStmtChild(s, expr, stmt);
+    return true;
+  };
+  expr(e);
 }
 
 /** True while no node of the tree mentions a derived binding. */

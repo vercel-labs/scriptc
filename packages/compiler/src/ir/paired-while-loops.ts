@@ -6,8 +6,10 @@ import {
   type IrFunction,
   type IrLocal,
   type IrModule,
+  type IrParam,
   type IrStmt,
 } from "./ir.js";
+import { type IrFieldWalker, walkStmtFields } from "./fields.generated.js";
 import { everyExprChild, everyStmtChild, mapExprChildren, mapStmtChildren } from "./traverse.js";
 
 type WhileLoop = IrStmt & { kind: "while" };
@@ -99,22 +101,20 @@ function continuesLoop(loop: WhileLoop): boolean {
   return found;
 }
 
-/** Mentions of each id in `node`, in any field (a string literal equal to
- * an id counts too, which only refuses more loops). */
+/** Mentions of each id in `stmts`, in any field but types (a string
+ * literal equal to an id counts too, which only refuses more loops). */
 function countMentions(
-  node: unknown,
+  stmts: readonly IrStmt[],
   ids: ReadonlySet<string>,
   mentions: Map<string, number>,
 ): void {
-  if (typeof node === "string") {
-    if (ids.has(node)) mentions.set(node, (mentions.get(node) ?? 0) + 1);
-  } else if (Array.isArray(node)) {
-    for (const item of node) countMentions(item, ids, mentions);
-  } else if (node !== null && typeof node === "object") {
-    const record = node as Record<string, unknown>;
-    for (const key in record)
-      if (key !== "loc" && key !== "type") countMentions(record[key], ids, mentions);
-  }
+  const walker: IrFieldWalker = {
+    node: () => {},
+    string: (value) => {
+      if (ids.has(value)) mentions.set(value, (mentions.get(value) ?? 0) + 1);
+    },
+  };
+  for (const stmt of stmts) walkStmtFields(stmt, walker, true);
 }
 
 /** A loop with the qualifying shape, the statements before it in its
@@ -184,7 +184,12 @@ function rewriteFunction(fn: IrFunction): IrFunction {
   const params = new Set(fn.params.map((p) => p.localId));
   // A counter this function reaches through its environment.
   const outer = new Map<string, number>();
-  countMentions([fn.captures ?? [], fn.classCaptures ?? []], ids, outer);
+  const noteOuter = (param: IrParam): void => {
+    for (const value of [param.localId, param.name])
+      if (ids.has(value)) outer.set(value, (outer.get(value) ?? 0) + 1);
+  };
+  for (const param of fn.captures ?? []) noteOuter(param);
+  for (const param of fn.classCaptures ?? []) noteOuter(param);
 
   let ranges: ReadonlyMap<IrExpr, IntegerRange | null> | null = null;
   const used = new Set(fn.locals.map((l) => l.id));
@@ -192,7 +197,7 @@ function rewriteFunction(fn: IrFunction): IrFunction {
   const rewritten = new Map<WhileLoop, Map<string, string>>();
   for (const { loop, counters, before, nested } of candidates) {
     const inside = new Map<string, number>();
-    countMentions(loop, new Set(counters), inside);
+    countMentions([loop], new Set(counters), inside);
     // Each counter's start: its declaration's initializer, or null for a
     // parameter.
     const starts = new Map<string, IrExpr | null>();

@@ -19,6 +19,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/uio.h>
+#endif
 
 #define SCR_FSS_MAX_SAFE 9007199254740991.0
 
@@ -39,6 +44,10 @@ typedef struct ScrFsStream {
   ScrError *destroy_err; /* owned: the waiting _destroy's error */
   void *owner;        /* a FileHandle the stream reads or writes, or NULL */
   const ScrFsStreamOwnerOps *owner_ops;
+  /* the descriptor scr_fss_try_inline last checked (0 before the first
+   * check) and whether its reads and writes may run on the loop thread */
+  int inline_fd;
+  bool inline_ok;
 } ScrFsStream;
 
 static void scr_fss_free(void *p) {
@@ -77,6 +86,7 @@ typedef struct ScrFssOp {
   size_t off, len;
   double pos;         /* < 0: the current offset */
   int64_t result;     /* answer or -errno */
+  size_t got;         /* READ: bytes the loop thread already read into buf */
   int retries;        /* WRITE: zero-byte retries */
   ScrError *carry;    /* FSYNC/CLOSE: the error to pass on (+1) */
   /* The AsyncLocalStorage context the step was started in (+1): its
@@ -88,7 +98,13 @@ static void scr_fss_work(void *p) {
   ScrFssOp *op = p;
   switch (op->kind) {
     case SCR_FSS_OPEN: op->result = scr_fs_raw_open(op->path, op->oflags, op->mode); break;
-    case SCR_FSS_READ: op->result = scr_fs_raw_read(op->fd, op->buf, op->len, op->pos); break;
+    case SCR_FSS_READ: {
+      /* the rest of a read the loop thread began (scr_fss_try_inline) */
+      int64_t r = scr_fs_raw_read(op->fd, op->buf + op->got, op->len - op->got,
+                                  op->pos >= 0 ? op->pos + (double)op->got : -1);
+      op->result = op->got == 0 ? r : r < 0 ? (int64_t)op->got : (int64_t)op->got + r;
+      break;
+    }
     case SCR_FSS_WRITE:
       op->result = scr_fs_raw_write(op->fd, op->chunk->data + op->off, op->len, op->pos);
       break;
@@ -127,7 +143,67 @@ static void scr_fss_after_in_context(void *p) {
   scr_als_dispatch_leave(prev);
 }
 
+#if defined(__linux__) && !defined(__ANDROID__) && defined(RWF_NOWAIT)
+/* Without a file-size limit a regular file's write cannot raise SIGXFSZ on
+ * the loop thread (scr_fs_write_once's guard is then not needed). */
+static bool scr_fss_size_unlimited(void) {
+  static int unlimited = -1;
+  if (unlimited < 0) {
+    struct rlimit lim;
+    unlimited = getrlimit(RLIMIT_FSIZE, &lim) == 0 && lim.rlim_cur == RLIM_INFINITY;
+  }
+  return unlimited == 1;
+}
+
+/* A read or write of a regular file whose data the page cache holds runs on
+ * the loop thread: RWF_NOWAIT answers EAGAIN instead of blocking. The
+ * completion still waits for the next loop turn (scr_work_submit_done), as
+ * a pool job's does. A read the cache holds only part of finishes on the
+ * pool, so the chunk is the one a single read() returns; a partial write
+ * completes with the bytes written, and the rest is submitted again, as
+ * after any partial write. Answers whether the step completed here. */
+static bool scr_fss_try_inline(ScrFssOp *op) {
+  if (op->kind != SCR_FSS_READ && op->kind != SCR_FSS_WRITE) return false;
+  ScrFsStream *f = scr_fss_of(op->s);
+  if (f->inline_fd != op->fd + 1) {
+    struct stat st;
+    f->inline_fd = op->fd + 1;
+    f->inline_ok = fstat(op->fd, &st) == 0 && S_ISREG(st.st_mode);
+  }
+  if (!f->inline_ok || op->len == 0) return false;
+  if (op->kind == SCR_FSS_WRITE && !scr_fss_size_unlimited()) return false;
+  off_t at = op->pos >= 0 ? (off_t)op->pos : -1;
+  ssize_t n;
+  if (op->kind == SCR_FSS_READ) {
+    struct iovec iov = {op->buf, op->len};
+    n = preadv2(op->fd, &iov, 1, at, RWF_NOWAIT);
+  } else {
+    struct iovec iov = {op->chunk->data + op->off, op->len};
+    n = pwritev2(op->fd, &iov, 1, at, RWF_NOWAIT);
+  }
+  if (n < 0) {
+    /* a kernel or file system without RWF_NOWAIT: the pool from now on */
+    if (errno == EOPNOTSUPP || errno == EINVAL || errno == ENOSYS) f->inline_ok = false;
+    return false;
+  }
+  /* A zero is not taken as EOF here: some kernels (Linux 5.9 and 5.10)
+   * answer 0 instead of EAGAIN for an uncached RWF_NOWAIT read, so the
+   * pool's read decides, as it does for a zero-byte write. */
+  if (n == 0) return false;
+  if (op->kind == SCR_FSS_READ && n > 0 && (size_t)n < op->len) {
+    op->got = (size_t)n;
+    return false;
+  }
+  op->result = n;
+  scr_work_submit_done(op, &scr_fss_after_in_context, &scr_fss_op_destroy);
+  return true;
+}
+#endif
+
 static void scr_fss_submit(ScrFssOp *op) {
+#if defined(__linux__) && !defined(__ANDROID__) && defined(RWF_NOWAIT)
+  if (scr_fss_try_inline(op)) return;
+#endif
   scr_work_submit(op, &scr_fss_work, &scr_fss_after_in_context, &scr_fss_op_destroy);
 }
 

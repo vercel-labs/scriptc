@@ -26,7 +26,10 @@ export {
 export { CcCompileError, subprocessFailureDetail } from "./native/process.js";
 export { compileLibArchive } from "./native/library.js";
 export { localizeLibraryObjects } from "./native/object-merge.js";
-export { implicitDependencyProbeIncludes } from "./native/compiler-fingerprint.js";
+export {
+  implicitDependencyIncludeDirective,
+  implicitDependencyProbeIncludes,
+} from "./native/compiler-fingerprint.js";
 export { parseLinkTraceFiles, nativeLinkerDependencyPaths } from "./native/linker-fingerprint.js";
 export { clearCcCaches, stageRuntimeObjects } from "./native/runtime-objects.js";
 export {

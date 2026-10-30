@@ -36,7 +36,11 @@ export function foldConstantGlobals(mod: IrModule): IrModule {
     if (value && (value.kind === "numLit" || value.kind === "boolLit")) values.set(id, value);
     else values.delete(id);
   };
-  for (const fn of mod.functions)
+  // Per function, the candidates it reads: the rewrite below visits only the
+  // functions that read a constant.
+  const readsByFunction = new Map<IrFunction, Set<string>>();
+  for (const fn of mod.functions) {
+    let read: Set<string> | undefined;
     everyStmtList(fn.body, {
       // Every node other than a read that names the binding is a write
       // (assignments, loop and catch bindings, compound updates); only a
@@ -48,16 +52,21 @@ export function foldConstantGlobals(mod: IrModule): IrModule {
         return true;
       },
       expr: (e) => {
-        if (e.kind !== "varRef" && "localId" in e && typeof e.localId === "string")
-          write(e.localId, null);
+        if (e.kind === "varRef") {
+          if (candidates.has(e.localId)) {
+            if (read === undefined) read = new Set();
+            read.add(e.localId);
+          }
+        } else if ("localId" in e && typeof e.localId === "string") write(e.localId, null);
         return true;
       },
     });
+    if (read !== undefined) readsByFunction.set(fn, read);
+  }
   const constants = new Map<string, Literal>();
   for (const [id, value] of values) if (writes.get(id) === 1) constants.set(id, value);
   if (constants.size === 0) return mod;
 
-  const reads = (e: IrExpr): boolean => !(e.kind === "varRef" && constants.has(e.localId));
   const rewriteExpr = (e: IrExpr): IrExpr => {
     if (e.kind === "varRef") {
       const value = constants.get(e.localId);
@@ -68,7 +77,8 @@ export function foldConstantGlobals(mod: IrModule): IrModule {
   const rewriteStmt = (s: IrStmt): IrStmt => mapStmtChildren(s, rewriteExpr, rewriteStmt);
   let changed = false;
   const functions = mod.functions.map((fn): IrFunction => {
-    if (everyStmtList(fn.body, { stmt: () => true, expr: reads })) return fn;
+    const read = readsByFunction.get(fn);
+    if (read === undefined || ![...read].some((id) => constants.has(id))) return fn;
     changed = true;
     return { ...fn, body: fn.body.map(rewriteStmt) };
   });

@@ -15,12 +15,3 @@ node-fallback-fence.ts:30:28 - error SC2020: 'timers/promises.setInterval with 3
   31 | const sleepWithSignal = promiseSleep(1, "tick", { signal: AbortSignal.timeout(5) }); // resolve values and AbortSignal options lower
 
   hint: the lowered form is setInterval(delay, value) with an explicit yielded value; AbortSignal options are not supported yet
-
-node-fallback-fence.ts:37:16 - error SC2020: 'zlib.brotliCompressSync' is part of the standard library types but has no scriptc lowering yet
-
-  36 | const packed = deflateSync("data", { level: 9, strategy: 1 }); // options lower
-  37 | const brotli = brotliCompressSync(Buffer.from("data")); // outside the lowered family: fenced
-     |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  38 | // The remaining imports continue the declared-but-not-lowered surface.
-
-  hint: Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface

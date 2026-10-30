@@ -68,6 +68,7 @@ typedef struct ScrStackFrame {
 void scr_stack_enter(ScrStackFrame *frame, const char *text);
 void scr_stack_leave(ScrStackFrame *frame);
 ScrStr *scr_stack_capture(void); /* +1, NULL when no source frames exist */
+ScrStr *scr_stack_capture_after(const char *through); /* +1, NULL when none remain */
 double scr_stack_limit_get(void);
 void scr_stack_limit_set(double limit);
 
@@ -123,6 +124,13 @@ static inline ScrExcCell *scr_exc_swap_cell_inline(ScrExcCell *cell) {
 _Static_assert(offsetof(ScrExcCell, kind) == 0 && sizeof(ScrExcKind) == 4 && SCR_EXC_NONE == 0,
                "the LLVM emitter's inline pending check loads an i32 kind at offset 0");
 
+/* Unwinds the native stack to the nearest landing pad of emitted code with
+ * the exception pending in the active cell (the unwinding ABI of emitted
+ * functions, unwind-abi.ts). Linux (glibc and musl) only; it never
+ * returns. */
+SCR_COLD _Noreturn void scr_unwind_raise(void);
+/* Continues the unwind from a landing pad with the exception it took. */
+SCR_COLD void scr_unwind_resume(void *exc);
 SCR_COLD void scr_throw_f64(double v);
 SCR_COLD void scr_throw_bool(bool v);
 SCR_COLD void scr_throw_str(ScrStr *v); /* takes ownership */
@@ -221,6 +229,7 @@ void scr_exc_print_uncaught(void);
 extern SCR_TL int (*scr_uncaught_exception_hook)(bool from_promise);
 bool scr_exc_handle_uncaught(bool from_promise);
 void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor);
+void scr_process_prepend_uncaught_exception(ScrDyn *fn, bool monitor);
 void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor);
 /* The value Node reports for an unhandled rejection (scr_async_dyn.c): an
  * error-like reason itself, otherwise an UnhandledPromiseRejection Error

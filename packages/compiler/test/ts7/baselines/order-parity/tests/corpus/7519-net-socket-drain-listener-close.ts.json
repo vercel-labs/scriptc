@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7519-net-socket-drain-listener-close.ts"
+ ],
+ "diags": []
+}

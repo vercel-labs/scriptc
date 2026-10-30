@@ -28,8 +28,8 @@ static const char dyn_s33[] SCR_DYN_COMPAT_STR = "constructing %s%s through a st
 static const char dyn_s34[] SCR_DYN_COMPAT_STR = " from a primitive";
 
 /* `new C(...args)` through a stored Object, Date, Map, Set, WeakMap or
- * WeakSet builds what the `new` expression builds. RegExp, Promise, and
- * Object over a primitive (a wrapper object) are fenced. */
+ * WeakSet builds what the `new` expression builds. The other constructors,
+ * and Object over a primitive (a wrapper object), are fenced. */
 static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) {
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != scr_dyn_global_ctor_call) return false;
   const char *name = callee->v.fn.clo->fn;

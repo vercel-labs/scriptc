@@ -4,4 +4,5 @@
   The `Deflate`, `Inflate`, `Gzip`, `Gunzip`, `DeflateRaw`, `InflateRaw`, and `Unzip` streams, from `createGzip()` and the other factories or `new zlib.Gzip()`, accept Node's options and support writes, piping, `pipeline`, async iteration, `flush`, `params`, `close`, `reset`, and `bytesWritten`.
   Each output chunk is its own Buffer rather than a slice of a shared chunk-size buffer.
   `zlib.constants` members and their module-level copies read as Node's values.
-  `util.inspect`, `instanceof zlib.Gzip`, and Brotli and Zstd compression are unsupported.
+  The Brotli one-shots `brotliCompress` and `brotliDecompress` and their `Sync` forms, and the `BrotliCompress` and `BrotliDecompress` streams, accept Node's options, including `params` and `dictionary`, and produce the same bytes as Node.
+  `util.inspect` and Zstd compression are unsupported.

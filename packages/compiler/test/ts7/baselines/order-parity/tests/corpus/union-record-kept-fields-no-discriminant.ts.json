@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-record-kept-fields-no-discriminant.ts"
+ ],
+ "diags": []
+}

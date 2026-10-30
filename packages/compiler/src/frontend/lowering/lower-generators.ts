@@ -183,13 +183,9 @@ export function lowerGenMethodCall(
       );
     }
     arg = lowerer.lowerExpr(argNode);
-    if (arg.type.kind === "date") {
-      lowerer.unsupported(
-        "SC1090",
-        argNode,
-        ".throw() with a Date value (the exception channel cannot preserve Date's object kind; throw an Error or primitive instead)",
-      );
-    }
+    // A Date throws as its checked-dynamic handle, the same Date object
+    // (the throw statement's rule).
+    if (arg.type.kind === "date") arg = lowerer.coerceToExpected(arg, DYN);
     if (arg.type.kind === "void" || arg.type.kind === "caught" || isUnitType(arg.type)) {
       lowerer.unsupported(
         "SC1090",

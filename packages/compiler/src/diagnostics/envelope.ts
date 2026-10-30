@@ -15,7 +15,7 @@
  * version; renaming or removing a field, or changing a field's meaning,
  * bumps it. */
 import { readFileSync } from "node:fs";
-import type { ScrDiagnostic } from "./diagnostic.js";
+import { isTypePatchCode, type ScrDiagnostic } from "./diagnostic.js";
 import { isPerformanceCode } from "./dynamic-tier.js";
 import type { WasmModuleReport } from "../wasm/discover.js";
 
@@ -114,6 +114,27 @@ export interface TiersEnvelope {
     message: string;
   })[];
   units: (TierUnitPosition & { requests: number; sites: number })[];
+  /** Localized failure (report-only): committed type failures that would
+   * become checked dynamic slots, and what they would clear. */
+  localizedFailure: {
+    errors: number;
+    typeFailures: { degradable: number; refused: number };
+    cascades: number;
+    clearedThroughL2: number;
+    clearedThroughL4: number;
+    remainingByCode: Record<string, number>;
+    slots: (SourcePosition & {
+      slot: string;
+      name: string;
+      declaredType: string;
+      family: string;
+      code: string;
+      message: string;
+      stage: string;
+      rejects?: string;
+      cascade: number;
+    })[];
+  };
 }
 
 export interface DiagnosticsEnvelope {
@@ -143,13 +164,87 @@ export interface DiagnosticsEnvelope {
   };
   /** build only: the produced artifact path. */
   artifact?: string;
+  /** coverage only, when there are any: the checked dynamic slots
+   * (localized failure, SC6104). */
+  dynamicSlots?: (SourcePosition & {
+    name: string;
+    kind: string;
+    declaredType: string;
+    code: string;
+    reason: string;
+    partial?: boolean;
+    dynamicOps: number;
+  })[];
   /** coverage --explain-dynamic only: the report-only tier assignment. */
   tiers?: TiersEnvelope;
   /** coverage only: the WebAssembly modules the build can see, with their
    * size, validity, proposals and the sources that found them. */
   wasmModules?: WasmModuleReport[];
+  /** coverage only, when there is something to report: the packages and
+   * user modules that would run in a Node island (report-only). */
+  nodeIslands?: NodeIslandsEnvelope;
   groups: DiagnosticGroup[];
   diagnostics: LocatedDiagnostic[];
+}
+
+/** One reason a package is outside the native subset. */
+export interface NodeIslandReasonEnvelope {
+  class: string;
+  /** R1.1–R2.5, or null for gap and packaging reasons. */
+  rule: string | null;
+  reason: string;
+  code: string | null;
+  message: string;
+  source: string;
+  at?: SourcePosition;
+}
+
+/** `scriptc coverage --print=diagnostics`: the Node island decisions. In
+ * this version they are would-be decisions (mode "would-be"): the build
+ * does not change. */
+export interface NodeIslandsEnvelope {
+  mode: "would-be";
+  policy: "auto" | "explicit" | "off";
+  /** Gap islands first, then by class and name. */
+  islands: {
+    package: string;
+    version: string | null;
+    path: string | null;
+    class: string;
+    reason: string;
+    diagnostic: string | null;
+    decision: string;
+    evaluation: string;
+    at?: SourcePosition;
+    reasons: NodeIslandReasonEnvelope[];
+    carries: string[];
+    importedFrom: SourcePosition[];
+  }[];
+  userModules: { file: string; decision: string }[];
+  /** Every npm package that is not an island: native, inside an island's
+   * closure, or shared between native code and an island. */
+  npmPackages: {
+    package: string;
+    version: string | null;
+    path: string | null;
+    status: string;
+    islands: string[];
+  }[];
+  violations: (SourcePosition & { code: string; message: string })[];
+  unknownPackages: string[];
+}
+
+/** Node island notices of a build that succeeds (scope-B): SC8001 and
+ * SC8021 notes (a package runs in a Node island, an island evaluates at
+ * boot) and the SC8020 warning (a stateful module duplicated across the
+ * boundary). The envelope reports all three as warnings. */
+export function isNodeIslandNoticeCode(code: string): boolean {
+  return code === "SC8001" || code === "SC8020" || code === "SC8021" || code === "SC8023";
+}
+
+/** SC8001 and SC8021 are notes, not warnings. */
+export function isNodeIslandNoteCode(code: string): boolean {
+  return code === "SC8001" || code === "SC8021";
 }
 
 /** The divergence band: compiles, but the program can behave differently
@@ -159,13 +254,15 @@ export function isDivergenceCode(code: string): boolean {
 }
 
 export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
-  const code = diag.code;
+  const code: string = diag.code;
   if (isDivergenceCode(code)) return "divergence";
   if (isPerformanceCode(code)) return "performance";
   if (code === "SC0001") return diag.typeWorld === true ? "environment" : "invalid-source";
   if (code === "SC0003") return "invalid-source";
   if (code === "SC0002" || code === "SC0004") return "environment";
   if (/^SC[35]\d{3}$/.test(code)) return "environment";
+  if (code === "SC8004" || code === "SC8005" || code === "SC8012") return "environment";
+  if (isTypePatchCode(code)) return "environment";
   if (/^SC9\d{3}$/.test(code)) return "internal";
   return "unsupported";
 }
@@ -175,7 +272,7 @@ export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
  * carries one. */
 export function hintOf(diag: ScrDiagnostic): string {
   if (diag.hint !== undefined && diag.hint !== "") return diag.hint;
-  const code = diag.code;
+  const code: string = diag.code;
   if (code === "SC0001")
     return "fix the TypeScript error; scriptc only compiles programs that typecheck under its type world (strict null checks, the ES2025 library, Node types)";
   if (code === "SC1090")
@@ -186,6 +283,8 @@ export function hintOf(diag: ScrDiagnostic): string {
     return "restate the value's type inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')";
   if (/^SC2\d{3}$/.test(code))
     return "restate the type inside the compilable set (https://scriptc.dev/limitations describes the boundary)";
+  if (/^SC8\d{3}$/.test(code))
+    return "see the Node island policy: npm code outside the native subset runs in Node, user code must be marked (scriptc coverage --explain-island=<package>)";
   if (/^SC9\d{3}$/.test(code))
     return "this is a compiler bug — please report it with the program that triggers it";
   return "see https://scriptc.dev/limitations";
@@ -281,7 +380,14 @@ export function locateDiagnostic(
   return {
     code: diag.code,
     category: categoryOf(diag),
-    severity: isDivergenceCode(diag.code) || isPerformanceCode(diag.code) ? "warning" : "error",
+    severity:
+      isDivergenceCode(diag.code) ||
+      isPerformanceCode(diag.code) ||
+      isNodeIslandNoticeCode(diag.code) ||
+      diag.code === "SC8004" ||
+      isTypePatchCode(diag.code)
+        ? "warning"
+        : "error",
     scope,
     file: diag.loc.file,
     line: start.line,

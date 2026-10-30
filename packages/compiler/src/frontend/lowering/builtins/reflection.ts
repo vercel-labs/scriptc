@@ -3,7 +3,34 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
-import { BOOL, DYN, type IrExpr, STRING, arrayOf } from "../../../ir/ir.js";
+import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import {
+  BOOL,
+  DYN,
+  type IrExpr,
+  STRING,
+  type SrcLoc,
+  VOID,
+  arrayOf,
+  isUnitType,
+} from "../../../ir/ir.js";
+
+/** The function value of the Reflect member `member` (ownKeys, on native
+ * computed-key reflection), or null for members without one. */
+export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
+  if (member !== "ownKeys") return null;
+  const value = lowerer.lowerNativeCallableValue(
+    {
+      fn: "dyn.ownKeys",
+      params: [DYN],
+      result: DYN,
+      valueParams: [{ mode: "required", type: DYN }],
+    },
+    "Reflect.ownKeys",
+    loc,
+  )!;
+  return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc };
+}
 
 /** Reflect.ownKeys uses native computed-key reflection. Reflect.apply(target,
  * thisArg, argsList) where the TARGET is a builtin
@@ -36,6 +63,72 @@ export function lowerReflectCall(
   }
   if (call.questionDotToken) return null;
   const reflectMember = lowerer.stdlibGlobalMember(access, "Reflect");
+  // Reflect.has(target, key) — the `in` operator's presence query over
+  // the target's checked-dynamic view (own and inherited names, proxy
+  // `has` traps included). A primitive target is Node's TypeError
+  // ("Reflect.has called on non-object"): a statically primitive target
+  // is refused, and a target held as any, unknown or a union is checked
+  // at run time (dyn.reflectHasTarget).
+  if (
+    reflectMember === "has" &&
+    call.arguments.nodes.length === 2 &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const loc = locOf(call);
+    const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    const primitive =
+      isUnitType(target.type) ||
+      ["bool", "f64", "string", "bigint", "symbol"].includes(target.type.kind);
+    if (primitive)
+      lowerer.noLowering(
+        "Reflect.has on a primitive target",
+        call.arguments.nodes[0]!,
+        "Node throws a TypeError for a primitive target; narrow to an object first",
+      );
+    if (!lowerer.dynConvertible(target.type))
+      lowerer.noLowering("Reflect.has on this target", call.arguments.nodes[0]!);
+    const key = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+    if (target.type.kind !== "dyn" && target.type.kind !== "union") {
+      return {
+        kind: "libCall",
+        fn: "dyn.hasKeyComputed",
+        args: [lowerer.coerceToExpected(target, DYN), key],
+        type: BOOL,
+        loc,
+      };
+    }
+    // A target held as any, unknown or a union may be a primitive at run
+    // time: both arguments are evaluated, then the target is checked.
+    const targetLocal = lowerer.declareHiddenLocal("%reflectHasTarget", DYN);
+    const keyLocal = lowerer.declareHiddenLocal("%reflectHasKey", DYN);
+    const targetRef = varRef(targetLocal.id, DYN, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "varDecl",
+          localId: targetLocal.id,
+          init: lowerer.coerceToExpected(target, DYN),
+          loc,
+        },
+        { kind: "varDecl", localId: keyLocal.id, init: key, loc },
+        {
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn: "dyn.reflectHasTarget", args: [targetRef], type: VOID, loc },
+          loc,
+        },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "dyn.hasKeyComputed",
+        args: [targetRef, varRef(keyLocal.id, DYN, loc)],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  }
   // Reflect.getOwnPropertyDescriptor and Reflect.defineProperty over
   // checked objects (execa's Promise mixin): the Object operations, with
   // defineProperty answering true. A non-object target throws the Object
@@ -59,6 +152,37 @@ export function lowerReflectCall(
         },
       ],
       result: { kind: "boolLit", value: true, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+  }
+  // Reflect.deleteProperty over a value with a live property table: a
+  // checked-dynamic value, or a JavaScript class whose statics are runtime
+  // properties of its constructor
+  // (`Reflect.deleteProperty(Response, "getResponseState")`).
+  if (
+    reflectMember === "deleteProperty" &&
+    call.arguments.nodes.length === 2 &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const loc = locOf(call);
+    let target = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    const info =
+      target.type.kind === "classval" ? lowerer.classes.get(target.type.className) : undefined;
+    // A primitive target throws the TypeError, so it boxes as is.
+    const primitive =
+      isUnitType(target.type) ||
+      ["bool", "f64", "string", "bigint", "symbol"].includes(target.type.kind);
+    if (
+      primitive ||
+      (info !== undefined && hasRuntimeStatics(info) && lowerer.dynConvertible(target.type))
+    )
+      target = lowerer.coerceToExpected(target, DYN);
+    if (target.type.kind !== "dyn") return null;
+    return {
+      kind: "libCall",
+      fn: "dyn.reflectDeleteProperty",
+      args: [target, lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN)],
       type: BOOL,
       loc,
     };

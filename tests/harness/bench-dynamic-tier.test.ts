@@ -16,6 +16,7 @@ import {
   DYNAMIC_WORKLOADS,
   definedFunctionNames,
   dynamicTierSymbols,
+  nodeIslandSymbols,
 } from "../../scripts/zero-cost-compare.mjs";
 import { readWorkloads } from "../../benchmarks/runtime/workloads.mjs";
 
@@ -52,7 +53,10 @@ test.skipIf(skip).each([...programs])(
       encoding: "utf8",
       maxBuffer: 1 << 28,
     });
-    const linked = dynamicTierSymbols(definedFunctionNames(stdout));
+    const defined = definedFunctionNames(stdout);
+    // No workload calls into Node.js: none links the Node island runtime.
+    expect(nodeIslandSymbols(defined), `${id} links Node island symbols`).toEqual([]);
+    const linked = dynamicTierSymbols(defined);
     if (DYNAMIC_WORKLOADS.has(id))
       expect(
         linked.length,

@@ -152,7 +152,7 @@ export function boundedIntegerLoopFacts(
       e.receiver.kind === "varRef" &&
       stable(e.receiver.localId)
     )
-      return { min: 0, max: Number.MAX_SAFE_INTEGER };
+      return BYTES_LENGTH_RANGE;
     // Every evaluation of an array length lies in its range, so the
     // condition bounds each pass even when the body resizes the array.
     if (isArrayLength(e)) return ARRAY_LENGTH_RANGE;
@@ -224,6 +224,12 @@ export function boundedIntegerLoopFacts(
   }
   return result;
 }
+
+/** Every length, byteLength and byteOffset of a typed array, DataView or
+ * Buffer: each counts elements or bytes of one allocation, and every
+ * supported target addresses less than 2^48 bytes. Counters and offsets
+ * derived from them then stay exact integers far below 2^53. */
+export const BYTES_LENGTH_RANGE: IntegerRange = { min: 0, max: 2 ** 48 };
 
 /** Every length an array can have: SCR_ARR_MAX_LENGTH (scr_array.c). */
 export const ARRAY_LENGTH_RANGE: IntegerRange = { min: 0, max: 4294967295 };
@@ -353,6 +359,13 @@ export function guardedLoopCounterFacts(
       stable(e.receiver.localId)
     )
       return { min: 0, max: STRING_MAX_UNITS };
+    if (
+      e.kind === "bytesIntrinsic" &&
+      (e.method === "length" || e.method === "byteLength") &&
+      e.receiver.kind === "varRef" &&
+      stable(e.receiver.localId)
+    )
+      return BYTES_LENGTH_RANGE;
     // An array length can change on any pass, but never leaves its range,
     // which is all a ceiling needs.
     if (isArrayLength(e)) return ARRAY_LENGTH_RANGE;
@@ -402,7 +415,82 @@ export function guardedLoopCounterFacts(
     if (Number.isSafeInteger(start.min) && Number.isSafeInteger(max))
       result.set(id, { min: start.min, max });
   }
+  // Companion counters: a binding the loop changes only by positive literal
+  // increments that no condition bounds (`out[k++] = ...` beside
+  // `while (i < n)`). A bounded counter that every pass advances before it
+  // can continue limits the number of passes, and each pass adds at most
+  // the companion's increments in the body. Increments inside nested loops
+  // can repeat within a pass, so those companions are not bounded.
+  let passes = Infinity;
+  for (const [id, range] of result) {
+    const hi = ceiling.get(id)!;
+    const step = guaranteedStep(loop.body, id);
+    if (step <= 0) continue;
+    passes = Math.min(passes, Math.floor((hi - range.min) / step) + 1);
+  }
+  if (!Number.isSafeInteger(passes) || passes < 0) return result;
+  const repeated = new Set<string>();
+  for (const inner of nested) for (const id of writtenLocals(inner.body)) repeated.add(id);
+  for (const [id, total] of budget) {
+    const local = locals.get(id),
+      start = initial.get(id);
+    if (result.has(id) || refused.has(id) || repeated.has(id) || ceiling.has(id)) continue;
+    if (!local || local.boxed || local.tdz || !start) continue;
+    const max = start.max + passes * total;
+    if (Number.isSafeInteger(start.min) && Number.isSafeInteger(max))
+      result.set(id, { min: start.min, max });
+  }
   return result;
+}
+
+/** The increments of counter `id` that every pass of `body` makes before it
+ * can start another pass: those of the leading statements up to the first
+ * one that can continue the loop or holds a nested region (0 when there is
+ * none). A pass that leaves the loop earlier starts no further pass, so the
+ * count bounds the passes that continue. */
+function guaranteedStep(body: readonly IrStmt[], id: string): number {
+  let step = 0;
+  for (const s of body) {
+    if (s.kind === "assign" && s.localId === id) {
+      const delta = increment(id, s.value);
+      if (delta === null || delta <= 0) return 0;
+      step += delta;
+      continue;
+    }
+    if (s.kind === "exprStmt" && s.expr.kind === "incDec" && s.expr.localId === id) {
+      if (s.expr.op !== "+") return 0;
+      step += 1;
+      continue;
+    }
+    if (mayContinue(s)) break;
+  }
+  return step;
+}
+
+/** Whether `s` can start another pass of the enclosing loop before its
+ * following statements run: it holds a `continue`, a loop or another
+ * region whose control flow is not walked here. */
+function mayContinue(s: IrStmt): boolean {
+  let found = false;
+  const stmt = (x: IrStmt): boolean => {
+    if (
+      x.kind === "continue" ||
+      x.kind === "for" ||
+      x.kind === "while" ||
+      x.kind === "doWhile" ||
+      x.kind === "forOf" ||
+      x.kind === "tryCatch" ||
+      x.kind === "switch" ||
+      (x.kind === "block" && !!x.labels?.length)
+    ) {
+      found = true;
+      return false;
+    }
+    return everyStmtChild(x, expr, stmt);
+  };
+  const expr = (e: IrExpr): boolean => everyExprChild(e, expr, stmt);
+  stmt(s);
+  return found;
 }
 
 /** The largest value counter `id` takes in one pass of `body`, which starts

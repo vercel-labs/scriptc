@@ -123,3 +123,15 @@ function plainIterator(TA) {
   console.log(new TA(source), TA.from(source, (v) => v * 2), gets, nexts);
 }
 plainIterator(Int16Array);
+// ToIndex of a Symbol or BigInt length, toLocaleString, and Symbol descriptions
+// that are not strings.
+function small(TA) {
+  for (const bad of [Symbol("s"), 1n]) {
+    try { new TA(bad); console.log("no throw"); } catch (e) { console.log(e.constructor.name); }
+  }
+  console.log(new TA([1, 1234.5, -0, 0]).toLocaleString(), new TA(0).toLocaleString(), typeof new TA(1).toLocaleString);
+}
+small(Float64Array);
+small(Uint16Array);
+const s = Symbol(1), t = Symbol(true), u = Symbol(2.5);
+console.log(s.description, t.description, u.toString(), typeof s.description);

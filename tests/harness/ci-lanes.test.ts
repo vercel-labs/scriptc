@@ -166,6 +166,7 @@ test("every job on a macOS runner is in the macos lane", () => {
   );
   expect(macosJobs.map(([name]) => name).sort()).toEqual([
     "llvm_artifacts_macos_arm64",
+    "llvm_artifacts_macos_arm64_contracts",
     "llvm_artifacts_macos_x64",
     "mobile_runtime_packs_ios",
     "native_macos",

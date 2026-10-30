@@ -1,5 +1,8 @@
 import type { IrExpr, IrFunction, IrStmt } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
+
+const CLOSURE_KINDS: readonly IrNodeKind[] = ["closure"];
 
 /** The local a node rebinds. Writes through the bound reference, such as a
  * field store or an array push, leave the binding unchanged. Catch bindings
@@ -37,7 +40,11 @@ export class LazyCaptures {
   private readonly pending = new Set<IrFunction>();
   private sites: Map<string, { owner: string; captures: string[] }[]> | null = null;
 
-  constructor(private readonly functions: ReadonlyMap<string, IrFunction>) {}
+  constructor(
+    private readonly functions: ReadonlyMap<string, IrFunction>,
+    /** The module's node index, read instead of walking the bodies it holds. */
+    private readonly nodes?: IrNodeIndex,
+  ) {}
 
   /** The captures of closure body `fnName` that hold one value for the
    * closure's whole life: at every creation site the captured binding is
@@ -103,16 +110,15 @@ export class LazyCaptures {
   private creationSites(): Map<string, { owner: string; captures: string[] }[]> {
     if (this.sites !== null) return this.sites;
     const sites = new Map<string, { owner: string; captures: string[] }[]>();
+    const scan = this.nodes?.scan(CLOSURE_KINDS);
     for (const fn of this.functions.values()) {
-      const visit = (node: IrStmt | IrExpr): boolean => {
+      eachNodeOfKinds(fn, scan, (node) => {
         if (node.kind === "closure") {
           let list = sites.get(node.fnName);
           if (!list) sites.set(node.fnName, (list = []));
           list.push({ owner: fn.name, captures: node.captures });
         }
-        return true;
-      };
-      everyStmtList(fn.body, { stmt: visit, expr: visit });
+      });
     }
     this.sites = sites;
     return sites;

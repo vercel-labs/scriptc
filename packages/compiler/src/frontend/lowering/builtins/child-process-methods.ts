@@ -16,6 +16,7 @@ import {
   VOID,
   canBoxFuncIntoDyn,
 } from "../../../ir/ir.js";
+import { type IrLibFn } from "../../../ir/builtin-signatures.js";
 import {
   ipcJsonMessage,
   ipcSendCallback,
@@ -23,13 +24,16 @@ import {
   ipcDisconnectListener,
 } from "./ipc.js";
 import { stripTypeCasts } from "./arguments.js";
+import { resultIsDiscarded } from "../call-position.js";
 
 export function lowerChildMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // A `?.` in the chain re-dispatches here with the receiver bound to the
+  // chain (optional-chains.ts), so only an UNHANDLED token declines.
+  if (lowerer.chainBlocked(call, access)) return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "child") return null;
   if (!isChildSurfaceMember(lowerer, access)) return null;
   const name = access.name.text;
@@ -286,6 +290,51 @@ export function lowerChildMethodCall(
       type: VOID,
       loc,
     });
+  }
+  // child.off(event, listener) / child.removeListener(event, listener) —
+  // EventEmitter's alias pair, removal by FUNCTION IDENTITY (the same
+  // closure value that was registered; the runtime compares pointers and
+  // releases the entry it drops). The events the registry can remove are
+  // the ones it stores statically; a listener registered through the
+  // checked-dynamic adapter is not removable by identity here and keeps
+  // its explicit refusal.
+  if ((name === "off" || name === "removeListener") && call.arguments.nodes.length === 2) {
+    const evT = lowerer.typeOf(call.arguments.nodes[0]!);
+    const event = evT.isStringLiteralType() ? evT.value : null;
+    const fn: IrLibFn | undefined =
+      event === "spawn"
+        ? "child.offSpawn"
+        : event === "exit"
+          ? "child.offExit"
+          : event === "close"
+            ? "child.offClose"
+            : event === "error"
+              ? "child.offError"
+              : undefined;
+    if (fn === undefined) {
+      lowerer.noLowering(
+        `child.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
+        call.arguments.nodes[0]!,
+        '"spawn", "exit", "close", and "error" are the removable child events (as literals)',
+      );
+    }
+    if (!resultIsDiscarded(call)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `using the result of child.${name}() (call it as its own statement)`,
+      );
+    }
+    const receiver = lowerer.lowerExpr(access.expression);
+    const listener = lowerer.lowerExpr(call.arguments.nodes[1]!);
+    if (listener.type.kind !== "func") {
+      lowerer.noLowering(
+        `child.${name} with a '${lowerer.fmt(listener.type)}' listener`,
+        call.arguments.nodes[1]!,
+        "pass the function value that was registered (removal is by identity)",
+      );
+    }
+    return { kind: "libCall", fn, args: [receiver, listener], type: VOID, loc };
   }
   // child.kill(signal?) — Node's semantics exactly: the name resolves
   // through Node's signal table (unknown names throw the ERR_UNKNOWN_SIGNAL
@@ -775,6 +824,32 @@ function childStreamEncodedAt(
   return before;
 }
 
+/** Whether the program calls `setEncoding` on the stream `receiver`
+ * names: a call whose receiver has the same access path, anywhere in the
+ * file. Its 'data' chunks can then be strings. */
+export function childStreamSetsEncoding(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  const key = accessPathOf(lowerer, receiver);
+  if (key === null) return false;
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "setEncoding"
+    ) {
+      const path = accessPathOf(lowerer, node.expression.expression);
+      if (path !== null && path.root === key.root && path.path === key.path) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.getSourceFileOfNode(receiver));
+  return found;
+}
+
 /** An inline 'exit'/'close' listener may declare `(code: number, signal:
  * string)`: TypeScript accepts it through ChildProcess's catch-all `on`
  * overload, while Node passes `number | null` and `Signals | null`. Those
@@ -801,7 +876,7 @@ function narrowedExitListenerParams(lowerer: Lowerer, listener: ts.Expression): 
 
 /** Lowers an inline listener with the given parameters bound as
  * checked-dynamic values typed `unknown` for the body. */
-function lowerWithCheckedParams(
+export function lowerWithCheckedParams(
   lowerer: Lowerer,
   listener: ts.Expression,
   symbols: readonly ts.Symbol[],

@@ -14,16 +14,21 @@ export function exprFunctionReference(expr: IrExpr): string | undefined {
 /** The expression kinds exprFunctionReference answers for. */
 export const FUNCTION_REFERENCE_KINDS = ["closure", "orDefault"] as const;
 
-/** Functions the module's metadata names: the entry, library exports and
- * the class prototype helpers the runtime calls. Class methods and
- * constructors follow the `%<class>.<method>` convention instead of being
- * named here; callers that need them derive them from `mod.classes`. */
+/** Functions the module's metadata names: the entry, library exports,
+ * closures' jsval entries and the class prototype helpers the runtime
+ * calls. Class methods and constructors follow the `%<class>.<method>`
+ * convention instead of being named here; callers that need them derive
+ * them from `mod.classes`. */
 export function moduleFunctionReferences(mod: IrModule): string[] {
   const names = [mod.entry];
   for (const entry of mod.lib?.exports ?? []) names.push(entry.fnName);
+  for (const fn of mod.functions) if (fn.jsEntry !== undefined) names.push(fn.jsEntry);
   for (const cls of mod.classes ?? []) {
     if (cls.prototypeDataHelper !== undefined) names.push(cls.prototypeDataHelper);
     if (cls.instancePrototypeHelper !== undefined) names.push(cls.instancePrototypeHelper);
+    if (cls.arrayFields !== undefined) names.push(cls.arrayFields);
+    if (cls.arraySpecies !== undefined) names.push(cls.arraySpecies);
+    if (cls.stringTagHelper !== undefined) names.push(cls.stringTagHelper);
   }
   return names;
 }

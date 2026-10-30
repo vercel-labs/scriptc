@@ -422,12 +422,14 @@ static void test_live_iteration_indices(void) {
 /* A small (linear) map that must grow its lookup index while an iteration
  * is active may not compact: entry indices, tombstones and the append
  * position stay put. Integer keys in a compact range move to the direct
- * index (dense) from the fifth entry, any other number keys to the bucket
+ * index (dense) from the second entry, any other number keys to the bucket
  * table from the ninth; both transitions are covered by running the same
- * script with `offset` 0 and 0.5. */
+ * script with `offset` 0 and 0.5. The walk deletes `victim`, an existing
+ * key, then appends the key that makes the index grow. */
 static void run_small_storage_transitions(double offset) {
   bool dense = offset == 0;
-  int n = dense ? 4 : 8; /* entries a linear map holds before its index grows */
+  int n = dense ? 1 : 8; /* entries a linear map holds before its index grows */
+  int victim = dense ? 0 : 1;
   ScrMap *m = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (int i = 0; i < n; i++) scr_map_set_f64_f64(m, i + offset, i + 10);
   check(m->nbuckets == 0 && m->buckets == NULL && m->ndense == 0,
@@ -441,22 +443,23 @@ static void run_small_storage_transitions(double offset) {
   ScrMap *copy = scr_map_clone(m, false, NULL);
   check(copy->nbuckets == 0 && copy->ndense == 0, "small clone preserves compact storage");
   scr_map_iter_enter(m);
-  scr_map_delete_f64(m, 1 + offset);
+  scr_map_delete_f64(m, victim + offset);
   scr_map_set_f64_f64(m, n + offset, 14);
   check(dense ? m->ndense > 0 && m->nbuckets == 0 : m->nbuckets > 0 && m->ndense == 0,
         "live iteration promotes without moving entry indices");
-  check(m->nentries == (uint32_t)n + 1 && !scr_map_iter_live(m, 1) &&
+  check(m->nentries == (uint32_t)n + 1 && !scr_map_iter_live(m, victim) &&
             scr_map_iter_key_f64(m, n) == n + offset,
         "promotion preserves tombstones and append position");
   for (int i = n + 1; i < 64; i++) scr_map_set_f64_f64(m, i + offset, i + 10);
-  check(m->nentries == 64 && !scr_map_iter_live(m, 1) && scr_map_iter_key_f64(m, 63) == 63 + offset,
+  check(m->nentries == 64 && !scr_map_iter_live(m, victim) && scr_map_iter_key_f64(m, 63) == 63 + offset,
         "growth during iteration keeps entry indices");
   double out = 0;
-  check(scr_map_get_f64_f64(m, offset, &out) && out == 10,
-        "original key survives promotion and growth");
-  check(!scr_map_has_f64(m, 1 + offset), "deleted small key stays absent after rehash");
+  check(dense ? scr_map_get_f64_f64(m, n + offset, &out) && out == 14
+              : scr_map_get_f64_f64(m, offset, &out) && out == 10,
+        "keys written before the promotion survive it and the growth");
+  check(!scr_map_has_f64(m, victim + offset), "deleted small key stays absent after rehash");
   scr_map_iter_exit(m);
-  check(scr_map_has_f64(copy, 1 + offset) && !scr_map_has_f64(copy, n + offset),
+  check(scr_map_has_f64(copy, victim + offset) && !scr_map_has_f64(copy, n + offset),
         "small clone remains independent");
   scr_map_clear(copy);
   scr_map_iter_enter(copy);

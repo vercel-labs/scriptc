@@ -62,14 +62,6 @@ test.each([
     console.log((source as { value: unknown }).value);`,
     "opaque structural views",
   ],
-  [
-    "runtime keys cannot supply required fields",
-    `
-    const values: Record<string, unknown> = { value: 1 };
-    const result: { value: number } = { ...values } as { value: number };
-    console.log(result.value);`,
-    "required field",
-  ],
 ])(
   "%s reports a frontend refusal instead of selecting the wrong layout",
   (_name, source, message) => {
@@ -90,6 +82,31 @@ test.each([
     }
   },
 );
+
+test("a runtime-keyed spread into a record validates through a checked extraction", () => {
+  const dir = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-structural-spread-"),
+  );
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(
+      entry,
+      `const values: Record<string, unknown> = { value: 1 };
+      const result: { value: number } = { ...values } as { value: number };
+      console.log(result.value);`,
+    );
+    const { coverage } = analyze(entry, {});
+    expect(coverage.preflightFailed, JSON.stringify(coverage.diagnostics)).toBe(false);
+    // The spread copies the source's own enumerable keys into a
+    // checked-dynamic object, and the assertion is a checked extraction:
+    // a required field the runtime keys do not carry fails the conversion
+    // instead of selecting a layout. The differential corpus (8502) pins
+    // the copy's key order and values against Node.
+    expect(coverage.diagnostics).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("opaque class view keeps prototype accessors through the instance itself", () => {
   const dir = mkdtempSync(

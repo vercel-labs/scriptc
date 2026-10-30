@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/width-layout-parameter-writes.ts"
+ ],
+ "diags": []
+}

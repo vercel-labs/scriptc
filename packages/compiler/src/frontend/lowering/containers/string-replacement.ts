@@ -18,6 +18,7 @@ import {
 import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { locOf } from "../../program.js";
+import { PLAIN_SEARCH_CAPTURES, lowerReplacerCallback } from "./replacer-params.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   coerceStringSearchValue,
@@ -48,11 +49,18 @@ export function lowerStringReplacement(
         type.kind === "bool" ||
         type.kind === "bigint" ||
         isUnitType(type);
-  const argument = (node: ts.Expression | undefined, callback: boolean): IrExpr => {
+  const argument = (
+    node: ts.Expression | undefined,
+    callback: boolean,
+    plainSearch = false,
+  ): IrExpr => {
     if (!node) return strLit("undefined", loc);
     const absent = lowerStaticallyUndefinedArgument(lowerer, node);
     if (absent) return defaultAfterUndefined(absent, strLit("undefined", loc));
-    const value = lowerer.lowerExpr(node);
+    // A plain search passes (match, offset, subject).
+    const value = plainSearch
+      ? lowerReplacerCallback(lowerer, node, PLAIN_SEARCH_CAPTURES)
+      : lowerer.lowerExpr(node);
     if (value.type.kind === "dyn" || (callback && value.type.kind === "func")) return value;
     if (!primitive(value.type)) {
       lowerer.noLowering(
@@ -64,7 +72,7 @@ export function lowerStringReplacement(
     return coerceStringSearchValue(lowerer, value, node, loc);
   };
   const search = argument(args[0], false);
-  const replacement = argument(args[1], true);
+  const replacement = argument(args[1], true, search.type.kind !== "dyn");
   if (search.type.kind === "dyn" || replacement.type.kind === "dyn") {
     // Evaluate all inputs once before choosing the search protocol. Regexes
     // retain their native pattern; plain values use the string-search helper.

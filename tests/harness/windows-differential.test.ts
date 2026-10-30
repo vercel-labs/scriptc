@@ -52,6 +52,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
+import { requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
@@ -100,6 +101,9 @@ const WINDOWS_SKIPS: Record<string, string> = {
   // spawns succeed, exposed here where every one fails.
   "process-named-signals.cjs":
     "POSIX signal delivery: Windows Node cannot send SIGWINCH or register SIGSTOP",
+  "write-signals-ignored.ts":
+    "POSIX signals: Windows has no SIGPIPE or SIGXFSZ, and the children are /bin/sh",
+  "write-signals-listener.mjs": "POSIX signals: Windows has no SIGPIPE or SIGXFSZ",
   "1360-spawn-sync.ts":
     'posix-shaped: every spawn is ENOENT on Windows Node too, exposing the documented spawn-failure ""-vs-null stdout stance (1644 covers spawnSync here)',
   "1361-spawn-events.ts":
@@ -266,6 +270,9 @@ const files = enabled
     ])
       .sort()
       .filter((f) => filter === undefined || new RegExp(filter).test(f))
+      // Calls into Node load a libnode pack for the host, not for this
+      // cross target (libnode.ts).
+      .filter((f) => !requiresLibnode(f))
   : [];
 
 if (enabled) {

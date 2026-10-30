@@ -29,7 +29,12 @@
  * Attribution is syntactic and approximate: the site's innermost node, the
  * operand it acts on, and that operand's declaration. Stage S6 replaces it
  * with requests the failing lowering names exactly. */
-import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import type {
+  ScrDiagnostic,
+  TypeFailureFamily,
+  TypeFailureSlot,
+} from "../diagnostics/diagnostic.js";
+import { isWarningCode } from "../diagnostics/render.js";
 import type { IrFunction, SrcLoc } from "../ir/ir.js";
 import { dynamicOperationSites, type DynamicFunction } from "../ir/tiers.js";
 import * as ts from "./ts7/adapter.js";
@@ -85,8 +90,70 @@ export interface TierDynamicFunction extends DynamicFunction {
   statements: number;
 }
 
+/** The localized-failure stage whose slot positions include a slot kind
+ * (design §3.6): locals and globals degrade first, declarations next,
+ * members of declared types with push-down, expression types last. */
+export type LocalizedFailureStage = "L1" | "L2" | "L3" | "L4";
+
+export function slotStage(slot: TypeFailureSlot): LocalizedFailureStage {
+  switch (slot) {
+    case "local":
+    case "global":
+    case "loop":
+      return "L1";
+    case "field":
+    case "param":
+    case "return":
+      return "L2";
+    case "member":
+      return "L3";
+    case "expression":
+      return "L4";
+  }
+}
+
+/** A committed type failure that would become a checked dynamic slot
+ * (SC6104) instead of an error. */
+export interface WouldBeSlot {
+  loc: SrcLoc;
+  slot: TypeFailureSlot;
+  name: string;
+  declaredType: string;
+  family: TypeFailureFamily;
+  code: string;
+  message: string;
+  stage: LocalizedFailureStage;
+  /** The declaration the failure rejects today (a failure-group key), if
+   * any: a class, a signature, or a declaration statement. */
+  rejects: string | null;
+  /** Other committed diagnostics that inherit from this slot's group and
+   * clear once every group they inherit from degrades (with push-down and
+   * expression slots, the full design). */
+  cascade: number;
+}
+
+/** Localized failure, report-only (stage L0): what the committed errors
+ * would become. Two scenarios: through stage L2 (declaration slots) and
+ * through L4 (members and expressions too). */
+export interface LocalizedFailureReport {
+  /** Reached errors (warnings excluded). */
+  errors: number;
+  /** Type failures, by whether a checked dynamic slot keeps meaning. */
+  typeFailures: { degradable: number; refused: number };
+  slots: WouldBeSlot[];
+  /** Diagnostics attributed to a rejected declaration they used. */
+  cascades: number;
+  /** Errors that disappear (degraded slots plus cleared cascades). */
+  clearedThroughL2: number;
+  clearedThroughL4: number;
+  /** The errors that remain through L4, by code. */
+  remainingByCode: Record<string, number>;
+}
+
 export interface TierReport {
   mode: TierMode;
+  /** Localized failure (report-only). */
+  localizedFailure: LocalizedFailureReport;
   /** Reached source statements that perform a dynamic operation. */
   statementsDynamic: number;
   dynamicFunctions: TierDynamicFunction[];
@@ -576,6 +643,119 @@ function demotedUnits(requests: readonly DemotionRequest[]): DemotedUnit[] {
   );
 }
 
+/* ── localized failure ───────────────────────────────────────────────── */
+
+/** A diagnostic's failure-group bookkeeping (lowerer: badType, deferred
+ * flushes, blocked statements) turned into the would-be report. A group
+ * (a rejected declaration or blocked statement) clears in a scenario when
+ * each of its diagnostics either degrades (a degradable type failure at a
+ * slot the scenario covers) or is a cascade whose every cause clears. */
+export function localizedFailureReport(reached: readonly ScrDiagnostic[]): LocalizedFailureReport {
+  const errors = reached.filter((d) => !isWarningCode(d.code));
+  const groups = new Map<string, ScrDiagnostic[]>();
+  for (const d of errors) {
+    if (d.rejects === undefined) continue;
+    const list = groups.get(d.rejects);
+    if (list === undefined) groups.set(d.rejects, [d]);
+    else list.push(d);
+  }
+  const stages: Record<"L2" | "L4", ReadonlySet<LocalizedFailureStage>> = {
+    L2: new Set(["L1", "L2"]),
+    L4: new Set(["L1", "L2", "L3", "L4"]),
+  };
+  const clears = (scenario: "L2" | "L4") => {
+    const covered = stages[scenario];
+    const memo = new Map<string, boolean>();
+    const degrades = (d: ScrDiagnostic): boolean =>
+      d.typeFailure !== undefined &&
+      d.typeFailure.degradable &&
+      covered.has(slotStage(d.typeFailure.slot));
+    const causeClears = (d: ScrDiagnostic): boolean =>
+      d.cause !== undefined && d.cause.length > 0 && d.cause.every((g) => groupClears(g));
+    const groupClears = (group: string): boolean => {
+      const known = memo.get(group);
+      if (known !== undefined) return known;
+      memo.set(group, false); // a cycle never clears
+      const members = groups.get(group) ?? [];
+      const ok = members.length > 0 && members.every((d) => degrades(d) || causeClears(d));
+      memo.set(group, ok);
+      return ok;
+    };
+    return { degrades, causeClears, groupClears };
+  };
+  const l2 = clears("L2");
+  const l4 = clears("L4");
+  const cleared = (c: ReturnType<typeof clears>, d: ScrDiagnostic) =>
+    c.degrades(d) || c.causeClears(d);
+  // Each slot's cascade: diagnostics whose causes (transitively) include
+  // the slot's group and that clear in the full scenario.
+  const reachesGroup = (d: ScrDiagnostic, group: string, seen: Set<string>): boolean => {
+    for (const g of d.cause ?? []) {
+      if (g === group) return true;
+      if (seen.has(g)) continue;
+      seen.add(g);
+      for (const m of groups.get(g) ?? []) if (reachesGroup(m, group, seen)) return true;
+    }
+    return false;
+  };
+  const slots: WouldBeSlot[] = [];
+  let degradable = 0;
+  let refused = 0;
+  for (const d of errors) {
+    const f = d.typeFailure;
+    if (f === undefined) continue;
+    if (!f.degradable) {
+      refused++;
+      continue;
+    }
+    degradable++;
+    const group = d.rejects ?? null;
+    let cascade = 0;
+    if (group !== null)
+      for (const e of errors)
+        if (
+          e !== d &&
+          e.typeFailure === undefined &&
+          cleared(l4, e) &&
+          reachesGroup(e, group, new Set())
+        )
+          cascade++;
+    slots.push({
+      loc: d.loc,
+      slot: f.slot,
+      name: f.name,
+      declaredType: f.declaredType,
+      family: f.family,
+      code: d.code,
+      message: d.message,
+      stage: slotStage(f.slot),
+      rejects: group,
+      cascade,
+    });
+  }
+  slots.sort(
+    (a, b) =>
+      b.cascade - a.cascade || a.loc.file.localeCompare(b.loc.file) || a.loc.start - b.loc.start,
+  );
+  const remainingByCode: Record<string, number> = {};
+  let clearedThroughL2 = 0;
+  let clearedThroughL4 = 0;
+  for (const d of errors) {
+    if (cleared(l2, d)) clearedThroughL2++;
+    if (cleared(l4, d)) clearedThroughL4++;
+    else remainingByCode[d.code] = (remainingByCode[d.code] ?? 0) + 1;
+  }
+  return {
+    errors: errors.length,
+    typeFailures: { degradable, refused },
+    slots,
+    cascades: errors.filter((d) => d.cause !== undefined && d.typeFailure === undefined).length,
+    clearedThroughL2,
+    clearedThroughL4,
+    remainingByCode,
+  };
+}
+
 export interface TierAnalysisInput {
   mode: TierMode;
   /** The dynamic-tier IR functions of the reached program. */
@@ -624,6 +804,7 @@ export function analyzeTiers(program: ts.Program, input: TierAnalysisInput): Tie
   const dynamic = dynamicFunctionReports(program, input.dynamicFunctions);
   return {
     mode: input.mode,
+    localizedFailure: localizedFailureReport(input.reached),
     statementsDynamic: dynamic.statements,
     dynamicFunctions: dynamic.functions,
     requests,

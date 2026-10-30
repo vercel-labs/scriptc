@@ -141,6 +141,75 @@ CommonJS packages compile with Node.js's module semantics. Each `require()` eval
 
 A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. These don't fail the build: each one compiles to code that throws a runtime error if it ever runs. Coverage reports list them as deferred sites, so review the list and test the parts of the package your program uses. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
 
+## Fix a package's types
+
+scriptc trusts declared types: a package's `.d.ts` files, its `@types/` package, and the JSDoc types in its JavaScript. A value that contradicts its declared type throws a `TypeError` instead of flowing on, so a package whose declarations are wrong can stop a program that runs under Node.js. A common case is a member declared `string` or `number` that is sometimes `undefined`.
+
+When the type comes from a package's declarations, the error names the declaration and the patch that would admit the value:
+
+```text
+Uncaught TypeError: expected string at $, got undefined
+    profilekit@3.1.0 declares Profile.email as string (index.d.ts:7)
+    if that declaration is wrong, patch it: scriptc types patch profilekit "Profile.email" "| undefined"
+```
+
+Fix such a declaration in your project with a type patch. `scriptc types patch` shows what a declaration path matches in the installed package and adds the patch to your `package.json`:
+
+```console
+$ scriptc types patch commander "HelpContext.helpWidth" "| undefined"
+commander 15.0.0 (node_modules/commander)
+  lib/command.js:2481  number  ->  number | undefined
+wrote package.json scriptc.typePatches["commander@^15.0.0"].declarations["HelpContext.helpWidth"]
+```
+
+The patch it writes looks like this:
+
+```json:package.json
+{
+  "scriptc": {
+    "typePatches": {
+      "commander@^15.0.0": {
+        "declarations": {
+          "HelpContext.helpWidth": "| undefined"
+        }
+      }
+    }
+  }
+}
+```
+
+Each key names a package and a semver range of the installed versions the patch describes. `declarations` maps a declaration to a type:
+
+<dl>
+  <dt>`"| undefined"`</dt>
+  <dd>A type that starts with `|` widens the declared type, here to `number | undefined`.</dd>
+  <dt>`"string | null"`</dt>
+  <dd>Any other type replaces the declared type.</dd>
+</dl>
+
+A declaration is named by its path: `Options.name` for a member of a type, `parse()` for a function's return type, `parse(text)` for a parameter, `list()[]` for an array's elements, and `Env[string]` for an index signature. `export=()` names the return type of the function the module exports, `default` its default export, and a file prefix such as `index.js:parse()` names a declaration inside one of the package's files. One patch applies to the package's own declarations, its JSDoc, and its `@types/` package. The patched type then holds everywhere, so your code has to handle the `undefined` that a widened declaration allows. An optional `"note"` string can link the upstream issue.
+
+For larger fixes, replace a whole declaration file, or give a package without declarations its own:
+
+```json:package.json
+{
+  "scriptc": {
+    "typePatches": {
+      "some-client@^3.2.0": {
+        "files": { "dist/types/options.d.ts": "./type-patches/options.d.ts" }
+      },
+      "untyped-helper@1.x": {
+        "types": "./type-patches/untyped-helper.d.ts"
+      }
+    }
+  }
+}
+```
+
+`files` maps a declaration file inside the package, or inside its `@types/` package written as `@types/<name>/<path>`, to a local `.d.ts` file. `types` supplies the package's declaration entry. Paths of local files are relative to the `package.json`, and a replaced file can import the package's other declaration files with the same relative paths as the file it replaces.
+
+Patches change only declarations, never the package's code, and values are still checked against the patched types. A build warns when a patch doesn't apply as written: when no range covers the installed version, when a declaration path matches nothing, when the declaration already has the type, or when a path is ambiguous. Report wrong declarations to the package too, so the patch can be removed later.
+
 ## Provenance sources (experimental)
 
 `--provenance-sources` compiles a package from the source at the commit its npm provenance attestation names, instead of from its published JavaScript. This lets packages written in TypeScript compile from their original TypeScript. Packages without a usable attestation compile from their installed files as usual.

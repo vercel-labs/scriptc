@@ -299,6 +299,21 @@ wrap empty: len 2 bytes 60 62
     expect(run.stdout).toBe(BUFFERS_EXPECTED);
   });
 
+  /* ── X509Certificate fields: scr_x509.c rides the archive ────────────── */
+
+  test("X509Certificate fields in a library", async () => {
+    const { archive, outDir } = await buildLibrary("x509", emission);
+    const probe = buildProbe("x509", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(
+      "C=US\nST=California\nL=San Francisco\nO=Example Org\nOU=Dev Team\nCN=Example Root CA\nemailAddress=ca@example.com" +
+        "|0123456789ABCDEF|Sep 27 16:33:52 2126 GMT|true|" +
+        "7C:5F:CA:18:57:BF:BD:FC:67:AC:BD:21:1C:67:E8:C3:73:48:35:4E:4D:95:A8:2B:83:FF:E0:5A:E7:0A:97:A9\n",
+    );
+  });
+
   /* ── cstring: NUL-terminated text in, out, and through callbacks ─────── */
 
   test("cstring parameters, results, and callback arguments", async () => {
@@ -361,6 +376,17 @@ globals: undefined fenced
     expect(run.signal).toBeNull();
     expect(run.status).toBe(0);
     expect(run.stdout).toBe(SESSION + SESSION + SESSION);
+  });
+
+  test("K4: untyped property caches start empty in every session", async () => {
+    // The shapes a session's cache entries name are freed when it ends;
+    // the next session's sites must not find those entries.
+    const { archive, outDir } = await buildLibrary("js-ic-sessions", emission);
+    const probe = buildProbe("js-ic-sessions", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("run: 40000\n".repeat(3));
   });
 
   /* ── K5/K6/K7: the trap channel ──────────────────────────────────────── */
@@ -580,6 +606,15 @@ survived, sink_calls=1
     expect(run.signal).toBeNull();
     expect(run.status).toBe(0);
     expect(run.stdout).toBe(SESSION + SESSION + SESSION);
+  });
+
+  platformTest("K10: property caches across sessions under ASan", async () => {
+    const { archive, outDir } = await buildLibrary("js-ic-sessions", emission, { sanitize: true });
+    const probe = buildProbe("js-ic-sessions", archive, outDir, { sanitize: true });
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("run: 40000\n".repeat(3));
   });
 
   platformTest("K10: K5/K7 under ASan", async () => {
@@ -1043,7 +1078,7 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
 
   test("a code-keyed teachings entry rides a non-fence refusal as the attributed note", async () => {
     const diags = await refusal(
-      `export function f(): number { return (1234.5).toLocaleString().length; }\n`,
+      `export function f(): number { return (1234.5).toLocaleString("de-DE").length; }\n`,
       {
         exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }],
         determinism: {
@@ -1060,13 +1095,13 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
 
   test("a manifest-id-keyed teachings entry attaches to that surface's own refusal", async () => {
     const diags = await refusal(
-      `import { brotliCompressSync } from "node:zlib";\nexport function f(): number { return brotliCompressSync("data").length; }\n`,
+      `import { createRequire } from "node:module";\nexport function f(): number { return createRequire("/x") === undefined ? 0 : 1; }\n`,
       {
         exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }],
         determinism: {
           teachings: {
-            "node-builtin.zlib.brotliCompressSync":
-              "compression runs in the host; request it as an effect",
+            "node-builtin.module.createRequire":
+              "module state is the host's; request it as an effect",
           },
         },
       },
@@ -1075,20 +1110,20 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
     // The surface's own code, not a fence code: the id key attaches text
     // to the refusal that already fires.
     expect(diags[0]!.code).toBe("SC2020");
-    expect(diags[0]!.message).toContain("zlib.brotliCompressSync");
+    expect(diags[0]!.message).toContain("module.createRequire");
     expect(diags[0]!.note).toBe(
-      "from the 'refusal-fixture' profile: compression runs in the host; request it as an effect",
+      "from the 'refusal-fixture' profile: module state is the host's; request it as an effect",
     );
   });
 
   test("fencing a surface the static tier refuses anyway changes only the message", async () => {
     const diags = await refusal(
-      `import { brotliCompressSync } from "node:zlib";\nexport function f(): number { return brotliCompressSync("data").length; }\n`,
+      `import { createRequire } from "node:module";\nexport function f(): number { return createRequire("/x") === undefined ? 0 : 1; }\n`,
       {
         exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }],
         determinism: {
           fences: [
-            { id: "node-builtin.zlib.brotliCompressSync", teaching: "compression is host work" },
+            { id: "node-builtin.module.createRequire", teaching: "module state is host work" },
           ],
         },
       },
@@ -1097,6 +1132,6 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
     // The existing refusal's code survives — the fence never re-codes a
     // surface that already refuses; its teaching rides as the note.
     expect(diags[0]!.code).toBe("SC2020");
-    expect(diags[0]!.note).toBe("from the 'refusal-fixture' profile: compression is host work");
+    expect(diags[0]!.note).toBe("from the 'refusal-fixture' profile: module state is host work");
   });
 });

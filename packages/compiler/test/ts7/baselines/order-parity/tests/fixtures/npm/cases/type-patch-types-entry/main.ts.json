@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/type-patch-types-entry/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'pointjs'. '<repo>/tests/fixtures/npm/cases/type-patch-types-entry/node_modules/pointjs/lib/point.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/pointjs` if it exists or add a new declaration (.d.ts) file containing `declare module 'pointjs';`",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/cases/type-patch-types-entry/main.ts",
+    "start": 246,
+    "end": 255
+   }
+  }
+ ]
+}

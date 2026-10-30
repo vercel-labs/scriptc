@@ -55,6 +55,23 @@ void arc4random_buf(void *buf, size_t n) {
  * CSPRNG shim above and must not acquire context-switching definitions. */
 #ifndef SCR_LIB
 
+#ifdef __x86_64__
+/* The libc memory and string routines of an x86_64 executable
+ * (scr_musl_mem.h). zig's libc defines these as weak symbols, which these
+ * definitions replace. A library artifact keeps the ones of the program it
+ * links into. */
+#include "scr_musl_mem.h"
+#define SCR_MUSL_LIBC __attribute__((no_builtin))
+SCR_MUSL_LIBC void *memset(void *dst, int c, size_t n) { return scr_musl_memset(dst, c, n); }
+SCR_MUSL_LIBC void *memcpy(void *__restrict dst, const void *__restrict src, size_t n) {
+  return scr_musl_memcpy(dst, src, n);
+}
+SCR_MUSL_LIBC void *memmove(void *dst, const void *src, size_t n) { return scr_musl_memmove(dst, src, n); }
+SCR_MUSL_LIBC int memcmp(const void *a, const void *b, size_t n) { return scr_musl_memcmp(a, b, n); }
+SCR_MUSL_LIBC int bcmp(const void *a, const void *b, size_t n) { return scr_musl_memcmp(a, b, n); }
+SCR_MUSL_LIBC size_t strlen(const char *s) { return scr_musl_strlen(s); }
+#endif
+
 /* musl exposes the POSIX ucontext types but intentionally omits these legacy
  * functions. scriptc's async/generator fibers need only user-space register
  * swaps; they never use a context to mutate the process signal mask. These are

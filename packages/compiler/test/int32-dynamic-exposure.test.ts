@@ -42,11 +42,11 @@ console.log(total, values, inspect(new Type(1, 2)));
 console.log(JSON.stringify(values), String(values[0]), typeof values[2]);
 `;
 
-async function lowered(): Promise<IrModule> {
+async function lowered(program = source): Promise<IrModule> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-int32-dynamic-"));
   try {
     const entry = join(dir, "main.ts");
-    await writeFile(entry, source);
+    await writeFile(entry, program);
     const outPath = join(dir, "main.ir.json");
     const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
     if (!result.ok)
@@ -81,4 +81,45 @@ test("classes that only reach dynamic reads keep their int32 fields", async () =
   ]).toEqual([true, true, true, true, true]);
   // The program reaches the helper that names class prototypes for inspection.
   expect(mod.functions.some((fn) => fn.name.startsWith("%prototype.data."))).toBe(true);
+});
+
+// A checked cast of a dynamic value that another holder still references
+// adopts the source (dyn.adoptShared): the adoption reads the value it built
+// and stores no property, so classes that reach dynamic code keep their int32
+// fields.
+const adopting = `
+class Node {
+  kind: number;
+  flags = 0;
+  constructor(kind: number) {
+    this.kind = kind;
+  }
+}
+type Job = { name: string; tags: string[] };
+
+const values: unknown[] = [new Node(1), new Node(2)];
+let total = 0;
+for (const value of values) if (value instanceof Node) total += value.kind | value.flags;
+const raw: unknown = JSON.parse(process.argv[2] ?? '{"name":"a","tags":["t"]}');
+const job = raw as Job;
+const same = raw as Job;
+job.tags.push("u");
+console.log(total, values, same.tags.join(","), job.name);
+`;
+
+test("adopting checked casts keep int32 fields of dynamically reached classes", async () => {
+  const mod = await lowered(adopting);
+  const adopts = mod.functions.filter((fn) =>
+    JSON.stringify(fn.body).includes('"fn":"dyn.adoptShared"'),
+  );
+  expect(adopts.length).toBeGreaterThan(0);
+  expect(dynamicFieldStores(mod).all).toBe(false);
+  const slots = analyzeInt32Slots(mod);
+  const node = mod.classes!.find(
+    (c) => (c.jsName ?? c.name) === "Node" || c.name.endsWith(".Node"),
+  )!;
+  expect([slots.isField(node.name, "kind"), slots.isField(node.name, "flags")]).toEqual([
+    true,
+    true,
+  ]);
 });

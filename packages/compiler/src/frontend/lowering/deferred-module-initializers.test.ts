@@ -168,17 +168,19 @@ test("reports the functions whose placeholders it fills", () => {
   expect(filled).toEqual([functions[0]]);
 });
 
-test("an update of the binding demands its initializer", () => {
+test("an update or an assignment of the binding demands its initializer", () => {
   const { initializers, pending, lowerer } = fixture();
   const updated = block(loc),
-    written = block({ ...loc, start: 2, end: 3 });
+    written = block({ ...loc, start: 2, end: 3 }),
+    assigned = block({ ...loc, start: 4, end: 5 }),
+    unused = block({ ...loc, start: 6, end: 7 });
   const update = (id: string, prefix: boolean): IrStmt => ({
     kind: "exprStmt",
     expr: { kind: "incDec", op: "+", prefix, localId: id, type: F64, loc },
     loc,
   });
   const functions = [
-    fn("init", [updated, written]),
+    fn("init", [updated, written, assigned, unused]),
     fn("use", [
       update("updated", false),
       {
@@ -187,13 +189,29 @@ test("an update of the binding demands its initializer", () => {
         value: { kind: "numLit", value: 1, type: F64, loc },
         loc,
       },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "assignExpr",
+          localId: "assigned",
+          value: { kind: "numLit", value: 2, type: F64, loc },
+          type: F64,
+          loc,
+        },
+        loc,
+      },
     ]),
   ];
   pending.set("updated", [{ loc, lower: () => [value(2)] }]);
   pending.set("written", [{ loc: written.loc, lower: () => [value(3)] }]);
+  pending.set("assigned", [{ loc: assigned.loc, lower: () => [value(4)] }]);
+  pending.set("unused", [{ loc: unused.loc, lower: () => [value(5)] }]);
   expect(initializers.process(lowerer, functions)).toBe(true);
   expect(updated.body).toEqual([value(2)]);
-  // A plain write never observes the initial value.
-  expect(written.body).toEqual([]);
-  expect(pending.has("written")).toBe(true);
+  // An assignment checks that the binding is initialized and releases its
+  // value, so the declaration must have run.
+  expect(written.body).toEqual([value(3)]);
+  expect(assigned.body).toEqual([value(4)]);
+  expect(unused.body).toEqual([]);
+  expect(pending.has("unused")).toBe(true);
 });

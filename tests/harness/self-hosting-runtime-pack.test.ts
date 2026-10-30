@@ -44,6 +44,8 @@ const base: NativeLinkFeatures = {
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
+  watchFile: false,
+  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -53,6 +55,7 @@ const base: NativeLinkFeatures = {
   dh: false,
   pki: false,
   ed25519: false,
+  x509: false,
   webcrypto: false,
   perfLoop: false,
 };

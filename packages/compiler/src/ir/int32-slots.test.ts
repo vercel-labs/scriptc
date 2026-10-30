@@ -281,6 +281,7 @@ test("dynamic stores disqualify the field names they can reach", () => {
     "dyn.typeof",
     "insp.dyn",
     "insp.dynS",
+    "insp.dynHidden",
     "dyn.objCreate",
     "dyn.getPrototype",
     "dyn.nameClassPrototype",
@@ -349,6 +350,52 @@ test("an Error subclass constructor forwarding dynamic arguments stores no class
             ref("e", obj("E")),
             ref("message", DYN),
             ref("options", DYN),
+          ]),
+        ],
+      ),
+    ]),
+  );
+  expect(slots.isField("C", "a")).toBe(true);
+});
+
+test("Buffer.from over an ArrayBuffer range and Buffer as a value keep class fields int32", () => {
+  // `Buffer.from(view.buffer, offset, length)` passes its operands as
+  // checked values, and a program that reads the Buffer function's value
+  // installs it in %main; neither stores into a class instance.
+  const classes = [cls("C", ["a"])];
+  const view: IrExpr = { loc, kind: "dynFrom", value: ref("o", obj("C")), type: DYN };
+  const libCall = (fnName: string, args: IrExpr[], type: IrType = VOID): IrStmt =>
+    stmt({ loc, kind: "libCall", fn: fnName, args, type } as IrExpr);
+  const slots = analyzeInt32Slots(
+    mod(classes, [
+      fn(
+        "load",
+        [
+          { id: "o", type: obj("C") },
+          { id: "storage", type: DYN },
+        ],
+        [
+          set(ref("o", obj("C")), "C", "a", num(1)),
+          libCall("dyn.typedRefIs", [
+            view,
+            { loc, kind: "strLit", value: "object:C", type: STRING },
+          ]),
+          libCall("buffer.installValue", []),
+          libCall("buffer.constructor", [], DYN),
+          libCall(
+            "buffer.poolFromDynRange",
+            [ref("storage", DYN), num(2), num(4)].map((arg): IrExpr =>
+              arg.type.kind === "dyn" ? arg : { loc, kind: "dynFrom", value: arg, type: DYN },
+            ),
+          ),
+          libCall("buffer.poolFromDynOffset", [
+            ref("storage", DYN),
+            {
+              loc,
+              kind: "dynFrom",
+              value: num(2),
+              type: DYN,
+            },
           ]),
         ],
       ),
@@ -476,6 +523,12 @@ test("counting-down recursion proves its parameter from the call-site ranges", (
   );
   const rising = analyzeInt32Slots(mod([], [up, fn("user", [], [stmt(call("up", [num(-18)]))])]));
   expect(rising.facts("up").params?.get("d")).toEqual({ min: -18, max: 0 });
+  // The same with the caller first, so the fixpoint analyzes it after the
+  // parameter dropped: the narrowing still sees its argument.
+  const callerFirst = analyzeInt32Slots(
+    mod([], [fn("user", [], [stmt(call("up", [num(-18)]))]), up]),
+  );
+  expect(callerFirst.facts("up").params?.get("d")).toEqual({ min: -18, max: 0 });
 
   // A negative start counts down past the smallest int32.
   const negative = analyzeInt32Slots(mod([], [count, even, odd, user([18, -1])]));
@@ -511,4 +564,67 @@ test("narrowed divisor facts prove remainders only while every divisor is positi
   expect(zero.facts("rem").params?.get("m")).toEqual({ min: 0, max: 1000003 });
   expect(zero.facts("caller").call?.("rem") ?? null).toBeNull();
   expect(zero.reasons.get("ret:rem")).toMatch(/not int32/);
+});
+
+/** A module with one number global `state`: its initializer assigns `init`
+ * inside an unlabeled block, as a declaration does, and `step` writes
+ * `write(l)` with `l` the global's value. */
+function globalModule(
+  init: IrExpr | null,
+  write: (l: IrExpr) => IrExpr,
+  extra: IrStmt[] = [],
+): IrModule {
+  const state = "%g.e.state";
+  const block: IrStmt = {
+    loc,
+    kind: "block",
+    body: init ? [{ loc, kind: "assign", localId: state, value: init }] : [],
+  };
+  const step = fn(
+    "step",
+    [],
+    [
+      { loc, kind: "varDecl", localId: "l", init: ref(state) },
+      { loc, kind: "assign", localId: state, value: write(ref("l")) },
+      ...extra,
+    ],
+  );
+  step.locals.push({ id: "l", name: "l", type: F64, mutable: true });
+  const m = mod([], [fn("%init.0", [], [block]), step]);
+  m.globals = [{ id: state, name: "state", type: F64, mutable: true }];
+  return m;
+}
+
+test("proves a module global non-negative through every write", () => {
+  const m = globalModule(num(42), (l) =>
+    bin("%", bin("+", bin("*", l, num(3877)), num(29573)), num(139968)),
+  );
+  const slots = analyzeInt32Slots(m);
+  expect(slots.hasGlobal("%g.e.state")).toBe(true);
+  expect(slots.facts("step").locals?.("%g.e.state")).toEqual({ min: 0, max: 2147483647 });
+  // A write that may be negative keeps the int32 fact without the sign.
+  const signed = analyzeInt32Slots(
+    globalModule(num(42), (l) => bin("-", bin("&", l, num(255)), num(128))),
+  );
+  expect(signed.facts("step").locals?.("%g.e.state")).toEqual({
+    min: -2147483648,
+    max: 2147483647,
+  });
+});
+
+test("drops module globals with a write the fixpoint cannot prove", () => {
+  const fraction = analyzeInt32Slots(globalModule(num(42), (l) => bin("/", l, num(2))));
+  expect(fraction.hasGlobal("%g.e.state")).toBe(false);
+  expect(fraction.reasons.get("global:%g.e.state")).toBe("write in step is not int32");
+  expect(fraction.facts("step").locals?.("%g.e.state") ?? null).toBeNull();
+  // ++/-- writes, and a global its initializer does not assign, are no candidates.
+  const increment = globalModule(num(42), (l) => l, [
+    stmt({ loc, kind: "incDec", op: "+", prefix: false, localId: "%g.e.state", type: F64 }),
+  ]);
+  expect(analyzeInt32Slots(increment).hasGlobal("%g.e.state")).toBe(false);
+  expect(analyzeInt32Slots(globalModule(null, (l) => l)).hasGlobal("%g.e.state")).toBe(false);
+  // An Int32 contract already covers its global.
+  const contract = globalModule(num(42), (l) => l);
+  contract.contracts = { int32Locals: ["\0%g.e.state"] } as NonNullable<IrModule["contracts"]>;
+  expect(analyzeInt32Slots(contract).hasGlobal("%g.e.state")).toBe(false);
 });

@@ -58,6 +58,9 @@ int version(int Argc, char **Argv) {
       {"supported_targets", std::move(SupportedTargets)},
       {"default_target", scriptc::DefaultTarget},
       {"data_layout", Machine->createDataLayout().getStringRepresentation()},
+      // Commands and options added within one protocol version, for callers
+      // that also run against older helpers.
+      {"features", json::Array{"runtime-unit-profile", "profile-functions"}},
   };
   outs() << formatv("{0}\n", json::Value(std::move(Response)));
   return 0;
@@ -80,6 +83,8 @@ int main(int Argc, char **Argv) {
     return scriptc::pruneImport(Argc, Argv);
   if (Argc >= 2 && StringRef(Argv[1]) == "merge-profiles")
     return scriptc::mergeProfiles(Argc, Argv);
+  if (Argc >= 2 && StringRef(Argv[1]) == "profile-functions")
+    return scriptc::profileFunctions(Argc, Argv);
   if (Argc >= 2 && StringRef(Argv[1]) == "emit") {
     std::optional<scriptc::EmitOptions> Options =
         scriptc::parseEmitOptions(Argc, Argv);
@@ -95,5 +100,6 @@ int main(int Argc, char **Argv) {
   }
   return scriptc::reportError("usage",
                               "expected 'version --format=json', 'emit', 'runtime-unit', "
-                              "'prune-import', or 'merge-profiles'");
+                              "'prune-import', 'merge-profiles', or "
+                              "'profile-functions'");
 }

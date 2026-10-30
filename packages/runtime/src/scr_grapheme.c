@@ -201,3 +201,58 @@ ScrDyn *scr_intl_segmenter_new(void) {
   scr_dyn_handle_install(SCR_DYNH_SEGMENTS, &segments);
   return scr_graphemes_box(NULL, SCR_DYNH_SEGMENTER);
 }
+
+/* A word or sentence Segmenter, which JavaScript dependencies may build at
+ * module load and use on some paths only: it constructs, and its segment()
+ * throws the compiler's SC2020 message. */
+typedef struct {
+  size_t rc;
+  ScrStr *refusal; /* retained */
+} ScrRefusingSegmenter;
+
+static void *scr_refusing_segmenter_retain(void *ptr) {
+  ScrRefusingSegmenter *value = ptr;
+  value->rc++;
+  return value;
+}
+
+static void scr_refusing_segmenter_release(void *ptr) {
+  ScrRefusingSegmenter *value = ptr;
+  if (--value->rc) return;
+  scr_str_release(value->refusal);
+  free(value);
+}
+
+static ScrDyn *scr_refusing_segmenter_invoke(void *ptr, ScrDyn *self, const char *method,
+    ScrDyn *const *args, size_t argc, const char *what) {
+  ScrRefusingSegmenter *value = ptr;
+  if (strcmp(method, "segment") == 0) {
+    ScrStr *input = scr_dyn_string_coerce_js(argc ? args[0] : scr_dyn_undefined());
+    if (!input) return NULL;
+    scr_str_release(input);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, value->refusal->data, value->refusal->len, "SC2020");
+    return NULL;
+  }
+  return scr_graphemes_invoke(&(ScrGraphemes){ .rc = 1 }, self, method, args, argc, what);
+}
+
+static ScrDyn *scr_refusing_segmenter_get(void *ptr, const char *key, size_t len) {
+  (void)ptr;
+  return scr_graphemes_get(&(ScrGraphemes){ .rc = 1 }, key, len);
+}
+
+ScrDyn *scr_intl_segmenter_refusing(ScrStr *refusal) {
+  static const ScrDynHandleOps segmenter = {
+    .cls = "Segmenter", .retain = scr_refusing_segmenter_retain,
+    .release = scr_refusing_segmenter_release, .invoke = scr_refusing_segmenter_invoke,
+    .get = scr_refusing_segmenter_get, .set = scr_graphemes_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_SEGMENTER_REFUSING, &segmenter);
+  ScrRefusingSegmenter *value = calloc(1, sizeof *value);
+  if (!value) scr_trap("scriptc: out of memory\n");
+  value->rc = 1;
+  value->refusal = scr_str_retain(refusal);
+  ScrDyn *boxed = scr_dyn_new_handle(value, SCR_DYNH_SEGMENTER_REFUSING);
+  scr_refusing_segmenter_release(value);
+  return boxed;
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/concat-dynamic-args/main.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/layered-errors.ts",
+  "args": [
+    "1"
+  ]
+}

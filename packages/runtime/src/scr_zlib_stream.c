@@ -433,6 +433,8 @@ static const char *scr_zs_class_name(int mode) {
   case SCR_ZM_GUNZIP: return "Gunzip";
   case SCR_ZM_DEFLATERAW: return "DeflateRaw";
   case SCR_ZM_INFLATERAW: return "InflateRaw";
+  case 8: return "BrotliDecompress";
+  case 9: return "BrotliCompress";
   default: return "Unzip";
   }
 }
@@ -478,7 +480,8 @@ ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
   if (!zs->out_buf) scr_zlib_stream_oom();
   zs->default_flush = (int)zo.flush;
   zs->finish_flush = (int)zo.finish_flush;
-  zs->full_flush = SCR_ZF_FULL;
+  /* Brotli's full flush is BROTLI_OPERATION_FLUSH (brotliDefaultOpts). */
+  zs->full_flush = mode == 8 || mode == 9 ? 1 : SCR_ZF_FULL;
   zs->level = zo.level;
   zs->strategy = zo.strategy;
   zs->reject_garbage = zo.reject_garbage;

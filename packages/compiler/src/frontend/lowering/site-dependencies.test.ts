@@ -1,9 +1,13 @@
 import { expect, test } from "vitest";
+import type * as ts from "../ts7/adapter.js";
 import { SiteDependencies } from "./site-dependencies.js";
+
+/** A stand-in node fact: facts are compared by identity. */
+const node = (): ts.Node => ({}) as ts.Node;
 
 test("a changed fact makes the sites that read it stale", () => {
   const dependencies = new SiteDependencies(3);
-  const a = {};
+  const a = node();
   const b = "key";
   dependencies.begin(0);
   dependencies.read(a);
@@ -20,8 +24,8 @@ test("a changed fact makes the sites that read it stale", () => {
 
 test("a visit that changes a fact makes every reader of its facts stale", () => {
   const dependencies = new SiteDependencies(3);
-  const shared = {};
-  const own = {};
+  const shared = node();
+  const own = node();
   dependencies.begin(0);
   dependencies.read(shared);
   dependencies.end(false);
@@ -37,7 +41,7 @@ test("a visit that changes a fact makes every reader of its facts stale", () => 
 
 test("reads outside a visit are not recorded", () => {
   const dependencies = new SiteDependencies(1);
-  const fact = {};
+  const fact = node();
   dependencies.read(fact);
   dependencies.changed(fact);
   expect(dependencies.isStale(0)).toBe(false);
@@ -45,7 +49,7 @@ test("reads outside a visit are not recorded", () => {
 
 test("a site visited again is listed once per fact", () => {
   const dependencies = new SiteDependencies(3);
-  const fact = {};
+  const fact = node();
   for (const site of [0, 2, 1, 2, 0]) {
     dependencies.begin(site);
     dependencies.read(fact);

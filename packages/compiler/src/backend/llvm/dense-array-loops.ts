@@ -36,7 +36,7 @@ import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { loadArrCount, SCR_ARR_FIELD } from "./common.js";
-import { emitCountedLoopLimit, emitExactIntegerTest } from "./counted-loops.js";
+import { emitCountedLoopLimit, emitStartIntegerTest } from "./counted-loops.js";
 
 export const INT32_MAX = 2147483647;
 
@@ -453,7 +453,7 @@ function emitPairedDenseGuard(
 ): string {
   const B = host.B;
   const start = (expr: IrExpr, min: number, max: number) =>
-    emitExactIntegerTest(host, host.emitExpr(expr).name, min, max);
+    emitStartIntegerTest(host, expr, min, max);
   const low = start(pair.lowStart, 0, INT32_MAX - 1);
   const high = start(pair.highStart, -1, INT32_MAX - 1);
   let valid = B.tmp();

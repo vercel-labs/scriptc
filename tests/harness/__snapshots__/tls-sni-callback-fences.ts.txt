@@ -5,4 +5,4 @@ tls-sni-callback-fences.ts:13:54 - error SC2020: 'tls.createServer with SNICallb
      |                                                      ^~~~~~~~~~~~~~~~~~~~
   14 | 
 
-  hint: SNICallback lowers with cert and key; ALPNProtocols, minVersion, maxVersion and the validated options are not combined with it yet
+  hint: SNICallback lowers with cert and key; ALPNProtocols, minVersion, maxVersion, requestCert, ca and the validated options are not combined with it yet

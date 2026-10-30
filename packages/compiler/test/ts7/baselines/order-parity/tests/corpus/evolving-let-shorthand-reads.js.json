@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/evolving-let-shorthand-reads.js"
+ ],
+ "diags": []
+}

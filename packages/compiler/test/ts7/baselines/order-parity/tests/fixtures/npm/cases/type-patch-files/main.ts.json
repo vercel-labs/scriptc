@@ -1,0 +1,25 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/type-patch-files/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property 'toUpperCase' does not exist on type 'number'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/cases/type-patch-files/main.ts",
+    "start": 346,
+    "end": 357
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "This comparison appears to be unintentional because the types 'number' and 'string' have no overlap.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/cases/type-patch-files/main.ts",
+    "start": 429,
+    "end": 447
+   }
+  }
+ ]
+}

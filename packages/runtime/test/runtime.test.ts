@@ -13,6 +13,7 @@ const RUNTIME_SOURCES = [
   "scr_bigint.c",
   "scr_string.c",
   "scr_array.c",
+  "scr_arena.c",
   "scr_bytes.c",
   "scr_shared.c",
   "scr_bytes_io.c",

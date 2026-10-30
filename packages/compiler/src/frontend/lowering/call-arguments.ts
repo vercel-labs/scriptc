@@ -28,6 +28,7 @@ import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { type ParamShape } from "./call-signatures.js";
 import { arrayValueRead, arrayValueType } from "./array-values.js";
 import { buildArrayConversion } from "./coercions/builders.js";
+import { lowerArraySpreadItems, lowerArrayValueItems } from "./containers/array-construction.js";
 import { restTupleElementTypes, typeKey } from "../type-mapper.js";
 
 function fixedTupleSpreadInfo(
@@ -54,6 +55,95 @@ function emptyTupleSpread(lowerer: Lowerer, node: ts.Expression): boolean {
   const forwarded = forwardedTupleType(lowerer, operand);
   if (forwarded) return forwarded.kind === "array";
   return restTupleElementTypes(lowerer.typeOf(operand), lowerer.typeCtx)?.length === 0;
+}
+
+/** A call's arguments as one checked-dynamic array, built in source order
+ * into a fresh hidden local: each argument converts to dyn, and a spread
+ * contributes the values its iteration yields (holes as undefined).
+ * `lowerSpread` lowers a spread's operand; the default lowers it here. */
+export function dynArgumentPack(
+  lowerer: Lowerer,
+  argNodes: readonly ts.Expression[],
+  loc: SrcLoc,
+  options: {
+    /** Pre-lowered values pushed before the arguments. */
+    leading?: readonly IrExpr[] | undefined;
+    blame?: ts.Node | undefined;
+    lowerSpread?: (arg: ts.SpreadElement) => IrExpr;
+  } = {},
+): { stmts: IrStmt[]; pack: () => IrExpr } {
+  const blame = options.blame ?? argNodes[0]!;
+  const lowerSpread =
+    options.lowerSpread ?? ((arg: ts.SpreadElement) => lowerer.lowerExpr(arg.expression));
+  const pack = lowerer.declareHiddenLocal("%spreadArgs", DYN);
+  const ref = (): IrExpr => ({ kind: "varRef", localId: pack.id, type: DYN, loc });
+  const stmts: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: pack.id,
+      init: { kind: "dynArrLit", elems: [], type: DYN, loc },
+      loc,
+    },
+  ];
+  const push = (value: IrExpr, fn: "dyn.packPush" | "dyn.packPushSpreadIter") => {
+    stmts.push({
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn, args: [ref(), value], type: VOID, loc: value.loc },
+      loc: value.loc,
+    });
+  };
+  for (const value of options.leading ?? [])
+    push(lowerer.coerceInto(blame, value, DYN), "dyn.packPush");
+  const spreads = argNodes.filter(ts.isSpreadElement).length;
+  argNodes.forEach((arg, index) => {
+    if (!ts.isSpreadElement(arg)) {
+      push(lowerer.lowerExprExpecting(arg, DYN), "dyn.packPush");
+      return;
+    }
+    let value = lowerSpread(arg);
+    if (value.type.kind === "set") {
+      value = {
+        kind: "setIntrinsic",
+        method: "toArray",
+        receiver: value,
+        args: [],
+        type: arrayOf(value.type.elem),
+        loc: value.loc,
+      };
+    } else if (value.type.kind === "object") {
+      value = lowerer.classIteratorDrainCall(value, locOf(arg)) ?? value;
+    }
+    if (value.type.kind === "array") {
+      // Argument iteration materializes holes as present undefined
+      // before conversion to the dense checked-dynamic argument pack.
+      value = {
+        kind: "arrayLit",
+        elems: [value],
+        spreads: [0],
+        type: value.type,
+        loc: value.loc,
+      };
+    }
+    value = checkedIterableSpread(lowerer, value, ts.getTextOfNode(arg.expression), loc);
+    if (spreads === 1 && index === argNodes.length - 1) {
+      stmts.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.packPushSpread",
+          args: [
+            ref(),
+            value,
+            { kind: "strLit", value: ts.getTextOfNode(arg.expression), type: STRING, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+    } else push(value, "dyn.packPushSpreadIter");
+  });
+  return { stmts, pack: ref };
 }
 
 export function completeArgs(
@@ -96,72 +186,10 @@ export function completeArgs(
     // Runtime-length spreads determine the complete argument list before
     // any parameter default runs. Build it once in source order, then
     // extract the fixed native ABI slots; missing elements are undefined.
-    const pack = lowerer.declareHiddenLocal("%spreadArgs", DYN);
-    const ref = (): IrExpr => ({ kind: "varRef", localId: pack.id, type: DYN, loc });
-    const stmts: IrStmt[] = [
-      {
-        kind: "varDecl",
-        localId: pack.id,
-        init: { kind: "dynArrLit", elems: [], type: DYN, loc },
-        loc,
-      },
-    ];
-    const push = (value: IrExpr, fn: "dyn.packPush" | "dyn.packPushSpreadIter") => {
-      stmts.push({
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn, args: [ref(), value], type: VOID, loc: value.loc },
-        loc: value.loc,
-      });
-    };
-    for (const value of leading ?? []) push(lowerer.coerceInto(blame, value, DYN), "dyn.packPush");
-    const spreads = argNodes.filter(ts.isSpreadElement).length;
-    argNodes.forEach((arg, index) => {
-      if (!ts.isSpreadElement(arg)) {
-        push(lowerer.lowerExprExpecting(arg, DYN), "dyn.packPush");
-        return;
-      }
-      let value = lowerSpread(arg);
-      if (value.type.kind === "set") {
-        value = {
-          kind: "setIntrinsic",
-          method: "toArray",
-          receiver: value,
-          args: [],
-          type: arrayOf(value.type.elem),
-          loc: value.loc,
-        };
-      } else if (value.type.kind === "object") {
-        value = lowerer.classIteratorDrainCall(value, locOf(arg)) ?? value;
-      }
-      if (value.type.kind === "array") {
-        // Argument iteration materializes holes as present undefined
-        // before conversion to the dense checked-dynamic argument pack.
-        value = {
-          kind: "arrayLit",
-          elems: [value],
-          spreads: [0],
-          type: value.type,
-          loc: value.loc,
-        };
-      }
-      value = checkedIterableSpread(lowerer, value, ts.getTextOfNode(arg.expression), loc);
-      if (spreads === 1 && index === argNodes.length - 1) {
-        stmts.push({
-          kind: "exprStmt",
-          expr: {
-            kind: "libCall",
-            fn: "dyn.packPushSpread",
-            args: [
-              ref(),
-              value,
-              { kind: "strLit", value: ts.getTextOfNode(arg.expression), type: STRING, loc },
-            ],
-            type: VOID,
-            loc,
-          },
-          loc,
-        });
-      } else push(value, "dyn.packPushSpreadIter");
+    const { stmts, pack: ref } = dynArgumentPack(lowerer, argNodes, loc, {
+      leading,
+      blame,
+      lowerSpread,
     });
     const args = shapes.map((shape, index): IrExpr => {
       if (shape.mode === "arguments") return ref();
@@ -403,6 +431,51 @@ export function completeArgs(
       }
     }
     if (restType.kind !== "array") lowerer.unsupported("SC1090", blame, "this call form");
+    // A `(T | undefined)[]` rest (stored as T elements) packs undefined
+    // arguments as present undefined elements.
+    const restNodes = sources.slice(restAt);
+    // Plain arguments and spreads, also together with spread tuple fields
+    // (pre-lowered): each item, in argument order.
+    if (
+      restType.optionalElements === true &&
+      (!restNodes.some(isIr) || restNodes.some((a) => !isIr(a) && ts.isSpreadElement(a)))
+    ) {
+      const items: (ts.Expression | IrExpr)[] = [];
+      for (const a of restNodes) {
+        if (isIr(a)) items.push(a.ir);
+        else items.push(a);
+      }
+      out.push(lowerArraySpreadItems(lowerer, items, restType.elem, restType, loc));
+      return out;
+    }
+    // Tuple-spread values (pre-lowered) and plain arguments pack the same
+    // way. Each value evaluates once, in argument order.
+    if (
+      restType.optionalElements === true &&
+      !restNodes.some((a) => !isIr(a) && ts.isSpreadElement(a))
+    ) {
+      const stmts: IrStmt[] = [];
+      const values = restNodes.map((a): IrExpr => {
+        // A tuple field is read where its spread appears: a later
+        // argument may write the tuple.
+        let value: IrExpr;
+        if (isIr(a)) {
+          value = a.ir;
+          if (value.kind === "seqExpr") {
+            stmts.push(...value.stmts);
+            value = value.result;
+          }
+        } else value = lowerer.lowerExpr(a as ts.Expression);
+        const saved = lowerer.declareHiddenLocal("%callArg", value.type);
+        stmts.push({ kind: "varDecl", localId: saved.id, init: value, loc: value.loc });
+        return { kind: "varRef", localId: saved.id, type: value.type, loc: value.loc };
+      });
+      const items = lowerArrayValueItems(lowerer, values, restType.elem, restType, loc);
+      out.push(
+        stmts.length === 0 ? items : { kind: "seqExpr", stmts, result: items, type: restType, loc },
+      );
+      return out;
+    }
     // The rest pack is a fresh array per call; surplus SPREADS copy
     // their elements in (JS-exact — `f(a, ...xs, b, ...ys)` packs in
     // order, sources untouched).

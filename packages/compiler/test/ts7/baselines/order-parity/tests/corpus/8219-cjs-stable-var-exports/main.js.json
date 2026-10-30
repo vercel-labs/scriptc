@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8219-cjs-stable-var-exports/lib/core.js",
+  "<repo>/tests/corpus/8219-cjs-stable-var-exports/lib/index.js",
+  "<repo>/tests/corpus/8219-cjs-stable-var-exports/lib/options.js",
+  "<repo>/tests/corpus/8219-cjs-stable-var-exports/main.js"
+ ],
+ "diags": []
+}

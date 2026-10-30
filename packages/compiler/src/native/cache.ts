@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -88,14 +89,19 @@ export class NativeCache {
     }
   }
 
-  write(family: string, key: string, bytes: string | Uint8Array): void {
+  write(
+    family: string,
+    key: string,
+    bytes: string | Uint8Array,
+    digest = contentDigest(bytes),
+  ): void {
     let stage: string | null = null;
     try {
       const directory = join(this.root, family);
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       stage = mkdtempSync(join(directory, ".write-"));
       writeFileSync(join(stage, "payload"), bytes);
-      writeFileSync(join(stage, "digest"), contentDigest(bytes) + "\n");
+      writeFileSync(join(stage, "digest"), digest + "\n");
       const path = join(directory, key);
       // Concurrent writers publish identical content under the same key;
       // a reader between the two renames simply treats it as a miss.
@@ -110,6 +116,18 @@ export class NativeCache {
         /* Cleanup is best effort too. */
       }
     }
+  }
+
+  /** Whether an entry exists, without reading or checking it. */
+  has(family: string, key: string): boolean {
+    return existsSync(join(this.root, family, key));
+  }
+
+  /** Writes `bytes` under their content digest, and returns the digest. */
+  writeContent(family: string, bytes: Uint8Array): string {
+    const digest = contentDigest(bytes);
+    this.write(family, digest, bytes, digest);
+    return digest;
   }
 
   /** Publish text parts without joining them into one string. */
@@ -149,9 +167,15 @@ export class NativeCache {
         "object",
         "sanitizer",
         "executable",
+        "kept",
+        "linker-job",
+        "runtime-pack",
+        "helper",
         "binary",
         "dsym",
         "coverage",
+        "units",
+        "unit-files",
       ]) {
         const directory = join(this.root, family);
         let names: string[];

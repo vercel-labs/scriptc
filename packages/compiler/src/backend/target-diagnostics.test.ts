@@ -117,7 +117,7 @@ test("prototype tables store optional methods without invoking their host capabi
 test("local abort signals remain available without a reflection dispatcher", () => {
   const mod = module();
   mod.functions = [
-    fn("%main", [{ kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc }]),
+    fn("%main", [{ kind: "libCall", fn: "abort.controllerNew", args: [], type: DYN, loc }]),
   ];
   fenceSpeculativeWasiFunctions(mod);
   expect(moduleWasiUnavailableSurface(mod)).toBeNull();

@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { Ts7Api } from "./rpc-api.js";
-import { Ts7Host, type Ts7ApiOptions, type Ts7CompilerOptions } from "./program-host.js";
+import {
+  getPreEmitDiagnostics,
+  Ts7Host,
+  type Ts7ApiOptions,
+  type Ts7CompilerOptions,
+} from "./program-host.js";
 import { ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
 import { tsgoPath } from "./session-path.js";
 
@@ -68,6 +73,54 @@ test("implementation discovery leaves declaration trees lazy without skipping th
   }
   expect(() => program.getImplementationSourceFiles()).toThrow("disposed");
   expect(() => program.getSourceFileNames()).toThrow("disposed");
+});
+
+test("pre-emit diagnostics for kept files check only those, unless a global diagnostic appears", () => {
+  const { directory, entry } = fixture();
+  const other = join(directory, "other.ts");
+  const later = join(directory, "later.ts");
+  writeFileSync(
+    entry,
+    'import "./other.js";\nimport "./later.js";\nexport const n: number = "x";\n',
+  );
+  writeFileSync(other, "export const s: string = 1;\n");
+  writeFileSync(later, "export const b: boolean = 0;\n");
+  const { host } = makeHost(directory);
+  const program = host.createProgram([entry], options);
+  try {
+    const full = getPreEmitDiagnostics(program);
+    const keep = (name: string): boolean => name !== tsgoPath(other);
+    const checked = vi.spyOn(program.project.program, "checkedFileDiagnosticData");
+    const kept = getPreEmitDiagnostics(program, keep);
+    // The full answer without the left-out file's diagnostics, in the same order.
+    expect(full.some((diagnostic) => diagnostic.fileName === tsgoPath(other))).toBe(true);
+    expect(kept.map((diagnostic) => [diagnostic.fileName, diagnostic.code])).toEqual(
+      full
+        .filter((diagnostic) => diagnostic.fileName === undefined || keep(diagnostic.fileName))
+        .map((diagnostic) => [diagnostic.fileName, diagnostic.code]),
+    );
+    expect(kept).toHaveLength(2);
+    expect(checked).toHaveBeenCalledTimes(1);
+    expect(checked.mock.calls[0]![0]).not.toContain(tsgoPath(other));
+    // Keeping every file is the full check.
+    expect(getPreEmitDiagnostics(program, () => true)).toEqual(full);
+    expect(checked).toHaveBeenCalledTimes(1);
+    // A global diagnostic from the partial check, or a server without it: the full check.
+    for (const answer of [
+      {
+        files: [],
+        global: [{ fileName: undefined, pos: 0, end: 0, code: 2318, category: 1, text: "global" }],
+      },
+      null,
+    ]) {
+      checked.mockReturnValueOnce(
+        answer as ReturnType<typeof program.project.program.checkedFileDiagnosticData>,
+      );
+      expect(getPreEmitDiagnostics(program, keep)).toEqual(full);
+    }
+  } finally {
+    program.dispose();
+  }
 });
 
 test("the factory receives one connection with the host's filesystem and timing", () => {

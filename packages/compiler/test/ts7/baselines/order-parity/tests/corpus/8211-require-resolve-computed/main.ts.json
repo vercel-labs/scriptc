@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8211-require-resolve-computed/main.ts"
+ ],
+ "diags": []
+}

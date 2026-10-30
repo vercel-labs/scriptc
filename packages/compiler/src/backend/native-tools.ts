@@ -8,7 +8,12 @@ import {
   validateNativeCodegenVersion,
   type NativeCodegenOutputKind,
 } from "./native-codegen-core.js";
-import { nativeProfileHelperArgs, type NativeProfileOptions } from "./native-profile.js";
+import {
+  nativeProfileHelperArgs,
+  parseNativeProfileMatch,
+  type NativeProfileMatch,
+  type NativeProfileOptions,
+} from "./native-profile.js";
 
 export function runNativeTool(
   executable: string,
@@ -48,10 +53,11 @@ export function emitNativeObject(options: {
   partitionCache?: string;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
-}): string[] {
+  verified?: NativeHelperVerification;
+}): { outputs: string[]; profileMatch: NativeProfileMatch | null } {
   verifyNativeHelper(options);
   const outputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
-  runNativeTool(options.executable, [
+  const stdout = runNativeTool(options.executable, [
     "emit",
     "--input",
     options.inputPath,
@@ -74,7 +80,10 @@ export function emitNativeObject(options: {
     ...nativeProfileHelperArgs(options.profile),
   ]);
   for (const output of outputs) requireNativeArtifact(output);
-  return outputs;
+  return {
+    outputs,
+    profileMatch: options.profile?.use === undefined ? null : parseNativeProfileMatch(stdout),
+  };
 }
 
 /** Merges raw or indexed IR profiles into one indexed profile. */
@@ -98,13 +107,24 @@ export function mergeNativeProfiles(options: {
   ]);
 }
 
-/** Verify installed identity even when a caller can reuse a cached object. */
+/** Helpers that answered `version` as expected: `known` is true when the
+ * helper file, as it is now, already did, and `remember` records that this
+ * one just did. */
+export interface NativeHelperVerification {
+  known(): boolean;
+  remember(): void;
+}
+
+/** Verify installed identity even when a caller can reuse a cached object.
+ * With `verified`, the version probe runs only for a helper it does not
+ * know yet. */
 export function verifyNativeHelper(options: {
   executable: string;
   packageRoot: string;
   compilerVersion: string;
   target: NativeTargetSpec;
   helper: NativeHelperSpec;
+  verified?: NativeHelperVerification;
 }): void {
   const identity = JSON.parse(readFileSync(options.packageRoot + "/package.json", "utf8")) as {
     name: string;
@@ -118,8 +138,10 @@ export function verifyNativeHelper(options: {
       `LLVM helper package mismatch: expected ${options.helper.packageName}@${options.compilerVersion}`,
     );
   }
+  if (options.verified?.known() === true) return;
   const version = JSON.parse(
     runNativeTool(options.executable, ["version", "--format=json"]),
   ) as Record<string, unknown>;
   validateNativeCodegenVersion(version, options.target, options.helper, options.compilerVersion);
+  options.verified?.remember();
 }

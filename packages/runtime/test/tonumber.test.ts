@@ -37,6 +37,7 @@ test("scr_string_to_number and scr_parse_float match Node on committed oracle ca
     // scr_string.c's own link closure (the string.test.ts set):
     // scr_str_split pulls the array module and its dependencies.
     join(testDir, "../src/scr_array.c"),
+    join(testDir, "../src/scr_arena.c"),
     // Checked-value collection equality shares the native JSON value runtime.
     join(testDir, "../src/scr_json.c"),
     join(testDir, "../src/scr_map.c"),

@@ -341,3 +341,164 @@ test("borrowed number arrays: length and element reads qualify", () => {
   const withOther: IrModule = { ...mod, functions: [sum, other] };
   expect(findIntegerClones(withOther, () => true).members.has("other")).toBe(false);
 });
+
+// A tree record whose children are `Tree | null` (tag 0 null, tag 1 the
+// record), and count(t) = t.left === null || t.right === null ? 1 :
+// 1 + count(t.left!) + count(t.right!), the binary-trees check.
+const TREE: IrType = { kind: "record", shapeId: "rTree" };
+const CHILD: IrType = { kind: "union", unionId: "uChild" };
+const field = (obj: IrExpr, name: string, type: IrType): IrExpr => ({
+  kind: "recordGet",
+  obj,
+  shapeId: "rTree",
+  field: name,
+  type,
+  loc,
+});
+const isNull = (value: IrExpr): IrExpr => ({
+  kind: "unionIsTag",
+  unionId: "uChild",
+  tag: 0,
+  negated: false,
+  value,
+  type: BOOL,
+  loc,
+});
+const child = (name: string): IrExpr => ({
+  kind: "unionNarrow",
+  unionId: "uChild",
+  tag: 1,
+  value: field(ref("t", TREE), name, CHILD),
+  type: TREE,
+  loc,
+});
+const count = fn(
+  "count",
+  ["t"],
+  [
+    ret(
+      ternary(
+        {
+          kind: "logical",
+          op: "||",
+          left: isNull(field(ref("t", TREE), "left", CHILD)),
+          right: isNull(field(ref("t", TREE), "right", CHILD)),
+          type: BOOL,
+          loc,
+        },
+        num(1),
+        bin("+", bin("+", num(1), call("count", [child("left")])), call("count", [child("right")])),
+      ),
+    ),
+  ],
+  F64,
+  [TREE],
+);
+// leftmost(t) = t.left === null ? 0 : leftmost(t.left!), a plain tail call.
+const leftmost = fn(
+  "leftmost",
+  ["t"],
+  [
+    ret(
+      ternary(
+        isNull(field(ref("t", TREE), "left", CHILD)),
+        num(0),
+        call("leftmost", [child("left")]),
+      ),
+    ),
+  ],
+  F64,
+  [TREE],
+);
+function treeModule(workers: boolean): IrModule {
+  return {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    records: [
+      {
+        id: "rTree",
+        fields: [
+          { name: "left", type: CHILD },
+          { name: "right", type: CHILD },
+          { name: "size", type: F64 },
+        ],
+      },
+    ],
+    unions: [{ id: "uChild", arms: [{ kind: "nullT" }, TREE] }],
+    ...(workers ? { workers: true } : {}),
+    functions: [
+      {
+        ...fn(
+          "main",
+          ["t"],
+          [stmt(call("count", [ref("t", TREE)])), stmt(call("leftmost", [ref("t", TREE)]))],
+          VOID,
+          [TREE],
+        ),
+        params: [],
+      },
+      count,
+      leftmost,
+    ],
+  };
+}
+
+test("borrowed records: field reads, null tests and narrows qualify", () => {
+  const mod = treeModule(false);
+  const refs = {
+    reference: (t: IrType) =>
+      (t.kind === "record" && t.shapeId === "rTree") ||
+      (t.kind === "union" && t.unionId === "uChild"),
+    arm: (unionId: string, tag: number) =>
+      unionId === "uChild" ? (tag === 0 ? ("null" as const) : ("record" as const)) : null,
+    field: (shapeId: string, name: string) =>
+      shapeId === "rTree" && name !== "size"
+        ? { struct: "sc_rs_rTree", index: name === "left" ? 1 : 2, type: CHILD }
+        : null,
+  };
+  // Records need the layout oracle and a borrowed parameter.
+  expect(findIntegerClones(mod, () => true).members.has("count")).toBe(false);
+  expect(findIntegerClones(mod, () => false, refs).members.has("count")).toBe(false);
+  expect(findIntegerClones(mod, () => true, refs).dispatched.has("count")).toBe(true);
+  // A field the oracle does not lay out in place disqualifies the reader.
+  const sized = fn(
+    "sized",
+    ["t"],
+    [ret(bin("+", field(ref("t", TREE), "size", F64), call("sized", [child("left")])))],
+    F64,
+    [TREE],
+  );
+  const withSized: IrModule = { ...mod, functions: [...mod.functions, sized] };
+  expect(findIntegerClones(withSized, () => true, refs).members.has("sized")).toBe(false);
+});
+
+test("record clones read fields in place; worker executables poll and use the thread's guard", () => {
+  for (const workers of [false, true]) {
+    const mod = treeModule(workers);
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod, { targetTriple: "x86_64-unknown-linux-gnu" });
+    const clone = define(llvm, "sc_f_count.int");
+    expect(clone).toContain("define internal { i32, i1 } @sc_f_count.int(ptr %a0)");
+    expect(clone).toMatch(/getelementptr inbounds %sc_rs_rTree, ptr %t\d+, i64 0, i32 1/);
+    // A NULL child bails before the call (the ordinary body reports it).
+    expect(clone).toMatch(/icmp ne ptr %t\d+, null/);
+    // count(t.right) is the accumulating loop's next iteration.
+    expect(clone.match(/= call \{ i32, i1 \} @sc_f_count\.int\(/g)!.length).toBeGreaterThan(0);
+    expect(clone).toMatch(/br label %tail\d+/);
+    expect(clone).not.toContain("retain");
+    const plain = define(llvm, "sc_f_leftmost.int");
+    if (workers) {
+      // One poll per call; the accumulating loop polls nowhere else, a loop
+      // over plain tail calls every POLL_INTERVAL iterations.
+      expect(clone.match(/load atomic i32, ptr @scr_exc_flag monotonic/g)).toHaveLength(1);
+      expect(clone).not.toContain("poll countdown");
+      expect(plain).toContain("poll countdown");
+      expect(plain.match(/load atomic i32, ptr @scr_exc_flag monotonic/g)).toHaveLength(2);
+      expect(llvm).toMatch(/@scr_stack_guard = external thread_local/);
+    } else {
+      expect(clone).not.toContain("@scr_exc_flag");
+      expect(plain).not.toContain("poll countdown");
+    }
+  }
+});

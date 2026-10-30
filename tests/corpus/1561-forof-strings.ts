@@ -1,7 +1,7 @@
 // for-of over STRINGS: JS's string iterator walks code POINTS — each pass
 // binds the whole character, so astral chars arrive as one two-unit string
-// (where charAt/slice would truncate the halves). Desugars over the UTF-16
-// cursor with the cpAt step intrinsic.
+// (where charAt/slice would truncate the halves). Desugars over a byte
+// cursor with the cpAtByte step intrinsic.
 for (const ch of "héllo 🎉x") console.log(ch, ch.length);
 
 // The empty string iterates zero times.

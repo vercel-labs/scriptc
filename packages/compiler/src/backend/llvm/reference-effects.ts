@@ -181,6 +181,9 @@ function expressionPreservesEdges(
     case "bytesIntrinsic":
       return (
         e.method === "get" ||
+        e.method === "indexOfElem" ||
+        e.method === "lastIndexOfElem" ||
+        e.method === "includesElem" ||
         e.method === "length" ||
         e.method === "byteLength" ||
         e.method === "byteOffset" ||

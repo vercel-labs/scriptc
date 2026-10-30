@@ -12,10 +12,13 @@ const run = promisify(execFile);
  * Speed units produce both artifacts from one optimized LLVM module: the
  * runtime compiler optimizes the C source to bitcode, and the host helper's
  * `runtime-unit` command promotes translation-unit-local symbols to hidden
- * unit-qualified globals and emits the object and the bitcode. Release
- * units keep the runtime compiler's own objects; their bitcode is the same
- * compilation with -emit-llvm, which the helper's `prune-import` reduces to
- * the bodies that need none of the unit's local state. Both bitcode forms
+ * unit-qualified globals and emits the object and the bitcode. With the
+ * target's committed runtime profile, the runtime compiler emits the bitcode
+ * unoptimized and the helper also optimizes it with the profile (build.mjs),
+ * so one LLVM reads and writes every profile. Release units keep the
+ * runtime compiler's own objects; their bitcode is the same compilation with
+ * -emit-llvm, which the helper's `prune-import` reduces to the bodies that
+ * need none of the unit's local state. Both bitcode forms
  * keep only what a program build can import.
  *
  * Every host helper supports every scriptc target, so packs keep building
@@ -54,7 +57,15 @@ export async function resolveRuntimeUnitHelper(repoRoot, triple) {
     const { stdout } = await run(helper, ["version", "--format=json"]);
     const version = JSON.parse(stdout);
     if (!version.supported_targets?.includes(triple)) return null;
-    return { path: helper, identity: `scriptc-llvm-codegen ${version.llvm_version}` };
+    return {
+      path: helper,
+      identity: `scriptc-llvm-codegen ${version.llvm_version}`,
+      // Commands and options newer than the protocol version, such as
+      // "runtime-unit-profile": `runtime-unit` takes --opt-level,
+      // --profile-use and --profile-generate (older helpers only promote and
+      // emit).
+      features: Array.isArray(version.features) ? version.features : [],
+    };
   } catch {
     if (explicit !== undefined) throw new Error(`SCRIPTC_LLVM_CODEGEN is not usable: ${helper}`);
     return null;
@@ -63,12 +74,19 @@ export async function resolveRuntimeUnitHelper(repoRoot, triple) {
 
 /** Compile one unit through the helper. `compileBitcode(output)` must run
  * the runtime compiler with the unit's exact flags plus -emit-llvm.
+ * `helperArgs` asks the helper to optimize the unit itself (`--opt-level`,
+ * with `--profile-use` or `--profile-generate`), for bitcode the runtime
+ * compiler emitted unoptimized.
  * Returns false, leaving no artifacts behind, when the helper cannot emit
  * this unit; the caller then compiles the object directly without bitcode,
- * so a pack never fails to build because of the import path. */
+ * so a pack never fails to build because of the import path. Otherwise
+ * returns an object, with the helper's `profile` match counts when a profile
+ * guided the unit, or the profile names of the unit's `functions` when it
+ * was instrumented. */
 export async function buildRuntimeUnit({
   helper,
   compileBitcode,
+  helperArgs = [],
   object,
   bitcode,
   triple,
@@ -79,7 +97,7 @@ export async function buildRuntimeUnit({
   // A runtime compiler failure is a real build error and surfaces as one.
   await compileBitcode(optimized);
   try {
-    await run(helper.path, [
+    const { stdout } = await run(helper.path, [
       "runtime-unit",
       "--input",
       optimized,
@@ -92,8 +110,13 @@ export async function buildRuntimeUnit({
       "--tag",
       tag,
       ...(sections ? ["--function-sections", "--data-sections"] : []),
+      ...helperArgs,
     ]);
-    return true;
+    const report = stdout.trim() === "" ? {} : JSON.parse(stdout.trim().split("\n").pop());
+    return {
+      ...(report.profile === undefined ? {} : { profile: report.profile }),
+      ...(report.functions === undefined ? {} : { functions: report.functions }),
+    };
   } catch (error) {
     const detail = (error.stderr || error.message || String(error)).trim().split("\n")[0];
     process.stderr.write(`runtime-unit: ${tag}: emitting without import bitcode (${detail})\n`);

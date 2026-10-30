@@ -70,3 +70,24 @@ interface PromiseConstructor {
     reject: (reason: Error) => void;
   };
 }
+
+/* Carriers of the types the lowerer gives untyped JavaScript collections
+ * whose uses prove them (js-collection-types.ts). Nothing reads them at run
+ * time. */
+declare namespace __scriptcInferredCollections {
+  const map_string_string: Map<string, string>;
+  const map_string_number: Map<string, number>;
+  const map_string_boolean: Map<string, boolean>;
+  const map_number_string: Map<number, string>;
+  const map_number_number: Map<number, number>;
+  const map_number_boolean: Map<number, boolean>;
+  const map_boolean_string: Map<boolean, string>;
+  const map_boolean_number: Map<boolean, number>;
+  const map_boolean_boolean: Map<boolean, boolean>;
+  const set_string: Set<string>;
+  const set_number: Set<number>;
+  const set_boolean: Set<boolean>;
+  const array_string: string[];
+  const array_number: number[];
+  const array_boolean: boolean[];
+}

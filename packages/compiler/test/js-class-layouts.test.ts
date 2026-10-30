@@ -221,3 +221,21 @@ test("a JavaScript file TypeScript checks uses its JSDoc types for class layouts
   expect(layout(unchecked, "Account").fields).toBe("owner:dyn balance:dyn");
   expect(params(unchecked, "%Account.constructor")).toBe("(object, dyn, dyn): void");
 });
+
+test("instances of a class with subclasses box at their exact class", async () => {
+  const module = await lower(`${SHAPES}
+/** @param {any} value */
+function keep(value) {
+  return value;
+}
+/** @param {Shape} shape */
+function cross(shape) {
+  return keep(shape);
+}
+console.log(cross(new Square()).size, cross(new Shape()).label);
+`);
+  const helper = module.functions.find((fn) => fn.name === "%dyn.class.boxExact:Shape");
+  expect(helper).toBeDefined();
+  expect(calls(module, "cross")).toContain("%dyn.class.boxExact:Shape");
+  expect(JSON.stringify(helper!.body)).toContain('"className":"Square"');
+});

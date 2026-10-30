@@ -9,6 +9,7 @@ import { compile } from "@scriptc/compiler";
 import { npmCases } from "./npm-cases.js";
 import { normalizeNodeTestOutput } from "./node-test-normalize.js";
 import { eventLoopCases, type StdinScript } from "./event-loop-cases.js";
+import { requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
@@ -125,6 +126,9 @@ const files = enabled
     ])
       .sort()
       .filter((f) => filter === undefined || new RegExp(filter).test(f))
+      // Calls into Node load a libnode pack for the host, not for this
+      // cross target (libnode.ts).
+      .filter((f) => !requiresLibnode(f))
   : [];
 
 if (enabled) {

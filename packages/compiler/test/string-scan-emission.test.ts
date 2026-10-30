@@ -37,7 +37,9 @@ console.log(scan("é-é", "ü-ü", "ö-ö"), at("é", 0.5));
     expect(llvm).toContain("@scr_str_scan = external global");
     const fallbacks = llvm
       .split("\n")
-      .filter((line) => /call double @scr_str_(utf16_len|char_code_at)\(/.test(line));
+      .filter((line) =>
+        /call (double|void) @scr_str_(utf16_len|char_code_at|scan_units)\(/.test(line),
+      );
     expect(fallbacks.length).toBeGreaterThanOrEqual(3);
     for (const line of fallbacks) expect(line).not.toMatch(/\bmemory\(/);
   } finally {

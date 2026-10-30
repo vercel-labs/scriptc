@@ -34,14 +34,14 @@ contract-int32-arrays.ts:16:13 - error SC7002: the element stored into 'counts' 
 
   hint: make the int32 conversion explicit, for example 'Math.PI | 0', so Node stores the same value
 
-contract-int32-arrays.ts:18:26 - error SC7002: the elements 'counts.map((x) => x * 2)' stores are not provably int32s (the array can reach 'doubled', declared Int32[])
+contract-int32-arrays.ts:18:44 - error SC7002: the element stored into 'counts.map((x) => x * 2)' is not provably an int32: 'x * 2' (the array can reach 'doubled', declared Int32[])
 
   17 | halveInto(counts, ids);
   18 | const doubled: Int32[] = counts.map((x) => x * 2);
-     |                          ^~~~~~~~~~~~~~~~~~~~~~~~
+     |                                            ^~~~~
   19 | const parsed: Int32[] = JSON.parse("[1, 2]");
 
-  hint: callback results are not followed; build the array with a loop that stores 'value | 0'
+  hint: make the int32 conversion explicit, for example '(x * 2) | 0', so Node stores the same value
 
 contract-int32-arrays.ts:19:15 - error SC7003: the Int32[] contract on 'parsed' cannot be checked: the array can come from dynamic (any or unknown) code (contract-int32-arrays.ts:19:25), whose element stores scriptc does not see
 

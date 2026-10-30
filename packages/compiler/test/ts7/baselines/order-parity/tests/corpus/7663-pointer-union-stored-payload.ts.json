@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7663-pointer-union-stored-payload.ts"
+ ],
+ "diags": []
+}

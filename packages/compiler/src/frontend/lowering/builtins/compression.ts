@@ -13,6 +13,7 @@ import {
   funcOf,
   type IrExpr,
   type IrLibFn,
+  type IrStmt,
   type IrType,
   type SrcLoc,
   STRING,
@@ -39,6 +40,36 @@ const ZLIB_CALLBACK_FNS: Readonly<Record<string, IrLibFn | undefined>> = {
   gunzip: "zlib.gunzipCb",
   unzip: "zlib.unzipCb",
 };
+
+/* Node's BROTLI_DECODE and BROTLI_ENCODE modes. */
+const BROTLI_DECODE = 8;
+const BROTLI_ENCODE = 9;
+
+/** The Brotli one-shots: every form takes the options entries. */
+const BROTLI_SYNC_MEMBERS: ReadonlySet<string> = new Set([
+  "brotliCompressSync",
+  "brotliDecompressSync",
+]);
+const BROTLI_CALLBACK_MEMBERS: ReadonlySet<string> = new Set([
+  "brotliCompress",
+  "brotliDecompress",
+]);
+
+/** A Brotli mode connects the codec (scr_brotli.c) to the zlib engine
+ * before any module initializer runs. */
+function noteBrotliMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
+  if (mode !== BROTLI_DECODE && mode !== BROTLI_ENCODE) return;
+  const installs = (stmt: IrStmt): boolean =>
+    stmt.kind === "exprStmt" &&
+    stmt.expr.kind === "libCall" &&
+    stmt.expr.fn === "zlib.brotliInstall";
+  if (lowerer.mainPrelude.some(installs)) return;
+  lowerer.mainPrelude.push({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "zlib.brotliInstall", args: [], type: VOID, loc },
+    loc,
+  });
+}
 
 const ZLIB_STREAM_CLASS = "%Transform";
 const ZLIB_STREAM_T: IrType = { kind: "object", className: ZLIB_STREAM_CLASS };
@@ -115,6 +146,7 @@ export function lowerZlibStreamNew(
   }
   const options =
     args[0] !== undefined ? zlibOptionsValue(lowerer, args[0], what, loc) : dynUndefinedExpr(loc);
+  noteBrotliMode(lowerer, mode, loc);
   return {
     kind: "libCall",
     fn: "zlib.streamNew",
@@ -154,8 +186,8 @@ function isZlibFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
   return false;
 }
 
-/** True when `access` names a member the zlib stream base class declares
- * (bytesWritten, flush, params, close, reset). */
+/** True when `access` names a member the zlib stream base classes declare
+ * (bytesWritten, flush, close and reset on ZlibBase; params on Zlib). */
 export function isZlibStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(access.name);
   if (!symbol) return false;
@@ -163,7 +195,7 @@ export function isZlibStreamMember(lowerer: Lowerer, access: ts.PropertyAccessEx
     (d) =>
       d.parent !== undefined &&
       ts.isClassDeclaration(d.parent) &&
-      d.parent.name?.text === "ZlibBase" &&
+      (d.parent.name?.text === "ZlibBase" || d.parent.name?.text === "Zlib") &&
       isZlibFallbackDecl(lowerer, d.parent),
   );
 }
@@ -281,12 +313,17 @@ const ZLIB_ONE_SHOT_MODES: Readonly<Record<string, number | undefined>> = {
   deflateRaw: 5,
   inflateRaw: 6,
   unzip: 7,
+  brotliDecompressSync: BROTLI_DECODE,
+  brotliCompressSync: BROTLI_ENCODE,
+  brotliDecompress: BROTLI_DECODE,
+  brotliCompress: BROTLI_ENCODE,
 };
 
 /** True for a zlib callback one-shot util.promisify converts (deflate,
- * inflate, deflateRaw, inflateRaw, gzip, gunzip and unzip). */
+ * inflate, deflateRaw, inflateRaw, gzip, gunzip, unzip, brotliCompress and
+ * brotliDecompress). */
 export function isPromisifiedZlibMember(member: string): boolean {
-  return ZLIB_CALLBACK_FNS[member] !== undefined;
+  return ZLIB_CALLBACK_FNS[member] !== undefined || BROTLI_CALLBACK_MEMBERS.has(member);
 }
 
 /** A call through `promisify(zlib.gzip)` and the other callback one-shots:
@@ -311,6 +348,7 @@ export function lowerPromisifiedZlibCall(
     );
   }
   const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
+  noteBrotliMode(lowerer, ZLIB_ONE_SHOT_MODES[member]!, loc);
   return {
     kind: "libCall",
     fn: input.dyn ? "zlib.promiseDyn" : "zlib.promise",
@@ -334,6 +372,8 @@ const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
   createDeflateRaw: 5,
   createInflateRaw: 6,
   createUnzip: 7,
+  createBrotliDecompress: BROTLI_DECODE,
+  createBrotliCompress: BROTLI_ENCODE,
 };
 
 export function lowerZlibModuleCall(
@@ -355,6 +395,9 @@ export function lowerZlibModuleCall(
       expr,
       loc,
     );
+  }
+  if (BROTLI_SYNC_MEMBERS.has(bi.member) || BROTLI_CALLBACK_MEMBERS.has(bi.member)) {
+    return lowerBrotliOneShot(lowerer, expr, bi.member, loc);
   }
   const syncFn = ZLIB_SYNC_FNS[bi.member];
   if (syncFn !== undefined) {
@@ -500,6 +543,57 @@ export function lowerZlibModuleCall(
     };
   }
   throw new InternalCompilerError(`unhandled lowered zlib member ${bi.member}`);
+}
+
+/** brotliCompressSync(data[, options]), brotliCompress(data[, options],
+ * callback) and the decompress pair: the options entries with Node's
+ * BROTLI_ENCODE or BROTLI_DECODE mode, an absent options value passing
+ * undefined. */
+function lowerBrotliOneShot(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  const mode = ZLIB_ONE_SHOT_MODES[member]!;
+  const sync = BROTLI_SYNC_MEMBERS.has(member);
+  if (sync ? args.length === 0 || args.length > 2 : args.length !== 2 && args.length !== 3) {
+    lowerer.noLowering(
+      `zlib.${member} with ${args.length} arguments`,
+      expr,
+      sync
+        ? `${member}(data) and ${member}(data, options) are supported`
+        : `${member}(data, callback) and ${member}(data, options, callback) are supported`,
+    );
+  }
+  const input = zlibInput(lowerer, args[0]!, loc);
+  const withOptions = sync ? args.length === 2 : args.length === 3;
+  const options = withOptions
+    ? zlibOptionsValue(lowerer, args[1]!, `zlib.${member}`, loc)
+    : dynUndefinedExpr(loc);
+  noteBrotliMode(lowerer, mode, loc);
+  if (sync) {
+    return {
+      kind: "libCall",
+      fn: input.dyn ? "zlib.syncOptsDyn" : "zlib.syncOpts",
+      args: [numLit(mode, loc), input.value, options],
+      type: BYTES_U8,
+      loc,
+    };
+  }
+  return {
+    kind: "libCall",
+    fn: input.dyn ? "zlib.cbOptsDyn" : "zlib.cbOpts",
+    args: [
+      numLit(mode, loc),
+      input.value,
+      options,
+      errorFirstBytesCallback(lowerer, args[withOptions ? 2 : 1]!, "zlib"),
+    ],
+    type: VOID,
+    loc,
+  };
 }
 
 /** The class name of a zlib stream mode (Node's constructor name). */

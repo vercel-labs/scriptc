@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7507-stream-write-error-drain.mjs"
+ ],
+ "diags": []
+}

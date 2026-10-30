@@ -13,9 +13,37 @@ import {
 import { SourceLocations } from "../source-locations.js";
 import { mangleFunction } from "../mangle.js";
 
-/** DWARF describes source bindings at their actual native storage locations. */
+/** A request a range emitter made of its debug info that added nodes
+ * (LlvmDebugInfo.record), with the ids it answered. */
+export type DebugRequest =
+  | { readonly op: "function"; readonly fn: string; readonly result: string }
+  | {
+      readonly op: "local";
+      readonly local: IrLocal;
+      readonly fn: string;
+      readonly arg: number;
+      readonly captured: boolean;
+      readonly result: { variable: string; location: string };
+    }
+  | {
+      readonly op: "location";
+      readonly loc: SrcLoc;
+      readonly fn: string;
+      readonly result: string;
+    };
+
+/** DWARF describes source bindings at their actual native storage locations.
+ *
+ * Nodes are numbered in request order. A range emitter (emit-module.ts)
+ * records the requests that added nodes; the emitter that merges the range
+ * replays them in order, so every node gets the number serial emission
+ * gives it, and renames the range's text from the ids the range answered to
+ * its own. A request that added no node answered an id that existed before
+ * the range started or that an earlier recorded request created. */
 export class LlvmDebugInfo {
   private readonly nodes: string[] = [];
+  /** The requests that added nodes, while recording (record). */
+  private requests: DebugRequest[] | null = null;
   private readonly files = new Map<string, string>();
   private readonly locations = new Map<string, string>();
   private readonly scopes = new Map<string, string>();
@@ -73,7 +101,53 @@ export class LlvmDebugInfo {
     return unit;
   }
 
+  /** Records the requests that add nodes from here on. */
+  record(): void {
+    this.requests = [];
+  }
+
+  /** The requests recorded since record. */
+  recorded(): readonly DebugRequest[] {
+    return this.requests ?? [];
+  }
+
+  /** Replays a range's recorded requests in order and adds to `ids` the
+   * rename from the ids the range answered to this debug info's. */
+  replay(
+    requests: readonly DebugRequest[],
+    functionNamed: (name: string) => IrFunction,
+    ids: Map<string, string>,
+  ): void {
+    const own = (id: string, to: string | null | undefined): void => {
+      if (to === null || to === undefined)
+        throw new Error(`llvm emitter bug: debug request for ${id} added no node on replay`);
+      if (to !== id) ids.set(id, to);
+    };
+    for (const request of requests) {
+      if (request.op === "function") {
+        own(request.result, this.function(functionNamed(request.fn)));
+        continue;
+      }
+      const fn = ids.get(request.fn) ?? request.fn;
+      if (request.op === "location") {
+        own(request.result, this.location(request.loc, fn));
+        continue;
+      }
+      const local = this.local(request.local, fn, request.arg, request.captured);
+      own(request.result.variable, local?.variable);
+      own(request.result.location, local?.location);
+    }
+  }
+
   function(fn: IrFunction): string | null {
+    const before = this.nodes.length;
+    const id = this.functionNode(fn);
+    if (this.requests !== null && id !== null && this.nodes.length > before)
+      this.requests.push({ op: "function", fn: fn.name, result: id });
+    return id;
+  }
+
+  private functionNode(fn: IrFunction): string | null {
     const pos = this.source.position(fn.loc);
     if (pos === null) return null;
     const file = this.file(pos.file);
@@ -231,6 +305,26 @@ export class LlvmDebugInfo {
     arg = 0,
     captured = false,
   ): { variable: string; expression: string; location: string } | null {
+    const before = this.nodes.length;
+    const result = this.localNodes(local, fn, arg, captured);
+    if (this.requests !== null && fn !== null && result !== null && this.nodes.length > before)
+      this.requests.push({
+        op: "local",
+        local,
+        fn,
+        arg,
+        captured,
+        result: { variable: result.variable, location: result.location },
+      });
+    return result;
+  }
+
+  private localNodes(
+    local: IrLocal,
+    fn: string | null,
+    arg: number,
+    captured: boolean,
+  ): { variable: string; expression: string; location: string } | null {
     if (fn === null || local.source === undefined) return null;
     const pos = this.source.position(local.source.loc);
     if (pos === null) return null;
@@ -279,6 +373,14 @@ export class LlvmDebugInfo {
   }
 
   location(loc: SrcLoc, fn: string | null): string | null {
+    const before = this.nodes.length;
+    const id = this.locationNode(loc, fn);
+    if (this.requests !== null && fn !== null && id !== null && this.nodes.length > before)
+      this.requests.push({ op: "location", loc, fn, result: id });
+    return id;
+  }
+
+  private locationNode(loc: SrcLoc, fn: string | null): string | null {
     if (fn === null) return null;
     const pos = this.source.position(loc);
     if (pos === null) return null;

@@ -51,14 +51,12 @@ test("decompression options lower for run-time validation", () => {
   expect(diags).toEqual([]);
 });
 
-test("Brotli keeps its SC2020 refusal", () => {
+test("Brotli options lower for run-time validation", () => {
   const diags = diagnostics(`
-    import { brotliCompressSync } from "node:zlib";
-    console.log(brotliCompressSync("payload").length);
+    import { brotliCompressSync, constants } from "node:zlib";
+    console.log(brotliCompressSync("payload", { params: { [constants.BROTLI_PARAM_QUALITY]: 4 } }).length);
   `);
-  expect(diags).toHaveLength(1);
-  expect(diags[0]!.code).toBe("SC2020");
-  expect(diags[0]!.message).toContain("brotliCompressSync");
+  expect(diags).toEqual([]);
 });
 
 test("union writes keep the refusal for incompatible field storage", () => {

@@ -7,7 +7,7 @@ import { expect, test } from "vitest";
 
 const exec = promisify(execFile);
 
-test("dynamic-tier shapes stay within the shape and key-byte budgets", async () => {
+test("layouts stay within the layout and key-byte budgets, and dynamic-tier absent reads are cached", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "scriptc-js-object-"));
   const src = import.meta.dirname;
   const binary = join(scratch, "js-object");
@@ -29,6 +29,7 @@ test("dynamic-tier shapes stay within the shape and key-byte budgets", async () 
         "scr_json.c",
         "scr_string.c",
         "scr_array.c",
+        "scr_arena.c",
         "scr_map.c",
         "scr_exception.c",
         "scr_error.c",
@@ -50,15 +51,19 @@ test("dynamic-tier shapes stay within the shape and key-byte budgets", async () 
       ].map((file) => join(src, file)),
       ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
     ]);
-    for (const args of [[], ["key-bytes"]]) {
-      const result = await exec(binary, args, {
+    for (const [args, stdout] of [
+      [[], "shape budget checks passed\n"],
+      [["key-bytes"], "shape budget checks passed\n"],
+      [["absent"], "absent read checks passed\n"],
+    ] as const) {
+      const result = await exec(binary, [...args], {
         env: {
           ...process.env,
           ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1",
           UBSAN_OPTIONS: "halt_on_error=1",
         },
       });
-      expect(result.stdout).toBe("shape budget checks passed\n");
+      expect(result.stdout).toBe(stdout);
       expect(result.stderr).toBe("");
     }
   } finally {

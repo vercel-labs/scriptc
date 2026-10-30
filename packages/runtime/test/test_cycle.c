@@ -557,6 +557,78 @@ static void check_program_growth_cap(void) {
   scr_cyc_set_growth_cap(0);
 }
 
+/* scr_cyc_set_nursery_threshold sets the trigger SCR_CYCLE_THRESHOLD sets,
+ * from the end of the next pass: with a trigger of 1024, dead rings released
+ * after a full pass wait until the 1024th, which collects them all. 0
+ * restores the default. */
+static void check_program_nursery_threshold(void) {
+  enum { THRESHOLD = 1024 };
+  if (getenv("SCR_CYCLE_THRESHOLD") != NULL) return; /* it takes precedence */
+  scr_cyc_set_nursery_threshold(THRESHOLD);
+  scr_collect_cycles(); /* re-arm with the new trigger */
+  size_t before = freed;
+  for (size_t i = 0; i < THRESHOLD - 1; i++) release_live(make_ring(1));
+  check(freed == before, "a program's nursery trigger did not hold the pass back");
+  release_live(make_ring(1));
+  check(freed - before == THRESHOLD, "a program's nursery trigger did not run the pass");
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+}
+
+/* How many dead rings the release path takes to run its next pass, from
+ * the end of the previous one: the nursery trigger in effect. */
+static size_t nursery_window(void) {
+  size_t before = freed, n = 0;
+  while (freed == before && n < 65536) {
+    release_live(make_ring(1));
+    n++;
+  }
+  check(freed - before == n, "a nursery pass left dead rings behind");
+  return n;
+}
+
+/* A scheduled full pass that reclaims nothing: its only candidate is an
+ * older live leaf. */
+static void scheduled_pass_finding_nothing(Node *leaf) {
+  size_t before = freed;
+  read_live(leaf);
+  for (size_t i = 0; i < configured_nursery_threshold(); i++)
+    scr_cyc_collect_scheduled();
+  check(freed == before, "a scheduled pass over a live leaf freed something");
+}
+
+/* Unpinned, the nursery trigger starts at 256 candidates. Each scheduled
+ * full pass that reclaims promoted rings doubles it, up to 4096; each one
+ * that reclaims nothing after the nursery passes freed rings halves it,
+ * down to 256. */
+static void check_adaptive_nursery_threshold(void) {
+  if (getenv("SCR_CYCLE_THRESHOLD") != NULL) return; /* it pins the trigger */
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+  check(nursery_window() == 256, "the unpinned nursery trigger did not start at 256");
+  static const size_t widened[] = { 512, 1024, 2048, 4096, 4096 };
+  for (size_t i = 0; i < sizeof(widened) / sizeof(widened[0]); i++) {
+    collect_dead_mature_rings();
+    check(nursery_window() == widened[i],
+          "a full pass reclaiming promoted rings did not double the nursery trigger");
+  }
+
+  static const size_t narrowed[] = { 2048, 1024, 512, 256, 256 };
+  Node *leaf = make_leaf();
+  read_live(leaf);
+  scr_collect_cycles(); /* promote */
+  for (size_t i = 0; i < sizeof(narrowed) / sizeof(narrowed[0]); i++) {
+    scheduled_pass_finding_nothing(leaf);
+    check(nursery_window() == narrowed[i],
+          "a full pass reclaiming nothing did not halve the nursery trigger");
+  }
+  leaf->rc--;
+  scr_cyc_on_dead(leaf);
+  node_free(leaf);
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+}
+
 /* The phase sweep (scr_collect_cycles_phase) is for a caller that knows a
  * phase's data has just died: it sweeps, and the growth schedule starts
  * over. After passes that find nothing have widened the old level's
@@ -761,6 +833,96 @@ static void check_deferred_white_restoration(void) {
  * scheduling decision or pass would do. */
 size_t scr_cyc_pass_at(unsigned gen);
 void scr_cyc_route_bypassed_at(void);
+
+/* A nursery pass over a dead ring, longer than the walk recurses, whose
+ * nodes hold edges into an older ring, and two live nodes the ring reaches
+ * that hold edges into another: only the dead ring's edges are paid off. */
+static void check_cross_generation_holders(void) {
+  enum { RING = 200 };
+  /* The ring's candidate must wait for the pass below. */
+  if (configured_nursery_threshold() < 8) return;
+  static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+  scr_collect_cycles();
+  size_t before = freed;
+  Node *targets[2];
+  for (int r = 0; r < 2; r++) {
+    targets[r] = make_ring(2);
+    targets[r]->rc++;
+    release_live(targets[r]);
+  }
+  scr_collect_cycles(); /* both survive, out of the nursery */
+  Node *live[2];
+  for (int i = 0; i < 2; i++) {
+    live[i] = scr_cyc_alloc(sizeof(*live[i]), &cyc_type);
+    live[i]->rc = 3; /* itself, the ring's edge and an outside owner */
+    live[i]->next = live[i];
+    live[i]->other = targets[1];
+    targets[1]->rc++;
+  }
+  Node *ring = make_ring(RING);
+  Node *node = ring;
+  for (size_t i = 0; i < RING; i++, node = node->next) {
+    node->other = i == 10 ? live[0] : i == 150 ? live[1] : targets[0];
+    if (node->other == targets[0]) targets[0]->rc++;
+  }
+  release_live(ring);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+  check(freed == before + RING, "nursery pass did not free only the dead ring");
+  check(targets[0]->rc == 2, "the dead ring's edges into an older ring were not paid off");
+  check(targets[1]->rc == 4, "a live node's edge into an older ring was paid off");
+  release_live(live[0]);
+  release_live(live[1]);
+  scr_collect_cycles();
+  check(freed == before + RING + 2, "the live nodes were not collected once dead");
+  release_live(targets[0]);
+  release_live(targets[1]);
+  scr_collect_cycles();
+  check(freed == before + RING + 6, "the older rings were not collected once dead");
+}
+
+/* A dispose observer (scr_cyc_free notifies it) reads the color of the
+ * objects a pass tears down. */
+static size_t observed_doomed, observed_other;
+static void observe_disposal(void *obj) {
+  if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_DOOMED) observed_doomed++;
+  else observed_other++;
+}
+
+static void check_dispose_observer_sees_doomed(void) {
+  enum { RING = 8 };
+  size_t before = freed;
+  void (*hook)(void *) = scr_weak_dispose_hook;
+  scr_weak_dispose_hook = observe_disposal;
+  observed_doomed = observed_other = 0;
+  Node *ring = make_ring(RING);
+  release_live(ring);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+  scr_weak_dispose_hook = hook;
+  check(freed == before + RING, "the dead ring was not freed");
+  check(observed_doomed == RING && observed_other == 0,
+        "a dispose observer saw a collected object that was not DOOMED");
+}
+
+/* A full pass whose gray list fills: the dead rings walked before it filled
+ * stay in the list, and the scan from the candidates passes over them. */
+static void check_doomed_rings_before_full_gray_list(void) {
+  enum { RINGS = 4, RING = 8, LIVE = 70000 };
+  if (configured_nursery_threshold() < 8) return;
+  size_t before = freed;
+  Node *dead[RINGS];
+  for (int i = 0; i < RINGS; i++) dead[i] = make_ring(RING);
+  Node *live = make_ring(LIVE);
+  scr_collect_cycles(); /* re-arms the allocation trigger */
+  for (int i = 0; i < RINGS; i++) release_live(dead[i]);
+  live->rc++;
+  release_live(live);
+  scr_collect_cycles();
+  check(freed == before + RINGS * RING, "a pass with a full gray list did not free only the dead rings");
+  release_live(live);
+  scr_collect_cycles();
+  check(freed == before + RINGS * RING + LIVE, "the large ring was not collected once dead");
+}
+
 static size_t bypass_traced; /* trace calls on bypass-kind nodes */
 static size_t bypass_freed;  /* bypass-kind nodes freed */
 static void bypass_trace(void *obj, ScrTraceVisit visit, void *ctx) {
@@ -872,6 +1034,75 @@ static void check_nursery_bypass(void) {
     live[i]->rc = 0;
     scr_cyc_on_dead(live[i]);
     node_free(live[i]);
+  }
+  free(live);
+  scr_collect_cycles();
+}
+
+/* A nursery probe window that opens makes the next release-triggered pass
+ * that would run at the nursery run at the mature level, which reclaims
+ * dead promoted rings a nursery pass stops at. */
+static size_t window_kind_freed, window_ring_freed;
+static void window_kind_free(void *obj) {
+  window_kind_freed++;
+  node_free(obj);
+}
+static void window_ring_free(void *obj) {
+  window_ring_freed++;
+  node_free(obj);
+}
+static ScrCycType window_kind_type = { &node_trace, &window_kind_free, 9 };
+static ScrCycType window_ring_type = { &node_trace, &window_ring_free, 0 };
+
+/* A candidate of the window kind that dies once it has been routed, as the
+ * next pass would route it: it counts down a bypass without growing the
+ * heap. */
+static void release_window_candidate(void) {
+  Node *node = scr_cyc_alloc(sizeof(*node), &window_kind_type);
+  node->rc = 2;
+  release_live(node);
+  scr_cyc_route_bypassed_at();
+  node->rc = 0;
+  scr_cyc_on_dead(node);
+  window_kind_free(node);
+}
+
+static void check_probe_window_runs_mature_pass(void) {
+  /* Every release collects at a threshold of 1, and passes with only a few
+   * candidates walk too few of them to decide a window. */
+  if (configured_nursery_threshold() < 8) return;
+  enum { WINDOW = 8192, INTERVAL = 16, LIVE = WINDOW, RING = 4 };
+  Node **live = calloc(LIVE, sizeof(*live));
+  if (!live) scr_trap("cycle test: out of memory\n");
+  for (size_t i = 0; i < LIVE; i++) {
+    live[i] = scr_cyc_alloc(sizeof(*live[i]), &window_kind_type);
+    live[i]->rc = 1;
+    read_live(live[i]);
+    scr_cyc_pass_at(SCR_CYC_NURSERY);
+  }
+  scr_collect_cycles();
+  /* A pass that an earlier window asked for runs now. */
+  run_release_passes();
+
+  /* A dead ring promoted to the mature level: nursery passes stop at it. */
+  Node *ring = make_ring_of(RING, &window_ring_type);
+  ring->rc++;
+  release_live(ring);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+  release_live(ring);
+  run_release_passes();
+  check(window_ring_freed == 0, "a nursery pass freed a dead mature ring");
+
+  /* The window kind's candidates go past the nursery until a probe window
+   * opens; the next release-triggered pass runs at the mature level. */
+  for (size_t i = 0; i < (size_t)WINDOW * INTERVAL; i++) release_window_candidate();
+  run_release_passes();
+  check(window_ring_freed == RING, "the pass after a probe window opened missed a dead mature ring");
+
+  for (size_t i = 0; i < LIVE; i++) {
+    live[i]->rc = 0;
+    scr_cyc_on_dead(live[i]);
+    window_kind_free(live[i]);
   }
   free(live);
   scr_collect_cycles();
@@ -1242,6 +1473,44 @@ static void check_limited_pass(void) {
   check(freed - before == 4 * RING, "the live ring was not collected once dead");
 }
 
+/* A limited pass that reaches a live candidate it did not take leaves the
+ * candidate in its slot and in its generation, which names the slot's
+ * buffer: when the candidate dies afterwards, it leaves that buffer, and no
+ * later pass meets its freed block. */
+static void check_limited_pass_keeps_untaken_generation(void) {
+  enum { RING = 16 };
+  if (configured_nursery_threshold() < 8) return;
+  scr_collect_cycles();
+  size_t before = freed;
+  static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+  Node *shared = scr_cyc_alloc(sizeof(*shared), &cyc_type);
+  shared->rc = 1; /* its owner */
+  /* A dead ring the filter takes points at it. */
+  Node *dead = make_ring(RING);
+  dead->other = shared;
+  shared->rc++;
+  /* It loses a reference and becomes a candidate the filter refuses. */
+  shared->rc++;
+  release_live(shared);
+  release_live(dead);
+  ScrCycHdr *h = scr_cyc_hdr(shared);
+  unsigned gen = scr_cyc_gen(h);
+  check(scr_cyc_is_buffered(h), "the shared node is not a candidate");
+  take(dead);
+  check(scr_cyc_collect_set(&taken, SCR_CYC_NURSERY) == RING,
+        "limited pass did not free the taken ring");
+  check(scr_cyc_is_buffered(h) && scr_cyc_gen(h) == gen,
+        "limited pass moved a candidate it did not take out of its generation");
+  memset(taken_slots, 0, sizeof taken_slots);
+  /* Its owner lets go: it dies directly, out of its buffer. */
+  check(shared->rc == 1, "the shared node kept a reference from the freed ring");
+  shared->rc--;
+  scr_cyc_on_dead(shared);
+  node_free(shared);
+  scr_collect_cycles();
+  check(freed - before == RING + 1, "the passes after the limited one freed something else");
+}
+
 /* A full pass whose fullest candidate buffer is the old generation's (more
  * entries than a pass keeps between passes), with nursery candidates
  * beside it: every dead ring in either buffer is reclaimed, the live rings
@@ -1488,6 +1757,9 @@ static void check_acyclic_objects(void) {
 }
 
 int main(void) {
+  /* The scheduling checks count candidates against a fixed nursery trigger;
+   * check_adaptive_nursery_threshold covers the unpinned one. */
+  scr_cyc_set_nursery_threshold((long)configured_nursery_threshold());
   check_inline_buffering();
   check_old_garbage_reclaimed_while_growing();
   check_older_rings_into_old();
@@ -1504,6 +1776,9 @@ int main(void) {
   check_deferred_white_restoration();
   check_cross_generation_edges();
   check_deep_cross_generation_chain();
+  check_cross_generation_holders();
+  check_dispose_observer_sees_doomed();
+  check_doomed_rings_before_full_gray_list();
   check_teardown_rebuffers_and_immortals();
   check_growth_schedule_follows_yield();
   check_growth_cap_bounds_floating_garbage();
@@ -1513,15 +1788,19 @@ int main(void) {
   check_death_brings_full_pass();
   check_nursery_bypass();
   check_mature_bypass();
+  check_probe_window_runs_mature_pass();
   check_probe_sees_candidate_rings();
   check_rebuffer_past_mature();
   check_allocation_growth_runs_passes();
   check_publication_takes_candidates();
   check_limited_pass();
+  check_limited_pass_keeps_untaken_generation();
   check_large_old_buffer_with_nursery_candidates();
   check_unjudged_backlog_follows_growth();
   check_acyclic_objects();
   check_program_growth_cap();
+  check_program_nursery_threshold();
+  check_adaptive_nursery_threshold();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;

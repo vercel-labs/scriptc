@@ -1,3 +1,11 @@
+import {
+  ARENA_RC,
+  arenaDisposeLines,
+  arenaDisposeSym,
+  arenaNewLines,
+  disposeFieldLines,
+  plainRefType,
+} from "./arenas.js";
 import { InternalCompilerError } from "../../errors.js";
 /** Class layouts, reference counting, hierarchy intervals, virtual tables and
  * constructor values. Opaque LLVM pointers allow virtual slots to store method
@@ -35,6 +43,7 @@ import { llvmCommentText } from "./common.js";
 import { INLINE_UNION_FIELD } from "./inline-unions.js";
 import { NullableRefFields } from "./nullable-fields.js";
 import type { Int32Slots } from "../../ir/int32-slots.js";
+import type { InlineArrayClass } from "../../ir/inline-arrays.js";
 import {
   cycleRootLines,
   traceFieldVisitLines,
@@ -45,6 +54,7 @@ import {
   directDestroyTarget,
   segmentPrologueLines,
   segmentTeardownLines,
+  iterativeTeardownDefinitions,
   segmentedTeardown,
   usedDirectTargets,
   type DirectDestroy,
@@ -58,6 +68,7 @@ import {
   traceAdapter,
   type ShapeHost,
   youngEntryLines,
+  arrElemInit,
 } from "./shapes.js";
 
 /** One virtual method slot of a hierarchy: the ROOT-MOST declaring class
@@ -90,7 +101,9 @@ export class LlClassMeta {
    * a vtable word, the rc word holds the class id (classIdRcWord) in its
    * high 32 bits (CLASS_ID_OFFSET) and the reference count in its low 32
    * bits, and the hierarchy's vtables are one array indexed by the id
-   * (mangleVtArray). */
+   * (mangleVtArray). A standalone class that is an arm of a class union
+   * (nullable-unions.ts taggedClasses) keeps its id the same way, without
+   * vtables. */
   idInRc = false;
   /** A ProgramLifetime class with the 32-bit header (assignCompactLayouts):
    * the i32 at offset 0 is compactHeaderWord, with the class id in place of
@@ -105,10 +118,28 @@ export class LlClassMeta {
    * a compact class instance as a 32-bit index (COMPACT_REF) rather than a
    * pointer: compactRefLoadLines decodes it, compactRefStoreLines encodes it. */
   compressed: boolean[] = [];
+  /** Compact classes with an inline array field (ir/inline-arrays.ts): the
+   * field's slot holds the element count as an i32, and the elements follow
+   * the fixed fields as 32-bit references from `tailOffset`, the same offset
+   * in every class of the declaring class's subtree. Absent otherwise. */
+  inlineTail?: LlInlineTail;
 
   constructor(readonly def: IrClassDef) {
     this.root = this;
   }
+}
+
+/** A class's inline array field (LlClassMeta.inlineTail). */
+export interface LlInlineTail {
+  /** The field's index in def.fields. */
+  readonly field: number;
+  /** Byte offset of the first element. */
+  readonly tailOffset: number;
+  /** The elements' class. */
+  readonly elemClass: string;
+  /** The index in a `new` expression's args of the array the field is
+   * initialized from, whose length the allocation reads. */
+  readonly lengthArg: number;
 }
 
 /** The class graph: link base/children, number the forest in preorder
@@ -121,6 +152,7 @@ export function buildClassGraph(
   mod: IrModule,
   fnByName: Map<string, IrFunction>,
   sizeType: "i32" | "i64" = "i64",
+  tagged: ReadonlySet<string> = new Set(),
 ): Map<string, LlClassMeta> {
   const metaMap = new Map<string, LlClassMeta>();
   for (const cls of mod.classes ?? []) {
@@ -151,7 +183,10 @@ export function buildClassGraph(
   // EventEmitter, EventTarget, Event and the streams) and 32-bit targets
   // have no spare half in the rc word: those keep the vtable word.
   for (const meta of metaMap.values())
-    meta.idInRc = sizeType === "i64" && meta.hierarchy && meta.root.def.runtime !== true;
+    meta.idInRc =
+      sizeType === "i64" &&
+      (meta.hierarchy || tagged.has(meta.def.name)) &&
+      meta.root.def.runtime !== true;
   const slotRoots = new Set<LlClassMeta>();
   for (const key of mod.threadSlotKeys ?? []) {
     const meta = metaMap.get(key);
@@ -371,9 +406,32 @@ function runtimePrefixOf(meta: LlClassMeta): RuntimePrefix | null {
  * on classes rooted at a runtime base, then the stream-state slot on
  * stream-rooted ones. */
 function headerEnd(meta: LlClassMeta): number {
+  if (meta.def.arrayElem !== undefined) return ARRAY_PREFIX.length + 1;
   if (!meta.hierarchy || meta.idInRc) return 1;
   if (streamRooted(meta)) return 5;
   return runtimePrefixOf(meta) ? 4 : 2;
+}
+
+/** The array header a class declared `extends Array` begins with, after
+ * the size_t reference count: %ScrArr's len, cap, elem, cyc, spare, filled
+ * and data (scr_array.h). */
+const ARRAY_PREFIX = ["i32", "i32", "i8", "i8", "i16", "i32", "ptr"];
+
+/** LLVM `c"..."` text of a string's UTF-8 bytes and a terminating NUL. */
+function nulTerminatedBytes(text: string): string {
+  let out = "";
+  for (const byte of Buffer.from(text, "utf8"))
+    out +=
+      byte >= 0x20 && byte < 0x7f && byte !== 0x22 && byte !== 0x5c
+        ? String.fromCharCode(byte)
+        : `\\${byte.toString(16).padStart(2, "0").toUpperCase()}`;
+  return out + "\\00";
+}
+
+/** The class descriptor (ScrArrClass: name, destroy) of a class declared
+ * `extends Array`. */
+export function arrayClassDescriptor(className: string): string {
+  return `@${mangleClassStruct(className)}.arrcls`;
 }
 
 /** The GEP index of the ThreadSlots slot word (an i32) in a class whose
@@ -411,6 +469,12 @@ export function classFieldIndex(
   if (idx < 0)
     throw new InternalCompilerError(
       `llvm emitter bug: unknown field ${field} on class ${meta.def.name}`,
+    );
+  // An inline array field's slot holds its element count: its reads and
+  // writes go through inline-arrays.ts.
+  if (meta.inlineTail?.field === idx && meta.compact)
+    throw new InternalCompilerError(
+      `llvm emitter bug: field slot of the inline array field ${meta.def.name}.${field}`,
     );
   const compressed = meta.compressed[idx] === true;
   // Callers that read or write a field's storage as a pointer must not see
@@ -473,7 +537,11 @@ export interface ClassHost extends ShapeHost {
  * hierarchy folds away. The cycle analysis leaves the hierarchy untraced, so
  * no trace adapter ever visits an instance (as for every untraced class). */
 export function programLifetimeClass(host: ClassHost, meta: LlClassMeta): boolean {
-  return host.programLifetime?.has(meta.root.def.name) === true && meta.root.def.runtime !== true;
+  return (
+    host.programLifetime?.has(meta.root.def.name) === true &&
+    meta.root.def.runtime !== true &&
+    meta.root.def.arrayElem === undefined
+  );
 }
 
 /** The reference count a program-lifetime instance is created with: the
@@ -573,20 +641,38 @@ export function classIdLoadLines(
  * 64-bit word. The count is the i32 at offset 0. */
 export const CLASS_ID_OFFSET = 4;
 
+/** The bound on layout ids (scr_rc.h SCR_RC_LAYOUT_ID_LIMIT): the high
+ * half of a 64-bit rc word keeps the layout id in its low 30 bits, beside
+ * the program-lifetime and frozen bits. A class id is the layout id of its
+ * class's canonical layout. */
+export const LAYOUT_ID_LIMIT = 0x3fffffff;
+
 /** The rc word an LlClassMeta.idInRc instance is created with: the class
  * id, its preorder number plus 1, in the high 32 bits, and in the low 32 bits
  * a count of 1, or for a program-lifetime instance the midpoint of the 32-bit
- * count (as programLifetimeRc is of the 32-bit word). The id is never 0,
- * 0x80000000 or 0xffffffff, the high halves of other objects' rc words, so
- * the runtime can tell an object with a class id (scr_rc.h scr_rc_class_id). */
+ * count (as programLifetimeRc is of the 32-bit word). The id is a layout id
+ * (LAYOUT_ID_LIMIT), so it never sets the program-lifetime or frozen bit
+ * and the runtime reads it back (scr_rc.h scr_rc_layout_id). */
 export function classIdRcWord(meta: LlClassMeta, lifetime: boolean): string {
+  if (meta.pre + 1 >= LAYOUT_ID_LIMIT)
+    throw new InternalCompilerError(`class id ${meta.pre + 1} is not a layout id`);
   return (BigInt(meta.pre + 1) * 2n ** 32n + (lifetime ? 2n ** 31n : 1n)).toString();
+}
+
+/** The rc word of an immortal LlClassMeta.idInRc instance (a frame
+ * object): the class id in the high half and the immortal count, all ones,
+ * in the low half, which scr_rc_immortal reads as immortal. */
+export function classIdImmortalRcWord(meta: LlClassMeta): string {
+  if (meta.pre + 1 >= LAYOUT_ID_LIMIT)
+    throw new InternalCompilerError(`class id ${meta.pre + 1} is not a layout id`);
+  return (BigInt(meta.pre + 1) * 2n ** 32n + 0xffffffffn).toString();
 }
 
 /** The 32-bit header of a compact class instance (LlClassMeta.compact):
  * COMPACT_HEADER_TAG, the class id (classIdRcWord's preorder number + 1, 0
- * outside a hierarchy) in the low 28 bits, and COMPACT_PUBLISHED once
- * publication marks the object. No other object's count reaches
+ * for a class without LlClassMeta.idInRc) in the low 28 bits, and
+ * COMPACT_PUBLISHED once publication marks the object. No other object's
+ * count reaches
  * 0x70000000, so the runtime reads a word of 0xf0000000 and up as published
  * for every object (scr_rc.h SCR_RC_PUBLISHED). */
 export const COMPACT_HEADER_TAG = 0x70000000;
@@ -605,7 +691,7 @@ export function storedHeaderBytes(meta: LlClassMeta): number {
 
 /** The header word a compact instance is created with. */
 export function compactHeaderWord(meta: LlClassMeta): number {
-  return COMPACT_HEADER_TAG | (meta.hierarchy ? meta.pre + 1 : 0);
+  return COMPACT_HEADER_TAG | (meta.idInRc ? meta.pre + 1 : 0);
 }
 
 /** Lines that decode the 32-bit reference `idx` (an i32) of a compressed
@@ -722,10 +808,16 @@ export function assignCompactLayouts(
     field: number,
     isCompact: (className: string) => boolean,
   ) => boolean,
+  inlineArrays?: ReadonlyMap<string, InlineArrayClass>,
 ): void {
   const isCompact = (className: string): boolean => {
     const target = metaMap.get(className);
-    return target !== undefined && target.def.runtime !== true && compact(target.root);
+    return (
+      target !== undefined &&
+      target.def.runtime !== true &&
+      target.root.def.arrayElem === undefined &&
+      compact(target.root)
+    );
   };
   const byPre = [...metaMap.values()].sort((a, b) => a.pre - b.pre);
   for (const meta of byPre) {
@@ -748,7 +840,18 @@ export function assignCompactLayouts(
         ? base!.compressed[i]!
         : compressedRef !== undefined && compressedRef(meta.def, i, isCompact),
     );
+    // An inline array field (ir/inline-arrays.ts) whose elements are compact
+    // keeps its element count in its slot.
+    const inline = inlineArrays?.get(meta.def.name);
+    const inlineField =
+      inline !== undefined && isCompact(inline.elemClass) && isCompact(inline.declaringClass)
+        ? inline.fieldIndex
+        : -1;
     const types = fieldTypes(meta.def).map((t, i) => {
+      if (i === inlineField) {
+        compressed[i] = false;
+        return "i32";
+      }
       if (!compressed[i]) return t;
       if (t !== "ptr")
         throw new InternalCompilerError(
@@ -796,6 +899,44 @@ export function assignCompactLayouts(
     meta.compactSlots = slots;
     meta.compressed = compressed;
   }
+  if (inlineArrays !== undefined) assignInlineTails(metaMap, inlineArrays);
+}
+
+/** Gives each compact class of an inline array field's subtree its tail
+ * (LlClassMeta.inlineTail): the elements start after the largest fixed part
+ * of any class in the subtree, so that a read through any static type of
+ * the subtree finds them at the same offset. */
+function assignInlineTails(
+  metaMap: ReadonlyMap<string, LlClassMeta>,
+  inlineArrays: ReadonlyMap<string, InlineArrayClass>,
+): void {
+  const subtrees = new Map<string, LlClassMeta[]>();
+  for (const [name, plan] of inlineArrays) {
+    const meta = metaMap.get(name);
+    if (meta === undefined || !meta.compact) continue;
+    // The layout gave the field its i32 count only when the elements are
+    // compact (assignCompactLayouts).
+    const slot = meta.compactSlots[plan.fieldIndex];
+    if (slot === undefined || meta.compactElems[slot]?.type !== "i32") continue;
+    const members = subtrees.get(plan.declaringClass);
+    if (members === undefined) subtrees.set(plan.declaringClass, [meta]);
+    else members.push(meta);
+  }
+  for (const members of subtrees.values()) {
+    let end = 0;
+    for (const meta of members)
+      for (const e of meta.compactElems) end = Math.max(end, e.offset + e.size);
+    const tailOffset = alignTo(end, 4);
+    for (const meta of members) {
+      const plan = inlineArrays.get(meta.def.name)!;
+      meta.inlineTail = {
+        field: plan.fieldIndex,
+        tailOffset,
+        elemClass: plan.elemClass,
+        lengthArg: plan.lengthArg,
+      };
+    }
+  }
 }
 
 function alignTo(n: number, align: number): number {
@@ -814,6 +955,20 @@ function undefFieldInits(
   meta: LlClassMeta,
   nullable: NullableRefFields | undefined,
 ): string[] {
+  return classUndefinedFieldInits(host, meta, nullable, "%o", "%uf");
+}
+
+/** The stores that start an instance's union and dyn fields at undefined,
+ * for the instance at `object`, with temporaries named `<prefix><index>`
+ * and `<prefix>v<index>`. A nullable-pointer field's zeroed slot already is
+ * its unit arm. */
+export function classUndefinedFieldInits(
+  host: ClassHost,
+  meta: LlClassMeta,
+  nullable: NullableRefFields | undefined,
+  object: string,
+  prefix: string,
+): string[] {
   const out: string[] = [];
   meta.def.fields.forEach((f, i) => {
     // Error.cause uses NULL for absence; an options constructor installs
@@ -821,6 +976,8 @@ function undefFieldInits(
     if (f.name === "%cause") return;
     // A nullable-pointer field's zeroed slot already is its unit arm.
     if (nullable?.get(meta.def.name, f.name)) return;
+    // An inline array field's slot holds its count, which `new` stores.
+    if (meta.inlineTail?.field === i && meta.compact) return;
     // Only union and dyn fields get a store here; a compressed field is a
     // class reference, which starts NULL.
     const { index, compressed } = classFieldIndex(meta, f.name, "compressed");
@@ -830,17 +987,17 @@ function undefFieldInits(
       const tag = undefinedArmTag(f.type, host.unionsById);
       if (tag < 0) return;
       out.push(
-        `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}, i32 0`,
-        `  store i32 ${tag}, ptr %uf${i} ; ${llvmCommentText(f.name)} starts undefined`,
+        `  ${prefix}${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr ${object}, i64 0, i32 ${index}, i32 0`,
+        `  store i32 ${tag}, ptr ${prefix}${i} ; ${llvmCommentText(f.name)} starts undefined`,
       );
       return;
     }
     if (f.type.kind === "dyn") {
       host.declare("declare ptr @scr_dyn_undefined()");
       out.push(
-        `  %ufv${i} = call ptr @scr_dyn_undefined()`,
-        `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}`,
-        `  store ptr %ufv${i}, ptr %uf${i} ; ${llvmCommentText(f.name)} starts undefined`,
+        `  ${prefix}v${i} = call ptr @scr_dyn_undefined()`,
+        `  ${prefix}${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr ${object}, i64 0, i32 ${index}`,
+        `  store ptr ${prefix}v${i}, ptr ${prefix}${i} ; ${llvmCommentText(f.name)} starts undefined`,
       );
       return;
     }
@@ -848,8 +1005,8 @@ function undefFieldInits(
     const tag = undefinedArmTag(f.type, host.unionsById);
     if (tag < 0) return;
     out.push(
-      `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}`,
-      `  store ptr ${host.unitInstanceRef(f.type.unionId, tag)}, ptr %uf${i} ; ${llvmCommentText(f.name)} starts undefined`,
+      `  ${prefix}${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr ${object}, i64 0, i32 ${index}`,
+      `  store ptr ${host.unitInstanceRef(f.type.unionId, tag)}, ptr ${prefix}${i} ; ${llvmCommentText(f.name)} starts undefined`,
     );
   });
   return out;
@@ -900,13 +1057,15 @@ export function emitClassShapes(
     // usual pointer reinterprets.
     const runtimePrefix = runtimePrefixOf(meta);
     const prefix =
-      meta.hierarchy && !meta.idInRc
-        ? streamRooted(meta)
-          ? ["ptr", "ptr", "ptr", "ptr"]
-          : runtimePrefix
-            ? ["ptr", "ptr", "ptr"]
-            : ["ptr"]
-        : [];
+      cls.arrayElem !== undefined
+        ? ARRAY_PREFIX
+        : meta.hierarchy && !meta.idInRc
+          ? streamRooted(meta)
+            ? ["ptr", "ptr", "ptr", "ptr"]
+            : runtimePrefix
+              ? ["ptr", "ptr", "ptr"]
+              : ["ptr"]
+          : [];
     const members = [...prefix, ...(meta.threadSlot ? ["i32"] : []), ...fieldTys];
     typeDefs.push(
       `%${mangleClassStruct(cls.name)} = type { ${host.sizeType}${members.length ? ", " + members.join(", ") : ""} } ` +
@@ -958,7 +1117,7 @@ export function emitClassShapes(
   // instance is the element at its number minus the root's.
   for (const name of roots) {
     const root = metaMap.get(name)!;
-    if (!root.idInRc) continue;
+    if (!root.hierarchy || !root.idInRc) continue;
     const members = [...metaMap.values()]
       .filter((m) => m.root === root)
       .sort((a, b) => a.pre - b.pre);
@@ -993,6 +1152,7 @@ export function emitClassShapes(
     const types = ownedFields(cls).map(({ field }) => storedFieldType(cls, field));
     for (const t of types) fieldTypes.push(t);
     if (programLifetimeClass(host, meta)) continue;
+    if (cls.arrayElem !== undefined) continue;
     if (meta.hierarchy && (meta.children.length !== 0 || meta.root.def.runtime === true)) continue;
     if (!types.some((t) => isRefCounted(t) && needsBoundedRelease(t))) continue;
     const release = mangleClassRelease(cls.name);
@@ -1009,6 +1169,12 @@ export function emitClassShapes(
   }
   const directTargets = usedDirectTargets(host, candidates, fieldTypes);
 
+  // The descriptor entries of a class declared `extends Array`: a helper
+  // the module defines, or null (a class that is never constructed has
+  // neither).
+  const defined = new Set(mod.functions.map((fn) => fn.name));
+  const arrayClassFn = (name: string | undefined): string =>
+    name !== undefined && defined.has(name) ? `@${mangleFunction(name)}` : "null";
   for (const cls of emitted) {
     const meta = metaMap.get(cls.name)!;
     const struct = mangleClassStruct(cls.name);
@@ -1038,9 +1204,15 @@ export function emitClassShapes(
     // A traced class whose trace visits nothing carries the collector header
     // only because its hierarchy is traced: it is never on a cycle. Its
     // descriptor names scr_cyc_no_children and its objects start out
-    // SCR_CYC_ACYCLIC, so releases never buffer them.
+    // SCR_CYC_ACYCLIC, so releases never buffer them. An Array subclass's
+    // trace also visits its elements by their current element ops
+    // (scr_arr_subclass_trace), so it is never acyclic.
     const acyclic =
-      traced && runtimePrefix === null && !isStreamRooted && tracedFields.length === 0;
+      traced &&
+      runtimePrefix === null &&
+      !isStreamRooted &&
+      tracedFields.length === 0 &&
+      cls.arrayElem === undefined;
     const bounded =
       runtimePrefix !== null ||
       isStreamRooted ||
@@ -1090,6 +1262,7 @@ export function emitClassShapes(
     const destroy = `${meta.hierarchy ? mangleClassReleaseDirect(cls.name) : mangleClassRelease(cls.name)}_destroy`;
     const segmented =
       chained &&
+      cls.arrayElem === undefined &&
       !meta.compact &&
       runtimePrefix === null &&
       !isStreamRooted &&
@@ -1105,7 +1278,12 @@ export function emitClassShapes(
     // members). Runs at rc == 0.
     const teardown = (lines: string[]): void => {
       const release = (prefix: string, f: (typeof refFields)[number], t: number): string[] => {
-        const direct = bounded ? directDestroyTarget(host, f.type, directTargets) : null;
+        // An Array subclass instance's destroy releases its fields plainly
+        // (it takes no chain length).
+        const direct =
+          bounded && cls.arrayElem === undefined
+            ? directDestroyTarget(host, f.type, directTargets)
+            : null;
         if (direct === null)
           return [
             `  call void ${releaseSym(host, f.type)}(ptr %v${t}) ; ${llvmCommentText(f.name)}`,
@@ -1236,9 +1414,57 @@ export function emitClassShapes(
         reld.push(`done:`, `  ret void`, `}`, ``);
         defs.push(...reld);
       }
+    } else if (cls.arrayElem !== undefined) {
+      // An instance is an array: its release is the array's, which reaches
+      // the class's destroy (the descriptor's) when the count reaches zero.
+      host.declare(`declare void @scr_arr_release(ptr)`);
+      host.declare(`declare void @scr_arr_subclass_drop(ptr)`);
+      const destroy = `${mangleClassRelease(cls.name)}.arrdestroy`;
+      const destroyBody: string[] = [
+        `define internal void @${destroy}(ptr %o) ${FN_ATTRS} { ; destroy ${cls.name} (an Array subclass instance)`,
+        `entry:`,
+      ];
+      const fieldsTeardown: string[] = [];
+      teardown(fieldsTeardown);
+      const free = emitObjectFree(host, traced);
+      destroyBody.push(
+        ...fieldsTeardown.slice(0, fieldsTeardown.length - free.length),
+        `  call void @scr_arr_subclass_drop(ptr %o)`,
+        ...free,
+        `  ret void`,
+        `}`,
+        ``,
+      );
+      const displayName = cls.name.includes(".")
+        ? cls.name.slice(cls.name.lastIndexOf(".") + 1)
+        : cls.name;
+      const jsName = cls.jsName ?? displayName;
+      defs.push(
+        ...destroyBody,
+        // The name is the class's own copy: its address identifies the
+        // class in dyn snapshots of an instance (scr_arr_copy_metadata).
+        `${arrayClassDescriptor(cls.name)}.name = private constant [${Buffer.byteLength(jsName, "utf8") + 1} x i8] c"${nulTerminatedBytes(jsName)}"`,
+        `${arrayClassDescriptor(cls.name)} = internal constant { ptr, ptr, ptr, ptr } { ptr ${arrayClassDescriptor(cls.name)}.name, ptr @${destroy}, ptr ${arrayClassFn(cls.arrayFields)}, ptr ${arrayClassFn(cls.arraySpecies)} }`,
+        ``,
+        `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (the array's)`,
+        `entry:`,
+        `  call void @scr_arr_release(ptr %o)`,
+        `  ret void`,
+        `}`,
+        ``,
+      );
     } else {
       const freeBody: string[] = [];
       teardown(freeBody);
+      // A segmented class whose every reference field holds its own type and
+      // that has no collector header tears down in one loop (shapes.ts
+      // iterativeTeardownDefinitions).
+      const iterative =
+        segmented &&
+        !traced &&
+        refFields.every(
+          (f) => directDestroyTarget(host, f.type, directTargets)?.destroy === destroy,
+        );
       defs.push(
         ...releaseBody(
           host,
@@ -1250,6 +1476,19 @@ export function emitClassShapes(
           lifetime,
           chained,
           segmented,
+          false,
+          iterative
+            ? iterativeTeardownDefinitions(
+                host,
+                destroy,
+                struct,
+                refFields.map((f) => f.index),
+                `@${mangleClassRelease(cls.name)}`,
+                "weak",
+                count,
+              )
+            : null,
+          count,
         ),
         ``,
       );
@@ -1259,8 +1498,12 @@ export function emitClassShapes(
     // members, undefined-admitting union fields at the interned unit
     // instance. Traced shapes allocate with the collector header; alloc.ts
     // inlines the allocator fast paths and the alloc note.
+    // An inline array field's instance (LlClassMeta.inlineTail) takes the
+    // field's element count and has room for the elements after its fixed
+    // fields.
+    const tail = meta.compact && regionRefs ? (meta.inlineTail ?? null) : null;
     const nw: string[] = [
-      `define internal ptr @${mangleClassNew(cls.name)}() ${FN_ATTRS} { ; new ${cls.name}`,
+      `define internal ptr @${mangleClassNew(cls.name)}(${tail !== null ? "i32 %inl.len" : ""}) ${FN_ATTRS} { ; new ${cls.name}`,
       `entry:`,
     ];
     const cycType = `@${mangleClassTrace(cls.name)}.cyctype`;
@@ -1288,7 +1531,14 @@ export function emitClassShapes(
       // Compressed fields refer to compact instances by their index in the
       // program-lifetime region, so every compact instance lives there:
       // zeroed, 8-byte aligned and never freed.
-      nw.push(...plrAllocLines(host, sizeOf));
+      if (tail !== null) {
+        nw.push(
+          `  %inl.n = zext i32 %inl.len to ${host.sizeType}`,
+          `  %inl.bytes = shl nuw nsw ${host.sizeType} %inl.n, 2`,
+          `  %inl.size = add nuw nsw ${host.sizeType} %inl.bytes, ${tail.tailOffset}`,
+        );
+        nw.push(...plrAllocLines(host, "%inl.size"));
+      } else nw.push(...plrAllocLines(host, sizeOf));
     } else
       nw.push(
         ...emitObjectAlloc(
@@ -1298,6 +1548,8 @@ export function emitClassShapes(
           storedHeaderBytes(meta),
         ),
       );
+    // The header and field set-up, shared with the arena-aware constructor.
+    const initStart = nw.length;
     if (meta.compact && !meta.hierarchy)
       nw.push(`  store i32 ${compactHeaderWord(meta)}, ptr %o ; no count (compactHeaderWord)`);
     else if (meta.compact) {
@@ -1323,6 +1575,13 @@ export function emitClassShapes(
       nw.push(
         `  store ${host.sizeType} ${lifetime ? programLifetimeRc(host.sizeType) : 1}, ptr %o`,
       );
+    if (cls.arrayElem !== undefined) {
+      const init = arrElemInit(host, cls.arrayElem);
+      host.declare(`declare void @scr_arr_subclass_init(ptr, i8, ptr, ptr, i1 zeroext)`);
+      nw.push(
+        `  call void @scr_arr_subclass_init(ptr %o, i8 ${init.kind}, ptr ${init.ops}, ptr ${arrayClassDescriptor(cls.name)}, i1 ${traced})`,
+      );
+    }
     if (lifetime && audit) {
       // --sanitize builds: the RC audit skips its leak report when the
       // program keeps program-lifetime objects (scr_console.c), and
@@ -1356,13 +1615,71 @@ export function emitClassShapes(
       );
     }
     nw.push(...undefFieldInits(host, meta, nullable));
+    if (tail !== null)
+      nw.push(
+        `  %inl.countp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${meta.compactSlots[tail.field]!}`,
+        `  store i32 %inl.len, ptr %inl.countp ; ${llvmCommentText(cls.name)} inline array count`,
+      );
     // Young instances: program-owned traced classes. Classes rooted at a
     // runtime base (errors, emitters, events, streams) carry runtime state
     // and stay with trial deletion, like every runtime family.
-    if (traced && !lifetime && (!meta.hierarchy || meta.root.def.runtime !== true))
+    const init = nw.slice(initStart);
+    if (
+      traced &&
+      !lifetime &&
+      (!meta.hierarchy || meta.root.def.runtime !== true) &&
+      cls.arrayElem === undefined
+    )
       nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr ${meta.hierarchy ? "%o.vt" : "%o"}`, `}`, ``);
     defs.push(...nw);
+    if (
+      host.arenaClasses?.has(cls.name) === true &&
+      cls.arrayElem === undefined &&
+      !lifetime &&
+      regions === null &&
+      !meta.compact &&
+      runtimePrefix === null &&
+      !isStreamRooted &&
+      !meta.threadSlot
+    ) {
+      // The arena count in place of 1, in the rc word or its low half.
+      const counted = meta.idInRc
+        ? `  store i64 ${classIdRcWord(meta, false)}, ptr %o.vt`
+        : `  store ${host.sizeType} 1, ptr %o`;
+      const arenaCount = meta.idInRc
+        ? `  store i64 ${(BigInt(meta.pre + 1) * 2n ** 32n + BigInt(ARENA_RC)).toString()}, ptr %o.vt`
+        : `  store ${host.sizeType} ${ARENA_RC}, ptr %o`;
+      const newSym = mangleClassNew(cls.name);
+      const dispose =
+        refFields.length > 0 && host.arenasClosed !== true ? arenaDisposeSym(newSym) : null;
+      defs.push(
+        ...arenaNewLines(
+          host,
+          newSym,
+          sizeOf,
+          traced ? cycType : null,
+          dispose,
+          init.map((line) => (line.startsWith(counted) ? arenaCount : line)),
+          meta.hierarchy ? "%o.vt" : "%o",
+        ),
+      );
+      if (dispose !== null)
+        defs.push(
+          ...arenaDisposeLines(
+            newSym,
+            refFields.flatMap((f, t) =>
+              disposeFieldLines(
+                t,
+                `getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
+                plainRefType(f.type),
+                releaseSym(host, f.type),
+                llvmCommentText(f.name),
+              ),
+            ),
+          ),
+        );
+    }
 
     if (traced) {
       // trace: visit exactly the cycle-capable fields; gcFree: release
@@ -1382,6 +1699,12 @@ export function emitClassShapes(
       tracedFields.forEach((f, i) => {
         tr.push(...traceFieldVisitLines(struct, f.index, i, llvmCommentText(f.name)));
       });
+      // An Array subclass instance's elements, when its current element
+      // storage is cycle-capable (a species result can retype it).
+      if (cls.arrayElem !== undefined) {
+        host.declare(`declare void @scr_arr_subclass_trace(ptr, ptr, ptr)`);
+        tr.push(`  call void @scr_arr_subclass_trace(ptr %o, ptr %visit, ptr %ctx) ; the elements`);
+      }
       tr.push(`  ret void`, `}`, ``);
       defs.push(...tr);
 
@@ -1399,6 +1722,12 @@ export function emitClassShapes(
         );
       });
       if (meta.threadSlot) gf.push(...slotForgetLines(host, struct, meta, "gfw"));
+      if (cls.arrayElem !== undefined) {
+        // The elements: traced ones are the collector's, the others are
+        // released with the storage (the same test as the trace's).
+        host.declare(`declare void @scr_arr_subclass_gc_drop(ptr)`);
+        gf.push(`  call void @scr_arr_subclass_gc_drop(ptr %o)`);
+      }
       gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
@@ -1410,18 +1739,18 @@ export function emitClassShapes(
  * statics plus their construct thunks — allocate, run the constructor over
  * a +1 `this`, and hand the remaining +1 out. No pending check is needed:
  * in-tier constructors are throw-free by construction.
- * `classObjs` maps className → { nameSym } registered during body emission
- * (the literal interned while the table was open). */
+ * `classObjs` maps className → { nameSym, baseNameSym } registered during
+ * body emission (the literals interned while the table was open). */
 export function emitClassObjDefs(
   host: ClassHost,
   metaMap: Map<string, LlClassMeta>,
-  classObjs: Map<string, { nameSym: string }>,
+  classObjs: Map<string, { nameSym: string; baseNameSym: string | null }>,
   fnByName: Map<string, IrFunction>,
   llType: (t: IrType) => string,
   threadLocal = false,
 ): string[] {
   const out: string[] = [];
-  for (const [className, { nameSym }] of classObjs) {
+  for (const [className, { nameSym, baseNameSym }] of classObjs) {
     const meta = metaMap.get(className);
     if (!meta)
       throw new InternalCompilerError(
@@ -1442,12 +1771,16 @@ export function emitClassObjDefs(
       throw new InternalCompilerError(
         `llvm emitter bug: class object for ${className} without a constructor`,
       );
+    if (meta.inlineTail !== undefined)
+      throw new InternalCompilerError(
+        `llvm emitter bug: class object for ${className}, which has an inline array field`,
+      );
     const params = ctor.params.slice(valueCtor.firstArg);
     const paramDecls = params.map((p, i) => `${llType(p.type)} %a${i}`).join(", ");
     const ctorArgs = params.map((p, i) => `${llType(p.type)} %a${i}`);
     const classObj =
       `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
-      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null } ; class ${className}`;
+      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null, ptr ${baseNameSym ?? "null"}, ${host.sizeType} ${meta.def.ownStaticFields ? 1 : 0} } ; class ${className}`;
     if (meta.def.runtime) {
       // A runtime-provided class: %C.construct allocates through the
       // runtime and returns the instance.
@@ -1508,6 +1841,8 @@ export function emitClassObjDefs(
       `define internal ptr @${mangleCtorThunk(className)}(ptr %class${paramDecls ? ", " + paramDecls : ""}) ${FN_ATTRS} { ; construct thunk ${className}`,
       `entry:`,
       `  %o = call ptr @${mangleClassNew(className)}()`,
+      // Construction through a class value: the census counts it here.
+      ...(host.heapCensus?.newLines(className) ?? []),
       ...(meta.def.localCaptures !== undefined
         ? [
             `  %class.owned = call ptr @scr_classobj_retain_v(ptr %class)`,

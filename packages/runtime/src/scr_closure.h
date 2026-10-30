@@ -82,6 +82,24 @@ void scr_box_set_f64(ScrBox *b, double v);
 void scr_box_set_bool(ScrBox *b, bool v);
 void scr_box_set_ref(ScrBox *b, void *v); /* releases old, owns new */
 
+/* The bits of ScrClosure.function_kind. The LLVM backend stores them too:
+ * CLOSURE_KIND in packages/compiler/src/backend/llvm/common.ts mirrors this
+ * list, and runtime-registries.test.ts checks that the two agree and that
+ * the bits are distinct. The low two bits (SCR_CLOSURE_KIND_CALL_MASK) are
+ * the function's call kind: 0 ordinary, 1 generator, 2 async, 3 async
+ * generator. */
+#define SCR_CLOSURE_KIND_GENERATOR 1u
+#define SCR_CLOSURE_KIND_ASYNC 2u
+#define SCR_CLOSURE_KIND_CALL_MASK 3u
+#define SCR_CLOSURE_KIND_OWN_PROTOTYPE 4u /* an ordinary function with its own prototype */
+#define SCR_CLOSURE_KIND_CHECKED_ADAPTER 8u /* a checked callable adapter: the callable is in caps[0] */
+/* The body never observes the ambient receiver (the `this` an unbound call
+ * binds), so compiled callers skip the receiver bracket around an indirect
+ * call. Set only by the compiler; the kind proper is
+ * function_kind & SCR_CLOSURE_KIND_MASK. */
+#define SCR_CLOSURE_KIND_RECEIVER_FREE 16u
+#define SCR_CLOSURE_KIND_MASK 15u
+
 typedef struct ScrClosure {
   size_t rc; /* SIZE_MAX = immortal (interned top-level function value) */
   void *fn;
@@ -98,7 +116,7 @@ typedef struct ScrClosure {
    * (like the dyn→closure edge): a cycle through it is merely never
    * collected. */
   ScrBox *props;
-  uint32_t function_kind; /* low bits: 0 ordinary, 1 generator, 2 async, 3 async generator; bit 2: ordinary own prototype; bit 3: checked callable adapter in caps[0] */
+  uint32_t function_kind; /* SCR_CLOSURE_KIND_* bits */
   /* The root's `length` as boxed values report it; meaningful only when
    * identity is set (the root's own boxes carry their arity). */
   uint32_t identity_length;

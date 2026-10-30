@@ -1,0 +1,19 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/split-cjs-require-cycle/b.js",
+  "<repo>/tests/diagnostics/split-cjs-require-cycle/main.js"
+ ],
+ "diags": [
+  {
+   "code": "SC1016",
+   "message": "circular imports (<repo>/tests/diagnostics/split-cjs-require-cycle/main.js → <repo>/tests/diagnostics/split-cjs-require-cycle/b.js → <repo>/tests/diagnostics/split-cjs-require-cycle/main.js; the cycle closes through a require() edge: <repo>/tests/diagnostics/split-cjs-require-cycle/main.js uses its exports at <repo>/tests/diagnostics/split-cjs-require-cycle/main.js:10 outside the export statements that precede its first require, so a module of the cycle can observe them before they settle) are not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/split-cjs-require-cycle/main.js",
+    "start": 0,
+    "end": 0
+   },
+   "milestone": "later",
+   "hint": "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge"
+  }
+ ]
+}

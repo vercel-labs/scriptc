@@ -1,7 +1,9 @@
 import { keyedHelperName } from "../stable-names.js";
+import { allBytesArms, indexedUnionArms, lowerIndexedUnionMethod } from "../indexed-unions.js";
 import { boolLit, dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { BUF_NUM_METHODS } from "./buffer-numeric-methods.js";
 import * as ts from "../../ts7/adapter.js";
+import { constituentTypes } from "../../ts7/checker.js";
 import {
   BIGINT_T,
   BOOL,
@@ -42,7 +44,7 @@ import {
   lowerStaticallyUndefinedArgument,
 } from "../optional-arguments.js";
 import { lowerArraySpreadItems, lowerCheckedArrayFrom } from "./array-construction.js";
-import { lowerToNumberArgument } from "../lower-exprs.js";
+import { lowerOptionalNumber, lowerToNumberArgument } from "../lower-exprs.js";
 import { lowerBytesIteratorValue } from "../iterator-adapters.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
 import { callbackSite, findPredicateOk, predicateToBoolean } from "./array-callbacks.js";
@@ -1032,6 +1034,119 @@ export function lowerBytesPrototypeSetCall(
  * variable-width read/writeUIntLE quartet — BUF_NUM_METHODS). Everything
  * else the lib declares (fill, indexOf, reverse, ...) falls through to
  * the SC2020 member fence. Null when this isn't a bytes method call. */
+/** The [needle, fromIndex] arguments of TypedArray indexOf, lastIndexOf
+ * and includes. A present fromIndex converts even when it is undefined
+ * (NaN, which ToIntegerOrInfinity makes 0); an absent one is 0, or
+ * +Infinity for lastIndexOf, which starts at the last element. */
+function elementSearchArgs(lowerer: Lowerer, call: ts.CallExpression, name: string): IrExpr[] {
+  const nodes = call.arguments.nodes;
+  const loc = locOf(call);
+  const needle = lowerer.lowerExprExpecting(nodes[0]!, F64);
+  const from: IrExpr = nodes[1]
+    ? lowerOptionalNumber(lowerer, lowerer.lowerExpr(nodes[1]), locOf(nodes[1]), nodes[1])
+    : ({
+        kind: "numLit",
+        value: name === "lastIndexOf" ? Infinity : 0,
+        type: F64,
+        loc,
+      } satisfies IrExpr);
+  // An undefined fromIndex is NaN once converted, which starts at 0.
+  if (from.kind === "unitLit") return [needle, { kind: "numLit", value: NaN, type: F64, loc }];
+  if (from.type.kind === "undefinedT" || from.type.kind === "void")
+    return [
+      needle,
+      {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: from, loc }],
+        result: { kind: "numLit", value: NaN, type: F64, loc },
+        type: F64,
+        loc,
+      },
+    ];
+  if (from.type.kind !== "f64") lowerer.noLowering(`.${name} with a non-number fromIndex`, call);
+  return [needle, from];
+}
+
+const ELEMENT_SEARCHES: Readonly<Record<string, IrBytesIntrinsicMethod>> = {
+  indexOf: "indexOfElem",
+  lastIndexOf: "lastIndexOfElem",
+  includes: "includesElem",
+};
+
+/** Whether a union has a Buffer arm, under any alias name: each arm's own
+ * symbol names it. */
+function hasBufferArm(type: ts.Type): boolean {
+  const arms = type.flags & ts.TypeFlags.Union ? constituentTypes(type) : [type];
+  return arms.some((arm) => {
+    const symbol = arm.getSymbol();
+    return symbol !== undefined && ts.symbolName(symbol) === "Buffer";
+  });
+}
+
+/** The element-kind-generic typed-array methods on a union of typed
+ * arrays (indexed-unions.ts): the arguments lower as for one typed array,
+ * and each arm runs the method on its own receiver. Null for the methods
+ * that need a narrowing to one kind first. */
+function lowerUnionBytesMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+): IrExpr | null {
+  if (isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
+  // A Buffer arm's methods differ from a typed array's (slice aliases, fill
+  // checks its range, searches take strings and wrap numbers), so such a
+  // union narrows to its arms first.
+  if (hasBufferArm(lowerer.typeOf(access.expression))) return null;
+  const nodes = call.arguments.nodes;
+  if (nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const optional = (i: number, fallback: IrExpr, type: IrType = F64): IrExpr =>
+    nodes[i] ? lowerOptionalArgument(lowerer, nodes[i]!, type, fallback) : fallback;
+  let method: IrBytesIntrinsicMethod;
+  let args: () => IrExpr[];
+  let result: "receiver" | IrType;
+  if ((name === "slice" || name === "subarray") && nodes.length <= 2) {
+    method = name;
+    args = () => [optional(0, num(0)), optional(1, num(Infinity))];
+    result = "receiver";
+  } else if (name === "fill" && nodes.length <= 3) {
+    method = "fillElem";
+    args = () => [optional(0, num(0)), optional(1, num(0)), optional(2, num(Infinity))];
+    result = "receiver";
+  } else if (name === "copyWithin" && nodes.length <= 3) {
+    method = "copyWithin";
+    args = () => [optional(0, num(0)), optional(1, num(0)), optional(2, num(Infinity))];
+    result = "receiver";
+  } else if (name === "toReversed" && nodes.length === 0) {
+    method = "toReversed";
+    args = () => [];
+    result = "receiver";
+  } else if (Object.hasOwn(ELEMENT_SEARCHES, name) && (nodes.length === 1 || nodes.length === 2)) {
+    method = ELEMENT_SEARCHES[name]!;
+    args = () => elementSearchArgs(lowerer, call, name);
+    result = name === "includes" ? BOOL : F64;
+  } else if (name === "join" && nodes.length <= 1) {
+    method = "join";
+    args = () => [optional(0, { kind: "strLit", value: ",", type: STRING, loc }, STRING)];
+    result = STRING;
+  } else if (name === "set" && (nodes.length === 1 || nodes.length === 2)) {
+    const source = lowerer.mapTypeOf(lowerer.typeOf(nodes[0]!));
+    method = source?.kind === "bytes" ? "setFrom" : "setFromDyn";
+    args = () => {
+      const src = lowerer.lowerExpr(nodes[0]!);
+      const first = src.type.kind === "bytes" ? src : lowerer.coerceInto(nodes[0]!, src, DYN);
+      return nodes.length === 2 ? [first, optional(1, num(0))] : [first];
+    };
+    result = VOID;
+  } else return null;
+  const receiver = lowerer.lowerExpr(access.expression);
+  const arms = indexedUnionArms(lowerer, receiver.type);
+  if (!arms || !allBytesArms(arms)) return null;
+  return lowerIndexedUnionMethod(lowerer, receiver, arms, method, args(), result, loc);
+}
+
 export function lowerBytesMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1040,6 +1155,9 @@ export function lowerBytesMethodCall(
   if (lowerer.chainBlocked(access, call)) return null;
   const name = access.name.text;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  const unionArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
+  if (unionArms && allBytesArms(unionArms) && lowerer.isStdlibMember(access))
+    return lowerUnionBytesMethodCall(lowerer, call, access, name);
   if (receiverIr?.kind !== "bytes") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const loc = locOf(call);
@@ -1085,6 +1203,29 @@ export function lowerBytesMethodCall(
       );
       if (value) return value;
     }
+  }
+  // TypedArray indexOf / lastIndexOf / includes (the Buffer-declared forms,
+  // which also take string and Buffer needles, lowered above).
+  if (
+    Object.hasOwn(ELEMENT_SEARCHES, name) &&
+    !lowerer.checker
+      .getSymbolAtLocation(access.name)
+      ?.declarations.some(
+        (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
+      )
+  ) {
+    if (nArgs < 1 || nArgs > 2 || call.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`.${name} with ${nArgs} arguments on typed arrays`, call);
+    }
+    const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
+    return {
+      kind: "bytesIntrinsic",
+      method: ELEMENT_SEARCHES[name]!,
+      receiver,
+      args: elementSearchArgs(lowerer, call, name),
+      type: name === "includes" ? BOOL : F64,
+      loc,
+    };
   }
   if (name === "toReversed") {
     if (nArgs !== 0) {

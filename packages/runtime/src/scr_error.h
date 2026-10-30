@@ -48,6 +48,12 @@ typedef struct ScrClassObj {
   size_t length;
   struct ScrBox *prototype_data;
   struct ScrBox *static_data;
+  /* The base class's name, which util.inspect prints as
+   * `[class C extends B]`; NULL without a named base. */
+  const ScrStr *base_name;
+  /* Nonzero when the class declares public static fields, which the
+   * class object does not carry without static_data. */
+  size_t own_static_fields;
   struct ScrBox *caps[];
 } ScrClassObj;
 

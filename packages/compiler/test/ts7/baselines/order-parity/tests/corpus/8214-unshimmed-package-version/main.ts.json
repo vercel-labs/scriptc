@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8214-unshimmed-package-version/main.ts"
+ ],
+ "diags": []
+}

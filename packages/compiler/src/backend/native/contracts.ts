@@ -29,7 +29,7 @@ export interface CcOptions {
   windowsSubsystem?: WindowsSubsystem;
   /** Optional equivalent LLVM modules for dev compilation. Unsupported
    * targets or merge failures fall back to the canonical cPath TU. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while shard merging
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -76,15 +76,24 @@ export interface CcOptions {
   fetch?: boolean;
   /** The program uses zlib (index.ts detects zlib.* libCalls on the IR):
    * compiles scr_zlib.c — the regex gating precedent, so zlib-free
-   * binaries keep their exact link line. The default host-clang build links
-   * the SYSTEM libz (macOS ships it), byte-identical to the historical line;
-   * every Zig build compiles the vendored zlib with the selected driver instead
-   * (ensureZlibObjects — zig has no libz in its sysroots). Compressed bytes may
-   * differ between the
-   * system and vendored libraries, which is why the corpus only ever
-   * compares round-trips and fixed-blob inflation, never raw deflate
-   * output. */
+   * binaries keep their exact link line. Every driver compiles the vendored
+   * zlib, the copy Node bundles (ensureZlibObjects), so compressed bytes match
+   * Node's. */
   zlib?: boolean;
+  /** The program uses node:zlib's Brotli forms (with zlib): compiles
+   * scr_brotli.c and links the vendored brotli archive. */
+  brotli?: boolean;
+  /** The program uses an Intl form that only ICU can answer (the `icu.*`
+   * libCalls: default-locale number/date formats, word segmentation):
+   * compiles scr_intl.c and links the ICU archive, and the
+   * executable gets icudt78l.dat next to it. Every engine-free form keeps
+   * linking none of it. */
+  intl?: boolean;
+  /** With `intl`: the installed runtime pack's ICU archive and the include
+   * root of the ICU headers it ships. The C-source path then links that
+   * archive and compiles scr_intl.c against those headers, instead of
+   * building ICU from its fetched release with Zig's C++ driver. */
+  icuPack?: { archive: string; include: string };
   /** The program uses node:assert (index.ts detects assert.* libCalls on
    * the IR): compiles scr_assert.c — the zlib gating precedent, so
    * assert-free binaries keep their exact size class. scr_regex.c calls
@@ -130,17 +139,43 @@ export interface CcOptions {
   streamDyn?: boolean;
   /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
   handleProps?: boolean;
+  /** ChildProcess listener removal and signalCode: compiles
+   * scr_child_lifecycle.c. */
+  childLifecycle?: boolean;
   declAdopt?: boolean;
+  typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
+  /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
+  mime?: boolean;
+  /** `--large-pages`: compiles scr_text_pages.c. */
+  largePages?: boolean;
+  /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
+  /** AbortController and AbortSignal: compiles scr_abort.c, unless the
+   * program compiles the fetch unit, which has them. */
+  abortSignal?: boolean;
+  /** util.debounce and util.throttle: compiles scr_util_timing.c. */
+  utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
   dynBuffer?: boolean;
+  /** createRequire's computed require and require.resolve: compiles
+   * scr_require.c. */
+  computedRequire?: boolean;
   /** Builtin functions read as values: compiles scr_builtin_values.c. */
   builtinValues?: boolean;
+  /** An Array.prototype method runs over an array-like receiver:
+   * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
+   * dispatch calls for receivers that are not arrays. */
+  arrayLikeDispatch?: boolean;
+  /** Number.prototype or Boolean.prototype read as a value in a JavaScript
+   * source: compiles scr_dyn_builtin_prototype.c. */
+  builtinPrototypeValue?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
@@ -150,8 +185,37 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
+   * NULL for a field a partial record view does not have. */
+  recordViewPartial?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
+  /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
+   * (scr_fs_flags.c and that build of scr_fs_cp.c). */
+  fsFlags?: boolean;
+  /** string_decoder's checked-dynamic chunk forms: compiles
+   * scr_bytes_strdec_dyn.c. */
+  strdecDyn?: boolean;
+  /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
+   * stdin.isRaw and server.off. */
+  processExtras?: boolean;
+  /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
+   * write completion callback receives (error-taking write callbacks). */
+  streamWriteErrors?: boolean;
+  /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
+   * (the write method as a value, its replacement, run-time-typed chunks). */
+  stdioWriteSlot?: boolean;
+  /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
+   * the event loop with SCR_NODE_ISLANDS (its helper slot). */
+  nodeIsland?: boolean;
+  /** Module namespace objects as checked-dynamic values: compiles
+   * scr_module_namespace.c. */
+  moduleNamespace?: boolean;
+  /** A module namespace boxed for typed code: compiles
+   * scr_module_namespace_dyn.c. */
+  moduleNamespaceDyn?: boolean;
+  /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
+  primitiveWrapper?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -170,6 +234,9 @@ export interface CcOptions {
    * Symbol-free binaries keep their exact link line. */
   symbol?: boolean;
   bigint?: boolean;
+  /** BigIntStats member reads: compiles scr_stats_bigint.c. Every other
+   * bigint program keeps its exact link line and size. */
+  bigstats?: boolean;
   /** Records URLSearchParams use in the build identity. Its runtime unit is
    * part of the base sources because checked URL handles expose searchParams. */
   searchParams?: boolean;
@@ -237,6 +304,16 @@ export interface CcOptions {
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */
   watch?: boolean;
+  /** The program uses fs.watchFile or fs.unwatchFile (moduleUsesFsWatchFile
+   * on the IR): compiles scr_watch_file.c into the binary — its own gated
+   * unit under the same precedent, so polling-free binaries keep their
+   * exact link line. */
+  watchFile?: boolean;
+  /** A typed fs read whose bytes value the program can observe as a Buffer
+   * (moduleUsesFsBufferBrand on the IR): compiles scr_lib.c's
+   * SCR_FS_BUFFER_BRAND build, so programs that never see the brand keep the
+   * default object byte for byte. */
+  fsBufferBrand?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */
@@ -277,6 +354,8 @@ export interface CcOptions {
   /** Ed25519 with pki: compiles scr_ed25519.c (the vendored libsodium
    * Ed25519). */
   ed25519?: boolean;
+  /** X509Certificate fields: compiles scr_x509.c. */
+  x509?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
   /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */
@@ -306,7 +385,7 @@ export interface LibArchiveOptions {
    * `programSource` remains the canonical TU/cache identity; these stable
    * shards compile independently and are relocatably merged into one program
    * object before archive assembly. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while the shard merge
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -362,6 +441,8 @@ export interface LibArchiveOptions {
   searchParams?: boolean;
   emitter?: boolean;
   zlib?: boolean;
+  /** X509Certificate fields: scr_x509.c. */
+  x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
 }

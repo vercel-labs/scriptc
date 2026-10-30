@@ -1,3 +1,5 @@
+import type * as ts from "../ts7/adapter.js";
+
 /** The facts each site of a fixed-point scan read on its last visit, so that
  * a pass visits again only the sites whose facts changed since.
  *
@@ -13,14 +15,19 @@
  * that with a pass over every site once a pass changes nothing, and resumes
  * when that pass changes a fact: a fact this tracking misses costs passes,
  * not a different result. */
+/** A fact a site reads: a symbol, a syntax node, or the name of a derived
+ * fact. A typed union keeps nodes and symbols native values; as `unknown`
+ * every syntax node would become a dynamic value. */
+export type SiteFact = ts.Node | ts.Symbol | string;
+
 export class SiteDependencies {
   /** Each fact's entry: the visit that last read it, so that a visit lists a
    * fact once, followed by the sites that read it, ascending. */
-  private readonly readers = new Map<unknown, number[]>();
+  private readonly readers = new Map<SiteFact, number[]>();
   private readonly stale: Uint8Array;
   private site = -1;
   private visit = 0;
-  private facts: unknown[] = [];
+  private facts: SiteFact[] = [];
 
   constructor(siteCount: number) {
     this.stale = new Uint8Array(siteCount);
@@ -46,7 +53,7 @@ export class SiteDependencies {
   }
 
   /** The site being visited read `fact`. */
-  read(fact: unknown): void {
+  read(fact: SiteFact): void {
     if (this.site < 0) return;
     const entry = this.readers.get(fact);
     if (entry === undefined) {
@@ -72,7 +79,7 @@ export class SiteDependencies {
   }
 
   /** `fact` changed: every site that read it is visited again. */
-  changed(fact: unknown): void {
+  changed(fact: SiteFact): void {
     const entry = this.readers.get(fact);
     if (entry !== undefined) for (let i = 1; i < entry.length; i++) this.stale[entry[i]!] = 1;
   }

@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 import { beforeAll, describe, expect, test } from "vitest";
 import {
   compile,
-  NODE24_FETCH_COMPAT_PROFILE,
+  node24FetchCompatProfile,
   renderDiagnostics,
   type FetchCompatEvidence,
 } from "@scriptc/compiler";
@@ -32,7 +32,7 @@ const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
 const fixturesRoot = join(repoRoot, "tests/fixtures/fetch");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
-const profile = NODE24_FETCH_COMPAT_PROFILE;
+const profile = node24FetchCompatProfile();
 function configuredInteger(name: string, fallback: number, maximum: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;

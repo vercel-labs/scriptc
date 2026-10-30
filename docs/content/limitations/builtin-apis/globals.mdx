@@ -1,4 +1,8 @@
 - **Globals:** Stored `globalThis` references support identity and probes for absent capabilities.
-  Most builtin members require direct global access; access through a stored global object can raise `SC2020`.
+  In JavaScript, reading a builtin global through the global object by name (`globalThis[name]`, or a stored global object) answers what the global's own spelling reads, and builtin module members that are global objects in Node, such as `require("buffer").atob` and `require("timers").setTimeout`, are the same values.
+  `WebAssembly` read this way, and builtin members read through a global object that untyped code received, can raise `SC2020`.
+  `for (key in globalThis)` visits Node's enumerable globals in Node's order, then the program's own global properties.
+  `navigator` answers Node's `hardwareConcurrency`, `language`, `languages`, `platform`, and `userAgent`, with `language` derived from `LC_ALL`, `LC_MESSAGES`, or `LANG` as Node does.
+  `navigator.locks` raises `SC2020`, as does `navigator.language` for a locale outside the `language_TERRITORY.codeset@modifier` form, or one whose language or territory needs ICU's tables (a three-letter territory, for example).
   `Temporal` is not defined, as in Node.js 24: `typeof Temporal` is `"undefined"`, `globalThis.Temporal` is `undefined`, and any other use throws `ReferenceError: Temporal is not defined`.
   Programs that name it type-check against TypeScript's `Temporal` declarations.

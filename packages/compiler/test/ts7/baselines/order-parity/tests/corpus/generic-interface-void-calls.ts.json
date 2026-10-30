@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/generic-interface-void-calls.ts"
+ ],
+ "diags": []
+}

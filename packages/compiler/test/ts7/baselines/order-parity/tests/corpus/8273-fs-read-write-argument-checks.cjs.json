@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8273-fs-read-write-argument-checks.cjs"
+ ],
+ "diags": []
+}

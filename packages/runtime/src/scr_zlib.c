@@ -1,13 +1,10 @@
 /* node:zlib, the lowered slice: the one-shot zlib/raw-DEFLATE/gzip codecs
  * over u8 bytes with Node's DEFAULT options. Compiled ONLY when the program
  * uses zlib (native-toolchain.ts gates it exactly like scr_regex.c/libregexp),
- * so zlib-free binaries keep their historical link line. Host builds link
- * the system -lz; cross targets link the vendored zlib built per target
- * (ensureZlibObjects in native-toolchain.ts).
- *
- * Compressed OUTPUT bytes are zlib-version-dependent — the differential
- * corpus tests round-trips and fixed-blob inflation, never raw deflate
- * output. deflate of valid input cannot fail (OOM aborts); inflate of
+ * so zlib-free binaries keep their historical link line. Every build links
+ * the vendored zlib (packages/runtime/vendor/zlib), the copy Node bundles,
+ * so compressed bytes match Node's for the same parameters. deflate of valid
+ * input cannot fail (OOM aborts); inflate of
  * corrupt input THROWS Node's catchable Error (zlib's own msg text:
  * "incorrect header check", ...). */
 #include "scr_runtime.h"
@@ -133,6 +130,11 @@ bool scr_zlib_inflate_exact(const unsigned char *src, size_t src_len,
  * Modes are Node's node_zlib_mode numbers (DEFLATE 1 ... UNZIP 7). */
 struct ScrZlibEngine {
   z_stream strm;
+  /* Another codec's engine (scr_zlib_engine_codec): its state answers the
+   * entries below, which skip the z_stream. */
+  const ScrZlibCodec *codec;
+  void *codec_state;
+  uint32_t codec_avail_in, codec_avail_out;
   int mode;
   int level, window_bits, mem_level, strategy;
   int flush;
@@ -169,6 +171,17 @@ ScrZlibEngine *scr_zlib_engine_new(int mode, int level, int window_bits, int mem
     memcpy(e->dict, dict, dict_len);
     e->dict_len = dict_len;
   }
+  return e;
+}
+
+ScrZlibEngine *scr_zlib_engine_codec(int mode, const ScrZlibCodec *codec, void *state,
+                                     bool reject_garbage) {
+  ScrZlibEngine *e = calloc(1, sizeof *e);
+  if (!e) scr_zlib_oom();
+  e->mode = mode;
+  e->codec = codec;
+  e->codec_state = state;
+  e->reject_garbage = reject_garbage;
   return e;
 }
 
@@ -229,6 +242,11 @@ static int scr_zlib_engine_reset_stream(ScrZlibEngine *e) {
 
 void scr_zlib_engine_work(ScrZlibEngine *e, int flush, const unsigned char *in, uint32_t in_len,
                           unsigned char *out, uint32_t out_len) {
+  if (e->codec) {
+    e->codec->work(e->codec_state, flush, in, in_len, out, out_len, &e->codec_avail_in,
+                   &e->codec_avail_out);
+    return;
+  }
   e->strm.avail_in = in_len;
   e->strm.next_in = (Bytef *)(uintptr_t)in;
   e->strm.avail_out = out_len;
@@ -286,6 +304,11 @@ void scr_zlib_engine_work(ScrZlibEngine *e, int flush, const unsigned char *in, 
 }
 
 void scr_zlib_engine_offsets(const ScrZlibEngine *e, uint32_t *avail_in, uint32_t *avail_out) {
+  if (e->codec) {
+    *avail_in = e->codec_avail_in;
+    *avail_out = e->codec_avail_out;
+    return;
+  }
   *avail_in = e->strm.avail_in;
   *avail_out = e->strm.avail_out;
 }
@@ -313,6 +336,7 @@ static bool scr_zlib_engine_fail(const ScrZlibEngine *e, const char *message, Sc
 }
 
 bool scr_zlib_engine_error(const ScrZlibEngine *e, ScrZlibError *out) {
+  if (e->codec) return e->codec->error(e->codec_state, out);
   switch (e->err) {
   case Z_OK:
   case Z_BUF_ERROR:
@@ -327,6 +351,7 @@ bool scr_zlib_engine_error(const ScrZlibEngine *e, ScrZlibError *out) {
 }
 
 bool scr_zlib_engine_reset(ScrZlibEngine *e, ScrZlibError *out) {
+  if (e->codec) return e->codec->reset(e->codec_state, out);
   switch (scr_zlib_engine_reset_stream(e)) {
   case 0: return false;
   case 1: return scr_zlib_engine_fail(e, "Failed to init stream before reset", out);
@@ -338,6 +363,7 @@ bool scr_zlib_engine_reset(ScrZlibEngine *e, ScrZlibError *out) {
 /* SetParams: deflateParams for DEFLATE and DEFLATERAW only (Node's
  * switch leaves GZIP's level and strategy unchanged). */
 bool scr_zlib_engine_params(ScrZlibEngine *e, int level, int strategy, ScrZlibError *out) {
+  if (e->codec) return false; /* Node's Brotli streams have no params() */
   if (scr_zlib_engine_init(e) && e->err != Z_OK)
     return scr_zlib_engine_fail(e, "Failed to init stream before set parameters", out);
   e->err = Z_OK;
@@ -350,6 +376,11 @@ bool scr_zlib_engine_params(ScrZlibEngine *e, int level, int strategy, ScrZlibEr
 
 void scr_zlib_engine_free(ScrZlibEngine *e) {
   if (!e) return;
+  if (e->codec) {
+    e->codec->free(e->codec_state);
+    free(e);
+    return;
+  }
   if (e->init_done) {
     if (scr_zlib_engine_deflating(e)) deflateEnd(&e->strm);
     else inflateEnd(&e->strm);
@@ -418,6 +449,15 @@ static bool scr_zlib_is_null(const ScrDyn *v) {
 void scr_zlib_options_drop(ScrZlibOptions *o) {
   if (o->dict) scr_bytes_release(o->dict);
   o->dict = NULL;
+  if (o->codec_state) o->codec_state_free(o->codec_state);
+  o->codec_state = NULL;
+}
+
+const ScrZlibBrotliHooks *scr_zlib_brotli_hooks = NULL;
+
+/* Node's BROTLI_DECODE and BROTLI_ENCODE modes. */
+static bool scr_zlib_brotli_mode(int mode) {
+  return mode == 8 || mode == 9;
 }
 
 static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibOptions *out);
@@ -426,6 +466,10 @@ static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibO
  * slot by reference) is read through its materialized view, as a plain
  * object is. */
 bool scr_zlib_options_parse(int mode, const ScrDyn *opts, ScrZlibOptions *out) {
+  if (scr_zlib_brotli_mode(mode)) {
+    if (!scr_zlib_brotli_hooks) scr_trap("scriptc: the Brotli codec is not linked\n");
+    return scr_zlib_brotli_hooks->options(mode, opts, out);
+  }
   if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF) return scr_zlib_options_parse_object(mode, opts, out);
   ScrDyn *view = scr_dyn_typed_ref_materialize(opts);
   bool ok = false;
@@ -475,6 +519,10 @@ static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibO
     }
     out->dict = scr_bytes_raw_view(d->v.bytes);
   }
+  return scr_zlib_base_options(o, 5, out);
+}
+
+bool scr_zlib_base_options(const ScrDyn *o, double flush_max, ScrZlibOptions *out) {
   const ScrDyn *rg = scr_zlib_opt(o, "rejectGarbageAfterEnd");
   out->reject_garbage = rg != NULL && rg->kind == SCR_DYN_BOOL && rg->v.b;
   const ScrDyn *cs = scr_zlib_opt(o, "chunkSize");
@@ -488,10 +536,10 @@ static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibO
     }
   }
   if (!ok ||
-      !scr_zlib_check_range(scr_zlib_opt(o, "flush"), "options.flush", true, 0, 5, Z_NO_FLUSH,
-                            &out->flush) ||
-      !scr_zlib_check_range(scr_zlib_opt(o, "finishFlush"), "options.finishFlush", true, 0, 5,
-                            Z_FINISH, &out->finish_flush) ||
+      !scr_zlib_check_range(scr_zlib_opt(o, "flush"), "options.flush", true, 0, flush_max,
+                            out->flush, &out->flush) ||
+      !scr_zlib_check_range(scr_zlib_opt(o, "finishFlush"), "options.finishFlush", true, 0,
+                            flush_max, out->finish_flush, &out->finish_flush) ||
       !scr_zlib_check_range(scr_zlib_opt(o, "maxOutputLength"), "options.maxOutputLength", true, 1,
                             9007199254740991.0, 9007199254740991.0, &out->max_output)) {
     scr_zlib_options_drop(out);
@@ -513,7 +561,8 @@ static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibO
   return true;
 }
 
-ScrZlibEngine *scr_zlib_engine_from_options(int mode, const ScrZlibOptions *o) {
+ScrZlibEngine *scr_zlib_engine_from_options(int mode, ScrZlibOptions *o) {
+  if (scr_zlib_brotli_mode(mode)) return scr_zlib_brotli_hooks->engine(mode, o);
   return scr_zlib_engine_new(mode, (int)o->level, (int)o->window_bits, (int)o->mem_level,
                              (int)o->strategy, o->dict ? o->dict->data : NULL,
                              o->dict ? o->dict->len : 0, o->reject_garbage);

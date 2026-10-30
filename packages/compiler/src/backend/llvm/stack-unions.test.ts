@@ -90,7 +90,7 @@ function body(ir: string, name: string): string {
 
 function emit(mod: IrModule, pointerBits: 32 | 64 = 64): string {
   expect(validateModule(mod)).toEqual([]);
-  return emitLlvmModule(keepUnionsBoxed(mod), { pointerBits });
+  return emitLlvmModule(mod, { pointerBits, ...keepUnionsBoxed(mod) });
 }
 
 function declareLocal(mod: IrModule, init: IrExpr): void {
@@ -172,8 +172,11 @@ test.each(["return", "alias", "capture", "store"])(
       work.body.push(ret(ref("item")));
     }
     if (reason === "alias") {
+      // The alias escapes, so it holds a heap box and so does its source.
+      work.returnType = optional;
       work.locals.push({ id: "alias", name: "alias", type: optional, mutable: false });
       work.body.push({ kind: "varDecl", localId: "alias", init: ref("item"), loc });
+      work.body.push(ret(ref("alias")));
     }
     if (reason === "capture") {
       work.locals[0]!.boxed = true;
@@ -203,6 +206,27 @@ test.each(["return", "alias", "capture", "store"])(
     expect(body(emit(mod), "sc_f_work")).toContain("@scr_union_new_ref");
   },
 );
+
+test("copies to a projection-only alias keep both locals in private storage", () => {
+  const mod = fixture();
+  const work: IrFunction = {
+    name: "work",
+    params: [],
+    locals: [],
+    body: [],
+    returnType: VOID,
+    loc,
+  };
+  mod.functions.unshift(work);
+  declareLocal(mod, wrap(fresh()));
+  work.locals.push({ id: "alias", name: "alias", type: optional, mutable: true });
+  work.body.push({ kind: "varDecl", localId: "alias", init: ref("item"), loc });
+  work.body.push({ kind: "assign", localId: "alias", value: ref("item"), loc });
+  work.body.push(effect(call("read", [ref("alias")], record)));
+  const text = body(emit(mod), "sc_f_work");
+  expect(text).toContain("alloca %ScrUnion");
+  expect(text).not.toMatch(/@scr_union_(?:new|retain|release)/);
+});
 
 test("forwarded parameters never retain or release a borrowed stack box", () => {
   const mod = fixture();

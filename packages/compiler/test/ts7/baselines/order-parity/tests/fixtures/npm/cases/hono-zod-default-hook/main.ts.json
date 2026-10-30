@@ -1,0 +1,61 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/hono-zod-default-hook/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'WebSocket'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/node_modules/hono/dist/types/client/types.d.ts",
+    "start": 1398,
+    "end": 1407
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'WebSocket'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/node_modules/hono/dist/types/client/types.d.ts",
+    "start": 1413,
+    "end": 1422
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'WebSocket'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/node_modules/hono/dist/types/client/types.d.ts",
+    "start": 3716,
+    "end": 3725
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'FormData'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/node_modules/hono/dist/types/client/types.d.ts",
+    "start": 4798,
+    "end": 4806
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'FormData'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/node_modules/hono/dist/types/request.d.ts",
+    "start": 549,
+    "end": 557
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'FormData'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/node_modules/hono/dist/types/request.d.ts",
+    "start": 5572,
+    "end": 5580
+   }
+  }
+ ]
+}

@@ -1,12 +1,14 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower-namespaces.js";
 
 /** The answer `typeof <operand>` gives without evaluating anything, for
  * the global-detection idioms (`typeof window < "u"`, `typeof global !==
- * "undefined"`): a name nothing declares answers "undefined" (Node's
- * answer for an undeclared global such as window or self, and typeof never
- * throws for one), and the Node global object and process answer
- * "object". Null for every other operand. */
+ * "undefined"`): a name nothing declares, or one the program declares
+ * ambiently and nothing defines, answers "undefined" (Node's answer for an
+ * undeclared global such as window or self, and typeof never throws for
+ * one), and the Node global object and process answer "object". Null for
+ * every other operand. */
 export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): string | null {
   let e = operand;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
@@ -14,6 +16,10 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
   if (lowerer.checker.getSymbolAtLocation(e) === undefined) return "undefined";
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";
+  // A name the program declares ambiently but nothing defines (`declare
+  // const Bun`): undeclared at run time.
+  if (ambientUndefinedVarSymbolOf(lowerer, e) || ambientUndefinedFnSymbolOf(lowerer, e))
+    return "undefined";
   return null;
 }
 

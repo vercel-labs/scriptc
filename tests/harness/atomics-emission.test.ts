@@ -59,7 +59,7 @@ console.log(work(new Int32Array(buffer), new Uint8Array(buffer), new Int16Array(
   // Every runtime call is the cold path for an index out of range.
   const calls = work.match(/call double @scr_atomics_op\([^\n]*/g) ?? [];
   expect(calls).toHaveLength(9);
-  for (const call of calls) expect(call).toMatch(/\) cold$/);
+  for (const call of calls) expect(call).toMatch(/\)(?: nounwind)? cold$/);
 });
 
 test("an unchanged local array is borrowed across Atomics operations", async () => {

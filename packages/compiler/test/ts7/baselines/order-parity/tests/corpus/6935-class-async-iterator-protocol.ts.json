@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6935-class-async-iterator-protocol.ts"
+ ],
+ "diags": []
+}

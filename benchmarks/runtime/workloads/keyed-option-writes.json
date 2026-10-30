@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/keyed-option-writes.ts",
+  "args": [
+    "4"
+  ]
+}

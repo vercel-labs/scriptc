@@ -37,7 +37,11 @@ export type MayThrowReason =
 export function computeMayThrow(
   mod: IrModule,
   options: {
-    stackChecks?: boolean;
+    /** Native stack checks: true for the functions that check on entry (one
+     * per call cycle, see stackCheckedFunctions); "everyCycleMember" for a
+     * model in which every function on a cycle checks, which answers a
+     * superset that does not depend on that choice. */
+    stackChecks?: boolean | "everyCycleMember";
     explain?: boolean;
     /** computePublishedTypes(mod), when the caller already has it. */
     published?: ReturnType<typeof computePublishedTypes>;
@@ -56,8 +60,16 @@ export function computeMayThrow(
   stackChecks?: Set<string>;
 } {
   const terminations = mod.workers === true ? workerTerminationPolls(mod, options.nodes) : null;
+  const stackGraph =
+    options.stackChecks === undefined || options.stackChecks === false
+      ? null
+      : stackCheckGraph(mod, options.nodes);
   const stackChecks =
-    options.stackChecks === true ? stackCheckedFunctions(mod, options.nodes) : null;
+    stackGraph === null
+      ? null
+      : options.stackChecks === "everyCycleMember"
+        ? stackGraph.cyclic
+        : cycleGuards(stackGraph);
   // Stores that can reach a published object throw the frozen TypeError.
   const published =
     options.published !== undefined ? options.published : computePublishedTypes(mod);
@@ -93,7 +105,7 @@ export function computeMayThrow(
   const classes = new Map((mod.classes ?? []).map((cls) => [cls.name, cls]));
   const constructorClasses = new Map<string, string>();
   const classValueCallers = new Map<string, Set<string>>();
-  const tdzGlobals = (mod.globals ?? []).filter((g) => g.tdz).map((g) => g.id);
+  const tdzGlobals = new Set((mod.globals ?? []).filter((g) => g.tdz).map((g) => g.id));
   for (const cls of mod.classes ?? []) {
     constructorClasses.set(`%${cls.name}.constructor`, cls.name);
     for (const m of cls.methods ?? []) {
@@ -113,11 +125,10 @@ export function computeMayThrow(
     if (explain) f.calleeLocs = new Map();
     // TDZ reads and non-initializing writes can throw ReferenceError.
     // Capture locals carry the same flag as the declaring binding.
-    const tdzIds = new Set([...tdzGlobals, ...fn.locals.filter((l) => l.tdz).map((l) => l.id)]);
-    const mutableTdzIds = new Set([
-      ...tdzGlobals,
-      ...fn.locals.filter((l) => l.tdz && l.mutable).map((l) => l.id),
-    ]);
+    // Every TDZ global counts for both reads and writes; the module's set is
+    // shared by every function.
+    const tdzLocals = new Set(fn.locals.filter((l) => l.tdz).map((l) => l.id));
+    const mutableTdzLocals = new Set(fn.locals.filter((l) => l.tdz && l.mutable).map((l) => l.id));
     // Traverse typed executable nodes without copying the IR into unknown.
     const visit = (rec: IrExpr | IrStmt): boolean => {
       const threw = f.throws;
@@ -133,13 +144,17 @@ export function computeMayThrow(
         case "varRef":
         case "incDec":
         case "assignExpr":
-          if (tdzIds.has(rec.localId)) f.throws = true;
+          if (tdzGlobals.has(rec.localId) || tdzLocals.has(rec.localId)) f.throws = true;
           break;
         case "assign":
           // A declaration is allowed to fill an empty box. Legacy const
           // TDZ stores also initialize; only mutable subsequent stores
           // introduce the new write-side exception edge.
-          if (rec.initializes !== true && mutableTdzIds.has(rec.localId)) f.throws = true;
+          if (
+            rec.initializes !== true &&
+            (tdzGlobals.has(rec.localId) || mutableTdzLocals.has(rec.localId))
+          )
+            f.throws = true;
           break;
         case "dynCheck":
         case "caughtCheck":
@@ -485,7 +500,9 @@ export function computeMayThrow(
     fns: may,
     ...(why !== null ? { why } : {}),
     indirect,
-    ...(terminations ? { workerEntryPolls: entryPolls(mod, terminations.entry, stackChecks) } : {}),
+    ...(terminations
+      ? { workerEntryPolls: entryPolls(mod, terminations.entry, stackGraph?.cyclic ?? null, may) }
+      : {}),
     ...(stackChecks ? { stackChecks } : {}),
   };
 }
@@ -717,28 +734,32 @@ function describeThrowingNode(rec: IrExpr | IrStmt): string {
 }
 
 /** The termination polls a worker program places on function entry. A
- * stack-checked synchronous function needs none: it may throw (the stack
- * guard seeds the fixpoint), so every caller tests the pending state after
- * the call, and a descent that never returns ends at the stack guard, whose
- * RangeError unwinds through those tests. An outstanding terminate request
- * keeps the alert word nonzero, so the first test that runs afterwards (a
- * post-call test, a loop poll or the unwinding) stops the thread; dropping
- * the entry poll only delays the stop by bounded work, which Node's
- * asynchronous terminate allows. The entry poll's slow path rejoins the
- * body, so every polled function kept its arguments live across a call. */
+ * synchronous function on a call cycle that may throw needs none: every
+ * caller tests the pending state after the call, and a descent that never
+ * returns passes a stack-checked function of each cycle again and again
+ * (stackCheckedFunctions) and ends at its guard, whose RangeError unwinds
+ * through those tests. An outstanding terminate request keeps the alert word
+ * nonzero, so the first test that runs afterwards (a post-call test, a loop
+ * poll or the unwinding) stops the thread; dropping the entry poll only
+ * delays the stop by bounded work, which Node's asynchronous terminate
+ * allows. The entry poll's slow path rejoins the body, so every polled
+ * function kept its arguments live across a call. */
 function entryPolls(
   mod: IrModule,
   entry: Set<string>,
-  stackChecks: Set<string> | null,
+  cyclic: Set<string> | null,
+  may: Set<string>,
 ): Set<string> {
-  if (stackChecks === null) return entry;
+  if (cyclic === null) return entry;
   // Calling an async or generator function never tests the caller's pending
   // state, and the module entry has no caller: those keep their polls.
   const keep = new Set(
     mod.functions.filter((fn) => fn.async || fn.generator !== undefined).map((fn) => fn.name),
   );
   keep.add(mod.entry);
-  return new Set([...entry].filter((name) => keep.has(name) || !stackChecks.has(name)));
+  return new Set(
+    [...entry].filter((name) => keep.has(name) || !cyclic.has(name) || !may.has(name)),
+  );
 }
 
 /** Statement and expression kinds that cannot reenter scriptc code except
@@ -968,16 +989,31 @@ export function workerTerminationPolls(
   return { entry, polls };
 }
 
-/** The functions that can take part in unbounded recursion, which check the
- * native stack guard on entry: every function on a cycle of the call graph.
- * Direct edges are calls, constructions and virtual dispatch. A function
- * containing any operation that can reenter scriptc code other than through
- * those edges (an indirect call, a callback-taking or dynamic operation, a
- * library call; see boundedNode) also reaches every function that such an
- * operation can invoke: closure targets and class members. Non-recursive
- * functions, including leaf callbacks, stay check-free. */
+/** The call graph that bounds recursion, and the functions on its cycles:
+ * the ones that can take part in unbounded recursion. Direct edges are
+ * calls, constructions and virtual dispatch. A function containing any
+ * operation that can reenter scriptc code other than through those edges
+ * (an indirect call, a callback-taking or dynamic operation, a library call;
+ * see boundedNode) also reaches every function that such an operation can
+ * invoke: closure targets and class members, behind one shared `reentry`
+ * node. */
+interface StackCheckGraph {
+  edges: Map<string, string[]>;
+  cyclic: Set<string>;
+}
+
+const REENTRY = "\0reentry";
+
+/** The functions that check the native stack guard on entry: one function
+ * of every cycle of the call graph (stackCheckGraph), which bounds every
+ * unbounded recursion, since its frames repeat the cycle's guarded function
+ * again and again. Non-recursive functions, including leaf callbacks, stay
+ * check-free. See cycleGuards for the choice. */
 export function stackCheckedFunctions(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
-  const reentry = "\0reentry";
+  return cycleGuards(stackCheckGraph(mod, nodes));
+}
+
+function stackCheckGraph(mod: IrModule, nodes?: IrNodeIndex): StackCheckGraph {
   const methodImpls = new Map<string, string[]>();
   const memberPrefixes = new Set<string>();
   for (const cls of mod.classes ?? []) {
@@ -1016,16 +1052,157 @@ export function stackCheckedFunctions(mod: IrModule, nodes?: IrNodeIndex): Set<s
     };
     eachNodeOfKinds(fn, scan, visit);
     const callees = out.filter((callee) => names.has(callee));
-    if (reenters) callees.push(reentry);
+    if (reenters) callees.push(REENTRY);
     edges.set(fn.name, callees);
   }
   edges.set(
-    reentry,
+    REENTRY,
     [...targets].filter((name) => names.has(name)),
   );
   const cyclic = cyclicFunctions(edges);
-  cyclic.delete(reentry);
-  return cyclic;
+  cyclic.delete(REENTRY);
+  return { edges, cyclic };
+}
+
+/** The longest run of calls between unchecked functions of a cycle that
+ * cycleGuards allows; deeper runs get a check. Acyclic call chains below a
+ * check are as deep as the program makes them already, so this keeps the
+ * stack used between two checks of the same order. */
+const MAX_UNCHECKED_CYCLE_RUN = 32;
+
+/** A small set of functions that meets every cycle of the stack-check graph
+ * (a feedback vertex set), chosen greedily: functions that cannot lie on a
+ * remaining cycle (no caller or no callee left among the candidates) drop
+ * out, a function that calls itself is chosen, and otherwise the function
+ * with the most caller-callee pairs, the one that breaks the most cycles,
+ * is chosen and removed; ties go to the earlier function. The reentry node
+ * is not a function and is never chosen. A last pass in topological order
+ * of the unchosen cycle functions adds a check where a run of them would
+ * exceed MAX_UNCHECKED_CYCLE_RUN calls. */
+function cycleGuards(graph: StackCheckGraph): Set<string> {
+  const { edges, cyclic } = graph;
+  const chosen = new Set<string>();
+  if (cyclic.size === 0) return chosen;
+  const order = new Map<string, number>();
+  const callees = new Map<string, Set<string>>();
+  const callers = new Map<string, Set<string>>();
+  const candidates = [...[...edges.keys()].filter((name) => cyclic.has(name)), REENTRY];
+  for (const name of candidates) {
+    order.set(name, order.size);
+    callees.set(name, new Set());
+    callers.set(name, new Set());
+  }
+  for (const name of candidates)
+    for (const callee of edges.get(name) ?? [])
+      if (callees.has(callee)) {
+        callees.get(name)!.add(callee);
+        callers.get(callee)!.add(name);
+      }
+  // Max-heap of [score, order, name]; an entry is stale once its function
+  // is gone or its score changed, and is skipped when popped.
+  const heap: [number, number, string][] = [];
+  const score = (name: string): number =>
+    name === REENTRY ? -1 : callers.get(name)!.size * callees.get(name)!.size;
+  const above = (x: [number, number, string], y: [number, number, string]): boolean =>
+    x[0] > y[0] || (x[0] === y[0] && x[1] < y[1]);
+  const push = (name: string): void => {
+    heap.push([score(name), order.get(name)!, name]);
+    for (let i = heap.length - 1; i > 0;) {
+      const parent = (i - 1) >> 1;
+      if (!above(heap[i]!, heap[parent]!)) break;
+      [heap[i], heap[parent]] = [heap[parent]!, heap[i]!];
+      i = parent;
+    }
+  };
+  const pop = (): [number, number, string] => {
+    const top = heap[0]!;
+    const last = heap.pop()!;
+    if (heap.length > 0) {
+      heap[0] = last;
+      for (let i = 0; ;) {
+        let best = i;
+        for (const child of [2 * i + 1, 2 * i + 2])
+          if (child < heap.length && above(heap[child]!, heap[best]!)) best = child;
+        if (best === i) break;
+        [heap[i], heap[best]] = [heap[best]!, heap[i]!];
+        i = best;
+      }
+    }
+    return top;
+  };
+  const doomed: string[] = [];
+  const remove = (name: string): void => {
+    const out = callees.get(name)!;
+    const into = callers.get(name)!;
+    callees.delete(name);
+    callers.delete(name);
+    for (const callee of out)
+      if (callee !== name) {
+        const set = callers.get(callee)!;
+        set.delete(name);
+        if (set.size === 0) doomed.push(callee);
+        else push(callee);
+      }
+    for (const caller of into)
+      if (caller !== name) {
+        const set = callees.get(caller)!;
+        set.delete(name);
+        if (set.size === 0) doomed.push(caller);
+        else push(caller);
+      }
+  };
+  // Removes the functions that can no longer lie on a cycle, transitively.
+  const settle = (): void => {
+    while (doomed.length > 0) {
+      const name = doomed.pop()!;
+      if (callees.has(name)) remove(name);
+    }
+  };
+  for (const name of candidates) {
+    if (callees.get(name)!.size === 0 || callers.get(name)!.size === 0) doomed.push(name);
+    else push(name);
+  }
+  settle();
+  for (const name of candidates)
+    if (callees.get(name)?.has(name) === true) {
+      chosen.add(name);
+      remove(name);
+      settle();
+    }
+  while (heap.length > 0) {
+    const [entryScore, , name] = pop();
+    if (!callees.has(name) || entryScore !== score(name) || name === REENTRY) continue;
+    chosen.add(name);
+    remove(name);
+    settle();
+  }
+  // Bound the runs of unchecked cycle functions (acyclic once the chosen
+  // ones are removed; the reentry node takes no frame): the longest run
+  // ending at each function, in topological order, and a check where it
+  // would grow too long.
+  const unchecked = candidates.filter((name) => !chosen.has(name));
+  const pending = new Map<string, number>(unchecked.map((name) => [name, 0]));
+  for (const name of unchecked)
+    for (const callee of new Set(edges.get(name)))
+      if (pending.has(callee)) pending.set(callee, pending.get(callee)! + 1);
+  const run = new Map<string, number>();
+  const ready = unchecked.filter((name) => pending.get(name) === 0);
+  for (let i = 0; i < ready.length; i++) {
+    const name = ready[i]!;
+    let depth = (run.get(name) ?? 0) + (name === REENTRY ? 0 : 1);
+    if (depth > MAX_UNCHECKED_CYCLE_RUN && name !== REENTRY) {
+      chosen.add(name);
+      depth = 0;
+    }
+    for (const callee of new Set(edges.get(name))) {
+      if (!pending.has(callee)) continue;
+      run.set(callee, Math.max(run.get(callee) ?? 0, depth));
+      const left = pending.get(callee)! - 1;
+      pending.set(callee, left);
+      if (left === 0) ready.push(callee);
+    }
+  }
+  return chosen;
 }
 
 /** Functions on a cycle of the call graph (Tarjan's strongly connected

@@ -477,11 +477,11 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           } else if (m.value.kind === ts.SyntaxKind.FalseKeyword) {
             detached = boolLit(false, loc);
           } else {
-            lowerer.noLowering(
-              "spawn with a non-literal detached option",
-              m.value,
-              "detached must be a boolean literal",
-            );
+            // A runtime boolean — the portable daemon idiom `detached:
+            // process.platform !== "win32"` — reaches the same
+            // POSIX_SPAWN_SETSID flag through scr_spawn_opts's bool slot.
+            detached = lowerer.lowerExprExpecting(m.value, BOOL);
+            plain = false;
           }
           break;
         }

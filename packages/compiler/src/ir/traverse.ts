@@ -64,6 +64,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "searchParams":
     case "symbol":
     case "stats":
+    case "bigintStats":
     case "fileHandle":
     case "dir":
     case "spawnRes":
@@ -140,6 +141,7 @@ export function everyModuleNode(mod: IrModule, visitor: IrModuleVisitor): boolea
   for (const cls of mod.classes ?? []) {
     for (const capture of cls.localCaptures ?? []) if (!type(capture.type, cls.loc)) return false;
     for (const field of cls.fields) if (!type(field.type, cls.loc)) return false;
+    if (cls.arrayElem !== undefined && !type(cls.arrayElem, cls.loc)) return false;
   }
   for (const global of mod.globals ?? [])
     if (!type(global.type, global.source?.loc ?? entryLoc)) return false;

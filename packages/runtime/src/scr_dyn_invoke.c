@@ -144,6 +144,10 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     return;
 
   case SCR_DYN_TYPED_REF: {
+    /* ToString of a class instance that converts through
+     * Object.prototype.toString shows its Symbol.toStringTag getter's
+     * string. */
+    if (to_string && scr_dyn_typed_ref_put_tag(b, d)) return;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     scr_dyn_display_buf(b, materialized, to_string);
     scr_dyn_release(materialized);
@@ -153,6 +157,10 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     scr_dyn_proxy_unsupported("string conversion");
     return;
   }
+}
+
+void scr_jb_join_dyn(ScrJsonBuf *b, const ScrDyn *d) {
+  if (d->kind != SCR_DYN_UNDEF && d->kind != SCR_DYN_NULL) scr_dyn_display_buf(b, d, true);
 }
 
 ScrStr *scr_dyn_display(const ScrDyn *d) {
@@ -771,11 +779,21 @@ ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method) {
     return scr_dyn_invoke(recv, method, NULL, 0, method);
   if (recv->kind == SCR_DYN_OBJ)
     return scr_dyn_obj_read(recv, method, strlen(method));
+  if (recv->kind == SCR_DYN_ARR && (recv->v.arr.properties || recv->prototype))
+    return scr_dyn_arr_custom_member(recv, method, strlen(method));
   if (recv->kind == SCR_DYN_PROXY) {
     ScrStr *key = scr_str_new(method, strlen(method));
     ScrDyn *result = scr_dyn_proxy_get(recv, key);
     scr_str_release(key);
     return result;
+  }
+  /* A class instance's own function-valued property is read before the
+   * arguments are evaluated, as JavaScript reads the callee first; its
+   * methods keep the dispatch scr_dyn_invoke makes. */
+  if (recv->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *own = scr_dyn_typed_ref_own_member(recv, method, strlen(method));
+    if (own && scr_dyn_is_callable(own)) return own;
+    scr_dyn_release(own);
   }
   return NULL;
 }
@@ -795,18 +813,226 @@ ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method,
   return scr_dyn_invoke_impl(recv, method, dyn_method_of(method), args, argc, what, NULL);
 }
 
-ScrDyn *scr_dyn_invoke_prepared_id(ScrDyn *recv, ScrDyn *callee, const char *method,
-                                  int32_t *mid_slot, ScrDyn *const *args, size_t argc,
-                                  const char *what) {
-  if (callee) return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
-  /* The slot is the call site's, shared by every thread: each writes the
-   * same id. */
+/* A dense array without holes, named properties or a prototype of its
+ * own, whose length and elements are writable: its common methods below
+ * run without the dispatch ladder, which answers every other receiver and
+ * method as before. */
+static bool dyn_arr_plain(const ScrDyn *recv) {
+  return recv->kind == SCR_DYN_ARR && !recv->v.arr.presence && !recv->v.arr.properties &&
+         !recv->prototype && !recv->null_proto && !recv->non_extensible &&
+         !recv->v.arr.sealed && !recv->v.arr.frozen && !scr_dyn_is_array_prototype(recv);
+}
+
+/* scr_dyn_strict_eq, with the number and string cases inline: an element
+ * search compares every element. */
+static inline bool dyn_elem_strict_eq(const ScrDyn *a, const ScrDyn *b) {
+  if (a->kind == SCR_DYN_STR && b->kind == SCR_DYN_STR) {
+    const ScrStr *x = a->v.str, *y = b->v.str;
+    return x == y || (x->len == y->len && memcmp(x->data, y->data, x->len) == 0);
+  }
+  if (a->kind == SCR_DYN_NUM && b->kind == SCR_DYN_NUM) return a->v.num == b->v.num;
+  return scr_dyn_strict_eq(a, b);
+}
+
+/* push, pop, shift, at, includes and indexOf of a plain array, with the
+ * ladder's results. An argument that would run user code (a non-number
+ * index, a fromIndex) leaves the call to the ladder. True when answered. */
+static bool dyn_arr_fast(ScrDyn *recv, int mid, ScrDyn *const *args, size_t argc,
+                         ScrDyn **result) {
+  size_t len = recv->v.arr.len;
+  switch (mid) {
+  case DYN_M_push:
+    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(recv, scr_dyn_retain(args[i]));
+    *result = scr_dyn_new_num((double)recv->v.arr.len);
+    return true;
+  case DYN_M_pop:
+    if (len == 0) {
+      *result = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    recv->v.arr.len = len - 1;
+    *result = recv->v.arr.items[len - 1]; /* ownership moves out */
+    return true;
+  case DYN_M_shift:
+    if (len == 0) {
+      *result = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    *result = recv->v.arr.items[0]; /* ownership moves out */
+    memmove(recv->v.arr.items, recv->v.arr.items + 1, (len - 1) * sizeof(ScrDyn *));
+    recv->v.arr.len = len - 1;
+    return true;
+  case DYN_M_at: {
+    if (argc == 0 || args[0]->kind != SCR_DYN_NUM) return false;
+    double index = args[0]->v.num;
+    index = isnan(index) ? 0 : trunc(index);
+    if (index < 0) index += (double)len;
+    *result = index < 0 || index >= (double)len ? scr_dyn_retain(scr_dyn_undefined())
+                                                : scr_dyn_retain(recv->v.arr.items[(size_t)index]);
+    return true;
+  }
+  case DYN_M_includes:
+  case DYN_M_indexOf: {
+    if (argc > 1) return false;
+    ScrDyn *needle = argc > 0 ? args[0] : scr_dyn_undefined();
+    bool nan = mid == DYN_M_includes && needle->kind == SCR_DYN_NUM && needle->v.num != needle->v.num;
+    for (size_t i = 0; i < len; i++) {
+      const ScrDyn *item = recv->v.arr.items[i];
+      if (nan ? item->kind == SCR_DYN_NUM && item->v.num != item->v.num
+              : dyn_elem_strict_eq(item, needle)) {
+        *result = mid == DYN_M_includes ? scr_dyn_new_bool(true) : scr_dyn_new_num((double)i);
+        return true;
+      }
+    }
+    *result = mid == DYN_M_includes ? scr_dyn_new_bool(false) : scr_dyn_new_num(-1);
+    return true;
+  }
+  default:
+    return false;
+  }
+}
+
+/* The call site's method id. The slot is the site's, shared by every
+ * thread: each writes the same id. */
+static int32_t dyn_site_method(const char *method, int32_t *mid_slot) {
   int32_t mid = __atomic_load_n(mid_slot, __ATOMIC_RELAXED);
   if (mid < 0) {
     mid = dyn_method_of(method);
     __atomic_store_n(mid_slot, mid, __ATOMIC_RELAXED);
   }
+  return mid;
+}
+
+ScrDyn *scr_dyn_invoke_prepared_id(ScrDyn *recv, ScrDyn *callee, const char *method,
+                                  int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                                  const char *what) {
+  if (callee) return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
+  int32_t mid = dyn_site_method(method, mid_slot);
+  ScrDyn *result;
+  if (dyn_arr_plain(recv) && dyn_arr_fast(recv, mid, args, argc, &result)) return result;
   return scr_dyn_invoke_impl(recv, method, mid, args, argc, what, NULL);
+}
+
+void scr_dyn_invoke_discard_id(ScrDyn *recv, ScrDyn *callee, const char *method,
+                               int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                               const char *what) {
+  /* A plain array's push whose new length nobody reads. */
+  if (!callee && dyn_arr_plain(recv) && dyn_site_method(method, mid_slot) == DYN_M_push) {
+    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(recv, scr_dyn_retain(args[i]));
+    return;
+  }
+  scr_dyn_release(scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what));
+}
+
+/* The callback methods of a dense dyn array that take a thisArg:
+ * forEach, map, filter, some, every, find, findIndex, findLast,
+ * findLastIndex and flatMap. The caller binds `this` for the callbacks.
+ * `len` is the length before the first callback. */
+static ScrDyn *dyn_arr_callback_method(ScrDyn *recv, int mid, ScrDyn *const *args, size_t argc,
+                                       size_t len, ScrDyn *callback_recv) {
+  if ((mid == DYN_M_findLast) || (mid == DYN_M_findLastIndex)) {
+    if (!dyn_cb_check(args, argc)) return NULL;
+    ScrDyn *visible_recv = callback_recv ? callback_recv : recv;
+    for (size_t i = len; i > 0; i--) {
+      size_t index = i - 1;
+      ScrDyn *item = index < recv->v.arr.len
+        ? scr_dyn_retain(recv->v.arr.items[index])
+        : scr_dyn_retain(scr_dyn_undefined());
+      ScrDyn *result = dyn_call_cb(args[0], item, index, visible_recv);
+      if (!result) { scr_dyn_release(item); return NULL; }
+      bool matched = scr_dyn_truthy(result);
+      scr_dyn_release(result);
+      if (matched) {
+        if ((mid == DYN_M_findLast)) return item;
+        scr_dyn_release(item);
+        return scr_dyn_new_num((double)index);
+      }
+      scr_dyn_release(item);
+    }
+    return (mid == DYN_M_findLast)
+      ? scr_dyn_retain(scr_dyn_undefined()) : scr_dyn_new_num(-1);
+  }
+  if ((mid == DYN_M_forEach) || (mid == DYN_M_map) ||
+      (mid == DYN_M_filter) || (mid == DYN_M_some) ||
+      (mid == DYN_M_every) || (mid == DYN_M_find) ||
+      (mid == DYN_M_findIndex)) {
+    if (!dyn_cb_check(args, argc)) return NULL;
+    ScrDyn *cb = args[0];
+    ScrDyn *out = ((mid == DYN_M_map) || (mid == DYN_M_filter)) ? scr_dyn_new_arr() : NULL;
+    /* Array iteration methods snapshot length before the first callback.
+     * A shrinking callback can remove a later dense entry; an expanding
+     * callback must not make the new tail observable to this pass. Live
+     * Web-boundary capsules are the externally visible receiver, so pass
+     * that capsule as callback arg 3: mutations through the callback's
+     * array argument then commit directly to the original static array. */
+    size_t n = len;
+    ScrDyn *visible_recv = callback_recv ? callback_recv : recv;
+    for (size_t step = 0; step < n; step++) {
+      size_t i = step;
+      if (i >= recv->v.arr.len) continue;
+      ScrDyn *item = scr_dyn_retain(recv->v.arr.items[i]);
+      ScrDyn *r = dyn_call_cb(cb, item, i, visible_recv);
+      if (!r) { scr_dyn_release(item); scr_dyn_release(out); return NULL; }
+      if ((mid == DYN_M_map)) {
+        scr_dyn_arr_push(out, r); /* ownership moves in */
+        r = NULL;
+      } else {
+        bool truthy = scr_dyn_truthy(r);
+        scr_dyn_release(r);
+        if ((mid == DYN_M_filter) && truthy) scr_dyn_arr_push(out, scr_dyn_retain(item));
+        if ((mid == DYN_M_some) && truthy) { scr_dyn_release(item); return scr_dyn_new_bool(true); }
+        if ((mid == DYN_M_every) && !truthy) { scr_dyn_release(item); return scr_dyn_new_bool(false); }
+        if ((mid == DYN_M_find) && truthy) return item; /* +1 moves out */
+        if ((mid == DYN_M_findIndex) && truthy) { scr_dyn_release(item); return scr_dyn_new_num((double)i); }
+      }
+      scr_dyn_release(item);
+    }
+    if (out) return out;
+    if ((mid == DYN_M_some)) return scr_dyn_new_bool(false);
+    if ((mid == DYN_M_every)) return scr_dyn_new_bool(true);
+    if ((mid == DYN_M_find)) return scr_dyn_retain(scr_dyn_undefined());
+    if ((mid == DYN_M_findIndex)) return scr_dyn_new_num(-1);
+    return scr_dyn_retain(scr_dyn_undefined()); /* forEach */
+  }
+  if ((mid == DYN_M_flatMap)) {
+    /* JS Array.prototype.flatMap over a dyn array: map + a depth-1
+     * flatten. Native dyn-array results flatten element-by-element; a
+     * WRAPPED engine array flattens through the routed keyed reads
+     * (elements wrap back scalar-normalized); everything else pushes
+     * as a single element (JS keeps non-array callback results whole).
+     * JS's spec snapshots the length up front (elements appended by
+     * the callback are not visited). */
+    if (!dyn_cb_check(args, argc)) return NULL;
+    ScrDyn *cb = args[0];
+    ScrDyn *out = scr_dyn_new_arr();
+    size_t n = recv->v.arr.len;
+    for (size_t i = 0; i < n && i < recv->v.arr.len; i++) {
+      if (!dyn_borrow_present(recv, i)) { if (scr_exc_pending()) { scr_dyn_release(out); return NULL; } continue; }
+      ScrDyn *item = dyn_borrow_item(recv, i);
+      if (!item) { scr_dyn_release(out); return NULL; }
+      ScrDyn *r = dyn_call_cb(
+          cb, item, i, callback_recv ? callback_recv : recv);
+      scr_dyn_release(item);
+      if (!r) { scr_dyn_release(out); return NULL; }
+      if (r->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(r)) {
+        ScrDyn *view = scr_dyn_typed_ref_materialize(r);
+        scr_dyn_release(r);
+        r = view;
+        if (!r) { scr_dyn_release(out); return NULL; }
+      }
+      if (r->kind == SCR_DYN_ARR) {
+        for (size_t j = 0; j < r->v.arr.len; j++) {
+          if (dyn_borrow_present(r, j)) scr_dyn_arr_push(out, dyn_borrow_item(r, j));
+          if (scr_exc_pending()) { scr_dyn_release(r); scr_dyn_release(out); return NULL; }
+        }
+        scr_dyn_release(r);
+      } else {
+        scr_dyn_arr_push(out, r); /* ownership moves in */
+      }
+    }
+    return out;
+  }
+  return NULL;
 }
 
 static ScrDyn *scr_dyn_invoke_impl(
@@ -1121,6 +1347,14 @@ static ScrDyn *scr_dyn_invoke_impl(
       if (frozen_op >= 0 &&
           scr_array_frozen_error(frozen_op, len, (double)splice_start, frozen_op == 10 ? (double)splice_removed : items, items))
         return NULL;
+      if ((mid == DYN_M_push) && grows && recv->non_extensible) {
+        scr_array_not_extensible_error((double)len);
+        return NULL;
+      }
+      if ((mid == DYN_M_pop) && shrinks && recv->v.arr.sealed) {
+        scr_array_undeletable_error((double)(len - 1));
+        return NULL;
+      }
       if ((grows && recv->non_extensible) || (shrinks && recv->v.arr.sealed && !(mid == DYN_M_shift))) {
         static const char message[] = "Cannot modify a sealed or frozen array";
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -1150,8 +1384,7 @@ static ScrDyn *scr_dyn_invoke_impl(
           scr_dyn_release(recv->v.arr.items[i - 1]);
           recv->v.arr.items[i - 1] = scr_dyn_retain(recv->v.arr.items[i]);
         }
-        static const char message[] = "Cannot delete non-configurable property";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        scr_array_undeletable_error((double)(len - 1));
         return NULL;
       }
       ScrDyn *first = recv->v.arr.items[0];
@@ -1253,27 +1486,16 @@ static ScrDyn *scr_dyn_invoke_impl(
       }
       return (mid == DYN_M_includes) ? scr_dyn_new_bool(false) : scr_dyn_new_num(-1);
     }
-    if ((mid == DYN_M_findLast) || (mid == DYN_M_findLastIndex)) {
-      if (!dyn_cb_check(args, argc)) return NULL;
-      ScrDyn *visible_recv = callback_recv ? callback_recv : recv;
-      for (size_t i = len; i > 0; i--) {
-        size_t index = i - 1;
-        ScrDyn *item = index < recv->v.arr.len
-          ? scr_dyn_retain(recv->v.arr.items[index])
-          : scr_dyn_retain(scr_dyn_undefined());
-        ScrDyn *result = dyn_call_cb(args[0], item, index, visible_recv);
-        if (!result) { scr_dyn_release(item); return NULL; }
-        bool matched = scr_dyn_truthy(result);
-        scr_dyn_release(result);
-        if (matched) {
-          if ((mid == DYN_M_findLast)) return item;
-          scr_dyn_release(item);
-          return scr_dyn_new_num((double)index);
-        }
-        scr_dyn_release(item);
-      }
-      return (mid == DYN_M_findLast)
-        ? scr_dyn_retain(scr_dyn_undefined()) : scr_dyn_new_num(-1);
+    if ((mid == DYN_M_forEach) || (mid == DYN_M_map) || (mid == DYN_M_filter) ||
+        (mid == DYN_M_some) || (mid == DYN_M_every) || (mid == DYN_M_find) ||
+        (mid == DYN_M_findIndex) || (mid == DYN_M_findLast) || (mid == DYN_M_findLastIndex) ||
+        (mid == DYN_M_flatMap)) {
+      /* Every callback runs with `this` bound to the thisArg, or undefined
+       * when there is none. */
+      scr_dyn_this_push_dyn(argc > 1 ? args[1] : scr_dyn_undefined());
+      ScrDyn *result = dyn_arr_callback_method(recv, mid, args, argc, len, callback_recv);
+      scr_dyn_this_pop();
+      return result;
     }
     if ((mid == DYN_M_join)) {
       ScrJsonBuf b;
@@ -1436,48 +1658,6 @@ static ScrDyn *scr_dyn_invoke_impl(
       }
       return scr_dyn_retain(recv);
     }
-    if ((mid == DYN_M_forEach) || (mid == DYN_M_map) ||
-        (mid == DYN_M_filter) || (mid == DYN_M_some) ||
-        (mid == DYN_M_every) || (mid == DYN_M_find) ||
-        (mid == DYN_M_findIndex)) {
-      if (!dyn_cb_check(args, argc)) return NULL;
-      ScrDyn *cb = args[0];
-      ScrDyn *out = ((mid == DYN_M_map) || (mid == DYN_M_filter)) ? scr_dyn_new_arr() : NULL;
-      /* Array iteration methods snapshot length before the first callback.
-       * A shrinking callback can remove a later dense entry; an expanding
-       * callback must not make the new tail observable to this pass. Live
-       * Web-boundary capsules are the externally visible receiver, so pass
-       * that capsule as callback arg 3: mutations through the callback's
-       * array argument then commit directly to the original static array. */
-      size_t n = len;
-      ScrDyn *visible_recv = callback_recv ? callback_recv : recv;
-      for (size_t step = 0; step < n; step++) {
-        size_t i = step;
-        if (i >= recv->v.arr.len) continue;
-        ScrDyn *item = scr_dyn_retain(recv->v.arr.items[i]);
-        ScrDyn *r = dyn_call_cb(cb, item, i, visible_recv);
-        if (!r) { scr_dyn_release(item); scr_dyn_release(out); return NULL; }
-        if ((mid == DYN_M_map)) {
-          scr_dyn_arr_push(out, r); /* ownership moves in */
-          r = NULL;
-        } else {
-          bool truthy = scr_dyn_truthy(r);
-          scr_dyn_release(r);
-          if ((mid == DYN_M_filter) && truthy) scr_dyn_arr_push(out, scr_dyn_retain(item));
-          if ((mid == DYN_M_some) && truthy) { scr_dyn_release(item); return scr_dyn_new_bool(true); }
-          if ((mid == DYN_M_every) && !truthy) { scr_dyn_release(item); return scr_dyn_new_bool(false); }
-          if ((mid == DYN_M_find) && truthy) return item; /* +1 moves out */
-          if ((mid == DYN_M_findIndex) && truthy) { scr_dyn_release(item); return scr_dyn_new_num((double)i); }
-        }
-        scr_dyn_release(item);
-      }
-      if (out) return out;
-      if ((mid == DYN_M_some)) return scr_dyn_new_bool(false);
-      if ((mid == DYN_M_every)) return scr_dyn_new_bool(true);
-      if ((mid == DYN_M_find)) return scr_dyn_retain(scr_dyn_undefined());
-      if ((mid == DYN_M_findIndex)) return scr_dyn_new_num(-1);
-      return scr_dyn_retain(scr_dyn_undefined()); /* forEach */
-    }
     if ((mid == DYN_M_reduce) || (mid == DYN_M_reduceRight)) {
       if (!dyn_cb_check(args, argc)) return NULL;
       bool backward = (mid == DYN_M_reduceRight);
@@ -1501,44 +1681,6 @@ static ScrDyn *scr_dyn_invoke_impl(
       static const char message[] = "Reduce of empty array with no initial value";
       scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
       return NULL;
-    }
-    if ((mid == DYN_M_flatMap)) {
-      /* JS Array.prototype.flatMap over a dyn array: map + a depth-1
-       * flatten. Native dyn-array results flatten element-by-element; a
-       * WRAPPED engine array flattens through the routed keyed reads
-       * (elements wrap back scalar-normalized); everything else pushes
-       * as a single element (JS keeps non-array callback results whole).
-       * JS's spec snapshots the length up front (elements appended by
-       * the callback are not visited). */
-      if (!dyn_cb_check(args, argc)) return NULL;
-      ScrDyn *cb = args[0];
-      ScrDyn *out = scr_dyn_new_arr();
-      size_t n = recv->v.arr.len;
-      for (size_t i = 0; i < n && i < recv->v.arr.len; i++) {
-        if (!dyn_borrow_present(recv, i)) { if (scr_exc_pending()) { scr_dyn_release(out); return NULL; } continue; }
-        ScrDyn *item = dyn_borrow_item(recv, i);
-        if (!item) { scr_dyn_release(out); return NULL; }
-        ScrDyn *r = dyn_call_cb(
-            cb, item, i, callback_recv ? callback_recv : recv);
-        scr_dyn_release(item);
-        if (!r) { scr_dyn_release(out); return NULL; }
-        if (r->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(r)) {
-          ScrDyn *view = scr_dyn_typed_ref_materialize(r);
-          scr_dyn_release(r);
-          r = view;
-          if (!r) { scr_dyn_release(out); return NULL; }
-        }
-        if (r->kind == SCR_DYN_ARR) {
-          for (size_t j = 0; j < r->v.arr.len; j++) {
-            if (dyn_borrow_present(r, j)) scr_dyn_arr_push(out, dyn_borrow_item(r, j));
-            if (scr_exc_pending()) { scr_dyn_release(r); scr_dyn_release(out); return NULL; }
-          }
-          scr_dyn_release(r);
-        } else {
-          scr_dyn_arr_push(out, r); /* ownership moves in */
-        }
-      }
-      return out;
     }
     if ((mid == DYN_M_sort)) {
       ScrDyn *cmp = argc > 0 ? args[0] : scr_dyn_undefined();
@@ -1602,6 +1744,20 @@ static ScrDyn *scr_dyn_invoke_impl(
 
   if (recv->kind == SCR_DYN_BYTES) {
     ScrBytes *bytes = recv->v.bytes;
+    /* An own property of the view shadows the prototype's method. */
+    ScrDyn *member = bytes->properties ? scr_bytes_named_get(recv, method, strlen(method)) : NULL;
+    if (!member && scr_exc_pending()) return NULL;
+    if (member) {
+      ScrDyn *result = NULL;
+      if (!scr_dyn_is_callable(member)) dyn_throw_not_fn(what);
+      else {
+        scr_dyn_this_push_dyn(recv);
+        result = scr_dyn_call(member, args, argc, what);
+        scr_dyn_this_pop();
+      }
+      scr_dyn_release(member);
+      return result;
+    }
     if (bytes->is_data_view) {
       static const char *const kinds[] = { "Uint8", "Int8", "Uint16", "Int16", "Uint32", "Int32", "Float32", "Float64", "BigUint64", "BigInt64", "Float16" };
       const bool get = !strncmp(method, "get", 3);
@@ -1673,7 +1829,10 @@ static ScrDyn *dyn_array_method_value_call(ScrClosure *closure, ScrDyn *const *a
   ScrStr *method = scr_box_get_ref(closure->caps[0]);
   ScrDyn *receiver = scr_dyn_this_get();
   ScrDyn *result;
-  if (receiver->kind == SCR_DYN_ARR) {
+  /* An array, or a live view of a native array, runs the method its own
+   * dispatch has; other receivers take the generic array-like algorithms. */
+  if (receiver->kind == SCR_DYN_ARR ||
+      (receiver->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(receiver))) {
     result = scr_dyn_invoke(receiver, method->data, args, argc, method->data);
   } else {
     ScrDyn *pack = scr_dyn_new_arr();
@@ -1801,6 +1960,12 @@ static const char dyn_s17[] SCR_DYN_COMPAT_STR = "callback";
 static const char dyn_s20[] SCR_DYN_COMPAT_STR = "Function";
 static const char dyn_s27[] SCR_DYN_COMPAT_STR = "SC2020";
 static const char dyn_s28[] SCR_DYN_COMPAT_STR = "clear";
+static const char dyn_s36[] SCR_DYN_COMPAT_STR = "atob";
+static const char dyn_s37[] SCR_DYN_COMPAT_STR = "btoa";
+static const char dyn_s38[] SCR_DYN_COMPAT_STR = "structuredClone";
+static const char dyn_s39[] SCR_DYN_COMPAT_STR = "The \"input\" argument must be specified";
+static const char dyn_s40[] SCR_DYN_COMPAT_STR = "The \"The value argument must be specified\" argument must be specified";
+static const char dyn_s41[] SCR_DYN_COMPAT_STR = "ERR_MISSING_ARGS";
 
 static ScrDyn *dyn_function_probe_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure; (void)args; (void)argc;
@@ -1875,7 +2040,36 @@ static ScrClosure *dyn_builtin_fn_deferred(ScrDyn *const *args, size_t argc, siz
 
 #endif
 
+/* atob, btoa and structuredClone as values: the calls the direct
+ * spellings make, with Node's error for a missing argument. NULL with the
+ * exception pending, or the result (+1); `*handled` reports whether `name`
+ * is one of them. */
+static ScrDyn *dyn_builtin_data_fn_call(const ScrStr *name, ScrDyn *const *args, size_t argc, bool *handled) {
+  bool atob = strcmp(name->data, dyn_s36) == 0, btoa = strcmp(name->data, dyn_s37) == 0;
+  bool clone = strcmp(name->data, dyn_s38) == 0;
+  *handled = atob || btoa || clone;
+  if (!*handled) return NULL;
+  if (argc == 0) {
+    const char *message = clone ? dyn_s40 : dyn_s39;
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), dyn_s41);
+    return NULL;
+  }
+  if (clone) return scr_structured_clone(args[0], argc > 1 ? args[1] : scr_dyn_undefined());
+  ScrStr *text = atob ? scr_atob(args[0]) : scr_btoa(args[0]);
+  if (!text) return NULL;
+  ScrDyn *result = scr_dyn_new_str(text); /* retains */
+  scr_str_release(text);
+  return result;
+}
+
 static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  {
+    ScrStr *name = scr_box_get_ref(clo->caps[0]);
+    bool handled;
+    ScrDyn *result = dyn_builtin_data_fn_call(name, args, argc, &handled);
+    scr_str_release(name);
+    if (handled) return result;
+  }
 #ifdef SCR_LIB
   (void)clo;
   (void)args;
@@ -1888,10 +2082,29 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
   ScrDyn *result = NULL;
   bool timeout = strcmp(name->data, dyn_s16) == 0;
   if (timeout || strcmp(name->data, dyn_s15) == 0) {
-    double ms = 0;
-    if (dyn_builtin_fn_callback(args, argc) && (argc < 2 || scr_dyn_number_coerce_js(args[1], &ms))) {
-      ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
-      result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+    /* Node validates the callback, then its Timeout constructor takes an
+     * undefined delay as the default 1ms, converts another as `after *= 1`
+     * does (a BigInt throws its TypeError) and warns when it sets the
+     * delay to 1. */
+    if (dyn_builtin_fn_callback(args, argc)) {
+      double ms = NAN;
+      bool converted = true;
+      if (argc >= 2 && args[1]->kind != SCR_DYN_UNDEF) {
+        ScrDyn *one = scr_dyn_new_num(1);
+        ScrStr *times = scr_str_new("*", 1);
+        ScrDyn *product = scr_dyn_arithmetic(args[1], one, times);
+        scr_str_release(times);
+        scr_dyn_release(one);
+        converted = product != NULL;
+        if (product) {
+          ms = scr_timer_user_delay(product->v.num, timeout ? 0 : 1);
+          scr_dyn_release(product);
+        }
+      }
+      if (converted) {
+        ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
+        result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+      }
     }
   } else if (strcmp(name->data, dyn_s13) == 0) {
     if (dyn_builtin_fn_callback(args, argc))
@@ -1934,11 +2147,41 @@ ScrDyn *scr_dyn_builtin_function(const ScrStr *name) {
     closure->caps[0] = scr_box_new(SCR_BOX_STR);
     scr_box_set_ref(closure->caps[0], scr_str_retain((ScrStr *)name));
     const char *dot = memchr(name->data, '.', name->len);
-    bool two = strcmp(name->data, dyn_s16) == 0 || strcmp(name->data, dyn_s15) == 0;
+    bool two = strcmp(name->data, dyn_s16) == 0 || strcmp(name->data, dyn_s15) == 0 ||
+               strcmp(name->data, dyn_s38) == 0;
     value = scr_dyn_new_func(closure, dyn_builtin_fn_call, two ? 2 : 1, dyn_s10, dot ? dot + 1 : name->data);
     scr_dyn_obj_set(dyn_builtin_fns, name->data, name->len, value); /* the table owns it */
   }
   return scr_dyn_retain(value);
+}
+
+/* An own data property of a namespace object. Attribute bits: 1 writable,
+ * 2 enumerable, 4 configurable. */
+static void dyn_namespace_put(ScrDyn *object, ScrDyn *key, ScrDyn *value, unsigned attributes) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
+  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool((attributes & 1) != 0));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool((attributes & 2) != 0));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool((attributes & 4) != 0));
+  scr_dyn_release(scr_dyn_define_property(object, key, descriptor));
+  scr_dyn_release(descriptor);
+}
+
+ScrDyn *scr_dyn_namespace_new(const ScrStr *tag, ScrDyn *tag_key) {
+  ScrDyn *object = scr_dyn_new_obj();
+  ScrDyn *value = scr_dyn_new_str((ScrStr *)tag);
+  dyn_namespace_put(object, tag_key, value, 4);
+  scr_dyn_release(value);
+  return object;
+}
+
+void scr_dyn_namespace_define(ScrDyn *object, const ScrStr *key, ScrDyn *value, double attributes,
+                              double length) {
+  if (length >= 0 && value->kind == SCR_DYN_FUNC) value->v.fn.arity = (uint32_t)length;
+  ScrDyn *name = scr_dyn_new_str((ScrStr *)key);
+  dyn_namespace_put(object, name, value, (unsigned)attributes);
+  scr_dyn_release(name);
+  if (length >= 0) scr_dyn_fence_member(object, key);
 }
 
 ScrDyn *scr_dyn_array_prototype(void) {

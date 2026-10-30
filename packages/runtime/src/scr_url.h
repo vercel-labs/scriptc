@@ -41,6 +41,16 @@ ScrStr *scr_url_href(ScrUrl *u);     /* +1; also toString() */
 void scr_url_set(ScrUrl *u, ScrStr *field, ScrStr *value); /* borrowed; href may throw */
 bool scr_url_set_component(ScrUrl *u, ScrStr *field, ScrStr *value); /* borrowed; false for ignored writes */
 void scr_url_set_checked(ScrUrl *u, ScrStr *field, const ScrDyn *value); /* borrowed; conversion may throw */
+/* url.urlToHttpOptions: Node's null-prototype options object for a URL.
+ * The checked-dynamic form throws ERR_INVALID_ARG_TYPE for a primitive or
+ * null and has no lowering for an object that is not a URL. Borrowed; +1,
+ * or NULL with the error pending. */
+ScrDyn *scr_url_to_http_options(ScrUrl *u);
+/* UTS #46 ToASCII for the host parser: NULL until scr_url_idna_install
+ * (scr_idna.c, emitted at startup by programs that use URLs) sets it. */
+extern ScrStr *(*scr_url_host_to_ascii)(const char *p, size_t n);
+void scr_url_idna_install(void);
+ScrDyn *scr_url_to_http_options_dyn(const ScrDyn *value);
 /* node:url's legacy surface (scr_url_legacy.c — linked with the regex,
  * querystring and dyn-async units). url.parse() answers a checked-dynamic
  * Url instance; format() accepts a Url-shaped object, a string, or a

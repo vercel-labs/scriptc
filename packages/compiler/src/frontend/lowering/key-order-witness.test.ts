@@ -29,7 +29,7 @@ interface Fixture {
   notes: KeyOrderNotes;
   record(fields: [string, IrType][], order: string[]): IrType & { kind: "record" };
   literal(type: IrType, keys: string[], segments?: KeyOrderSegment[]): IrExpr;
-  run(body: IrStmt[]): IrFunction;
+  run(body: IrStmt[], name?: string): IrFunction;
   order(type: IrType & { kind: "record" }): string[] | undefined;
 }
 
@@ -73,8 +73,8 @@ function fixture(): Fixture {
       segments ?? keys.map((name) => ({ kind: "key", name, definite: true })),
     );
   };
-  const run = (body: IrStmt[]): IrFunction => {
-    const fn: IrFunction = { name: "main", params: [], returnType: F64, locals: [], body, loc };
+  const run = (body: IrStmt[], name = "main"): IrFunction => {
+    const fn: IrFunction = { name, params: [], returnType: F64, locals: [], body, loc };
     applyKeyOrderWitnesses(lowerer, [fn]);
     return fn;
   };
@@ -706,7 +706,10 @@ test("a spread reads its source's order right after the literal evaluates the so
 
 /** `{ a, b }` with a declared table `["a", "b"]` and a literal `{ b, a }`
  * plus `{ ...value, a }` of the same shape, beside `extra`. */
-function selfCopy(extra: (f: Fixture, ab: IrType & { kind: "record" }) => IrStmt[]): string[] {
+function selfCopy(
+  extra: (f: Fixture, ab: IrType & { kind: "record" }) => IrStmt[],
+  fnName = "main",
+): string[] {
   const f = fixture();
   const ab = f.record(
     [
@@ -716,11 +719,14 @@ function selfCopy(extra: (f: Fixture, ab: IrType & { kind: "record" }) => IrStmt
     ["a", "b"],
   );
   const self: KeyOrderSegment = { kind: "spread", shapeId: ab.shapeId, maybeAbsent: false };
-  f.run([
-    decl("v", f.literal(ab, ["b", "a"])),
-    observe(f.literal(ab, ["a", "b"], [self, { kind: "key", name: "a", definite: true }])),
-    ...extra(f, ab),
-  ]);
+  f.run(
+    [
+      decl("v", f.literal(ab, ["b", "a"])),
+      observe(f.literal(ab, ["a", "b"], [self, { kind: "key", name: "a", definite: true }])),
+      ...extra(f, ab),
+    ],
+    fnName,
+  );
   return f.order(ab)!;
 }
 
@@ -760,6 +766,31 @@ test("a replaceable method's checked result builds records when a replacement ma
       return [observe(f.notes.methodResult(result, "load"))];
     }),
   ).toEqual(["a", "b"]);
+});
+
+/** A native callback taking the shape, boxed for JavaScript. */
+const boxedCallback = (ab: IrType): IrExpr => ({
+  kind: "dynFrom",
+  value: {
+    kind: "closure",
+    fnName: "callback",
+    captures: [],
+    type: { kind: "func", params: [ab], ret: { kind: "void" } },
+    loc,
+  },
+  type: { kind: "dyn" },
+  loc,
+});
+
+test("a native callback boxed for JavaScript receives records JavaScript builds", () => {
+  expect(selfCopy((_, ab) => [observe(boxedCallback(ab))])).toEqual(["a", "b"]);
+});
+
+test("a class's prototype slots box its methods without building their parameters", () => {
+  expect(selfCopy((_, ab) => [observe(boxedCallback(ab))], "%prototype.data.Service")).toEqual([
+    "b",
+    "a",
+  ]);
 });
 
 test("a replaceable method's result keeps its witness through an IR rewrite", () => {

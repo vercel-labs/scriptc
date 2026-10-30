@@ -14,7 +14,12 @@ import {
 import { varRef } from "../../../ir/build.js";
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
-import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
+import {
+  arrayNumberRead,
+  arrayValueRead,
+  arrayValueStore,
+  elementMayBeForeign,
+} from "../array-values.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { globalSymbolKey } from "./global-symbols.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -185,7 +190,12 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
         const element = storage;
         write = (value) => arrayValueStore(lowerer, receiver, key, value, element, loc);
         const elementLoc = locOf(target);
-        if (nullish && NON_NULLISH_ELEMENTS.has(element.kind)) {
+        // A foreign element can be any value, nullish or not.
+        if (
+          nullish &&
+          NON_NULLISH_ELEMENTS.has(element.kind) &&
+          !elementMayBeForeign(lowerer, element)
+        ) {
           // Only a missing element is nullish: keep the present value or
           // store the right side, without the optional element value.
           rhs = lowerer.lowerExprExpecting(expr.right, element);

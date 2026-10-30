@@ -1,8 +1,10 @@
 import { expect, test } from "vitest";
-import { tokenEquivalentSource } from "./token-equivalence.js";
+import { tokenEquivalentSource, tokenPositionEquivalentSource } from "./token-equivalence.js";
 
 const equivalent = (previous: string, current: string, path = "/src/a.ts") =>
   tokenEquivalentSource(path, previous, current);
+const positionEquivalent = (previous: string, current: string, path = "/src/a.ts") =>
+  tokenPositionEquivalentSource(path, previous, current);
 
 test("whitespace and plain comments are trivia", () => {
   expect(equivalent("const a = 1;\n", "const a = 1; // one\n")).toBe(true);
@@ -104,4 +106,51 @@ test("text the scanner cannot classify is never equivalent", () => {
   expect(equivalent("const \\u0061 = 1; // a\n", "const \\u0061 = 1; // b\n")).toBe(false);
   expect(equivalent("const a = <b/>; // a\n", "const a = <b/>; // b\n", "/src/a.tsx")).toBe(false);
   expect(equivalent('const s = "open\n', 'const s = "open // \n')).toBe(false);
+});
+
+test("a / after a non-null assertion divides", () => {
+  expect(
+    equivalent("const q = data[i]! / 7; // ratio\n", "const q = data[i]! / 7; // the ratio\n"),
+  ).toBe(true);
+  expect(
+    equivalent("const q = value! / 7; // ratio\n", "const q = value! / 7; // the ratio\n"),
+  ).toBe(true);
+  expect(equivalent("const q = this! / 7; // ratio\n", "const q = this! / 7; // the ratio\n")).toBe(
+    true,
+  );
+  // A prefix `!` negates a regular expression, whose `//` is code.
+  expect(
+    equivalent("const t = !/[//]/.test(s); c = 1;\n", "const t = !/[//]/.test(s); c = 2;\n"),
+  ).toBe(false);
+  expect(equivalent("return !/[//]/.test(s); // one\n", "return !/[//]/.test(s); // two\n")).toBe(
+    true,
+  );
+  // After a line break, `!` starts a new expression.
+  expect(equivalent("a\n!/[//]/.test(s); c = 1;\n", "a\n!/[//]/.test(s); c = 2;\n")).toBe(false);
+  // `f()!` and `if (a) !` read the same up to the `/`.
+  expect(equivalent("const q = f()! / 2; // one\n", "const q = f()! / 2; // two\n")).toBe(false);
+});
+
+test("position equivalence also keeps every token's line and column", () => {
+  const source = "const a = 1; // one\nconst b = a; /* two */ f(b);\n";
+  // A comment's text within its line, after the line's last token.
+  expect(
+    positionEquivalent(source, "const a = 1; // the first\nconst b = a; /* two */ f(b);\n"),
+  ).toBe(true);
+  // Comments and whitespace after the last token, and trailing whitespace.
+  expect(positionEquivalent(source, source + "// appended\n\n")).toBe(true);
+  expect(
+    positionEquivalent(source, "const a = 1;   // one\nconst b = a; /* two */ f(b);  \n"),
+  ).toBe(true);
+  expect(positionEquivalent(source, source.replaceAll("\n", "\r\n"))).toBe(true);
+  // A longer comment before a token moves its column; a new line moves the
+  // lines below it. Both stay token-equivalent.
+  const column = "const a = 1; // one\nconst b = a; /* the second */ f(b);\n";
+  const line = "// header\nconst a = 1; // one\nconst b = a; /* two */ f(b);\n";
+  expect(positionEquivalent(source, column)).toBe(false);
+  expect(positionEquivalent(source, line)).toBe(false);
+  expect(equivalent(source, column)).toBe(true);
+  expect(equivalent(source, line)).toBe(true);
+  // A token edit is never equivalent.
+  expect(positionEquivalent(source, source.replace("1", "2"))).toBe(false);
 });

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/symbol-property-key-reuse.mjs"
+ ],
+ "diags": []
+}

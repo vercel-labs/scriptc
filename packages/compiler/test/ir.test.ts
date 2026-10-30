@@ -8,12 +8,10 @@ test("hand-built fib module validates", () => {
   expect(validateModule(fibModule)).toEqual([]);
 });
 
-test("validator rejects Date union arms beside other data arms", () => {
-  const bad = structuredClone(fibModule);
-  bad.unions = [{ id: "u-date", arms: [{ kind: "date" }, { kind: "string" }] }];
-  expect(validateModule(bad).map((e) => e.message)).toContain(
-    "union u-date: date arm 0 beside non-unit arms",
-  );
+test("validator accepts Date union arms beside other arms", () => {
+  const mixed = structuredClone(fibModule);
+  mixed.unions = [{ id: "u-date", arms: [{ kind: "date" }, { kind: "string" }] }];
+  expect(validateModule(mixed)).toEqual([]);
   const nullable = structuredClone(fibModule);
   nullable.unions = [{ id: "u-date", arms: [{ kind: "date" }, { kind: "undefinedT" }] }];
   expect(validateModule(nullable)).toEqual([]);

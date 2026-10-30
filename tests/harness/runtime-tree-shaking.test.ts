@@ -142,6 +142,9 @@ nativeToolchainTest(
       "scr_url_",
       "scr_json_parse",
       "scr_date_",
+      // The generator runtime installs its tag reader with its first
+      // generator; a load-time constructor would retain it everywhere.
+      "scr_gen_tag",
     ]) {
       expect(helloSymbols, `hello retains ${family}`).not.toContain(family);
     }
@@ -159,8 +162,10 @@ nativeToolchainTest(
 
     // Symbol absence is the primary reachability contract. Keep a deliberately
     // roomy, platform-specific hello-world ceiling too: it catches losing
-    // section GC without pinning an exact linker/SDK byte count. The canonical
-    // Linux build is about 84KB and current Mach-O builds are about 70KB. Most
+    // section GC without pinning an exact linker/SDK byte count. The Linux
+    // build is about 65KB with lld (CI's pinned LLVM provides it) and about
+    // 94KB with GNU ld, which keeps a unit's string literals whole once any of
+    // them is reachable; current Mach-O builds are about 70KB. Most
     // of Linux hello's runtime code is the cycle collector, which its exit
     // path reaches (scr_lib_cleanup releases an array). ELF segments are page
     // aligned, so the Linux size moves in 4 KiB steps whenever .text crosses

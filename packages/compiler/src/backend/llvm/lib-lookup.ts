@@ -37,7 +37,7 @@ function lookupAnswer(host: LlvmEmitterContext, answer: IrType & { kind: "func" 
   const key = "lookup:" + typeKey(answer);
   let symbol = host.resolveThunks.get(key);
   if (symbol === undefined) {
-    symbol = `sc_lookup_answer_${host.resolveThunks.size}`;
+    symbol = host.contentSymbol("sc_lookup_answer_", key);
     host.resolveThunks.set(key, symbol);
     host.journal?.allocated(symbol, "lookupAnswer", [answer]);
     for (const declaration of [

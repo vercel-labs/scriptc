@@ -42,7 +42,7 @@ interface E2 {
   label: string;
 }
 function fromUnion(u: E1 | E2): string {
-  const { b } = u; // union source whose arms type the field differently: narrow first
+  const { b } = u; // arms type the field differently: the joined read compiles
   return String(b);
 }
 console.log(fromUnion({ kind: "one", b: "s", count: 1 }));

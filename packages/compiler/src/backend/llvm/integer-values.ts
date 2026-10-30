@@ -111,13 +111,17 @@ export function wideArithmetic(
     rv = view(r, ri);
   if (!lv || !rv) return null;
   let below: number, bound: number;
+  let single = false;
   if (op === "*") {
     if (lv.below !== Infinity || rv.below !== Infinity) return null;
-    below = EXACT_DOUBLES;
     bound = productBound(lv.bound, rv.bound);
+    // Scaling by a power of two never rounds a double that stays finite.
+    below = powerOfTwo(li) || powerOfTwo(ri) ? Infinity : EXACT_DOUBLES;
+    single = true;
   } else if (lv.below === Infinity && rv.below === Infinity) {
     below = EXACT_DOUBLES;
     bound = sumBound(lv.bound, rv.bound);
+    single = true;
   } else if (lv.below === Infinity || rv.below === Infinity) {
     const [exact, wide] = lv.below === Infinity ? [lv, rv] : [rv, lv];
     below = Math.min(wide.below - exact.bound, EXACT_DOUBLES);
@@ -132,7 +136,50 @@ export function wideArithmetic(
   host.B.line(
     `${name} = ${op === "+" ? "add" : op === "-" ? "sub" : "mul"} nsw i64 ${left}, ${right}`,
   );
-  return { name, below, bound };
+  return single ? { name, below, bound, single } : { name, below, bound };
+}
+
+/** Whether an exact integer is the constant 2^k or -2^k. */
+function powerOfTwo(integer: LlInteger | null): boolean {
+  if (integer === null || integer.range.min !== integer.range.max) return false;
+  const value = Math.abs(integer.range.min);
+  // Math.log2 can round to an integer for a value that is not a power of
+  // two (2^52 - 1), so the candidate power is compared with the value.
+  return value >= 1 && value <= 2 ** 52 && 2 ** Math.round(Math.log2(value)) === value;
+}
+
+/** The i64 operands of a number compare that gives the doubles' result:
+ * both equal their doubles wherever they can be, or one is an exact integer
+ * of magnitude at most 2^53 - 1 and the other's double is its integer
+ * rounded once. Rounding is monotonic, and b - 1, b and b + 1 are doubles
+ * for a safe integer b, so an integer rounded once compares with b as the
+ * integer does. Null for any other pair. */
+export function exactCompareOperands(
+  host: LlvmEmitterContext,
+  l: LlValue,
+  li: LlInteger | null,
+  r: LlValue,
+  ri: LlInteger | null,
+): [string, string] | null {
+  const describe = (value: LlValue, integer: LlInteger | null) => {
+    if (integer) return { exact: true, single: true, bound: magnitude(integer.range) };
+    const wide = value.wideInteger;
+    if (!wide) return null;
+    return { exact: wide.bound <= wide.below, single: wide.single === true, bound: wide.bound };
+  };
+  const a = describe(l, li),
+    b = describe(r, ri);
+  if (!a || !b) return null;
+  const safe = (d: { exact: boolean; bound: number }): boolean =>
+    d.exact && d.bound <= Number.MAX_SAFE_INTEGER;
+  const ok =
+    (a.exact && b.exact) ||
+    (safe(a) && (b.exact || b.single)) ||
+    (safe(b) && (a.exact || a.single));
+  if (!ok) return null;
+  const operand = (value: LlValue, integer: LlInteger | null): string =>
+    integer ? widenInteger(host, integer) : value.wideInteger!.name;
+  return [operand(l, li), operand(r, ri)];
 }
 
 /** An i64 index for a consumer that compares it, unsigned, with a length or
@@ -189,6 +236,18 @@ export function int32Number(
   const number = host.B.tmp();
   host.B.line(`${number} = sitofp i32 ${name} to double`);
   return { name: number, type, uint32: name, integer: { name, type: "i32", signed: true, range } };
+}
+
+/** `integerNumber` for an i32 whose range is within uint32. */
+export function uint32Number(
+  host: LlvmEmitterContext,
+  name: string,
+  range: IntegerRange,
+  type: IrType,
+): LlValue {
+  const number = host.B.tmp();
+  host.B.line(`${number} = uitofp i32 ${name} to double`);
+  return { name: number, type, uint32: name, integer: { name, type: "i32", signed: false, range } };
 }
 
 export function integerNumber(

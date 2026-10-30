@@ -16,7 +16,10 @@ const COPIED_NODE_FRACTION = 0.25;
  * closure it creates writes through its environment (and transitively the
  * closures those create). A parameter or capture absent from its function's
  * set holds the value it entered with for the whole call. */
-export function writtenLocals(mod: IrModule, nodes?: IrNodeIndex): Map<string, Set<string>> {
+export function writtenLocals(
+  mod: { readonly functions: readonly IrFunction[] },
+  nodes?: IrNodeIndex,
+): Map<string, Set<string>> {
   return rebindings(mod, nodes).written;
 }
 
@@ -30,29 +33,55 @@ const REBINDING_KINDS: readonly IrNodeKind[] = [
   "closure",
 ];
 
+/** The rebindings one function's body makes: locals it writes after
+ * declaring them, and the closures it creates over captured bindings. */
+interface FunctionRebindings {
+  ids: Set<string>;
+  sites: { owner: string; fnName: string; captures: string[] }[];
+}
+
+/** Records `node`'s rebinding into `into` (owner `fnName`). */
+function noteRebinding(fnName: string, node: IrExpr | IrStmt, into: FunctionRebindings): void {
+  if (node.kind === "assign" || node.kind === "forOf") into.ids.add(node.localId);
+  else if (node.kind === "tryCatch" && node.catchLocalId !== null) into.ids.add(node.catchLocalId);
+  else if (node.kind === "assignExpr" || node.kind === "incDec") into.ids.add(node.localId);
+  else if (node.kind === "closure" && node.captures.length)
+    into.sites.push({ owner: fnName, fnName: node.fnName, captures: node.captures });
+}
+
 function rebindings(
-  mod: IrModule,
+  mod: { readonly functions: readonly IrFunction[] },
   nodes?: IrNodeIndex,
 ): {
   written: Map<string, Set<string>>;
   /** Bindings of each function that a closure it creates writes. */
   closureWritten: Map<string, Set<string>>;
 } {
+  const scan = nodes?.scan(REBINDING_KINDS);
+  const each = mod.functions.map((fn) => {
+    const own: FunctionRebindings = { ids: new Set(), sites: [] };
+    eachNodeOfKinds(fn, scan, (node) => noteRebinding(fn.name, node, own));
+    return own;
+  });
+  return closeRebindings(mod, each);
+}
+
+/** The module's rebindings from each function's own (`each`, in module
+ * order):
+ * a binding a closure writes through its environment is written by the
+ * function that created the closure, transitively. */
+function closeRebindings(
+  mod: { readonly functions: readonly IrFunction[] },
+  each: readonly FunctionRebindings[],
+): { written: Map<string, Set<string>>; closureWritten: Map<string, Set<string>> } {
   const written = new Map<string, Set<string>>();
   const closureWritten = new Map<string, Set<string>>();
   const sites: { owner: string; fnName: string; captures: string[] }[] = [];
-  const scan = nodes?.scan(REBINDING_KINDS);
-  for (const fn of mod.functions) {
-    const ids = new Set<string>();
-    eachNodeOfKinds(fn, scan, (node) => {
-      if (node.kind === "assign" || node.kind === "forOf") ids.add(node.localId);
-      else if (node.kind === "tryCatch" && node.catchLocalId !== null) ids.add(node.catchLocalId);
-      else if (node.kind === "assignExpr" || node.kind === "incDec") ids.add(node.localId);
-      else if (node.kind === "closure" && node.captures.length)
-        sites.push({ owner: fn.name, fnName: node.fnName, captures: node.captures });
-    });
-    written.set(fn.name, ids);
-  }
+  mod.functions.forEach((fn, index) => {
+    const own = each[index]!;
+    written.set(fn.name, own.ids);
+    for (const site of own.sites) sites.push(site);
+  });
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   for (let changed = true; changed;) {
     changed = false;
@@ -127,13 +156,11 @@ export function specializeCallbackCalls(
   symbolName: (name: string) => string = (name) => name,
 ): IrModule {
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
-  const { written, closureWritten } = rebindings(mod);
   const copies = new Map<string, IrFunction>();
-  const candidates = new Map<string, Candidate>();
-  let totalNodes = 0;
+  // Helpers that may take callbacks: their callback parameters are final
+  // once the walk below finds which of them the body rebinds.
+  const helpers = new Map<string, IrFunction>();
   for (const fn of mod.functions) {
-    const nodes = countNodes(fn);
-    totalNodes += nodes;
     if (
       !(fn.ownsPrototype || fn.name.startsWith("%arr.")) ||
       fn.name === mod.entry ||
@@ -143,9 +170,80 @@ export function specializeCallbackCalls(
       fn.classCaptures?.length ||
       fn.fastRead !== undefined ||
       fn.speculativeDispatch ||
-      nodes > MAX_FUNCTION_NODES
+      !fn.params.some((param) => param.type.kind === "func")
     )
       continue;
+    helpers.set(fn.name, fn);
+  }
+  if (!helpers.size) return mod;
+
+  // Function values, exports, entry points and methods: an original
+  // reachable this way stays even when every direct call moves to a copy.
+  const referenced = new Set<string>(moduleFunctionReferences(mod));
+  for (const cls of mod.classes ?? [])
+    for (const method of ["constructor", ...(cls.methods ?? [])])
+      referenced.add(`%${cls.name}.${method}`);
+  const globalIds = new Set(mod.globals?.map((global) => global.id));
+  const globalWrites = new Map<string, IrExpr[]>();
+  // One walk of every body records what the steps below read: its node
+  // count (countNodes), its rebindings, the values written into each of its
+  // bindings, and its direct calls of helpers, in walk order.
+  const each = mod.functions.map((fn) => {
+    let nodes = 0;
+    const own: FunctionRebindings = { ids: new Set(), sites: [] };
+    const values = new Map<string, IrExpr[]>();
+    const counts = new Map<string, number>();
+    const calls: (IrExpr & { kind: "call" })[] = [];
+    const record = (id: string, value: IrExpr | null, weight: number): void => {
+      counts.set(id, (counts.get(id) ?? 0) + weight);
+      if (value) {
+        const list = values.get(id);
+        if (list === undefined) values.set(id, [value]);
+        else list.push(value);
+      }
+    };
+    everyStmtList(fn.body, {
+      stmt: (stmt) => {
+        nodes++;
+        noteRebinding(fn.name, stmt, own);
+        if (stmt.kind === "varDecl") record(stmt.localId, stmt.init, stmt.init ? 1 : 0);
+        if (stmt.kind === "assign") {
+          if (globalIds.has(stmt.localId)) {
+            const list = globalWrites.get(stmt.localId);
+            if (list === undefined) globalWrites.set(stmt.localId, [stmt.value]);
+            else list.push(stmt.value);
+          }
+          record(stmt.localId, stmt.value, 1);
+        }
+        if (stmt.kind === "forOf") record(stmt.localId, null, 2);
+        if (stmt.kind === "tryCatch" && stmt.catchLocalId !== null)
+          record(stmt.catchLocalId, null, 2);
+        return true;
+      },
+      expr: (expr) => {
+        nodes++;
+        noteRebinding(fn.name, expr, own);
+        if (expr.kind === "assignExpr" || expr.kind === "incDec") {
+          record(expr.localId, null, 2);
+          if (globalIds.has(expr.localId)) globalWrites.set(expr.localId, []);
+        }
+        if (expr.kind === "call" && helpers.has(expr.callee)) calls.push(expr);
+        const name = exprFunctionReference(expr);
+        if (name !== undefined) referenced.add(name);
+        return true;
+      },
+    });
+    return { fn, nodes: Math.min(nodes, MAX_FUNCTION_NODES + 1), own, values, counts, calls };
+  });
+  const { written, closureWritten } = closeRebindings(
+    mod,
+    each.map((entry) => entry.own),
+  );
+  const nodesOf = new Map(each.map((entry) => [entry.fn.name, entry.nodes]));
+  const candidates = new Map<string, Candidate>();
+  for (const fn of helpers.values()) {
+    const nodes = nodesOf.get(fn.name)!;
+    if (nodes > MAX_FUNCTION_NODES) continue;
     const rebound = written.get(fn.name)!;
     const slots: number[] = [];
     fn.params.forEach((param, index) => {
@@ -155,46 +253,11 @@ export function specializeCallbackCalls(
   }
   if (!candidates.size) return mod;
 
-  // Function values, exports, entry points and methods: an original
-  // reachable this way stays even when every direct call moves to a copy.
-  const referenced = new Set<string>(moduleFunctionReferences(mod));
-  for (const cls of mod.classes ?? [])
-    for (const method of ["constructor", ...(cls.methods ?? [])])
-      referenced.add(`%${cls.name}.${method}`);
   // Single definitions of function-typed locals and globals.
   const definitions = new Map<string, Map<string, IrExpr>>();
-  const globalIds = new Set(mod.globals?.map((global) => global.id));
-  const globalWrites = new Map<string, IrExpr[]>();
-  for (const fn of mod.functions) {
-    const values = new Map<string, IrExpr[]>();
-    const counts = new Map<string, number>();
-    const record = (id: string, value: IrExpr | null, weight: number): void => {
-      counts.set(id, (counts.get(id) ?? 0) + weight);
-      if (value) values.set(id, [...(values.get(id) ?? []), value]);
-    };
-    everyStmtList(fn.body, {
-      stmt: (stmt) => {
-        if (stmt.kind === "varDecl") record(stmt.localId, stmt.init, stmt.init ? 1 : 0);
-        if (stmt.kind === "assign") {
-          if (globalIds.has(stmt.localId))
-            globalWrites.set(stmt.localId, [...(globalWrites.get(stmt.localId) ?? []), stmt.value]);
-          record(stmt.localId, stmt.value, 1);
-        }
-        if (stmt.kind === "forOf") record(stmt.localId, null, 2);
-        if (stmt.kind === "tryCatch" && stmt.catchLocalId !== null)
-          record(stmt.catchLocalId, null, 2);
-        return true;
-      },
-      expr: (expr) => {
-        if (expr.kind === "assignExpr" || expr.kind === "incDec") {
-          record(expr.localId, null, 2);
-          if (globalIds.has(expr.localId)) globalWrites.set(expr.localId, []);
-        }
-        const name = exprFunctionReference(expr);
-        if (name !== undefined) referenced.add(name);
-        return true;
-      },
-    });
+  // The sum of countNodes over every function.
+  let totalNodes = 0;
+  for (const { fn, nodes, values, counts } of each) {
     const single = new Map<string, IrExpr>();
     const locals = new Set(fn.locals.map((local) => local.id));
     const shared = closureWritten.get(fn.name);
@@ -208,6 +271,7 @@ export function specializeCallbackCalls(
       )
         single.set(id, list[0]!);
     definitions.set(fn.name, single);
+    totalNodes += nodes;
   }
   const globalDefinitions = new Map<string, IrExpr>();
   for (const global of mod.globals ?? [])
@@ -274,23 +338,18 @@ export function specializeCallbackCalls(
   // unknown callbacks or function-value entries.
   const keysOf = new Map<string, Set<string>>();
   const unknown = new Set<string>();
-  for (const fn of mod.functions)
-    everyStmtList(fn.body, {
-      stmt: () => true,
-      expr: (expr) => {
-        if (expr.kind !== "call") return true;
-        const candidate = candidates.get(expr.callee);
-        if (!candidate) return true;
-        const key = callKey(fn, new Map(), expr, candidate);
-        if (key === "") unknown.add(expr.callee);
-        else if (key !== null) {
-          const keys = keysOf.get(expr.callee) ?? new Set<string>();
-          keys.add(key);
-          keysOf.set(expr.callee, keys);
-        }
-        return true;
-      },
-    });
+  for (const { fn, calls } of each)
+    for (const call of calls) {
+      const candidate = candidates.get(call.callee);
+      if (!candidate) continue;
+      const key = callKey(fn, new Map(), call, candidate);
+      if (key === "") unknown.add(call.callee);
+      else if (key !== null) {
+        const keys = keysOf.get(call.callee) ?? new Set<string>();
+        keys.add(key);
+        keysOf.set(call.callee, keys);
+      }
+    }
   const specialized = new Set<string>();
   for (const [name, keys] of keysOf)
     if (keys.size > 1 || unknown.has(name) || referenced.has(name)) specialized.add(name);
@@ -405,12 +464,9 @@ export function specializeCallbackCalls(
     return owner.body.map(stmt);
   }
 
-  const functionsOut = mod.functions.map((fn) => {
+  const functionsOut = each.map(({ fn, calls }) => {
     // Most bodies call no specialized original; keep their nodes.
-    const untouched = everyStmtList(fn.body, {
-      stmt: () => true,
-      expr: (expr) => expr.kind !== "call" || !specialized.has(expr.callee),
-    });
+    const untouched = calls.every((call) => !specialized.has(call.callee));
     return untouched ? fn : { ...fn, body: rewriteBody(fn, new Map(), new Set(), false) };
   });
   for (let i = 0; i < pending.length; i++) {
@@ -423,19 +479,29 @@ export function specializeCallbackCalls(
   // Drop originals no remaining code reaches: every direct call moved to a
   // copy and nothing names them as a value.
   const callers = new Map<string, Set<string>>();
-  for (const fn of functionsOut)
+  const call = (callee: string, caller: string): void => {
+    if (!specialized.has(callee)) return;
+    const set = callers.get(callee) ?? new Set<string>();
+    set.add(caller);
+    callers.set(callee, set);
+  };
+  functionsOut.forEach((fn, index) => {
+    // A body the rewrite kept has the calls the walk recorded, and its
+    // closures are already in `referenced`.
+    const kept = each[index];
+    if (kept !== undefined && kept.fn === fn) {
+      for (const site of kept.calls) call(site.callee, fn.name);
+      return;
+    }
     everyStmtList(fn.body, {
       stmt: () => true,
       expr: (expr) => {
-        if (expr.kind === "call" && specialized.has(expr.callee)) {
-          const set = callers.get(expr.callee) ?? new Set<string>();
-          set.add(fn.name);
-          callers.set(expr.callee, set);
-        }
+        if (expr.kind === "call") call(expr.callee, fn.name);
         if (expr.kind === "closure" && specialized.has(expr.fnName)) referenced.add(expr.fnName);
         return true;
       },
     });
+  });
   const live = new Set<string>();
   const work: string[] = [];
   for (const fn of functionsOut)

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/recursive-generic-method-members.ts"
+ ],
+ "diags": []
+}

@@ -15,3 +15,6 @@ JavaScript argument and return conversions preserve native array references; oth
 
 Supported operations on `unknown` include truthiness, `typeof` narrowing, property access, `+`, `switch`, and `throw`.
 Cast before using other operations.
+
+In JavaScript, a call whose untyped argument could select an overload with another result type returns a checked value, whichever overload the type checker picks, and so do the unannotated bindings and functions that hold or return it.
+In TypeScript, an `any` argument keeps the overload the type checker picks, and a value that selects another overload at runtime throws a `TypeError` where the result is used.

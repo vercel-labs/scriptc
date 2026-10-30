@@ -1,7 +1,7 @@
 [Contract types](/docs/contracts) are checked only where they are written as the annotation of a parameter, variable, class instance field or function result, `Acyclic` only on classes, interfaces and object type aliases, and `ProgramLifetime` only in the `implements` clause of a class declaration; other aliases, interface members and nested type positions are reported.
 In programs that use worker threads, a surrounding `try`/`catch` does not discharge `NoThrow`.
 `Int32` refuses parameters of functions used as values and fields of classes whose instances are stored in `any` or `unknown` values.
-`Int32[]` refuses arrays that can come from or escape to code scriptc cannot see, does not follow callback results (such as `map` results), and checks a copy made by `slice` or a spread as if it were its source array.
+`Int32[]` refuses arrays that can come from or escape to code scriptc cannot see, follows callback results only for callbacks written at a `map` or `filter` call that scriptc runs inline, and checks a copy made by `slice` or a spread as if it were its source array.
 Element reads that find a value are int32s, but a scalar `Int32` slot still needs `a[i] | 0`, because a read can miss and produce `undefined`.
 `Immutable` refuses values stored in `any` or `unknown` or that another reference can still change.
 `ProgramLifetime` applies to root classes of executables only; instances the program drops are never reclaimed unless they belong to a released [lifetime region](/docs/experimental#lifetimeregion).

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8112-error-factory-own-key-order.js"
+ ],
+ "diags": []
+}

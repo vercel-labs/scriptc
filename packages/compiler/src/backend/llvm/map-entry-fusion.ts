@@ -14,10 +14,10 @@
  * key match by identity implies the SameValueZero match the set would find.
  *
  * Only scalar values (number, boolean) fuse: overwriting them releases
- * nothing, exactly like the runtime's own overwrite. Only string-keyed
- * typed maps fuse here: a number-key write after a read of the same key
- * already probes through the read-only entry lookup that LLVM merges with
- * the read's (findReadNumberMapWrites, map-read-lifetimes.ts).
+ * nothing, exactly like the runtime's own overwrite. String-keyed and
+ * number-keyed typed maps fuse. A number key matches when its bits are the
+ * read's: such keys are SameValueZero-equal, and a key that is equal with
+ * other bits (-0 for 0) takes the ordinary set.
  */
 import type { IrExpr, IrFunction, IrStmt } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
@@ -30,7 +30,7 @@ type MapOp = Extract<IrExpr, { kind: "mapIntrinsic" }>;
 /** One fused read/write pair. The slots exist once the read emits through
  * an entry path; a write whose read took another path stays ordinary. */
 export interface MapEntryPair {
-  slots: { map: string; key: string; entry: string } | null;
+  slots: { map: string; key: string; entry: string; keyType: "ptr" | "double" } | null;
 }
 
 export interface MapEntryFusion {
@@ -38,13 +38,14 @@ export interface MapEntryFusion {
   writes: Map<IrExpr, MapEntryPair>;
 }
 
-/** A typed string-keyed Map read/write with a scalar value. */
+/** A typed string- or number-keyed Map read/write with a scalar value. */
 function fusableOp(e: IrExpr, method: "get" | "set"): e is MapOp {
   if (e.kind !== "mapIntrinsic" || e.method !== method) return false;
   const receiver = e.receiver.type;
-  if (receiver.kind !== "map") return false;
+  if (receiver.kind !== "map" || receiver.key.kind === "union") return false;
   if (receiver.value.kind !== "f64" && receiver.value.kind !== "bool") return false;
-  if (mapKeyAccess(receiver.key) !== "str") return false;
+  const access = mapKeyAccess(receiver.key);
+  if (access !== "str" && access !== "f64") return false;
   return method === "get" ? borrowsMapReadInputs(e) : borrowsMapMutationReceiver(e);
 }
 
@@ -219,23 +220,25 @@ export function findMapEntryFusions(fn: IrFunction): MapEntryFusion {
   return out;
 }
 
-/** After a fused read resolved `entry` for the string `key` in `map`: park
- * all three for the paired write. */
+/** After a fused read resolved `entry` for `key` in `map`: park all three
+ * for the paired write. `keyType` is the key's LLVM type: a string's ptr or
+ * a number's double. */
 export function rememberMapEntry(
   host: LlvmEmitterContext,
   read: IrExpr,
   map: string,
   key: string,
   entry: string,
+  keyType: "ptr" | "double" = "ptr",
 ): void {
   const pair = host.mapEntryFusion?.reads.get(read);
   if (!pair) return;
   const B = host.B;
   if (pair.slots === null) {
-    const slots = { map: B.slot(), key: B.slot(), entry: B.slot() };
+    const slots = { map: B.slot(), key: B.slot(), entry: B.slot(), keyType };
     B.entryAllocas.push(
       `${slots.map} = alloca ptr ; fused map read: map`,
-      `${slots.key} = alloca ptr ; fused map read: key`,
+      `${slots.key} = alloca ${keyType} ; fused map read: key`,
       `${slots.entry} = alloca ptr ; fused map read: entry`,
       `store ptr null, ptr ${slots.entry}`,
     );
@@ -243,7 +246,7 @@ export function rememberMapEntry(
   }
   const slots = pair.slots;
   B.line(`store ptr ${map}, ptr ${slots.map}`);
-  B.line(`store ptr ${key}, ptr ${slots.key}`);
+  B.line(`store ${slots.keyType} ${key}, ptr ${slots.key}`);
   B.line(`store ptr ${entry}, ptr ${slots.entry}`);
 }
 
@@ -270,13 +273,20 @@ export function emitFusedMapSet(
     both = B.tmp(),
     reuse = B.tmp();
   B.line(`${parkedMap} = load ptr, ptr ${slots.map}`);
-  B.line(`${parkedKey} = load ptr, ptr ${slots.key}`);
+  B.line(`${parkedKey} = load ${slots.keyType}, ptr ${slots.key}`);
   B.line(`${entry} = load ptr, ptr ${slots.entry}`);
   // The entry is valid only between its read and this write.
   B.line(`store ptr null, ptr ${slots.entry}`);
   B.line(`${found} = icmp ne ptr ${entry}, null`);
   B.line(`${sameMap} = icmp eq ptr ${parkedMap}, ${map}`);
-  B.line(`${sameKey} = icmp eq ptr ${parkedKey}, ${key}`);
+  if (slots.keyType === "ptr") B.line(`${sameKey} = icmp eq ptr ${parkedKey}, ${key}`);
+  else {
+    const parkedBits = B.tmp(),
+      keyBits = B.tmp();
+    B.line(`${parkedBits} = bitcast double ${parkedKey} to i64`);
+    B.line(`${keyBits} = bitcast double ${key} to i64`);
+    B.line(`${sameKey} = icmp eq i64 ${parkedBits}, ${keyBits}`);
+  }
   B.line(`${both} = and i1 ${sameMap}, ${sameKey}`);
   B.line(`${reuse} = select i1 ${found}, i1 ${both}, i1 false`);
   const hit = B.newLabel("mapfuse.hit"),

@@ -12,6 +12,7 @@
  * compared in constant time. A cipher used as a stream reads and writes
  * through its own native Transform, which the stream unit builds on first
  * use, as Node's LazyTransform is. All arguments are borrowed. */
+#include "scr_cipher_names.h"
 #include "scr_runtime.h"
 
 #include <stdio.h>
@@ -114,52 +115,12 @@ static const ScCipherSpec sc_specs[] = {
 static const struct {
   const char *name;
   unsigned iv_len;
-} sc_legacy[] = {
-  {"des", 8}, {"des-cbc", 8}, {"des-ecb", 0}, {"des-cfb", 8}, {"des-cfb1", 8}, {"des-cfb8", 8},
-  {"des-ofb", 8}, {"desx", 8}, {"desx-cbc", 8}, {"bf", 8}, {"bf-cbc", 8}, {"bf-ecb", 0},
-  {"bf-cfb", 8}, {"bf-ofb", 8}, {"blowfish", 8}, {"cast", 8}, {"cast-cbc", 8}, {"cast5-cbc", 8},
-  {"cast5-ecb", 0}, {"cast5-cfb", 8}, {"cast5-ofb", 8}, {"rc2", 8}, {"rc2-cbc", 8}, {"rc2-ecb", 0},
-  {"rc2-cfb", 8}, {"rc2-ofb", 8}, {"rc2-40-cbc", 8}, {"rc2-64-cbc", 8}, {"rc4", 0}, {"rc4-40", 0},
-  {"rc4-hmac-md5", 0}, {"seed", 16}, {"seed-cbc", 16}, {"seed-ecb", 0}, {"seed-cfb", 16},
-  {"seed-ofb", 16}, {"idea", 8}, {"idea-cbc", 8}, {"idea-ecb", 0}, {"idea-cfb", 8}, {"idea-ofb", 8},
-};
+} sc_legacy[] = {SCR_CIPHER_LEGACY_ENTRIES};
 
 /* crypto.getCiphers() on Node 24.22 (OpenSSL 3.5). Names in this list that
  * have no implementation throw a coded SC2020 error instead of Node's
  * ERR_CRYPTO_UNKNOWN_CIPHER. */
-static const char *const sc_known[] = {
-  "aes-128-cbc", "aes-128-cbc-cts", "aes-128-ccm", "aes-128-cfb", "aes-128-cfb1", "aes-128-cfb8",
-  "aes-128-ctr", "aes-128-ecb", "aes-128-gcm", "aes-128-gcm-siv", "aes-128-ocb", "aes-128-ofb",
-  "aes-128-siv", "aes-128-wrap", "aes-128-wrap-inv", "aes-128-wrap-pad", "aes-128-wrap-pad-inv",
-  "aes-128-xts", "aes-192-cbc", "aes-192-cbc-cts", "aes-192-ccm", "aes-192-cfb", "aes-192-cfb1",
-  "aes-192-cfb8", "aes-192-ctr", "aes-192-ecb", "aes-192-gcm", "aes-192-gcm-siv", "aes-192-ocb",
-  "aes-192-ofb", "aes-192-siv", "aes-192-wrap", "aes-192-wrap-inv", "aes-192-wrap-pad",
-  "aes-192-wrap-pad-inv", "aes-256-cbc", "aes-256-cbc-cts", "aes-256-ccm", "aes-256-cfb",
-  "aes-256-cfb1", "aes-256-cfb8", "aes-256-ctr", "aes-256-ecb", "aes-256-gcm", "aes-256-gcm-siv",
-  "aes-256-ocb", "aes-256-ofb", "aes-256-siv", "aes-256-wrap", "aes-256-wrap-inv",
-  "aes-256-wrap-pad", "aes-256-wrap-pad-inv", "aes-256-xts", "aes128", "aes128-wrap",
-  "aes128-wrap-inv", "aes128-wrap-pad", "aes128-wrap-pad-inv", "aes192", "aes192-wrap",
-  "aes192-wrap-inv", "aes192-wrap-pad", "aes192-wrap-pad-inv", "aes256", "aes256-wrap",
-  "aes256-wrap-inv", "aes256-wrap-pad", "aes256-wrap-pad-inv", "aria-128-cbc", "aria-128-ccm",
-  "aria-128-cfb", "aria-128-cfb1", "aria-128-cfb8", "aria-128-ctr", "aria-128-ecb", "aria-128-gcm",
-  "aria-128-ofb", "aria-192-cbc", "aria-192-ccm", "aria-192-cfb", "aria-192-cfb1", "aria-192-cfb8",
-  "aria-192-ctr", "aria-192-ecb", "aria-192-gcm", "aria-192-ofb", "aria-256-cbc", "aria-256-ccm",
-  "aria-256-cfb", "aria-256-cfb1", "aria-256-cfb8", "aria-256-ctr", "aria-256-ecb", "aria-256-gcm",
-  "aria-256-ofb", "aria128", "aria192", "aria256", "camellia-128-cbc", "camellia-128-cbc-cts",
-  "camellia-128-cfb", "camellia-128-cfb1", "camellia-128-cfb8", "camellia-128-ctr",
-  "camellia-128-ecb", "camellia-128-ofb", "camellia-192-cbc", "camellia-192-cbc-cts",
-  "camellia-192-cfb", "camellia-192-cfb1", "camellia-192-cfb8", "camellia-192-ctr",
-  "camellia-192-ecb", "camellia-192-ofb", "camellia-256-cbc", "camellia-256-cbc-cts",
-  "camellia-256-cfb", "camellia-256-cfb1", "camellia-256-cfb8", "camellia-256-ctr",
-  "camellia-256-ecb", "camellia-256-ofb", "camellia128", "camellia192", "camellia256", "chacha20",
-  "chacha20-poly1305", "des-ede", "des-ede-cbc", "des-ede-cfb", "des-ede-ecb", "des-ede-ofb",
-  "des-ede3", "des-ede3-cbc", "des-ede3-cfb", "des-ede3-cfb1", "des-ede3-cfb8", "des-ede3-ecb",
-  "des-ede3-ofb", "des3", "des3-wrap", "id-aes128-ccm", "id-aes128-gcm", "id-aes128-wrap",
-  "id-aes128-wrap-pad", "id-aes192-ccm", "id-aes192-gcm", "id-aes192-wrap", "id-aes192-wrap-pad",
-  "id-aes256-ccm", "id-aes256-gcm", "id-aes256-wrap", "id-aes256-wrap-pad",
-  "id-smime-alg-cms3deswrap", "sm4", "sm4-cbc", "sm4-ccm", "sm4-cfb", "sm4-cfb128", "sm4-ctr",
-  "sm4-ecb", "sm4-gcm", "sm4-ofb", "sm4-ofb128", "sm4-xts",
-};
+static const char *const sc_known[] = {SCR_CIPHER_KNOWN_NAMES};
 
 enum { SC_NO_TAG = -1 };
 enum { SC_TAG_UNKNOWN, SC_TAG_SET_BY_USER, SC_TAG_COMPUTED };

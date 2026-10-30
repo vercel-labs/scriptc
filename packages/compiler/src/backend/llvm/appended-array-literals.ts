@@ -9,7 +9,7 @@
  * one directly or through a binding read from it. The choice never changes
  * behavior. */
 
-import type { IrExpr, IrModule } from "../../ir/ir.js";
+import type { IrExpr, IrModule, IrStmt } from "../../ir/ir.js";
 import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 
 const APPENDING_METHODS: ReadonlySet<string> = new Set([
@@ -119,4 +119,37 @@ export function findAppendedArrayLiterals(
     });
   }
   return result;
+}
+
+/** `const xs = []` directly followed by a capacity hint for `xs` (an
+ * `arraySetLength` with `reserve`) whose length reads only literals and
+ * other locals: the literal can be constructed with that capacity, and the
+ * hint then has nothing left to do. */
+export function reservedArrayLength(
+  stmts: readonly IrStmt[],
+  i: number,
+): { literal: IrExpr; hint: IrStmt & { kind: "arraySetLength" } } | null {
+  const decl = stmts[i];
+  const next = stmts[i + 1];
+  if (decl?.kind !== "varDecl" || decl.init === null || !isEmptyLiteral(decl.init)) return null;
+  if (next?.kind !== "arraySetLength" || next.reserve !== true) return null;
+  if (next.arr.kind !== "varRef" || next.arr.localId !== decl.localId) return null;
+  return plainLength(next.length, decl.localId) ? { literal: decl.init, hint: next } : null;
+}
+
+function plainLength(e: IrExpr, array: string): boolean {
+  switch (e.kind) {
+    case "numLit":
+      return true;
+    case "varRef":
+      return e.localId !== array;
+    case "bin":
+      return plainLength(e.left, array) && plainLength(e.right, array);
+    case "ternary":
+      return (
+        plainLength(e.cond, array) && plainLength(e.then, array) && plainLength(e.else_, array)
+      );
+    default:
+      return false;
+  }
 }

@@ -167,3 +167,47 @@ test("a store into a dictionary whose values can be functions keeps checked disp
   );
   expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
 });
+
+test("a store into a generic dictionary of dictionaries keeps checked dispatch", async () => {
+  const source = dictionaries
+    .replace(
+      "interface Settings { groups: Record<string, Record<string, string>> }",
+      "interface Settings<T> { groups: Record<string, Record<string, T>> }",
+    )
+    .replace("function addGroup(settings: Settings,", "function addGroup<T>(settings: Settings<T>,")
+    .replace("const settings: Settings =", "const settings: Settings<string> =");
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});
+
+test("a runtime-key store into a dictionary view of a class instance keeps checked dispatch", async () => {
+  const source = `
+class Counter {
+  n = 0;
+  tick(): number { return ++this.n; }
+}
+const counter = new Counter();
+const view: {} = counter;
+const slots: Record<string, string> = view;
+const key: string = String(process.argv.length);
+slots[key] = "replaced";
+console.log(counter.tick());
+`;
+  // The method has a slot the write can replace, which calls consult.
+  expect(await callersOf(source, "%Counter.tick")).toContain("%method.value:%Counter.tick");
+});
+
+test("a dot store into a dictionary view of a class instance keeps checked dispatch", async () => {
+  const source = `
+class Lamp {
+  on = false;
+  toggle(): boolean { this.on = !this.on; return this.on; }
+}
+const lamp = new Lamp();
+const view: {} = lamp;
+const slots: Record<string, string> = view;
+slots.toggle = "replaced";
+console.log(lamp.toggle());
+`;
+  // The method has a slot the write can replace, which calls consult.
+  expect(await callersOf(source, "%Lamp.toggle")).toContain("%method.value:%Lamp.toggle");
+});

@@ -1,5 +1,6 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import { isDateSetter } from "./builtins/dates.js";
 
 /** Date methods whose receiver is only read for its time value: a Date
  * local used as their receiver can store the time value instead of a Date
@@ -41,12 +42,15 @@ const RELATIONAL = new Set([
 
 /** True when a local `const` (or a `let` that is never assigned again)
  * initialized with `new Date(...)` can keep the Date's time value instead
- * of a Date object: no use observes the Date's identity. Every use reads the time value as
- * a Date method receiver, a String() or template operand, a relational or
- * string `+` operand, or `new Date(d)`'s argument, inside the declaring
- * function, or inside the block or loop that scopes a module-level
- * binding (no closure captures it). Top-level module bindings keep the
- * object. Other uses box the time value into a new Date at the use. */
+ * of a Date object: no use observes the Date's identity. Every use reads
+ * the time value as a Date method receiver (a setter replaces it; the
+ * arguments of a method that reads it call no setter on it), a
+ * String(), Number() or template operand, a unary + or - operand, a
+ * relational or string `+` operand, or `new Date(d)`'s argument, inside
+ * the declaring function, or inside the block or loop that scopes a
+ * module-level binding (no closure captures it). Top-level module bindings
+ * keep the object. Other uses box the time value into a new Date at the
+ * use. */
 export function isTimeValueDateDeclaration(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -94,17 +98,21 @@ function decideTimeValueDate(lowerer: Lowerer, decl: ts.VariableDeclaration): bo
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
   if (!symbol) return false;
   let ok = true;
+  let sets = false;
   const visit = (node: ts.Node): void => {
     if (!ok) return;
     if (ts.isIdentifier(node) && node !== decl.name && node.text === decl.name.text) {
       if (lowerer.checker.getSymbolAtLocation(node) === symbol) {
-        if (enclosingFunction(node) !== fn || !readsTimeValue(lowerer, node)) ok = false;
+        const use = enclosingFunction(node) === fn ? timeValueUse(lowerer, node, symbol) : null;
+        if (use === null) ok = false;
+        else if (use === "set") sets = true;
       }
       return;
     }
     ts.forEachChild(node, visit);
   };
   visit(scope);
+  if (ok && sets) lowerer.timeValueDateWrites.add(decl);
   return ok;
 }
 
@@ -164,29 +172,75 @@ function enclosingFunction(node: ts.Node): ts.FunctionLikeDeclaration | null {
   return null;
 }
 
-/** A use of the binding that reads only its time value. */
-function readsTimeValue(lowerer: Lowerer, id: ts.Identifier): boolean {
+/** How a use of the binding uses its time value: "read" for a use that
+ * reads only the time value, "set" for a setter call that replaces it, or
+ * null for any other use. */
+function timeValueUse(
+  lowerer: Lowerer,
+  id: ts.Identifier,
+  symbol: ts.Symbol,
+): "read" | "set" | null {
   let node: ts.Node = id;
   while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
   const parent = node.parent;
+  if (parent === undefined) return null;
   if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
     const call = parent.parent;
-    return (
-      !parent.questionDotToken &&
-      ts.isCallExpression(call) &&
-      call.expression === parent &&
-      !call.questionDotToken &&
-      TIME_VALUE_METHODS.has(parent.name.text) &&
-      lowerer.isStdlibMember(parent)
-    );
+    if (
+      parent.questionDotToken ||
+      !ts.isCallExpression(call) ||
+      call.expression !== parent ||
+      call.questionDotToken ||
+      !lowerer.isStdlibMember(parent)
+    )
+      return null;
+    if (isDateSetter(parent.name.text)) return "set";
+    // The method reads the time value after its arguments are evaluated:
+    // a setter there (`d.toJSON(d.setTime(0))`) changes what it reads.
+    if (call.arguments.nodes.some((arg) => callsSetterOf(lowerer, arg, symbol))) return null;
+    return TIME_VALUE_METHODS.has(parent.name.text) ? "read" : null;
   }
+  return readsTimeValue(lowerer, node, parent, symbol) ? "read" : null;
+}
+
+/** True when `node` calls a setter on the binding `symbol` names. */
+function callsSetterOf(lowerer: Lowerer, node: ts.Node, symbol: ts.Symbol): boolean {
+  if (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    isDateSetter(node.expression.name.text)
+  ) {
+    let receiver = node.expression.expression;
+    while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+    if (ts.isIdentifier(receiver) && lowerer.checker.getSymbolAtLocation(receiver) === symbol)
+      return true;
+  }
+  return (
+    ts.forEachChild(node, (child) => callsSetterOf(lowerer, child, symbol) || undefined) ?? false
+  );
+}
+
+/** A use of the binding, other than a method call, that reads only its
+ * time value. */
+function readsTimeValue(
+  lowerer: Lowerer,
+  node: ts.Node,
+  parent: ts.Node,
+  symbol: ts.Symbol,
+): boolean {
   if (ts.isTemplateSpan(parent)) return parent.expression === node;
+  // Unary + and -, the number hint.
+  if (ts.isPrefixUnaryExpression(parent))
+    return (
+      parent.operator === ts.SyntaxKind.PlusToken || parent.operator === ts.SyntaxKind.MinusToken
+    );
   if (ts.isCallExpression(parent)) {
     return (
       parent.arguments.nodes.length === 1 &&
       parent.arguments.nodes[0] === node &&
       ts.isIdentifier(parent.expression) &&
-      lowerer.isStdlibGlobal(parent.expression, "String")
+      (lowerer.isStdlibGlobal(parent.expression, "String") ||
+        lowerer.isStdlibGlobal(parent.expression, "Number"))
     );
   }
   if (ts.isNewExpression(parent)) {
@@ -198,6 +252,9 @@ function readsTimeValue(lowerer: Lowerer, id: ts.Identifier): boolean {
     );
   }
   if (ts.isBinaryExpression(parent)) {
+    // A left operand converts after the right one is evaluated: a setter
+    // there changes the time value the comparison or concatenation reads.
+    if (parent.left === node && callsSetterOf(lowerer, parent.right, symbol)) return false;
     const other = parent.left === node ? parent.right : parent.left;
     const otherKind = lowerer.mapTypeOf(lowerer.typeOf(other))?.kind;
     if (RELATIONAL.has(parent.operatorToken.kind)) return otherKind === "date";

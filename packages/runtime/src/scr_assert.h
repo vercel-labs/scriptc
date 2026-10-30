@@ -24,6 +24,19 @@ void scr_assert_fail(ScrStr *message, bool generated); /* takes ownership; alway
  * consumes them; a passing call clears them. */
 void scr_assert_set_options(int options);
 void scr_assert_clear_options(void);
+/* A message argument that is not a string, for the next assertion that
+ * fails with SCR_ASSERT_VALUE_MESSAGE as its message (scr_assert.c): an
+ * Error (`error`) is thrown as it is, anything else reports String(value).
+ * Borrows value; clear drops a registration the call did not consume. */
+#define SCR_ASSERT_VALUE_MESSAGE "\x01scriptc:assert-message-value"
+void scr_assert_message_value(struct ScrDyn *value, bool error);
+void scr_assert_message_clear(void);
+/* An assert method as a function value, by canonical name (+1). */
+struct ScrDyn *scr_assert_method_value(ScrStr *name);
+/* assert.throws/rejects with a validation function: its result must be
+ * true (Node's expectedException), else the AssertionError. Borrows all. */
+void scr_assert_throws_validate(struct ScrDyn *actual, struct ScrDyn *validate, ScrStr *op,
+                                ScrStr *msg, bool has_msg);
 bool scr_assert_diff_full(void);
 bool scr_assert_skip_prototype(void);
 void scr_assert_record(ScrDyn *actual, ScrDyn *expected, const char *op); /* values move in */
@@ -113,10 +126,12 @@ void scr_assert_loose_result(bool equal, bool negated, ScrStr *actual,
  * promise fulfilled): "Missing expected exception|rejection" with Node's
  * details — ` (${expected.name})` when the expected class/shape carries a
  * name (has_ename), then `: message` or `.`. */
-/* Node's expectsError over an error-INSTANCE expected: the expected dyn
- * error's keys (minus the %error marker) each deep-compare against the
- * caught value's; mismatches throw the deep-equal AssertionError. */
-void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, bool has_msg);
+/* Node's expectedException over an object expected (a validation object or
+ * an error instance): each key compares against the caught value's own or
+ * inherited one; a mismatch throws the Comparison deep-equal
+ * AssertionError with the throws (or rejects) operator. */
+void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, bool has_msg,
+                                bool rejection);
 void scr_assert_throws_none(bool rejection, ScrStr *ename, bool has_ename,
                             ScrStr *msg, bool has_msg);
 void scr_assert_throws_mismatch(ScrStr *expected_name, ScrError *err,

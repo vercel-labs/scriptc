@@ -43,7 +43,7 @@ retired-engine-2103-optional-tuple-elements.ts:19:1 - error SC2004: uses of 'f2'
 
   hint: the declaration of 'f2' did not compile — fix the diagnostic reported there and these sites clear with it
 
-retired-engine-2103-optional-tuple-elements.ts:20:7 - error SC2001: values of type '[(string | undefined)?, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+retired-engine-2103-optional-tuple-elements.ts:20:7 - error SC2001: values of type '[(string | undefined)?, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   19 | f2([]);
   20 | const t: [string?, number?] = ["x"];
@@ -59,7 +59,7 @@ retired-engine-2103-optional-tuple-elements.ts:21:13 - error SC2004: uses of 't'
 
   hint: the declaration of 't' did not compile — fix the diagnostic reported there and these sites clear with it
 
-retired-engine-2103-optional-tuple-elements.ts:22:7 - error SC2001: values of type '[(string | undefined)?, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+retired-engine-2103-optional-tuple-elements.ts:22:7 - error SC2001: values of type '[(string | undefined)?, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   21 | console.log(t.length, `${t[0]} ${t[1]}`);
   22 | const full: [string?, number?] = ["y", 7];
@@ -75,14 +75,14 @@ retired-engine-2103-optional-tuple-elements.ts:23:13 - error SC2004: uses of 'fu
 
   hint: the declaration of 'full' did not compile — fix the diagnostic reported there and these sites clear with it
 
-retired-engine-2103-optional-tuple-elements.ts:24:7 - error SC2001: values of type '[(string | undefined)?, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+retired-engine-2103-optional-tuple-elements.ts:24:7 - error SC2001: values of type '[(string | undefined)?, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   23 | console.log(full.length, `${full[0]} ${full[1]}`);
   24 | const none: [string?, number?] = [];
      |       ^~~~
   25 | console.log(none.length);
 
-retired-engine-2103-optional-tuple-elements.ts:24:34 - error SC2001: values of type '[(string | undefined)?, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+retired-engine-2103-optional-tuple-elements.ts:24:34 - error SC2001: values of type '[(string | undefined)?, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   23 | console.log(full.length, `${full[0]} ${full[1]}`);
   24 | const none: [string?, number?] = [];
@@ -98,7 +98,7 @@ retired-engine-2103-optional-tuple-elements.ts:25:13 - error SC2004: uses of 'no
 
   hint: the declaration of 'none' did not compile — fix the diagnostic reported there and these sites clear with it
 
-retired-engine-2103-optional-tuple-elements.ts:27:7 - error SC2001: values of type '[string, ...number[]]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+retired-engine-2103-optional-tuple-elements.ts:27:7 - error SC2001: values of type '[string, ...number[]]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   26 | // A rest-element tuple rides the same island representation.
   27 | const r: [string, ...number[]] = ["head", 1, 2, 3];

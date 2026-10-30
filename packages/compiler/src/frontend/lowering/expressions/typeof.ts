@@ -34,7 +34,12 @@ import { varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
-import { isTemporalGlobalRoot } from "../lower-namespaces.js";
+import {
+  ambientUndefinedFnSymbolOf,
+  ambientUndefinedVarSymbolOf,
+  isTemporalGlobalRoot,
+} from "../lower-namespaces.js";
+import { isF64HandleTyped } from "../f64-handles.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
   const webAssembly = lowerWebAssemblyTypeof(lowerer, expr.expression);
@@ -219,6 +224,16 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     if (isTemporalGlobalRoot(lowerer, tested, sym)) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }
+    // A name the program declares ambiently but nothing defines
+    // (`declare const Bun`, `declare function f(): void`): Node erases the
+    // declaration, so typeof answers "undefined" without reading it, where
+    // a read throws ReferenceError.
+    if (
+      ambientUndefinedVarSymbolOf(lowerer, tested) ||
+      ambientUndefinedFnSymbolOf(lowerer, tested)
+    ) {
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+    }
     // `const { inspect } = require("util")` / `import { inspect } from
     // "node:util"`: a binding of a builtin module's exported function,
     // class or object. JavaScript sources represent such a value without
@@ -281,13 +296,18 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     promise: "object",
     bytes: "object",
     regex: "object",
+    date: "object",
     generator: "object",
     classval: "function",
     moduleNs: "object",
     undefinedT: "undefined",
     nullT: "object",
   };
-  const folded = FOLD[operand.type.kind];
+  // An f64 handle (a readline Interface, a Timeout) is an object.
+  const folded =
+    operand.type.kind === "f64" && isF64HandleTyped(lowerer, expr.expression)
+      ? "object"
+      : FOLD[operand.type.kind];
   if (folded) {
     const result: IrExpr = { kind: "strLit", value: folded, type: STRING, loc };
     return isSafeToDiscard(operand)
@@ -473,6 +493,24 @@ export function lowerDynTypeofTest(
     // preserving both operands' evaluation order without a narrowing test.
     if (!ts.isStringLiteral(b)) continue;
     const declared = lowerer.mapTypeOf(lowerer.typeOf(a.expression));
+    // `typeof undeclared === "..."` in a JavaScript source: nothing declares
+    // the name, so Node answers "undefined" without ever reading it — the
+    // test is that constant's comparison, never a read (a read throws).
+    {
+      let operand = a.expression;
+      while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+      if (
+        ts.isIdentifier(operand) &&
+        isJsSourceFile(ts.getSourceFileOfNode(operand)) &&
+        lowerer.resolveValueSymbol(operand) === null
+      )
+        return {
+          kind: "boolLit",
+          value: (b.text === "undefined") !== negated,
+          type: BOOL,
+          loc,
+        };
+    }
     let value: IrExpr;
     if (declared?.kind === "dyn") {
       value = lowerer.lowerExpr(a.expression);

@@ -1,0 +1,13 @@
+{
+  "name": "type-patch-files-case",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "typePatches": {
+      "eventlog@^2.0.0": {
+        "files": { "dist/entry.d.ts": "./type-patches/entry.d.ts" },
+        "declarations": { "summarize().last": "| undefined" }
+      }
+    }
+  }
+}

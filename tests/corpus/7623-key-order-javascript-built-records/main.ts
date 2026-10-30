@@ -1,7 +1,7 @@
 // Copies and enumerations of records JavaScript builds follow the order
 // JavaScript wrote, also when the TypeScript literals of the type write
 // another order and spread their own type. Each case uses its own type.
-import { install } from "./lib.js";
+import { install, installLabel } from "./lib.js";
 
 interface Pair {
   a: number;
@@ -39,6 +39,9 @@ showPair("method", store.get());
 showPair("self copy", { ...store.get(), b: 3 });
 install(store, "get");
 showPair("replaced", store.get());
+const labels: { label(): string } = { label: () => "plain" };
+installLabel(labels, "label");
+console.log(labels.label());
 
 // A JavaScript function, checked into a typed slot, calls a native callback
 // it receives inside its options record with a record it builds.

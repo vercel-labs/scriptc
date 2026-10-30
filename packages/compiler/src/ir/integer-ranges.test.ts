@@ -828,6 +828,72 @@ test("a while condition on a string's length bounds a counter, and guarded incre
   expect(run((inside) => [observe(inside), bump, rebound]).after).toBeNull();
 });
 
+test("a while counter every pass advances bounds the companions the loop increments", () => {
+  // pos = 0; k = 0; while (pos < text.length) { pos++; observe(k); if (unknown === 1) k++; k++; } observe(k)
+  const text: IrExpr = { loc, kind: "varRef", localId: "text", type: STRING };
+  const length: IrExpr = {
+    loc,
+    kind: "strIntrinsic",
+    method: "length",
+    receiver: text,
+    args: [],
+    type: F64,
+  };
+  const set = (localId: string, value: IrExpr): IrStmt => ({ loc, kind: "assign", localId, value });
+  const bump = (localId: string): IrStmt => ({
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "incDec", op: "+", prefix: false, localId, type: F64 },
+  });
+  const maybe = (then: IrStmt[]): IrStmt => ({
+    loc,
+    kind: "if",
+    cond: condition("===", ref("unknown"), num(1)),
+    then,
+    else_: null,
+  });
+  const run = (body: (inside: IrExpr) => IrStmt[]) => {
+    const inside = ref("k"),
+      after = ref("k");
+    const loop: IrStmt = {
+      loc,
+      kind: "while",
+      cond: condition("<", ref("pos"), length),
+      body: body(inside),
+    };
+    const f = fn([set("pos", num(0)), set("k", num(0)), loop, observe(after)]);
+    f.locals.push(
+      { id: "pos", name: "pos", type: F64, mutable: true },
+      { id: "k", name: "k", type: F64, mutable: true },
+      { id: "text", name: "text", type: STRING, mutable: false },
+    );
+    const facts = analyzeIntegerRangeFacts(f);
+    return {
+      inside: facts.ranges.get(inside),
+      after: facts.ranges.get(after),
+      loop: facts.loopRanges.get(loop)?.get("k"),
+    };
+  };
+  // At most 2^31 - 1 passes, each adding at most 2.
+  const bounded = { min: 0, max: 4294967294 };
+  expect(run((inside) => [bump("pos"), observe(inside), maybe([bump("k")]), bump("k")])).toEqual({
+    inside: bounded,
+    after: bounded,
+    loop: bounded,
+  });
+  // A pass that can continue before advancing the counter, or an increment a
+  // nested loop repeats, bounds nothing.
+  const skip: IrStmt = maybe([{ loc, kind: "continue" }]);
+  expect(run((inside) => [skip, bump("pos"), observe(inside), bump("k")]).after).toBeNull();
+  const repeat: IrStmt = {
+    loc,
+    kind: "while",
+    cond: condition("===", ref("unknown"), num(1)),
+    body: [bump("k")],
+  };
+  expect(run((inside) => [bump("pos"), observe(inside), repeat]).after).toBeNull();
+});
+
 test("a nested while loop may advance a counter its own condition bounds", () => {
   // while (pos < text.length) { observe(pos); while (pos < text.length && unknown === 1) pos++; pos += 2; }
   const text: IrExpr = { loc, kind: "varRef", localId: "text", type: STRING };
@@ -1323,7 +1389,7 @@ test("a for loop bounds cursors it resets and copies, and their writes keep the 
   }
 });
 
-test("a cursor of a loop over a typed array keeps its writes exact up to 2^53 - 1", () => {
+test("a cursor of a loop over a typed array keeps its writes within the largest length", () => {
   // for (x = 0; x < bytes.length; x++) changes = changes + 1;
   const bytes: IrExpr = {
     loc,
@@ -1355,7 +1421,7 @@ test("a cursor of a loop over a typed array keeps its writes exact up to 2^53 - 
     { id: "changes", name: "changes", type: F64, mutable: true },
     { id: "bytes", name: "bytes", type: { kind: "bytes", elem: "u8" }, mutable: false },
   );
-  // The sum of the header range passes 2^53 - 1; the write takes the loop
-  // range instead.
-  expect(analyzeIntegerRanges(f).get(counted)).toEqual({ min: 0, max: Number.MAX_SAFE_INTEGER });
+  // The sum of the header range passes the largest typed array length; the
+  // write takes the loop range instead.
+  expect(analyzeIntegerRanges(f).get(counted)).toEqual({ min: 1, max: 2 ** 48 });
 });

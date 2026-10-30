@@ -15,7 +15,9 @@
  * answer `.constructor` on the matching dynamic values, so
  * `o.constructor === Object` and `a.constructor === b.constructor` are
  * exact identity tests. `Object(v)` works through the stored value; calling
- * the others through it is fenced. */
+ * the others through it is fenced. SharedArrayBuffer, DataView,
+ * BigInt64Array, BigUint64Array and Proxy are interned the same way;
+ * calling one throws Node's "Constructor X requires 'new'" TypeError. */
 #include "scr_runtime.h"
 
 #include <stdio.h>
@@ -51,6 +53,12 @@ static const char dyn_s31[] SCR_DYN_COMPAT_STR = "Set";
 static const char dyn_s32[] SCR_DYN_COMPAT_STR = "";
 static const char dyn_s35[] SCR_DYN_COMPAT_STR = "FinalizationRegistry";
 static const char dyn_s36[] SCR_DYN_COMPAT_STR = "native:prototype";
+static const char dyn_s42[] SCR_DYN_COMPAT_STR = "SharedArrayBuffer";
+static const char dyn_s43[] SCR_DYN_COMPAT_STR = "DataView";
+static const char dyn_s44[] SCR_DYN_COMPAT_STR = "BigInt64Array";
+static const char dyn_s45[] SCR_DYN_COMPAT_STR = "BigUint64Array";
+static const char dyn_s46[] SCR_DYN_COMPAT_STR = "Proxy";
+static const char dyn_s47[] SCR_DYN_COMPAT_STR = "Constructor %s requires 'new'";
 
 /* Object.prototype.toString's tag: errors answer "[object Error]" (the
  * shared tag walk in scr_json.c answers "[object Object]" for them). */
@@ -124,8 +132,14 @@ ScrDyn *scr_dyn_object_prototype_method(const ScrStr *method) {
 /* ── The builtin constructors as dynamic values ──────────────────────── */
 static const char *const dyn_global_ctor_names[] = {
   dyn_s26, dyn_s29, dyn_s25, dyn_s30, dyn_s31, dyn_s21, dyn_s22, dyn_s24, dyn_s35,
+  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46,
 };
 #define DYN_GLOBAL_CTORS (sizeof dyn_global_ctor_names / sizeof dyn_global_ctor_names[0])
+/* Each constructor's own length, indexed like dyn_global_ctor_names. */
+static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2};
+/* The first of the constructors that only `new` builds
+ * (SharedArrayBuffer onward): calling one throws Node's TypeError. */
+#define DYN_GLOBAL_NEW_ONLY 9
 static SCR_TL ScrDyn *dyn_global_ctors[DYN_GLOBAL_CTORS];
 static SCR_TL bool dyn_global_ctors_registered;
 
@@ -138,6 +152,13 @@ static void dyn_global_ctors_cleanup(void) {
 
 ScrDyn *scr_dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const char *name = closure->fn;
+  for (size_t i = DYN_GLOBAL_NEW_ONLY; i < DYN_GLOBAL_CTORS; i++) {
+    if (name != dyn_global_ctor_names[i]) continue;
+    char message[64];
+    int length = snprintf(message, sizeof message, dyn_s47, name);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
+    return NULL;
+  }
   bool object = strcmp(name, dyn_s26) == 0;
   if (object) {
     const ScrDyn *value = argc ? args[0] : scr_dyn_undefined();
@@ -170,12 +191,12 @@ ScrDyn *scr_dyn_global_ctor(const char *name) {
       if (scr_dyn_global_ctor_construct) scr_dyn_global_construct_fn = scr_dyn_global_ctor_construct;
     }
     if (!dyn_global_ctors[i]) {
-      /* Each constructor's own length: Object 1, Date 7, RegExp 2, Promise 1,
-       * the collections 0, FinalizationRegistry 1. */
-      uint32_t length = i == 0 || i == 5 || i == 8 ? 1 : i == 1 ? 7 : i == 2 ? 2 : 0;
       dyn_global_ctors[i] = scr_dyn_new_func(scr_closure_new((void *)dyn_global_ctor_names[i], 0),
-                                             scr_dyn_global_ctor_call, length, dyn_s6,
+                                             scr_dyn_global_ctor_call, dyn_global_ctor_lengths[i], dyn_s6,
                                              dyn_global_ctor_names[i]);
+      /* `o.constructor.prototype` of a plain object is Object.prototype
+       * (zod's isPlainObject). The other prototypes are not modeled. */
+      if (i == 0) scr_dyn_fn_seed_prototype(dyn_global_ctors[i], scr_dyn_object_prototype());
     }
     return scr_dyn_retain(dyn_global_ctors[i]);
   }

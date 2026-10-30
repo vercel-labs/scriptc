@@ -9,11 +9,17 @@ import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { borrowsStringInputs } from "./string-lifetimes.js";
 import { borrowsMapReadInputs } from "./map-read-lifetimes.js";
 import { LazyCaptures } from "./lazy-captures.js";
-import { storedLastUseRead } from "./local-extents.js";
+import { BodyLastUses, storedLastUseRead } from "./local-extents.js";
+import { InternalCompilerError } from "../../errors.js";
 
 interface ForwardedUse {
   callee: string;
   index: number;
+  /** The binding reached the call inside a nullable-pointer union
+   * (PointerWrapTest): the callee's parameter holds the binding itself as
+   * its payload, so the callee must keep the payload, not only the union,
+   * in place. */
+  wrapped: boolean;
 }
 
 interface Uses {
@@ -21,6 +27,17 @@ interface Uses {
   written: Set<string>;
   declarations: Map<string, number>;
   forwards: Map<string, ForwardedUse[]>;
+  /** Union bindings whose payload a use may keep: a narrowed read that is
+   * not projected or passed on, a narrowed nullish read, a store into a
+   * nullable-pointer field. The union itself can still be only projected. */
+  payloadKept: Set<string>;
+  /** Narrowed payloads of union bindings passed directly as call arguments:
+   * the payload stays in place if the callee's parameter is proved. */
+  payloadForwards: Map<string, ForwardedUse[]>;
+  /** Union bindings whose whole value initializes or is assigned to
+   * another union local (`const x = y`, `x = y` as a statement), with the
+   * locals it is copied to. */
+  copies: Map<string, string[]>;
 }
 
 interface Parameter {
@@ -46,6 +63,11 @@ export interface CallLifetimes {
   /** Projection-only local uses, allowing statement assignments. Each
    * initializer and assignment still needs a separate storage proof. */
   projectedLocals: Map<string, Set<string>>;
+  /** Locals that projectedLocals leaves out only because their whole value
+   * is copied to other union locals, with those locals. Such a local is
+   * only projected when every local it is copied to snapshots the copy
+   * (local-union-storage.ts) instead of keeping the box. */
+  copiedLocals: Map<string, Map<string, readonly string[]>>;
   /** Generator bodies own their parameters for the whole body, including
    * every suspension: the frame releases them only on its final exit. A
    * reference parameter nothing rebinds, declares or captures is therefore
@@ -99,19 +121,56 @@ const NO_INLINE_FIELDS: InlineFieldTest = { record: () => false, classField: () 
  * reads the record and keeps no reference to it. */
 export type RecordDynCopyTest = (shapeId: string) => boolean;
 
+/** Wraps into a nullable-pointer union whose value is the payload pointer
+ * itself (LlEmitter.borrowableNullableWrap): the wrapped binding reaches the
+ * callee's parameter unchanged. */
+export type PointerWrapTest = (wrap: IrExpr & { kind: "unionWrap" }) => boolean;
+
 function collectUses(
   fn: IrFunction,
   nullableField: NullableFieldTest,
   registerReturn: boolean,
   inlineField: InlineFieldTest,
   recordDynCopy: RecordDynCopyTest,
+  pointerWrap: PointerWrapTest,
 ): Uses {
   const uses: Uses = {
     invalid: new Set(),
     written: new Set(),
     declarations: new Map(),
     forwards: new Map(),
+    payloadKept: new Set(),
+    payloadForwards: new Map(),
+    copies: new Map(),
   };
+  const forward = (
+    table: Map<string, ForwardedUse[]>,
+    localId: string,
+    use: ForwardedUse,
+  ): void => {
+    let forwards = table.get(localId);
+    if (!forwards) table.set(localId, (forwards = []));
+    forwards.push(use);
+  };
+  /** The union binding `x` whose payload `value` is: `unionNarrow(x)`, or a
+   * checked narrowing `unionIsTag(x) ? <libCall> : unionNarrow(x)` (either
+   * order), whose other branch is visited as any use. */
+  function narrowedBinding(value: IrExpr): string | null {
+    if (value.kind === "unionNarrow")
+      return value.value.kind === "varRef" ? value.value.localId : null;
+    if (
+      value.kind !== "ternary" ||
+      value.cond.kind !== "unionIsTag" ||
+      value.cond.value.kind !== "varRef"
+    )
+      return null;
+    const id = value.cond.value.localId;
+    if (value.else_.kind === "libCall" && narrowedBinding(value.then) === id)
+      return expr(value.else_) ? id : null;
+    if (value.then.kind === "libCall" && narrowedBinding(value.else_) === id)
+      return expr(value.then) ? id : null;
+    return null;
+  }
   const aliases: { alias: string; source: string }[] = [];
   const stringInput = (value: IrExpr): boolean => {
     if (value.kind === "varRef" && value.type.kind === "string") return true;
@@ -145,6 +204,12 @@ function collectUses(
         if (borrowsMapReadInputs(node)) return expr(node.receiver) && node.args.every(stringInput);
         break;
       case "unionNarrow":
+        // The payload may escape; the union itself does not.
+        if (node.value.kind === "varRef") {
+          uses.payloadKept.add(node.value.localId);
+          return true;
+        }
+        break;
       case "unionIsTag":
         if (node.value.kind === "varRef") return true;
         break;
@@ -161,12 +226,16 @@ function collectUses(
           node.left.kind === "varRef" &&
           node.left.type.kind === "union" &&
           node.type.kind !== "union"
-        )
+        ) {
+          uses.payloadKept.add(node.left.localId);
           return expr(node.right);
+        }
         break;
       case "fieldGet":
       case "recordGet":
-        if (node.obj.kind === "varRef") return true;
+        // A field read of a binding, or of a union binding's narrowed
+        // payload, keeps neither.
+        if (node.obj.kind === "varRef" || narrowedBinding(node.obj) !== null) return true;
         break;
       case "dynFrom":
         // A copied record converts field by field; a live capsule keeps it.
@@ -200,13 +269,19 @@ function collectUses(
         return node.args.every(expr);
       case "call":
         node.args.forEach((arg, index) => {
-          if (arg.kind !== "varRef") {
+          const narrowed = narrowedBinding(arg);
+          if (narrowed !== null) {
+            forward(uses.payloadForwards, narrowed, { callee: node.callee, index, wrapped: false });
+            return;
+          }
+          const wrapped =
+            arg.kind === "unionWrap" && arg.value.kind === "varRef" && pointerWrap(arg);
+          const value = wrapped ? arg.value : arg;
+          if (value.kind !== "varRef") {
             expr(arg);
             return;
           }
-          let forwards = uses.forwards.get(arg.localId);
-          if (!forwards) uses.forwards.set(arg.localId, (forwards = []));
-          forwards.push({ callee: node.callee, index });
+          forward(uses.forwards, value.localId, { callee: node.callee, index, wrapped });
         });
         return true;
       case "assignExpr":
@@ -227,6 +302,18 @@ function collectUses(
     }
     return everyExprChild(node, expr, (node) => stmt(node, true));
   }
+  /** `const x = y` or a statement `x = y` of union locals: the copy is
+   * recorded instead of rejecting `y`. A parameter's copy still rejects it,
+   * since callers may lend projection-only parameters a stack box. */
+  const params = new Set(fn.params.map((param) => param.localId));
+  const unionCopy = (target: string, value: IrExpr | null | undefined): boolean => {
+    if (value?.kind !== "varRef" || value.type.kind !== "union" || params.has(value.localId))
+      return false;
+    let targets = uses.copies.get(value.localId);
+    if (!targets) uses.copies.set(value.localId, (targets = []));
+    targets.push(target);
+    return true;
+  };
   function stmt(node: IrStmt, inExpression: boolean): boolean {
     switch (node.kind) {
       case "return":
@@ -235,6 +322,7 @@ function collectUses(
         break;
       case "varDecl":
         uses.declarations.set(node.localId, (uses.declarations.get(node.localId) ?? 0) + 1);
+        if (unionCopy(node.localId, node.init)) return true;
         // A receiver temporary (`%compoundReceiver = this`) projects its
         // source as long as the temporary itself is only projected.
         if (
@@ -250,8 +338,11 @@ function collectUses(
           node.value.kind === "varRef" &&
           node.value.type.kind === "union" &&
           nullableField(node.className, node.field)
-        )
+        ) {
+          // The field retains the payload.
+          uses.payloadKept.add(node.value.localId);
           return expr(node.obj);
+        }
         const stored = fieldStore(
           node.obj,
           node.value,
@@ -274,6 +365,7 @@ function collectUses(
         // Sequence expressions can rebind a previous call argument before
         // its consumer runs. Those locals need an owned heap snapshot.
         if (inExpression) uses.invalid.add(node.localId);
+        else if (unionCopy(node.localId, node.value)) return true;
         break;
       case "forOf":
         // The binding is initialized afresh for each iteration. Its uses
@@ -345,10 +437,14 @@ export function analyzeCallLifetimes(
   registerReturns: ReadonlySet<string> = new Set(),
   inlineField: InlineFieldTest = NO_INLINE_FIELDS,
   recordDynCopy: RecordDynCopyTest = () => false,
+  pointerWrap: PointerWrapTest = () => false,
 ): CallLifetimes {
   const usesByFunction = new Map<string, Uses>();
   const lazyCaptures = new LazyCaptures(functions);
   const nodes = new Map<string, Parameter[]>();
+  /** Union parameters that keep their payload in place too, which a
+   * pointer-wrapped argument needs (ForwardedUse.wrapped). */
+  const payloadNodes = new Map<string, (Parameter | undefined)[]>();
   const unsafe: Parameter[] = [];
   const consumed: { fn: string; index: number }[] = [];
   const result: CallLifetimes = {
@@ -357,11 +453,12 @@ export function analyzeCallLifetimes(
     borrowed: new Map(),
     bindings: new Map(),
     projectedLocals: new Map(),
+    copiedLocals: new Map(),
     generatorParameters: new Map(),
   };
   for (const fn of functions.values()) {
     if (fn.generator !== undefined && fn.classCaptures === undefined) {
-      const uses = collectUses(fn, nullableField, false, inlineField, recordDynCopy);
+      const uses = collectUses(fn, nullableField, false, inlineField, recordDynCopy, pointerWrap);
       const locals = new Map(fn.locals.map((local) => [local.id, local]));
       const stable = new Set<string>();
       for (const param of fn.params) {
@@ -386,6 +483,7 @@ export function analyzeCallLifetimes(
       registerReturns.has(fn.name),
       inlineField,
       recordDynCopy,
+      pointerWrap,
     );
     usesByFunction.set(fn.name, uses);
     // Class-capturing bodies get only local facts (computed below from
@@ -425,6 +523,9 @@ export function analyzeCallLifetimes(
     // environment box takes a reference of its own when it is created.
     const unchangedCaptures = lazyCaptures.parameters(fn);
     const walks = walkParameters.get(fn.name);
+    // One walk of the body answers every parameter's last use (consumedParameter).
+    let lastUses: BodyLastUses | undefined;
+    const bodyLastUses = (): BodyLastUses => (lastUses ??= new BodyLastUses(fn.body));
     fn.params.forEach((param, index) => {
       const local = locals.get(param.localId);
       if (
@@ -439,7 +540,7 @@ export function analyzeCallLifetimes(
           !walks?.has(index) &&
           !unchangedCaptures.has(local.id) &&
           param.name !== "this" &&
-          consumedParameter(fn, param.localId)
+          consumedParameter(fn, param.localId, bodyLastUses)
         )
           consumed.push({ fn: fn.name, index });
       }
@@ -460,23 +561,50 @@ export function analyzeCallLifetimes(
         return node;
       }),
     );
+    payloadNodes.set(
+      fn.name,
+      fn.params.map((param) => {
+        if (param.type.kind !== "union") return undefined;
+        const node: Parameter = { safe: !uses.payloadKept.has(param.localId), callers: new Set() };
+        if (!node.safe) unsafe.push(node);
+        return node;
+      }),
+    );
   }
+  /** The fact a forwarded use needs from the callee's parameter. */
+  const target = (use: ForwardedUse): Parameter | undefined =>
+    use.wrapped ? payloadNodes.get(use.callee)?.[use.index] : nodes.get(use.callee)?.[use.index];
   for (const fn of functions.values()) {
     const params = nodes.get(fn.name);
     const uses = usesByFunction.get(fn.name);
     if (!params || !uses) continue;
-    fn.params.forEach((param, index) => {
-      const node = params[index]!;
+    const depend = (node: Parameter, callees: (Parameter | undefined)[]): void => {
       if (!node.safe) return;
-      for (const use of uses.forwards.get(param.localId) ?? []) {
-        const callee = nodes.get(use.callee)?.[use.index];
+      for (const callee of callees) {
         if (!callee) {
           node.safe = false;
           unsafe.push(node);
-          break;
+          return;
         }
         callee.callers.add(node);
       }
+    };
+    fn.params.forEach((param, index) => {
+      const node = params[index]!;
+      const forwards = uses.forwards.get(param.localId) ?? [];
+      depend(node, forwards.map(target));
+      const payload = payloadNodes.get(fn.name)?.[index];
+      if (!payload) return;
+      // The payload stays in place when the union does, when every callee
+      // the union reaches keeps its payload too, and when every callee its
+      // narrowed payload reaches proves that parameter.
+      depend(payload, [
+        node,
+        ...forwards.map((use) => payloadNodes.get(use.callee)?.[use.index]),
+        ...(uses.payloadForwards.get(param.localId) ?? []).map(
+          (use) => nodes.get(use.callee)?.[use.index],
+        ),
+      ]);
     });
   }
   for (let i = 0; i < unsafe.length; i++) {
@@ -499,6 +627,7 @@ export function analyzeCallLifetimes(
     const params = new Set(fn.params.map((param) => param.localId));
     const safe = new Set<string>();
     const projected = new Set<string>();
+    const copied = new Map<string, readonly string[]>();
     for (const local of fn.locals) {
       if (
         params.has(local.id) ||
@@ -508,13 +637,18 @@ export function analyzeCallLifetimes(
       )
         continue;
       const forwards = uses.forwards.get(local.id) ?? [];
-      if (forwards.every((use) => result.parameters.get(use.callee)?.has(use.index) === true)) {
-        projected.add(local.id);
-        if (eligible(local) && !uses.written.has(local.id)) safe.add(local.id);
+      if (!forwards.every((use) => target(use)?.safe === true)) continue;
+      const copies = uses.copies.get(local.id);
+      if (copies) {
+        copied.set(local.id, copies);
+        continue;
       }
+      projected.add(local.id);
+      if (eligible(local) && !uses.written.has(local.id)) safe.add(local.id);
     }
     result.locals.set(fn.name, safe);
     result.projectedLocals.set(fn.name, projected);
+    if (copied.size > 0) result.copiedLocals.set(fn.name, copied);
   }
   // Consumed parameters take the owned convention, unless only projected.
   for (const { fn, index } of consumed) {
@@ -527,6 +661,9 @@ export function analyzeCallLifetimes(
   return result;
 }
 
+/** SCRIPTC_EMIT_FACTS_VERIFY=1: every BodyLastUses answer is checked against storedLastUseRead. */
+const verifiesLastUses = process.env["SCRIPTC_EMIT_FACTS_VERIFY"] === "1";
+
 /** A parameter whose last use in the body stores it (a field, record or
  * element store, a record literal field, a push) and moves its reference
  * there (lastUseRead). Its owned convention lets a caller hand over a
@@ -534,8 +671,12 @@ export function analyzeCallLifetimes(
  * copy while the caller releases its temporary right after the call. The
  * read must be the only node of its kind in the function, like every
  * moved read. */
-function consumedParameter(fn: IrFunction, localId: string): boolean {
-  const read = storedLastUseRead(fn.body, -1, localId, true);
+function consumedParameter(fn: IrFunction, localId: string, lastUses: () => BodyLastUses): boolean {
+  const read = lastUses().storedRead(localId);
+  if (verifiesLastUses && read !== storedLastUseRead(fn.body, -1, localId, true))
+    throw new InternalCompilerError(
+      `call lifetimes: the body's last use of ${localId} in ${fn.name} differs`,
+    );
   if (read === null) return false;
   let count = 0;
   const expr = (e: IrExpr): boolean => {

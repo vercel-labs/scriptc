@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8213-cycle-star-reexport/services.ts",
+  "<repo>/tests/corpus/8213-cycle-star-reexport/runtime.ts",
+  "<repo>/tests/corpus/8213-cycle-star-reexport/sdk.ts",
+  "<repo>/tests/corpus/8213-cycle-star-reexport/main.ts"
+ ],
+ "diags": []
+}

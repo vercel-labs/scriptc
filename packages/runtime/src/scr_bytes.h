@@ -55,6 +55,11 @@ typedef struct ScrBytes {
   size_t rc;
   size_t len; /* ELEMENT count, fixed at construction */
   ScrBytesElem elem;
+#if SIZE_MAX > UINT32_MAX
+  /* Bits 0-31 of the storage an owner counts (scr_bytes_held), in the
+   * padding after elem, so the offsets compiled code uses hold. */
+  uint32_t held_lo;
+#endif
   uint8_t *data; /* len * elem_size bytes; owned unless backing is set */
   /* NULL for owners. A view (DataView, subarray, Buffer-slice) sets this
    * to the retained OWNER it aliases (chain depth is always exactly 1:
@@ -65,8 +70,45 @@ typedef struct ScrBytes {
   bool is_data_view; /* DataView is distinct from a numeric typed array. */
   bool external; /* Root aliases foreign memory; releasing it never frees data. */
   bool untransferable; /* A Buffer pool slab: its ArrayBuffer cannot be transferred. */
+  /* The cycle collector's last trace of `properties` from the one checked
+   * value that held this view (see scr_dyn_trace_v). In padding, so the
+   * offsets compiled code uses hold. */
+  bool properties_traced;
+#if SIZE_MAX > UINT32_MAX
+  uint16_t held_hi; /* bits 32-47 of the counted storage, in padding */
+#endif
   ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
+  /* Named properties a program adds to the view (`ta.foo = 1`,
+   * Object.defineProperty): a checked object, NULL until the first one.
+   * Runtime-only and last, so compiled code's field indices hold. */
+  struct ScrDyn *properties;
+#if SIZE_MAX <= UINT32_MAX
+  uint32_t held_lo; /* the counted storage, runtime-only */
+#endif
 } ScrBytes;
+#if SIZE_MAX > UINT32_MAX
+_Static_assert(offsetof(ScrBytes, data) == 24 && offsetof(ScrBytes, shared) == 48 && sizeof(ScrBytes) == 64,
+               "the counted storage sits in padding: compiled code reads data at 24 and shared at 48");
+#endif
+
+/* The bytes of storage an owner counts in process.memoryUsage()'s
+ * arrayBuffers and external (scr_array_buffers_held): 0 for views, foreign
+ * memory and owners whose storage became shared. On 64-bit targets its 48
+ * bits hold any size the address space can allocate. */
+static inline size_t scr_bytes_held(const ScrBytes *b) {
+#if SIZE_MAX > UINT32_MAX
+  return (size_t)b->held_lo | (size_t)b->held_hi << 32;
+#else
+  return b->held_lo;
+#endif
+}
+
+static inline void scr_bytes_set_held(ScrBytes *b, size_t n) {
+  b->held_lo = (uint32_t)n;
+#if SIZE_MAX > UINT32_MAX
+  b->held_hi = (uint16_t)(n >> 32);
+#endif
+}
 
 /* Copies out of and into shared storage, made of relaxed atomic accesses
  * (aligned 8-byte words, single bytes at unaligned edges). Lock-free
@@ -147,6 +189,11 @@ double scr_bytes_to_u8_clamp(double value);
  * incomplete-tail walk, base64's mod-3 groups, utf16le's odd-byte and
  * trailing-lead-surrogate holds. None throws. */
 ScrStr *scr_strdec_write(const ScrStr *enc, double pending, const ScrBytes *chunk);
+/* The checked-dynamic chunk forms: a string passes through unchanged (and
+ * leaves the buffered state alone); an ArrayBufferView decodes; anything
+ * else throws Node's ERR_INVALID_ARG_TYPE. */
+ScrStr *scr_strdec_write_dyn(const ScrStr *enc, double pending, const ScrDyn *chunk);
+double scr_strdec_next_dyn(const ScrStr *enc, double pending, const ScrDyn *chunk);
 double scr_strdec_next(const ScrStr *enc, double pending, const ScrBytes *chunk);
 ScrStr *scr_strdec_end(const ScrStr *enc, double pending);
 ScrStr *scr_strdec_encoding(const ScrDyn *enc); /* +1, or NULL with ERR_UNKNOWN_ENCODING pending */
@@ -196,6 +243,15 @@ ScrBytes *scr_array_buffer_view_dv(ScrDyn *, ScrDyn *, ScrDyn *);
  * empty span. */
 ScrBytes *scr_bytes_from_data(const uint8_t *data, size_t len); /* +1 */
 ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len); /* +1, consumes malloc storage */
+/* Bytes of storage the runtime holds: the typed array, Buffer and DataView
+ * owners of the calling instance (shared false), and the SharedArrayBuffer
+ * storage of the process (shared true). process.memoryUsage()'s
+ * arrayBuffers is their sum and external counts the first, as Node's do.
+ * scr_array_buffers_sub uncounts released storage; scr_array_buffers_share
+ * moves an owner's bytes to shared storage. */
+double scr_array_buffers_held(bool shared);
+void scr_array_buffers_sub(bool shared, size_t n);
+void scr_array_buffers_share(size_t n);
 
 /* Same-element-kind copy, preserving the raw representation. Cross-kind
  * construction uses scr_bytes_convert. Borrows src. Never throws. */
@@ -369,10 +425,20 @@ ScrDyn *scr_text_decoder_to_dyn(void *rec, void *(*retain)(void *), void (*relea
 void *scr_text_codec_from_dyn(const ScrDyn *d, bool decoder, const struct ScrDynPath *path,
                               const char *want);
 bool scr_text_codec_is(const ScrDyn *d, bool decoder);
+/* StringDecoder records as checked-dynamic handles (the same unit): the
+ * byte offsets of the encoding (string) and pending (f64) fields. */
+ScrDyn *scr_string_decoder_to_dyn(void *rec, void *(*retain)(void *), void (*release)(void *),
+                                  size_t encoding, size_t pending);
+void *scr_string_decoder_from_dyn(const ScrDyn *d, const struct ScrDynPath *path,
+                                  const char *want);
 bool scr_buffer_is_ascii(const ScrDyn *input);
 bool scr_buffer_is_utf8(const ScrDyn *input);
 ScrBytes *scr_buffer_transcode(const ScrDyn *source, const ScrDyn *from, const ScrDyn *to);
 ScrBytes *scr_bytes_buffer_source(const ScrDyn *value);
+ScrBytes *scr_text_decoder_input(const ScrDyn *value, double encoding, const ScrDyn *state, bool stream);
+bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name);
+bool scr_text_decode_stream_option(const ScrDyn *options);
+double scr_text_decoder_encoding_options(const ScrDyn *label, const ScrDyn *options);
 ScrStr *scr_text_decode_buffer_source(const ScrDyn *value);
 ScrStr *scr_text_decode_options(const ScrBytes *b, bool fatal, bool ignore_bom);
 ScrStr *scr_text_decode_stream(ScrDyn *state, const ScrBytes *b, double encoding, bool fatal, bool ignore_bom, bool stream);
@@ -524,6 +590,8 @@ ScrDyn *scr_fs_lchmod_sync_chk(const ScrDyn *path, const ScrDyn *mode);
 ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode);
 void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                      const ScrDyn *length, const ScrDyn *position, const ScrStr *fence);
+double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                            const ScrDyn *length, const ScrDyn *position);
 void scr_fs_stream_opts_chk(const ScrDyn *path, const ScrDyn *opts, const ScrStr *fence);
 /* The fs streams' option pieces (scr_fs_stream.c): the getOptions,
  * options.fd and path checks above without the fence; the checked path
@@ -538,6 +606,16 @@ ScrEmitter *scr_emitter_set_max_chk(ScrEmitter *em, const ScrDyn *n);
 void scr_emitter_set_default_max_chk(const ScrDyn *n, const ScrStr *name);
 double scr_bytes_index_of(const ScrBytes *b, const ScrBytes *needle, double off, double align, bool fwd);
 double scr_bytes_index_of_num(const ScrBytes *b, double v, double off, bool fwd);
+/* TypedArray indexOf (last false) and lastIndexOf (last true) over any
+ * element kind, with strict equality: NaN is never found and -0 matches 0.
+ * `from` is the fromIndex argument (ToIntegerOrInfinity applies); the
+ * caller passes 0, or +Infinity for lastIndexOf, when it is omitted. A
+ * Buffer (a Uint8Array receiver can be one) searches as Buffer's
+ * indexOf and lastIndexOf do. */
+double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last);
+/* TypedArray includes: indexOf's search from `from` with SameValueZero,
+ * so NaN is found. A Buffer searches as Buffer's includes does. */
+bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from);
 ScrBytes *scr_bytes_fill(ScrBytes *b, const ScrBytes *pattern, double nargs, double offset, double end);
 ScrBytes *scr_bytes_fill_num(ScrBytes *b, double v, double nargs, double offset, double end);
 ScrBytes *scr_bytes_fill_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/split-cjs-require-cycle/odd.cjs",
+  "<repo>/tests/corpus/split-cjs-require-cycle/even.cjs",
+  "<repo>/tests/corpus/split-cjs-require-cycle/main.cjs"
+ ],
+ "diags": []
+}

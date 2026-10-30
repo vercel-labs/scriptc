@@ -6,10 +6,14 @@ import { bindingNeverReassigned } from "./binding-analysis.js";
 import { implicitDefaultInstance } from "./generic-functions.js";
 import { type FnSig } from "./call-signatures.js";
 
-/** An ordinary constructor's explicit object return replaces its receiver.
- * Without observing this or new.target, it can use the function's call ABI. */
-function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
-  if (!ts.isIdentifier(expr.expression) || lowerer.peekLocal(expr.expression)) return false;
+/** The JavaScript function declaration (or never-reassigned function
+ * expression binding) `new` calls, when it is an ordinary constructor: not
+ * a generator or async function. */
+function jsConstructorFunctionOf(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+): ts.FunctionDeclaration | ts.FunctionExpression | null {
+  if (!ts.isIdentifier(expr.expression) || lowerer.peekLocal(expr.expression)) return null;
   // This probe also sees ordinary classes during global collection. Leave
   // their deferred diagnostics for the class declaration's lowering.
   const wasCollecting = lowerer.collecting;
@@ -20,7 +24,7 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
   } finally {
     lowerer.collecting = wasCollecting;
   }
-  if (!symbol) return false;
+  if (!symbol) return null;
   const owner = symbol.declarations.find(
     (node) =>
       (ts.isFunctionDeclaration(node) && node.body !== undefined) ||
@@ -45,7 +49,15 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
     declaration.asteriskToken ||
     declaration.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
   )
-    return false;
+    return null;
+  return declaration;
+}
+
+/** An ordinary constructor's explicit object return replaces its receiver.
+ * Without observing this or new.target, it can use the function's call ABI. */
+function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
+  const declaration = jsConstructorFunctionOf(lowerer, expr);
+  if (!declaration?.body) return false;
   const objectReturn = (expression: ts.Expression): boolean =>
     ts.isObjectLiteralExpression(expression) ||
     ts.isArrayLiteralExpression(expression) ||
@@ -81,8 +93,13 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
 
 /** Collection must register the shared result before reaching factory
  * bodies: those bodies can reference later globals in the same module. */
+/** The storage of a JavaScript module binding initialized with `new` of an
+ * ordinary function: a factory's result and a constructor function's
+ * receiver (`const head = new Segment()`) are both checked-dynamic
+ * values, which functions declared elsewhere in the module read through
+ * the global. */
 export function objectFactoryGlobalType(lowerer: Lowerer, expr: ts.NewExpression): IrType | null {
-  return isObjectFactoryNew(lowerer, expr) ? DYN : null;
+  return jsConstructorFunctionOf(lowerer, expr) !== null ? DYN : null;
 }
 
 export function objectFactorySignature(lowerer: Lowerer, expr: ts.NewExpression): FnSig | null {

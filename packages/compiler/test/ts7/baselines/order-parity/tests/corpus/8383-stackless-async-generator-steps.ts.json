@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8383-stackless-async-generator-steps.ts"
+ ],
+ "diags": []
+}

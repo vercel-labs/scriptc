@@ -101,6 +101,13 @@ export class CheckedNarrows {
   }
 }
 
+/** A call to a checked extraction whose helper borrows its argument, so
+ * emitCheckedNarrowReceiver can lend the payload instead of calling it. */
+export function borrowsCheckedNarrow(host: LlvmEmitterContext, e: IrExpr): boolean {
+  if (e.kind !== "call" || host.checkedNarrows.get(e) === null) return false;
+  return host.callLifetimes.borrowed.get(e.callee)?.has(0) === true && host.mayThrow.has(e.callee);
+}
+
 /** A checked extraction consumed at once by a field or tag load. The
  * successful arm borrows the payload from the union, which itself borrows
  * from its source: a dense array read keeps the element in the array slot,
@@ -113,7 +120,7 @@ export function emitCheckedNarrowReceiver(
   narrow: CheckedNarrowCall,
 ): LlValue | null {
   const callee = narrow.call.callee;
-  if (!host.callLifetimes.borrowed.get(callee)?.has(0) || !host.mayThrow.has(callee)) return null;
+  if (!borrowsCheckedNarrow(host, narrow.call)) return null;
   const B = host.B;
   const read = host.optionalArrayReads.get(narrow.value);
   const union = read

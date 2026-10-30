@@ -652,7 +652,14 @@ function publicDetail(tier) {
         source,
       )
     ) {
-      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Brotli and Zstd streams remain unsupported.";
+      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.";
+    }
+    if (
+      /^compiler-feature:zlib\.(?:zlib\.(?:BrotliCompress|BrotliDecompress)|BrotliOptions)$/.test(
+        source,
+      )
+    ) {
+      return "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params().";
     }
     if (source === "compiler-feature:zlib.zlib.constants") {
       return "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.";

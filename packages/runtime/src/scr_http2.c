@@ -2559,9 +2559,9 @@ ScrNetServer *scr_http2_create_secure_server_dyn(const ScrDyn *opts /*borrowed*/
                                                   ScrHttpReqFn fn) {
   bool allow_http1 = false;
   if (opts != NULL && opts->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < opts->v.obj.len; i++) {
-      if (strcmp(opts->v.obj.entries[i].key, "allowHTTP1") == 0) {
-        allow_http1 = scr_dyn_truthy(opts->v.obj.entries[i].value);
+    for (size_t i = 0; i < scr_dyn_obj_count(opts); i++) {
+      if (strcmp(scr_dyn_obj_prop_at(opts, i).key, "allowHTTP1") == 0) {
+        allow_http1 = scr_dyn_truthy(scr_dyn_obj_value_at(opts, i));
       }
     }
   }
@@ -2617,11 +2617,11 @@ static void scr_h2_on_established(void *ctx) {
  * TLS client transport with ALPN ["h2"] (scr_tls.c — linked whenever
  * this unit is): the same preface/SETTINGS buffer through the handshake
  * and everything after establishment is protocol-identical. `ca`
- * replaces the client trust anchors (len 0 = none) and
+ * replaces the client trust anchors (NULL = none) and
  * reject_unauthorized false disables the verify gate — the local-CA
  * self-connect shapes. Throws catchably on unparsable input. */
 ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthorized,
-                                 const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                 const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                  ScrClosure *cb /*moves, nullable*/, ScrH2ConnectFn fn) {
   const char *p = url->data;
   const char *sep = strstr(p, "://");
@@ -3105,15 +3105,15 @@ static void scr_h2_dyn_fire_goaway(ScrClosure *cb, double code, double last) {
 /* Flatten a dyn headers object into the flat pairs array (numbers via
  * String(n); the :status/:method/... pseudo-headers pass through). */
 static ScrArr *scr_h2_dom_to_pairs(const ScrDyn *headers) {
-  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, headers->v.obj.len * 2);
-  for (size_t i = 0; i < headers->v.obj.len; i++) {
-    const ScrDynEntry *e = &headers->v.obj.entries[i];
-    const ScrDyn *v = e->value;
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, scr_dyn_obj_count(headers) * 2);
+  for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+    const ScrDyn *v = e.value;
     ScrStr *vs;
     if (v->kind == SCR_DYN_STR) vs = scr_str_retain(v->v.str);
     else if (v->kind == SCR_DYN_NUM) vs = scr_f64_to_scrstr(v->v.num);
     else continue; /* undefined/null header: dropped, Node's stance */
-    scr_arr_push_ref(pairs, scr_str_new(e->key, e->key_len));
+    scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
     scr_arr_push_ref(pairs, vs);
   }
   return pairs;

@@ -157,6 +157,28 @@ struct SfStream {
   ScrDyn *cancel_cb;
   ScrDyn *source_this;
   ScrDyn *from_dyn;
+#ifdef SCR_HANDLE_CLASSES
+  /* A body made from a checked-dynamic web ReadableStream: that stream's
+   * reader (+1), read one chunk per pull through scr_web_stream_bridge. */
+  ScrDyn *web_reader;
+  /* Consuming the body takes Uint8Array chunks only: set on a body from a
+   * web ReadableStream and on the tee branches of such a body. */
+  bool u8_chunks;
+  /* The web ReadableStream this stream's checked-dynamic handles stand
+   * for once a member the fetch stream lacks is used (+1, or NULL; see
+   * sf_stream_web_view). It reads this stream; from then on every member
+   * and every use of the body go through it. */
+  ScrDyn *web_view;
+  /* A reader of web_view (+1) that keeps it locked while this stream was
+   * locked when web_view was made: by a reader of its own, released
+   * later, or by reading the body. */
+  ScrDyn *web_view_lock;
+  /* web_view's reader of this stream, taken at its first pull (owned
+   * through `reader`). */
+  SfReader *view_reader;
+  /* web_view's source holds a reference to this stream. */
+  bool view_source_live;
+#endif
   ScrArr *from_array;
   ScrBytes *from_bytes;
   ScrStr *from_string;
@@ -248,9 +270,11 @@ struct SfTransfer {
   bool response_ended;
   bool response_sent;
   bool done;
-  struct SfTransfer *next;
+  bool live; /* listed in sf_live */
+  struct SfTransfer *prev, *next;
 };
 
+/* the transfers in flight: +1 each, most recent first */
 static SfTransfer *sf_live;
 #endif
 /* Weak registries: owners unlink themselves on destruction. They let the
@@ -909,6 +933,20 @@ static void sf_stream_drop_source_callbacks(
 static void sf_stream_release(SfStream *s) {
   if (!s) return;
   if (--s->rc > 0) {
+#ifdef SCR_HANDLE_CLASSES
+    /* Only the web view's source still holds the stream, with the transfer
+     * that fills it while the response runs: the view no longer needs to be
+     * found from it, and the view, which reads it, keeps it while anything
+     * else holds the view. A view nothing else holds releases its source,
+     * and the stream then takes the unobserved-response discard below. */
+    if (s->rc == (s->response_owner ? 2u : 1u) && s->view_source_live && s->web_view) {
+      ScrDyn *view = s->web_view, *lock = s->web_view_lock;
+      s->web_view = s->web_view_lock = NULL;
+      scr_dyn_release(lock);
+      scr_dyn_release(view); /* may release s */
+      return;
+    }
+#endif
     sf_response_discard_if_unobserved(s);
     return;
   }
@@ -923,6 +961,11 @@ static void sf_stream_release(SfStream *s) {
   scr_dyn_release(s->error);
   sf_stream_drop_source_callbacks(s, true);
   scr_dyn_release(s->from_dyn);
+#ifdef SCR_HANDLE_CLASSES
+  scr_dyn_release(s->web_reader);
+  scr_dyn_release(s->web_view_lock);
+  scr_dyn_release(s->web_view);
+#endif
   scr_arr_release(s->from_array);
   scr_bytes_release(s->from_bytes);
   scr_str_release(s->from_string);
@@ -1129,15 +1172,19 @@ static void sf_response_pause_if_full(SfStream *s) {
 
 static void sf_response_resume_if_ready(SfStream *s) {
   SfTransfer *t = s->response_owner;
-  if (!t || t->done || !t->response_paused || !t->response_socket ||
-      s->queued >= 1 || s->close_requested || s->closed || s->error) {
+  if (!t || t->done || s->queued >= 1 || s->close_requested || s->closed ||
+      s->error || t->inflate_draining) {
     return;
   }
-  if (t->inflate_draining) return;
-  if (t->inflating && (t->inflate_pending || t->inflate_needs_drain)) {
+  /* Compressed input or decoder output still buffered drains on demand:
+   * while the socket is paused, and after 'end', when the transfer no
+   * longer holds the socket and no more data arrives. */
+  if (t->inflating && (t->inflate_pending || t->inflate_needs_drain) &&
+      (t->response_paused || t->response_ended)) {
     sf_inflate_resume(t);
     return;
   }
+  if (!t->response_paused || !t->response_socket) return;
   t->response_paused = false;
   scr_net_sock_release(scr_net_sock_resume(t->response_socket));
 }
@@ -1168,7 +1215,20 @@ static void sf_stream_drain(SfStream *s) {
       s->head = c->next;
       if (!s->head) s->tail = NULL;
       s->queued--;
+#ifdef SCR_HANDLE_CLASSES
+      ScrBytes *bytes;
+      /* A body read from a JavaScript ReadableStream, or from a clone or
+       * tee branch of one, takes Uint8Array chunks only, as Node's body
+       * mixin does. */
+      if (s->u8_chunks && !scr_dyn_bytes_is(c->value, SCR_BYTES_U8)) {
+        sf_type_error("Received non-Uint8Array chunk");
+        bytes = NULL;
+      } else {
+        bytes = sf_chunk_bytes(c->value);
+      }
+#else
       ScrBytes *bytes = sf_chunk_bytes(c->value);
+#endif
       if (!bytes) {
         sf_chunk_release(c);
         scr_promise_reject_pending(s->collector->promise);
@@ -1520,8 +1580,179 @@ static ScrDyn *sf_controller_box(SfStream *s) {
 }
 
 static bool sf_stream_has_from_source(const SfStream *s) {
+#ifdef SCR_HANDLE_CLASSES
+  if (s->web_reader) return true;
+#endif
   return s->from_dyn || s->from_array || s->from_bytes || s->from_string;
 }
+
+/* A Response, Request or fetch body of a ReadableStream: the fetch unit's
+ * own streams, and in the build that programs with JavaScript web streams
+ * link (SCR_HANDLE_CLASSES), theirs. */
+static bool sf_is_stream_body(const ScrDyn *body) {
+  if (body->kind != SCR_DYN_HANDLE) return false;
+#ifdef SCR_HANDLE_CLASSES
+  if (body->v.handle.tag == SCR_DYNH_WS_READABLE) return true;
+#endif
+  return body->v.handle.tag == SCR_DYNH_WEB_STREAM;
+}
+
+#ifdef SCR_HANDLE_CLASSES
+static void sf_stream_schedule_pull_complete(SfStream *s);
+
+/* The web stream reader's answer to one pull. */
+static void sf_web_chunk(void *ctx, ScrDyn *chunk) {
+  SfStream *s = ctx;
+  if (!s->close_requested && !s->closed && !s->error) {
+    sf_stream_enqueue_value(s, chunk);
+    sf_stream_drain(s);
+  }
+  sf_stream_schedule_pull_complete(s);
+  sf_stream_release(s);
+}
+
+static void sf_web_close(void *ctx) {
+  SfStream *s = ctx;
+  s->pulling = false;
+  sf_stream_close(s);
+  sf_stream_release(s);
+}
+
+static void sf_web_error(void *ctx, ScrDyn *reason) {
+  SfStream *s = ctx;
+  s->pulling = false;
+  sf_stream_error(s, reason ? reason : scr_dyn_undefined());
+  sf_stream_release(s);
+}
+
+static const ScrFetchReadSink sf_web_sink = {sf_web_chunk, sf_web_close, sf_web_error};
+
+static void sf_stream_pull_from_web(SfStream *s) {
+  s->pulling = true;
+  sf_stream_retain(s);
+  if (!scr_web_stream_bridge->reader_read_into(s->web_reader, &sf_web_sink, s)) {
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *reason = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    sf_web_error(s, reason);
+    scr_dyn_release(reason);
+  }
+}
+
+/* A body from a checked-dynamic web ReadableStream (borrowed): a native
+ * stream that reads it (+1 handle), or NULL with the TypeError pending
+ * for one that is locked or disturbed. */
+static ScrDyn *sf_web_body(const ScrDyn *body) {
+  if (!scr_web_stream_bridge || scr_web_stream_bridge->unusable(body)) {
+    sf_type_error("Response body object should not be disturbed or locked");
+    return NULL;
+  }
+  ScrDyn *reader = scr_dyn_invoke((ScrDyn *)body, "getReader", NULL, 0, "ReadableStream.getReader");
+  if (!reader) return NULL;
+  SfStream *s = sf_stream_new_native();
+  s->web_reader = reader;
+  s->u8_chunks = true;
+  sf_stream_schedule_initial_pull(s);
+  ScrDyn *out = scr_dyn_new_handle(s, SCR_DYNH_WEB_STREAM);
+  sf_stream_release(s);
+  return out;
+}
+
+static bool sf_is_web_body(const ScrDyn *body) {
+  return body && body->kind == SCR_DYN_HANDLE && body->v.handle.tag == SCR_DYNH_WS_READABLE;
+}
+
+static SfReader *sf_stream_get_reader(SfStream *s);
+static bool sf_reader_read_request(SfReader *r, ScrPromise *p, const ScrFetchReadSink *sink, void *sink_ctx);
+static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason, bool through_reader);
+
+/* The web view's source (scr_webstream_readable_over): it reads the stream
+ * through a reader of its own, taken at the first pull. */
+static bool sf_view_read_into(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx) {
+  SfStream *s = ctx;
+  if (!s->view_reader) {
+    SfReader *r = sf_stream_get_reader(s);
+    if (!r) return false;
+    s->view_reader = r; /* the stream owns it as its reader */
+    sf_reader_release(r);
+  }
+  /* A chunk the request takes at once can close the view, whose source
+   * then lets the stream go while it still drains. */
+  sf_stream_retain(s);
+  bool ok = sf_reader_read_request(s->view_reader, NULL, sink, sink_ctx);
+  sf_stream_release(s);
+  return ok;
+}
+
+static ScrPromise *sf_view_cancel(void *ctx, ScrDyn *reason) {
+  SfStream *s = ctx;
+  return sf_stream_cancel(s, reason, s->view_reader != NULL && s->reader == s->view_reader);
+}
+
+static void sf_view_release(void *ctx) {
+  SfStream *s = ctx;
+  s->view_source_live = false;
+  sf_stream_release(s);
+}
+
+static const ScrWebStreamSource sf_view_source = {sf_view_read_into, sf_view_cancel, sf_view_release};
+
+/* The web ReadableStream the stream's checked-dynamic handles stand for
+ * (borrowed), made on first use. Node's Response.body is one; the fetch
+ * stream answers getReader, cancel and locked itself until a member it
+ * lacks is used, and a lock it holds then keeps the view locked. */
+static ScrDyn *sf_stream_web_view(SfStream *s) {
+  if (s->web_view) return s->web_view;
+  s->web_view = scr_webstream_readable_over(&sf_view_source, sf_stream_retain(s));
+  s->view_source_live = true;
+  if (s->reader || s->internal_lock) {
+    s->web_view_lock = scr_dyn_invoke(s->web_view, "getReader", NULL, 0, "ReadableStream.getReader");
+    if (!s->web_view_lock) return NULL;
+  }
+  return s->web_view;
+}
+
+/* Whether `key` names one of the fetch stream's own methods (its ops'
+ * method table). */
+static bool sf_stream_own_method(const char *key, size_t len) {
+  ScrDyn probe;
+  memset(&probe, 0, sizeof probe);
+  probe.kind = SCR_DYN_HANDLE;
+  probe.v.handle.tag = SCR_DYNH_WEB_STREAM;
+  for (const ScrDynHandleMethod *m = scr_dyn_handle_ops_of(&probe)->methods; m && m->name; m++)
+    if (sf_name(key, len, m->name)) return true;
+  return false;
+}
+
+/* scr_dyn_handle_class_alias_view for the stream's handles (+1). */
+static ScrDyn *sf_stream_view_of(ScrDyn *handle) {
+  ScrDyn *view = sf_stream_web_view((SfStream *)handle->v.handle.ptr);
+  return view ? scr_dyn_retain(view) : NULL;
+}
+
+/* A body whose stream has a web view is read through the view, which
+ * locks it as reading a body locks Node's stream: a native stream that
+ * reads the view (+1), or NULL with the TypeError pending. Otherwise the
+ * stream itself (+1). */
+static SfStream *sf_stream_body_source(SfStream *s) {
+  if (!s->web_view) return sf_stream_retain(s);
+  ScrDyn *reading = sf_web_body(s->web_view);
+  if (!reading) return NULL;
+  SfStream *out = sf_stream_retain((SfStream *)reading->v.handle.ptr);
+  scr_dyn_release(reading);
+  return out;
+}
+#endif
+
+/* Whether a body's web view is locked or disturbed, which makes the body
+ * unusable as one, as its own lock and disturbed state do. */
+#ifdef SCR_HANDLE_CLASSES
+static bool sf_view_unusable(const SfStream *s) {
+  return s->web_view && scr_web_stream_bridge->unusable(s->web_view);
+}
+#else
+#define sf_view_unusable(s) false
+#endif
 
 static void sf_stream_pull_from_source(SfStream *s) {
   ScrDyn *value = NULL;
@@ -1657,6 +1888,12 @@ static void sf_stream_pull(SfStream *s) {
     s->pull_again = true;
     return;
   }
+#ifdef SCR_HANDLE_CLASSES
+  if (s->web_reader) {
+    sf_stream_pull_from_web(s);
+    return;
+  }
+#endif
   if (sf_stream_has_from_source(s)) {
     s->pulling = true;
     sf_stream_pull_from_source(s);
@@ -1768,10 +2005,22 @@ static void sf_reader_release_lock(SfReader *r) {
 
   sf_reader_reject_message_all(r, "Invalid state: Releasing reader");
 
+#ifdef SCR_HANDLE_CLASSES
+  /* The web view was made while this reader held the lock. */
+  ScrDyn *view_lock = r != s->view_reader ? s->web_view_lock : NULL;
+  if (view_lock) s->web_view_lock = NULL;
+#endif
   size_t handle_refs = r->handle_refs;
   s->reader = NULL;
   r->stream = NULL;
   sf_reader_release(r); /* stream's ownership */
+#ifdef SCR_HANDLE_CLASSES
+  if (view_lock) {
+    ScrDyn *released = scr_dyn_invoke(view_lock, "releaseLock", NULL, 0, "ReadableStreamDefaultReader.releaseLock");
+    if (released) scr_dyn_release(released);
+    scr_dyn_release(view_lock);
+  }
+#endif
   while (handle_refs-- > 0) sf_stream_release(s);
 }
 
@@ -1823,6 +2072,9 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
       s->cancel_cb ? scr_dyn_retain(s->cancel_cb) : NULL;
   ScrDyn *cancel_this =
       cancel_cb ? scr_dyn_retain(s->source_this) : NULL;
+#ifdef SCR_HANDLE_CLASSES
+  ScrDyn *web_reader = s->web_reader ? scr_dyn_retain(s->web_reader) : NULL;
+#endif
   sf_stream_drop_chunks(s);
   SfTransfer *response_owner = s->response_owner;
   if (response_owner && response_owner->client) {
@@ -1832,6 +2084,22 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
   else sf_stream_close(s);
   if (response_owner && !response_owner->done) sf_settle(response_owner);
 
+#ifdef SCR_HANDLE_CLASSES
+  if (cancel_cb || web_reader) {
+    ScrDyn *args[1] = {reason ? reason : scr_dyn_undefined()};
+    ScrDyn *r;
+    if (web_reader) {
+      /* The web stream's cancel through its reader. */
+      r = scr_dyn_invoke(web_reader, "cancel", args, 1, "ReadableStreamDefaultReader.cancel");
+      scr_dyn_release(web_reader);
+    } else {
+      scr_dyn_this_push_dyn(cancel_this);
+      r = scr_dyn_call(cancel_cb, args, 1, "underlyingSource.cancel");
+      scr_dyn_this_pop();
+      scr_dyn_release(cancel_cb);
+      scr_dyn_release(cancel_this);
+    }
+#else
   if (cancel_cb) {
     ScrDyn *args[1] = {reason ? reason : scr_dyn_undefined()};
     scr_dyn_this_push_dyn(cancel_this);
@@ -1840,6 +2108,7 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
     scr_dyn_this_pop();
     scr_dyn_release(cancel_cb);
     scr_dyn_release(cancel_this);
+#endif
     if (!r) {
       scr_promise_reject_pending(p);
       return p;
@@ -1865,8 +2134,21 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
 }
 
 static ScrPromise *sf_stream_collect(SfStream *s, int mode) {
+#ifdef SCR_HANDLE_CLASSES
+  if (s->web_view && !(s->disturbed || s->reader || s->internal_lock || sf_view_unusable(s))) {
+    SfStream *source = sf_stream_body_source(s);
+    if (!source) {
+      ScrPromise *p = scr_promise_new();
+      scr_promise_reject_pending(p);
+      return p;
+    }
+    ScrPromise *p = sf_stream_collect(source, mode);
+    sf_stream_release(source);
+    return p;
+  }
+#endif
   ScrPromise *p = scr_promise_new();
-  if (s->disturbed || s->reader || s->internal_lock) {
+  if (s->disturbed || s->reader || s->internal_lock || sf_view_unusable(s)) {
     sf_type_error("Body is unusable: Body has already been read");
     scr_promise_reject_pending(p);
     return p;
@@ -1880,7 +2162,9 @@ static ScrPromise *sf_stream_collect(SfStream *s, int mode) {
   c->mode = mode;
   s->collector = c;
   sf_stream_drain(s);
-  if (s->hwm_zero && !s->head) sf_stream_pull(s);
+  /* The collector reads to the end: a queue it emptied asks the source
+   * for the next chunk, also when the queue had filled before. */
+  if (!s->head) sf_stream_pull(s);
   return p;
 }
 
@@ -2103,6 +2387,9 @@ static void sf_stream_tee(SfStream *s, SfStream *out[2]) {
     b->cancel_cb = sf_tee_func(
         t, i == 0 ? &sf_tee_cancel_thunk_0 : &sf_tee_cancel_thunk_1, "cancel");
     b->source_this = scr_dyn_retain(scr_dyn_undefined());
+#ifdef SCR_HANDLE_CLASSES
+    b->u8_chunks = s->u8_chunks;
+#endif
     sf_stream_track_callbacks(b);
     t->branch[i] = sf_stream_retain(b);
     out[i] = b;
@@ -2266,6 +2553,11 @@ ScrDyn *scr_fetch_stream_from_string(ScrStr *iterable) {
 }
 
 bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx) {
+#ifdef SCR_HANDLE_CLASSES
+  if (scr_web_stream_bridge && reader && reader->kind == SCR_DYN_HANDLE &&
+      reader->v.handle.tag == SCR_DYNH_WS_READER)
+    return scr_web_stream_bridge->reader_read_into(reader, sink, ctx);
+#endif
   if (!reader || reader->kind != SCR_DYN_HANDLE ||
       reader->v.handle.tag != SCR_DYNH_WEB_READER) {
     sf_type_error("Expected a ReadableStreamDefaultReader");
@@ -2275,6 +2567,20 @@ bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, vo
 }
 
 ScrPromise *scr_fetch_reader_read(ScrDyn *reader) {
+#ifdef SCR_HANDLE_CLASSES
+  /* A checked-dynamic web stream's reader answers its own read(). */
+  if (reader && reader->kind == SCR_DYN_HANDLE && reader->v.handle.tag == SCR_DYNH_WS_READER) {
+    ScrDyn *result = scr_dyn_invoke(reader, "read", NULL, 0, "reader.read");
+    if (!result) {
+      ScrPromise *p = scr_promise_new();
+      scr_promise_reject_pending(p);
+      return p;
+    }
+    ScrPromise *p = scr_promise_retain(result->v.promise);
+    scr_dyn_release(result);
+    return p;
+  }
+#endif
   if (!reader || reader->kind != SCR_DYN_HANDLE ||
       reader->v.handle.tag != SCR_DYNH_WEB_READER) {
     sf_type_error("Expected a ReadableStreamDefaultReader");
@@ -2298,6 +2604,14 @@ static ScrDyn *sf_stream_invoke(void *ptr, ScrDyn *self, const char *method,
                                 ScrDyn *const *args, size_t argc,
                                 const char *what) {
   SfStream *s = ptr;
+#ifdef SCR_HANDLE_CLASSES
+  /* Any other member, and every member once the web view exists, is the
+   * view's. */
+  if (s->web_view || !sf_stream_own_method(method, strlen(method))) {
+    ScrDyn *view = sf_stream_web_view(s);
+    return view ? scr_dyn_invoke(view, method, args, argc, what) : NULL;
+  }
+#endif
   if (strcmp(method, "getReader") == 0) {
     ScrDyn *options = argc ? args[0] : NULL;
     ScrDyn *materialized = NULL;
@@ -2336,11 +2650,34 @@ static ScrDyn *sf_stream_invoke(void *ptr, ScrDyn *self, const char *method,
 
 static ScrDyn *sf_stream_get(void *ptr, const char *key, size_t len) {
   SfStream *s = ptr;
+#ifdef SCR_HANDLE_CLASSES
+  /* The stream's own members are its own until the web view exists; any
+   * other member makes the view and is the view's. */
+  if (s->web_view || !(sf_name(key, len, "locked") || sf_stream_own_method(key, len))) {
+    ScrDyn *view = sf_stream_web_view(s);
+    if (!view) return NULL;
+    ScrStr *name = scr_str_new(key, len);
+    ScrDyn *value = scr_dyn_handle_key_get(view, name);
+    scr_str_release(name);
+    return value;
+  }
+#endif
   if (sf_name(key, len, "locked")) {
     return scr_dyn_new_bool(s->reader != NULL || s->internal_lock);
   }
   return NULL;
 }
+
+#ifdef SCR_HANDLE_CLASSES
+/* Symbol.asyncIterator is the web view's. */
+static ScrDyn *sf_stream_symbol_get(void *ptr, const ScrDyn *key) {
+  if (!scr_dyn_is_async_iterator_symbol(key)) return NULL;
+  ScrDyn *view = sf_stream_web_view(ptr);
+  if (!view) return NULL;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(view);
+  return ops->symbol_get ? ops->symbol_get(view->v.handle.ptr, key) : NULL;
+}
+#endif
 
 static ScrDyn *sf_reader_invoke(void *ptr, ScrDyn *self, const char *method,
                                 ScrDyn *const *args, size_t argc,
@@ -3940,10 +4277,30 @@ static ScrPromise *sf_response_collect(SfResponse *r, int mode) {
  * guard. NULL with a TypeError pending when the body is unusable. */
 static SfResponse *sf_response_clone(SfResponse *r, const char *unusable) {
   if (!r->null_body &&
-      (r->body->disturbed || r->body->reader || r->body->internal_lock)) {
+      (r->body->disturbed || r->body->reader || r->body->internal_lock || sf_view_unusable(r->body))) {
     sf_type_error(unusable);
     return NULL;
   }
+#ifdef SCR_HANDLE_CLASSES
+  /* A body with a web view tees through it; each side reads one branch. */
+  SfStream *viewed[2] = {NULL, NULL};
+  if (!r->null_body && r->body->web_view) {
+    ScrDyn *branches = scr_dyn_invoke(r->body->web_view, "tee", NULL, 0, "ReadableStream.tee");
+    if (!branches) return NULL;
+    for (int i = 0; i < 2; i++) {
+      ScrDyn *reading = sf_web_body(branches->v.arr.items[i]);
+      if (!reading) {
+        sf_stream_release(viewed[0]);
+        scr_dyn_release(branches);
+        return NULL;
+      }
+      viewed[i] = sf_stream_retain((SfStream *)reading->v.handle.ptr);
+      viewed[i]->u8_chunks = r->body->u8_chunks;
+      scr_dyn_release(reading);
+    }
+    scr_dyn_release(branches);
+  }
+#endif
   SfResponse *c = calloc(1, sizeof *c);
   if (!c) sf_oom();
   c->rc = 1;
@@ -3952,7 +4309,16 @@ static SfResponse *sf_response_clone(SfResponse *r, const char *unusable) {
     sf_stream_close(c->body);
   } else {
     SfStream *branches[2];
+#ifdef SCR_HANDLE_CLASSES
+    if (viewed[0]) {
+      branches[0] = viewed[0];
+      branches[1] = viewed[1];
+    } else {
+      sf_stream_tee(r->body, branches);
+    }
+#else
     sf_stream_tee(r->body, branches);
+#endif
     sf_stream_release(r->body);
     r->body = branches[0];
     c->body = branches[1];
@@ -4019,6 +4385,12 @@ static ScrDyn *sf_response_get(void *ptr, const char *key, size_t len) {
       sf_name(key, len, "statusText"))
     sf_response_materialize(r);
   if (sf_name(key, len, "bodyUsed")) {
+#ifdef SCR_HANDLE_CLASSES
+    /* A read, cancel or pipe started on the web view disturbs it at once,
+     * before its pull reaches this stream. */
+    if (!r->null_body && r->body->web_view && scr_web_stream_bridge->disturbed(r->body->web_view))
+      return scr_dyn_new_bool(true);
+#endif
     return scr_dyn_new_bool(!r->null_body && r->body->disturbed);
   }
   if (sf_name(key, len, "body")) {
@@ -4126,12 +4498,24 @@ static void sf_settle(SfTransfer *t) {
     t->response_socket = NULL;
     t->response_paused = false;
   }
-  for (SfTransfer **link = &sf_live; *link; link = &(*link)->next) {
-    if (*link == t) {
-      *link = t->next;
-      sf_release(t); /* registry reference */
-      return;
+  if (t->live) {
+#ifdef SCR_RC_AUDIT
+    /* the transfer is reachable from the head and its neighbors point
+     * back at it */
+    const SfTransfer *it = sf_live;
+    while (it != NULL && it != t) it = it->next;
+    if (it == NULL || (t->prev ? t->prev->next != t : sf_live != t) ||
+        (t->next != NULL && t->next->prev != t)) {
+      fprintf(stderr, "scr_fetch: the live transfer list's links disagree\n");
+      abort();
     }
+#endif
+    t->live = false;
+    if (t->prev) t->prev->next = t->next;
+    else sf_live = t->next;
+    if (t->next) t->next->prev = t->prev;
+    t->prev = t->next = NULL;
+    sf_release(t); /* registry reference */
   }
 }
 
@@ -4821,14 +5205,14 @@ static ScrArr *sf_headers_convert_init(const ScrDyn *headers, bool *canonical_ou
     return converted;
   }
   if (headers->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < headers->v.obj.len; i++) {
-      const ScrDynEntry *e = &headers->v.obj.entries[i];
-      ScrStr *raw_name = scr_str_new(e->key, e->key_len);
+    for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+      ScrStr *raw_name = scr_str_new(e.key, e.key_len);
       ScrStr *name_bytes = sf_header_value_bytestring(raw_name);
       ScrStr *name = name_bytes ? sf_latin1_to_utf8(name_bytes) : NULL;
       scr_str_release(name_bytes);
       scr_str_release(raw_name);
-      ScrDyn *source = scr_dyn_retain(e->value);
+      ScrDyn *source = scr_dyn_retain(e.value);
       ScrStr *raw_value = name ? scr_dyn_string_coerce_js(source) : NULL;
       scr_dyn_release(source);
       ScrStr *value_bytes = raw_value
@@ -5386,9 +5770,21 @@ static void sf_on_data(ScrClosure *cb, ScrBytes *chunk) {
   sf_release(t);
 }
 
+/* After 'end' the keep-alive agent can hand the socket to the next request
+ * on the connection, so the transfer leaves it reading and stops pausing
+ * and resuming it. */
+static void sf_drop_response_socket(SfTransfer *t) {
+  if (!t->response_socket) return;
+  if (t->response_paused) scr_net_sock_release(scr_net_sock_resume(t->response_socket));
+  t->response_paused = false;
+  scr_net_sock_release(t->response_socket);
+  t->response_socket = NULL;
+}
+
 static void sf_on_end(ScrClosure *cb) {
   SfTransfer *t = sf_from(cb);
   if (!t) return;
+  sf_drop_response_socket(t);
   if (!t->done) {
     if (t->inflating && t->response_stream &&
         !t->response_stream->discarded) {
@@ -5929,9 +6325,16 @@ static bool sf_start_hop(SfTransfer *t) {
     wrap_ctx = scr_tls_fetch_client_ctx(sni, true);
     wrap = &scr_tls_fetch_client_wrap;
   }
-  ScrHttpClientReq *client = scr_http_request_ex(
-      dial, dial_port, path, t->method, 0, headers, false, NULL, NULL,
-      default_port, wrap, wrap_ctx);
+  /* A direct connection goes through fetch's keep-alive agent, which hands
+   * an idle connection to the next request for the same origin, as
+   * undici's dispatcher does; the bare host keys the pool, so origins that
+   * share an address keep their own connections. A proxied request dials
+   * its own connection. */
+  ScrHttpClientReq *client =
+      proxy ? scr_http_request_ex(dial, dial_port, path, t->method, 0, headers, false, NULL,
+                                  NULL, default_port, wrap, wrap_ctx)
+            : scr_http_fetch_request(https, dial, dial_port, path, t->method, headers,
+                                     default_port, wrap, wrap_ctx, bare);
   scr_arr_release(headers);
   scr_str_release(path);
   scr_str_release(dial);
@@ -5976,13 +6379,28 @@ static bool sf_start_hop(SfTransfer *t) {
       stream = sf_stream_of(body);
     }
     if (!stream || stream->reader || stream->internal_lock ||
-        stream->disturbed) {
+        stream->disturbed || sf_view_unusable(stream)) {
       scr_dyn_release(seeded);
       if (t->client) scr_http_client_destroy(t->client);
       sf_reject(t,
                 "Response body object should not be disturbed or locked");
       return false;
     }
+#ifdef SCR_HANDLE_CLASSES
+    /* A stream with a web view uploads through it; the transfer holds the
+     * stream that reads the view. */
+    SfStream *through = NULL;
+    if (stream->web_view) {
+      through = sf_stream_body_source(stream);
+      if (!through) {
+        scr_dyn_release(seeded);
+        if (t->client) scr_http_client_destroy(t->client);
+        sf_reject(t, "Response body object should not be disturbed or locked");
+        return false;
+      }
+      stream = through;
+    }
+#endif
     stream->disturbed = true;
     stream->internal_lock = true;
     stream->request_owner = t;
@@ -5992,6 +6410,9 @@ static bool sf_start_hop(SfTransfer *t) {
         !stream->error && !t->done && t->client) {
       sf_stream_pull(stream);
     }
+#ifdef SCR_HANDLE_CLASSES
+    sf_stream_release(through);
+#endif
     scr_dyn_release(seeded);
   } else {
     scr_http_client_end(client);
@@ -6088,11 +6509,11 @@ static int8_t sf_light_header_form(const ScrDyn *headers, bool json_body,
   }
   int8_t form = 0;
   if (headers->kind == SCR_DYN_OBJ) {
-    ScrArr *out = scr_arr_new(SCR_ELEM_STR, 2 * headers->v.obj.len);
+    ScrArr *out = scr_arr_new(SCR_ELEM_STR, 2 * scr_dyn_obj_count(headers));
     form = 3;
-    for (size_t i = 0; i < headers->v.obj.len && form == 3; i++) {
-      const ScrDynEntry *e = &headers->v.obj.entries[i];
-      const ScrDyn *value = e->value;
+    for (size_t i = 0; i < scr_dyn_obj_count(headers) && form == 3; i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+      const ScrDyn *value = e.value;
       size_t count = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
       for (size_t j = 0; j < count; j++) {
         const ScrDyn *item = value->kind == SCR_DYN_ARR ? value->v.arr.items[j] : value;
@@ -6106,7 +6527,7 @@ static int8_t sf_light_header_form(const ScrDyn *headers, bool json_body,
           form = 0;
           break;
         }
-        scr_arr_push_ref(out, scr_str_new(e->key, e->key_len));
+        scr_arr_push_ref(out, scr_str_new(e.key, e.key_len));
         scr_arr_push_ref(out, text);
       }
     }
@@ -6154,9 +6575,7 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
    * string arm therefore runs before ResponseInit's dictionary conversion,
    * while a ReadableStream is only brand-converted here — its locked/
    * disturbed state belongs to the later body-extraction phase. */
-  if (!null_body && !json_body &&
-      !(body->kind == SCR_DYN_HANDLE &&
-        body->v.handle.tag == SCR_DYNH_WEB_STREAM)) {
+  if (!null_body && !json_body && !sf_is_stream_body(body)) {
     if (body->kind == SCR_DYN_BYTES) {
       ScrBytes *raw = scr_bytes_raw_view(body->v.bytes);
       body_bytes = scr_bytes_copy(raw);
@@ -6254,12 +6673,24 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   } else if (body->kind == SCR_DYN_HANDLE &&
              body->v.handle.tag == SCR_DYNH_WEB_STREAM) {
     stream = (SfStream *)body->v.handle.ptr;
-    if (stream->reader || stream->internal_lock || stream->disturbed) {
+    if (stream->reader || stream->internal_lock || stream->disturbed || sf_view_unusable(stream)) {
       stream = NULL; /* borrowed until the successful retain below */
       sf_type_error("Response body object should not be disturbed or locked");
       goto fail;
     }
+#ifdef SCR_HANDLE_CLASSES
+    stream = sf_stream_body_source(stream);
+    if (!stream) goto fail;
+#else
     sf_stream_retain(stream);
+#endif
+#ifdef SCR_HANDLE_CLASSES
+  } else if (sf_is_web_body(body)) {
+    ScrDyn *web = sf_web_body(body);
+    if (!web) goto fail;
+    stream = sf_stream_retain((SfStream *)web->v.handle.ptr);
+    scr_dyn_release(web);
+#endif
   } else {
     stream = sf_stream_new_native();
     light_length_bytes = body_bytes->len;
@@ -6494,7 +6925,8 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   ScrDyn *body = sf_response_init_get(init, "body", 4);
   bool supplied = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
   if (!supplied && source && !source->payload->null_body) {
-    if (source->payload->body->disturbed || source->payload->body->reader || source->payload->body->internal_lock) {
+    if (source->payload->body->disturbed || source->payload->body->reader || source->payload->body->internal_lock ||
+        sf_view_unusable(source->payload->body)) {
       scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url);
       sf_type_error("Cannot construct a Request with a Request object that has already been used."); return NULL;
     }
@@ -6504,7 +6936,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   if (has_body && (sf_name(method_text->data, method_text->len, "GET") || sf_name(method_text->data, method_text->len, "HEAD"))) {
     scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); sf_type_error("Request with GET/HEAD method cannot have body."); return NULL;
   }
-  if (supplied && body->kind == SCR_DYN_HANDLE && body->v.handle.tag == SCR_DYNH_WEB_STREAM) {
+  if (supplied && sf_is_stream_body(body)) {
     ScrDyn *duplex = sf_response_init_get(init, "duplex", 6);
     ScrStr *text = duplex && duplex->kind != SCR_DYN_UNDEF ? scr_dyn_string_coerce_js(duplex) : NULL;
     scr_dyn_release(duplex);
@@ -6666,27 +7098,27 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     return sf_reject_now(promise, "fetch failed");
   }
   if (init && init->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < init->v.obj.len; i++) {
-      const ScrDynEntry *entry = &init->v.obj.entries[i];
-      bool supported = sf_name(entry->key, entry->key_len, "method") ||
-                       sf_name(entry->key, entry->key_len, "headers") ||
-                       sf_name(entry->key, entry->key_len, "body") ||
-                       sf_name(entry->key, entry->key_len, "duplex") ||
-                       sf_name(entry->key, entry->key_len, "redirect") ||
-                       sf_name(entry->key, entry->key_len, "signal");
+    for (size_t i = 0; i < scr_dyn_obj_count(init); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(init, i);
+      bool supported = sf_name(entry.key, entry.key_len, "method") ||
+                       sf_name(entry.key, entry.key_len, "headers") ||
+                       sf_name(entry.key, entry.key_len, "body") ||
+                       sf_name(entry.key, entry.key_len, "duplex") ||
+                       sf_name(entry.key, entry.key_len, "redirect") ||
+                       sf_name(entry.key, entry.key_len, "signal");
       bool recognized_unsupported =
-          sf_name(entry->key, entry->key_len, "cache") ||
-          sf_name(entry->key, entry->key_len, "credentials") ||
-          sf_name(entry->key, entry->key_len, "dispatcher") ||
-          sf_name(entry->key, entry->key_len, "integrity") ||
-          sf_name(entry->key, entry->key_len, "keepalive") ||
-          sf_name(entry->key, entry->key_len, "mode") ||
-          sf_name(entry->key, entry->key_len, "priority") ||
-          sf_name(entry->key, entry->key_len, "referrer") ||
-          sf_name(entry->key, entry->key_len, "referrerPolicy") ||
-          sf_name(entry->key, entry->key_len, "window");
-      if (!supported && recognized_unsupported && entry->value &&
-          entry->value->kind != SCR_DYN_UNDEF) {
+          sf_name(entry.key, entry.key_len, "cache") ||
+          sf_name(entry.key, entry.key_len, "credentials") ||
+          sf_name(entry.key, entry.key_len, "dispatcher") ||
+          sf_name(entry.key, entry.key_len, "integrity") ||
+          sf_name(entry.key, entry.key_len, "keepalive") ||
+          sf_name(entry.key, entry.key_len, "mode") ||
+          sf_name(entry.key, entry.key_len, "priority") ||
+          sf_name(entry.key, entry.key_len, "referrer") ||
+          sf_name(entry.key, entry.key_len, "referrerPolicy") ||
+          sf_name(entry.key, entry.key_len, "window");
+      if (!supported && recognized_unsupported && entry.value &&
+          entry.value->kind != SCR_DYN_UNDEF) {
         return sf_reject_now(promise, "fetch failed");
       }
     }
@@ -6710,6 +7142,17 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
    * arrays, and plain objects (with the ordinary JS object coercion
    * protocol), while null and undefined continue to mean no body. */
   ScrDyn *coerced_body = NULL;
+#ifdef SCR_HANDLE_CLASSES
+  if (body_present && sf_is_web_body(body)) {
+    coerced_body = sf_web_body(body);
+    if (!coerced_body) {
+      scr_promise_reject_pending(promise);
+      return promise;
+    }
+    body = coerced_body;
+    body_stream = true;
+  }
+#endif
   /* A URLSearchParams body is its serialization, sent as
    * application/x-www-form-urlencoded;charset=UTF-8 (extract a body). */
   bool form_body = false;
@@ -6940,7 +7383,10 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     t->signal_watch =
         sf_signal_watch(signal, t, &sf_transfer_abort_watch);
   }
+  t->live = true;
+  t->prev = NULL;
   t->next = sf_live;
+  if (sf_live) sf_live->prev = t;
   sf_live = t;
   sf_start_hop(t);
   return promise;
@@ -7002,6 +7448,9 @@ static const ScrDynHandleOps sf_abort_controller_ops = {
 static const ScrDynHandleOps sf_stream_ops = {
     "ReadableStream", &sf_stream_retain_v, &sf_stream_release_v,
     &sf_stream_invoke, &sf_stream_get, &sf_no_set, NULL,
+#ifdef SCR_HANDLE_CLASSES
+    .symbol_get = &sf_stream_symbol_get,
+#endif
     .methods = sf_stream_methods,
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
     .rejected = &sf_rejected};
@@ -7080,6 +7529,9 @@ void scr_fetch_install(void) {
   scr_dyn_handle_install(SCR_DYNH_ABORT_CONTROLLER,
                          &sf_abort_controller_ops);
   scr_dyn_handle_install(SCR_DYNH_WEB_STREAM, &sf_stream_ops);
+#ifdef SCR_HANDLE_CLASSES
+  scr_dyn_handle_class_alias_view(SCR_DYNH_WEB_STREAM, &sf_stream_view_of);
+#endif
   scr_dyn_handle_install(SCR_DYNH_WEB_READER, &sf_reader_ops);
   scr_dyn_handle_install(SCR_DYNH_WEB_CONTROLLER, &sf_controller_ops);
   scr_dyn_handle_install(SCR_DYNH_FETCH_REQUEST, &sf_request_ops);

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/unhandled-rejection-without-async.cjs"
+ ],
+ "diags": []
+}

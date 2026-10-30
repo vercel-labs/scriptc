@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bundlePlatformPackages, llvmNotice, platformPackagesOf } from "./native-cli-bundle.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packages = resolve(process.argv[2] ?? join(repository, "packages"));
@@ -39,6 +40,27 @@ for (const name of readdirSync(packages)
     const binary = join(bin, name.includes("win32-") ? "scriptc.exe" : "scriptc");
     const manifest = JSON.parse(readFileSync(binary + ".json", "utf8"));
     const hostPath = (value) => (name.includes("win32-") ? value.replaceAll("\\", "/") : value);
+    // The standalone archive bundles the LLVM helper and runtime pack that
+    // the npm platform package depends on.
+    if (manifest.llvm_package === undefined) {
+      const { helper, runtime } = platformPackagesOf(identity);
+      const paths = bundlePlatformPackages({
+        packages,
+        distribution,
+        helper,
+        runtime,
+        windows: name.includes("win32-"),
+      });
+      manifest.llvm_package = paths.llvm_package;
+      manifest.runtime_pack = paths.runtime_pack;
+      manifest.runtime_packs = [{ target: manifest.target, path: paths.runtime_pack }];
+      writeFileSync(binary + ".json", JSON.stringify(manifest, null, 2) + "\n");
+      const notices = join(distribution, "THIRD_PARTY_NOTICES");
+      writeFileSync(
+        notices,
+        readFileSync(notices, "utf8").replace(llvmNotice(helper), llvmNotice(undefined)),
+      );
+    }
     // GitHub artifact transport drops executable modes. Restore the native
     // tools before validating and creating the standalone archive.
     for (const path of [

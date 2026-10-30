@@ -93,7 +93,7 @@ test("IR imports and the explicit parser islands remain usable", () => {
   source(
     work,
     "packages/compiler/src/frontend/lowering/probe.ts",
-    'export { LIB_FN_SIGS } from "../../ir/builtin-signatures.js";\nexport { STR_INTRINSIC_SIGS } from "../../ir/intrinsic-signatures.js";\n',
+    'export { libFnSignatures } from "../../ir/builtin-signatures.js";\nexport { STR_INTRINSIC_SIGS } from "../../ir/intrinsic-signatures.js";\n',
   );
   source(
     work,

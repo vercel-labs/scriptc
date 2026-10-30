@@ -107,7 +107,8 @@ export function resolveSelfCaptures(mod: IrModule): IrModule {
         if (creator.captures?.some((c) => c.localId === source)) return false;
         if (creator.classCaptures?.some((c) => c.localId === source)) return false;
         if (declarations.get(owner)!.get(source) !== 1) return false;
-        flow ??= new CaptureFlow(mod.functions);
+        // Only unchanged() is asked: the flow reads just the bodies it needs.
+        flow ??= new CaptureFlow(mod.functions, false);
         return flow.unchanged(owner, source, definition.writes);
       });
       if (qualifies) {
@@ -117,8 +118,20 @@ export function resolveSelfCaptures(mod: IrModule): IrModule {
     }
   }
   if (resolved.size === 0) return mod;
+  // A closure's jsval body (IrFunction.jsEntry) runs in the closure's own
+  // environment, so it drops the same capture.
+  for (const fn of mod.functions) {
+    const index = resolved.get(fn.name);
+    if (index !== undefined && fn.jsEntry !== undefined) resolved.set(fn.jsEntry, index);
+  }
 
+  // Only the resolved bodies and the functions that create their closures
+  // change.
+  const touched = new Set(resolved.keys());
+  for (const name of resolved.keys())
+    for (const site of sites.get(name) ?? []) touched.add(site.owner);
   const rewritten = mod.functions.map((fn) => {
+    if (!touched.has(fn.name)) return fn;
     const own = resolved.get(fn.name);
     const self = own === undefined ? null : fn.captures![own]!;
     let changed = false;

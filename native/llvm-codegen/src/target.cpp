@@ -118,11 +118,22 @@ CodeGenOptLevel codeGenLevel(StringRef Level) {
   return CodeGenOptLevel::Default;
 }
 
+static bool ProfileLayout = false;
+
+void enableProfileLayout() { ProfileLayout = true; }
+
 TargetOptions targetOptions(const Triple &TargetTriple) {
   TargetOptions Options;
   // The Android API 26 runtime pack uses the NDK's emulated TLS ABI.
   // Program globals and runtime thread instances must use the same ABI.
   Options.EmulatedTLS = TargetTriple.isAndroid();
+  // Program constructors go in .init_array, which the C runtime's startup
+  // files run on ELF, as runtime units' constructors do (runtime-unit.cpp).
+  Options.UseInitArray = TargetTriple.isOSBinFormatELF();
+  if (ProfileLayout && TargetTriple.isOSBinFormatELF()) {
+    Options.FunctionSections = true;
+    Options.EnableMachineFunctionSplitter = true;
+  }
   return Options;
 }
 

@@ -35,6 +35,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_string.c"),
     join(testDir, "../src/scr_number.c"),
     join(testDir, "../src/scr_array.c"),
+    join(testDir, "../src/scr_arena.c"),
     join(testDir, "../src/scr_bytes.c"),
     join(testDir, "../src/scr_shared.c"),
     join(testDir, "../src/scr_lib.c"),

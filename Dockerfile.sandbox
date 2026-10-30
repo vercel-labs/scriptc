@@ -26,6 +26,7 @@ RUN apt-get update \
         libclang-rt-22-dev \
         libpolly-22-dev \
         libzstd-dev \
+        lld-22 \
         llvm-22-dev \
         ninja-build \
         xz-utils \
@@ -33,6 +34,7 @@ RUN apt-get update \
     && ln -sf clang-22 /usr/bin/clang \
     && ln -sf clang++-22 /usr/bin/clang++ \
     && test "$(llvm-config-22 --version)" = 22.1.8 \
+    && test -x "$(dirname "$(readlink -f /usr/bin/clang)")/ld.lld" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --fail --silent --show-error --location \

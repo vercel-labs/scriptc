@@ -35,6 +35,68 @@ export const eventLoopCases: EventLoopCase[] = [
     script: { writes: [], end: false },
   },
   {
+    title: "stdio values: 'readable' drains with read(), then fires once more at EOF",
+    fixture: "stdio-readable.mjs",
+    // The first chunk waits until both readers run: a reader that starts
+    // after the second chunk arrives reads the two in one 'readable'.
+    script: {
+      writes: [
+        { delayMs: 500, data: "alpha " },
+        { delayMs: 60, data: "beta\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdio values: 'readable' with read(size) holds a partial tail until EOF",
+    fixture: "stdio-readable-size.mjs",
+    script: { writes: [{ delayMs: 0, data: "abcdefghij" }], end: true },
+  },
+  {
+    title: "stdio values: input a once('readable') listener leaves stays buffered for 'data'",
+    fixture: "stdio-readable-once-rest.mjs",
+    script: { writes: [{ delayMs: 0, data: "abcdefgh" }], end: true },
+  },
+  {
+    title: "stdio values: 'readable' with a read(size) above the read-ahead mark",
+    fixture: "stdio-readable-large-size.mjs",
+    script: {
+      writes: [
+        { delayMs: 0, data: "a".repeat(70000) },
+        { delayMs: 30, data: "b".repeat(70000) },
+        { delayMs: 30, data: "c".repeat(60000) },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdio values: 'readable' with 'data' and resume() holds input at the read-ahead mark",
+    fixture: "stdio-readable-backpressure.mjs",
+    script: {
+      writes: Array.from({ length: 16 }, (_, i) => ({
+        delayMs: i === 0 ? 0 : 5,
+        data: String.fromCharCode(97 + i).repeat(65536),
+      })),
+      end: true,
+    },
+  },
+  {
+    title: "stdio values: 'readable' on an immediately ended pipe",
+    fixture: "stdio-readable.mjs",
+    script: { writes: [], end: true },
+  },
+  {
+    title: "for-await: process.stdin yields Buffers",
+    fixture: "stdin-for-await-buffers.mjs",
+    script: {
+      writes: [
+        { delayMs: 0, data: "#one\nabcd\n" },
+        { delayMs: 40, data: "#two\nefgh\n" },
+      ],
+      end: true,
+    },
+  },
+  {
     title: "read-all: one instant write, then EOF",
     fixture: "stdin-read-all.ts",
     script: { writes: [{ delayMs: 0, data: "hello stdin\nsecond line\n" }], end: true },

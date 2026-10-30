@@ -1,0 +1,14 @@
+`tlsSocket.getPeerCertificate()`, `getCertificate()`, `getPeerX509Certificate()`, and `getX509Certificate()` follow Node, including the `detailed` issuer chain, on sockets whose type is known.
+On a TLS socket held in an `unknown` or `any` value, or in an untyped JavaScript parameter, they throw an error that names the call as not supported.
+Client certificates follow Node: `tls.createServer`, `https.createServer`, and `new tls.TLSSocket` take `requestCert`, `rejectUnauthorized`, and `ca`, and `tls.connect` and `https.request` take `cert` and `key`.
+A server's `authorized` and `authorizationError` report the client certificate's verification as Node does, and a server, client, or `tls.createSecureContext` given a `ca` also sends the chain it completes, as OpenSSL's automatic chain does.
+A server verifies client certificates against the `ca` of the context it serves, including contexts from `addContext()` and `setSecureContext()`: an empty `ca` (an empty Buffer or array) trusts no certificate, and an omitted `ca` trusts the default CAs.
+The same holds for a client's `ca` in `tls.connect`, `https.request`, and `http2.connect`, where an empty string is no `ca`, as in Node.
+In `http2.connect`, a `ca` held in an `unknown` or `any` value that is an empty string is refused.
+`requestCert` beside a TLSSocket's `secureContext` or an `SNICallback`, client certificates on http2 secure servers, and a `cert` without a `key` (or the reverse) are refused.
+`server.addContext()` and `server.setSecureContext()` follow Node on tls and https servers, including wildcard names, which match one label without regard to case.
+A name with regular-expression groups or alternation, or one outside ASCII, is refused, as are both methods on a server that is not a tls or https server.
+The `'tlsClientError'` event reports Node's error for a failed handshake: OpenSSL's code and reason, or `socket hang up` for a client that leaves.
+OpenSSL's messages leave out the thread identifier Node prints before `error:` and the source location after the reason.
+A failure whose OpenSSL reason the runtime does not know, such as a malformed client hello, is reported as an error with code `SC2020` that says so.
+The X509Certificate those accessors return has the same refusals as any other certificate (see Crypto), so in JavaScript narrow it, for example with `if (cert)`, before reading its fields.

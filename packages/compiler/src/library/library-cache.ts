@@ -54,6 +54,7 @@ interface EarlyLibraryCacheStamp {
     searchParams: boolean;
     emitter: boolean;
     zlib: boolean;
+    x509: boolean;
     copying: boolean;
     textDecoderLegacy: boolean;
   };
@@ -74,6 +75,7 @@ export interface EarlyLibraryNativeFeatures {
   searchParams: boolean;
   emitter: boolean;
   zlib: boolean;
+  x509: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
@@ -132,6 +134,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "searchParams",
   "emitter",
   "zlib",
+  "x509",
   "copying",
   "textDecoderLegacy",
 ] as const satisfies readonly (keyof EarlyLibraryNativeFeatures)[];

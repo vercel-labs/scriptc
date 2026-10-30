@@ -13,6 +13,7 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { isClassCallback } from "./class-callbacks.js";
+import { TO_STRING_TAG_FIELD } from "./symbol-fields.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { DATE_TIME_FIELD, dateRootOf } from "./builtins/date-classes.js";
 import { dateValueMethod } from "./builtins/dates.js";
@@ -29,9 +30,18 @@ type ConversionMethod = "sym:toPrimitive" | "valueOf" | "toString";
  * Date`, or through Object.prototype.toString ("[object Object]"). */
 type Plan =
   | { method: ConversionMethod; ret: IrType }
-  | { method: null; date?: "toString" | "valueOf" };
+  | { method: null; date?: "toString" | "valueOf"; tag?: ToStringTag };
+
+/** Where Object.prototype.toString finds a class's Symbol.toStringTag: a
+ * string field (`[Symbol.toStringTag] = "LRUCache"`) or a getter that
+ * returns a string, declared on `owner`. */
+interface ToStringTag {
+  owner: ClassInfo;
+  getter: boolean;
+}
 
 const PRIMITIVE_KINDS = new Set(["f64", "string", "bool", "bigint", "undefinedT", "nullT"]);
+const OBJECT_ARMS_TO_STRING = new Set(["url", "bytes", "date", "regex"]);
 
 /** ToString(ToPrimitive(value, hint)) of a program class instance, as Node
  * computes it: `[Symbol.toPrimitive](hint)` when the class defines it, then
@@ -50,6 +60,17 @@ export function classToStringConversion(
   return classConversion(lowerer, value, hint, node, STRING, (primitive) =>
     lowerer.ensureString(primitive, node),
   );
+}
+
+/** Object.prototype.toString of a program class instance: "[object " +
+ * its Symbol.toStringTag + "]" (an own tag field, else an inherited
+ * getter), or "[object Object]". The class's own conversion methods do not
+ * take part. Null as for classToStringConversion, and for Date subclasses. */
+export function classObjectTag(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr | null {
+  if (value.type.kind !== "object") return null;
+  const info = lowerer.classes.get(value.type.className);
+  if (!info || dateRootOf(info) !== null) return null;
+  return classConversion(lowerer, value, "tag", node, STRING, (tag) => tag);
 }
 
 /** ToNumber(ToPrimitive(value, "number")) of a program class instance
@@ -122,7 +143,7 @@ function mayBeBigint(lowerer: Lowerer, type: IrType): boolean {
 function classConversion(
   lowerer: Lowerer,
   value: IrExpr,
-  hint: ConversionHint,
+  hint: ConversionHint | "tag",
   node: ts.Node,
   resultType: IrType,
   finish: (primitive: IrExpr) => IrExpr,
@@ -131,7 +152,7 @@ function classConversion(
   const info = lowerer.classes.get(value.type.className);
   if (!info || !plainProgramClass(info)) return null;
   const classes = subtree(lowerer, info);
-  for (const cls of classes) refuseReplacedConversions(lowerer, cls, node);
+  if (hint !== "tag") for (const cls of classes) refuseReplacedConversions(lowerer, cls, node);
   const plans = new Map(classes.map((cls) => [cls, planOf(lowerer, cls, hint, node)]));
   // A class whose plan differs from its base's starts a group; the deepest
   // groups are tested first, so each instance takes its own class's plan.
@@ -164,12 +185,52 @@ function classConversion(
       };
       return finish(dateValueMethod(plan.date, time, loc)!);
     }
+    if (plan.method === null && plan.tag) {
+      // Object.prototype.toString: "[object " + the tag + "]".
+      const owner = plan.tag.owner.def.name;
+      const tag: IrExpr = plan.tag.getter
+        ? accessorCall(
+            lowerer,
+            owner,
+            "get:sym:toStringTag",
+            lowerer.upcastTo(object, owner),
+            [],
+            STRING,
+            loc,
+          )
+        : {
+            kind: "fieldGet",
+            obj: lowerer.upcastTo(object, owner),
+            className: owner,
+            field: TO_STRING_TAG_FIELD,
+            type: STRING,
+            loc,
+          };
+      return finish({
+        kind: "strConcat",
+        left: {
+          kind: "strConcat",
+          left: { kind: "strLit", value: "[object ", type: STRING, loc },
+          right: tag,
+          type: STRING,
+          loc,
+        },
+        right: { kind: "strLit", value: "]", type: STRING, loc },
+        type: STRING,
+        loc,
+      });
+    }
     if (plan.method === null)
       return finish({ kind: "strLit", value: "[object Object]", type: STRING, loc });
     const args: IrExpr[] =
       plan.method === "sym:toPrimitive" ? [{ kind: "strLit", value: hint, type: STRING, loc }] : [];
     return finish(accessorCall(lowerer, cls.def.name, plan.method, object, args, plan.ret, loc));
   };
+  // "[object Object]" reads nothing of the instance, but the receiver
+  // expression still runs, once.
+  const own = plans.get(info)!;
+  if (tops.length === 0 && own.method === null && !own.date && !own.tag && !isSafeToRepeat(value))
+    prefix.push({ kind: "exprStmt", expr: value, loc });
   let result = convert(info, receiver);
   for (let i = tops.length - 1; i >= 0; i--) {
     const top = tops[i]!;
@@ -228,10 +289,28 @@ function depth(info: ClassInfo): number {
 }
 
 function samePlan(a: Plan, b: Plan): boolean {
-  return (
-    a.method === b.method &&
-    (a.method !== null || b.method !== null || a.date === (b as { date?: string }).date)
-  );
+  if (a.method !== null || b.method !== null) return a.method === b.method;
+  return a.date === b.date && a.tag?.owner === b.tag?.owner && a.tag?.getter === b.tag?.getter;
+}
+
+/** The class's Symbol.toStringTag, when it has one: the class at the top
+ * of the chain whose layout holds the tag field (an own property, which
+ * shadows any getter), or its getter. Other tag types would make
+ * Object.prototype.toString answer "Object" or the value depending on the
+ * run, and are refused. */
+function toStringTagOf(lowerer: Lowerer, info: ClassInfo, node: ts.Node): ToStringTag | null {
+  const type = info.fields.get(TO_STRING_TAG_FIELD);
+  if (type !== undefined) {
+    if (type.kind !== "string") refuse(lowerer, node, info, "a non-string Symbol.toStringTag");
+    let owner = info;
+    while (owner.base?.fields.has(TO_STRING_TAG_FIELD)) owner = owner.base;
+    return { owner, getter: false };
+  }
+  const getter = findMethodOn(lowerer, info, "get:sym:toStringTag");
+  if (!getter) return null;
+  if (getter.sig.ret.kind !== "string")
+    refuse(lowerer, node, info, "a non-string Symbol.toStringTag");
+  return { owner: getter.declarer, getter: true };
 }
 
 /** A conversion method the class declares or inherits (a field of that
@@ -246,7 +325,16 @@ function declared(
   return found ? { ret: found.sig.ret } : null;
 }
 
-function planOf(lowerer: Lowerer, info: ClassInfo, hint: ConversionHint, node: ts.Node): Plan {
+function planOf(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  hint: ConversionHint | "tag",
+  node: ts.Node,
+): Plan {
+  if (hint === "tag") {
+    const tag = toStringTagOf(lowerer, info, node);
+    return tag ? { method: null, tag } : { method: null };
+  }
   const exotic = declared(lowerer, info, "sym:toPrimitive");
   if (exotic) {
     if (!primitive(lowerer, exotic.ret))
@@ -271,7 +359,8 @@ function planOf(lowerer: Lowerer, info: ClassInfo, hint: ConversionHint, node: t
       refuse(lowerer, node, info, `a '${method}' method that can return an object`);
     return { method, ret: found.ret };
   }
-  return { method: null };
+  const tag = toStringTagOf(lowerer, info, node);
+  return tag ? { method: null, tag } : { method: null };
 }
 
 function primitive(lowerer: Lowerer, type: IrType): boolean {
@@ -292,8 +381,6 @@ function refuseReplacedConversions(lowerer: Lowerer, info: ClassInfo, node: ts.N
     if (lowerer.prototypeMethodAccesses.has(method))
       refuse(lowerer, node, info, `a '${method}' the program reaches through a prototype`);
   }
-  if (findMethodOn(lowerer, info, "get:sym:toStringTag") || info.fields.has("sym:toStringTag"))
-    refuse(lowerer, node, info, "a Symbol.toStringTag");
 }
 
 function refuse(lowerer: Lowerer, node: ts.Node, info: ClassInfo, what: string): never {
@@ -305,8 +392,9 @@ function refuse(lowerer: Lowerer, node: ts.Node, info: ClassInfo, what: string):
 }
 
 /** ToString(ToPrimitive(value, hint)) of a union whose arms are program
- * class instances, URLs and primitives (`Box | undefined`, `string | URL`):
- * each arm converts as it would alone. Null for other unions. */
+ * class instances, URLs, typed arrays, dates, regular expressions and
+ * primitives (`Box | undefined`, `string | URL`, `URL | Uint8Array`): each
+ * arm converts as it would alone. Null for other unions. */
 export function classUnionToString(
   lowerer: Lowerer,
   value: IrExpr,
@@ -316,11 +404,19 @@ export function classUnionToString(
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
-  if (!arms || !arms.some((arm) => arm.kind === "object" || arm.kind === "url")) return null;
+  if (!arms || arms.every((arm) => PRIMITIVE_KINDS.has(arm.kind))) return null;
+  // Without class or URL arms both hints give the same text, and
+  // ensureString, which tries the checker's narrowed arm first, converts
+  // the union with the string hint.
+  if (hint === "default" && !arms.some((arm) => arm.kind === "object" || arm.kind === "url"))
+    return null;
   const convertible = (arm: IrType): boolean => {
     if (PRIMITIVE_KINDS.has(arm.kind)) return true;
-    // A URL arm converts through its href, like String(url).
-    if (arm.kind === "url") return true;
+    // These arms convert as ensureString converts them alone, with the
+    // same result for both hints: a URL through its href, a typed array
+    // through its join, a date through toString, a regular expression
+    // through its source and flags.
+    if (OBJECT_ARMS_TO_STRING.has(arm.kind)) return true;
     if (arm.kind !== "object") return false;
     const info = lowerer.classes.get(arm.className);
     return info !== undefined && plainProgramClass(info);

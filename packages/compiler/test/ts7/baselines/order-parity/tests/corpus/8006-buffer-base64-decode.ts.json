@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8006-buffer-base64-decode.ts"
+ ],
+ "diags": []
+}

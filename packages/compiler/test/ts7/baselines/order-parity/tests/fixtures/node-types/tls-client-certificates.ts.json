@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/tls-client-certificates.ts"
+ ],
+ "diags": []
+}

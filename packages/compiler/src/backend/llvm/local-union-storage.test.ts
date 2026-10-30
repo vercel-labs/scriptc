@@ -104,7 +104,7 @@ function facts(mod: IrModule) {
 function body(mod: IrModule, pointerBits: 32 | 64): string {
   expect(validateModule(mod)).toEqual([]);
   return /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(
-    emitLlvmModule(keepUnionsBoxed(mod), { pointerBits }),
+    emitLlvmModule(mod, { pointerBits, ...keepUnionsBoxed(mod) }),
   )![0];
 }
 
@@ -113,7 +113,8 @@ test("conditional and reassigned locals own payload snapshots without heap wrapp
   expect(facts(mod).get("item")?.ownerType).toEqual(STRING);
   for (const bits of [32, 64] as const) {
     const ir = body(mod, bits);
-    expect(ir).toContain("call ptr @sc_map_entry_f64("); // inline number-key read
+    // The inline number-key read, on the integer view of the literal key.
+    expect(ir).toMatch(/call ptr @sc_map_entry_f64_int\(ptr %\S+, i64 \d+, double /);
     expect(ir).toContain("@scr_str_release");
     expect(ir).not.toMatch(/@scr_union_(?:new|retain|release)/);
     expect(ir).toContain("store i64 0");

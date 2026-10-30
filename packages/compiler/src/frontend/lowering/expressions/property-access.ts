@@ -74,6 +74,8 @@ import {
   isDynTypedRefType,
   isUnitType,
   typeEquals,
+  sortArms,
+  sortArmsTotal,
   typeKey,
   unionContainerArmsOk,
   BYTES_ELEMENT_SIZE,
@@ -1888,9 +1890,7 @@ function mergeReadTypes(lowerer: Lowerer, types: IrType[]): IrType | null {
   }
   if (arms.length === 0) return null;
   if (arms.length === 1) return arms[0]!;
-  const canonical = arms.sort((a, b) =>
-    typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0,
-  );
+  const canonical = sortArmsTotal(arms);
   return { kind: "union", unionId: lowerer.unions.intern(canonical) };
 }
 
@@ -4149,7 +4149,7 @@ export function lowerUnionKeyedRead(
   ) {
     return null;
   }
-  joinArms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(joinArms);
   const type: IrType =
     joinArms.length === 1
       ? joinArms[0]!

@@ -39,6 +39,7 @@ import {
   STRING,
   UNDEFINED_T,
   type SrcLoc,
+  sortArms,
   typeKey,
   VOID,
 } from "../../ir/ir.js";
@@ -520,7 +521,7 @@ function headerParamShapeId(cbT: IrType, idx: number): string | null {
  * with no static param type to read the shape from). */
 function canonicalHeaderRecord(lowerer: Lowerer): { type: IrType; shapeId: string } {
   const arms = [F64, STRING, arrayOf(STRING), UNDEFINED_T];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   const slot: IrType = { kind: "union", unionId: lowerer.unions.intern(arms) };
   const shapeId = lowerer.shapes.intern([], false, slot, []);
   return { type: { kind: "record", shapeId }, shapeId };

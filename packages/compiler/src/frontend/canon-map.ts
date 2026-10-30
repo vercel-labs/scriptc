@@ -12,7 +12,7 @@
  * comparison to SCRIPTC_CANON_SHADOW_OUT. It maps into throwaway
  * registries, so the program's own IR is untouched. */
 import { appendFileSync } from "node:fs";
-import { BOOL, DYN, F64, NULL_T, STRING, UNDEFINED_T, typeKey, type IrType } from "../ir/ir.js";
+import { BOOL, DYN, F64, NULL_T, STRING, UNDEFINED_T, sortArms, typeKey, type IrType } from "../ir/ir.js";
 import { canonKey, Normalizer, type Canon, type CanonProp } from "./canon.js";
 import * as ts from "./ts7/adapter.js";
 import {
@@ -88,7 +88,7 @@ export function mapCanonical(
         if (notes !== undefined) notes.collapsedToDynamic = true;
         return DYN;
       }
-      arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(arms);
       return { kind: "union", unionId: ctx.unions.intern(arms) };
     }
     case "obj": {

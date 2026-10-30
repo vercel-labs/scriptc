@@ -83,6 +83,7 @@ import {
   isSupportedSetElem,
   isUnitType,
   typeEquals,
+  sortArms,
 } from "../../ir/ir.js";
 import {
   genericCallInstance,
@@ -1475,7 +1476,7 @@ function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
     byKey.set(typeKey(a), a);
   }
   byKey.set(typeKey(UNDEFINED_T), UNDEFINED_T);
-  const sorted = [...byKey.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...byKey.values()]);
   return { kind: "union", unionId: lowerer.unions.intern(sorted) };
 }
 
@@ -10316,7 +10317,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           : {
               kind: "union",
               unionId: lowerer.unions.intern(
-                [yesType, noType].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1)),
+                sortArms([yesType, noType]),
               ),
             };
       return {

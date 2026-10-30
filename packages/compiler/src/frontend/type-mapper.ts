@@ -40,6 +40,7 @@ import {
   STRING,
   SYMBOL_T,
   typeEquals,
+  sortArms,
   typeKey,
   maybePromiseUnionArmsOk,
   unionContainerArmsOk,
@@ -2578,7 +2579,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
       if (hasNum && hasStr) {
         const arms = [F64, STRING];
-        arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+        sortArms(arms);
         return { kind: "union", unionId: unions.intern(arms) };
       }
       return hasStr ? STRING : F64;
@@ -4492,9 +4493,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const optStr = withUndefinedArm(STRING, ctx.unions);
     const optNum = withUndefinedArm(F64, ctx.unions);
     const optBool = withUndefinedArm(BOOL, ctx.unions);
-    const stdioArms = [arrayOf(STRING), STRING, UNDEFINED_T].sort((a, b) =>
-      typeKey(a) < typeKey(b) ? -1 : 1,
-    );
+    const stdioArms = sortArms([arrayOf(STRING), STRING, UNDEFINED_T]);
     const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
     if (!optStr || !optNum || !optBool) return null;
     return {
@@ -4767,7 +4766,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const t = args[0] && mapType(args[0], ctx);
       if (!t || t.kind !== "string") return null;
     }
-    const shellArms = [NULL_T, STRING].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const shellArms = sortArms([NULL_T, STRING]);
     const shell: IrType = { kind: "union", unionId: ctx.unions.intern(shellArms) };
     return {
       kind: "record",
@@ -5087,7 +5086,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("NetworkInterfaceInfoIPv6")
   ) {
     const v6 = ts.symbolName(psym!) === "NetworkInterfaceInfoIPv6";
-    const cidrArms = [NULL_T, STRING].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const cidrArms = sortArms([NULL_T, STRING]);
     const cidr: IrType = { kind: "union", unionId: ctx.unions.intern(cidrArms) };
     const scopeid = v6 ? F64 : withUndefinedArm(F64, ctx.unions);
     if (!scopeid) return null;
@@ -5568,7 +5567,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return null;
       }
-      mergedArms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(mergedArms);
       const discriminant =
         unionDiscriminant(recordParts, mergedArms, ctx) ??
         (substitutedUnions.length === 1
@@ -6631,7 +6630,7 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
     }
   }
   if (arms.length === 1) return arms[0]!;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: ctx.unions.intern(arms) };
 }
 
@@ -6729,7 +6728,7 @@ function mapDistributedConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | 
   if (arms.every(isUnitType)) return null;
   if (arms.length === 1) return arms[0]!;
   if (!unionContainerArmsOk(arms)) return null;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: ctx.unions.intern(arms) };
 }
 
@@ -7186,7 +7185,7 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
  * that could inhabit the extra arm. */
 export function unitOnlyUnion(unions: UnionRegistry): IrType {
   const arms = [NULL_T, UNDEFINED_T];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -7226,7 +7225,7 @@ export function iterableUnionType(
     )
       arms.push({ kind: "map", key: k.type, value: v.type });
   }
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -7279,7 +7278,7 @@ export function genResultRecord(
       // the slot still needs a readable undefined — the unit-only union.
       valueT = unitOnlyUnion(unions);
     } else {
-      arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(arms);
       valueT = { kind: "union", unionId: unions.intern(arms) };
     }
   }
@@ -7383,7 +7382,7 @@ export function withUnitArm(
     const arms = [...def.arms, unit];
     // Date and Promise arms beside other data arms have no union home.
     if (!unionContainerArmsOk(arms)) return null;
-    arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    sortArms(arms);
     return { kind: "union", unionId: unions.transform(def, arms) };
   }
   if (
@@ -7396,7 +7395,7 @@ export function withUnitArm(
     return null;
   }
   const arms = [t, unit];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -7997,7 +7996,7 @@ function joinOverloadTypes(types: readonly IrType[], ctx: TypeMapperCtx): IrType
     }
   }
   if (scalar && [...arms.values()].some((arm) => !isUnitType(arm))) {
-    const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const sorted = sortArms([...arms.values()]);
     return { kind: "union", unionId: ctx.unions.intern(sorted) };
   }
   if (
@@ -8380,7 +8379,7 @@ function dictSpreadLiteralShape(
   }
   for (const field of parts.fields) if (!addArms(field.type)) return null;
   if (![...arms.values()].some((arm) => !isUnitType(arm))) return null;
-  const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...arms.values()]);
   const slot: IrType =
     sorted.length === 1 ? sorted[0]! : { kind: "union", unionId: unions.intern(sorted) };
   return shapes.intern([], false, slot, []);
@@ -8650,7 +8649,7 @@ function mapRecordTypeInner(
       slotDef.arms.every(armOk)
     ) {
       const armsRaw = [F64, STRING, arrayOf(STRING), UNDEFINED_T];
-      armsRaw.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(armsRaw);
       const canonical: IrType = { kind: "union", unionId: ctx.unions.intern(armsRaw) };
       const fits = (t: IrType | null): boolean => {
         if (!t) return false;
@@ -9104,7 +9103,7 @@ function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
           ? {
               kind: "union",
               unionId: ctx.unions.intern(
-                [...payload].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1)),
+                sortArms([...payload]),
               ),
             }
           : null;

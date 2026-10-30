@@ -235,7 +235,7 @@ import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
-import { recordTextCodecClass } from "../../ir/ir.js";
+import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
@@ -7331,7 +7331,7 @@ export class Lowerer {
         const primitive = (t: IrType | null): t is IrType =>
           t?.kind === "f64" || t?.kind === "string" || t?.kind === "bool";
         if (primitive(left) && primitive(right) && !typeEquals(left, right)) {
-          const arms = [left, right].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          const arms = sortArms([left, right]);
           return { kind: "union", unionId: this.unions.intern(arms) };
         }
         return null;
@@ -14552,7 +14552,7 @@ export class Lowerer {
    * miss (process.env reads). "undefined" sorts last among all arm typeKeys,
    * so the sorted pair is always [t, undefined]. */
   withUndefinedArm(t: IrType): IrType {
-    const arms = [t, UNDEFINED_T].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const arms = sortArms([t, UNDEFINED_T]);
     return { kind: "union", unionId: this.unions.intern(arms) };
   }
 

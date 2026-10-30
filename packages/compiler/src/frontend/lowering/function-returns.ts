@@ -11,6 +11,7 @@ import {
   VOID,
   isUnitType,
   typeEquals,
+  sortArms,
   typeKey,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
@@ -759,7 +760,7 @@ function widenReturnArms(
   if (extra.size === 0) return mapped;
   const joined = new Map<string, IrType>();
   for (const a of [...arms, ...extra.values()]) joined.set(typeKey(a), a);
-  const sorted = [...joined.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...joined.values()]);
   const unionId = lowerer.unions.intern(sorted);
   lowerer.coercions.widenedReturns.add(unionId);
   return { kind: "union", unionId };

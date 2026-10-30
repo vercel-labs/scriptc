@@ -16,7 +16,7 @@ import {
   NULL_T,
   type SrcLoc,
   STRING,
-  typeKey,
+  sortArms,
 } from "../../../ir/ir.js";
 
 const DATE_GETTER_FNS: Readonly<Record<string, IrLibFn>> = {
@@ -271,7 +271,7 @@ function lowerDateToJson(
 
 /** `string | null`, the type of a Date's `toJSON()` result. */
 export function dateJsonType(lowerer: Lowerer): IrType {
-  const arms = [STRING, NULL_T].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const arms = sortArms([STRING, NULL_T]);
   return { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 

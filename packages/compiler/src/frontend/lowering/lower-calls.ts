@@ -2148,32 +2148,25 @@ function callableInstanceStringCall(
   };
 }
 
-/** A call through a value whose checker signature keeps its own type
- * parameters (the erased instance lowerGenericFnValue /
- * erasedGenericInstance produce): arguments complete into the erased
- * signature's `unknown` slots and the result converts to this call's
- * resolved (instantiated) type, exactly the generic-callable record-field
- * rule. Null for every other callee, which keeps its own lane. */
-function genericValueCall(
+/** Refuses a copying conversion at a call through a value whose checker
+ * signature keeps its own type parameters — the erased instance
+ * lowerGenericFnValue / erasedGenericInstance produce. The call itself
+ * needs no new rule: such a value's IR type is already the erased func
+ * type, so the ordinary func-value lane completes its arguments into the
+ * erased signature's `unknown` slots (records, arrays and collections box
+ * as live capsules, primitives as themselves) and leaves the result dyn
+ * for each use to convert, where a lie throws (dynCheck) instead of
+ * answering a value the program never had. Keeping the lane unchanged is
+ * what keeps every program that compiles today byte-identical. */
+function refuseCopyingErasureInstanceCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   callee: IrExpr,
-  loc: SrcLoc,
-): IrExpr | null {
-  if (callee.type.kind !== "func") return null;
+): void {
+  if (callee.type.kind !== "func") return;
   const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(call.expression));
-  if (!sigs.some((sig) => sig.getTypeParameters().length > 0)) return null;
+  if (!sigs.some((sig) => sig.getTypeParameters().length > 0)) return;
   refuseCopyingErasureBoundary(lowerer, call, callee.type);
-  if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) return null;
-  const args = completeFuncValueArgs(lowerer, call, callee.type, loc);
-  const result: IrExpr = {
-    kind: "callValue",
-    callee,
-    args,
-    type: callee.type.ret,
-    loc,
-  };
-  return lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
 }
 
 /** Refuse an erased instantiation whose boundary conversion would COPY the
@@ -2303,18 +2296,12 @@ export function lowerCallThroughValue(
 ): IrExpr {
   // A callee value that keeps its call signature's OWN type parameters
   // (`f(3)` where `f: <T>(x: T) => T`, a generic method's record slot, a
-  // generic result read back): the value is the ERASED instance — one
-  // function whose parameters and result are `unknown`, exactly the
-  // function JavaScript runs for every type argument. The arguments enter
-  // through the erased signature's `dyn` slots (records, arrays and
-  // collections box as live capsules, primitives as themselves) and the
-  // result converts back to THIS call's instantiated type, where a lie
-  // throws (dynCheck) instead of answering a value the program never had.
-  // Spread arguments keep the ordinary lanes below.
-  {
-    const generic = genericValueCall(lowerer, expr, callee, loc);
-    if (generic) return generic;
-  }
+  // generic result read back) is the ERASED instance — one function whose
+  // parameters and result are `unknown`, exactly the function JavaScript
+  // runs for every type argument. Its IR type is that erased func type, so
+  // the ordinary lanes below serve the call; only a boundary conversion
+  // that would COPY is refused instead of compiled.
+  refuseCopyingErasureInstanceCall(lowerer, expr, callee);
   // A CHECKED-DYNAMIC callee — `fn(a, b)` where fn is an implicit-any
   // JS binding (the mustCall body's `fn(...args)`), a dyn capture, or a
   // keyed read off a dyn value: the dynCall boundary. Arguments convert

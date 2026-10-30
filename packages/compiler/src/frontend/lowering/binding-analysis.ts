@@ -443,8 +443,18 @@ export function deadUnmappableBinding(
   // The type gate LAST among the cheap checks: querying the checker for
   // a type is the expensive step (and can panic upstream — the 1e999
   // bug), so only survivors of the syntactic filters pay it. Mappable
-  // types keep their real storage.
-  if (lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(sym)) !== null) return false;
+  // types keep their real storage, EXCEPT a generic signature, which now
+  // maps to its erased func type (`var a1: { <T, U extends T>(): void }`):
+  // a dead binding of one is still materialized and dropped by Node, so
+  // it keeps this family's zero code instead of gaining a func slot.
+  const declared = lowerer.checker.getTypeOfSymbol(sym);
+  const mapped = lowerer.mapTypeOf(declared);
+  if (mapped !== null) {
+    const erasedSignature =
+      mapped.kind === "func" &&
+      lowerer.checker.getCallSignatures(declared).some((sig) => sig.getTypeParameters().length > 0);
+    if (!erasedSignature) return false;
+  }
   const symText = ts.symbolName(sym);
   const namesSym = (e: ts.Node): boolean =>
     ts.isIdentifier(e) && e.text === symText && lowerer.resolveValueSymbol(e) === sym;

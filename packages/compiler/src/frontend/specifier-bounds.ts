@@ -190,6 +190,10 @@ function boundParameter(
   if (fn === undefined || !ts.isFunctionLike(fn))
     return top(expr, `'${expr.text}', a parameter of a non-function scope`);
   if (decl.dotDotDotToken !== undefined) return top(expr, `'${expr.text}', a rest parameter`);
+  // A parameter the function assigns takes values the call arguments do not
+  // show.
+  if (!bindingNeverReassigned(lowerer, sym, decl))
+    return top(expr, `'${expr.text}', a parameter written in its function`);
   const binding = functionBindingName(fn);
   if (binding === null)
     return top(expr, `'${expr.text}', a parameter of a function with no local name`);
@@ -201,13 +205,20 @@ function boundParameter(
   if (inProgress.has(fnSym))
     return top(binding, `a parameter of the recursive function '${binding.text}'`);
   const sf = ts.getSourceFileOfNode(fn);
+  // A named function expression is also called through its own name, inside
+  // its body.
+  const ownName = ts.isFunctionExpression(fn) && fn.name !== undefined ? fn.name : null;
+  const ownSym = ownName === null ? undefined : lowerer.checker.getSymbolAtLocation(ownName);
+  if (ownName !== null && ownSym === undefined)
+    return top(ownName, `a parameter of the function '${ownName.text}', which has no symbol`);
   const calls: ts.CallExpression[] = [];
   let escaped: ts.Node | null = null;
   ts.walkPreorder(sf, (node) => {
     if (escaped !== null) return "stop";
-    if (!ts.isIdentifier(node) || node === binding) return;
+    if (!ts.isIdentifier(node) || node === binding || node === ownName) return;
     if (ts.isTypeNode(node)) return;
-    if (lowerer.checker.getSymbolAtLocation(node) !== fnSym) return;
+    const target = lowerer.checker.getSymbolAtLocation(node);
+    if (target !== fnSym && (ownSym === undefined || target !== ownSym)) return;
     const call = directCallee(node);
     if (call === null) escaped = node;
     else calls.push(call);
@@ -267,7 +278,11 @@ function isExported(lowerer: Lowerer, name: ts.Identifier): boolean {
         ts.isClassDeclaration(p))
     )
       return true;
-    if (ts.isStatement(p)) return false;
+    // A module-level declaration can still be exported by a clause.
+    if (ts.isStatement(p))
+      return p.parent !== undefined && ts.isSourceFile(p.parent)
+        ? exportedByClause(lowerer, p.parent, name)
+        : false;
   }
   return false;
 }
@@ -280,9 +295,16 @@ function exportedByClause(lowerer: Lowerer, sf: ts.SourceFile, name: ts.Identifi
   for (const stmt of sf.statements.nodes) {
     if (ts.isExportDeclaration(stmt) && stmt.exportClause !== undefined) {
       if (!ts.isNamedExports(stmt.exportClause)) continue;
+      // A re-export from another module names no local binding.
+      if (stmt.moduleSpecifier !== undefined) continue;
       for (const element of stmt.exportClause.elements.nodes) {
         const local = element.propertyName ?? element.name;
-        if (lowerer.checker.getSymbolAtLocation(local) === sym) return true;
+        // The specifier's name resolves to the export's alias symbol, which
+        // aliases the local binding.
+        let target = lowerer.checker.getSymbolAtLocation(local);
+        if (target !== undefined && target.flags & ts.SymbolFlags.Alias)
+          target = lowerer.checker.getAliasedSymbol(target);
+        if (target === sym) return true;
       }
     } else if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {
       if (lowerer.checker.getSymbolAtLocation(stmt.expression) === sym) return true;

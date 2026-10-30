@@ -19,6 +19,20 @@ interface OsModule {
   EOL: string;
 }
 
+// A named function expression's calls through its own name bound its
+// parameter too.
+const viaInner = function loadInner(specifier: string, again: boolean): Promise<unknown> {
+  return again ? loadInner("node:os", false) : import(specifier);
+};
+
+// An awaited builtin namespace taken as `unknown` still suspends the caller
+// until the import settles.
+const order: string[] = [];
+async function boxed(): Promise<void> {
+  const ns: unknown = await import("node:path");
+  order.push("boxed " + typeof ns);
+}
+
 async function main(): Promise<void> {
   const os = (await importNodeModule("node:os")) as OsModule;
   const path = (await importNodeModule(NODE_PATH)) as PathModule;
@@ -38,6 +52,12 @@ async function main(): Promise<void> {
     console.log((e as Error).name, (e as Error).message);
   }
   console.log(typeof require);
+  const inner = (await viaInner("node:path", true)) as OsModule;
+  console.log("inner", JSON.stringify(inner.EOL));
+  const pending = boxed();
+  order.push("sync");
+  await pending;
+  console.log(order.join(","));
 }
 void main();
 export {};

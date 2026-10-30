@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6845-node-island-deferred-require/main.ts"
+ ],
+ "diags": []
+}

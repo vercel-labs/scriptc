@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/intl-tolocalestring-c-utf8-locale.ts"
+ ],
+ "diags": []
+}

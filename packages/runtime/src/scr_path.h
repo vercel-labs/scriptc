@@ -53,6 +53,20 @@ ScrArr *scr_path_win32_parse(ScrStr *path);
 ScrStr *scr_path_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *name, ScrStr *ext);
 ScrStr *scr_path_win32_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *name,
                               ScrStr *ext);
+/* ── node:path functions read as values (scr_builtin_values.c) ───────
+ * The adapters behind a stored `path.posix.join` or a `path.win32`
+ * namespace passed around, whose arguments arrive unchecked: lib/path.js's
+ * validateString/validateObject under Node's argument names, then the
+ * functions above. All borrow; results are +1, or NULL with Node's
+ * ERR_INVALID_ARG_TYPE pending. resolve_value validates `paths[i]` only as
+ * far as Node's last-first walk reads them; format_value answers `base`
+ * itself when there is no dir (Node's _format), so its result is a dyn
+ * value. */
+struct ScrDyn;
+ScrStr *scr_path_resolve_value(const struct ScrDyn *args, bool win32);
+struct ScrDyn *scr_path_parse_value(const struct ScrDyn *path, bool win32);
+struct ScrDyn *scr_path_format_value(const struct ScrDyn *object, bool win32);
+struct ScrDyn *scr_path_to_namespaced_value(struct ScrDyn *path, bool win32);
 /* path.matchesGlob (scr_glob.c): Node 24's minimatch with matchGlobPattern's
  * options, case-insensitive on macOS and Windows hosts like Node. Borrows
  * both; a brace sequence over 2^32 - 1 elements throws Node's RangeError, a

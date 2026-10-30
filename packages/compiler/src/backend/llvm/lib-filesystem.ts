@@ -1,7 +1,7 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { DYN, F64, STRING, type IrExpr } from "../../ir/ir.js";
+import { DYN, F64, STRING, type IrExpr, type IrType } from "../../ir/ir.js";
 import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
@@ -171,6 +171,22 @@ function emitObjEntryPairs(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   B.startBlock(le);
   B.line(`call void @scr_dyn_entry_pairs_free(ptr ${snap})`);
   return out;
+}
+
+/** The adapter of an fs.watch 'change' listener, by its declared shape: the
+ * runtime's for no parameters and for a string eventType, and one this
+ * module emits for a dynamic eventType or an (eventType, filename) listener.
+ * Only the runtime's adapters need a declaration. */
+function watchChangeAdapter(host: LlvmEmitterContext, cbT: IrType & { kind: "func" }): string {
+  const runtime =
+    cbT.params.length === 0
+      ? "scr_watch_thunk0"
+      : cbT.params.length === 1 && cbT.params[0]!.kind !== "dyn"
+        ? "scr_watch_thunk_event"
+        : null;
+  if (runtime === null) return host.watchNameThunkFor(cbT);
+  host.declare(`declare void @${runtime}(ptr, ptr, ptr)`);
+  return runtime;
 }
 
 export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
@@ -448,17 +464,19 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     // loop (usesTimers).
     host.usesTimers = true;
     const path = host.emitExpr(e.args[0]!);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
     const t = B.tmp();
-    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null)`);
+    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false)`);
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
   }
   if (e.fn === "fs.watchCb") {
     // The callback MOVES into the watcher's registry; the adapter is
-    // runtime-provided per listener shape (zero-param, or the eventType
-    // string). May throw (ENOENT) — the standard pending check.
+    // runtime-provided per listener shape (zero-param, the eventType
+    // string, or the compiler's (eventType, filename) adapter). May
+    // throw (ENOENT, or the macOS directory-names refusal) — the
+    // standard pending check.
     host.usesTimers = true;
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")
@@ -466,20 +484,108 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const path = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     host.toHeap(cb);
-    const adapter = cbT.params.length === 0 ? "scr_watch_thunk0" : "scr_watch_thunk_event";
-    host.declare(`declare void @${adapter}(ptr, ptr)`);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr)`);
+    const adapter = watchChangeAdapter(host, cbT);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
     const t = B.tmp();
-    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter})`);
+    B.line(
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"})`,
+    );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
+  }
+  if (e.fn === "watcher.on") {
+    // (recv, event, flags, listener) — flags: 1 once, 2 prepend. The
+    // listener MOVES in; the adapter follows the event (0 change, 1
+    // error, 2 close — CLOSE takes no adapter, a plain zero-arg call).
+    // Registration can throw (the macOS directory-names refusal).
+    const flagsArg = e.args[2]!;
+    if (flagsArg.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: watcher.on flags not a literal");
+    const flags = flagsArg.value;
+    const codeArg = e.args[1]!;
+    if (codeArg.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: watcher.on event not a literal");
+    const code = codeArg.value;
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: watcher.on listener not a func");
+    const w = host.emitExpr(e.args[0]!);
+    const event = host.emitExpr(e.args[1]!);
+    const cb = host.emitExpr(e.args[3]!);
+    host.toHeap(cb);
+    let adapter = "null";
+    let wantsName = false;
+    if (code === 0) {
+      adapter = watchChangeAdapter(host, cbT);
+      wantsName = cbT.params.length === 2;
+    } else if (code === 1) {
+      adapter = cbT.params.length === 0 ? "scr_watch_err_thunk0" : host.watchErrorThunkFor(cbT);
+      if (cbT.params.length === 0) host.declare(`declare void @scr_watch_err_thunk0(ptr, ptr)`);
+    }
+    host.declare(
+      `declare void @scr_watcher_on(ptr, double, ptr, ptr, i1 zeroext, i1 zeroext, i1 zeroext)`,
+    );
+    B.line(
+      `call void @scr_watcher_on(ptr ${w.name}, double ${event.name}, ptr ${cb.name}, ptr ${adapter === "null" ? "null" : `@${adapter}`}, i1 ${flags & 1 ? "true" : "false"}, i1 ${flags & 2 ? "true" : "false"}, i1 ${wantsName ? "true" : "false"})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "watcher.off") {
+    // Removal is by pointer identity: the listener stays borrowed
+    // (never heap-moved), exactly like process.offExit's.
+    const w = host.emitExpr(e.args[0]!);
+    const event = host.emitExpr(e.args[1]!);
+    const cb = host.emitExpr(e.args[2]!);
+    host.declare(`declare void @scr_watcher_off(ptr, double, ptr)`);
+    B.line(`call void @scr_watcher_off(ptr ${w.name}, double ${event.name}, ptr ${cb.name})`);
+    return { name: "", type: e.type };
   }
   if (e.fn === "watcher.close") {
     // Idempotent; never throws.
     const w = host.emitExpr(e.args[0]!);
     host.declare(`declare void @scr_watcher_close(ptr)`);
     B.line(`call void @scr_watcher_close(ptr ${w.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "fs.watchFile") {
+    // (path, interval, persistent, listener) — the listener MOVES into
+    // the poller's registry and the adapter is runtime-provided per
+    // listener shape (zero, one or two Stats parameters). The poller
+    // re-arms a timer every interval, so this is a timer program. May
+    // throw (a null byte in the path, or an interval that is not a
+    // uint32) — the standard pending check.
+    host.usesTimers = true;
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: fs.watchFile listener not a func");
+    const path = host.emitExpr(e.args[0]!);
+    const interval = host.emitExpr(e.args[1]!);
+    const persistent = host.emitExpr(e.args[2]!);
+    const cb = host.emitExpr(e.args[3]!);
+    host.toHeap(cb);
+    const adapter = `scr_watch_file_thunk${cbT.params.length}`;
+    host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
+    host.declare(`declare void @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    B.line(
+      `call void @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "fs.unwatchFile") {
+    // Removal is by closure identity: the listener stays borrowed
+    // (never heap-moved), exactly like watcher.off's; an absent one is
+    // the NULL that removes every listener on the path. A null byte in
+    // the path throws.
+    const path = host.emitExpr(e.args[0]!);
+    const cb = e.args[1] === undefined ? null : host.emitExpr(e.args[1]!);
+    host.declare(`declare void @scr_fs_unwatch_file(ptr, ptr)`);
+    B.line(
+      `call void @scr_fs_unwatch_file(ptr ${path.name}, ptr ${cb === null ? "null" : cb.name})`,
+    );
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "fs.globTypesSync" || e.fn === "fsp.globTypes") {

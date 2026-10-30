@@ -139,3 +139,25 @@ export {};
   if (!result.ok) return;
   expect(helpers(result.ir, "%union.arr").length).toBeGreaterThan(0);
 });
+
+test("an empty array literal takes the union's first array arm instead of trapping", async () => {
+  const result = await lower(`
+type TextContent = { type: "text"; text: string };
+type ImageContent = { type: "image"; url: string };
+interface Message {
+  content: TextContent[] | ImageContent[];
+}
+const message: Message = { content: [] };
+function lists(): string[] | number[] {
+  return [];
+}
+console.log(JSON.stringify(message.content), JSON.stringify(lists()));
+export {};
+`);
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  // An empty literal carries no element of its own, so it is built as the
+  // union's first array arm: no stranded-source trap and no element rebuild.
+  expect(helpers(result.ir, "%union.strand")).toEqual([]);
+  expect(helpers(result.ir, "%union.arr")).toEqual([]);
+});

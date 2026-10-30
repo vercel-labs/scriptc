@@ -71,6 +71,8 @@ class BlockRecorder {
 public:
   // Records F's block counts, which the profile annotation just gave it.
   void add(const llvm::Function &F);
+  // Records F, which the profile has no record of, as never run.
+  void addNeverRan(const llvm::Function &F);
   // Writes the file through a private sibling; returns an error message on
   // failure.
   std::optional<std::string> write(llvm::StringRef Path);

@@ -2,6 +2,8 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../i
 import { InternalCompilerError } from "../../errors.js";
 
 import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
+import { staticString } from "./builtins/module-resolution.js";
+import { resolveImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
@@ -1427,7 +1429,7 @@ export function fenceStaticReadableStreamMember(
   lowerer.noLowering(
     `ReadableStream.${member} in a static build`,
     access,
-    "the native static ReadableStream surface is locked plus cancel() and getReader(); values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while stored iterator handles remain unsupported",
+    "ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported",
     sym,
   );
 }
@@ -1967,8 +1969,9 @@ export function lowerStaticReadableStreamNew(
 
 /** `new TransformStream()`: the identity transform, a native handle whose
  * readable side is a native ReadableStream and whose writable side is the
- * runtime's WritableStream. A transformer or queuing strategies have no
- * native lowering yet and keep the SC2020 refusal. */
+ * runtime's WritableStream. A TransformStream with a transformer or
+ * queuing strategies is built with the web stream classes instead
+ * (web-streams-dyn.ts, lowerWebStreamNew). */
 export function lowerStaticTransformStreamNew(
   lowerer: Lowerer,
   expr: ts.NewExpression,
@@ -2237,18 +2240,32 @@ const COMPUTED_SPECIFIER_REFUSAL =
 export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
   const arg = call.arguments.nodes[0];
-  if (arg === undefined) {
-    lowerer.unsupported("SC1090", call, COMPUTED_SPECIFIER_REFUSAL, undefined, "dynamic-import");
+  // The specifier text must be known at build time; a constant expression
+  // (`import("node:" + "fs")`, `import(FS)`) names its module just as a
+  // literal does. collectDynamicImports keys its table by the same text.
+  // A specifier that is not a compile-time constant may still be bounded to
+  // a set of values (a module-local parameter every call of which passes a
+  // literal); the bounded lowering picks the arm at run time.
+  const specifier = arg === undefined ? null : staticString(lowerer, arg);
+  if (specifier === null) {
+    if (arg !== undefined) return lowerBoundedDynamicImport(lowerer, call, arg);
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      "dynamic import() of computed specifiers (the module graph resolves at " +
+        "build time — the specifier must be a string literal)",
+      undefined,
+      "dynamic-import",
+    );
   }
   if (call.arguments.nodes.length !== 1) {
     lowerer.unsupported("SC1090", call, "dynamic import() with import attributes");
   }
-  if (!ts.isStringLiteralLike(arg)) return lowerBoundedDynamicImport(lowerer, call, arg);
-  const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${arg.text}`);
+  const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
   if (res.kind === "program-module") {
-    return lowerOwnStaticModuleImport(lowerer, call, arg);
+    return lowerOwnStaticModuleImport(lowerer, call, specifier);
   }
   return lowerStaticNamespaceImport(lowerer, call, {
     kind: "moduleNs",
@@ -2407,7 +2424,7 @@ function lowerRejectedImport(
       { kind: "exprStmt", expr: hop, loc },
       {
         kind: "exprStmt",
-        expr: nodeThrowExpr(errorKind, crash.code ?? "", crash.message, VOID, loc),
+        expr: nodeThrowExpr(errorKind, crash.code ?? "", crash.message, VOID, loc, crash.url),
         loc,
       },
       { kind: "return", value: dynUndefinedExpr(loc), loc },
@@ -2435,13 +2452,24 @@ function lowerRejectedImport(
   };
 }
 
-/** The checker-resolved program source behind one literal import(). */
-function programImportTarget(lowerer: Lowerer, arg: ts.StringLiteralLike): ts.SourceFile | null {
-  const modSym = lowerer.checker.getSymbolAtLocation(arg);
-  for (const d of modSym ? modSym.declarations : []) {
-    if (ts.isSourceFile(d) && !d.isDeclarationFile) return d;
+/** The compiled module a literal specifier names. A FOLDED specifier
+ * (a `const` or a `+` concatenation) carries no module symbol on its
+ * argument node, so it resolves through the checker's program import
+ * resolution instead; only modules already in the program resolve. */
+function programImportTarget(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  specifier: string,
+): ts.SourceFile | null {
+  const arg = call.arguments.nodes[0];
+  if (arg !== undefined && ts.isStringLiteralLike(arg)) {
+    const modSym = lowerer.checker.getSymbolAtLocation(arg);
+    for (const d of modSym ? modSym.declarations : []) {
+      if (ts.isSourceFile(d) && !d.isDeclarationFile) return d;
+    }
   }
-  return null;
+  const resolved = resolveImport(lowerer.program, ts.getSourceFileOfNode(call), specifier);
+  return resolved !== null && !resolved.isDeclarationFile ? resolved : null;
 }
 
 /** Static literal import of one compiled ESM module. The async helper's
@@ -2452,14 +2480,14 @@ function programImportTarget(lowerer: Lowerer, arg: ts.StringLiteralLike): ts.So
 function lowerOwnStaticModuleImport(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  arg: ts.StringLiteralLike,
+  specifier: string,
 ): IrExpr {
-  const dep = programImportTarget(lowerer, arg);
+  const dep = programImportTarget(lowerer, call, specifier);
   if (dep !== null && (dep.fileName.endsWith(".cts") || isCjsJsFile(dep, lowerer.program))) {
     lowerer.unsupported(
       "SC1090",
       call,
-      `dynamic import of the program's own CommonJS module '${arg.text}' ` +
+      `dynamic import of the program's own CommonJS module '${specifier}' ` +
         "(its namespace comes from module.exports through Node's CJS lexer, " +
         "which has no compiled story — require it, or import it statically)",
     );
@@ -2468,7 +2496,7 @@ function lowerOwnStaticModuleImport(
     lowerer.unsupported(
       "SC1090",
       call,
-      `dynamic import of the program's own module '${arg.text}' ` +
+      `dynamic import of the program's own module '${specifier}' ` +
         "(this module is not part of the compiled module graph)",
     );
   }

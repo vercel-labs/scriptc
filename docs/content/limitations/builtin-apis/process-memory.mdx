@@ -1,2 +1,5 @@
 - **Process memory:** `process.memoryUsage()` reads `rss` from the operating system and `heapTotal` and `heapUsed` from the runtime's allocator, so the heap figures start near zero and grow as the program allocates.
-  `external` and `arrayBuffers` are `0`, because Buffer and typed-array storage is part of the same heap.
+  `arrayBuffers` is the storage of the ArrayBuffers, typed arrays, Buffers, DataViews and SharedArrayBuffers the program holds, and `external` is the same storage without SharedArrayBuffers, as in Node.
+  Node also counts its own startup allocations in both, so a program that holds no such storage reports `0` where Node reports a few megabytes.
+  In a program with worker threads, `external` and the non-shared part of `arrayBuffers` count the calling thread's storage.
+  The storage comes from the same allocator, so it also counts in `heapTotal` and `heapUsed`.

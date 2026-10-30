@@ -119,10 +119,12 @@ test("a dispatching x86-64 build gives each program function a baseline and an x
   for (const [name] of coroutines) expect(defs.has(`${name}.v3`), name).toBe(false);
   // Functions used as values are referenced by their dispatching name.
   expect(ll).not.toMatch(/ptr @[\w.$-]+\.(v3|base)(?!\()/);
-  expect(ll).toMatch(/^attributes #3 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" \}$/m);
+  expect(ll).toMatch(
+    /^attributes #3 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" \}$/m,
+  );
   // Unsanitized builds leave sanitize_address out of the copies' groups too.
   expect(emit({ ...x86, cpuDispatch: true, sanitizeAttributes: false })).toMatch(
-    /^attributes #3 = \{ uwtable "target-cpu"="x86-64-v3" \}$/m,
+    /^attributes #3 = \{ uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" \}$/m,
   );
   // main sets the level before anything else runs.
   expect(defs.get("main")).toMatch(

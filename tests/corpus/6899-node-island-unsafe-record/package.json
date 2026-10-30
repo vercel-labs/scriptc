@@ -1,0 +1,1 @@
+{ "name": "node-island-unsafe-record", "private": true, "type": "module", "scriptc": { "packages": { "recordkit": "node" } } }

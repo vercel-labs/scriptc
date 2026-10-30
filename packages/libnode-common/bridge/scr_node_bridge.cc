@@ -20,21 +20,40 @@
 // Calls into JavaScript therefore do not drain queues themselves: the
 // runtime's checkpoints do, through `checkpoint`, and Node's own after
 // every callback it dispatches.
+//
+// One heap, as far as cycles go (scope-B NI-8). The import table holds V8
+// objects as v8::TracedReferences that Node's CppHeap traces, and every
+// export representative carries a CppHeap object that traces what its
+// native value reaches across the boundary; see "cross-heap cycle
+// collection" below.
 #include "scr_node_bridge.h"
 
+#include <cppgc/allocation.h>
+#include <cppgc/garbage-collected.h>
+#include <cppgc/heap-consistency.h>
+#include <cppgc/heap-state.h>
+#include <cppgc/persistent.h>
+#include <cppgc/visitor.h>
 #include <dlfcn.h>
 #include <node.h>
 #include <node_buffer.h>
 #include <node_api.h>
 #include <node_version.h>
 #include <uv.h>
+#include <v8-cppgc.h>
 #include <v8.h>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <functional>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -61,6 +80,9 @@ const ScrNodeBridgeHost *g_host = nullptr;
 void DropAllHandles();
 void DropAllExports();
 void FlushReleasedExports();
+bool StartCollector(v8::Isolate *isolate);
+void StopCollector(v8::Isolate *isolate);
+void Touch(uint32_t export_id);
 std::unique_ptr<node::MultiIsolatePlatform> g_platform;
 node::EmbedderSnapshotData::Pointer g_snapshot;
 std::unique_ptr<node::CommonEnvironmentSetup> g_setup;
@@ -285,6 +307,7 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   g_stack_limit = stack_limit;
   node::SetProcessExitHandler(g_setup->env(),
                               [](node::Environment *, int code) { g_host->exit(code); });
+  if (!StartCollector(isolate)) return Copy("this libnode's isolate has no CppHeap", nullptr);
   HandleScope handles(isolate);
   Local<Context> context = g_setup->context();
   Context::Scope context_scope(context);
@@ -697,6 +720,7 @@ void Stop() {
   node::Stop(g_setup->env());
   g_call.Reset();
   g_load.Reset();
+  StopCollector(isolate);
   DropAllHandles();
   DropAllExports();
   for (Global<Function> *fn :
@@ -721,26 +745,42 @@ void Stop() {
 
 
 // ── object handles (scope-B NI-4) ───────────────────────────────────────
-// The import table: V8 values the runtime holds, one v8::Global per value
-// and one id per value while held (found again through the value's
-// identity hash), so a V8 object crossing twice is the same runtime
-// handle. A typed array's slot also keeps its backing store, so memory the
-// runtime aliases stays valid even if JavaScript detaches the buffer.
+// The import table: V8 values the runtime holds, one entry per value and
+// one id per value while held (found again through the value's identity
+// hash), so a V8 object crossing twice is the same runtime handle. A typed
+// array's slot also keeps its backing store, so memory the runtime aliases
+// stays valid even if JavaScript detaches the buffer.
+//
+// An entry holds its value as a v8::TracedReference, which only the
+// cross-heap collector's tracing marks (NI-8): as a root while native
+// roots may use it, otherwise through the representative of an export
+// whose native value reaches it. An entry nothing traced in a major GC is
+// reclaimed by V8 and becomes dead: the runtime no longer reaches it and
+// only drops its id, and any other use is an internal error.
 
 struct Slot {
-  Global<Value> value;
+  v8::TracedReference<Value> value;
   std::shared_ptr<v8::BackingStore> store;
   int hash = 0;
-  bool live = false;
+  bool live = false;   // the runtime holds the id
+  bool dead = false;   // V8 reclaimed the value: the reference is never touched again
+  bool rooted = true;  // traced as a root under an exact analysis
+  std::atomic<uint32_t> traced{0}; // the GC cycle that last traced it
 };
 
-std::vector<Slot> g_slots(1); // id 0 is never used
+// The GC lock guards what the collector's tracing reads, from V8's marking
+// threads: the slot vector, slot references and flags, the export GC
+// table, reach lists and the collector's mode. The main thread never holds
+// it while V8 may allocate.
+std::mutex g_gc_lock;
+std::vector<std::unique_ptr<Slot>> g_slots(1); // index = id; id 0 is never used
 std::vector<uint32_t> g_free_ids;
 std::unordered_multimap<int, uint32_t> g_ids;
 uint32_t g_live_handles = 0;
 // Strings of out-values: valid until the next outermost entry.
 std::deque<std::string> g_scratch;
 int g_entry_depth = 0;
+void NoteFresh(uint32_t entry);
 
 int IdentityHash(Local<Value> v) {
   if (v->IsObject()) return v.As<Object>()->GetIdentityHash();
@@ -752,7 +792,7 @@ uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingSto
   int hash = IdentityHash(v);
   auto range = g_ids.equal_range(hash);
   for (auto it = range.first; it != range.second; ++it) {
-    Slot &slot = g_slots[it->second];
+    Slot &slot = *g_slots[it->second];
     if (slot.value.Get(isolate)->StrictEquals(v)) return it->second;
   }
   uint32_t id;
@@ -761,36 +801,67 @@ uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingSto
     g_free_ids.pop_back();
   } else {
     id = static_cast<uint32_t>(g_slots.size());
-    g_slots.emplace_back();
   }
-  Slot &slot = g_slots[id];
-  slot.value.Reset(isolate, v);
-  slot.store = std::move(store);
-  slot.hash = hash;
-  slot.live = true;
+  {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    if (id == g_slots.size()) g_slots.emplace_back();
+    if (!g_slots[id]) g_slots[id] = std::make_unique<Slot>();
+    Slot &slot = *g_slots[id];
+    // An assigning store: a reference made while V8 marks is marked.
+    slot.value.Reset(isolate, v);
+    slot.store = std::move(store);
+    slot.hash = hash;
+    slot.live = true;
+    slot.dead = false;
+    slot.rooted = true;
+  }
+  NoteFresh(id);
   g_ids.emplace(hash, id);
   g_live_handles++;
   return id;
 }
 
-Local<Value> HandleValue(Isolate *isolate, uint32_t id) {
-  if (id == 0 || id >= g_slots.size() || !g_slots[id].live) return v8::Undefined(isolate);
-  return g_slots[id].value.Get(isolate);
+[[noreturn]] void CollectedInUse(uint32_t id) {
+  std::fprintf(stderr,
+               "scriptc: internal error: island handle %u was used after V8 collected its "
+               "object (cross-heap collector)\n",
+               id);
+  std::fflush(stderr);
+  std::abort();
 }
 
-void Drop(uint32_t id) {
-  if (id == 0 || id >= g_slots.size() || !g_slots[id].live) return;
-  Slot &slot = g_slots[id];
-  auto range = g_ids.equal_range(slot.hash);
+Local<Value> HandleValue(Isolate *isolate, uint32_t id) {
+  if (id == 0 || id >= g_slots.size() || !g_slots[id] || !g_slots[id]->live)
+    return v8::Undefined(isolate);
+  Slot &slot = *g_slots[id];
+  if (slot.dead) CollectedInUse(id);
+  return slot.value.Get(isolate);
+}
+
+void ForgetIdentity(uint32_t id, int hash) {
+  auto range = g_ids.equal_range(hash);
   for (auto it = range.first; it != range.second; ++it) {
     if (it->second == id) {
       g_ids.erase(it);
       break;
     }
   }
-  slot.value.Reset();
-  slot.store.reset();
-  slot.live = false;
+}
+
+void Drop(uint32_t id) {
+  if (id == 0 || id >= g_slots.size() || !g_slots[id] || !g_slots[id]->live) return;
+  Slot &slot = *g_slots[id];
+  if (!slot.dead) ForgetIdentity(id, slot.hash);
+  std::shared_ptr<v8::BackingStore> store;
+  {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    // V8 already reclaimed a dead slot's node: forget it without touching it.
+    if (slot.dead) new (&slot.value) v8::TracedReference<Value>();
+    else slot.value.Reset();
+    store = std::move(slot.store);
+    slot.live = false;
+    slot.dead = false;
+  }
   g_free_ids.push_back(id);
   g_live_handles--;
 }
@@ -800,6 +871,277 @@ void DropAllHandles() {
 }
 
 uint32_t LiveHandles() { return g_live_handles; }
+
+// ── cross-heap cycle collection (scope-B NI-8) ─────────────────────────
+// V8's marker decides what lives on both sides of the boundary. Before a
+// major GC marks (its prologue), the runtime analyzes the native subgraph
+// under the exported values (gc_analyze, scr_node_island_gc.c): which
+// exports its own roots hold, which imports they hold, and what every
+// other export's native value reaches (imports and other exports). Then:
+//  - Roots, a CppHeap object held by a Persistent, traces the imports
+//    native roots hold and the representatives of the exports they hold;
+//  - every representative carries a CppHeap object (Reach, wrapped by a
+//    carrier object the representative holds under a private symbol) that
+//    traces what its export reaches;
+//  - Fresh traces references made while V8 marks (new imports, new
+//    exports, and exports JavaScript hands to the runtime or calls into
+//    while V8 marks, which become roots), retraced through a Steele
+//    barrier.
+// V8 reclaims every traced reference this left untraced: the imports
+// become dead (the runtime holds them only from garbage it frees next),
+// and representatives V8 did not mark die, which releases their exports
+// (export_release) so the runtime's cycle collector frees the native half.
+// Without an analysis (the runtime declined, or V8 skipped the prologue)
+// the collector is conservative: Roots traces everything.
+//
+// Node creates the isolate with its own CppHeap (NewIsolate: owned by V8)
+// and supports addons wrapping CppHeap objects with v8::Object::Wrap; the
+// bridge uses that heap. V8 13.6's EmbedderRootsHandler only resets
+// droppable references in minor GCs, and attaching a second CppHeap is no
+// longer possible, so this is the one way to put embedder edges into
+// V8's major-GC marking.
+
+struct ExportGc {
+  v8::TracedReference<Object> rep; // the representative, traced only by the collector
+  bool rooted = true;
+  std::vector<uint32_t> reach;     // what the export reaches (SCR_NODE_GC_EXPORT marks exports)
+  std::atomic<uint32_t> traced{0};
+  uint32_t gen = 0;                // tells this representative's Reach from older ones
+  uint8_t tenure = 0;              // consecutive analyses that found it held natively
+};
+std::unordered_map<uint32_t, std::unique_ptr<ExportGc>> g_export_gc;
+uint32_t g_export_gen = 0;
+enum { kConservative = 0, kExact = 1 };
+int g_gc_mode = kConservative;
+uint32_t g_epoch = 1;          // the GC cycle; a reference traced in it carries it
+std::vector<uint32_t> g_fresh; // entries to trace with Fresh
+bool g_fresh_pending = false;  // Fresh will be (re)traced and sees g_fresh
+bool g_gc_trace = false;       // SCRIPTC_NODE_ISLANDS_TRACE contains "gc"
+bool g_gc_off = false;         // SCRIPTC_NODE_ISLANDS_GC=off: every handle a root
+ScrNodeGcStats g_gc_stats;
+struct {
+  size_t exports, rooted, imports, free, reach, visited, touched;
+  uint64_t ns;
+  bool analyzed;
+  bool incremental; // analyzed when incremental marking started
+} g_gc_cycle;
+uint64_t g_cycle_freed_exports = 0;
+
+void TraceEntry(cppgc::Visitor *visitor, uint32_t entry, uint32_t epoch) {
+  auto *js = static_cast<v8::JSVisitor *>(visitor);
+  if (entry & SCR_NODE_GC_EXPORT) {
+    auto it = g_export_gc.find(entry & ~SCR_NODE_GC_EXPORT);
+    if (it == g_export_gc.end() || it->second->rep.IsEmptyThreadSafe()) return;
+    js->Trace(it->second->rep);
+    it->second->traced.store(epoch, std::memory_order_relaxed);
+    return;
+  }
+  if (entry == 0 || entry >= g_slots.size() || !g_slots[entry]) return;
+  Slot &slot = *g_slots[entry];
+  if (!slot.live || slot.dead) return;
+  js->Trace(slot.value);
+  slot.traced.store(epoch, std::memory_order_relaxed);
+}
+
+class Roots final : public cppgc::GarbageCollected<Roots> {
+ public:
+  void Trace(cppgc::Visitor *visitor) const {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    bool exact = g_gc_mode == kExact;
+    uint32_t epoch = g_epoch;
+    for (uint32_t id = 1; id < g_slots.size(); id++)
+      if (g_slots[id] && (!exact || g_slots[id]->rooted)) TraceEntry(visitor, id, epoch);
+    for (auto &it : g_export_gc)
+      if (!exact || it.second->rooted) TraceEntry(visitor, it.first | SCR_NODE_GC_EXPORT, epoch);
+  }
+};
+
+class Fresh final : public cppgc::GarbageCollected<Fresh> {
+ public:
+  void Trace(cppgc::Visitor *visitor) const {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    for (uint32_t entry : g_fresh) TraceEntry(visitor, entry, g_epoch);
+    g_fresh.clear();
+    g_fresh_pending = false;
+  }
+};
+
+class Reach final : public cppgc::GarbageCollected<Reach> {
+ public:
+  Reach(uint32_t id, uint32_t gen) : id_(id), gen_(gen) {}
+  void Trace(cppgc::Visitor *visitor) const {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    if (g_gc_mode != kExact) return; // Roots traces everything
+    auto it = g_export_gc.find(id_);
+    if (it == g_export_gc.end() || it->second->gen != gen_) return;
+    for (uint32_t entry : it->second->reach) TraceEntry(visitor, entry, g_epoch);
+  }
+
+ private:
+  uint32_t id_, gen_;
+};
+
+v8::CppHeap *g_cpp_heap = nullptr;
+// What a representative keeps alive natively, as V8 learns of it (its
+// external memory): V8 schedules its major GCs by its own heap, which the
+// native halves of cross-heap garbage do not grow. An estimate per
+// representative (the native value, its closure or record and what they
+// hold); reported lazily, never from inside a GC.
+constexpr int64_t kExportExternalBytes = 2048;
+// The estimate follows what major GCs find. A major GC that frees fewer
+// exports than an eighth of those made since the previous one drops it to
+// kExportExternalFloor: long-lived exports would otherwise schedule a major
+// GC per 32k of them, each walking every handle. One that frees more
+// restores it.
+constexpr int64_t kExportExternalFloor = 64;
+int64_t g_export_external_bytes = kExportExternalBytes;
+uint64_t g_cycle_new_exports = 0; // exports made since the last major GC
+int64_t g_external_reported = 0;
+
+void ReportExternal(Isolate *isolate) {
+  int64_t want = static_cast<int64_t>(g_export_gc.size()) * g_export_external_bytes;
+  if (want == g_external_reported) return;
+  isolate->AdjustAmountOfExternalAllocatedMemory(want - g_external_reported);
+  g_external_reported = want;
+}
+cppgc::Persistent<Roots> *g_roots = nullptr;
+cppgc::Persistent<Fresh> *g_fresh_root = nullptr;
+Global<v8::Private> g_gc_key;
+Global<v8::ObjectTemplate> g_carrier_template;
+
+bool Marking() {
+  return g_cpp_heap != nullptr && cppgc::subtle::HeapState::IsMarking(g_cpp_heap->GetHeapHandle());
+}
+
+// Makes V8 trace `object` again if it already did in this marking.
+void Retrace(const void *object) {
+  cppgc::subtle::HeapConsistency::WriteBarrierParams params;
+  if (cppgc::subtle::HeapConsistency::GetWriteBarrierType(object, params) ==
+      cppgc::subtle::HeapConsistency::WriteBarrierType::kMarking)
+    cppgc::subtle::HeapConsistency::SteeleWriteBarrier(params, object);
+}
+
+// A reference made, or an export rooted, while V8 marks.
+void NoteFresh(uint32_t entry) {
+  if (g_fresh_root == nullptr || !Marking()) return;
+  bool retrace;
+  {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    g_fresh.push_back(entry);
+    retrace = !g_fresh_pending;
+    g_fresh_pending = true;
+  }
+  if (retrace) Retrace(g_fresh_root->Get());
+}
+
+// JavaScript handed export `export_id` to the runtime, or called into it:
+// under an exact analysis the runtime may now reach its native value, so it
+// becomes a root for the rest of this GC.
+void Touch(uint32_t export_id) {
+  if (g_gc_mode != kExact) return;
+  auto it = g_export_gc.find(export_id);
+  if (it == g_export_gc.end() || it->second->rooted) return;
+  {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    it->second->rooted = true;
+  }
+  g_gc_cycle.touched++;
+  NoteFresh(export_id | SCR_NODE_GC_EXPORT);
+}
+
+uint64_t NowNs() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::steady_clock::now().time_since_epoch())
+                                   .count());
+}
+
+// Exports found stable (held natively, or reaching nothing across the
+// boundary) in this many analyses in a row are tenured: analyzed again
+// only at every kTenuredEvery-th analysis, roots meanwhile (a bounded cost
+// for long-lived exports; their cycles are found at the next full one).
+constexpr uint8_t kTenure = 2;
+constexpr uint64_t kTenuredEvery = 8;
+
+// The analysis for this GC (in the prologue, before V8 marks or, for an
+// incremental GC, when its marking starts). Newest exports first: they are
+// the likeliest garbage, and the analysis may stop at its budget.
+void Analyze() {
+  std::vector<std::pair<uint32_t, uint32_t>> order; // (gen, id)
+  order.reserve(g_export_gc.size());
+  bool full = g_gc_stats.analyses % kTenuredEvery == 0;
+  for (auto &it : g_export_gc)
+    if (!it.second->rep.IsEmpty() && (full || it.second->tenure < kTenure))
+      order.emplace_back(it.second->gen, it.first);
+  std::sort(order.begin(), order.end(), std::greater<>());
+  std::vector<uint32_t> ids;
+  ids.reserve(order.size());
+  for (auto &o : order) ids.push_back(o.second);
+  ScrNodeGcResult r;
+  std::memset(&r, 0, sizeof r);
+  uint64_t t0 = NowNs();
+  // A host without the analysis (the smoke tests) keeps every handle a root.
+  int status = g_host->gc_analyze != nullptr && !g_gc_off
+                   ? g_host->gc_analyze(ids.data(), ids.size(), &r)
+                   : 1;
+  uint64_t ns = NowNs() - t0;
+  g_gc_stats.analysis_ns += ns;
+  if (ns > g_gc_stats.max_analysis_ns) g_gc_stats.max_analysis_ns = ns;
+  std::lock_guard<std::mutex> lock(g_gc_lock);
+  for (auto &slot : g_slots)
+    if (slot) slot->rooted = true;
+  for (auto &it : g_export_gc) {
+    it.second->rooted = true;
+    it.second->reach.clear();
+  }
+  g_gc_cycle = {};
+  g_gc_cycle.ns = ns;
+  if (status != 0) {
+    g_gc_mode = kConservative;
+    return;
+  }
+  g_gc_stats.analyses++;
+  g_gc_cycle.analyzed = true;
+  g_gc_cycle.exports = ids.size();
+  g_gc_cycle.imports = g_live_handles;
+  g_gc_cycle.visited = r.visited;
+  for (size_t i = 0; i < r.nfree_imports; i++) {
+    uint32_t id = r.free_imports[i];
+    if (id < g_slots.size() && g_slots[id] && g_slots[id]->live) {
+      g_slots[id]->rooted = false;
+      g_gc_cycle.free++;
+    }
+  }
+  for (size_t i = 0; i < ids.size(); i++) {
+    ExportGc &x = *g_export_gc[ids[i]];
+    x.rooted = r.rooted[i] != 0;
+    if (x.rooted) g_gc_cycle.rooted++;
+    // Stable: held natively, or reaching nothing across the boundary
+    // (rooting such an export only delays freeing its representative).
+    bool stable = x.rooted || r.reach_len[i] == 0;
+    x.tenure = stable ? (x.tenure < 255 ? x.tenure + 1 : 255) : 0;
+    x.reach.assign(r.reach + r.reach_start[i], r.reach + r.reach_start[i] + r.reach_len[i]);
+    g_gc_cycle.reach += r.reach_len[i];
+  }
+  g_gc_mode = kExact;
+}
+
+void OnGcPrologue(Isolate *, v8::GCType type, v8::GCCallbackFlags, void *) {
+  bool marking = Marking();
+  // V8 calls the prologue of an incremental GC before its marking starts,
+  // so nothing was traced yet: a new marking cycle, whose traced references
+  // carry a new epoch.
+  if (!marking) g_epoch++;
+  // The final pause of an incremental GC keeps the analysis made when its
+  // marking started: anything the program reached since went through Touch
+  // or NoteFresh.
+  if (type == v8::kGCTypeMarkSweepCompact && marking && g_gc_mode == kExact) return;
+  Analyze();
+  g_gc_cycle.incremental = type == v8::kGCTypeIncrementalMarking;
+  if (marking && type == v8::kGCTypeIncrementalMarking && g_gc_trace)
+    std::fprintf(stderr, "[node-islands] gc: marking had started before the prologue\n");
+}
+
+
 
 const char *Scratch(std::string text, size_t *len) {
   g_scratch.push_back(std::move(text));
@@ -945,6 +1287,13 @@ void OnExportGone(const v8::WeakCallbackInfo<void> &info) {
     it->second.Reset();
     g_exports.erase(it);
   }
+  {
+    // Nothing traced the representative: V8 reclaims its traced reference.
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    g_export_gc.erase(id);
+  }
+  g_gc_stats.freed_exports++;
+  g_cycle_freed_exports++;
   for (auto p = g_proxy_ids.begin(); p != g_proxy_ids.end();) {
     if (p->second == id) p = g_proxy_ids.erase(p);
     else ++p;
@@ -954,6 +1303,7 @@ void OnExportGone(const v8::WeakCallbackInfo<void> &info) {
 
 // Delivers the releases V8's collector queued (never from inside a GC).
 void FlushReleasedExports() {
+  if (!g_released_exports.empty() && g_setup) ReportExternal(g_setup->isolate());
   while (!g_released_exports.empty()) {
     uint32_t id = g_released_exports.back();
     g_released_exports.pop_back();
@@ -962,8 +1312,12 @@ void FlushReleasedExports() {
   }
 }
 
+// The export id a representative's callback carries. JavaScript is
+// calling into that export: the runtime may reach its native value now.
 uint32_t ExportIdArg(Local<Value> data) {
-  return data->IsUint32() ? data.As<v8::Uint32>()->Value() : 0;
+  uint32_t id = data->IsUint32() ? data.As<v8::Uint32>()->Value() : 0;
+  if (id != 0) Touch(id);
+  return id;
 }
 
 // Out-value scratch of host calls made from outside any runtime entry (a
@@ -1464,10 +1818,42 @@ void RefreshMirror(Isolate *isolate, Local<Context> context, uint32_t id, uint32
   }
 }
 
+// NI-8: the representative of export `id` holds a carrier whose CppHeap
+// object traces what the export reaches, and the export's traced reference
+// (marked only by the collector) starts out a root.
+void AttachReach(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> rep) {
+  if (g_cpp_heap == nullptr) return;
+  if (g_carrier_template.IsEmpty()) {
+    Local<v8::ObjectTemplate> t = v8::ObjectTemplate::New(isolate);
+    t->SetInternalFieldCount(1);
+    g_carrier_template.Reset(isolate, t);
+  }
+  if (g_gc_key.IsEmpty())
+    g_gc_key.Reset(isolate, v8::Private::New(isolate, Utf8(isolate, "scriptc:gc")));
+  Local<Object> carrier = g_carrier_template.Get(isolate)->NewInstance(context).ToLocalChecked();
+  uint32_t gen = ++g_export_gen;
+  Reach *reach = cppgc::MakeGarbageCollected<Reach>(g_cpp_heap->GetAllocationHandle(), id, gen);
+  v8::Object::Wrap<v8::CppHeapPointerTag::kDefaultTag>(isolate, carrier, reach);
+  // A Proxy holds its target: an array export's private lives there.
+  Local<Object> holder = rep->IsProxy() ? rep.As<v8::Proxy>()->GetTarget().As<Object>() : rep;
+  holder->SetPrivate(context, g_gc_key.Get(isolate), carrier).Check();
+  {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    std::unique_ptr<ExportGc> &x = g_export_gc[id];
+    x = std::make_unique<ExportGc>();
+    x->rep.Reset(isolate, rep);
+    x->gen = gen;
+  }
+  g_cycle_new_exports++;
+  NoteFresh(id | SCR_NODE_GC_EXPORT);
+  ReportExternal(isolate);
+}
+
 Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
   uint32_t id = in->u.exp.id;
   auto found = g_exports.find(id);
   if (found != g_exports.end()) {
+    Touch(id);
     Local<Object> existing = found->second.Get(isolate);
     RefreshMirror(isolate, context, id, in->flags, existing);
     return existing;
@@ -1509,6 +1895,7 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     obj->SetPrototypeV2(context, v8::Object::New(isolate)->GetPrototypeV2()).FromMaybe(false);
   }
   if (!obj->IsProxy()) obj->SetPrivate(context, ExportKey(isolate), data).Check();
+  AttachReach(isolate, context, id, obj);
   Global<Object> &slot = g_exports[id];
   slot.Reset(isolate, obj);
   slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
@@ -1531,6 +1918,11 @@ void ExportSettle(uint32_t id, int rejected, const ScrNodeValue *value) {
 }
 
 void DropAllExports() {
+  {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    for (auto &it : g_export_gc) it.second->rep.Reset();
+    g_export_gc.clear();
+  }
   for (auto &it : g_exports) it.second.Reset();
   g_exports.clear();
   for (auto &it : g_resolvers) it.second.Reset();
@@ -1539,6 +1931,122 @@ void DropAllExports() {
   g_proxy_ids.clear();
   g_export_template.Reset();
   g_export_key.Reset();
+}
+
+// After a major GC: what the collector left untraced is reclaimed. Dead
+// imports are forgotten (the runtime drops them from the garbage it frees
+// next); a representative that lived on through JavaScript alone gets a new
+// traced reference. Then the collector is conservative again until the
+// next analysis.
+void OnGcEpilogue(Isolate *isolate, v8::GCType, v8::GCCallbackFlags, void *) {
+  HandleScope handles(isolate);
+  uint64_t freed_imports = 0;
+  std::vector<uint32_t> refresh, dead;
+  {
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    uint32_t epoch = g_epoch;
+    for (uint32_t id = 1; id < g_slots.size(); id++) {
+      Slot *slot = g_slots[id].get();
+      if (slot == nullptr || !slot->live || slot->dead) continue;
+      if (slot->traced.load(std::memory_order_relaxed) == epoch) continue;
+      slot->dead = true;
+      new (&slot->value) v8::TracedReference<Value>();
+      dead.push_back(id);
+      freed_imports++;
+    }
+    for (auto &it : g_export_gc) {
+      ExportGc &x = *it.second;
+      if (x.traced.load(std::memory_order_relaxed) != epoch) {
+        new (&x.rep) v8::TracedReference<Object>();
+        refresh.push_back(it.first);
+      }
+      x.rooted = true;
+      x.reach.clear();
+    }
+    for (auto &slot : g_slots)
+      if (slot) slot->rooted = true;
+    g_gc_mode = kConservative;
+    g_fresh.clear();
+    g_fresh_pending = false;
+    g_epoch++;
+  }
+  for (uint32_t id : dead) ForgetIdentity(id, g_slots[id]->hash);
+  for (uint32_t id : refresh) {
+    auto weak = g_exports.find(id);
+    std::lock_guard<std::mutex> lock(g_gc_lock);
+    auto x = g_export_gc.find(id);
+    if (x == g_export_gc.end()) continue;
+    if (weak == g_exports.end() || weak->second.IsEmpty()) g_export_gc.erase(x);
+    else x->second->rep.Reset(isolate, weak->second.Get(isolate));
+  }
+  g_gc_stats.major_gcs++;
+  g_gc_stats.freed_imports += freed_imports;
+  if (g_cycle_new_exports >= 1024)
+    g_export_external_bytes = g_cycle_freed_exports * 8 < g_cycle_new_exports
+                                  ? kExportExternalFloor
+                                  : kExportExternalBytes;
+  g_cycle_new_exports = 0;
+  if (g_gc_trace) {
+    std::fflush(stdout);
+    if (g_gc_cycle.analyzed)
+      std::fprintf(stderr,
+                   "[node-islands] gc %llu%s: exports %zu (native roots %zu, reach %zu, touched "
+                   "%zu), imports %zu (free %zu), walked %zu in %.3f ms; freed exports %llu, "
+                   "imports %llu\n",
+                   (unsigned long long)g_gc_stats.major_gcs,
+                   g_gc_cycle.incremental ? " (incremental)" : "", g_gc_cycle.exports,
+                   g_gc_cycle.rooted, g_gc_cycle.reach, g_gc_cycle.touched, g_gc_cycle.imports,
+                   g_gc_cycle.free, g_gc_cycle.visited, (double)g_gc_cycle.ns / 1e6,
+                   (unsigned long long)g_cycle_freed_exports, (unsigned long long)freed_imports);
+    else
+      std::fprintf(stderr,
+                   "[node-islands] gc %llu: not analyzed (every handle a root); freed exports "
+                   "%llu, imports %llu\n",
+                   (unsigned long long)g_gc_stats.major_gcs,
+                   (unsigned long long)g_cycle_freed_exports, (unsigned long long)freed_imports);
+  }
+  g_gc_cycle = {};
+  g_cycle_freed_exports = 0;
+}
+
+void GcStats(ScrNodeGcStats *out) {
+  *out = g_gc_stats;
+  out->live_exports = static_cast<uint32_t>(g_exports.size());
+  out->live_imports = g_live_handles;
+}
+
+bool StartCollector(Isolate *isolate) {
+  const char *trace = std::getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+  g_gc_trace = trace != nullptr && std::strstr(trace, "gc") != nullptr;
+  const char *mode = std::getenv("SCRIPTC_NODE_ISLANDS_GC");
+  g_gc_off = mode != nullptr && std::strcmp(mode, "off") == 0;
+  // Node creates every isolate with a CppHeap; the import table's traced
+  // references need one, or V8 would reclaim them at its first major GC.
+  g_cpp_heap = isolate->GetCppHeap();
+  if (g_cpp_heap == nullptr) return false;
+  g_roots = new cppgc::Persistent<Roots>(
+      cppgc::MakeGarbageCollected<Roots>(g_cpp_heap->GetAllocationHandle()));
+  g_fresh_root = new cppgc::Persistent<Fresh>(
+      cppgc::MakeGarbageCollected<Fresh>(g_cpp_heap->GetAllocationHandle()));
+  isolate->AddGCPrologueCallback(
+      OnGcPrologue, nullptr,
+      static_cast<v8::GCType>(v8::kGCTypeMarkSweepCompact | v8::kGCTypeIncrementalMarking));
+  isolate->AddGCEpilogueCallback(OnGcEpilogue, nullptr, v8::kGCTypeMarkSweepCompact);
+  return true;
+}
+
+void StopCollector(Isolate *isolate) {
+  if (g_roots == nullptr) return;
+  if (g_external_reported != 0) isolate->AdjustAmountOfExternalAllocatedMemory(-g_external_reported);
+  g_external_reported = 0;
+  isolate->RemoveGCPrologueCallback(OnGcPrologue, nullptr);
+  isolate->RemoveGCEpilogueCallback(OnGcEpilogue, nullptr);
+  delete g_roots;
+  delete g_fresh_root;
+  g_roots = nullptr;
+  g_fresh_root = nullptr;
+  g_carrier_template.Reset();
+  g_gc_key.Reset();
 }
 
 void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeValue *out) {
@@ -1577,6 +2085,7 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
     }
   }
   if (uint32_t export_id = ExportIdOf(isolate, context, v)) {
+    Touch(export_id);
     out->tag = SCR_NV_EXPORT;
     out->u.exp.id = export_id;
     return;
@@ -1715,7 +2224,14 @@ struct Op {
   Enter e;
   TryCatch try_catch;
   Op() : try_catch(e.isolate) {
-    if (g_entry_depth++ == 0) g_scratch.clear();
+    if (g_entry_depth++ == 0) {
+      g_scratch.clear();
+      // Representatives V8 collected since: the runtime drops their exports
+      // now (NI-8), whatever runs JavaScript next. The runtime holds nothing
+      // of theirs while it starts an operation: their values were reachable
+      // only through the table.
+      FlushReleasedExports();
+    }
   }
   ~Op() { g_entry_depth--; }
   // The operation's outcome: 0 and the result, or 1 and the thrown value.
@@ -2087,6 +2603,7 @@ const ScrNodeBridge kBridge = {
     LiveHandles,
     ExportSettle,
     SharedPush,
+    GcStats,
 };
 
 }  // namespace

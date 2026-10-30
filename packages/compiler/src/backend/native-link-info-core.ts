@@ -31,9 +31,28 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
+  /** The program asserts a record literal to a wider record type (a partial
+   * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
+   * Absent for every program without one, so their objects stay identical. */
+  recordViewPartial?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
+  /** writeFile's `flag` disposition or copyFile's mode argument:
+   * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
+  fsFlags?: boolean;
+  /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
+  strdecDyn?: boolean;
+  /** process.prependListener, stdin.isRaw or server.off: the
+   * SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and the
+   * SCR_NET_SERVER_OFF build of scr_net.c. */
+  processExtras?: boolean;
+  /** A write completion callback takes the error argument: links the
+   * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
+  streamWriteErrors?: boolean;
+  /** The program reaches the process output streams' write slot: links the
+   * SCR_STDIO_WRITE_SLOT build of the events unit. */
+  stdioWriteSlot?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
@@ -43,6 +62,9 @@ export interface NativeLinkFeatures {
   /** A module namespace boxed for typed code links
    * scr_module_namespace_dyn.c; absent (false) otherwise. */
   moduleNamespaceDyn?: boolean;
+  /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
+   * otherwise. */
+  primitiveWrapper?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
@@ -120,6 +142,12 @@ export interface NativeLinkFeatures {
    * scr_text_codec_dyn.c. */
   textCodecDyn: boolean;
   watch: boolean;
+  /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
+  watchFile: boolean;
+  /** A typed fs read whose bytes value the program can observe as a Buffer:
+   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
+   * brand keep the default object. */
+  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -144,6 +172,10 @@ export interface NativeLinkFeatures {
   x509: boolean;
   /** perf_hooks event-loop metrics: scr_perf_loop.c. */
   perfLoop: boolean;
+  /** Intl over ICU (scr_intl.c plus the ICU archive and its data
+   * file): the `icu.*` libCalls of the first slice. Absent (false) for
+   * programs without them, so their link features stay unchanged. */
+  intl?: boolean;
   tlsCa: boolean;
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
    * scr_webcrypto.c. */

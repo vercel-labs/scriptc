@@ -7,15 +7,6 @@ stdlib-fence.ts:17:23 - error SC2020: 'Object.assign' is part of the standard li
 
   hint: spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target literal-source shape (Object.assign({}, { ... }) IS the source literal) and merges INTO an index-signature record whose value slot every source value enters — other aliased targets are real mutation, and a function target (Object.assign(fn, { prop })) is a function-with-properties value the model cannot represent: bind the property separately
 
-stdlib-fence.ts:18:14 - error SC2020: 'Reflect.has' is part of the standard library types but has no scriptc lowering yet
-
-  17 | const aliasedAssign = Object.assign(merged, { b: 2 }); // aliased targets stay fenced (real mutation of a live object)
-  18 | const refl = Reflect.has({ a: 1 }, "a");
-     |              ^~~~~~~~~~~
-  19 | const parsedMs = Date.parse;
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
 stdlib-fence.ts:19:18 - error SC2020: 'Date.parse' is part of the standard library types but has no scriptc lowering yet
 
   18 | const refl = Reflect.has({ a: 1 }, "a");
@@ -32,7 +23,7 @@ stdlib-fence.ts:20:7 - error SC2020: 'NumberFormat' is part of the standard libr
      |       ^~~
   21 | 
 
-  hint: Intl formatter values have no representation — the COMPOSED en-US forms lower: new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default options; the rest is ICU locale data the binary does not carry
+  hint: Intl formatter values have no representation — the COMPOSED forms lower: new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and x.toLocaleString() with default options, d.toLocaleString(), d.toLocaleTimeString(), and Intl.Segmenter with grapheme or word granularity; the formatter objects themselves (locale negotiation, resolvedOptions, options bags) remain unsupported
 
 stdlib-fence.ts:20:13 - error SC2020: 'new Intl.NumberFormat' is part of the standard library types but has no scriptc lowering yet
 
@@ -77,14 +68,14 @@ stdlib-fence.ts:39:31 - error SC1090: '.split()' on a 'RegExp | string' separato
      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~
   40 | const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
 
-stdlib-fence.ts:41:19 - error SC2020: 'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:41:43 - error SC2020: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
 
   40 | const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
-  41 | const localized = (1234.5).toLocaleString();
-     |                   ^~~~~~~~~~~~~~~~~~~~~~~~~
+  41 | const localized = (1234.5).toLocaleString("de-DE");
+     |                                           ^~~~~~~
   42 | // Unlowered call FORMS of lowered members. (push is fully variadic now —
 
-  hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")
+  hint: what lowers is the default locale (no argument) and the composed en-US form — other locales are ICU data the binary does not negotiate yet
 
 stdlib-fence.ts:47:1 - error SC2020: '.forEach with 2 arguments' is part of the standard library types but has no scriptc lowering yet
 

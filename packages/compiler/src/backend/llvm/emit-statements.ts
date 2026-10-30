@@ -1147,6 +1147,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         (countedLoop?.guarded || pairedLoop?.guarded) &&
         !LOOPS.of(emitter).provenCountedGuards.has(s)
       ) {
+        // A function that emits each loop once takes only the copy without
+        // the integer form, which needs no safety test.
+        if (LOOPS.of(emitter).plainLoops) {
+          LOOPS.of(emitter).countedLoopsEnabled = false;
+          emitSlowCopy(emitter, s);
+          LOOPS.of(emitter).countedLoopsEnabled = true;
+          break;
+        }
         const safe = countedLoop
           ? emitCountedLoopSafety(emitter, countedLoop)
           : emitPairedLoopSafety(emitter, pairedLoop!);
@@ -1278,26 +1286,26 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         }
       };
       // A counted loop over typed arrays, or a loop to a typed array's
-      // length, polls between blocks of WORKER_POLL_BLOCK iterations instead
+      // length, polls between blocks of workerPollBlock iterations instead
       // of in its body: the inner loop over a block then has no exit
       // besides its own bound, which LLVM can vectorize. A typed
       // array's length is fixed, so each block can take it as its limit when
       // the loop does not assign the array's binding.
       //
       // Inside another loop of this function, which polls at least once
-      // every WORKER_POLL_BLOCK of its own iterations, a loop needs less:
+      // every workerPollBlock of its own iterations, a loop needs less:
       // - a loop whose counters' ranges bound its runs, and those of the
-      //   loops in its body, to WORKER_POLL_BLOCK^2 needs no poll;
+      //   loops in its body, to workerPollBlock^2 needs no poll;
       // - an innermost counted loop is strip-mined, typed arrays or not,
       //   and does not poll after its last block. A run of at most
-      //   WORKER_POLL_BLOCK iterations then never polls, and the countdown
+      //   workerPollBlock iterations then never polls, and the countdown
       //   leaves its body. A run of at most WORKER_UNPOLLED_RUN iterations
       //   is one block, polled once as it leaves.
+      const pollBlock = workerPollBlock(emitter);
       const enclosed =
         emitter.mod.workers === true &&
         emitter.jumpTargets.some((target) => target.kind === "loop");
-      const bounded =
-        enclosed && boundedLoopRuns(emitter, s) <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK;
+      const bounded = enclosed && boundedLoopRuns(emitter, s) <= pollBlock * pollBlock;
       const innermost = enclosed && !containsLoop(s.body);
       const stripMined =
         !bounded &&
@@ -1305,7 +1313,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         integerSlot !== null &&
         ((countedLoop !== null &&
           countedLimit !== null &&
-          Math.abs(countedLoop.step) * WORKER_POLL_BLOCK <= 2 ** 52) ||
+          Math.abs(countedLoop.step) * pollBlock <= 2 ** 52) ||
           (integerLoop !== null && integerArrayLoop === null && integerLoop.stableReceiver)) &&
         emitter.workerLoopPolls(s) &&
         (loopAccessesTypedArrays(s) || (countedLoop !== null && innermost));
@@ -1314,10 +1322,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // step on each side, has a run whose length its counters fix on entry.
       // With a small body, a run of at most WORKER_UNPOLLED_RUN steps takes a
       // plain copy of the loop without a poll, which polls once as it leaves
-      // when it ran more than WORKER_POLL_BLOCK steps, like a strip-mined run;
+      // when it ran more than workerPollBlock steps, like a strip-mined run;
       // longer runs take the loop as it is emitted otherwise.
       const shortRuns: { stride: number; left: () => string } | null =
         !innermost ||
+        LOOPS.of(emitter).plainLoops ||
         bounded ||
         capturedLets.length > 0 ||
         !emitter.workerLoopPolls(s) ||
@@ -1491,7 +1500,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           emitPlainLoop(shortEnd, null);
           // A run longer than one block polls once as it leaves.
           B.startBlock(shortEnd);
-          B.line(`${pollsAfter} = icmp sgt i64 ${left}, ${shortRuns.stride * WORKER_POLL_BLOCK}`);
+          B.line(`${pollsAfter} = icmp sgt i64 ${left}, ${shortRuns.stride * pollBlock}`);
           B.condBr(pollsAfter, shortPoll, exit);
           B.startBlock(shortPoll);
           emitter.emitWorkerPoll();
@@ -2811,8 +2820,15 @@ function emitInt32KindLoop(
 
 /** At the top of a loop copy's header: lets a speculative loop find its
  * ordinary copy's header, and keeps its third copy out of the loop. */
-/** Iterations between cancellation polls of a strip-mined counted loop. */
-const WORKER_POLL_BLOCK = 64;
+/** Iterations between cancellation polls of a strip-mined counted loop. A
+ * block holds at least one step of the vectorized loop over bytes, so that
+ * a full block runs vector code: 64 iterations at the baseline (16-byte
+ * vectors, interleaved 4 times), and 128 when the program's code is compiled
+ * for x86-64-v3 or above, whose vectors take 32 bytes. */
+function workerPollBlock(emitter: LlEmitter): number {
+  const cpu = emitter.targetCpu;
+  return emitter.cpuDispatch || cpu === "x86-64-v3" || cpu === "x86-64-v4" ? 128 : 64;
+}
 
 /** The longest run of a strip-mined loop inside another loop that polls
  * only as it leaves. */
@@ -2855,7 +2871,8 @@ function boundedLoopRuns(emitter: LlEmitter, loop: IrStmt): number {
     if (stepped && range && exactSteps(range, stepped.step))
       trips = Math.floor((range.max - range.min) / Math.abs(stepped.step)) + 1;
   }
-  if (!(trips <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK)) return Infinity;
+  const pollBlock = workerPollBlock(emitter);
+  if (!(trips <= pollBlock * pollBlock)) return Infinity;
   let nested = 0;
   const visit = (s: IrStmt): boolean => {
     if (s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf") {
@@ -2909,17 +2926,17 @@ interface StripMinedCounter {
   limit: () => string;
 }
 
-/** A counted `for` loop of a worker program as blocks of WORKER_POLL_BLOCK
+/** A counted `for` loop of a worker program as blocks of workerPollBlock
  * iterations, with the cancellation poll between blocks: the outer header
  * tests the counter against the loop's limit, each block runs the body up
- * to the nearer of the limit and WORKER_POLL_BLOCK steps on, and the poll
+ * to the nearer of the limit and workerPollBlock steps on, and the poll
  * follows the block. It polls once per block, and the inner loop's only
  * exit besides `break` and `return` is its bound.
  *
  * With `runSlot` (for a loop that another loop of the function encloses), a
  * block that ends at the limit leaves the loop without polling, and a run
  * of at most WORKER_UNPOLLED_RUN iterations is one block, polled once as
- * it leaves when it took more than WORKER_POLL_BLOCK iterations. `runSlot`
+ * it leaves when it took more than workerPollBlock iterations. `runSlot`
  * holds whether the current block is such a run. */
 function emitStripMinedCountedLoop(
   emitter: LlEmitter,
@@ -2932,6 +2949,7 @@ function emitStripMinedCountedLoop(
   const B = emitter.B;
   const { slot, type, signed, step } = counter;
   const ascending = step > 0;
+  const pollBlock = workerPollBlock(emitter);
   const compare = !signed ? "ult" : ascending ? "slt" : "sgt";
   const saturating = `llvm.${signed ? "sadd" : "uadd"}.sat.${type}`;
   const nearer = `llvm.${!signed ? "umin" : ascending ? "smin" : "smax"}.${type}`;
@@ -2956,9 +2974,7 @@ function emitStripMinedCountedLoop(
   B.startBlock(block);
   const stepped = B.tmp();
   const bound = B.tmp();
-  B.line(
-    `${stepped} = call ${type} @${saturating}(${type} ${start}, ${type} ${step * WORKER_POLL_BLOCK})`,
-  );
+  B.line(`${stepped} = call ${type} @${saturating}(${type} ${start}, ${type} ${step * pollBlock})`);
   B.line(`${bound} = call ${type} @${nearer}(${type} ${stepped}, ${type} ${limit})`);
   if (runSlot === null) B.line(`store ${type} ${bound}, ptr ${boundSlot}`);
   else {
@@ -2975,7 +2991,7 @@ function emitStripMinedCountedLoop(
         : `${left} = sub ${wrap} ${type} ${start}, ${limit}`,
     );
     B.line(`${whole} = icmp ule ${type} ${left}, ${stride * WORKER_UNPOLLED_RUN}`);
-    B.line(`${long} = icmp ugt ${type} ${left}, ${stride * WORKER_POLL_BLOCK}`);
+    B.line(`${long} = icmp ugt ${type} ${left}, ${stride * pollBlock}`);
     B.line(`${polled} = and i1 ${whole}, ${long}`);
     B.line(`${end} = select i1 ${whole}, ${type} ${limit}, ${type} ${bound}`);
     B.line(`store ${type} ${end}, ptr ${boundSlot}`);

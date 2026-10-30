@@ -2593,7 +2593,7 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
     char *msg = malloc(cap);
     if (!msg) scr_child_oom();
     int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -3208,10 +3208,9 @@ static void scr_exec_envp_free(char **envp);
  * next entry. The last such failure is EACCES if any candidate was denied,
  * else ENOENT. Relative entries are resolved by the child, which starts in
  * `cwd`. Returns posix_spawn's error number. */
-static int scr_spawn_command(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
-                             const posix_spawnattr_t *attr, char *const *argv,
-                             char *const *envp, const char *cwd) {
-  (void)cwd; /* the file actions change into it before the exec */
+static int scr_spawn_resolved(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
+                              const posix_spawnattr_t *attr, char *const *argv,
+                              char *const *envp) {
   if (envp == NULL) return posix_spawnp(pid, file, fa, attr, argv, environ);
   if (strchr(file, '/')) return posix_spawn(pid, file, fa, attr, argv, envp);
   const char *path = "/usr/bin:/bin";
@@ -3241,6 +3240,31 @@ static int scr_spawn_command(pid_t *pid, const char *file, const posix_spawn_fil
     dir = end + 1;
   }
   return denied ? EACCES : ENOENT;
+}
+
+/* scr_spawn_resolved with the child's SIGPIPE and SIGXFSZ at their default
+ * actions, as libuv's spawns start them: executables ignore both
+ * (scr_init), and an exec keeps ignored dispositions. `attr` may be NULL. */
+static int scr_spawn_command(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
+                             posix_spawnattr_t *attr, char *const *argv, char *const *envp,
+                             const char *cwd) {
+  (void)cwd; /* the file actions change into it before the exec */
+  posix_spawnattr_t local;
+  if (attr == NULL) {
+    posix_spawnattr_init(&local);
+    attr = &local;
+  }
+  sigset_t defaults;
+  sigemptyset(&defaults);
+  sigaddset(&defaults, SIGPIPE);
+  sigaddset(&defaults, SIGXFSZ);
+  short flags = 0;
+  (void)posix_spawnattr_getflags(attr, &flags);
+  (void)posix_spawnattr_setsigdefault(attr, &defaults);
+  (void)posix_spawnattr_setflags(attr, (short)(flags | POSIX_SPAWN_SETSIGDEF));
+  int err = scr_spawn_resolved(pid, file, fa, attr, argv, envp);
+  if (attr == &local) posix_spawnattr_destroy(&local);
+  return err;
 }
 
 /* env_pairs: NULL inherits the parent's environment; else [k,v,...]
@@ -5462,7 +5486,7 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
     char *msg = malloc(cap);
     if (!msg) scr_child_oom();
     int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }

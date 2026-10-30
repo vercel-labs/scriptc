@@ -366,10 +366,13 @@ function overlaySiteClones(): number {
 
 function overlayJsFiles(analysis: ShapeAnalysis): ts.SourceFile[] {
   // Package JavaScript of packages that keep shapes on, and the program's
-  // own JavaScript files.
+  // own JavaScript files. Inference for the program's JavaScript alone
+  // (SCRIPTC_INFER_JS=1 without SCRIPTC_SHAPE_OVERLAY=1) leaves packages as
+  // they are.
   return analysis.files.filter((sf) => {
     if (sf.isDeclarationFile || !isJsSourceFile(sf)) return false;
     if (!isPackageJsFile(sf)) return !sf.fileName.includes("/node_modules/");
+    if (!shapeOverlayEnabled()) return false;
     const pkg = npmStaticPackageOfPath(sf.fileName);
     return pkg === null || !isShapelessPackage(pkg);
   });

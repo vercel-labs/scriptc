@@ -33,6 +33,9 @@
  *   O <oid> <flags> <plain-class>      an object (SCR_NVF_* flags)
  *   K <oid> <len>:<key> <value>        a data member of object <oid>
  *   R <oid>                            the module's value
+ *   E <len>:<key> <0|1> <len>:<value>  an env key the load read (absent: 0)
+ *   T <fd> <0|1>                       the isTTY state the load read
+ *   M <component>                      per-module mode (NI-7b): see below
  * where <value> is o<oid>, u, l, t, f, n<number> or s<len>:<bytes>. */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
@@ -45,6 +48,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #if !defined(_WIN32) && !defined(__wasi__)
 
@@ -76,8 +80,18 @@ typedef struct NbStub {
   ScrCaught *error; /* why it could not be reconciled */
 } NbStub;
 
+typedef struct {
+  const char *key, *value;
+  size_t key_len, value_len;
+  bool present;
+} NbEnv;
+
 typedef struct NbModule {
   char *path;
+  uint32_t component; /* per-module mode: modules evaluated together */
+  bool done;
+  NbEnv *env;
+  size_t nenv;
   char *snapshot; /* owns the strings the stubs point into */
   uint32_t root;
   uint32_t *order; /* stubs to reconcile after the root, parents first */
@@ -90,6 +104,12 @@ static size_t nb_stubs_cap = 0;
 static NbModule **nb_modules = NULL;
 static size_t nb_nmodules = 0, nb_modules_cap = 0;
 static bool nb_installed = false;
+/* Per-module mode (NI-7b, `M` records): Node starting does not evaluate
+ * every deferred module; each component evaluates on the first use of one
+ * of its stubs. The build chooses it only when every static island import
+ * is deferred, none mutates builtin state and no island module loads at a
+ * call site, so nothing but these stubs can reach the modules' objects. */
+static bool nb_lazy = false;
 static int nb_trace = -1;
 
 static bool nb_tracing(void) {
@@ -195,10 +215,63 @@ static ScrCaught *nb_changed(const NbModule *m) {
   return scr_exc_take();
 }
 
+/* A NUL-terminated copy (the snapshot's strings are length-delimited). */
+static char *nb_cstr(const char *s, size_t n) {
+  char *c = malloc(n + 1);
+  if (c == NULL) nb_oom();
+  memcpy(c, s, n);
+  c[n] = '\0';
+  return c;
+}
+
+static bool nb_env_matches(const NbEnv *e) {
+  char *key = nb_cstr(e->key, e->key_len);
+  const char *now = getenv(key);
+  free(key);
+  if (!e->present) return now == NULL;
+  return now != NULL && strlen(now) == e->value_len && memcmp(now, e->value, e->value_len) == 0;
+}
+
+/* The module evaluates against the environment it saw at its import
+ * position (the boot guard checked those values then): keys the program
+ * changed since are set back for the evaluation and restored after it. */
+static void nb_env_swap(NbModule *m, char **saved, bool restore) {
+  for (size_t i = 0; i < m->nenv; i++) {
+    NbEnv *e = &m->env[i];
+    char *key = nb_cstr(e->key, e->key_len);
+    if (!restore) {
+      const char *now = getenv(key);
+      saved[i] = now != NULL ? strdup(now) : NULL;
+      if (!nb_env_matches(e)) {
+        if (e->present) {
+          char *v = nb_cstr(e->value, e->value_len);
+          setenv(key, v, 1);
+          free(v);
+        } else {
+          unsetenv(key);
+        }
+      }
+    } else {
+      if (saved[i] != NULL) setenv(key, saved[i], 1);
+      else unsetenv(key);
+      free(saved[i]);
+    }
+    free(key);
+  }
+}
+
 static void nb_materialize(NbModule *m) {
+  if (m->done) return;
+  m->done = true;
+  if (nb_tracing()) fprintf(stderr, "[node-islands] evaluating deferred %s\n", m->path);
+  char **saved = m->nenv > 0 ? calloc(m->nenv, sizeof *saved) : NULL;
+  if (m->nenv > 0 && saved == NULL) nb_oom();
+  nb_env_swap(m, saved, false);
   ScrStr *path = scr_str_new(m->path, strlen(m->path));
   ScrDyn *real = scr_ni_require(path);
   scr_str_release(path);
+  nb_env_swap(m, saved, true);
+  free(saved);
   if (real == NULL) {
     m->error = scr_exc_take();
     return;
@@ -210,9 +283,23 @@ static void nb_materialize(NbModule *m) {
     m->error = nb_changed(m);
     return;
   }
+  /* Only stubs the program holds (their box has a reference besides this
+   * table's), and their parents, need their real values: a stub nobody
+   * took has no identity to keep, and reading its value would run getters
+   * the eager program never runs. Parents precede children in `order`. */
+  bool *needed = m->norder > 0 ? calloc(m->norder, sizeof *needed) : NULL;
+  if (m->norder > 0 && needed == NULL) nb_oom();
+  for (size_t i = m->norder; i-- > 0;) {
+    NbStub *s = nb_stub(m->order[i]);
+    if (s->box->rc > 1) needed[i] = true;
+    if (!needed[i]) continue;
+    for (size_t j = 0; j < i; j++)
+      if (m->order[j] == s->parent) needed[j] = true;
+  }
   for (size_t i = 0; i < m->norder; i++) {
     NbStub *s = nb_stub(m->order[i]);
     NbStub *parent = nb_stub(s->parent);
+    if (!needed[i]) continue;
     if (scr_ni_stub_of(s->box) == NULL) continue; /* reached through an earlier module */
     if (parent->error != NULL || scr_ni_stub_of(parent->box) != NULL) {
       s->error = scr_caught_retain(parent->error != NULL ? parent->error : m->error);
@@ -226,12 +313,23 @@ static void nb_materialize(NbModule *m) {
     if (!scr_ni_stub_reconcile(s->box, value)) s->error = nb_changed(m);
     scr_dyn_release(value);
   }
+  free(needed);
 }
 
 static void nb_started(void) {
+  if (nb_lazy) return; /* each component evaluates on first use */
   if (nb_tracing() && nb_nmodules > 0)
     fprintf(stderr, "[node-islands] Node started: evaluating %zu deferred module(s)\n", nb_nmodules);
   for (size_t i = 0; i < nb_nmodules; i++) nb_materialize(nb_modules[i]);
+}
+
+void scr_ni_boot_materialize(void *stub) {
+  NbModule *owner = ((NbStub *)stub)->module;
+  for (size_t i = 0; i < nb_nmodules; i++) {
+    NbModule *m = nb_modules[i];
+    if (m == owner || (owner->component != 0 && m->component == owner->component))
+      nb_materialize(m);
+  }
 }
 
 void scr_ni_boot_stub_failed(void *stub) {
@@ -277,6 +375,14 @@ ScrDyn *scr_ni_boot_member(void *stub, const char *key, size_t len) {
 
 bool scr_ni_boot_plain_class(void *stub) { return ((NbStub *)stub)->plain; }
 
+/* Whether the snapshot still describes the stub's value: its module has
+ * not evaluated. Before Node starts nothing has; in per-module mode, a
+ * component's objects are unreachable to any code until it evaluates. */
+bool scr_ni_boot_snapshot_valid(void *stub) {
+  NbStub *s = stub;
+  return !s->module->done && (nb_lazy || scr_ni_bridge_loaded() == NULL);
+}
+
 /* ── nodeIsland.defer ─────────────────────────────────────────────────── */
 
 static void nb_cleanup(void) {
@@ -295,6 +401,7 @@ static void nb_cleanup(void) {
     NbModule *m = nb_modules[i];
     if (m->error != NULL) scr_caught_release(m->error);
     free(m->order);
+    free(m->env);
     free(m->snapshot);
     free(m->path);
     free(m);
@@ -340,13 +447,40 @@ static NbStub *nb_new_stub(uint32_t oid, uint32_t flags, bool plain, NbModule *m
 }
 
 ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
-  if (scr_ni_bridge_loaded() != NULL) return nb_eager(path, "Node is already running");
-  nb_install();
-  /* Pass 1: the guards. */
+  /* Pass 1: the guards, and the mode. */
   NbCursor c = {snapshot->data, snapshot->data + snapshot->len, false};
+  bool lazy = false;
   while (c.p < c.end && !c.bad) {
     char tag = *c.p++;
-    if (tag == 'G') {
+    if (tag == 'M') lazy = true;
+    nb_line_end(&c);
+  }
+  /* In per-module mode a module can stay deferred while Node runs. */
+  if (!lazy && scr_ni_bridge_loaded() != NULL) return nb_eager(path, "Node is already running");
+  nb_install();
+  c = (NbCursor){snapshot->data, snapshot->data + snapshot->len, false};
+  while (c.p < c.end && !c.bad) {
+    char tag = *c.p++;
+    if (tag == 'E') {
+      NbEnv e = {0};
+      e.key = nb_str(&c, &e.key_len);
+      e.present = nb_uint(&c) != 0;
+      e.value = nb_str(&c, &e.value_len);
+      if (c.bad) break;
+      if (!nb_env_matches(&e)) {
+        if (nb_tracing())
+          fprintf(stderr, "[node-islands] boot guard failed: env %.*s\n", (int)e.key_len, e.key);
+        return nb_eager(path, "a boot guard failed");
+      }
+    } else if (tag == 'T') {
+      int fd = (int)nb_uint(&c);
+      bool was = nb_uint(&c) != 0;
+      if (c.bad) break;
+      if ((isatty(fd) == 1) != was) {
+        if (nb_tracing()) fprintf(stderr, "[node-islands] boot guard failed: isatty(%d)\n", fd);
+        return nb_eager(path, "a boot guard failed");
+      }
+    } else if (tag == 'G') {
       size_t len;
       const char *file = nb_str(&c, &len);
       uint64_t size = nb_uint(&c);
@@ -409,11 +543,26 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       }
     } else if (tag == 'R') {
       m->root = (uint32_t)nb_uint(&c);
+    } else if (tag == 'M') {
+      m->component = (uint32_t)nb_uint(&c);
+      nb_lazy = true;
+    } else if (tag == 'E') {
+      NbEnv e = {0};
+      e.key = nb_str(&c, &e.key_len);
+      e.present = nb_uint(&c) != 0;
+      e.value = nb_str(&c, &e.value_len);
+      if (!c.bad) {
+        NbEnv *grown = realloc(m->env, (m->nenv + 1) * sizeof *grown);
+        if (grown == NULL) nb_oom();
+        m->env = grown;
+        m->env[m->nenv++] = e;
+      }
     }
     nb_line_end(&c);
   }
   NbStub *root = nb_stub(m->root);
   if (c.bad || root == NULL) {
+    free(m->env);
     free(m->snapshot);
     free(m->path);
     free(m);

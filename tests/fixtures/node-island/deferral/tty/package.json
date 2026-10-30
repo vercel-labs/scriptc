@@ -1,0 +1,1 @@
+{ "name": "deferral-tty", "private": true, "type": "module", "scriptc": { "packages": { "tty-pkg": "node" } } }

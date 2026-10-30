@@ -1,8 +1,7 @@
 // Object spreads of node:path's namespaces copy the exports. The ES module
 // namespace has its keys sorted and also `default`, the module object;
 // posix, win32 and the default import are module objects, in Node's member
-// order. The copies hold the module's own functions. The key lists leave out
-// format and parse, which have no function values yet.
+// order. The copies hold the module's own functions.
 import * as path from "node:path";
 import defaultPath, { posix, win32 } from "node:path";
 
@@ -10,7 +9,7 @@ const fromNamespace = { ...path };
 const fromDefault = { ...defaultPath };
 const fromPosix = { ...posix };
 const fromWin32 = { ...win32 };
-const keys = (copy) => JSON.stringify(Object.keys(copy).filter((key) => key !== "format" && key !== "parse"));
+const keys = (copy) => JSON.stringify(Object.keys(copy));
 console.log(keys(fromNamespace));
 console.log(keys(fromPosix));
 console.log(keys(fromDefault) === keys(fromPosix));

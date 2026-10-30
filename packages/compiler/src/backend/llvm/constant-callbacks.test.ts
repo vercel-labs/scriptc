@@ -1,7 +1,10 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
+  BYTES_U8,
+  DYN,
   F64,
+  STRING,
   VOID,
   funcOf,
   type IrExpr,
@@ -258,6 +261,59 @@ test("receiver elision admits only synchronous receiver-free work", () => {
   fn.body.shift();
   fn.async = true;
   expect(callbackIgnoresReceiver(fn)).toBe(false);
+});
+
+test("receiver elision admits library work that runs no user code", () => {
+  const str: IrExpr = { kind: "strLit", value: "a", type: STRING, loc };
+  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const dyn = ref("d", DYN);
+  const ignores = (expr: IrExpr): boolean => {
+    const fn = fixture().functions[0]!;
+    fn.body.unshift({ kind: "exprStmt", expr, loc });
+    return callbackIgnoresReceiver(fn);
+  };
+  const lib = (fn: string, args: IrExpr[]): IrExpr =>
+    ({ kind: "libCall", fn, args, type: F64, loc }) as IrExpr;
+  const intrinsic = (name: string, args: IrExpr[]): IrExpr =>
+    ({ kind: "intrinsic", name, args, type: VOID, loc }) as IrExpr;
+  // String and number members over primitives; a callback operand may run.
+  expect(ignores(lib("string.lastIndexOfFrom", [str, str, num(0)]))).toBe(true);
+  expect(ignores(lib("num.sameValue", [num(0), num(1)]))).toBe(true);
+  expect(ignores(lib("string.lastIndexOf", [str, closure("predicate")]))).toBe(false);
+  expect(ignores(lib("perf.now", []))).toBe(true);
+  // `new Error(message, options)` with a primitive message and no options.
+  const message: IrExpr = { kind: "dynFrom", value: str, type: DYN, loc };
+  expect(ignores(lib("error.newOptions", [message, message]))).toBe(true);
+  expect(ignores(lib("error.newOptions", [message, dyn]))).toBe(false);
+  // The module binding check only throws; console output may inspect.
+  const initialized: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+  expect(ignores(intrinsic("module.tdzCheck", [initialized, str]))).toBe(true);
+  expect(ignores(intrinsic("console.log", [dyn]))).toBe(false);
+  // A typed array built from nothing or a typed source; a dynamic source
+  // may be an iterable.
+  const bytes = (source: IrExpr | null): IrExpr => ({
+    kind: "bytesNew",
+    source,
+    type: BYTES_U8,
+    loc,
+  });
+  expect(ignores(bytes(null))).toBe(true);
+  expect(ignores(bytes(dyn))).toBe(false);
+});
+
+test("receiver elision admits array for-of loops", () => {
+  const fn = fixture().functions[0]!;
+  const numbers = { kind: "array", elem: F64 } as const;
+  const one: IrExpr = { kind: "numLit", value: 1, type: F64, loc };
+  fn.locals.push({ id: "x", name: "x", type: F64, mutable: false });
+  fn.body.unshift({
+    kind: "forOf",
+    localId: "x",
+    iterable: { kind: "arrayLit", elems: [one], type: numbers, loc },
+    body: [],
+    loc,
+  });
+  expect(callbackIgnoresReceiver(fn)).toBe(true);
 });
 
 function callsOf(name: string, callee: string, extra: IrStmt[] = []): IrFunction {

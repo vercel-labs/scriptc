@@ -131,6 +131,34 @@ export function applyWidthLift(
         throw new InternalCompilerError("lowerer bug: planned retag lift failed to intern");
       return { kind: "call", callee: retag, args: [value], type: dst, loc };
     }
+    case "checkedRetag": {
+      if (dst.kind !== "union" || value.type.kind !== "union")
+        throw new InternalCompilerError("lowerer bug: checked retag lift shape");
+      const retag = lowerer.unionRetagHelper(
+        value.type.unionId,
+        dst.unionId,
+        loc,
+        new Set(lift.trappable),
+      );
+      if (!retag)
+        throw new InternalCompilerError("lowerer bug: planned checked retag lift failed to intern");
+      return { kind: "call", callee: retag, args: [value], type: dst, loc };
+    }
+    case "funcAdaptChecked": {
+      if (dst.kind !== "func" || value.type.kind !== "func")
+        throw new InternalCompilerError("lowerer bug: checked funcAdapt lift shape");
+      lowerer.coercions.checkedRetags++;
+      try {
+        const adapter = lowerer.funcCoerceAdapter(value.type, dst, loc);
+        if (!adapter)
+          throw new InternalCompilerError(
+            "lowerer bug: planned checked funcAdapt lift failed to intern",
+          );
+        return { kind: "call", callee: adapter, args: [value], type: dst, loc };
+      } finally {
+        lowerer.coercions.checkedRetags--;
+      }
+    }
     case "unitRetag": {
       if (dst.kind !== "union" || value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: unit retag lift shape");
@@ -527,11 +555,16 @@ export function recordWidthHelper(
   lowerer.coercionOriginNode = null;
   lowerer.coercionFieldOrigin = null;
   try {
-    lowerer.liftedFns.push(
-      buildRecordProjection(lowerer, name, fromT, to, plan, loc, (field) =>
-        declared === null ? null : fieldOrigin(lowerer.checker, declared, field),
-      ),
-    );
+    lowerer.coercions.methodFieldDepth++;
+    try {
+      lowerer.liftedFns.push(
+        buildRecordProjection(lowerer, name, fromT, to, plan, loc, (field) =>
+          declared === null ? null : fieldOrigin(lowerer.checker, declared, field),
+        ),
+      );
+    } finally {
+      lowerer.coercions.methodFieldDepth--;
+    }
   } finally {
     lowerer.coercionOriginNode = outerNode;
     lowerer.coercionFieldOrigin = outerField;

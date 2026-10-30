@@ -563,6 +563,9 @@ function helperProfileMatch(match: NativeProfileMatch): Record<string, number> {
     missing: match.missing,
     recovered: match.recovered,
     unknown_partitions: match.unknownPartitions,
+    ...(match.annotatedCounts === undefined || match.mismatchedCounts === undefined
+      ? {}
+      : { annotated_counts: match.annotatedCounts, mismatched_counts: match.mismatchedCounts }),
   };
 }
 

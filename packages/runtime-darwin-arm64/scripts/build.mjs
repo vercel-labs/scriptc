@@ -364,7 +364,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: RUNTIME_PACK_MATRIX.target,
-      runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
+      runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
       compiler: {
         command: compiler,
         identity: compilerVersion,
@@ -376,6 +376,8 @@ async function build() {
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
           "SCR_STDIO_EXTENDED",
+          "SCR_STREAM_WRITE_ERRORS",
+          "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",

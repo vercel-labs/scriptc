@@ -934,10 +934,12 @@ static void sf_stream_release(SfStream *s) {
   if (!s) return;
   if (--s->rc > 0) {
 #ifdef SCR_HANDLE_CLASSES
-    /* Only the web view's source still holds the stream: the view no
-     * longer needs to be found from it, and the view, which reads it,
-     * keeps it while anything else holds the view. */
-    if (s->rc == 1 && s->view_source_live && s->web_view) {
+    /* Only the web view's source still holds the stream, with the transfer
+     * that fills it while the response runs: the view no longer needs to be
+     * found from it, and the view, which reads it, keeps it while anything
+     * else holds the view. A view nothing else holds releases its source,
+     * and the stream then takes the unobserved-response discard below. */
+    if (s->rc == (s->response_owner ? 2u : 1u) && s->view_source_live && s->web_view) {
       ScrDyn *view = s->web_view, *lock = s->web_view_lock;
       s->web_view = s->web_view_lock = NULL;
       scr_dyn_release(lock);

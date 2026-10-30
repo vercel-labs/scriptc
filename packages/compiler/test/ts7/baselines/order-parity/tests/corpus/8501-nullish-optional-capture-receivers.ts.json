@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8501-nullish-optional-capture-receivers.ts"
+ ],
+ "diags": []
+}

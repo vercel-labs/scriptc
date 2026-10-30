@@ -234,6 +234,17 @@ function powerOfTwo(e: IrExpr): boolean {
 /** Typed-array element kinds whose elements are integers. */
 const INTEGER_ELEMENTS = new Set(["u8", "u8c", "i8", "u16", "i16", "u32", "i32"]);
 
+/** The values of each integer element kind. */
+const ELEMENT_RANGES: Record<string, { min: number; max: number }> = {
+  u8: { min: 0, max: 255 },
+  u8c: { min: 0, max: 255 },
+  i8: { min: -128, max: 127 },
+  u16: { min: 0, max: 65535 },
+  i16: { min: -32768, max: 32767 },
+  u32: { min: 0, max: 2 ** 32 - 1 },
+  i32: { min: -(2 ** 31), max: 2 ** 31 - 1 },
+};
+
 /** A typed-array element read of an integer kind with no effect: an
  * out-of-range read gives NaN, which fails its check. Float elements would
  * only bail. */
@@ -904,6 +915,17 @@ export function emitSafeIntegerCheck(host: LlvmEmitterContext, value: string): [
   return [integer, ok];
 }
 
+/** The condition that a bounded value's exponent is above `limit`. A
+ * value test it replaces can fail only past that limit; testing the
+ * exponent alone, which is usually the same in every iteration of a loop,
+ * keeps the value out of the test. Past the limit the write bails to the
+ * double copy, also for a value the replaced test would have passed. */
+function exponentAbove(host: LlvmEmitterContext, bound: MaskBound, limit: number): string {
+  const above = host.B.tmp();
+  host.B.line(`${above} = icmp sgt i64 ${bound.exponent}, ${limit}`);
+  return above;
+}
+
 /** A condition that is true when an i64 lies outside the safe range. */
 function unsafeInteger(host: LlvmEmitterContext, value: string): string {
   const B = host.B;
@@ -930,6 +952,29 @@ function outsideRange(host: LlvmEmitterContext, value: string, low: number, high
     outside = outside === "false" ? above : either(host, outside, above);
   }
   return outside;
+}
+
+/** The range of an operand once its speculative evaluation continued: a
+ * literal's value, the range analysis' proof (well inside the safe
+ * integers), or for an integer element read, which bails on the NaN of an
+ * out-of-range index, the element kind's values. */
+function operandRange(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+): { min: number; max: number } | undefined {
+  const range = staticRange(host, e);
+  if (range || !isSpeculativeByteRead(e) || e.kind !== "bytesIntrinsic") return range;
+  return e.receiver.type.kind === "bytes" ? ELEMENT_RANGES[e.receiver.type.elem] : undefined;
+}
+
+/** An i64 the speculative evaluation has bounded to [0, 2^(exponent +
+ * shift)): the floor-mod of a value by 2^exponent, shifted left by `shift`.
+ * `exponent` is an i64 already checked to be in [0, 52]; in a loop it is
+ * usually the same value on every iteration, so a test on it alone is
+ * loop-invariant. */
+interface MaskBound {
+  exponent: string;
+  shift: number;
 }
 
 /** A literal's value or the range analysis' proof for an expression whose
@@ -962,6 +1007,7 @@ export function emitSpeculativeInteger(
   bail: (condition: string) => void,
   reads: ReadonlyMap<IrExpr, LlValue> = new Map(),
   integral = false,
+  bounds = new Map<string, MaskBound>(),
 ): string {
   const B = host.B;
   // A value the range analysis already proves takes the ordinary integer
@@ -1000,12 +1046,13 @@ export function emitSpeculativeInteger(
       // bits, also for a negative value: in [0, 2^n), and never -0.
       const mod = floorModPowerOfTwo(e);
       if (mod) {
-        const value = emitSpeculativeInteger(host, mod.value, bail, reads, integral);
+        const value = emitSpeculativeInteger(host, mod.value, bail, reads, integral, bounds);
         const n = exponentOf(host, mod.power, bail, reads, integral);
         const mask = B.tmp(),
           low = B.tmp();
         B.line(`${mask} = sub i64 ${shiftOne(host, n)}, 1`);
         B.line(`${low} = and i64 ${value}, ${mask}`);
+        bounds.set(low, { exponent: n, shift: 0 });
         return low;
       }
       // A product with 2^n shifts: it is safe iff the other factor's
@@ -1013,8 +1060,19 @@ export function emitSpeculativeInteger(
       // integer and a positive power is +0.
       if (e.op === "*" && (powerOfTwo(e.right) || powerOfTwo(e.left))) {
         const [factor, power] = powerOfTwo(e.right) ? [e.left, e.right] : [e.right, e.left];
-        const value = emitSpeculativeInteger(host, factor, bail, reads, integral);
+        const value = emitSpeculativeInteger(host, factor, bail, reads, integral, bounds);
         const n = exponentOf(host, power, bail, reads, integral);
+        // A factor below 2^(m + s) times 2^k is below 2^(m + s + k), so
+        // safe when m + s + k <= 53.
+        const bound = bounds.get(value);
+        const k = power.kind === "numLit" ? exactPowerOfTwo(power.value) : null;
+        if (bound && k !== null) {
+          bail(exponentAbove(host, bound, 53 - bound.shift - k));
+          const product = B.tmp();
+          B.line(`${product} = shl nuw nsw i64 ${value}, ${n}`);
+          bounds.set(product, { exponent: bound.exponent, shift: bound.shift + k });
+          return product;
+        }
         const limit = B.tmp(),
           magnitude = B.tmp(),
           outside = B.tmp(),
@@ -1027,16 +1085,24 @@ export function emitSpeculativeInteger(
         B.line(`${product} = shl nsw i64 ${value}, ${n}`);
         return product;
       }
-      const a = emitSpeculativeInteger(host, e.left, bail, reads, integral);
-      const b = emitSpeculativeInteger(host, e.right, bail, reads, integral);
+      const a = emitSpeculativeInteger(host, e.left, bail, reads, integral, bounds);
+      const b = emitSpeculativeInteger(host, e.right, bail, reads, integral, bounds);
       const result = B.tmp();
       if (e.op === "+" || e.op === "-") {
         // With one operand's range known, the other is checked against the
         // narrowed bounds before the operation: the check then depends on
         // no new value, and LLVM keeps the operation itself simple.
-        const right = staticRange(host, e.right);
-        const left = e.op === "+" ? staticRange(host, e.left) : undefined;
-        if (right) {
+        const right = operandRange(host, e.right);
+        const left = e.op === "+" ? operandRange(host, e.left) : undefined;
+        // A bounded operand, in [0, 2^(m + s)), plus one in [lo, hi] with
+        // |lo|, hi <= 2^52 is safe when m + s <= 52.
+        const bound = (value: string): MaskBound | undefined =>
+          e.op === "+" ? bounds.get(value) : undefined;
+        const aBound = right ? bound(a) : undefined;
+        const bBound = !right && left ? bound(b) : undefined;
+        if (aBound) bail(exponentAbove(host, aBound, 52 - aBound.shift));
+        else if (bBound) bail(exponentAbove(host, bBound, 52 - bBound.shift));
+        else if (right) {
           // a + b with b in [lo, hi] is safe iff a in [-SAFE - lo, SAFE - hi];
           // a - b iff a in [-SAFE + hi, SAFE + lo].
           const low = e.op === "+" ? -SAFE - right.min : -SAFE + right.max;

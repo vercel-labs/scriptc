@@ -10,7 +10,5 @@
       <- SC1090 reflection at tests/coverage-fixtures/tier-demotions.ts:10:1: assignment to non-variables are not supported yet
       -> function <top level> turns dynamic
     function <top level>  tests/coverage-fixtures/tier-demotions.ts:1:1 (1 site inside)
-    function precise  tests/coverage-fixtures/tier-demotions.ts:21:1 (1 site inside)
-    binding n in precise  tests/coverage-fixtures/tier-demotions.ts:21:18 (1 request)
-      <- SC2020 operation at tests/coverage-fixtures/tier-demotions.ts:22:10: 'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
-      -> function precise turns dynamic
+    function precise  tests/coverage-fixtures/tier-demotions.ts:21:1 (1 request, 1 site inside)
+      <- SC2020 operation at tests/coverage-fixtures/tier-demotions.ts:22:27: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet

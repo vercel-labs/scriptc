@@ -42,6 +42,13 @@ export type WidthLift =
   | { how: "dynOut" }
   | { how: "upcast" }
   | { how: "funcAdapt" }
+  /** A method field whose parameter records differ per instantiation
+   * (`Provider<"x">` into `Provider<Api>`, admitted by method bivariance):
+   * funcCoerceAdapter built in checked mode. Record-field planning only. */
+  | { how: "funcAdaptChecked" }
+  /** A union into a union where the `trappable` source arms have no home:
+   * they throw the catchable TypeError. Checked mode only. */
+  | { how: "checkedRetag"; trappable: number[] }
   /** A promise whose payload widens (`Promise<void>` into `Promise<unknown>`):
    * the checked payload widening coerceToExpected applies at a promise slot,
    * which keeps the promise's identity and settlement turn. */

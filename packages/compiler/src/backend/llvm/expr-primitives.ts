@@ -7,9 +7,16 @@ import {
 } from "./inline-arrays.js";
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
+import {
+  isRefCounted,
+  recordTextCodecClass,
+  type IrExpr,
+  type IrStrCmpOp,
+  type IrType,
+} from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
+import { recordViewTestLines } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
@@ -25,6 +32,7 @@ import {
   int32Number,
   integerNumber,
   narrowInteger,
+  uint32Number,
   wideArithmetic,
   widenInteger,
   type LlInteger,
@@ -126,6 +134,16 @@ function emitIntegerOrNaNCompare(
     result = combined;
   }
   return result;
+}
+
+/** A `>>>` result, or a sum, difference or product with one as an operand. */
+function unsignedShiftArithmetic(e: IrExpr): boolean {
+  if (e.kind !== "bin") return false;
+  if (e.op === ">>>") return true;
+  return (
+    (e.op === "+" || e.op === "-" || e.op === "*") &&
+    (unsignedShiftArithmetic(e.left) || unsignedShiftArithmetic(e.right))
+  );
 }
 
 export function emitLiteralExpr(
@@ -381,6 +399,28 @@ export function emitOperatorExpr(
               `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nsw i32 ${narrowInteger(host, li)}, ${narrowInteger(host, ri)}`,
             );
             return int32Number(host, result, range, e.type);
+          }
+          if (
+            range &&
+            withinUint32(range) &&
+            withinUint32(li.range) &&
+            withinUint32(ri.range) &&
+            (unsignedShiftArithmetic(e.left) || unsignedShiftArithmetic(e.right))
+          ) {
+            // A uint32 result built on a `>>>` result, such as
+            // `(x >>> 1) + i`: 32-bit arithmetic that cannot wrap. Its double
+            // converts from the 32 bits, which vectorizes to three
+            // instructions on x86-64 without AVX-512, where the unsigned
+            // 64-bit conversion takes six. Sums of counters and literals,
+            // such as `i + 1`, keep the 64-bit form, whose conversion LLVM
+            // folds with their uses as indexes.
+            const result = B.tmp();
+            B.line(
+              `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nuw i32 ${narrowInteger(host, li)}, ${narrowInteger(host, ri)}`,
+            );
+            const number = uint32Number(host, result, range, e.type);
+            const wrapped = emitWrappingSum(host, e, l, r, li, ri);
+            return wrapped === undefined ? number : { ...number, ...wrapped };
           }
           const left = widenInteger(host, li),
             right = widenInteger(host, ri);
@@ -924,8 +964,10 @@ export function emitStringExpr(
       }
       if (v.type.kind === "record") {
         // String(record) / `${record}`: Object.prototype.toString's
-        // constant — the interned literal, retained like a strLit.
-        const sym = host.internLiteral("[object Object]");
+        // constant — the interned literal, retained like a strLit. A
+        // TextEncoder or TextDecoder answers its Symbol.toStringTag.
+        const codec = recordTextCodecClass(host.recordShape(v.type.shapeId));
+        const sym = host.internLiteral(`[object ${codec ?? "Object"}]`);
         return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
       }
       if (v.type.kind === "caught") {
@@ -1473,16 +1515,70 @@ export function emitRecordExpr(
       return host.emitRecordKeyGet(e);
     case "recordHas": {
       // Own-property presence: only an undefined-armed union slot can
-      // lack its property, by holding the ABSENT state.
+      // lack its property, by holding the ABSENT state, and a PARTIAL
+      // record view (record-views.ts) can lack a field its viewed record
+      // does not declare.
+      const fieldType = host.recordsById
+        .get(e.shapeId)
+        ?.fields.find((f) => f.name === e.field)?.type;
       const obj = host.emitReadReceiver(e.obj);
+      if (host.shapeHost.recordViews?.partialMissing(e.shapeId, e.field) !== true) {
+        const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
+          return { name: "true", type: e.type };
+        const v = host.loadField(ptr, type, inline);
+        const absent = host.fieldAbsentTest(v, type.unionId);
+        const t = B.tmp();
+        B.line(`${t} = xor i1 ${absent}, true`);
+        return { name: t, type: e.type };
+      }
+      // A field some partial view of this shape lacks: ask the view first.
+      // Only a present field's slot may be looked up — a partial view's
+      // absent field answers no slot at all (scr_record_view_slot).
+      const position = host.recordsById.get(e.shapeId)!.fields.findIndex((f) => f.name === e.field);
+      host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+      const isView = B.tmp();
+      const rhFrom = B.currentLabel();
+      const view = B.newLabel("rh.view");
+      const done = B.newLabel("rh.done");
+      for (const line of recordViewTestLines(host.sizeType, obj.name, isView))
+        B.line(line.trimStart());
+      // Not a view: every field of the target has its slot.
+      B.condBr(isView, view, done, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+      B.startBlock(view);
+      const slot = B.tmp();
+      B.line(
+        `${slot} = call ptr @scr_record_view_slot(ptr ${obj.name}, ${host.sizeType} ${position})`,
+      );
+      const hasSlot = B.tmp();
+      B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+      B.br(done);
+      B.startBlock(done);
+      const hasView = B.tmp();
+      B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${hasSlot}, %${view} ]`);
+      if (fieldType === undefined || fieldType.kind !== "union")
+        return { name: hasView, type: e.type };
+      const unionId = fieldType.unionId;
+      if (undefinedArmTag(fieldType, host.unionsById) < 0) return { name: hasView, type: e.type };
+      // The field is also undefined-armed: a present slot still answers by
+      // its ABSENT state, a field the view lacks by the view.
+      const check = B.newLabel("rh.present");
+      const join = B.newLabel("rh.join");
+      const from = B.currentLabel();
+      B.condBr(hasView, check, join);
+      B.startBlock(check);
       const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
-      if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
-        return { name: "true", type: e.type };
       const v = host.loadField(ptr, type, inline);
-      const absent = host.fieldAbsentTest(v, type.unionId);
-      const t = B.tmp();
-      B.line(`${t} = xor i1 ${absent}, true`);
-      return { name: t, type: e.type };
+      const absent = host.fieldAbsentTest(v, unionId);
+      const present = B.tmp();
+      B.line(`${present} = xor i1 ${absent}, true`);
+      // The field load can end in a later block (a view's slot read).
+      const checked = B.currentLabel();
+      B.br(join);
+      B.startBlock(join);
+      const answer = B.tmp();
+      B.line(`${answer} = phi i1 [ false, %${from} ], [ ${present}, %${checked} ]`);
+      return { name: answer, type: e.type };
     }
     case "fieldAbsent":
       return { name: host.absentInstanceRef(e.unionId), type: e.type };

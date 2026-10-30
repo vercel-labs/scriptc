@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-values-untyped-slots.ts"
+ ],
+ "diags": []
+}

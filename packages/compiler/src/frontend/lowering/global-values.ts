@@ -138,6 +138,55 @@ export function jsGlobalValueByName(
   );
 }
 
+/** Globals whose values a TypeScript read keeps refused: the Array
+ * constructor value has none of Array's static members (`o.Array.isArray`
+ * would read undefined), and the timer values lack the
+ * util.promisify.custom getter Node's util.inspect lists. */
+const UNTYPED_UNMODELED: ReadonlySet<string> = new Set(["Array", "setTimeout", "setImmediate"]);
+
+/** The value a TypeScript source reads for the declared global `name` at
+ * `node` when the checker types the slot it flows into as any or unknown
+ * (`const o: any = { j: JSON }`, a call to a parameter typed unknown): the
+ * value a JavaScript source reads. Null in JavaScript sources, in typed
+ * slots, and for a global without a value, whose read keeps its SC2020
+ * refusal. Null for the primitive constructors too: a TypeScript read of
+ * String, Number, Boolean or BigInt is the closure with the typed
+ * signature (lowerIdentifierExpr), and `{ String }` must equal it. */
+export function tsUntypedGlobalValue(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  name: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (isJsSourceFile(ts.getSourceFileOfNode(node)) || UNTYPED_UNMODELED.has(name)) return null;
+  if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
+    return null;
+  if (!flowsIntoUntypedSlot(lowerer, node)) return null;
+  return jsGlobalValueByName(lowerer, name, loc);
+}
+
+/** Whether the checker types the slot `node` flows into as any or unknown.
+ * A member of an object or array literal whose own slot is any has no
+ * contextual type, so the literal's slot decides. */
+function flowsIntoUntypedSlot(lowerer: Lowerer, node: ts.Expression): boolean {
+  let value: ts.Expression = node;
+  for (;;) {
+    const slot = lowerer.checker.getContextualType(value);
+    if (slot !== undefined) return (slot.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+    const parent = value.parent;
+    if (
+      (ts.isPropertyAssignment(parent) && parent.initializer === value) ||
+      ts.isShorthandPropertyAssignment(parent)
+    ) {
+      value = parent.parent as ts.ObjectLiteralExpression;
+    } else if (ts.isArrayLiteralExpression(parent) || ts.isParenthesizedExpression(parent)) {
+      value = parent;
+    } else {
+      return false;
+    }
+  }
+}
+
 /** jsGlobalValueByName for the globals other than the interned builtin
  * functions and constructors (builtinGlobalValue). */
 export function jsSpecialGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {

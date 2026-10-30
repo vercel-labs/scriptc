@@ -16372,13 +16372,27 @@ export class Lowerer {
    * fallback (see loadProgram — the lowering tables recognize the same
    * members by name + this provenance, and everything else those files
    * declare hits the SC2020-family fence). The file half of every
-   * supported-surface provenance check. */
-  readonly isStdlibFile = (sf: ts.SourceFile): boolean =>
-    sf.fileName === this.ambient ||
-    sf.fileName === this.overridesAmbient ||
-    isFallbackDtsPath(sf.fileName) ||
-    this.program.isSourceFileDefaultLibrary(sf) ||
-    (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+   * supported-surface provenance check.
+   *
+   * Type mapping asks this several times per mapped declaration, and the
+   * answer is a pure function of the file's name and of the program's
+   * library metadata, both fixed for a lowerer: one answer per file name,
+   * then a map lookup. Every question is about a declaration file, so the
+   * memo holds a few hundred entries however large the program. */
+  private readonly stdlibFiles = new Map<string, boolean>();
+  readonly isStdlibFile = (sf: ts.SourceFile): boolean => {
+    let answer = this.stdlibFiles.get(sf.fileName);
+    if (answer === undefined) {
+      answer =
+        sf.fileName === this.ambient ||
+        sf.fileName === this.overridesAmbient ||
+        isFallbackDtsPath(sf.fileName) ||
+        this.program.isSourceFileDefaultLibrary(sf) ||
+        (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+      this.stdlibFiles.set(sf.fileName, answer);
+    }
+    return answer;
+  };
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);

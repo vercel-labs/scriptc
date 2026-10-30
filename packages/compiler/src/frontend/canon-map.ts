@@ -12,7 +12,17 @@
  * comparison to SCRIPTC_CANON_SHADOW_OUT. It maps into throwaway
  * registries, so the program's own IR is untouched. */
 import { appendFileSync } from "node:fs";
-import { BOOL, DYN, F64, NULL_T, STRING, UNDEFINED_T, sortArms, typeKey, type IrType } from "../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  NULL_T,
+  STRING,
+  UNDEFINED_T,
+  sortArms,
+  typeKey,
+  type IrType,
+} from "../ir/ir.js";
 import { canonKey, Normalizer, type Canon, type CanonProp } from "./canon.js";
 import * as ts from "./ts7/adapter.js";
 import {

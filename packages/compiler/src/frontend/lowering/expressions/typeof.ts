@@ -31,7 +31,7 @@ import { tryLowerExpression } from "./try-lower-expression.js";
 import { isJsSourceFile, isNodeEsmFile } from "../../program.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { varRef } from "../../../ir/build.js";
-import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
+import { isExecExceptionType } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import {
@@ -427,7 +427,11 @@ export function lowerErrorCodeTypeofTest(
       recv = recv.expression;
     const errT = errorRootedObjectOf(lowerer, lowerer.typeOf(recv));
     if (!errT) continue;
-    if (isExecExceptionType(lowerer, lowerer.typeOf(recv))) refuseExecExceptionCode(lowerer, prop);
+    // An exec/execFile callback error's code is Node's own NUMBER, string
+    // or null — the slot-presence test below would answer for the errno
+    // slot instead: leave the read to the generic typeof lowering, which
+    // tests the union's tags.
+    if (isExecExceptionType(lowerer, lowerer.typeOf(recv))) return null;
     const caught = lowerer.caughtLocalOf(recv);
     let receiver: IrExpr;
     if (caught) {

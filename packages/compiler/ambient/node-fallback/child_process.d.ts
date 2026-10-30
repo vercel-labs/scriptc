@@ -205,7 +205,33 @@ declare module "child_process" {
   }
   export function execFileSync(file: string, args?: string[], options?: ExecSyncOptions): string;
   export function execSync(command: string, options?: ExecSyncOptions): string;
-  export type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
+  /* The exec/execFile callback error, Node's exact metadata members and
+   * their runtime types: `code` is the child's exit status, or null after
+   * a signal, or the errno name ("ENOENT", ...) when the spawn itself
+   * failed; `killed` is present on a command failure (true when a timeout
+   * killed the child) and absent after a spawn failure; `signal` is the
+   * terminating signal's name, null on an ordinary exit. A spawn failure
+   * adds the errno fields (@types/node spells them on -- and only on --
+   * its ExecFileException). @types/node's ExecException narrows `code` to
+   * a number and `signal` to a signal name; Node's own values are wider,
+   * and these are the honest ones. */
+  export interface ExecException extends Error {
+    cmd?: string;
+    killed?: boolean;
+    code?: number | string | null;
+    signal?: string | null;
+    stdout?: string;
+    stderr?: string;
+    errno?: number;
+    syscall?: string;
+    path?: string;
+  }
+  export type ExecFileException = ExecException;
+  export type ExecFileCallback = (
+    error: ExecException | null,
+    stdout: string,
+    stderr: string,
+  ) => void;
   /* The callback form starts an asynchronous child and captures utf8
    * stdout/stderr. The no-callback overload remains for util.promisify's
    * static target recognition; reached no-callback calls still fence. */
@@ -232,8 +258,8 @@ declare module "child_process" {
    * fence at their site. */
   export function exec(
     command: string,
-    options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
-    callback?: (error: Error | null, stdout: string, stderr: string) => void,
+    options?: ExecSyncOptions | ExecFileCallback,
+    callback?: ExecFileCallback,
   ): ChildProcess;
 }
 

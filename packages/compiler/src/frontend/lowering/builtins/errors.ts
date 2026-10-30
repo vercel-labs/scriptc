@@ -12,7 +12,9 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  NULL_T,
   STRING,
+  typeKey,
   VOID,
 } from "../../../ir/ir.js";
 
@@ -24,26 +26,93 @@ const ASSERTION_ERROR_PROPERTIES: ReadonlySet<string> = new Set([
   "diff",
 ]);
 
-/** True for child_process.ExecException, exec's callback error. Its
- * `code` is the child's numeric exit status (null after a signal), which
- * the runtime error's string code slot does not hold, so reads, `in` tests
- * and typeof tests of `code` refuse instead of answering from the slot. */
+/** True for the exec/execFile callback error types: @types/node's
+ * child_process.ExecException interface (exec's callback error) and its
+ * ExecFileException alias, as our fallback declarations spell them too.
+ * Their metadata members (`code`, `killed`, `signal`, `cmd`) are own
+ * properties of the runtime error's checked-dynamic node — Node's exact
+ * values — which the string code slot cannot hold. */
 export function isExecExceptionType(lowerer: Lowerer, t: ts.Type): boolean {
-  const sym = t.getSymbol();
-  return (
+  // The callback's error parameter is `T | null`; an optional-chain read
+  // keeps the nullish arm on the checker type of the receiver.
+  const target = lowerer.checker.getNonNullableType(t);
+  const stdlib = (sym: ts.Symbol | undefined, name: string, faceOnly: boolean): boolean =>
     sym !== undefined &&
-    ts.symbolName(sym) === "ExecException" &&
+    ts.symbolName(sym) === name &&
     sym.declarations.some(
-      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
-    )
+      (d) =>
+        (!faceOnly || ts.isInterfaceDeclaration(d)) &&
+        lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
+    );
+  return (
+    stdlib(target.getSymbol(), "ExecException", true) ||
+    stdlib(target.getAliasSymbol(), "ExecFileException", false)
   );
 }
 
-export function refuseExecExceptionCode(lowerer: Lowerer, node: ts.Node): never {
-  return lowerer.noLowering(
-    "ExecException.code",
-    node,
-    "spawn reports the exit status through its 'close' event",
+/** The exec callback error's metadata members, read from the error's
+ * checked-dynamic node at Node's runtime types: `code` is the exit status,
+ * the errno name after a spawn failure, or null after a signal; `killed`
+ * is absent on spawn failures; `signal` is null on an ordinary exit; `cmd`
+ * is always present. */
+const EXEC_ERROR_DYNAMIC_MEMBERS: ReadonlySet<string> = new Set([
+  "code",
+  "killed",
+  "signal",
+  "cmd",
+]);
+
+function execErrorMemberType(lowerer: Lowerer, member: string): IrType {
+  // A union arm list is flat: the optional arms are added through the
+  // union-aware canonicalizer, never by nesting a union inside the
+  // undefined pair.
+  const optional = (arms: IrType[]): IrType => {
+    const sorted = [...arms].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const base: IrType =
+      sorted.length === 1 ? sorted[0]! : { kind: "union", unionId: lowerer.unions.intern(sorted) };
+    return lowerer.withUndefinedArmOf(base) ?? base;
+  };
+  switch (member) {
+    case "code":
+      return optional([F64, STRING, NULL_T]);
+    case "killed":
+      return optional([BOOL]);
+    case "signal":
+      return optional([STRING, NULL_T]);
+    default:
+      return optional([STRING]);
+  }
+}
+
+/** `err.code`/`err.killed`/`err.signal`/`err.cmd` on an exec/execFile
+ * callback error: the own property of the error's checked-dynamic node,
+ * wrapped at the member's runtime type. Null for every other read. */
+function lowerExecErrorMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  recvT: IrType,
+): IrExpr | null {
+  // `?.` reads reach this lowering once the chain machinery has guarded
+  // the receiver (chainHandled), exactly like the dyn-view members above.
+  if (
+    recvT.kind !== "object" ||
+    recvT.className !== "%Error" ||
+    !EXEC_ERROR_DYNAMIC_MEMBERS.has(expr.name.text) ||
+    !lowerer.isStdlibMember(expr)
+  )
+    return null;
+  if (!isExecExceptionType(lowerer, lowerer.typeOf(expr.expression))) return null;
+  const receiver = lowerer.lowerExpr(expr.expression);
+  const loc = locOf(expr);
+  return lowerer.coerceToExpected(
+    {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(receiver, DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    },
+    execErrorMemberType(lowerer, expr.name.text),
   );
 }
 
@@ -154,6 +223,10 @@ export function lowerErrorCodeProperty(
       declared,
     );
   }
+  // An exec/execFile callback error's code, killed, signal and cmd: Node's
+  // own properties of the checked-dynamic node, not the errno code slot.
+  const execMember = lowerExecErrorMember(lowerer, expr, recvT);
+  if (execMember) return execMember;
   // A member an `Error & { ... }` intersection adds beyond Error's own and
   // the system-error metadata (`Object.assign(new Error(m), { status })`):
   // an own property of the error's checked-dynamic node, read at the
@@ -205,9 +278,6 @@ export function lowerErrorCodeProperty(
     !(recvT.className === "%Error" && lowerer.typeOf(expr.expression).isIntersectionType())
   )
     return null;
-  if (expr.name.text === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.expression))) {
-    refuseExecExceptionCode(lowerer, expr);
-  }
   const rawReceiver = lowerer.lowerExpr(expr.expression);
   const receiver =
     rawReceiver.type.kind === "dyn"

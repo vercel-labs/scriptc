@@ -1097,8 +1097,15 @@ const RUNTIME_FEATURE_RULES = {
    * (SCR_ARRAY_ATTRS in scr_json.c and scr_dyn_invoke.c): the dynamic tier
    * keeps per-element writable/enumerable/configurable bits and a
    * length-writability bit only for programs that can set them, so every
-   * other program keeps the default runtime object. */
-  dynArrayAttrs: rule({ fns: ["dyn.defineProperty", "dyn.defineProps"] }),
+   * other program keeps the default runtime object. A dyn.freeze/seal/
+   * preventExtensions call can make an array non-extensible, and the build
+   * also carries the first-new-index error unshift and splice report for
+   * one. dyn.defineProps alone does not select it: the bound-function
+   * lowering stores its metadata through it, always on a closure, and an
+   * Object.defineProperties of an array keeps its precise refusal. */
+  dynArrayAttrs: rule({
+    fns: ["dyn.defineProperty", "dyn.preventExtensions", "dyn.freeze", "dyn.seal"],
+  }),
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
   streamDyn: rule({

@@ -285,9 +285,10 @@ export function variantsFor(source) {
       });
     }
     // Object.defineProperty on an array's index or length (SCR_ARRAY_ATTRS)
-    // reads and writes per-element attribute bits, so only programs that
-    // lower such a call link this build; the same most-specific-wins rule
-    // gives each build above its counterpart.
+    // reads and writes per-element attribute bits, and a freeze, seal or
+    // preventExtensions can make an array non-extensible, so only programs
+    // that lower one of those calls link this build; the same
+    // most-specific-wins rule gives each build above its counterpart.
     for (const { id, when, defines } of variants.slice()) {
       const suffix = id === "default" ? "" : `-${id}`;
       variants.push({
@@ -298,8 +299,9 @@ export function variantsFor(source) {
     }
   }
   // An array method on a receiver whose elements carry attributes keeps the
-  // length and element checks of the SCR_ARRAY_ATTRS build (scr_json.c
-  // holds the bits); other programs keep the default object.
+  // length, element and non-extensible growth checks of the SCR_ARRAY_ATTRS
+  // build (scr_json.c holds the bits); other programs keep the default
+  // object.
   if (source === "scr_dyn_invoke.c") {
     variants.push({
       id: "array-attrs",

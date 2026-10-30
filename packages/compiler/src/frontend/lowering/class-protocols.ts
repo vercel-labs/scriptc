@@ -973,15 +973,53 @@ export class ClassProtocols {
     callsNamed: (name: string) => readonly (ts.CallExpression | ts.NewExpression)[],
   ): boolean {
     if (this.isProgramClassInstance(type) || this.isRecordWithFields(type)) return true;
-    if (!isDynamicView(this.checker, type) || !ts.isIdentifier(source)) return false;
+    if (!isDynamicView(this.checker, type)) return false;
+    const holdsObjectType = (held: ts.Type | undefined): boolean =>
+      held !== undefined && (this.isProgramClassInstance(held) || this.isRecordWithFields(held));
+    const holdsObject = (expr: ts.Expression): boolean =>
+      holdsObjectType(attempt(() => this.checker.getTypeAtLocation(this.flowSourceNode(expr))));
+    const constInitializer = (name: ts.Identifier): ts.Expression | undefined => {
+      const decl = attempt(() => this.checker.getSymbolAtLocation(name))?.valueDeclaration;
+      return decl !== undefined &&
+        ts.isVariableDeclaration(decl) &&
+        ts.isVariableDeclarationList(decl.parent) &&
+        (decl.parent.flags & ts.NodeFlags.Const) !== 0
+        ? decl.initializer
+        : undefined;
+    };
+    if (ts.isElementAccessExpression(source)) {
+      // An element of a constant `unknown[]` binding holds what the
+      // binding's initializer stores: the elements of an array of records
+      // or class instances, or what a `map` callback returns.
+      let base = source.expression;
+      while (ts.isParenthesizedExpression(base)) base = base.expression;
+      const initializer = ts.isIdentifier(base) ? constInitializer(base) : undefined;
+      if (initializer === undefined) return false;
+      const array = attempt(() => this.checker.getTypeAtLocation(initializer));
+      if (
+        array !== undefined &&
+        this.checker.isArrayType(array) &&
+        holdsObjectType(this.checker.getTypeArguments(array as ts.TypeReference)[0])
+      )
+        return true;
+      let call = initializer;
+      while (ts.isParenthesizedExpression(call)) call = call.expression;
+      if (
+        !ts.isCallExpression(call) ||
+        !ts.isPropertyAccessExpression(call.expression) ||
+        call.expression.name.text !== "map"
+      )
+        return false;
+      const callback = call.arguments.nodes[0];
+      return (
+        callback !== undefined &&
+        (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+        functionResults(callback).some(holdsObject)
+      );
+    }
+    if (!ts.isIdentifier(source)) return false;
     const decl = attempt(() => this.checker.getSymbolAtLocation(source))?.valueDeclaration;
     if (decl === undefined) return false;
-    const holdsObject = (expr: ts.Expression): boolean => {
-      const held = attempt(() => this.checker.getTypeAtLocation(this.flowSourceNode(expr)));
-      return (
-        held !== undefined && (this.isProgramClassInstance(held) || this.isRecordWithFields(held))
-      );
-    };
     if (ts.isParameter(decl)) {
       // A parameter holds what its callers pass: the calls of the function
       // by name whose signature resolves to it.
@@ -1000,13 +1038,8 @@ export class ClassProtocols {
         );
       });
     }
-    return (
-      ts.isVariableDeclaration(decl) &&
-      decl.initializer !== undefined &&
-      ts.isVariableDeclarationList(decl.parent) &&
-      (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
-      holdsObject(decl.initializer)
-    );
+    const initializer = constInitializer(source);
+    return initializer !== undefined && holdsObject(initializer);
   }
 
   /** A program object type with declared properties that is not a class
@@ -1370,6 +1403,20 @@ const IDENTITY_METHODS = new Set([
   "lastIndexOf",
   "includes",
 ]);
+
+/** The values a function expression answers: an arrow's expression body,
+ * or the operands of its own return statements. */
+function functionResults(fn: ts.ArrowFunction | ts.FunctionExpression): ts.Expression[] {
+  if (!ts.isBlock(fn.body)) return [fn.body];
+  const results: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) results.push(node.expression);
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(fn.body, visit);
+  return results;
+}
 
 /** An expression that denotes an object that already exists, not a fresh
  * literal or call result. */

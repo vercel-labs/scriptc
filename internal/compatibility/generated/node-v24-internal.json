@@ -44328,6 +44328,7 @@
           "tests/corpus/5570-fs-cp-async.ts",
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs",
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
@@ -45353,7 +45354,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.copyFile",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46094,7 +46096,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47967,7 +47970,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49019,7 +49023,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91579,6 +91584,7 @@
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
+          "tests/corpus/8428-string-decoder-dynamic-chunks.ts",
           "tests/corpus/node24-string-decoder.ts"
         ]
       },
@@ -91607,7 +91613,8 @@
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
-          "tests/corpus/5882-string-decoder-runtime-encoding.ts"
+          "tests/corpus/5882-string-decoder-runtime-encoding.ts",
+          "tests/corpus/8428-string-decoder-dynamic-chunks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91635,7 +91642,8 @@
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
-          "tests/corpus/5882-string-decoder-runtime-encoding.ts"
+          "tests/corpus/5882-string-decoder-runtime-encoding.ts",
+          "tests/corpus/8428-string-decoder-dynamic-chunks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91663,7 +91671,8 @@
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
-          "tests/corpus/5882-string-decoder-runtime-encoding.ts"
+          "tests/corpus/5882-string-decoder-runtime-encoding.ts",
+          "tests/corpus/8428-string-decoder-dynamic-chunks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99989,6 +99998,7 @@
           "tests/corpus/5229-url-legacy-errors.cjs",
           "tests/corpus/5833-url-search-params-iterators.ts",
           "tests/corpus/5834-url-search-params-iterators-dynamic.mjs",
+          "tests/corpus/8423-urlsearchparams-implicit-string.ts",
           "tests/corpus/node24-file-url-buffer.ts",
           "tests/corpus/node24-file-url-errors.js",
           "tests/corpus/node24-file-url-options.ts",
@@ -101238,7 +101248,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.url.urlToHttpOptions",
         "tests": [
-          "tests/corpus/1794-searchparams-url-live.ts"
+          "tests/corpus/1794-searchparams-url-live.ts",
+          "tests/corpus/8423-urlsearchparams-implicit-string.ts"
         ]
       },
       "anchorSource": "exact"

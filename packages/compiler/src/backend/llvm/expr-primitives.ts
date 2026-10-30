@@ -26,6 +26,7 @@ import {
   int32Number,
   integerNumber,
   narrowInteger,
+  uint32Number,
   wideArithmetic,
   widenInteger,
   type LlInteger,
@@ -127,6 +128,16 @@ function emitIntegerOrNaNCompare(
     result = combined;
   }
   return result;
+}
+
+/** A `>>>` result, or a sum, difference or product with one as an operand. */
+function unsignedShiftArithmetic(e: IrExpr): boolean {
+  if (e.kind !== "bin") return false;
+  if (e.op === ">>>") return true;
+  return (
+    (e.op === "+" || e.op === "-" || e.op === "*") &&
+    (unsignedShiftArithmetic(e.left) || unsignedShiftArithmetic(e.right))
+  );
 }
 
 export function emitLiteralExpr(
@@ -382,6 +393,28 @@ export function emitOperatorExpr(
               `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nsw i32 ${narrowInteger(host, li)}, ${narrowInteger(host, ri)}`,
             );
             return int32Number(host, result, range, e.type);
+          }
+          if (
+            range &&
+            withinUint32(range) &&
+            withinUint32(li.range) &&
+            withinUint32(ri.range) &&
+            (unsignedShiftArithmetic(e.left) || unsignedShiftArithmetic(e.right))
+          ) {
+            // A uint32 result built on a `>>>` result, such as
+            // `(x >>> 1) + i`: 32-bit arithmetic that cannot wrap. Its double
+            // converts from the 32 bits, which vectorizes to three
+            // instructions on x86-64 without AVX-512, where the unsigned
+            // 64-bit conversion takes six. Sums of counters and literals,
+            // such as `i + 1`, keep the 64-bit form, whose conversion LLVM
+            // folds with their uses as indexes.
+            const result = B.tmp();
+            B.line(
+              `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nuw i32 ${narrowInteger(host, li)}, ${narrowInteger(host, ri)}`,
+            );
+            const number = uint32Number(host, result, range, e.type);
+            const wrapped = emitWrappingSum(host, e, l, r, li, ri);
+            return wrapped === undefined ? number : { ...number, ...wrapped };
           }
           const left = widenInteger(host, li),
             right = widenInteger(host, ri);

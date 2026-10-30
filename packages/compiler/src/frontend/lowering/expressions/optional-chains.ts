@@ -1,4 +1,5 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
@@ -172,6 +173,24 @@ function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boole
   );
 }
 
+/** `proc?.env` for `const proc = (globalThis as { process?: P }).process`,
+ * and `globalThis.process?.env`: the receiver is a global Node always
+ * defines (a snapshot alias is plumbing for the global itself), so the
+ * guarded step is the plain member read (the navigator rule). */
+function alwaysDefinedGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  // The bare global's own spelling (`console?.log`) keeps its existing path.
+  if (ts.isIdentifier(inner)) {
+    const symbol = lowerer.resolveValueSymbol(inner);
+    if (symbol === null || !lowerer.stdlibGlobalAliases.has(symbol)) return false;
+  } else if (!ts.isPropertyAccessExpression(inner)) {
+    return false;
+  }
+  const name = stdlibGlobalNameOf(lowerer, inner);
+  return name !== null && SNAPSHOT_GLOBALS.has(name);
+}
+
 export function lowerOptionalChain(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.PropertyAccessExpression | ts.ElementAccessExpression,
@@ -225,7 +244,7 @@ export function lowerOptionalChain(
   // reports its own diagnostics) instead of failing on the value read.
   // `navigator?.userAgent`: Node's navigator global is never nullish and
   // has no value form, so the guarded step is the plain member read.
-  if (isNavigatorGlobal(lowerer, recvNode)) {
+  if (isNavigatorGlobal(lowerer, recvNode) || alwaysDefinedGlobal(lowerer, recvNode)) {
     lowerer.chainHandled.add(dotNode);
     try {
       return lowerer.lowerExpr(expr);

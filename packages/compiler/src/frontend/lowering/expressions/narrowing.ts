@@ -590,7 +590,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     if (
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       ts.isPropertyAccessExpression(node) &&
-      ["isTTY", "columns", "rows"].includes(node.name.text) &&
+      ["isTTY", "columns", "rows", "isRaw"].includes(node.name.text) &&
       lowerer.isStdlibMember(node)
     )
       return expr;

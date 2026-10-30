@@ -7,15 +7,6 @@ stdlib-fence.ts:17:23 - error SC2020: 'Object.assign' is part of the standard li
 
   hint: spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target literal-source shape (Object.assign({}, { ... }) IS the source literal) and merges INTO an index-signature record whose value slot every source value enters — other aliased targets are real mutation, and a function target (Object.assign(fn, { prop })) is a function-with-properties value the model cannot represent: bind the property separately
 
-stdlib-fence.ts:18:14 - error SC2020: 'Reflect.has' is part of the standard library types but has no scriptc lowering yet
-
-  17 | const aliasedAssign = Object.assign(merged, { b: 2 }); // aliased targets stay fenced (real mutation of a live object)
-  18 | const refl = Reflect.has({ a: 1 }, "a");
-     |              ^~~~~~~~~~~
-  19 | const parsedMs = Date.parse;
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
 stdlib-fence.ts:19:18 - error SC2020: 'Date.parse' is part of the standard library types but has no scriptc lowering yet
 
   18 | const refl = Reflect.has({ a: 1 }, "a");

@@ -110,6 +110,7 @@ import {
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
 import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { heldEnvValueType } from "./builtins/environment.js";
 import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
@@ -2539,6 +2540,12 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
 
   const header = lowerer.lowerHttpHeadersElement(expr);
   if (header) return header;
+
+  // A keyed read through a value HELD from process.env (`const env =
+  // process.env; env[k] ?? fallback`) aliases the live table: the ordinary
+  // lowering is getenv, whose `string | undefined` result already carries
+  // the missing arm this probe reconstructs for record keys.
+  if (heldEnvValueType(lowerer, expr.expression) !== null) return null;
 
   const receiverT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverT?.kind === "record") {

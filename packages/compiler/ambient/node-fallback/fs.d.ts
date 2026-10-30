@@ -30,8 +30,10 @@ declare module "node:fs" {
   export function writeFileSync(
     path: string | URL,
     data: string,
-    /* The options-record stance (see http.RequestOptions): flag fences
-     * by name at the call site; undocumented keys drop like Node. */
+    /* The options-record stance (see http.RequestOptions): an unsupported
+     * flag fences by name at the call site; undocumented keys drop like
+     * Node. The lowered flags are "w" (truncate-or-create) and "wx"
+     * (exclusive create). */
     options?: {
       mode?: number;
       encoding?: "utf8" | "utf-8";
@@ -174,9 +176,11 @@ declare module "node:fs" {
   export function lchownSync(path: string | URL, uid: number, gid: number): void;
   export function fchownSync(fd: number, uid: number, gid: number): void;
   export function truncateSync(path: string | URL, len?: number): void;
-  /* The 2-argument form only (Node's mode flags have no lowering). The
-   * destination is created or truncated carrying the SOURCE's mode. */
-  export function copyFileSync(src: string | URL, dest: string | URL): void;
+  /* The destination is created or truncated carrying the SOURCE's mode.
+   * `mode` is libuv's copyfile flag bits: COPYFILE_EXCL (1) fails when the
+   * destination exists, COPYFILE_FICLONE (2) requests a reflink and falls
+   * back to a copy, COPYFILE_FICLONE_FORCE (4) requires one. */
+  export function copyFileSync(src: string | URL, dest: string | URL, mode?: number): void;
   export function rename(
     oldPath: string,
     newPath: string,

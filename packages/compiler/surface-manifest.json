@@ -294,6 +294,13 @@
       "code": "SC2013"
     },
     {
+      "id": "diagnostic.sc2014",
+      "kind": "diagnostic-fence",
+      "name": "writes through a value held from process.env (a snapshot, not the live table)",
+      "status": "unsupported",
+      "code": "SC2014"
+    },
+    {
       "id": "diagnostic.sc2020",
       "kind": "diagnostic-fence",
       "name": "standard-library or @types/node surface with no lowering",

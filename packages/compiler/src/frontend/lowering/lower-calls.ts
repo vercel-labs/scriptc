@@ -4074,8 +4074,7 @@ function lowerDynReceiverMethodCall(
         (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
         // A receiver of the boxed String type may be a wrapper object.
         (lowerer.createsWrappers ??= programCreatesWrappers(lowerer))) &&
-      !call.questionDotToken &&
-      !access.questionDotToken &&
+      !lowerer.chainBlocked(call, access) &&
       !call.arguments.nodes.some(ts.isSpreadElement)
     )
       return lowerStringOrMemberCall(lowerer, call, access, recv);
@@ -4091,8 +4090,6 @@ function lowerDynReceiverMethodCall(
   // runtime dispatch.
   if (
     !ownCallable &&
-    !call.questionDotToken &&
-    !access.questionDotToken &&
     isDynPrimitiveKindMethod(access.name.text) &&
     !lowerer.chainBlocked(access, call)
   ) {
@@ -4240,9 +4237,13 @@ function lowerDynReceiverMethodCall(
     !stringOnlyName
   )
     return null;
-  // Optional forms (`obj.cb?.()`, `obj?.cb()`) belong to the chain
-  // machinery's short-circuit semantics — not modeled here yet.
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // An UNHANDLED `?.` step (`obj.cb?.()`, `obj?.cb()`) belongs to the chain
+  // machinery's short-circuit semantics. Inside the guarded body of a chain
+  // the active lowering has ALREADY proven the receiver present, so the
+  // step is a plain read-and-call there — the same "read the member, call
+  // it" shape below, with `dynCall` throwing Node's catchable
+  // "obj.cb is not a function" for a present but non-callable member.
+  if (lowerer.chainBlocked(call, access)) return null;
   const loc = locOf(call);
   const receiverLocal = lowerer.declareHiddenLocal("%dynCallReceiver", DYN);
   const receiver: IrExpr = { kind: "varRef", localId: receiverLocal.id, type: DYN, loc };
@@ -8040,6 +8041,16 @@ function lowerObjectStaticCall(
       isUnitType(object.type)
     )
       object = { kind: "dynFrom", value: object, type: DYN, loc: locOf(call) };
+    // An array or class instance reflects through its own checked-dynamic
+    // view (own fields and elements, in property order). A record keeps its
+    // static key walk below when it has one — `getOwnPropertyNames` over a
+    // fixed record is exactly Object.keys' construction, and boxing a typed
+    // record would link the dynamic tier into a program that needs none of
+    // it. The descriptor and symbol forms have no static walk, so a record
+    // takes the view there.
+    const staticWalk = member === "getOwnPropertyNames" && object.type.kind === "record";
+    if (!staticWalk && object.type.kind !== "dyn" && lowerer.dynConvertible(object.type))
+      object = lowerer.coerceToExpected(object, DYN);
     if (object.type.kind === "dyn")
       return {
         kind: "libCall",

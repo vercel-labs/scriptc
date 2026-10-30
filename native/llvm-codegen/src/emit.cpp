@@ -54,6 +54,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/Scalar/CorrelatedValuePropagation.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <algorithm>
@@ -872,6 +873,35 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
   return std::nullopt;
 }
 
+// The level of an optimized partition's simplification before the thin
+// link. The backend optimizes every partition again at Level after
+// importing, so the pre-link runs the O1 simplification: it annotates the
+// profile, inlines and simplifies enough for the summaries the import
+// decisions read, and leaves the full simplification to the backend. The
+// O2 simplification before the link repeated most of the backend's work: on
+// a partition dominated by one large function it took about half as long as
+// the backend's optimization and code generation of that partition.
+OptimizationLevel preLinkLevel(OptimizationLevel Level) {
+  if (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3)
+    return OptimizationLevel::O1;
+  return Level;
+}
+
+// Adds correlated value propagation, which the O2 simplification runs and
+// the O1 one does not, once per function after the O1 pre-link simplifies
+// it. On the edge where a loop's early exit is taken, it replaces the values
+// the exit condition fixed with constants. Without it, SimplifyCFG folds a
+// jammed loop's early exit and its trip-count exit into one branch, the
+// latch no longer exits, and the backend's unroller keeps a trip-count test
+// in every unrolled iteration.
+void addPreLinkValuePropagation(PassBuilder &PB) {
+  PB.registerCGSCCOptimizerLateEPCallback(
+      [](CGSCCPassManager &CGPM, OptimizationLevel) {
+        CGPM.addPass(
+            createCGSCCToFunctionPassAdaptor(CorrelatedValuePropagationPass()));
+      });
+}
+
 // Runs Work(I) for every partition on a pool sized to the host. Outputs never
 // depend on the pool size or scheduling order.
 void forEachPartition(size_t Count, function_ref<void(size_t)> Work) {
@@ -1051,7 +1081,10 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.collectAnnotated(Weigher.Annotated);
         P.afterProfileAnnotation(PartitionMatch);
       }
-      ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
+      if (preLinkLevel(Level) != Level)
+        addPreLinkValuePropagation(P.PB);
+      ModulePassManager MPM =
+          P.PB.buildThinLTOPreLinkDefaultPipeline(preLinkLevel(Level));
       MPM.addPass(UnnameStructTypes());
       // The module hash is set at the thin link instead (see Names).
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,

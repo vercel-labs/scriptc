@@ -1074,8 +1074,14 @@ export function lowerFsWriteOptionsCall(
   const operation = promiseWriteOptions ? "fs.promises.writeFile" : "writeFileSync";
   const plainFn: IrLibFn = promiseWriteOptions ? "fsp.writeFile" : "fs.writeFileSync";
   const modeFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileMode" : "fs.writeFileModeSync";
+  const flagsFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileFlags" : "fs.writeFileFlagsSync";
   const resultType: IrType = promiseWriteOptions ? { kind: "promise", inner: VOID } : VOID;
   type WriteOptionValue = { kind: "effect" | "mode"; value: IrExpr };
+  /** `flag: "w"` is the plain truncate-or-create write; `flag: "wx"` is
+   * open(2)'s O_EXCL (EEXIST when the path exists). Both are literals, so
+   * the bit is known here and carries no evaluation of its own. */
+  let exclusive = false;
+  let sawFlag = false;
   // The runtime needs only `mode`, but every source option value is an
   // ordinary JS expression. Stage path/data and then evaluate the option
   // values in object-literal order before issuing the write; otherwise a
@@ -1104,19 +1110,36 @@ export function lowerFsWriteOptionsCall(
       });
       mode = varRef(modeLocal.id, modeLocal.type, loc);
     }
-    const result: IrExpr = {
-      kind: "libCall",
-      fn: mode ? modeFn : plainFn,
-      args: mode
-        ? [
+    const result: IrExpr = sawFlag
+      ? {
+          kind: "libCall",
+          fn: flagsFn,
+          args: [
             varRef(pathLocal.id, pathLocal.type, loc),
             varRef(dataLocal.id, dataLocal.type, loc),
-            mode,
-          ]
-        : [varRef(pathLocal.id, pathLocal.type, loc), varRef(dataLocal.id, dataLocal.type, loc)],
-      type: resultType,
-      loc,
-    };
+            // Node's default creation mode when only the flag is given.
+            mode ?? { kind: "numLit", value: 0o666, type: F64, loc },
+            { kind: "numLit", value: exclusive ? 1 : 0, type: F64, loc },
+          ],
+          type: resultType,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: mode ? modeFn : plainFn,
+          args: mode
+            ? [
+                varRef(pathLocal.id, pathLocal.type, loc),
+                varRef(dataLocal.id, dataLocal.type, loc),
+                mode,
+              ]
+            : [
+                varRef(pathLocal.id, pathLocal.type, loc),
+                varRef(dataLocal.id, dataLocal.type, loc),
+              ],
+          type: resultType,
+          loc,
+        };
     return { kind: "seqExpr", stmts, result, type: resultType, loc };
   };
   // The bare-encoding spelling — writeFileSync(p, data, "utf-8") — is
@@ -1159,13 +1182,21 @@ export function lowerFsWriteOptionsCall(
         }
         optionValues.push({ kind: "effect", value: lowerer.lowerExprExpecting(m.value, STRING) });
       } else if (m.name === "flag") {
-        // Documented, behavior-changing (open(2)'s disposition — 'a'
-        // IS appendFileSync), no lowering: fence by name.
-        lowerer.noLowering(
-          `${operation} with the flag option`,
-          p,
-          "the write truncates-or-creates (Node's default 'w'); other flags have no lowering",
-        );
+        // Node's disposition flag changes whether an existing file is
+        // truncated: "w" is the default write, "wx" the exclusive create.
+        // Every other flag (append "a"/"as", synchronous "ws", ...) writes
+        // different bytes and keeps the fence by name.
+        const t = lowerer.typeOf(m.value);
+        if (!t.isStringLiteralType() || (t.value !== "w" && t.value !== "wx")) {
+          lowerer.noLowering(
+            `${operation} with the flag option`,
+            p,
+            'the lowered flags are "w" (the default truncate-or-create) and "wx" (O_EXCL: EEXIST when the path exists); other flags write different bytes',
+          );
+        }
+        exclusive = t.value === "wx";
+        sawFlag = true;
+        optionValues.push({ kind: "effect", value: lowerer.lowerExprExpecting(m.value, STRING) });
       } else {
         // The options-record stance: documented keys with no lowering
         // fence by name; undocumented keys drop like Node.
@@ -1175,7 +1206,7 @@ export function lowerFsWriteOptionsCall(
           m.name,
           operation,
           FS_WRITE_FILE_DOCUMENTED_OPTIONS,
-          'the supported options are { mode: <number>, encoding: "utf8" }',
+          'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" }',
         );
       }
     }
@@ -1184,7 +1215,7 @@ export function lowerFsWriteOptionsCall(
     lowerer.noLowering(
       `${operation} with 3 arguments`,
       optsNode,
-      'the supported options are { mode: <number>, encoding: "utf8" } over string data',
+      'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" } over string data',
     );
   }
   return finishWrite(optionValues);

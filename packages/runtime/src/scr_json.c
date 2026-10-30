@@ -5538,10 +5538,26 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
     return -1;
   /* A native Date, or an instance of a class declared `extends Date`. */
   if (strcmp(callee->v.fn.name, "Date") == 0) return scr_dyn_date_instance_is(value);
+  if (strcmp(callee->v.fn.name, "DataView") == 0) return scr_dyn_data_view_is(value);
+  /* No value is a BigInt64Array or BigUint64Array: neither is constructed. */
+  if (strcmp(callee->v.fn.name, "BigInt64Array") == 0 || strcmp(callee->v.fn.name, "BigUint64Array") == 0)
+    return 0;
+  /* Proxy has no prototype: false for a primitive, Node's TypeError for an
+   * object. */
+  if (strcmp(callee->v.fn.name, "Proxy") == 0) {
+    if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_BOOL ||
+        value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT ||
+        value->kind == SCR_DYN_SYMBOL)
+      return 0;
+    static const char message[] = "Function has non-object prototype 'undefined' in instanceof check";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return 0;
+  }
   static const struct { const char *name; int tag; } kinds[] = {
     {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
     {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
+    {"SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER},
   };
   bool promise = strcmp(callee->v.fn.name, "Promise") == 0;
   int tag = -1;
@@ -9408,6 +9424,25 @@ static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_ke
 
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 0); }
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 1); }
+
+/* Reflect.has's target check: Node's TypeError for a primitive target. */
+void scr_dyn_reflect_has_target(const ScrDyn *target) {
+  switch (target->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL: {
+    static const char message[] = "Reflect.has called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return;
+  }
+  default:
+    return;
+  }
+}
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 2); }
 
 static void scr_json_delete_member(ScrDyn *object, const ScrStr *key);

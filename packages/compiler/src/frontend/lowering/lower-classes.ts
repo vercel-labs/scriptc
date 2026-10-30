@@ -2111,7 +2111,14 @@ export function collectClassShapeInner(
         const emitterBase = lowerer.builtinEmitterInfoOf(resolved);
         const streamBaseNs = builtinStreamInfoOf(lowerer, resolved);
         if (emitterBase || streamBaseNs) {
-          if (t.typeArguments?.nodes) lowerer.unsupported("SC1090", t, "extending generic classes");
+          // An EventEmitter's type argument is the listener MAP, a pure
+          // typing aid: the emitter base is one runtime class whatever the
+          // map says, and the map's keys never reach the layout (Node's
+          // own generic erases at runtime), so `extends
+          // EventEmitter<MyEvents>` adopts the same base. A stream base's
+          // argument IS the element layout, which still has to be concrete.
+          if (!emitterBase && t.typeArguments?.nodes)
+            lowerer.unsupported("SC1090", t, "extending generic classes");
           base = (emitterBase ?? streamBaseNs)!;
           continue;
         }
@@ -2341,7 +2348,13 @@ export function collectClassShapeInner(
         base = instBase;
         continue;
       }
-      if (t.typeArguments?.nodes) lowerer.unsupported("SC1090", t, "extending generic classes");
+      // An EventEmitter base's type argument is the listener MAP — a pure
+      // typing aid (the runtime base is one emitter class whatever the map
+      // says, and Node erases it too), so `extends EventEmitter<Events>`
+      // adopts the same base. Every other generic base still refuses:
+      // its argument can carry a layout.
+      if (t.typeArguments?.nodes && lowerer.builtinEmitterInfoOf(symbol) === null)
+        lowerer.unsupported("SC1090", t, "extending generic classes");
       if (named?.extendsArray)
         lowerer.unsupported(
           "SC1090",

@@ -128,6 +128,16 @@ function captureIslandInputs(fe: Frontend): { inputs: IslandDecisionInputs; seal
   };
 }
 
+/** The islands and modules a failing round's diagnostics grow, plus the
+ * fence retry its result implies: the three retry decisions prepareRound
+ * makes from one lowering result (retry-round SPEC, D-R R2). */
+interface RoundRetry {
+  result: LowerResult;
+  islands: Map<string, IslandPackage> | null;
+  modules: Map<string, IslandModule> | null;
+  fences: Map<string, IslandPackage> | null;
+}
+
 /** Internal round options, a test seam: the island-round tests turn the
  * first-load reuse off to compare a compile with and without it. */
 export interface PrepareRoundOptions {
@@ -231,6 +241,26 @@ function prepareRound(
     // A null decision always comes from a fresh load (above).
     fe = first!;
   }
+  // A round that retries with more islands decides from its push-down pass
+  // alone (retry-round SPEC, D-R R2): the whole-slot and stream relowers
+  // exist to pick the pass the failure is reported from, and a retry throws
+  // them away. `fe.lower` asks this predicate after that pass and stops
+  // when it is true; the failure path below then retries with exactly these
+  // sets instead of deciding from the same diagnostics again.
+  const pushDown: { retry: RoundRetry | null } = { retry: null };
+  const decideRetry = (result: LowerResult): RoundRetry => ({
+    result,
+    islands: loweringIslands(
+      entryPath,
+      opts,
+      fe,
+      result.diagnostics,
+      lowerIslands,
+      fe.nodeIslandScan?.({ userJs: false }).edges,
+    ),
+    modules: loweringModules(entryPath, opts, result.diagnostics, lowerModules),
+    fences: retryFences ? fenceIslands(entryPath, opts, fe, result, lowerIslands, false) : null,
+  });
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
   let contractWarnings: ScrDiagnostic[] = [];
@@ -289,6 +319,14 @@ function prepareRound(
       lowered = fe.lower(
         {
           ...(islandDecision !== null ? { nodeIslands: islandDecision } : {}),
+          stopAfterPushDown: (result) => {
+            pushDown.retry = decideRetry(result);
+            return (
+              pushDown.retry.islands !== null ||
+              pushDown.retry.modules !== null ||
+              pushDown.retry.fences !== null
+            );
+          },
           targetPlatform: buildPlatform,
           ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
           ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
@@ -307,21 +345,32 @@ function prepareRound(
       ]);
     }
     if (lowered.module === null) {
+      // The decisions `fe.lower` already made from this exact result, when
+      // it stopped after the push-down pass (above); otherwise from the
+      // pass that won.
+      const retried =
+        pushDown.retry !== null && pushDown.retry.result === lowered ? pushDown.retry : null;
       // Packages whose own modules refused to lower run in Node islands
       // too (the authoritative lowering, DESIGN.md §1.4): build again with
       // them as islands.
-      const grown = loweringIslands(
-        entryPath,
-        opts,
-        fe,
-        lowered.diagnostics,
-        lowerIslands,
-        fe.nodeIslandScan?.({ userJs: false }).edges,
-      );
+      const grown =
+        retried !== null
+          ? retried.islands
+          : loweringIslands(
+              entryPath,
+              opts,
+              fe,
+              lowered.diagnostics,
+              lowerIslands,
+              fe.nodeIslandScan?.({ userJs: false }).edges,
+            );
       // Sloppy user modules the lowering refused join the same retry
       // (DESIGN.md note 1 §3.2): one reload with every island at once,
       // never one round per module.
-      const grownModules = loweringModules(entryPath, opts, lowered.diagnostics, lowerModules);
+      const grownModules =
+        retried !== null
+          ? retried.modules
+          : loweringModules(entryPath, opts, lowered.diagnostics, lowerModules);
       if (grown !== null || grownModules !== null) {
         fe.dispose();
         frontendDisposed();
@@ -348,7 +397,9 @@ function prepareRound(
       // diagnostics describe a program the island build does not compile:
       // there the packages' declarations type the user code.
       const marked = retryFences
-        ? fenceIslands(entryPath, opts, fe, lowered, lowerIslands, false)
+        ? retried !== null
+          ? retried.fences
+          : fenceIslands(entryPath, opts, fe, lowered, lowerIslands, false)
         : null;
       if (marked !== null) {
         fe.dispose();
@@ -364,7 +415,7 @@ function prepareRound(
           timing,
           marked,
           false,
-          undefined,
+          null,
           lowerModules,
         );
       }

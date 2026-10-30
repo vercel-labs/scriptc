@@ -1046,6 +1046,14 @@ export interface LowerOptions {
    * `preflight` holds the import and package refusals coverage reports
    * beside the lowering's own blockers; they request module demotions. */
   tierReport?: { preflight: readonly ScrDiagnostic[] };
+  /** Prepared island rounds: return the push-down pass's own result when it
+   * failed and the predicate says this round retries with more islands from
+   * exactly those diagnostics. The whole-slot and stream relowers exist to
+   * pick the pass a program's failure is reported from; a round that
+   * retries discards them, so it may decide from the push-down pass alone
+   * (retry-round SPEC, D-R R2). Absent for every other build, which keeps
+   * the full pipeline. */
+  stopAfterPushDown?: ((result: LowerResult) => boolean) | undefined;
 }
 
 interface RuntimeFenceFallback {
@@ -1392,6 +1400,14 @@ function lowerToIrWithIslands(
   let result = emitted.result;
   let resultLowerer = reachableEmit;
   timing("reachable-emit", { reachable: reachable.size });
+  // Prepared island rounds only (LowerOptions.stopAfterPushDown): a round
+  // whose failing push-down pass already implies a retry with more islands
+  // would discard the relowers below along with their diagnostics, so the
+  // caller's predicate decides the retry from this result and the relowers
+  // are skipped. A round that compiles, or whose push-down pass implies no
+  // retry, runs the full pipeline as before and reports from the pass that
+  // wins.
+  if (result.module === null && options.stopAfterPushDown?.(result) === true) return result;
   // Localized failure (stage L3): push-down must never cost a failing
   // program more errors than the whole-slot checked dynamic. A pushed-down
   // type is baked into the globals, fields and signatures that hold it, so

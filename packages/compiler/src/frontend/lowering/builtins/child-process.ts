@@ -11,6 +11,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrStmt,
   SPAWNRES_T,
   STRING,
   type SrcLoc,
@@ -732,17 +733,26 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     loc,
   });
   if (shellRuntime !== null) {
-    // Node's shell:true command building — `[file, ...args].join(" ")`
-    // run by /bin/sh -c — as the taken arm of a ternary on the flag, so
-    // a runtime `shell` keeps Node's exact command line. Every other
-    // argument expression is shared between the arms and only the taken
-    // arm evaluates, so each still evaluates exactly once.
+    // A runtime `shell`: the command, the args and the flag evaluate once,
+    // in source order, into locals. With the flag set, the command is
+    // Node's `[file, ...args].join(" ")` with no args, and the runtime runs
+    // it through the platform's shell (/bin/sh -c, or ComSpec's /d /s /c on
+    // Windows), as it does for a literal `shell: true`.
+    const stmts: IrStmt[] = [];
+    const bind = (name: string, value: IrExpr): IrExpr => {
+      const local = lowerer.declareHiddenLocal(name, value.type);
+      stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return { kind: "varRef", localId: local.id, type: value.type, loc };
+    };
+    const file = bind("%spawnFile", cmd);
+    const args = bind("%spawnArgs", argv);
+    const shellOn = bind("%spawnShell", shellRuntime);
     const joined: IrExpr = {
       kind: "arrIntrinsic",
       method: "join",
       receiver: {
         kind: "arrayLit",
-        elems: [cmd, argv],
+        elems: [file, args],
         spreads: [1],
         type: arrayOf(STRING),
         loc,
@@ -751,21 +761,21 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       type: STRING,
       loc,
     };
-    const shellArgv: IrExpr = {
-      kind: "arrayLit",
-      elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, joined],
-      type: arrayOf(STRING),
-      loc,
-    };
     return {
-      kind: "ternary",
-      cond: shellRuntime,
-      then: spawnOpts(
-        { kind: "strLit", value: "/bin/sh", type: STRING, loc },
-        shellArgv,
-        boolLit(false, loc),
+      kind: "seqExpr",
+      stmts,
+      result: spawnOpts(
+        { kind: "ternary", cond: shellOn, then: joined, else_: file, type: STRING, loc },
+        {
+          kind: "ternary",
+          cond: shellOn,
+          then: { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+          else_: args,
+          type: arrayOf(STRING),
+          loc,
+        },
+        shellOn,
       ),
-      else_: spawnOpts(cmd, argv, boolLit(false, loc)),
       type: CHILD_T,
       loc,
     };

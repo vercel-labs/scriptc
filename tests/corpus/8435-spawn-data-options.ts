@@ -71,6 +71,28 @@ function runShell(shellOn: boolean): Promise<void> {
 await runShell(false);
 await runShell(true);
 
+// The command and args evaluate before the options object, as in Node: a
+// command expression that turns the flag on runs the shell form.
+let shellFlag = false;
+function shellCommand(): string {
+  shellFlag = true;
+  return "/bin/echo";
+}
+await new Promise<void>((resolve) => {
+  const child = spawn(shellCommand(), ["late; echo flag"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: shellFlag,
+  });
+  let text = "";
+  child.stdout?.on("data", (chunk) => {
+    text += chunk.toString();
+  });
+  child.on("close", (code) => {
+    console.log(`order close=${code} out=${JSON.stringify(text)}`);
+    resolve();
+  });
+});
+
 // spawnSync: the tuple slot carries a value typed as a union of the
 // literals (a read, not a conditional), and shell: false is Node's
 // default spelled out. Only the captured streams are read — an "ignore"

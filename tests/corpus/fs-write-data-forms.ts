@@ -72,6 +72,15 @@ await writeFile(writePath("order.txt"), writeData("data", "order"), {
 });
 console.log("order:", evaluations.join(","), hex("order.txt"));
 
+// The two-argument form over string|Uint8Array data: the path, then the
+// data, each evaluated once.
+evaluations = [];
+await writeFile(writePath("two-args.bin"), writeData("data", new Uint8Array([0x6f, 0x6b])));
+console.log("two-argument order:", evaluations.join(","), hex("two-args.bin"));
+evaluations = [];
+await writeFile(writePath("two-args.txt"), writeData("data", "text"));
+console.log("two-argument order:", evaluations.join(","), hex("two-args.txt"));
+
 async function invalidMode(label: string, value: number): Promise<void> {
   const path = join(dir, `${label}.bin`);
   try {

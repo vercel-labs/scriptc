@@ -973,17 +973,31 @@ export function lowerFsWriteBytesCall(
       if (bi.module === "fs/promises") {
         // A promise write's arms are themselves promises: the tag picks
         // the entry inline (appendFile never routes union data here — its
-        // append entries take one data kind).
-        return promiseStringOrBytesWrite(
-          lowerer,
-          dataIr,
-          arms,
-          lowerFsPath(lowerer, expr.arguments.nodes[0]!),
-          lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, dataIr),
-          null,
-          false,
+        // append entries take one data kind). The path and the data
+        // evaluate once, in that order, before the tag test reads the data.
+        const pathLocal = lowerer.declareHiddenLocal("%writePath", STRING);
+        const dataLocal = lowerer.declareHiddenLocal("%writeData", dataIr);
+        const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+        const data = lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, dataIr);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+            { kind: "varDecl", localId: dataLocal.id, init: data, loc: data.loc },
+          ],
+          result: promiseStringOrBytesWrite(
+            lowerer,
+            dataIr,
+            arms,
+            varRef(pathLocal.id, pathLocal.type, loc),
+            varRef(dataLocal.id, dataLocal.type, loc),
+            null,
+            false,
+            loc,
+          ),
+          type: { kind: "promise", inner: VOID },
           loc,
-        );
+        };
       }
       return lowerStringOrBytesWrite(
         lowerer,

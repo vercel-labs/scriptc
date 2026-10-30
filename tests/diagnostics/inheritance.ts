@@ -58,7 +58,7 @@ class Bivariant extends Animal {
 }
 
 // An override may add TRAILING optional or defaulted parameters (corpus
-// 8517): the inherited slot keeps the base arity and fills the omitted
+// 8540): the inherited slot keeps the base arity and fills the omitted
 // values. A call that supplies one of the extras still needs the override's
 // own body, which a virtual slot cannot carry — a subclass below makes this
 // receiver virtual, so the surplus argument fences instead of vanishing.

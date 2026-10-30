@@ -10258,9 +10258,14 @@ function checkedElementConstruction(
   };
 }
 /** `new x.someLibMethod(...)`: a built-in method is not a constructor.
- * Node evaluates the receiver, then the arguments, then throws
- * `TypeError: <callee> is not a constructor` (V8 prints an anonymous
- * intermediate value as `(intermediate value)`). Null otherwise. */
+ * Node evaluates the receiver, reads the member, evaluates the arguments,
+ * then throws `TypeError: <callee> is not a constructor` (V8 prints an
+ * anonymous intermediate value as `(intermediate value)`). On a typed
+ * receiver and on %Iterator.prototype% the member is the built-in method.
+ * Any other checked-dynamic receiver may hold any value: the read throws
+ * Node's TypeError for undefined and null before any argument evaluates
+ * and runs an accessor, and a function it answers constructs as for any
+ * dynamic callee. Null otherwise. */
 function lowerNonConstructorNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   let callee = expr.expression;
   while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
@@ -10282,18 +10287,69 @@ function lowerNonConstructorNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     ts.isArrowFunction(receiver)
       ? "(intermediate value)"
       : ts.getTextOfNode(receiver);
+  const message = `${left}.${callee.name.text} is not a constructor`;
+  const recv = lowerer.lowerExpr(receiver);
+  // %Iterator.prototype% (scr_js_iterator.c) holds the runtime's helpers.
+  const intrinsic = recv.kind === "libCall" && recv.fn === "iterator.prototype";
+  if (intrinsic || (recv.type.kind !== "dyn" && recv.type.kind !== "union")) {
+    const stmts: IrStmt[] = [
+      { kind: "exprStmt", expr: recv, loc: locOf(receiver) },
+      ...args.map((arg): IrStmt => ({
+        kind: "exprStmt",
+        expr: lowerer.lowerExpr(arg),
+        loc: locOf(arg),
+      })),
+    ];
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: nodeThrowExpr(1, "", message, DYN, loc),
+      type: DYN,
+      loc,
+    };
+  }
+  const member = lowerer.declareHiddenLocal("%newMember", DYN);
   const stmts: IrStmt[] = [
-    { kind: "exprStmt", expr: lowerer.lowerExpr(receiver), loc: locOf(receiver) },
-    ...args.map((arg): IrStmt => ({
-      kind: "exprStmt",
-      expr: lowerer.lowerExpr(arg),
-      loc: locOf(arg),
-    })),
+    {
+      kind: "varDecl",
+      localId: member.id,
+      init: {
+        kind: "dynKeyGet",
+        key: strLit(callee.name.text, loc),
+        value: lowerer.coerceToExpected(recv, DYN),
+        type: DYN,
+        loc: locOf(callee),
+      },
+      loc: locOf(callee),
+    },
   ];
+  const argRefs = args.map((arg): IrExpr => {
+    const local = lowerer.declareHiddenLocal("%newArg", DYN);
+    stmts.push({
+      kind: "varDecl",
+      localId: local.id,
+      init: lowerer.coerceToExpected(lowerer.lowerExpr(arg), DYN),
+      loc: locOf(arg),
+    });
+    return varRef(local.id, DYN, loc);
+  });
   return {
     kind: "seqExpr",
     stmts,
-    result: nodeThrowExpr(1, "", `${left}.${callee.name.text} is not a constructor`, DYN, loc),
+    result: {
+      kind: "ternary",
+      cond: {
+        kind: "dynTest",
+        test: "function",
+        value: varRef(member.id, DYN, loc),
+        type: BOOL,
+        loc,
+      },
+      then: checkedClassConstruction(lowerer, varRef(member.id, DYN, loc), argRefs, loc),
+      else_: nodeThrowExpr(1, "", message, DYN, loc),
+      type: DYN,
+      loc,
+    },
     type: DYN,
     loc,
   };

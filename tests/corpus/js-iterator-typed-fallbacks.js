@@ -106,6 +106,43 @@ t("new Iterator.prototype.map", () => new Iterator.prototype.map(() => 0));
 // @ts-expect-error a method is not a constructor
 t("new array map", () => new [].map(String));
 
+// Node reads the member before the arguments evaluate. A receiver the
+// checker types as an array but that holds another value at run time
+// throws the read's TypeError for undefined and null, runs an accessor,
+// and constructs a function the member holds.
+const order = [];
+const arg = (v) => (order.push(`arg ${v}`), v);
+/** @param {number[]} a */
+function newMap(a) {
+  // @ts-expect-error a method is not a constructor
+  return new a.map(arg(1));
+}
+function Made(v) {
+  this.made = v;
+}
+const loose = (/** @type {any} */ v) => v;
+const getter = {
+  get map() {
+    order.push("get map");
+    return Made;
+  },
+};
+t("new map on array", () => newMap([1]).made);
+t("new map on null", () => newMap(loose(null)).made);
+t("new map on undefined", () => newMap(loose(undefined)).made);
+t("new map on own constructor", () => newMap(loose({ map: Made })).made);
+t("new map through getter", () => newMap(loose(getter)).made);
+t("new map on own number", () => newMap(loose({ map: 1 })).made);
+console.log(order.join(", "));
+/** @param {string | null} s */
+function newSlice(s) {
+  // @ts-expect-error a method is not a constructor
+  return new s.slice(arg(2));
+}
+t("new slice on string", () => newSlice("x"));
+t("new slice on null", () => newSlice(null));
+console.log(order.join(", "));
+
 // A `let` generator binding reassigned with a stage: the binding holds the
 // runtime's helper object (the declared type cannot hold it), and the
 // helpers keep answering.

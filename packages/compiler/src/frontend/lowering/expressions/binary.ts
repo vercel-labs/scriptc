@@ -2662,8 +2662,22 @@ export function lowerStrictEquality(
     // here, so the pointer would answer false against Node's true. The
     // operands' declarations decide it, not their compiled instances.
     const leftDecl = genericDeclarationBehindValue(lowerer, leftNode, true);
-    if (leftDecl !== null && leftDecl === genericDeclarationBehindValue(lowerer, rightNode, true))
-      return boolLit(!negated, loc);
+    if (leftDecl !== null && leftDecl === genericDeclarationBehindValue(lowerer, rightNode, true)) {
+      // JavaScript evaluates both operands, left first, before it compares
+      // them — and a read of a binding still in its temporal dead zone
+      // throws there. The declaration decides the answer, but the reads
+      // keep their place, in that order.
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: idLeft, loc },
+          { kind: "exprStmt", expr: idRight, loc },
+        ],
+        result: boolLit(!negated, loc),
+        type: BOOL,
+        loc,
+      };
+    }
     return {
       kind: "bin",
       op: negated ? "!==" : "===",

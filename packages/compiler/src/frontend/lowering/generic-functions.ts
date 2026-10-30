@@ -153,6 +153,18 @@ export interface GenericFnInfo {
   valueInstances?: Set<string>;
 }
 
+/** The temporal-dead-zone flag of a module-scope generic ALIAS binding
+ * (`const h = id`): an alias names a generic declaration, so it has no
+ * runtime value of its own — a read that can run before the declaration
+ * checks this flag instead of a binding. */
+export interface GenericAliasPresence {
+  flagId: string;
+  name: string;
+  decl: ts.VariableDeclaration;
+  /** useRunsAfter's answers for the declarations it placed. */
+  ordering: Map<ts.Node, boolean>;
+}
+
 /** One enclosing-frame value a generic arrow/function-expression binding
  * reads (GenericFnInfo.captures). `nameNode` is the binding's own
  * declaration identifier: declaring a local for it binds the SYMBOL, so
@@ -364,7 +376,7 @@ export function lowerGenericCall(
       type: instance.returnType,
       loc,
     };
-    return guardEarlyBindingCall(lowerer, info, expr, call);
+    return guardEarlyAliasCall(lowerer, expr, guardEarlyBindingCall(lowerer, info, expr, call));
   }
   // The enclosing-frame values follow the declared arguments, the order
   // the instance takes them in (lowerGenericInstance).
@@ -378,7 +390,7 @@ export function lowerGenericCall(
     type: instance.returnType,
     loc,
   };
-  return guardEarlyBindingCall(lowerer, info, expr, call);
+  return guardEarlyAliasCall(lowerer, expr, guardEarlyBindingCall(lowerer, info, expr, call));
 }
 
 /** The instance a CALL of a generic function-like names: resolved
@@ -1487,7 +1499,13 @@ export function lowerGenericFnValue(
     const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
     lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
     lowerer.noteEdge(inst.name);
-    return { kind: "closure", fnName: inst.name, captures: [], type: funcType, loc };
+    return aliasTdzGuard(lowerer, ref, {
+      kind: "closure",
+      fnName: inst.name,
+      captures: [],
+      type: funcType,
+      loc,
+    });
   }
   // Each call of the enclosing function makes a new function object for a
   // binding declared inside it (`make() !== make()` when make returns
@@ -1545,14 +1563,58 @@ export function lowerGenericFnValue(
   // (lower-calls.ts, genericValueCall). `f === f` still holds: the erased
   // instance is one interned closure per declaration.
   if (!target || target.getTypeParameters().length > 0) {
-    return guardEarlyBindingValue(lowerer, info, ref, erasedGenericFnValue(lowerer, ref, info));
+    return aliasTdzGuard(
+      lowerer,
+      ref,
+      guardEarlyBindingValue(lowerer, info, ref, erasedGenericFnValue(lowerer, ref, info)),
+    );
   }
-  return guardEarlyBindingValue(
+  return aliasTdzGuard(
     lowerer,
-    info,
     ref,
-    pinnedGenericClosure(lowerer, ref, info, target, fenceUnpinned),
+    guardEarlyBindingValue(
+      lowerer,
+      info,
+      ref,
+      pinnedGenericClosure(lowerer, ref, info, target, fenceUnpinned),
+    ),
   );
+}
+
+/** A read of a generic ALIAS binding (`const h = id`) that can run before
+ * the alias's declaration: the alias has no binding storage, so JavaScript
+ * reaches its temporal dead zone through the flag the declaration sets —
+ * the read throws before it hands out the function. Reads that can only
+ * run after the declaration stay direct. */
+function aliasTdzGuard(lowerer: Lowerer, ref: ts.Expression, value: IrExpr): IrExpr {
+  const presence = earlyAliasPresence(lowerer, ref);
+  if (presence === undefined) return value;
+  const loc = value.loc;
+  const flag: IrExpr = { kind: "varRef", localId: presence.flagId, type: BOOL, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [tdzCheck(flag, presence.name, loc)],
+    result: value,
+    type: value.type,
+    loc,
+  };
+}
+
+/** The flag of a generic ALIAS binding that `node`, a reference to it,
+ * can reach before its declaration runs — undefined when the node names no
+ * alias, or names one whose declaration has already run. */
+function earlyAliasPresence(lowerer: Lowerer, node: ts.Node): GenericAliasPresence | undefined {
+  const ident = ts.isIdentifier(node)
+    ? node
+    : ts.isExpressionWithTypeArguments(node) && ts.isIdentifier(node.expression)
+      ? node.expression
+      : undefined;
+  if (ident === undefined) return undefined;
+  const symbol = lowerer.resolveValueSymbol(ident);
+  const presence = symbol === null ? undefined : lowerer.genericAliasPresence.get(symbol);
+  if (presence === undefined) return undefined;
+  if (useRunsAfter(lowerer, presence.decl, ident, presence.ordering, new Set())) return undefined;
+  return presence;
 }
 
 /** The value of a generic declaration read where no concrete instantiation
@@ -3628,6 +3690,23 @@ function guardEarlyBindingValue(
   };
 }
 
+/** A call through a generic ALIAS binding (`h(3)`) that can run before the
+ * alias's declaration: JavaScript reads the callee first, so the temporal
+ * dead zone throws before the arguments evaluate. */
+function guardEarlyAliasCall(lowerer: Lowerer, expr: ts.CallExpression, call: IrExpr): IrExpr {
+  const presence = earlyAliasPresence(lowerer, expr.expression);
+  if (presence === undefined) return call;
+  const loc = call.loc;
+  const flag: IrExpr = { kind: "varRef", localId: presence.flagId, type: BOOL, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [tdzCheck(flag, presence.name, loc)],
+    result: call,
+    type: call.type,
+    loc,
+  };
+}
+
 /** The presence flag a use that can run before the declaration checks.
  * Only module-scope bindings have one: a binding inside a function would
  * need a per-call flag that its closures share. */
@@ -3690,7 +3769,59 @@ export function bindingGenericFnAliasInfoOf(
   const name = decl.name.text;
   requireStableGenericBinding(lowerer, decl, sym, name);
   lowerer.genericFnsBySymbol.set(sym, target);
+  noteAliasPresence(lowerer, decl, sym, name);
   return target;
+}
+
+/** Records the temporal-dead-zone flag of a module-scope alias whose reads
+ * can run before its declaration — a hoisted function called during module
+ * evaluation reads the binding while JavaScript still has it in its dead
+ * zone, and the alias has no storage of its own to throw from. The
+ * declaration statement sets the flag (genericAliasPresenceStore) and the
+ * early reads check it. Aliases declared inside functions keep the
+ * existing fences: a per-call flag would need a closure shared with every
+ * reader. */
+function noteAliasPresence(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  symbol: ts.Symbol,
+  name: string,
+): void {
+  const stmt = decl.parent?.parent;
+  const list = stmt?.parent;
+  if (stmt === undefined || list === undefined) return;
+  if (!ts.isSourceFile(list) && !ts.isModuleBlock(list)) return;
+  const nameNode = decl.name as ts.Identifier;
+  const ordering = new Map<ts.Node, boolean>();
+  const early = bindingReferences(lowerer, ts.getSourceFileOfNode(decl), symbol, nameNode).some(
+    (ref) => !useRunsAfter(lowerer, decl, ref, ordering, new Set()),
+  );
+  if (!early) return;
+  const flagId = `%g.${lowerer.qualify(
+    ts.getSourceFileOfNode(decl),
+    nsPathPrefix(lowerer, stmt, decl) + name,
+  )}%initialized`;
+  lowerer.globalsList.push({ id: flagId, name: "%initialized", type: BOOL, mutable: true });
+  lowerer.genericAliasPresence.set(symbol, { flagId, name, decl, ordering });
+}
+
+/** The statement that records a generic alias's declaration as run, for
+ * an alias with a presence flag. */
+export function genericAliasPresenceStore(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): IrStmt | null {
+  if (!ts.isIdentifier(decl.name)) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+  const presence = symbol === undefined ? undefined : lowerer.genericAliasPresence.get(symbol);
+  if (presence === undefined) return null;
+  const loc = locOf(decl);
+  return {
+    kind: "assign",
+    localId: presence.flagId,
+    value: { kind: "boolLit", value: true, type: BOOL, loc },
+    loc,
+  };
 }
 
 /** Static resolution stands in for the receiver's runtime value, so an

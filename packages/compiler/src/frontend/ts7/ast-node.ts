@@ -14,7 +14,7 @@ import {
   type AstFileReference,
   type AstNodeHandle,
 } from "./ast-wire.js";
-import type { SourceFile } from "./ast-types.js";
+import type { ImportClause, SourceFile } from "./ast-types.js";
 import { SyntaxKind, NodeFlags } from "./enums.js";
 
 /** Receives the file name of a source file whose raw text or line
@@ -32,6 +32,17 @@ export function observeSourceText(observer: ((fileName: string) => void) | undef
  * list field returns a new AstNodeList over the same array, so `nodes` keeps
  * its identity and a decoded file holds no list objects. The position is
  * decoded from the wire when it is read; most readers only use `nodes`. */
+/** An import clause's `phaseModifier` for TypeScript 7.1's `import source`,
+ * which TypeScript 7.0's syntax kinds have no keyword for. */
+export const SOURCE_PHASE_MODIFIER = -1;
+
+/** Whether `clause` is an `import source` clause (`SOURCE_PHASE_MODIFIER`). */
+export function isSourcePhaseImport(clause: ImportClause | undefined): boolean {
+  if (clause === undefined) return false;
+  const phase: number | undefined = clause.phaseModifier;
+  return phase === SOURCE_PHASE_MODIFIER;
+}
+
 export class AstNodeList<T extends AstNode = AstNode> {
   constructor(
     private readonly wire: AstWireFile,
@@ -629,6 +640,7 @@ export class AstNode {
   get phaseModifier(): number | undefined {
     if (this.kind !== AstKind.ImportClause) return undefined;
     const value = (this.data >>> 24) & 3;
+    if (value === 3) return SOURCE_PHASE_MODIFIER;
     return value === 1 ? AstKind.TypeKeyword : value === 2 ? AstKind.DeferKeyword : undefined;
   }
   get token(): number | undefined {

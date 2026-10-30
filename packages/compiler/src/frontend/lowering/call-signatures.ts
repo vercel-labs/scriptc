@@ -1200,6 +1200,15 @@ export function lambdaSignature(
   // is the one the adoption block below takes for mappable inferred
   // returns, so this only changes programs that do not compile today.
   //
+  // A lambda RETURNED from the function being lowered flows into that
+  // function's result type, which OBSERVES its value — the checker's void
+  // contextual type at such a site comes from an outer assignment target
+  // that would discard the enclosing function's own result. So the void
+  // adoption below must not fire there: `{ on: (h) => () => seen.push("y") }`
+  // against a `(h) => void` field types the inner arrow `() => number`
+  // (its own type) while its contextual type is the discarded `() => void`,
+  // and the outer arrow's result is the `() => number` that must return it.
+  const returnedValue = returnedIntoValueSlot(lowerer, node);
   // The contextual signature is looked up at most once per lambda: both
   // this decision and the adoption block below need it, and the checker
   // call is not free in a compile this hot.
@@ -1217,6 +1226,7 @@ export function lambdaSignature(
     ts.isArrowFunction(node) && !ts.isBlock(node.body) && isStreamUndefCallExpr(lowerer, node.body)
       ? VOID
       : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+          !returnedValue &&
           voidContextualSlot(lowerer, node, contextualSigs)
         ? VOID
         : lowerer.declaredReturnType(node, node);
@@ -1344,6 +1354,7 @@ export function lambdaSignature(
     if (
       !literalMethod &&
       !isAsyncLike &&
+      !returnedValue &&
       !node.type &&
       !inferredLiteral &&
       ret.kind !== "void" &&
@@ -1402,6 +1413,20 @@ function voidContextualSlot(
     sigs.length === 1 &&
     (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0
   );
+}
+
+/** Whether `node` is the expression of a `return` in the function being
+ * lowered, and that function's result is a function type promising a
+ * value (`() => number`, not `() => void`). Such a lambda's value reaches
+ * the caller of the enclosing function, so its own return type is kept
+ * even when the checker's contextual type for it is `void` (see the ABI
+ * decision in lambdaSignature). */
+function returnedIntoValueSlot(lowerer: Lowerer, node: ts.Node): boolean {
+  let parent: ts.Node | undefined = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+  if (parent === undefined || !ts.isReturnStatement(parent) || !parent.expression) return false;
+  const result = lowerer.ctx.returnType;
+  return result.kind === "func" && result.ret.kind !== "void";
 }
 
 /** The type of the property an object-literal method fills on the

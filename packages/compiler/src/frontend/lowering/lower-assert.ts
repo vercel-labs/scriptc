@@ -1290,6 +1290,30 @@ function lowerAssertEqual(
           ?.arms.every((arm) => instanceType(arm) || isUnitType(arm)) ??
           false))) &&
     lowerer.dynConvertible(e.type);
+  // A union under the strict pair, against a side that holds only
+  // primitives, null or undefined: both sides cross into the checked-dynamic
+  // tree. A composite arm crosses as a copy, which is honest here because
+  // no primitive is SameValue to an object; its failure message renders the
+  // copy as Node renders the value.
+  const primitive = (t: IrType): boolean =>
+    t.kind === "f64" ||
+    t.kind === "string" ||
+    t.kind === "bool" ||
+    t.kind === "bigint" ||
+    isUnitType(t) ||
+    (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms.every(primitive) ?? false));
+  const convertibleArms = (t: IrType): boolean =>
+    t.kind === "union" &&
+    lowerer.dynConvertible(t) &&
+    !typeReachesCycle(lowerer, t) &&
+    !typeReachesFunction(lowerer, t) &&
+    (lowerer.unions.get(t.unionId)?.arms.every((arm) => arm.kind !== "bytes") ?? false);
+  // Unions whose arms cannot cross (a nullable stream handle) keep the
+  // paths below.
+  const unionAgainstPrimitive =
+    !deep &&
+    ((convertibleArms(a.type) && primitive(b.type)) ||
+      (convertibleArms(b.type) && primitive(a.type)));
   // A nullable number, string or boolean (`number | null`) against a
   // scalar or null/undefined: under the strict pair each arm crosses by
   // value, so the checked-dynamic SameValue compare answers, and renders
@@ -1311,6 +1335,7 @@ function lowerAssertEqual(
     a.type.kind === "moduleNs" ||
     b.type.kind === "moduleNs" ||
     (instance(a) && instance(b)) ||
+    unionAgainstPrimitive ||
     strictNullable
   ) {
     const box = (e: IrExpr, node: ts.Expression): IrExpr => {
@@ -1324,6 +1349,7 @@ function lowerAssertEqual(
       const k = e.type.kind;
       const ok =
         e.kind === "unitLit" ||
+        (unionAgainstPrimitive && convertibleArms(e.type)) ||
         k === "f64" ||
         k === "string" ||
         k === "bool" ||
@@ -2518,6 +2544,7 @@ function assertThrowsHelper(
             varRef("ev.0", DYN, loc),
             m(),
             hm(),
+            boolLit(mode === "rejects", loc),
           ]),
           doReturn,
         ];

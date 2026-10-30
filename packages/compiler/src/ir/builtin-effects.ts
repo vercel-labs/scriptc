@@ -91,6 +91,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.onDyn",
   "text.decoderEncoding",
   "strdec.encoding",
+  "strdec.encodingValue",
   "strdec.writeDyn",
   "strdec.nextDyn",
   "dyn.construct",
@@ -161,6 +162,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "arrayBuffer.viewF64",
   "arrayBuffer.viewDV",
   "bytes.bufferSource",
+  "text.decoderInput",
+  "text.decoderFlag",
+  "text.decodeStreamOption",
+  "text.decoderEncodingOptions",
   "text.decodeBufferSource",
 
   "bigint.parse",
@@ -667,6 +672,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "str.encodeUriComponent",
   "str.encodeUri",
   "qs.escape",
+  "qs.escapeValue",
+  "qs.parseCustom",
+  "qs.stringifyCustom",
+  "qs.separator",
   "qs.stringify",
   // node:punycode's RangeErrors (encode/toASCII only past 32-bit deltas)
   // and String.fromCodePoint's for ucs2.encode.
@@ -792,6 +801,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsDescriptor",
   "child.propsOnDyn",
   "dyn.arrayProtoCall",
+  "dyn.arrayLikeProtoCall",
   "process.chdir",
   "os.getPriority",
   "os.setPriority",
@@ -992,6 +1002,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.connectCb",
   "net.connectPath",
   "net.connectPathCb",
+  // listen's port from a checked-dynamic first argument: ERR_SOCKET_BAD_PORT,
+  // or the fence for forms without a lowering.
+  "net.listenPortDyn",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
   "net.sockResetAndDestroy",
   // SocketAddress's option checks and parse()'s input check.

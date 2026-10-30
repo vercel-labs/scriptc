@@ -27,10 +27,9 @@ static bool scr_td_label_space(unsigned char c) {
   return c == 9 || c == 10 || c == 12 || c == 13 || c == 32;
 }
 
-double scr_text_decoder_encoding(const ScrDyn *label) {
-  if (!label || label->kind == SCR_DYN_UNDEF) return -1;
-  ScrStr *text = scr_dyn_string_coerce_js(label);
-  if (!text) return -1;
+/* The encoding id of a label that String() converted (borrowed), or
+ * Node's RangeError ERR_ENCODING_NOT_SUPPORTED. */
+static double scr_td_lookup(ScrStr *text) {
   size_t start = 0, end = text->len;
   while (start < end && scr_td_label_space((unsigned char)text->data[start])) start++;
   while (end > start && scr_td_label_space((unsigned char)text->data[end - 1])) end--;
@@ -43,11 +42,7 @@ double scr_text_decoder_encoding(const ScrDyn *label) {
       if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
       if (c != (unsigned char)candidate[j - start]) { matches = false; break; }
     }
-    if (matches) {
-      double result = scr_td_labels[i].encoding;
-      scr_str_release(text);
-      return result;
-    }
+    if (matches) return scr_td_labels[i].encoding;
   }
   static const char prefix[] = "The \"";
   static const char suffix[] = "\" encoding is not supported";
@@ -59,11 +54,85 @@ double scr_text_decoder_encoding(const ScrDyn *label) {
   memcpy(message + sizeof prefix - 1 + text->len, suffix, sizeof suffix);
   scr_throw_error_msg_code(SCR_ERR_RANGE, message, length, "ERR_ENCODING_NOT_SUPPORTED");
   free(message);
-  scr_str_release(text);
   return -1;
 }
 
-ScrStr *scr_text_decoder_name(double encoding) {
+double scr_text_decoder_encoding(const ScrDyn *label) {
+  if (!label || label->kind == SCR_DYN_UNDEF) return -1;
+  ScrStr *text = scr_dyn_string_coerce_js(label);
+  if (!text) return -1;
+  double result = scr_td_lookup(text);
+  scr_str_release(text);
+  return result;
+}
+
+/* TextDecoder's options argument, as Node's validateObject with
+ * kValidateObjectAllowObjectsAndNull checks it: null, objects, arrays and
+ * functions pass, as does undefined, which the parameter default replaces
+ * with an empty object; another primitive throws ERR_INVALID_ARG_TYPE. */
+static bool scr_td_options_ok(const ScrDyn *options) {
+  switch (options->kind) {
+    case SCR_DYN_BOOL:
+    case SCR_DYN_NUM:
+    case SCR_DYN_STR:
+    case SCR_DYN_SYMBOL:
+    case SCR_DYN_BIGINT:
+      scr_dyn_arg_type_fail("options", "of type object", options);
+      return false;
+    default:
+      return true;
+  }
+}
+
+/* options[name] with JS truthiness; undefined and null options read as
+ * false. A getter's exception stays pending. */
+bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name) {
+  if (options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL) return false;
+  ScrDyn *value;
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    /* A compiled record or class instance: its own fields, else its view. */
+    value = scr_dyn_typed_ref_key_get(options, name);
+    if (!value && !scr_exc_pending()) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(options);
+      if (!view) return false;
+      value = scr_dyn_obj_read(view, name->data, name->len);
+      scr_dyn_release(view);
+    }
+  } else {
+    value = scr_dyn_obj_read(options, name->data, name->len);
+  }
+  if (!value) return false;
+  bool truthy = scr_dyn_truthy(value);
+  scr_dyn_release(value);
+  return truthy;
+}
+
+/* decode(input, options): the options check, then options.stream. */
+bool scr_text_decode_stream_option(const ScrDyn *options) {
+  if (!scr_td_options_ok(options)) return false;
+  ScrStr *name = scr_str_new("stream", 6);
+  bool stream = scr_text_decoder_flag(options, name);
+  scr_str_release(name);
+  return stream;
+}
+
+/* new TextDecoder(label, options) with options outside an object literal,
+ * in Node's order: String(label) (an undefined label is utf-8), the
+ * options check, then the label lookup. */
+double scr_text_decoder_encoding_options(const ScrDyn *label, const ScrDyn *options) {
+  ScrStr *text = label->kind == SCR_DYN_UNDEF ? NULL : scr_dyn_string_coerce_js(label);
+  if (!text && label->kind != SCR_DYN_UNDEF) return -1;
+  if (!scr_td_options_ok(options)) {
+    if (text) scr_str_release(text);
+    return -1;
+  }
+  if (!text) return -1;
+  double result = scr_td_lookup(text);
+  scr_str_release(text);
+  return result;
+}
+
+static const char *scr_td_encoding_name(double encoding) {
   static const char *names[] = {
     "ibm866", "iso-8859-2", "iso-8859-3", "iso-8859-4", "iso-8859-5",
     "iso-8859-6", "iso-8859-7", "iso-8859-8", "iso-8859-10", "iso-8859-13",
@@ -74,7 +143,11 @@ ScrStr *scr_text_decoder_name(double encoding) {
     "gb18030", "big5", "euc-jp", "iso-2022-jp", "shift_jis", "euc-kr",
     "iso-8859-8-i", "gbk",
   };
-  const char *name = encoding < 0 ? "utf-8" : names[(unsigned)encoding];
+  return encoding < 0 ? "utf-8" : names[(unsigned)encoding];
+}
+
+ScrStr *scr_text_decoder_name(double encoding) {
+  const char *name = scr_td_encoding_name(encoding);
   return scr_str_new(name, strlen(name));
 }
 
@@ -1363,6 +1436,43 @@ ScrBytes *scr_bytes_buffer_source(const ScrDyn *value) {
   return NULL;
 }
 
+/* TextDecoder.decode's input: an ArrayBuffer, SharedArrayBuffer or view
+ * as a u8 view of its bytes, and undefined as no bytes. Any other value
+ * throws Node's ERR_INVALID_ARG_TYPE, whose text depends on the decoder:
+ * the single-byte decoders and a utf-8 decode that continues or starts a
+ * stream (`stream`, or bytes `state` holds from one) describe the value
+ * they received; a whole utf-8 decode names the "list" argument; the
+ * utf-16 and multi-byte decoders name "input". */
+ScrBytes *scr_text_decoder_input(const ScrDyn *value, double encoding, const ScrDyn *state, bool stream) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
+    if (!materialized) return NULL;
+    ScrBytes *result = scr_text_decoder_input(materialized, encoding, state, stream);
+    scr_dyn_release(materialized);
+    return result;
+  }
+  if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value))
+    return scr_bytes_buffer_source(value);
+  bool partial = stream;
+  if (!partial && encoding < 0 && state->kind == SCR_DYN_OBJ) {
+    ScrDyn *saved = scr_dyn_obj_read(state, "pending", 7);
+    partial = saved->kind == SCR_DYN_BYTES && saved->v.bytes->len > 0;
+    scr_dyn_release(saved);
+  }
+  /* Ids below 28 (through x-user-defined) and 36 (iso-8859-8-i) are the
+   * single-byte decoders. */
+  bool single_byte = encoding >= 0 && (encoding < 28 || encoding == 36);
+  if (single_byte || (encoding < 0 && partial)) {
+    scr_dyn_arg_type_fail("input", "an instance of ArrayBuffer or ArrayBufferView", value);
+    return NULL;
+  }
+  static const char list[] = "The \"list\" argument must be an instance of SharedArrayBuffer, ArrayBuffer or ArrayBufferView.";
+  static const char input[] = "The \"input\" argument must be an instance of SharedArrayBuffer, ArrayBuffer or ArrayBufferView.";
+  if (encoding < 0) scr_throw_error_msg_code(SCR_ERR_TYPE, list, sizeof list - 1, "ERR_INVALID_ARG_TYPE");
+  else scr_throw_error_msg_code(SCR_ERR_TYPE, input, sizeof input - 1, "ERR_INVALID_ARG_TYPE");
+  return NULL;
+}
+
 ScrStr *scr_text_decode_buffer_source(const ScrDyn *value) {
   ScrBytes *view = scr_bytes_buffer_source(value);
   if (!view) return NULL;
@@ -1685,8 +1795,10 @@ static void scr_td_error(ScrTdOut *out) {
   scr_td_put(out, 0xfffd);
 }
 
+/* NULL when a fatal decoder met invalid data: the caller throws, naming
+ * the decoder's encoding. */
 static ScrStr *scr_td_finish(ScrTdOut *out, bool fatal) {
-  if (fatal && out->failed) { free(out->data); scr_td_invalid("legacy encoding"); return NULL; }
+  if (fatal && out->failed) { free(out->data); return NULL; }
   ScrStr *str = scr_str_new(out->data, out->len);
   free(out->data);
   return str;
@@ -2180,9 +2292,7 @@ static ScrStr *scr_td_iso_2022_jp_decode(const ScrBytes *b, bool fatal) {
   return scr_td_finish(&out, fatal);
 }
 
-ScrStr *scr_text_decode_legacy_options(const ScrBytes *b, double encoding_value, bool fatal, bool ignore_bom) {
-  SCR_BYTES_SNAPSHOT(b);
-  unsigned encoding = (unsigned)encoding_value;
+static ScrStr *scr_td_legacy_decode(const ScrBytes *b, unsigned encoding, bool fatal, bool ignore_bom) {
   if (encoding == 36) encoding = 7; /* ISO-8859-8-I */
   if (encoding == 37) encoding = SCR_TD_GB18030; /* GBK */
   if (encoding < SCR_TD_SINGLE_COUNT) return scr_td_single_byte(b, encoding, fatal);
@@ -2198,6 +2308,15 @@ ScrStr *scr_text_decode_legacy_options(const ScrBytes *b, double encoding_value,
     case SCR_TD_EUC_KR: return scr_td_euc_kr_decode(b, fatal);
     default: return scr_str_new("", 0); /* compiler invariant */
   }
+}
+
+/* A fatal decoder's invalid data throws Node's TypeError, which names the
+ * decoder's encoding (iso-8859-8-i and gbk keep their own names). */
+ScrStr *scr_text_decode_legacy_options(const ScrBytes *b, double encoding_value, bool fatal, bool ignore_bom) {
+  SCR_BYTES_SNAPSHOT(b);
+  ScrStr *result = scr_td_legacy_decode(b, (unsigned)encoding_value, fatal, ignore_bom);
+  if (!result) scr_td_invalid(scr_td_encoding_name(encoding_value));
+  return result;
 }
 ScrStr *scr_text_decode_legacy(const ScrBytes *b, double encoding_value) {
   return scr_text_decode_legacy_options(b, encoding_value, false, false);
@@ -2754,8 +2873,8 @@ ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
 /* new StringDecoder(encoding) with an encoding known only at run time:
  * Node's normalizeEncoding. undefined, null and "" are utf8; a Buffer
  * encoding name in any ASCII case answers its canonical name (+1); any
- * other string throws ERR_UNKNOWN_ENCODING (NULL). Encodings that are not
- * strings have no lowering. */
+ * other string throws ERR_UNKNOWN_ENCODING (NULL). Encodings that may not
+ * be strings go through scr_strdec_encoding_value (scr_inspect.c). */
 ScrStr *scr_strdec_encoding(const ScrDyn *enc) {
   if (enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL) return scr_str_new("utf8", 4);
   if (enc->kind != SCR_DYN_STR) {

@@ -26,12 +26,14 @@ import {
   canDynCheckTo,
   isDynTypedRefType,
   isUnitType,
+  recordTextCodecClass,
   shapeHasAccessorSlots,
   typeEquals,
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { heldEnvValueType } from "../builtins/environment.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
 import { lowerEnumAccess } from "../lower-enums.js";
 import { fenceNodeModuleMutation, lowerRequireCacheElement } from "../lower-node-module.js";
@@ -240,6 +242,25 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     };
     return lowerer.maybeNarrow(get, expr);
   }
+  // `held[expr]` for a value HELD from process.env (`const env =
+  // process.env`): the hold aliases the live table, so the read is the same
+  // getenv the direct spelling uses.
+  {
+    const live = heldEnvValueType(lowerer, expr.expression);
+    if (live !== null) {
+      const key = lowerEnvironmentKey(lowerer, expr.argumentExpression);
+      if (key.type.kind === "string") {
+        const get: IrExpr = {
+          kind: "libCall",
+          fn: "process.envGet",
+          args: [key],
+          type: live,
+          loc: locOf(expr),
+        };
+        return lowerer.maybeNarrow(get, expr);
+      }
+    }
+  }
   // Expando function members in element clothing (`foo[strMem]`,
   // `foo[_private]` where foo is a module-level function/callable const
   // and the key folds or is a unique-symbol const): the member's module
@@ -259,6 +280,28 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const target = symbolFieldTarget(lowerer, expr);
     if (target) return lowerer.maybeNarrow(lowerer.fieldGetExpr(target, locOf(expr), expr), expr);
     let receiver = lowerer.lowerExpr(expr.expression);
+    // TextEncoder and TextDecoder define Symbol.toStringTag on their
+    // prototypes as the class name.
+    const codec =
+      receiver.type.kind === "record"
+        ? recordTextCodecClass(lowerer.shapes.get(receiver.type.shapeId)!)
+        : null;
+    const key = expr.argumentExpression;
+    if (
+      codec !== null &&
+      ts.isPropertyAccessExpression(key) &&
+      key.name.text === "toStringTag" &&
+      lowerer.isStdlibGlobal(key.expression, "Symbol")
+    ) {
+      const loc = locOf(expr);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+        result: { kind: "strLit", value: codec, type: STRING, loc },
+        type: STRING,
+        loc,
+      };
+    }
     const classInfo =
       receiver.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
     if (
@@ -2267,8 +2310,14 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     };
   }
   // `process.env[key] = v` — the computed twin of the dotted env write:
-  // setenv(3), string keys and string values only.
-  if (lowerer.isProcessEnv(target.expression) && !target.questionDotToken) {
+  // setenv(3), string keys and string values only. A key write through a
+  // value HELD from process.env takes the same path: the hold aliases the
+  // live table.
+  if (
+    !target.questionDotToken &&
+    (lowerer.isProcessEnv(target.expression) ||
+      heldEnvValueType(lowerer, target.expression) !== null)
+  ) {
     const loc = locOf(expr);
     const key = lowerEnvironmentKey(lowerer, target.argumentExpression);
     if (key.type.kind !== "string") {

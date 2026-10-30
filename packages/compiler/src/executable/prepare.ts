@@ -819,7 +819,6 @@ function cjsNamespaceIslands(
   return grown.size === known.size ? null : grown;
 }
 
-
 /** The island modules grown by the lowering's refusals in user JavaScript
  * (`--node-islands=auto` only), or null when there are none: a sloppy
  * module whose semantics the native pipeline refuses (an implicit global,
@@ -854,7 +853,6 @@ function loweringModules(
   }
   return grown.size === known.size ? null : grown;
 }
-
 
 /** Preflight refusals at import statements of natively compiled npm
  * packages (`--node-islands=auto` only): those packages become islands. */

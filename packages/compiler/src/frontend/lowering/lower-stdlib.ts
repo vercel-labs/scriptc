@@ -2253,9 +2253,7 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   // SPEC §5.1: a specifier no constant expression names may still be
   // bounded to a set of values; that site lowers a selector.
   if (specifier === null) return lowerBoundedDynamicImport(lowerer, call, arg);
-  const res = lowerer.dynImports.get(
-    `${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`,
-  );
+  const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
   if (res.kind === "program-module") {

@@ -305,9 +305,20 @@ export class GeneratorDynamicDispatch {
         const loc = dispatch.fn.loc;
         const receiver = varRef("p.0", DYN, loc);
         const mode = dispatch.source.method as "next" | "return" | "throw";
-        const result = genResultRecord(type.yieldT, type.retT, lowerer.shapes, lowerer.unions)!;
-        const resultType: IrType = type.async ? { kind: "promise", inner: result } : result;
         const supplied = dispatch.source.args.length > 0;
+        // A supplied value through a void return channel completes the
+        // generator with it (see widenedReturnRecord): the runtime parks it
+        // in the type-erased RET slot, so the record widens rather than
+        // refusing. `.return()` with no argument keeps the plain record.
+        // An async generator settles through the declaration's record, which
+        // this call site cannot widen, so it keeps the fence.
+        const widened = mode === "return" && type.retT.kind === "void" && supplied && !type.async;
+        const result = (
+          widened
+            ? genResultRecord(type.yieldT, DYN, lowerer.shapes, lowerer.unions)
+            : genResultRecord(type.yieldT, type.retT, lowerer.shapes, lowerer.unions)
+        )!;
+        const resultType: IrType = type.async ? { kind: "promise", inner: result } : result;
         const incoming = supplied ? varRef("p.1", DYN, loc) : dynUndefinedExpr(loc);
         const channel = mode === "next" ? type.nextT : type.retT;
         // return() with no value completes with undefined, as the typed
@@ -315,11 +326,13 @@ export class GeneratorDynamicDispatch {
         const arg =
           mode === "throw"
             ? incoming
-            : channel.kind === "undefinedT" ||
-                channel.kind === "void" ||
-                (mode === "return" && !supplied)
-              ? null
-              : lowerer.coerceToExpected(incoming, channel);
+            : widened
+              ? incoming
+              : channel.kind === "undefinedT" ||
+                  channel.kind === "void" ||
+                  (mode === "return" && !supplied)
+                ? null
+                : lowerer.coerceToExpected(incoming, channel);
         const convertible = canConvertToDyn(
           resultType,
           (id) => lowerer.shapes.get(id),
@@ -327,7 +340,7 @@ export class GeneratorDynamicDispatch {
         );
         const body: IrStmt[] = [];
         // A void return channel cannot store a supplied completion value.
-        if (mode === "return" && type.retT.kind === "void" && supplied)
+        if (mode === "return" && type.retT.kind === "void" && supplied && !widened)
           body.push({
             kind: "if",
             cond: {
@@ -367,8 +380,9 @@ export class GeneratorDynamicDispatch {
           loc,
         });
         const valid =
-          convertible && (arg === null || mode === "throw" || typeEquals(arg.type, channel));
-        if (valid && mode === "return" && arg !== null)
+          convertible &&
+          (widened || arg === null || mode === "throw" || typeEquals(arg.type, channel));
+        if (valid && !widened && mode === "return" && arg !== null)
           body.push({
             kind: "if",
             cond: { kind: "dynTest", test: "undefined", value: incoming, type: BOOL, loc },

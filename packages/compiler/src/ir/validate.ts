@@ -6516,7 +6516,11 @@ function validateFunction(
             );
           }
         } else if (e.mode === "return") {
-          if (e.arg !== null && !typeEquals(e.arg.type, genT.retT)) {
+          // A void return channel still completes with the value `.return(v)`
+          // supplies (widenedReturnRecord): the runtime parks it in the
+          // type-erased RET slot, so a checked value is valid there.
+          const widened = genT.retT.kind === "void" && e.arg?.type.kind === "dyn";
+          if (e.arg !== null && !widened && !typeEquals(e.arg.type, genT.retT)) {
             err(
               `return argument ${typeKey(e.arg.type)} != return channel ${typeKey(genT.retT)}`,
               e.loc,

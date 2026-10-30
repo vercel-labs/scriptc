@@ -43,6 +43,18 @@ export function resultRecordOf(lowerer: Lowerer, genT: GenType): IrType & { kind
   return rec;
 }
 
+/** The result record of `.return(value)` on a generator whose return
+ * channel carries no value: ECMAScript completes the generator with the
+ * supplied value, so the call site's record carries it as a checked
+ * value. The runtime parks it in the type-erased RET slot and promotes it
+ * to OUT when the GENRET unwind completes, so only the record's value
+ * field and the result thunk change — never the generator's own type. */
+export function widenedReturnRecord(lowerer: Lowerer, genT: GenType): IrType & { kind: "record" } {
+  const rec = genResultRecord(genT.yieldT, DYN, lowerer.shapes, lowerer.unions);
+  if (!rec) throw new InternalCompilerError("lowerer bug: widened generator result record");
+  return rec;
+}
+
 /** The undefined value coerced into a yield/return channel — `yield;`,
  * `.return()`'s absent argument evaluated as a value. Null when the
  * channel cannot hold undefined. */
@@ -134,7 +146,7 @@ export function lowerGenMethodCall(
   if (gen.type.kind !== "generator") return null;
   const genT = gen.type;
   const recT = resultRecordOf(lowerer, genT);
-  const resultT: IrType = genT.async ? { kind: "promise", inner: recT } : recT;
+  let resultT: IrType = genT.async ? { kind: "promise", inner: recT } : recT;
   const argNode = call.arguments.nodes[0];
   let arg: IrExpr | null = null;
   if (name === "next") {
@@ -165,11 +177,22 @@ export function lowerGenMethodCall(
   } else if (name === "return") {
     if (argNode === undefined) {
       arg = null; // undefined done-value
+    } else if (genT.retT.kind === "void" && !genT.async) {
+      // A generator whose body never returns a value still completes with
+      // the value `.return(v)` supplies: ECMAScript has no valueless return
+      // channel, and the runtime parks this in the type-erased RET slot and
+      // promotes it to OUT when the unwind completes. The call site's
+      // record widens to a checked value; the generator's own type does not,
+      // so a program that never supplies one keeps its IR. An async
+      // generator settles through its declaration's record, which the call
+      // site cannot widen, so it keeps the refusal below.
+      arg = lowerer.lowerExprExpecting(argNode, DYN);
+      resultT = widenedReturnRecord(lowerer, genT);
     } else if (genT.retT.kind === "void") {
       lowerer.unsupported(
         "SC1071",
         call,
-        ".return(value) on a generator whose return type carries no value (call .return() with no argument)",
+        ".return(value) on an async generator whose return type carries no value (call .return() with no argument)",
       );
     } else {
       arg = lowerer.lowerExprExpecting(argNode, genT.retT);

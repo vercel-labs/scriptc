@@ -52,14 +52,20 @@ function adoptionKey(t: IrType): string {
  * (dyn.adoptShared): every source object or array that something else still
  * references becomes a live capsule of the native value built from it, so
  * writes through either reference reach the same object, as in Node.js. The
- * check and the adoption run in one helper per target type. */
+ * check and the adoption run in one helper per target type.
+ *
+ * `adopt: false` keeps the plain conversion. An evolving array source uses
+ * it: the conversion builds a native array of the target element type, and a
+ * later write of another element type through the source would fail that
+ * element check, where Node keeps one array of an unsettled element type. */
 export function adoptingDynCheck(
   lowerer: Lowerer,
   value: IrExpr,
   target: IrType,
   loc: SrcLoc,
+  adopt = true,
 ): IrExpr {
-  if (!holdsReference(lowerer, target) || freshDynValue(value))
+  if (!adopt || !holdsReference(lowerer, target) || freshDynValue(value))
     return { kind: "dynCheck", value, type: target, loc };
   const key = `dynadopt:${adoptionKey(target)}`;
   let name = lowerer.coercions.retags.get(key);

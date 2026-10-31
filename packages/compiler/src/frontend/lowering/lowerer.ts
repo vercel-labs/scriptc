@@ -739,6 +739,7 @@ import {
   matchGroupsPatternSource,
   isGuardedRecordRead,
   holdsEvolvingArray,
+  namesEvolvingArray,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -12693,8 +12694,11 @@ export class Lowerer {
    * value's type is one of its arms, wrap it in a `unionWrap` carrying the
    * arm's canonical tag. Same-union values pass through untouched; anything
    * else (including a DIFFERENT union) is left for requireExactShape, which
-   * rejects union mismatches with SC2003. */
-  coerceToExpected(expr: IrExpr, expected: IrType): IrExpr {
+   * rejects union mismatches with SC2003. `source` is the TypeScript node the
+   * value was lowered from, when the caller knows it: an evolving array
+   * binding there converts by copying rather than adopting
+   * (namesEvolvingArray). */
+  coerceToExpected(expr: IrExpr, expected: IrType, source?: ts.Node): IrExpr {
     // A comma expression ending in a unit literal (`return log(), null`):
     // its effects run first, unchanged, and the unit value takes the
     // destination's representation (a bare unit literal has none).
@@ -12703,7 +12707,7 @@ export class Lowerer {
       expr.result.kind === "unitLit" &&
       !typeEquals(expr.type, expected)
     ) {
-      const result = this.coerceToExpected(expr.result, expected);
+      const result = this.coerceToExpected(expr.result, expected, source);
       return { ...expr, result, type: result.type };
     }
     // A `Promise<module namespace>` widening into `Promise<unknown>`, or
@@ -12730,7 +12734,7 @@ export class Lowerer {
         const asArray = arrayOfClassInstance(arrayClass, expr, expr.loc);
         return typeEquals(asArray.type, expected)
           ? asArray
-          : this.coerceToExpected(asArray, expected);
+          : this.coerceToExpected(asArray, expected, source);
       }
     }
     // A destination that holds undefined takes an unassigned deferred-init
@@ -12759,7 +12763,7 @@ export class Lowerer {
     }
     // process.stdout/stderr into a general Writable slot (general-streams.ts).
     const stdioStream = stdioIntoGeneralStream(this, expr, expected);
-    if (stdioStream) return this.coerceToExpected(stdioStream, expected);
+    if (stdioStream) return this.coerceToExpected(stdioStream, expected, source);
     // Iterator-typed slots: native iterators and differently typed
     // generators step through an adapter generator.
     if (expected.kind === "generator" && !typeEquals(expr.type, expected)) {
@@ -12796,7 +12800,7 @@ export class Lowerer {
         !typeEquals(mp.promise, expr.type) &&
         this.promisePayloadWidens(expr.type, mp.promise)
       )
-        expr = this.coerceToExpected(expr, mp.promise);
+        expr = this.coerceToExpected(expr, mp.promise, source);
     }
     // Promise payloads may widen at a checked return boundary, including
     // arrays inferred as tuple results by Promise.all. Keep both payload
@@ -12815,7 +12819,7 @@ export class Lowerer {
     ) {
       return {
         kind: "dynCheck",
-        value: this.coerceToExpected(expr, DYN),
+        value: this.coerceToExpected(expr, DYN, source),
         type: expected,
         loc: expr.loc,
       };
@@ -13029,8 +13033,16 @@ export class Lowerer {
         funcOk ||
         handleOk
       ) {
-        // A record or array target keeps one identity with its source.
-        return adoptingDynCheck(this, expr, expected, expr.loc);
+        // A record or array target keeps one identity with its source,
+        // except where the source is an evolving array, whose element type
+        // its later writes may still change.
+        return adoptingDynCheck(
+          this,
+          expr,
+          expected,
+          expr.loc,
+          !(source !== undefined && namesEvolvingArray(this, source)),
+        );
       }
       return expr;
     }
@@ -13056,6 +13068,7 @@ export class Lowerer {
         return this.coerceToExpected(
           { kind: "dynFrom", value: un, type: DYN, loc: un.loc },
           expected,
+          source,
         );
       }
     }
@@ -13164,7 +13177,7 @@ export class Lowerer {
         // exactly like same-class storage before the prefix view widens it.
         return {
           kind: "upcast",
-          value: this.coerceToExpected(expr, present[0]!),
+          value: this.coerceToExpected(expr, present[0]!, source),
           type: expected,
           loc: expr.loc,
         };
@@ -13375,7 +13388,7 @@ export class Lowerer {
         const candidates = arms.filter((arm) => arm.kind === expr.type.kind);
         const arm = candidates.length === 1 ? candidates[0]! : null;
         if (arm) {
-          const converted = this.coerceToExpected(expr, arm);
+          const converted = this.coerceToExpected(expr, arm, source);
           if (converted !== expr && typeEquals(converted.type, arm)) {
             return {
               kind: "unionWrap",
@@ -13766,7 +13779,7 @@ export class Lowerer {
         }
       }
     }
-    let e = this.coerceToExpected(expr, expected);
+    let e = this.coerceToExpected(expr, expected, node);
     // Keep storage intact when ordinary widening already accepts it. Only
     // a destination needing a more specific class layout uses the site's
     // refinement and checked extraction.
@@ -13778,7 +13791,7 @@ export class Lowerer {
       const narrowed =
         (site && narrowStoredClassValue(this, e, site)) ??
         narrowGenericClassValue(this, e, expected);
-      if (narrowed) e = this.coerceToExpected(narrowed, expected);
+      if (narrowed) e = this.coerceToExpected(narrowed, expected, node);
     }
     // Existing JavaScript arrays retain mutations and identity across checked
     // slots. Fresh literals have no prior identity and use checked storage
@@ -13834,7 +13847,7 @@ export class Lowerer {
             (arm) => !isUnitType(arm) && sourceArms.some((source) => typeEquals(source, arm)),
           )
         ) {
-          e = this.coerceToExpected(this.coerceToExpected(e, DYN), expected);
+          e = this.coerceToExpected(this.coerceToExpected(e, DYN, node), expected, node);
         }
       }
     }

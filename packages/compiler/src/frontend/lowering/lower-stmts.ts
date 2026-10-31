@@ -5989,6 +5989,20 @@ export function holdsEvolvingArray(lowerer: Lowerer, expr: ts.Expression): boole
   return evolvingArrayHold(lowerer, expr) === "container";
 }
 
+/** Whether a TypeScript expression is an evolving array binding itself or an
+ * alias of one (evolvingArrayHold's "evolving" and "alias"), so a conversion
+ * of it into a typed array or record slot copies instead of adopting: the
+ * binding's element type is not fixed, and a write of another element type
+ * through the binding after the conversion would fail the adopted native
+ * array's element check. A container (`{ items: xs }`, `[xs]`) is not
+ * included, since the value converted there is the container, not the array.
+ * JavaScript sources answer false. */
+export function namesEvolvingArray(lowerer: Lowerer, node: ts.Node): boolean {
+  if (!ts.isExpression(node) || isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  const held = evolvingArrayHold(lowerer, node);
+  return held === "evolving" || held === "alias";
+}
+
 /** An unannotated binding initialized with an evolving array binding whose
  * reads disagree, or with an alias or container of one (evolvingArrayHold):
  * it takes the array's checked-dynamic type, so it sees the later writes.

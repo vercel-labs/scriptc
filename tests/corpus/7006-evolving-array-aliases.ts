@@ -64,10 +64,17 @@ function passed(): string {
   xs.push("z");
   return `${n} ${alias.length}`;
 }
+function direct(): string {
+  const xs = [];
+  xs.push(1);
+  const n = total(xs);
+  xs.push("z");
+  return `${n} ${xs.length}`;
+}
 console.log(chain());
 console.log(viaAlias(), "|", letAlias());
 console.log(nested(true), "|", nested(false), "|", elementWrite());
-console.log(agreeing(), "|", passed());
+console.log(agreeing(), "|", passed(), "|", direct());
 
 function spreadSame(): number {
   const xs = [];

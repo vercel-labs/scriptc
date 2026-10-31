@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Dynamic callback adapters release returned values when cancellation interrupts their return, including shared Node-island bindings during shutdown.
+
 - Shared Node-island exports declared in one statement become visible to island callbacks after each declaration, so later initializers can read earlier bindings.
 
 <!-- release:start -->

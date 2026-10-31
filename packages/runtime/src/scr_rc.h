@@ -379,6 +379,9 @@ void *scr_plr_alloc(size_t n);
  * window, and one the window cannot serve ends the process instead of
  * yielding an address a 32-bit field would truncate. */
 void scr_sa_require_window(void);
+/* Whether it was: scr_arena.c takes its chunks from the window (and frees
+ * them with scr_mem_free) when a reference can name an arena object. */
+bool scr_sa_refs_required(void);
 /* The calling script thread's part of the region: emitted allocation fast
  * paths take [next, limit) in 8-byte multiples and call scr_plr_alloc when
  * it is exhausted (llvm/classes.ts addresses both fields). */

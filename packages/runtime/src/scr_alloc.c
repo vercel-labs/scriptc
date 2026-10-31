@@ -2531,6 +2531,10 @@ static inline bool scr_sa_window_required(void) {
   return __atomic_load_n(&scr_sa_win_required, __ATOMIC_RELAXED);
 }
 
+/* For other parts of the runtime that allocate memory a reference can name
+ * (group arenas): they take it from the window when the program requires it. */
+bool scr_sa_refs_required(void) { return scr_sa_window_required(); }
+
 /* The window has no room left (for a reference block, or for the region of
  * program-lifetime objects): ended as Node ends at its heap limit, with this
  * message and an abort. */

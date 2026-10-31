@@ -895,9 +895,11 @@ static void scr_map_gcfree(void *o) {
 }
 
 /* Map construction inlines into its callers; keeping the header allocation
- * out of line keeps those call sites as small as the libc call they had. */
+ * out of line keeps those call sites as small as the libc call they had.
+ * The header is a reference block: a compact class field can name a map or
+ * a set, so it must lie in the window (scr_mem_calloc_ref). */
 static __attribute__((noinline)) ScrMap *scr_map_alloc_plain(void) {
-  return scr_mem_calloc(sizeof(ScrMap));
+  return scr_mem_calloc_ref(sizeof(ScrMap));
 }
 
 static const ScrMapOps scr_map_no_ops = {0};

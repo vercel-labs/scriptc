@@ -179,6 +179,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  // Object.isExtensible and Object.isSealed of a value typed dynamically; a
+  // unit of its own so scr_json.c keeps its layout for every other program.
+  ["scr_dyn_integrity.c", "dynIntegrityQueries"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
@@ -365,6 +368,17 @@ export function variantsFor(source) {
       id: "flags",
       when: { fsFlags: true },
       defines: ["SCR_FS_FLAGS"],
+    });
+  }
+  // spawnSync's and the exec/execFile callback form's cwd/input/shell
+  // entries (SCR_CHILD_CP_OPTIONS) live in a build of scr_child.c of their
+  // own, so a program that never passes those options keeps the default
+  // object, byte for byte.
+  if (source === "scr_child.c") {
+    variants.push({
+      id: "cp-options",
+      when: { childOptionExt: true },
+      defines: ["SCR_CHILD_CP_OPTIONS"],
     });
   }
   // server.off / removeListener: the listener-removal entry, in a build of

@@ -362,6 +362,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // ChildProcess listener removal (off/removeListener) and signalCode.
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
+  // Object.isExtensible and Object.isSealed of a value typed dynamically.
+  unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
@@ -475,6 +477,9 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_child.c's spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+  // entries.
+  { define: "SCR_CHILD_CP_OPTIONS", when: (opts) => opts.childOptionExt },
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },

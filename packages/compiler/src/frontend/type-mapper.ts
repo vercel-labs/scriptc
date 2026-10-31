@@ -4529,6 +4529,43 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // child_process.SpawnSyncOptionsWithStringEncoding: the spawnSync twin of
+  // the exec-options record above, interned explicitly for the same
+  // reason — a typed const or a runner function's options parameter is a
+  // runtime record the spawnSync lowering reads member by member. The
+  // members are the ones it honestly implements: encoding (required — the
+  // "WithStringEncoding" refinement), cwd/input/timeout/shell/stdio (a
+  // runtime array is string[]; unsupported runtime modes throw at the
+  // call), and the accepted-but-inert windowsHide. env and killSignal
+  // stay literal-only, so their presence keeps the shape unmatched and
+  // their literals fence at the shape check instead of being dropped.
+  if (isStdlibInterface("SpawnSyncOptionsWithStringEncoding")) {
+    const optStr = withUndefinedArm(STRING, ctx.unions);
+    const optNum = withUndefinedArm(F64, ctx.unions);
+    const optBool = withUndefinedArm(BOOL, ctx.unions);
+    const stdioArms = [arrayOf(STRING), STRING, UNDEFINED_T].sort((a, b) =>
+      typeKey(a) < typeKey(b) ? -1 : 1,
+    );
+    const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
+    if (!optStr || !optNum || !optBool) return null;
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "cwd", type: optStr },
+          { name: "encoding", type: STRING },
+          { name: "input", type: optStr },
+          { name: "shell", type: optBool },
+          { name: "stdio", type: stdio },
+          { name: "timeout", type: optNum },
+          { name: "windowsHide", type: optBool },
+        ],
+        false,
+        undefined,
+        ["encoding", "cwd", "input", "timeout", "shell", "stdio", "windowsHide"],
+      ),
+    };
+  }
   if (isStdlibInterface("AddressInfo")) {
     return {
       kind: "record",

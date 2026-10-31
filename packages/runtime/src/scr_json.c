@@ -3469,11 +3469,21 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
       ScrDyn *table = (ScrDyn *)scr_box_get_ref(scr_closure_identity(value->v.fn.clo)->props);
       ScrDyn *desc = table ? scr_dyn_own_descriptor(table, key) : NULL;
       scr_dyn_release(table);
-      return desc;
+      if (!desc || desc->kind != SCR_DYN_UNDEF || !scr_dyn_builtin_static_fn || value->v.fn.class_obj)
+        return desc;
+      ScrDyn *member = scr_dyn_builtin_static_fn(value, key->data, key->len, true);
+      if (!member && !scr_exc_pending()) return desc;
+      scr_dyn_release(desc);
+      return member;
     }
     bool name = key->len == 4 && memcmp(key->data, "name", 4) == 0;
     bool length = key->len == 6 && memcmp(key->data, "length", 6) == 0;
-    if (!name && !length) return scr_dyn_retain(scr_dyn_undefined());
+    if (!name && !length) {
+      ScrDyn *member = scr_dyn_builtin_static_fn && !value->v.fn.class_obj
+        ? scr_dyn_builtin_static_fn(value, key->data, key->len, true)
+        : NULL;
+      return member || scr_exc_pending() ? member : scr_dyn_retain(scr_dyn_undefined());
+    }
     ScrDyn *out = scr_dyn_new_obj();
     ScrDyn *member = scr_dyn_fn_get(value, key->data, key->len);
     scr_dyn_obj_set(out, "value", 5, member);
@@ -5935,6 +5945,9 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   return scr_bytes_instanceof_at(value, callee, NULL);
 }
 SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
+SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
+                                            bool descriptor) = NULL;
+SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
 ScrDyn *(*scr_bytes_buffer_constructor_fn)(void) = NULL;
 
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
@@ -7702,7 +7715,8 @@ static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *
 /* Property tables belong to closures, not temporary checked wrappers. Seed
  * the configurable, non-writable builtin members once so redefinitions and
  * deletions retain the same behavior through every alias. Returns +1. */
-static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
+/* The function's own-property table (+1), created on first use. */
+static ScrDyn *scr_dyn_fn_table(const ScrDyn *function) {
   /* A signature adapter shares the table of the function it adapts. */
   ScrClosure *owner = scr_closure_identity(function->v.fn.clo);
   if (!owner->props && function->v.fn.class_obj && function->v.fn.class_obj->static_data)
@@ -7736,13 +7750,24 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
   return (ScrDyn *)scr_box_get_ref(owner->props);
 }
 
+/* scr_dyn_fn_table, with a builtin constructor's static members defined as
+ * own properties of it (scr_dyn_builtin_statics_own_fn). */
+static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
+  ScrDyn *table = scr_dyn_fn_table(function);
+  if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
+  return table;
+}
+
 void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {
-  ScrDyn *table = scr_dyn_fn_properties(function);
+  /* `prototype` comes before the static members, as in V8's own-key order
+   * (length, name, prototype, then the statics). */
+  ScrDyn *table = scr_dyn_fn_table(function);
   scr_dyn_obj_set(table, "prototype", 9, prototype);
   ScrDynEntry *entry = scr_dyn_find_entry(table, "prototype", 9);
   entry->writable = false;
   entry->enumerable = false;
   entry->configurable = false;
+  if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
   scr_dyn_release(table);
 }
 
@@ -10790,6 +10815,35 @@ static ScrDyn *scr_error_stack_set_call(ScrClosure *closure, ScrDyn *const *args
   scr_error_release(error);
   scr_dyn_release(self);
   return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* The `stack` member an error view reads as a string, the value util.inspect
+ * prints (Node's getStackString). A getter runs here as it would for any
+ * other read, and a throwing one leaves its exception pending for the
+ * caller to discard. Borrows the view; +1, or NULL when the member is
+ * absent, empty (a falsy stack) or not a string (Node's non-string stack
+ * form, which this runtime does not model). */
+ScrStr *scr_error_dyn_stack_text(const ScrDyn *view) {
+  ScrDyn *read = scr_dyn_obj_read_receiver(view, "stack", 5, view);
+  if (!read) return NULL;
+  ScrStr *text = read->kind == SCR_DYN_STR && read->v.str->len != 0
+      ? scr_str_retain(read->v.str) : NULL;
+  scr_dyn_release(read);
+  return text;
+}
+
+/* Whether an error view's own `stack` member is still the runtime's shared
+ * accessor, whose getter resolves its error through the identity cache. A
+ * field-built view or a materialized snapshot is not in that cache, so the
+ * member answers nothing there and util.inspect falls back to the error's
+ * own formatted stack. A member the program replaced (a data property, a
+ * program getter, a deleted one) reads as the program sees it. */
+bool scr_error_dyn_stack_shared(const ScrDyn *view) {
+  if (view->kind != SCR_DYN_OBJ) return false;
+  ScrDynEntry *entry = scr_dyn_find_entry(view, "stack", 5);
+  return entry != NULL && entry->accessor && entry->getter != NULL &&
+         entry->getter->kind == SCR_DYN_FUNC &&
+         entry->getter->v.fn.thunk == scr_error_stack_get_call;
 }
 
 static void scr_error_dyn_add_stack(ScrDyn *d) {
@@ -15740,6 +15794,7 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
     return scr_dyn_new_num((double)d->v.fn.arity);
   }
   if (key_len == 5 && memcmp(key, "apply", 5) == 0) return scr_dyn_function_apply();
+  if (scr_dyn_builtin_static_fn && !d->v.fn.class_obj) return scr_dyn_builtin_static_fn(d, key, key_len, false);
   if (d->v.fn.class_obj && !d->v.fn.class_obj->static_data) {
     static const char message[] = "scriptc: class properties through unknown other than name and length are not supported";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);

@@ -94,9 +94,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   streamDyn: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
+  childOptionExt: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   dynForAwait: boolean;
+  dynIntegrityQueries: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -326,9 +328,11 @@ export function effectiveRuntimeFeatures(
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
+    childOptionExt: features.childOptionExt === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
+    dynIntegrityQueries: features.dynIntegrityQueries === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,

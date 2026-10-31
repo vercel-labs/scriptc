@@ -268,14 +268,15 @@ function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
 
 /** An error value whose runtime class may be a program-declared subclass,
  * which may declare fields (`class Bailable extends Error { bail = false }`)
- * or carry a `cause`: Node prints the error base (`[Bailable [Error]: m]`,
- * the stackless form compiled errors use) followed by the own properties,
- * `[Bailable [Error]: m] { bail: true }`, with the usual single-line/
- * multi-line choice counting the base. Each program class (most-derived
- * first) is an instanceof arm; other values keep the runtime's error
- * rendering. Beyond the depth budget an instance with own properties
- * prints `[Name]`, as Node does for any object with keys; one without
- * prints its header. */
+ * or carry a `cause`: Node prints the error base — its stack, headed
+ * `Bailable [Error]: m` by improveStack, or the bracketed
+ * `[Bailable [Error]: m]` when the stack has no frame line — followed by
+ * the own properties, `{ bail: true }` after the last frame, with the
+ * usual single-line/multi-line choice counting the base. Each program
+ * class (most-derived first) is an instanceof arm; other values keep the
+ * runtime's error rendering. Beyond the depth budget an instance with own
+ * properties prints `[Name]`, as Node does for any object with keys; one
+ * without prints its header. */
 function errorInspectHelper(
   lowerer: Lowerer,
   t: IrType & { kind: "object" },
@@ -622,10 +623,12 @@ function userErrorClasses(info: ClassInfo): ClassInfo[] {
   return out;
 }
 
-/** Node's improveStack over the stackless base (`[Error: m]`): when the
- * instance's constructor name differs from its `name` and the name ends in
- * "Error", the header names both — `[Bailable [Error]: m]`, or
- * `[FetchError: m]` when the constructor name already contains it. */
+/** Node's improveStack over the rendering's base: when the instance's
+ * constructor name differs from its `name` and the name ends in "Error",
+ * the header names both — `[Bailable [Error]: m]`, or `[FetchError: m]`
+ * when the constructor name already contains it. Two bases reach here: the
+ * bracket form (`[Error: m]`, an error whose stack is empty) and the stack
+ * itself (`Error: m\n    at ...`, whose first line carries the header). */
 function improvedErrorBase(
   lowerer: Lowerer,
   value: IrExpr,
@@ -696,6 +699,42 @@ function improvedErrorBase(
     type: STRING,
     loc,
   };
+  /** The name's length — where a stack base's header ends. */
+  const nameLength = (): IrExpr => str("length", nameRef(), [], F64);
+  /** The base's character at `name.length`: `:` or `\n` after the name, or
+   * the empty answer when the base is the name alone (Node's
+   * `stack.length === len` arm). */
+  const atNameEnd = (): IrExpr => str("charAt", baseRef(), [nameLength()], STRING);
+  const stackCond = and(
+    and(
+      eq(nameRef(), strLit(display, loc), true),
+      str("endsWith", nameRef(), [strLit("Error", loc)], BOOL),
+    ),
+    and(str("startsWith", baseRef(), [nameRef()], BOOL), {
+      kind: "logical",
+      op: "||",
+      left: {
+        kind: "logical",
+        op: "||",
+        left: eq(atNameEnd(), strLit(":", loc)),
+        right: eq(atNameEnd(), strLit("\n", loc)),
+        type: BOOL,
+        loc,
+      },
+      right: eq(atNameEnd(), strLit("", loc)),
+      type: BOOL,
+      loc,
+    }),
+  );
+  const stackRest = (): IrExpr => str("slice", baseRef(), [nameLength()], STRING);
+  const improvedStack: IrExpr = {
+    kind: "ternary",
+    cond: str("includes", strLit(display, loc), [nameRef()], BOOL),
+    then: concatAll([strLit(display, loc), stackRest()], loc),
+    else_: concatAll([strLit(`${display} [`, loc), nameRef(), strLit("]", loc), stackRest()], loc),
+    type: STRING,
+    loc,
+  };
   return {
     kind: "seqExpr",
     stmts: [
@@ -714,7 +753,21 @@ function improvedErrorBase(
       },
       { kind: "varDecl", localId: "raw.0", init: base, loc },
     ],
-    result: { kind: "ternary", cond, then: improved, else_: baseRef(), type: STRING, loc },
+    result: {
+      kind: "ternary",
+      cond,
+      then: improved,
+      else_: {
+        kind: "ternary",
+        cond: stackCond,
+        then: improvedStack,
+        else_: baseRef(),
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    },
     type: STRING,
     loc,
   };

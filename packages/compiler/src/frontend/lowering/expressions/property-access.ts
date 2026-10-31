@@ -37,7 +37,6 @@ import {
   ARRAY_METHODS,
   MAP_METHODS,
   NARROW_FIRST,
-  OBJECT_CALLABLE_VALUES,
   SET_METHODS,
   STDLIB_SURFACE,
   STRING_INDEX_METHODS,
@@ -181,15 +180,8 @@ import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
 } from "../builtins/module-resolution.js";
-import {
-  builtinPrototypeMethod,
-  lowerArrayIsArrayValue,
-  lowerCheckedPredicateValue,
-  lowerNumberParserValue,
-  lowerObjectAssignValue,
-  lowerStringCodesValue,
-} from "../lower-builtin-values.js";
-import { lowerArrayFromValue } from "../containers/array-construction.js";
+import { builtinPrototypeMethod, lowerCheckedPredicateValue } from "../lower-builtin-values.js";
+import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
@@ -575,33 +567,8 @@ export function lowerPropertyAccessExpr(
       loc,
     };
   }
-  if (lowerer.stdlibGlobalMember(expr, "Object") === "freeze") {
-    // Object.freeze as a value can freeze any untyped value it is passed.
-    lowerer.untypedIntegrity = true;
-    const name = "%builtin.Object.freeze";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name))
-      lowerer.liftedFns.push({
-        name,
-        params: [{ localId: "value", name: "value", type: DYN }],
-        locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-        returnType: DYN,
-        body: [
-          {
-            kind: "return",
-            value: {
-              kind: "libCall",
-              fn: "dyn.freeze",
-              args: [varRef("value", DYN, loc)],
-              type: DYN,
-              loc,
-            },
-            loc,
-          },
-        ],
-        loc,
-      });
-    return { kind: "closure", fnName: name, captures: [], type: funcOf([DYN], DYN), loc };
-  }
+  if (lowerer.stdlibGlobalMember(expr, "Object") === "freeze")
+    return objectFreezeValue(lowerer, loc);
   // An Hmac has no copy() (Hash does): Node answers undefined, which
   // `typeof mac.copy` feature checks read. TypeScript rejects the read.
   if (
@@ -2211,19 +2178,9 @@ export function lowerIntrinsicProperty(
   }
   if (lowerer.stdlibGlobalMember(expr, "Object") === "prototype")
     return { kind: "libCall", fn: "dyn.objectPrototype", args: [], type: DYN, loc: locOf(expr) };
-  // Error.prototype as a value (`F.prototype = Object.create(Error.prototype)`)
-  // and Error.captureStackTrace read as a function (`if
-  // (Error.captureStackTrace) ...`).
+  // Error.prototype as a value (`F.prototype = Object.create(Error.prototype)`).
   if (isErrorPrototypeValue(lowerer, expr))
     return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
-  if (lowerer.stdlibGlobalMember(expr, "Error") === "captureStackTrace")
-    return {
-      kind: "libCall",
-      fn: "dyn.errorCaptureStackTraceFunction",
-      args: [],
-      type: DYN,
-      loc: locOf(expr),
-    };
   // Function.prototype as a VALUE (a prototype-chain link:
   // `Object.setPrototypeOf(F.prototype, Function.prototype)`): one
   // anonymous function answering undefined, length 0 — a zero-capture
@@ -2252,16 +2209,19 @@ export function lowerIntrinsicProperty(
       loc,
     };
   }
-  if (lowerer.stdlibGlobalMember(expr, "Array") === "isArray")
-    return lowerArrayIsArrayValue(lowerer, locOf(expr));
-  if (lowerer.stdlibGlobalMember(expr, "Array") === "from")
-    return lowerArrayFromValue(lowerer, locOf(expr));
-  const stringMember = lowerer.stdlibGlobalMember(expr, "String");
-  if (stringMember === "fromCharCode" || stringMember === "fromCodePoint")
-    return lowerStringCodesValue(lowerer, stringMember, locOf(expr));
-  const numberMember = lowerer.stdlibGlobalMember(expr, "Number");
-  if (numberMember === "parseInt" || numberMember === "parseFloat")
-    return lowerNumberParserValue(lowerer, numberMember, locOf(expr));
+  // Array.isArray, Object.keys, Date.now, Error.captureStackTrace (`if
+  // (Error.captureStackTrace) ...`) and the other statics with function
+  // values: the same values a read through the constructor's untyped value
+  // answers (builtin-statics.ts).
+  {
+    const owner = stdlibGlobalNameOf(lowerer, expr.expression);
+    const member = owner === null ? null : lowerer.stdlibGlobalMember(expr, owner);
+    const value =
+      owner === null || member === null
+        ? null
+        : constructorStaticValue(lowerer, owner, member, locOf(expr));
+    if (value !== null) return value;
+  }
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "poolSize")
     return { kind: "libCall", fn: "buffer.poolSize", args: [], type: F64, loc: locOf(expr) };
   {
@@ -2322,22 +2282,6 @@ export function lowerIntrinsicProperty(
       "Buffer.compare",
       locOf(expr),
     );
-  if (lowerer.stdlibGlobalMember(expr, "Date") === "now")
-    return lowerer.lowerNativeCallableValue(
-      {
-        fn: "date.now",
-        params: [],
-        result: F64,
-        valueParams: [],
-      },
-      "Date.now",
-      locOf(expr),
-    );
-  if (stdlibGlobalNameOf(lowerer, expr.expression) === "Object") {
-    if (expr.name.text === "assign") return lowerObjectAssignValue(lowerer, locOf(expr));
-    const fn = own(OBJECT_CALLABLE_VALUES, expr.name.text);
-    if (fn) return lowerer.lowerNativeCallableValue(fn, `Object.${expr.name.text}`, locOf(expr));
-  }
   // A never-tainted JS receiver type lowered checked-dynamic
   // (neverTaintedJsType — `cmd.length` on `const cmd = ['pwd', []]`):
   // stand down so the dyn keyed read below the chain answers, instead

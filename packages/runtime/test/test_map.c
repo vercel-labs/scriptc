@@ -516,6 +516,34 @@ static void test_identity_key_ownership(void) {
   scr_map_release(m);
 }
 
+static double closure_key_fn(void) { return 1; }
+
+/* Closure keys hash and compare identity roots: a signature adapter is the
+ * key of the function it adapts, and the map keeps the closure it stored. */
+static void test_closure_identity_keys(void) {
+  ScrClosure *fn = scr_closure_new((void *)closure_key_fn, 0);
+  ScrClosure *wide = scr_closure_new((void *)closure_key_fn, 0);
+  ScrClosure *other = scr_closure_new((void *)closure_key_fn, 0);
+  scr_closure_adopt_identity(wide, fn, 0);
+  ScrMap *m = scr_map_new(SCR_MAP_KEY_CLOSURE, SCR_MAP_VAL_F64,
+      ops_of(scr_closure_retain_v, scr_closure_release_v, NULL, NULL, NULL, NULL, NULL));
+  scr_map_set_ref_f64(m, wide, 1);
+  check(scr_map_has_ref(m, fn), "an adapter's key finds the function it adapts");
+  scr_map_set_ref_f64(m, fn, 2);
+  check(scr_map_size(m) == 1, "a function and its adapter are one key");
+  double value = 0;
+  check(scr_map_get_ref_f64(m, wide, &value) && value == 2, "the overwrite reaches the adapter's entry");
+  void *key = scr_map_iter_key_ref(m, 0);
+  check(key == wide, "the map keeps the closure it stored");
+  scr_closure_release(key);
+  check(!scr_map_has_ref(m, other), "another closure of the same code is another key");
+  check(scr_map_delete_ref(m, fn) && scr_map_size(m) == 0, "delete by the original removes the adapter's entry");
+  scr_map_release(m);
+  scr_closure_release(fn);
+  scr_closure_release(wide);
+  scr_closure_release(other);
+}
+
 static void test_identity_scalar_values(void) {
   ScrArr *key = scr_arr_new(SCR_ELEM_F64, 0);
   ScrArr *other = scr_arr_new(SCR_ELEM_F64, 0);
@@ -931,6 +959,7 @@ int main(void) {
   test_small_storage_transitions();
   test_identity_key_ownership();
   test_identity_scalar_values();
+  test_closure_identity_keys();
   test_reboxed_keys_and_rehash();
   test_value_keys_and_copies();
   test_absent_key_filter();

@@ -1034,6 +1034,13 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
+   * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
+   * own, so a program that never passes those options keeps the default
+   * object, byte for byte. */
+  childOptionExt: rule({
+    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+  }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -1176,6 +1183,9 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically
+   * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
+  dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -1202,6 +1212,7 @@ const RUNTIME_FEATURE_RULES = {
       "path.parseValue",
       "path.formatValue",
       "path.toNamespacedValue",
+      "dyn.installBuiltinStatics",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
@@ -1577,9 +1588,11 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    childOptionExt: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
+    dynIntegrityQueries: false,
     dynBuffer: false,
     builtinValues: false,
     computedRequire: false,

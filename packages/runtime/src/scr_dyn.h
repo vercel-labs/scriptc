@@ -1310,8 +1310,10 @@ ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object);
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype);
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object);
 bool scr_dyn_is_extensible(ScrDyn *object);
+bool scr_dyn_is_extensible_query(ScrDyn *object);
 ScrDyn *scr_dyn_seal(ScrDyn *object);
 bool scr_dyn_is_sealed(const ScrDyn *object);
+bool scr_dyn_is_sealed_query(const ScrDyn *object);
 ScrDyn *scr_dyn_proxy_new(const ScrDyn *target, const ScrDyn *handler);
 bool scr_dyn_is_callable(const ScrDyn *value);
 ScrDyn *scr_dyn_proxy_get(const ScrDyn *proxy, const ScrStr *key);
@@ -1335,6 +1337,24 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
  * the exception pending). */
 extern SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
                                                   ScrDyn **result);
+/* Installed by scr_builtin_values.c when the program installs its
+ * static-member lookup (scr_builtin_statics_install): the static member
+ * `key` of the builtin constructor value `fn` (+1), or its property
+ * descriptor when `descriptor` is true; NULL without an exception when
+ * `fn` is no builtin constructor value or has no such member. Consulted
+ * only for keys `fn` has no own property for. */
+extern SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
+                                                   bool descriptor);
+/* Installs the program's static-member lookup, a dyn function of the
+ * constructor value and the key answering the member's value or null, and
+ * for the key "" the name of a constructor the runtime does not intern
+ * (borrowed); the first installation stands. */
+void scr_builtin_statics_install(ScrDyn *lookup);
+/* Installed with scr_dyn_builtin_static_fn: called with a function value
+ * and its property table (borrowed) whenever the table is read for a
+ * change or reflection; a builtin constructor's static members become own
+ * properties of the table the first time. */
+extern SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
 /* A typed array's, Buffer's or DataView's own named property (+1), or NULL
  * without an exception when it has none. */
@@ -1768,6 +1788,16 @@ extern SCR_TL size_t scr_uncloneable_count;
 ScrDyn *scr_dyn_from_error(const ScrError *e);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
+/* The `stack` member an error view reads as a non-empty string, for
+ * util.inspect's stack rendering (Node's getStackString). Borrows the view;
+ * +1, or NULL when it is absent, empty or not a string. A throwing getter
+ * leaves its exception pending. */
+ScrStr *scr_error_dyn_stack_text(const ScrDyn *view);
+/* Whether an error view's own `stack` is still the runtime's shared
+ * accessor, which cannot resolve an error for a field-built view or a
+ * materialized snapshot (util.inspect then falls back to the error's own
+ * formatted stack). Borrows the view. */
+bool scr_error_dyn_stack_shared(const ScrDyn *view);
 void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
 /* An Error subclass view of an instance whose class keeps a property bag:
  * `name` and `message` take their committed positions, and data values

@@ -254,8 +254,8 @@ direct(new Base());
         "true TypeError: Value is not an instance of 'Sub'",
         "true TypeError: Value is not an instance of 'Sub'",
         "ok 0",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
         "",
       ].join("\n"),
     );

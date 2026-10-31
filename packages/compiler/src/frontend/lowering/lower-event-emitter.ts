@@ -54,6 +54,8 @@ import { dynFallbackType, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
+import { nullishExprUnitOf, stripValueWrappers } from "./binding-analysis.js";
+import { isPureReference } from "./effect-free.js";
 import { functionUsesThis } from "./cjs-exports-object.js";
 import { isThisParameter } from "./call-signatures.js";
 import {
@@ -362,53 +364,50 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
         (ts.isIdentifier(callee) ? callee : callee.name).text === "getEventListeners" &&
         node.arguments.nodes.length === 2
       ) {
-        const nameT = (() => {
-          try {
-            return lowerer.typeOf(node.arguments.nodes[1]!);
-          } catch {
-            return null;
-          }
-        })();
-        if (nameT?.isStringLiteralType()) listenersRead.add(literalEventKey(nameT.value));
+        const key = scannedEventKey(lowerer, node.arguments.nodes[1]!);
+        if (key !== null && key !== ERROR_MONITOR_EVENT) listenersRead.add(key);
         return;
       }
       if (!ts.isPropertyAccessExpression(callee)) return;
-      const member = callee.name.text;
+      let member = callee.name.text;
+      let recvNode = callee.expression;
+      let callArgs = node.arguments.nodes;
+      // `R.<method>.call(thisArg, ...args)` runs the method on thisArg
+      // (lowerEmitterMethodValueCall in lower-calls.ts).
+      if (
+        member === "call" &&
+        ts.isPropertyAccessExpression(callee.expression) &&
+        callArgs.length > 0
+      ) {
+        member = callee.expression.name.text;
+        recvNode = callArgs[0]!;
+        callArgs = callArgs.slice(1);
+      }
       if (member === "listeners" || member === "rawListeners") {
-        const arg = node.arguments.nodes[0];
-        let nameT: ts.Type | null = null;
+        const arg = callArgs[0];
         try {
-          if (
-            !arg ||
-            !scannedEmitterInfo(lowerer, lowerer.mapTypeOf(lowerer.typeOf(callee.expression)))
-          )
+          if (!arg || !scannedEmitterInfo(lowerer, lowerer.mapTypeOf(lowerer.typeOf(recvNode))))
             return;
-          nameT = lowerer.typeOf(arg);
         } catch {
           return;
         }
-        if (nameT.isStringLiteralType()) listenersRead.add(literalEventKey(nameT.value));
+        const key = scannedEventKey(lowerer, arg);
+        if (key !== null && key !== ERROR_MONITOR_EVENT) listenersRead.add(key);
         return;
       }
       const isEmit = member === "emit";
       if (!isEmit && !REGISTER_MEMBERS.has(member)) return;
-      const arg0 = node.arguments.nodes[0];
+      const arg0 = callArgs[0];
       if (!arg0) return;
       let recvT: IrType | null = null;
-      let nameT: ts.Type | null = null;
       try {
-        recvT = lowerer.mapTypeOf(lowerer.typeOf(callee.expression));
-        nameT = lowerer.typeOf(arg0);
+        recvT = lowerer.mapTypeOf(lowerer.typeOf(recvNode));
       } catch {
         return; // checker trouble is the lowering's business, not the scan's
       }
       const info = scannedEmitterInfo(lowerer, recvT);
       if (!info) return;
-      const literal = isErrorMonitorRef(lowerer, arg0)
-        ? ERROR_MONITOR_EVENT
-        : nameT.isStringLiteralType()
-          ? literalEventKey(nameT.value)
-          : null;
+      const literal = scannedEventKey(lowerer, arg0);
       if (literal === null) {
         const pattern = computedEventPatternOf(lowerer, arg0);
         if (
@@ -424,7 +423,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
         return;
       }
       const name = literal;
-      if (META_EVENTS.has(name) && !isEmit && node.arguments.nodes[1]) {
+      if (META_EVENTS.has(name) && !isEmit && callArgs[1]) {
         // A dyn-flavored meta listener receives each added or removed
         // listener as a checked-dynamic function value. The scan cannot
         // lower the listener as dynListenerFlavor does, so it counts every
@@ -433,7 +432,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
         // JavaScript function without parameters, and the dyn-flavored
         // forms. Counting one too many only routes more registrations
         // through the adapter.
-        const cbNode = node.arguments.nodes[1];
+        const cbNode = callArgs[1];
         let typed = false;
         try {
           const cbCt = lowerer.typeOf(cbNode);
@@ -452,7 +451,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
       }
       if (isEmit && name === "error") {
         try {
-          const payload = node.arguments.nodes.slice(1);
+          const payload = callArgs.slice(1);
           if (
             payload.length !== 1 ||
             !rootsAtError(lowerer, lowerer.mapTypeOf(lowerer.typeOf(payload[0]!)))
@@ -474,14 +473,13 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
         if (isEmit) {
           mergeEmit(
             name,
-            node.arguments.nodes.slice(1).map((a) => lowerer.mapTypeOf(lowerer.typeOf(a))),
+            callArgs.slice(1).map((a) => lowerer.mapTypeOf(lowerer.typeOf(a))),
             isJsSourceFile(sf),
           );
-        } else if (node.arguments.nodes[1]) {
-          const cbCt = lowerer.typeOf(node.arguments.nodes[1]);
-          const cbT =
-            lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, node.arguments.nodes[1], cbCt);
-          const pack = readsArgumentsPack(lowerer, node.arguments.nodes[1]);
+        } else if (callArgs[1]) {
+          const cbCt = lowerer.typeOf(callArgs[1]);
+          const cbT = lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, callArgs[1], cbCt);
+          const pack = readsArgumentsPack(lowerer, callArgs[1]);
           // A TypeScript listener with no parameters is typed too: it
           // registers without the adapter, so an untyped emit reaches it
           // only through the event's fixed ABI. A JavaScript function
@@ -607,13 +605,112 @@ function isErrorMonitorRef(lowerer: Lowerer, arg: ts.Expression): boolean {
   return property !== undefined && isMonitorType(lowerer.checker.getTypeOfSymbol(property));
 }
 
+/** A name expression whose evaluation has no effects: a string or number
+ * literal, a `null`, `true` or `false` keyword, a binding read, or a stored
+ * field or record entry read. A call or an accessor lowers as a run-time
+ * name so its effects still run. */
+function staticNameExpr(lowerer: Lowerer, arg: ts.Expression): boolean {
+  const expression = stripValueWrappers(arg);
+  if (
+    ts.isStringLiteral(expression) ||
+    ts.isNoSubstitutionTemplateLiteral(expression) ||
+    ts.isNumericLiteral(expression) ||
+    expression.kind === ts.SyntaxKind.NullKeyword ||
+    expression.kind === ts.SyntaxKind.TrueKeyword ||
+    expression.kind === ts.SyntaxKind.FalseKeyword
+  ) {
+    return true;
+  }
+  return isPureReference(lowerer, expression) || staticStdlibRead(lowerer, expression);
+}
+
+/** A read of a standard library field (`events.errorMonitor`,
+ * `EventEmitter.errorMonitor`): a plain member of the standard library's
+ * declaration, so it runs no program code. */
+function staticStdlibRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return false;
+  if (!isPureReference(lowerer, node.expression)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(node.name);
+  return (
+    symbol !== undefined &&
+    lowerer.isStdlibSymbol(symbol) &&
+    (symbol.flags &
+      (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor | ts.SymbolFlags.Method)) ===
+      0
+  );
+}
+
 /** A compile-time event key (literalEventKey): a string-literal TYPE
  * (const bindings and literal unions of one member count — the
- * staticHeaderKeyOf stance) or the errorMonitor symbol. */
+ * staticHeaderKeyOf stance) or the errorMonitor symbol, read without
+ * effects. A number-literal type read without effects and a `null`,
+ * `undefined`, `true` or `false` literal name the string Node's listener
+ * table keys them by, the property key `String(name)`: `on(123, fn)`
+ * registers under '123'. */
 function literalEventName(lowerer: Lowerer, arg: ts.Expression): string | null {
-  if (isErrorMonitorRef(lowerer, arg)) return ERROR_MONITOR_EVENT;
-  const t = lowerer.typeOf(arg);
-  return t.isStringLiteralType() ? literalEventKey(t.value) : null;
+  const staticName = staticNameExpr(lowerer, arg);
+  if (staticName && isErrorMonitorRef(lowerer, arg)) return ERROR_MONITOR_EVENT;
+  if (staticName) {
+    const t = lowerer.typeOf(arg);
+    if (t.isStringLiteralType()) return literalEventKey(t.value);
+    if (t.isNumberLiteralType()) return literalEventKey(String(t.value));
+  }
+  const unit = nullishExprUnitOf(lowerer, arg);
+  if (unit !== null) return unit;
+  let expression = arg;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return "true";
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return "false";
+  return null;
+}
+
+/** An event-name argument as the string Node's listener table keys it by:
+ * a compile-time key, or a string, number or boolean value (or a union of
+ * those with null and undefined) converted as a property key
+ * (`String(name)`). An untyped value converts with the dynamic ToString,
+ * as the untyped emitter entries do. Other names are refused at the
+ * argument. */
+function eventNameArg(lowerer: Lowerer, member: string, arg: ts.Expression): IrExpr {
+  const key = literalEventName(lowerer, arg);
+  if (key !== null) return eventNameExpr(key, locOf(arg));
+  const value = lowerer.lowerExpr(arg);
+  if (value.type.kind === "string") return value;
+  const converts = (t: IrType): boolean =>
+    t.kind === "string" || t.kind === "f64" || t.kind === "bool" || isUnitType(t);
+  const union = value.type.kind === "union" ? lowerer.unions.get(value.type.unionId) : undefined;
+  if (
+    value.type.kind === "f64" ||
+    value.type.kind === "bool" ||
+    value.type.kind === "dyn" ||
+    (union !== undefined && union.arms.every(converts))
+  ) {
+    return { kind: "toString", operand: value, type: STRING, loc: value.loc };
+  }
+  lowerer.noLowering(
+    `${member} with a '${lowerer.fmt(value.type)}' event name`,
+    arg,
+    "event names lower as strings, numbers and booleans (symbol names have no lowering)",
+  );
+}
+
+/** Whether a name that is neither a compile-time key nor a computed name
+ * with a constant prefix or suffix reaches the emitter through the bridge
+ * typed code uses for untyped receivers (lowerDynamicEmitterOn and
+ * lowerDynamicEmitterEmit): the runtime matches the name against the
+ * events typed code fixes, and keeps Node's 'error' and meta-event behavior
+ * for any other name. Streams keep their fixed internal events. */
+function bridgesUnrestrictedName(lowerer: Lowerer, info: ClassInfo, arg: ts.Expression): boolean {
+  return computedEventPatternOf(lowerer, arg) === null && streamSidesOf(lowerer, info) === null;
+}
+
+/** literalEventName for the event table's scan, which leaves checker
+ * trouble to the lowering: null when the name's type cannot be read. */
+function scannedEventKey(lowerer: Lowerer, arg: ts.Expression): string | null {
+  try {
+    return literalEventName(lowerer, arg);
+  } catch {
+    return null;
+  }
 }
 
 /** The compile-time key for a literal-only operation, or a pointed fence. */
@@ -1523,17 +1620,20 @@ function lowerListenerArg(
  * routes here): the receiver is the current method's `this`, and emit
  * NEVER dispatches through an override at-or-below the lexical class —
  * JS's static super dispatch (the nearest override STRICTLY ABOVE the
- * lexical class still answers, exactly like a prototype-chain walk). */
+ * lexical class still answers, exactly like a prototype-chain walk).
+ * `argsOverride` replaces the call's arguments (`method.call(thisArg,
+ * ...args)` passes the ones after thisArg). */
 export function lowerEmitterMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
   info: ClassInfo,
   superRecv?: { thisRef: IrExpr; cls: ClassInfo },
+  argsOverride?: readonly ts.Expression[],
 ): IrExpr | null {
   const member = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments.nodes;
+  const args = argsOverride ?? call.arguments.nodes;
   const lowerReceiver = (): IrExpr => {
     if (superRecv) return superRecv.thisRef;
     const receiver = lowerer.lowerExpr(access.expression);
@@ -1693,11 +1793,21 @@ export function lowerEmitterMethodCall(
     if (literalEventName(lowerer, args[0]!) === null) {
       // An unrestricted name on a plain emitter takes the any-name path;
       // streams keep the fence (their runtime events carry fixed ABIs).
-      const anyName =
-        computedEventPatternOf(lowerer, args[0]!) === null && streamSidesOf(lowerer, info) === null;
+      const anyName = bridgesUnrestrictedName(lowerer, info, args[0]!);
       if (!anyName) computedEventPattern(lowerer, info, member, args[0]!);
+      // The name may be a meta event, which the runtime fires internally.
+      const ov = anyName && registering ? emitOverrideComparable(info) : null;
+      if (ov) {
+        lowerer.noLowering(
+          `'${member}' with a runtime event name while '${ov.def.jsName || ov.def.name}' overrides emit`,
+          call,
+          "the runtime fires meta events internally, which cannot route through an emit override",
+        );
+      }
       const receiver = lowerReceiver();
-      const name = lowerer.lowerExprExpecting(args[0]!, STRING);
+      const name = anyName
+        ? eventNameArg(lowerer, member, args[0]!)
+        : lowerer.lowerExprExpecting(args[0]!, STRING);
       return lowerFlexListenerCall(
         lowerer,
         member,
@@ -1912,8 +2022,8 @@ export function lowerEmitterMethodCall(
           loc,
         };
       }
-      if (pattern === null && streamSidesOf(lowerer, info) === null) {
-        const name = lowerer.lowerExprExpecting(args[0]!, STRING);
+      if (bridgesUnrestrictedName(lowerer, info, args[0]!)) {
+        const name = eventNameArg(lowerer, member, args[0]!);
         return lowerFlexEmit(name, "computed-name", true);
       }
       computedEventPattern(lowerer, info, member, args[0]!);
@@ -2040,17 +2150,7 @@ export function lowerEmitterMethodCall(
     }
     const all = args.length === 0;
     const receiver = lowerReceiver();
-    const name = all
-      ? strLit("", loc)
-      : isErrorMonitorRef(lowerer, args[0]!)
-        ? eventNameExpr(ERROR_MONITOR_EVENT, loc)
-        : lowerer.lowerExprExpecting(args[0]!, STRING);
-    if (name.type.kind !== "string") {
-      lowerer.noLowering(
-        `removeAllListeners with a '${lowerer.fmt(name.type)}' event name`,
-        args[0] ?? call,
-      );
-    }
+    const name = all ? strLit("", loc) : eventNameArg(lowerer, member, args[0]!);
     return {
       kind: "libCall",
       fn: "emitter.removeAll",
@@ -2065,12 +2165,7 @@ export function lowerEmitterMethodCall(
       lowerer.noLowering(`listenerCount with ${args.length} arguments`, call);
     }
     const receiver = lowerReceiver();
-    const name = isErrorMonitorRef(lowerer, args[0]!)
-      ? eventNameExpr(ERROR_MONITOR_EVENT, loc)
-      : lowerer.lowerExprExpecting(args[0]!, STRING);
-    if (name.type.kind !== "string") {
-      lowerer.noLowering(`listenerCount with a '${lowerer.fmt(name.type)}' event name`, args[0]!);
-    }
+    const name = eventNameArg(lowerer, member, args[0]!);
     if (args.length === 2) {
       // The fn filter matches by identity — the listener's own type is
       // its word; no tuple check is needed to count.
@@ -2108,6 +2203,20 @@ export function lowerEmitterMethodCall(
         call,
         "the supported form is (eventName)",
       );
+    }
+    if (
+      literalEventName(lowerer, args[0]!) === null &&
+      bridgesUnrestrictedName(lowerer, info, args[0]!)
+    ) {
+      // A runtime name: the untyped array, as through an untyped receiver.
+      const receiver = lowerReceiver();
+      return {
+        kind: "libCall",
+        fn: "emitter.listenersDyn",
+        args: [receiver, eventNameArg(lowerer, member, args[0]!)],
+        type: DYN,
+        loc,
+      };
     }
     const name = eventNameOf(lowerer, member, args[0]!);
     const sig = table.get(name);
@@ -2406,7 +2515,7 @@ function isWriteTarget(id: ts.Identifier): boolean {
 }
 
 /** The nearest class at-or-above `info` declaring an emit override. */
-function emitOverrideAtOrAbove(info: ClassInfo | null | undefined): ClassInfo | null {
+export function emitOverrideAtOrAbove(info: ClassInfo | null | undefined): ClassInfo | null {
   for (let c: ClassInfo | null = info ?? null; c; c = c.base) {
     if (c.emitOverride) return c;
   }

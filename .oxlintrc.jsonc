@@ -270,6 +270,7 @@
       "files": [
         "packages/compiler/src/frontend/lowering/**",
         "packages/compiler/src/backend/llvm/**",
+        "packages/compiler/src/backend/immutability.test.ts",
         "packages/compiler/src/backend/loop-polls.test.ts",
         "packages/compiler/src/backend/may-throw.test.ts",
         "packages/compiler/src/backend/stack-observations.test.ts",

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import { shareIdenticalArtifacts } from "../scripts/share-artifacts.mjs";
 
-type Artifact = { path: string; sha256: string; size: number; bitcode?: Artifact };
+type Artifact = { path: string; sha256: string; size: number };
 
 async function artifact(root: string, path: string, sha256: string): Promise<Artifact> {
   await mkdir(dirname(join(root, path)), { recursive: true });
@@ -31,11 +31,6 @@ test("identical artifacts of one unit share the first flavor's file", async () =
         await unit("release", "scr_b", { default: "b1" }),
       ],
     };
-    release.runtime_units[1]!.variants[0]!.bitcode = await artifact(
-      root,
-      "artifacts/release/runtime/default/scr_b.bc",
-      "b-bitcode",
-    );
     const speed = {
       runtime_units: [
         await unit("speed", "scr_a", { default: "a2" }),
@@ -43,34 +38,20 @@ test("identical artifacts of one unit share the first flavor's file", async () =
         await unit("speed", "scr_b", { default: "b1", other: "a1" }),
       ],
     };
-    speed.runtime_units[1]!.variants[0]!.bitcode = await artifact(
-      root,
-      "artifacts/speed/runtime/default/scr_b.bc",
-      "b-bitcode",
-    );
     const flavors = { release, speed };
     await shareIdenticalArtifacts(flavors, root);
     const paths = (flavor: typeof release) =>
-      flavor.runtime_units.map((unit) =>
-        unit.variants.map((variant: Artifact) => [variant.path, variant.bitcode?.path]),
-      );
+      flavor.runtime_units.map((unit) => unit.variants.map((variant: Artifact) => variant.path));
     expect(paths(release)).toEqual([
-      [
-        ["artifacts/release/runtime/default/scr_a.o", undefined],
-        ["artifacts/release/runtime/default/scr_a.o", undefined],
-      ],
-      [["artifacts/release/runtime/default/scr_b.o", "artifacts/release/runtime/default/scr_b.bc"]],
+      ["artifacts/release/runtime/default/scr_a.o", "artifacts/release/runtime/default/scr_a.o"],
+      ["artifacts/release/runtime/default/scr_b.o"],
     ]);
     expect(paths(speed)).toEqual([
-      [["artifacts/speed/runtime/default/scr_a.o", undefined]],
-      [
-        ["artifacts/release/runtime/default/scr_b.o", "artifacts/release/runtime/default/scr_b.bc"],
-        ["artifacts/speed/runtime/other/scr_b.o", undefined],
-      ],
+      ["artifacts/speed/runtime/default/scr_a.o"],
+      ["artifacts/release/runtime/default/scr_b.o", "artifacts/speed/runtime/other/scr_b.o"],
     ]);
     expect(existsSync(join(root, "artifacts/release/runtime/default-workers"))).toBe(false);
     expect(existsSync(join(root, "artifacts/speed/runtime/default/scr_b.o"))).toBe(false);
-    expect(existsSync(join(root, "artifacts/speed/runtime/default/scr_b.bc"))).toBe(false);
     expect(existsSync(join(root, "artifacts/speed/runtime/default/scr_a.o"))).toBe(true);
     expect(existsSync(join(root, "artifacts/speed/runtime/other/scr_b.o"))).toBe(true);
   } finally {

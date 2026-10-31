@@ -202,6 +202,25 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   2304,
   2552,
   18004,
+  // ---- The checker's OPINIONS about legal JavaScript ----
+  // Each diagnostic below reports that a construct is unusual for TypeScript,
+  // never that it is illegal JavaScript: Node gives it a defined runtime
+  // meaning and the lowerer already builds it. TypeScript input keeps all
+  // three.
+  //
+  // 2695, an unused comma-operand left side (`(0, fn)`, `(0, [[x]] = [])`):
+  // the operator evaluates the left operand for its effects and yields the
+  // right one; the lowerer emits a sequence expression for it.
+  2695,
+  // 18050, `null`/`undefined` in an arithmetic or bitwise position
+  // (`null + undefined`, `null * 3`): ToNumber gives them 0 and NaN, which
+  // the numeric coercion implements for a unit literal; the demand comes
+  // from strictNullChecks, not from JavaScript.
+  18050,
+  // 7057, a `yield` in a generator with no return-type annotation: the
+  // generator protocol is untyped in JavaScript and the sent value is
+  // whatever the caller passes. The generator lowering owns the channels.
+  7057,
 ]);
 
 /* Arithmetic on an `any` operand (TS2362/2363/2365 fire when the other

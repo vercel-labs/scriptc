@@ -63,6 +63,7 @@ import { dateRootOf } from "./builtins/date-classes.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
 import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
+import { registerLinkedHelper } from "./record-links.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { dynArgumentPack } from "./call-arguments.js";
 
@@ -2614,7 +2615,36 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
     });
   }
   lowerer.liftedFns.push(fn);
+  if (t.kind === "record" && recordMayKeepSource(lowerer, t))
+    registerLinkedHelper(lowerer, fn, t.shapeId, "inspect");
   return name;
+}
+
+/** The rendering of `value` at recursion `r` and depth budget `d`: its
+ * type's inspect helper, or the checked-dynamic view's rendering when the
+ * type has no inspect lowering (a record with a function field). */
+export function inspectHelperCall(
+  lowerer: Lowerer,
+  value: IrExpr,
+  r: IrExpr,
+  d: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (inspectSupport(lowerer, value.type, new Set(), { recursive: false }) !== null)
+    return {
+      kind: "libCall",
+      fn: "insp.dyn",
+      args: [{ kind: "dynFrom", value, liveRef: true, type: DYN, loc }, r, d],
+      type: STRING,
+      loc,
+    };
+  return {
+    kind: "call",
+    callee: inspectHelper(lowerer, value.type, loc),
+    args: [value, r, d],
+    type: STRING,
+    loc,
+  };
 }
 
 /* ── the console/format top-level value rendering ────────────────────── */

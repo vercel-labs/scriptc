@@ -44,6 +44,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
+    ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
@@ -51,6 +52,9 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
+    ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
+    ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
+    ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     // Island code's signal and exit listeners join the events unit's
     // registries (scope-B NI-3).

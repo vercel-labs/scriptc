@@ -83,6 +83,8 @@ import {
 import type { Lowerer } from "./lowerer.js";
 import * as ts from "../ts7/adapter.js";
 import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
+import { replaceChildExpr } from "../../ir/fields.generated.js";
+import { InternalCompilerError } from "../../errors.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
 
 /** The statements a key-order helper runs for record `ref`: `walks[0]`,
@@ -897,6 +899,14 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
           shapesIn(segment.value.type, early, earlySeen);
           if (early.size !== before) grew = true;
         }
+      }
+      // A copy narrowed from a record links to it (record-links.ts) and
+      // shows the record's own keys, so the record is observed through it.
+      for (const link of lowerer.recordLinks.values()) {
+        if (!early.has(link.to)) continue;
+        const before = early.size;
+        shapesIn({ kind: "record", shapeId: link.from }, early, earlySeen);
+        if (early.size !== before) grew = true;
       }
     }
     for (let grew = true; grew;) {
@@ -2276,23 +2286,48 @@ function collectDeclaredKeys(
   ];
 }
 
-/** Rewrite a node its parent already holds a reference to: clear the fields
- * its old kind used, then copy the replacement's (a `seqExpr`). The compiler
- * compiles this file too, where `Object.keys` over a big node union has no
- * lowering, so the fields are cleared explicitly. */
-function replaceInPlace(node: IrExpr, replacement: IrExpr): void {
-  if (replacement.kind !== "seqExpr") return;
-  const fields = node as unknown as Record<string, unknown>;
-  delete fields["value"];
-  delete fields["stmts"];
-  delete fields["result"];
-  delete fields["source"];
-  delete fields["overrides"];
-  fields["kind"] = replacement.kind;
-  fields["stmts"] = replacement.stmts;
-  fields["result"] = replacement.result;
-  fields["type"] = replacement.type;
-  fields["loc"] = replacement.loc;
+/** The replacements recorded for `fn`. */
+function replacementsIn(
+  byFn: Map<IrFunction, Map<IrExpr, IrExpr>>,
+  fn: IrFunction,
+): Map<IrExpr, IrExpr> {
+  let replacements = byFn.get(fn);
+  if (replacements === undefined) byFn.set(fn, (replacements = new Map()));
+  return replacements;
+}
+
+/** Replaces each node of `replacements` in `fn` through the node that holds
+ * it (replaceChildExpr), and the nodes under a replacement in turn. A node
+ * is never rewritten into another kind in place: the compiler compiles this
+ * file too, and a node it builds keeps its kind's fields. */
+function replaceThroughParents(fn: IrFunction, replacements: ReadonlyMap<IrExpr, IrExpr>): void {
+  if (replacements.size === 0) return;
+  let replaced = 0;
+  const children = (parent: IrExpr | IrStmt) => ({
+    expr: (child: IrExpr): boolean => {
+      const to = replacements.get(child);
+      if (to !== undefined && replaceChildExpr(parent, child, to)) replaced++;
+      visitExpr(to ?? child);
+      return true;
+    },
+    stmt: (child: IrStmt): boolean => {
+      visitStmt(child);
+      return true;
+    },
+  });
+  function visitExpr(node: IrExpr): void {
+    const { expr, stmt } = children(node);
+    everyExprChild(node, expr, stmt);
+  }
+  function visitStmt(node: IrStmt): void {
+    const { expr, stmt } = children(node);
+    everyStmtChild(node, expr, stmt);
+  }
+  for (const stmt of fn.body) visitStmt(stmt);
+  if (replaced !== replacements.size)
+    throw new InternalCompilerError(
+      `key-order-witness: ${replacements.size - replaced} kept site(s) not found in ${fn.name}`,
+    );
 }
 
 /** Width spreads: `{ ...wide }` into a narrower declared record. Node's copy
@@ -2450,6 +2485,7 @@ function keepSourceProbes(
 ): void {
   if (!possible) return;
   let index = 0;
+  const byFn = new Map<IrFunction, Map<IrExpr, IrExpr>>();
   for (const { node, fn } of sites) {
     const probe = notes.sourceProbeOf(node);
     if (probe === undefined) continue;
@@ -2480,8 +2516,9 @@ function keepSourceProbes(
       type: BOOL,
       loc,
     };
-    replaceInPlace(node, replacement);
+    replacementsIn(byFn, fn).set(node, replacement);
   }
+  for (const [fn, replacements] of byFn) replaceThroughParents(fn, replacements);
 }
 
 /** Same-shape `{ ...r, k: v }` clones: Node's copy holds every own key of
@@ -2497,6 +2534,7 @@ function keepRecordClones(
   kept: ReadonlySet<IrExpr>,
 ): void {
   let index = 0;
+  const byFn = new Map<IrFunction, Map<IrExpr, IrExpr>>();
   for (const { node, fn } of sites) {
     if (!kept.has(node) || node.kind !== "recordClone") continue;
     const cloneT = node.type;
@@ -2568,8 +2606,9 @@ function keepRecordClones(
       type: cloneT,
       loc,
     };
-    replaceInPlace(node, replacement);
+    replacementsIn(byFn, fn).set(node, replacement);
   }
+  for (const [fn, replacements] of byFn) replaceThroughParents(fn, replacements);
 }
 
 /** `if (key is a declared field) keys[key] = undefined`: appends a declared

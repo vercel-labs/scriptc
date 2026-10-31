@@ -655,7 +655,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           s.value,
           null,
         );
-        emitter.emitNullableFieldStore(obj.name, s.className, s.field, nullable, s.value);
+        emitter.emitNullableFieldStore(
+          obj.name,
+          s.className,
+          s.field,
+          nullable,
+          s.value,
+          emitter.freshFieldStores.has(s),
+        );
         break;
       }
       if (s.kind === "fieldSet" && emitter.int32Slots.isField(s.className, s.field)) {
@@ -690,8 +697,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         s.kind === "fieldSet"
           ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
           : emitter.recordFieldPtr(obj.name, s.shapeId, s.field);
-      // A result-slot entry fills zeroed caller storage, each field once.
-      if (resultSlotStore(emitter.currentFunctionName, s)) emitter.initField(ptr, type, inline, v);
+      // A result-slot entry fills zeroed caller storage, each field once; a
+      // constructor's first store to its own field fills the slot `new` left.
+      if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+        emitter.initField(ptr, type, inline, v);
       else emitter.replaceField(ptr, type, inline, v);
       if (
         s.kind === "fieldSet" &&

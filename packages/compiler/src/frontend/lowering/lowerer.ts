@@ -248,6 +248,7 @@ import {
 } from "../tier-analysis.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
+import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./record-links.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
@@ -315,6 +316,7 @@ import type {
   IrWasmModule,
   IrWasmUntranslated,
   IrParam,
+  IrRecordLink,
   IrRecordShape,
   IrStmt,
   IrType,
@@ -2193,6 +2195,19 @@ function builtinMemberValueName(
   return builtinModuleFnOf(lowerer, module, member)?.valueName ?? null;
 }
 
+/** Whether `node` is a function, arrow or class DEFINITION that carries no
+ * name of its own, so the binding or property it initializes names it
+ * (V8's SetFunctionName). Every other expression evaluates to a value that
+ * already has whatever name it has. */
+function isAnonymousCallableDefinition(node: ts.Node): boolean {
+  if (ts.isArrowFunction(node)) return true;
+  return (ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name === undefined;
+}
+
+/** The name V8 gives a function value read from this expression: its own
+ * definition, through parenthesized, rebindable and const bindings and
+ * property reads (`process.cwd`), or the binding an anonymous definition
+ * initializes. Null when the source does not determine it. */
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
@@ -2206,20 +2221,31 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       n = declaration;
       break;
     }
-    if (
-      !declaration ||
-      !ts.isVariableDeclaration(declaration) ||
-      !declaration.initializer ||
-      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
-    )
+    if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
+    let value: ts.Node = declaration.initializer;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    // Name inference (V8's SetFunctionName) covers an ANONYMOUS function or
+    // class definition and nothing else: the binding names it, so a
+    // rebindable binding keeps the binding's spelling below. Any other
+    // initializer is a value that carries its own name — a named
+    // definition, a builtin function (`var a = String; a.name` is
+    // "String") or another binding (`var a = b` keeps b's name) — and
+    // resolution follows it.
+    if (isAnonymousCallableDefinition(value)) {
+      // The binding this definition initializes named it when it was
+      // created, so answer that binding and not the alias the reference
+      // reached it through: `import b from "./m"` keeps the "root" of
+      // `const root = (text) => text;` in `m`.
+      if (ts.isIdentifier(declaration.name)) return declaration.name.text;
       break;
-    n = declaration.initializer;
-    while (ts.isParenthesizedExpression(n)) n = n.expression;
+    }
+    n = value;
   }
   if (ts.isIdentifier(n)) return n.text;
   if (ts.isPropertyAccessExpression(n)) return n.name.text;
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
-  if (ts.isFunctionExpression(n) || ts.isArrowFunction(n)) {
+  if (ts.isClassExpression(n) && n.name) return n.name.text;
+  if (ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassExpression(n)) {
     // An anonymous function takes the name of the binding or property it
     // initializes, through parentheses (`const f = (function () {})`).
     let outer: ts.Node = n;
@@ -2608,6 +2634,21 @@ export class Lowerer {
    * lowering and resolved by checkGenericIdentityPins only when some
    * generic declaration is held at more than one signature. */
   readonly dynIdentityComparisons: { node: ts.Node; left: ts.Node; right: ts.Node }[] = [];
+  /** The value instance each pinned binding holds (`const f: Fn = ident`),
+   * keyed by the binding's declaration: two pins of one generic
+   * declaration at different signatures are separate compiled closures, so
+   * checkGenericIdentityPins refuses to compare them. */
+  readonly pinnedValueInstances = new Map<ts.Node, { info: GenericFnInfo; instance: string }>();
+  /** Function-vs-function identity comparisons recorded while lowering,
+   * with the closure name each operand lowered to when it is a closure
+   * (an inline instantiation expression names its instance directly). */
+  readonly pinnedIdentityComparisons: {
+    node: ts.Node;
+    left: ts.Node;
+    right: ts.Node;
+    leftInstance: string | undefined;
+    rightInstance: string | undefined;
+  }[] = [];
   /** The identity comparison check reports once, after all lowering. */
   genericIdentityCheckDone = false;
   /** Function expressions lowered against a fixed target signature with a
@@ -3827,6 +3868,25 @@ export class Lowerer {
   >();
   /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
   readonly threadSlotKeys = new Set<string>();
+  /** The narrowing conversions that link copies to their sources, by
+   * `${from}:${to}` (record-links.ts). */
+  readonly recordLinks = new Map<string, IrRecordLink>();
+  /** Where each of recordLinks' pairs was first converted, by compose
+   * helper name. */
+  readonly recordLinkLocs = new Map<string, SrcLoc>();
+  /** The conversion each %rec.string and %rec.primitive helper's calls
+   * replace, by helper name (record-links.ts recordStringCall). */
+  readonly recordStringFallbacks = new Map<string, StringFallback>();
+  /** The conversion helpers that build copies of recordLinks' pairs. */
+  readonly recordLinkSites: { link: IrRecordLink; projection: IrFunction }[] = [];
+  /** Object.prototype methods other than toString called by name on
+   * record types (finalizeRecordLinks checks them against link sources). */
+  readonly recordMethodCalls: { shapeId: string; method: string; loc: SrcLoc }[] = [];
+  /** Completions of "custom" linked helpers (record-links.ts), which
+   * finalizeRecordLinks runs once the links are known. */
+  readonly linkedHelperFinalizers: (() => void)[] = [];
+  /** Helpers over record types that finalizeRecordLinks completes. */
+  readonly linkedHelpers: LinkedHelper[] = [];
   /** The JavaScript names of object literals' methods, by lifted function
    * (function-names.ts). */
   readonly objectMethodNames = new Map<string, string>();
@@ -4341,6 +4401,11 @@ export class Lowerer {
       checkedTable("erasingLambdas", () => this.erasingLambdas.size),
       checkedTable("genericIdentityPins", () => this.genericIdentityPins.length),
       checkedTable("dynIdentityComparisons", () => this.dynIdentityComparisons.length),
+      // Pinned binding instances and function-vs-function identity
+      // comparisons feed the same end-of-lowering check; a unit that records
+      // one lowers again rather than replaying a record without it.
+      checkedTable("pinnedValueInstances", () => this.pinnedValueInstances.size),
+      checkedTable("pinnedIdentityComparisons", () => this.pinnedIdentityComparisons.length),
       checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
       checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
       checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
@@ -4451,6 +4516,13 @@ export class Lowerer {
       checkedTable("threadSlotNames", () => this.threadSlotNames.size),
       checkedTable("threadSlotFamilies", () => this.threadSlotFamilies.size),
       checkedTable("threadSlotKeys", () => this.threadSlotKeys.size),
+      checkedTable("recordLinks", () => this.recordLinks.size),
+      checkedTable("recordLinkLocs", () => this.recordLinkLocs.size),
+      checkedTable("recordLinkSites", () => this.recordLinkSites.length),
+      checkedTable("recordStringFallbacks", () => this.recordStringFallbacks.size),
+      checkedTable("linkedHelpers", () => this.linkedHelpers.length),
+      checkedTable("linkedHelperFinalizers", () => this.linkedHelperFinalizers.length),
+      checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
@@ -5361,19 +5433,44 @@ export class Lowerer {
     );
   }
 
-  /** A stdlib WeakMap or WeakSet, alone or with `null`/`undefined`. */
+  /** A stdlib WeakMap or WeakSet, alone or in a union with `null`/`undefined`
+   * (including the `WeakMap | WeakSet` pair). */
   private weakCollectionType(type: ts.Type): boolean {
+    return this.weakCollectionNamesOf(type) !== null;
+  }
+
+  /** The stdlib collections a type denotes — `WeakMap`, `WeakSet`, or the
+   * two in a union — alone or with `null`/`undefined`, which `nullable`
+   * reports; null for everything else. The predicate behind
+   * weak-collection lowering and the JavaScript value read of one of
+   * their methods, whose receiver may hold either collection. */
+  weakCollectionNamesOf(
+    type: ts.Type,
+  ): { names: ("WeakMap" | "WeakSet")[]; nullable: boolean } | null {
+    const names: ("WeakMap" | "WeakSet")[] = [];
     const weak = (part: ts.Type): boolean => {
       const symbol = part.getSymbol();
-      return (
-        ((symbol !== undefined && ts.symbolName(symbol) === "WeakMap") ||
-          (symbol !== undefined && ts.symbolName(symbol) === "WeakSet")) &&
-        symbol.declarations.some(
+      if (symbol === undefined) return false;
+      const symbolName = ts.symbolName(symbol);
+      if (symbolName !== "WeakMap" && symbolName !== "WeakSet") return false;
+      if (
+        !symbol.declarations.some(
           (d) => ts.isInterfaceDeclaration(d) && this.isStdlibFile(ts.getSourceFileOfNode(d)),
         )
-      );
+      )
+        return false;
+      if (!names.includes(symbolName)) names.push(symbolName);
+      return true;
     };
-    return this.stdlibHandleType(type, weak);
+    if (!this.stdlibHandleType(type, weak)) return null;
+    return {
+      names,
+      nullable:
+        type.isUnionType() &&
+        ts
+          .constituentTypes(type)
+          .some((part) => (part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0),
+    };
   }
 
   /** A type `handle` accepts, alone or with `null`/`undefined`. */
@@ -9820,6 +9917,7 @@ export class Lowerer {
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
+    finalizeRecordLinks(this, functions);
     boxBuiltinValuesChecked(this, functions);
     finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
@@ -9957,6 +10055,7 @@ export class Lowerer {
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
+            ...(this.recordLinks.size > 0 ? { recordLinks: [...this.recordLinks.values()] } : {}),
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
@@ -13178,6 +13277,14 @@ export class Lowerer {
       const helper = this.unionRetagHelper(expr.type.unionId, expected.unionId, expr.loc);
       if (helper) {
         return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
+      }
+      // Inside a type assertion's operand the program claimed the value's
+      // shape: an arm the asserted target excludes traps (divergence 38's
+      // lying-assertion stance) instead of refusing the whole conversion.
+      if (this.coercions.assertedOperand > 0) {
+        const checked = this.widthLiftPlan(expr.type, expected);
+        if (checked?.how === "checkedRetag")
+          return this.applyWidthLift(checked, expr, expected, expr.loc);
       }
       return assertedConversion(this, expr, expected) ?? expr;
     }

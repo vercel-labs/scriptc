@@ -402,8 +402,22 @@ function buildLibFnSignatures() {
      * the may-throw seed set. */
     "dyn.defineProps": { argTypes: [DYN, DYN], result: DYN },
     "dyn.defineProperty": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** dyn.defineProps / dyn.defineProperty / dyn.objCreateWithProperties
+     * for a descriptor (or a property-descriptor map) built by an expression
+     * instead of a plain object literal: ToPropertyDescriptor accepts any
+     * object and reads each field through [[HasProperty]] and [[Get]]. */
+    "dyn.definePropsShapes": { argTypes: [DYN, DYN], result: DYN },
+    "dyn.definePropertyShapes": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "dyn.objCreateWithPropertiesShapes": { argTypes: [DYN, DYN], result: DYN },
     "dyn.getOwnPropertyDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "dyn.arrayProtoCall": { argTypes: [DYN, STRING, DYN], result: DYN },
+    /** The same call through the array-like unit (JavaScript sources):
+     * Array.prototype's generic algorithms over a receiver that is not a
+     * native array, and the invoke unit's dispatch for everything else. */
+    "dyn.arrayLikeProtoCall": { argTypes: [DYN, STRING, DYN], result: DYN },
+    /** Number.prototype / Boolean.prototype as JavaScript values: the
+     * prototype object (dyn.builtinPrototype unit). */
+    "dyn.builtinPrototype": { argTypes: [STRING], result: DYN },
     /** Promise.all / Promise.allSettled / Promise.any over a spread
      * checked-dynamic array: the values, the settled-record array, or the
      * first fulfillment (AggregateError once every entry rejects).
@@ -459,6 +473,13 @@ function buildLibFnSignatures() {
     "module.cacheHas": { argTypes: [STRING], result: BOOL },
     "module.cacheKeys": { argTypes: [], result: arrayOf(STRING) },
     "timers.setTimeout": { argTypes: [{ kind: "func", params: [], ret: VOID }, F64], result: VOID },
+    /** A setTimeout/setInterval delay that is not a literal in [1, 2^31-1]:
+     * the delay unchanged, after the warning Node's Timeout constructor
+     * emits when it sets the delay to 1 (scr_timer_user_delay). The second
+     * argument is 0 for the global setTimeout, 1 for the global
+     * setInterval and 2 for a node:timers import, plus 4 for a delay read
+     * from an array element. */
+    "timers.userDelay": { argTypes: [F64, F64], result: F64 },
     /** The repeating timer pair. setInterval takes (callback, ms) like
      * setTimeout and RETURNS the f64 handle the fallback declarations
      * promise (ids start at 1, so truthiness narrowing works); the loop
@@ -1241,8 +1262,21 @@ function buildLibFnSignatures() {
      * All borrow; string results +1; escape and stringify throw URIError
      * [ERR_INVALID_URI] on a lone surrogate. */
     "qs.parse": { argTypes: [STRING, STRING, STRING, F64], result: VOID },
+    /** parse with a decodeURIComponent option: qs, sep, eq, maxKeys and
+     * the option's value (a function decodes; any other value means the
+     * default decoder). The result is the same dictionary as qs.parse's. */
+    "qs.parseCustom": { argTypes: [STRING, STRING, STRING, F64, DYN], result: VOID },
     "qs.stringify": { argTypes: [DYN, STRING, STRING], result: STRING },
+    /** stringify with an encodeURIComponent option's value. */
+    "qs.stringifyCustom": { argTypes: [DYN, STRING, STRING, DYN], result: STRING },
+    /** A sep/eq argument that may not be a string: (value, default, parse). */
+    "qs.separator": { argTypes: [DYN, STRING, BOOL], result: STRING },
+    /** unescapeBuffer(s, decodeSpaces) as a new Buffer. */
+    "qs.unescapeBuffer": { argTypes: [STRING, BOOL], result: BYTES_U8 },
     "qs.escape": { argTypes: [STRING], result: STRING },
+    /** escape of a value that may not be a string: String(value) for an
+     * object or null, value + "" otherwise (a symbol throws TypeError). */
+    "qs.escapeValue": { argTypes: [DYN], result: STRING },
     "qs.unescape": { argTypes: [STRING], result: STRING },
     /** node:util.parseArgs: one checked-dynamic config object in, one
      * checked-dynamic ParsedResults tree out. Statically typed member reads
@@ -2195,6 +2229,8 @@ function buildLibFnSignatures() {
     "http.reqHttpVersionMajor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqHttpVersionMinor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqAborted": { argTypes: [HTTPREQ_T], result: BOOL },
+    "http.reqDestroyed": { argTypes: [HTTPREQ_T], result: BOOL },
+    "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
     "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
     "http.resDestroy": { argTypes: [HTTPRES_T], result: VOID },
     "http.resOnClose": {
@@ -4186,6 +4222,10 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A standard library prototype object as a value (`Date.prototype` read
+     * in a JavaScript source), named by its constructor: the unit in
+     * scr_dyn_stdlib_prototype.c. */
+    "dyn.stdlibPrototype": { argTypes: [STRING], result: DYN },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
@@ -4230,6 +4270,13 @@ function buildLibFnSignatures() {
     "dyn.isExtensible": { argTypes: [DYN], result: BOOL },
     "dyn.seal": { argTypes: [DYN], result: DYN },
     "dyn.isSealed": { argTypes: [DYN], result: BOOL },
+    /** Object.isExtensible / Object.isSealed of a value whose kind is known
+     * only at runtime: a native handle or a promise has no modeled integrity
+     * state, so these refuse (SC2020) instead of answering like
+     * dyn.isExtensible/dyn.isSealed, which the static arms (a class
+     * instance's checked view, a typed function value) keep using. */
+    "dyn.isExtensibleQuery": { argTypes: [DYN], result: BOOL },
+    "dyn.isSealedQuery": { argTypes: [DYN], result: BOOL },
     "dyn.objValues": { argTypes: [DYN], result: DYN },
     /** Object.values as a native vector of checked values, for results the
      * program consumes directly (for-of, index reads, read-only methods). */
@@ -5009,10 +5056,25 @@ function buildLibFnSignatures() {
      * (key-order-witness.ts ordered spreads). Both are record types. Never
      * throws. */
     "record.sourceSpread": { argTypes: [null, null], result: VOID },
-    /** `record.sourceNote(built, keys)`: the record a spread just built keeps
-     * `keys` as its kept source (scr_record_source_note). For a declared
-     * spread merge (`{ ...a, ...b }` into one declared shape;
-     * key-order-witness.ts declared merges) these are the declared keys its
+    /** `record.sourceShare(built, value)`: the record `built`, of value's
+     * record type, keeps value's kept source too (record-links.ts compose
+     * helpers). Never throws. */
+    "record.sourceShare": { argTypes: [null, null], result: VOID },
+    /** `record.link(copy, source, pair)`: the copy a narrowing conversion
+     * just built links to its source record (IrModule.recordLinks; `pair`
+     * a numLit). Borrows both. Never throws. */
+    "record.link": { argTypes: [null, null, F64], result: VOID },
+    /** `record.linkIs(copy, pair)`: whether the record links to a source
+     * through the pair (a numLit). Never throws. */
+    "record.linkIs": { argTypes: [null, F64], result: BOOL },
+    /** `record.linkSource(copy, pair)`: the source a record links to
+     * through the pair, which the caller has tested (record.linkIs); its
+     * type is the pair's source type. Never throws. */
+    "record.linkSource": { argTypes: [null, F64], result: VOID },
+    /** `record.sourceNote(built, keys)`: the record a spread just built
+     * keeps `keys` as its kept source (scr_record_source_note). For a
+     * declared spread merge (`{ ...a, ...b }` into one declared shape;
+     * key-order-witness.ts declared merges) they are the declared keys its
      * sources supplied, in the order the spreads created them, kept when the
      * record holds them in another order than it serializes them. For a width
      * spread they are the copy's own keys, in order (declared ones are
@@ -5053,6 +5115,10 @@ function buildLibFnSignatures() {
     /** A runtime encoding argument's canonical name (Node's normalizeEncoding:
      * nullish and "" are utf8); an unknown name throws ERR_UNKNOWN_ENCODING. */
     "strdec.encoding": { argTypes: [DYN], result: STRING },
+    /** The same for an encoding that may not be a string (scr_inspect.c):
+     * an object whose `length` is 3 to 9 matches by its string in lower
+     * case; other values throw ERR_UNKNOWN_ENCODING formatted with %s. */
+    "strdec.encodingValue": { argTypes: [DYN], result: STRING },
     // node:readline: the interface handle is f64; the callbacks' func types
     // are program-dependent (the emitter picks the adapter by parameter
     // count), so those slots are null like child.onExit's.

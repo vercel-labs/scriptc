@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { setShapeOverlayMemoDir, shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
 import { jsInferenceEnabled } from "./frontend/js-inference.js";
-import { nodeFrontendServices } from "./frontend/services-node.js";
+import { createNodeFrontendServices, nodeFrontendServices } from "./frontend/services-node.js";
 import {
   runTypePatchCommand,
   type TypePatchCommandRequest,
@@ -173,7 +173,8 @@ import { serializeModuleParts } from "./ir/serialize.js";
 import { readTextParts, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
 import { compilerOwnedFileRoots } from "./frontend/dts-paths.js";
-import { loadProgram } from "./frontend/program-node.js";
+import { loadProgramWithServices } from "./frontend/program-node.js";
+import { programHostLoads } from "./frontend/services.js";
 import { runFrontend, type FrontendFactory } from "./frontend/pipeline.js";
 import {
   type ProvenanceSources,
@@ -485,7 +486,35 @@ const nodeFrontend: FrontendFactory = (
   externalTypes,
   libraryNpmStatic,
   options,
-) => runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+) => {
+  // One syntax parser for every load of this compile, and program hosts
+  // that serve several loads (FrontendServices.reuseProgramHosts).
+  const services = createNodeFrontendServices();
+  try {
+    services.reuseProgramHosts(programHostLoads());
+    const frontend = runFrontend(
+      entry,
+      (path, loadOptions) => loadProgramWithServices(path, services, loadOptions),
+      npmStatic,
+      externalTypes,
+      libraryNpmStatic,
+      options,
+    );
+    return {
+      ...frontend,
+      dispose: () => {
+        try {
+          frontend.dispose();
+        } finally {
+          services.close();
+        }
+      },
+    };
+  } catch (error) {
+    services.close();
+    throw error;
+  }
+};
 
 /** The checker's part of the executable cache key (`checkerCacheIdentity`), as the CLI's startup route computes it. */
 function checkerField(): { checker?: string } {
@@ -807,6 +836,7 @@ async function compileExecutableNative(
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
+    ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
@@ -815,6 +845,9 @@ async function compileExecutableNative(
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
+    ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
+    ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
+    ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     events: features.events,
     emitter: features.emitter,

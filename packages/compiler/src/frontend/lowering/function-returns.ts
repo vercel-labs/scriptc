@@ -1,6 +1,7 @@
 import { iterableGeneratorArm } from "./iterable-values.js";
 import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
+import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -550,6 +551,7 @@ export function resolveInferredReturn(
   // The wrap pass: settle every recorded return onto `final`, in place.
   // Write through the stored union arm: optional-field widening on a
   // local alias can otherwise introduce a record copy in native builds.
+  const fenced = new Map<IrStmt, IrStmt>();
   for (const e of infer.entries) {
     if (e.stmt.kind !== "return") continue;
     const diagsBefore = lowerer.diags.length;
@@ -581,19 +583,45 @@ export function resolveInferredReturn(
       for (const d of ice) lowerer.diags.push(d);
       for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
       const first = captured.find((d) => d.code !== "SC9001");
-      // Property writes, not literal element writes: the class method
-      // census reads `x["kind"] = …` as a possible write to every method
-      // named `kind`, which would make those methods dynamic in native builds.
-      const mutable = e.stmt as unknown as Record<string, unknown>;
-      delete mutable.value;
-      mutable.kind = "runtimeFence";
-      mutable.code = first?.code ?? "SC1090";
-      mutable.message = first
-        ? `${first.message} [${first.code}]`
-        : "this return value has no lowering onto the instance's settled return type [SC1090]";
+      // The fence is a NEW statement. A node's kind is a union arm, and in a
+      // native build the tag cannot be reassigned through a dynamic view of
+      // the node (the `return` node keeps its fields: `delete` of a required
+      // field throws there). Record the replacement and swap it into the body
+      // once every entry is settled, below.
+      fenced.set(e.stmt, {
+        kind: "runtimeFence",
+        code: first?.code ?? "SC1090",
+        message: first
+          ? `${first.message} [${first.code}]`
+          : "this return value has no lowering onto the instance's settled return type [SC1090]",
+        loc: e.stmt.loc,
+      });
     }
   }
+  if (fenced.size > 0) replaceFencedReturns(body, fenced);
   return final;
+}
+
+/** Puts each fence in place of its return. Only the nodes on a path to a
+ * fenced return are copied: every other node keeps its identity, because
+ * later passes rewrite the body in place. */
+function replaceFencedReturns(body: IrStmt[], fenced: ReadonlyMap<IrStmt, IrStmt>): void {
+  const stmt = (s: IrStmt): IrStmt => {
+    const fence = fenced.get(s);
+    if (fence !== undefined) return fence;
+    let changed = false;
+    const copy = mapStmtChildren(
+      s,
+      (e) => e,
+      (next) => {
+        const mapped = stmt(next);
+        if (mapped !== next) changed = true;
+        return mapped;
+      },
+    );
+    return changed ? copy : s;
+  };
+  for (let i = 0; i < body.length; i += 1) body[i] = stmt(body[i]!);
 }
 
 /** The declaration's real Block body. tsgo's remote child indexing can hand

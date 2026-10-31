@@ -2349,6 +2349,7 @@ const attempts: Array<() => string> = [
   () => util.format(o, { a: 1 }),
   () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
   () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
+  () => util.formatWithOptions({ maxArrayLength: 1.5 }, [1, 2]),
   () => util.formatWithOptions({ compact: true }, [1, 2]),
 ];
 for (const attempt of attempts) {
@@ -2367,7 +2368,8 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
       "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
         "Error SC2020 util.format %o of objects renders hidden properties, which have no lowering; use %O\n" +
         "Error SC2020 colored inspect output of Error values has no lowering\n" +
-        "Error SC2020 util.formatWithOptions with the maxArrayLength option has no lowering\n" +
+        "[ 1, ... 1 more item ]\n" +
+        "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
         "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
         "{ a: 1 } [ 1, 2 ]\n",
     );

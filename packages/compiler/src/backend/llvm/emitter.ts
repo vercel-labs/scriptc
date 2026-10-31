@@ -949,6 +949,25 @@ function isIdentifierByte(code: number): boolean {
  * bookkeeping calls do not suspend it. */
 export const SUSPENDS =
   /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_)|sc_a[wd]_)/;
+/** The literal text each SUSPENDS alternative starts with. The `@scr_` prefix
+ * is joined to each suffix here so that a prefix is not read as an emitted
+ * symbol name by the runtime ABI scan. */
+const SUSPEND_PREFIXES = [
+  "await_",
+  "module_await",
+  "promise_await_settled",
+  "test_sub",
+  "gen_yield_",
+  "async_gen_",
+  "fiber_",
+]
+  .map((suffix) => `@scr_${suffix}`)
+  .concat("@sc_aw_", "@sc_ad_");
+/** Whether `text` mentions a SUSPENDS entry point. The regex runs only on
+ * text that holds one of its prefixes, which most function bodies do not. */
+export function mentionsSuspension(text: string): boolean {
+  return SUSPEND_PREFIXES.some((prefix) => text.includes(prefix)) && SUSPENDS.test(text);
+}
 /** The suspensions of a fiber body's own awaits, which its stackless
  * coroutine form suspends itself at instead. */
 const AWAIT_SUSPENSIONS =
@@ -1055,6 +1074,10 @@ function countLocalMentions(body: readonly IrStmt[], id: string): number {
 export class LlEmitter {
   /** Per-feature state (emitter-state.ts), indexed by each key's slot. */
   readonly moduleStates: unknown[] = [];
+  /** The names of the functions that `versionLoopBoundParameters` versions
+   * for int32 loop bounds: the ones that keep their name and call the copy
+   * and the fallback. Computed on first use. */
+  int32Versioned: Set<string> | null = null;
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
@@ -2836,6 +2859,7 @@ export class LlEmitter {
    * displayName, else its sourceName. Function boxes without a static name
    * look the closure's entry up in this table. */
   private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  private closureNameByEntry: Map<string, string> | undefined;
   /** The declared functions `closureNames` lists by their wrapper. A scan
    * sees closures in statements the emitter never reaches (a statement
    * after a runtimeFence: the fence always jumps), so some of these names
@@ -2845,6 +2869,7 @@ export class LlEmitter {
   closureNames(): readonly { entry: string; name: string }[] {
     if (this.closureNameEntries !== undefined) return this.closureNameEntries;
     const entries = new Map<string, string>();
+    this.closureNameByEntry = entries;
     const scan = this.nodeIndex.scan(CLOSURE_KINDS);
     for (const fn of this.mod.functions) {
       eachNodeOfKinds(fn, scan, (node) => {
@@ -2854,14 +2879,29 @@ export class LlEmitter {
           target?.displayName ??
           (target?.sourceName !== "<anonymous>" ? target?.sourceName : undefined);
         if (target === undefined || name === undefined || name === "") return true;
-        const entry =
-          target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        const entry = this.closureEntry(node.fnName, target);
         if (target.captures === undefined) this.closureWrapperNames.add(node.fnName);
         if (!entries.has(entry)) entries.set(entry, name);
         return true;
       });
     }
     return (this.closureNameEntries = [...entries].map(([entry, name]) => ({ entry, name })));
+  }
+
+  /** The entry point of a closure of `fnName` (closureNames). */
+  private closureEntry(fnName: string, target: IrFunction): string {
+    return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
+  }
+
+  /** The name the closure-name table gives a closure made of `fnName`
+   * (null when it has none), which lets a box of a closure made at the site
+   * skip the table lookup; undefined for a function the module does not
+   * define. */
+  closureNameOf(fnName: string): string | null | undefined {
+    const target = this.fnByName.get(fnName);
+    if (target === undefined) return undefined;
+    this.closureNames();
+    return this.closureNameByEntry!.get(this.closureEntry(fnName, target)) ?? null;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test

@@ -13,6 +13,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
+import { wrapperConstructors } from "../primitive-wrappers.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
@@ -4732,47 +4733,62 @@ export function fieldTarget(
       lowerer.lowerExpr(access.expression),
     );
   }
-  // A generic receiver's member the INSTANTIATION cannot store: the type
-  // parameter's constraint declares the member (so tsc admits the read),
-  // while the record the parameter was instantiated with has no such slot —
-  // a generic options bag read through its constraint (`options.sessionId`
-  // under an `"sessionId" in options` guard) at a call site whose options
-  // literal omits the optional member. Node reads the property off the
-  // object it actually has: undefined when the caller omitted it, the extra
-  // property when a JavaScript caller supplied one. So the read is the
-  // checked-dynamic keyed read of the stored record, entering the static
-  // code at the type the checker gave the read.
-  if (
-    !access.questionDotToken &&
-    readOnlyAccess(access) &&
-    typeParameterReceiver(lowerer.typeOf(access.expression))
-  ) {
+  // A member the checker ADMITS but the stored layout cannot hold. The
+  // constraint of a type parameter declares it (a generic options bag read
+  // through an `"sessionId" in options` guard), and so does a cast that
+  // intersects the member onto a record (`options as Omit<T, "k"> &
+  // ProviderRequestOptions<M>`), while the record the value was STORED as
+  // has no such slot: the call site omitted the optional member, the
+  // instantiation is a union of option shapes, or the cast added a member
+  // its source layout never declared. Node reads the property off the
+  // object it actually has — undefined when the object lacks it, the value
+  // when the value kept one — so the read is the checked-dynamic keyed read
+  // of the stored value, entering the static code at the type the checker
+  // gave the read (a failed conversion throws; it never diverges).
+  if (!access.questionDotToken && readOnlyAccess(access)) {
     const storedIr = stored ?? narrowed;
-    const arm = storedIr?.kind === "union" ? lowerer.stripUndefinedArm(storedIr) : storedIr;
-    const shape = arm?.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+    const present = storedIr?.kind === "union" ? lowerer.stripUndefinedArm(storedIr) : storedIr;
+    const arms =
+      present?.kind === "union"
+        ? (lowerer.unions.get(present.unionId)?.arms ?? [present])
+        : present
+          ? [present]
+          : [];
+    // Every arm is a plain record layout with no slot for the member.
+    const layoutMissing =
+      arms.length > 0 &&
+      arms.every((arm) => {
+        if (arm.kind !== "record") return false;
+        const shape = lowerer.shapes.get(arm.shapeId);
+        return (
+          shape !== undefined &&
+          !shape.tuple &&
+          !shape.indexValue &&
+          !shape.fields.some((f) => f.name === access.name.text)
+        );
+      });
     const admitted = lowerer.mapTypeOf(lowerer.typeOf(access));
-    if (
-      shape &&
-      !shape.tuple &&
-      !shape.indexValue &&
-      !shape.fields.some((f) => f.name === access.name.text) &&
-      admitted &&
-      admitted.kind !== "void"
-    ) {
+    const checkerHolds =
+      typeParameterReceiver(lowerer.typeOf(access.expression)) ||
+      narrowed === null ||
+      (narrowed.kind === "record" &&
+        (lowerer.shapes.get(narrowed.shapeId)?.fields.some((f) => f.name === access.name.text) ??
+          false));
+    if (layoutMissing && checkerHolds && admitted && admitted.kind !== "void") {
       let obj = lowerer.lowerExpr(access.expression);
       if (obj.type.kind === "union" && lowerer.armTag(obj.type.unionId, UNDEFINED_T) >= 0) {
-        const present = lowerer.stripUndefinedArm(obj.type);
+        const presentType = lowerer.stripUndefinedArm(obj.type);
         obj =
-          present.kind === "record"
+          presentType.kind === "record"
             ? (lowerer.runtimeOptionalPropertyReceiver(
                 access.expression,
                 obj,
-                present,
+                presentType,
                 access.name.text,
               ) ?? obj)
             : lowerer.maybeNarrow(obj, access.expression);
       }
-      if (obj.type.kind !== "record") return null;
+      if (!lowerer.dynConvertible(obj.type)) return null;
       return {
         container: "dynamic",
         obj: lowerer.coerceToExpected(obj, DYN),
@@ -5773,13 +5789,27 @@ function jsPrimitivePrototypeValue(
 ): IrExpr | null {
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const loc = locOf(expr);
-  const value = (kind: string): IrExpr => ({
-    kind: "libCall",
-    fn: "dyn.builtinPrototype",
-    args: [{ kind: "strLit", value: kind, type: STRING, loc }],
-    type: DYN,
-    loc,
-  });
+  const value = (kind: string): IrExpr =>
+    kind === "Boolean"
+      ? // The wrapper unit's Boolean.prototype is the object Boolean
+        // instances inherit from, so its valueOf/toString are the interned
+        // members and accept a primitive boolean or a Boolean wrapper
+        // receiver (the dyn.builtinPrototype builder takes only the kind's
+        // primitives).
+        {
+          kind: "libCall",
+          fn: "wrapper.booleanPrototype",
+          args: [wrapperConstructors(lowerer, loc)[2]!],
+          type: DYN,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: "dyn.builtinPrototype",
+          args: [{ kind: "strLit", value: kind, type: STRING, loc }],
+          type: DYN,
+          loc,
+        };
   const receiver = expr.expression;
   if (ts.isPropertyAccessExpression(receiver) && receiver.name.text === "prototype") {
     const kind = primitivePrototypeKind(lowerer, receiver);

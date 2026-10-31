@@ -257,6 +257,10 @@ export function eachStringField(
       visit(node.localId, "localId");
       return;
     }
+    case "genBindBarrier": {
+      visit(node.kind, "kind");
+      return;
+    }
     case "genResume": {
       visit(node.kind, "kind");
       visit(node.mode, "mode");
@@ -1727,6 +1731,10 @@ export function walkStmtFields(node: IrStmt, walker: IrFieldWalker, skipType: bo
       }
       return;
     }
+    case "genBindBarrier": {
+      walker.string(node.kind);
+      return;
+    }
     case "if": {
       walker.string(node.kind);
       walkExprFields(node.cond, walker, skipType);
@@ -3140,12 +3148,13 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>, "arg" | "what">>,
   Unread<ValuesNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>["arg"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCall" }>, "kind" | "callee" | "receiver" | "calleeName" | "calleeNameValue" | "args" | "spreads" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "exact" | "partialView" | "inferredSite" | "origin" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "exact" | "partialView" | "inferredSite" | "origin" | "pathIndex" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["preserveRefs"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["adopt"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["origin"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["pathIndex"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynDestrCheck" }>, "kind" | "value" | "spelling" | "firstProp" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynFrom" }>, "kind" | "value" | "type" | "loc" | "liveRef" | "fnName" | "fnLength">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynFrom" }>["liveRef"]>>,
@@ -3275,6 +3284,7 @@ export type IrFieldsCurrent = [
   Unread<ValuesNotRead<Extract<IrStmt, { kind: "fieldSet" }>["attributesChecked"]>>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "for" }>, "kind" | "init" | "cond" | "update" | "body" | "labels" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "forOf" }>, "kind" | "localId" | "iterable" | "body" | "labels" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrStmt, { kind: "genBindBarrier" }>, "kind" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "if" }>, "kind" | "cond" | "then" | "else_" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "recordKeyDelete" }>, "kind" | "obj" | "shapeId" | "key" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "recordKeySet" }>, "kind" | "obj" | "shapeId" | "key" | "value" | "overflowOnly" | "loc">>,

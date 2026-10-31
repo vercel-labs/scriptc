@@ -1,4 +1,15 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -510,3 +521,100 @@ test("LLVM text parts are written as one file and the helper reads a private cop
   expect(await readFile(output, "utf8")).toBe(parts.join(""));
   await expect(stat(input)).rejects.toThrow();
 });
+
+/** Every object the native cache family holds for this package. */
+async function cachedObjects(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.name.endsWith(".o")) files.push(path);
+    }
+  };
+  await walk(join(root, "cache", "native-codegen-v1"));
+  return files.sort();
+}
+
+function identityRecordPath(root: string): string {
+  return join(root, ".scriptc", "identity.json");
+}
+
+function digestOf(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+test("uses the recorded helper identity and keys the cache exactly as hashing does", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "recorded.o");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const recorded = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(recorded.digest).toBe(digestOf(await readFile(pkg.bin)));
+  const hashedKeys = await cachedObjects(pkg.root);
+  expect(hashedKeys).toHaveLength(1);
+
+  // The same build without a record hashes the binary and finds the same entry.
+  await rm(join(pkg.root, ".scriptc"), { recursive: true, force: true });
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  expect(await cachedObjects(pkg.root)).toEqual(hashedKeys);
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  expect(JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8")).digest).toBe(
+    recorded.digest,
+  );
+});
+
+test("a recorded digest keys the cache, and a stale digest is rehashed", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "recorded.o");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const record = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  const realKeys = await cachedObjects(pkg.root);
+
+  // A valid record whose digest is not the binary's own can only reach the
+  // cache key if the build took the digest from the record.
+  await writeFile(
+    identityRecordPath(pkg.root),
+    `${JSON.stringify({ ...record, digest: "0".repeat(64) })}\n`,
+  );
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const recordedKeys = await cachedObjects(pkg.root);
+  expect(recordedKeys).toHaveLength(realKeys.length + 1);
+  expect(await readFile(identityRecordPath(pkg.root), "utf8")).toContain("0".repeat(64));
+
+  // A record the installed files no longer match costs one hash and is replaced.
+  await utimes(pkg.bin, new Date(2020, 0, 1), new Date(2020, 0, 1));
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "touched.o")));
+  const rewritten = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(rewritten.digest).toBe(record.digest);
+  expect(rewritten.dependencies).not.toEqual(record.dependencies);
+});
+
+test("a replaced helper is rehashed and a corrupt record falls back to hashing", async () => {
+  const pkg = await fakePackage();
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "first.o")));
+  const first = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+
+  await writeFile(pkg.bin, `${await readFile(pkg.bin, "utf8")}# replaced\n`);
+  await chmod(pkg.bin, 0o755);
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "second.o")));
+  const replaced = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(replaced.digest).toBe(digestOf(await readFile(pkg.bin)));
+  expect(replaced.digest).not.toBe(first.digest);
+
+  await writeFile(identityRecordPath(pkg.root), "{ not a record\n");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "third.o")));
+  expect(JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8")).digest).toBe(
+    replaced.digest,
+  );
+});
+
+test.skipIf(process.platform === "win32")(
+  "an install that cannot hold the record still builds",
+  async () => {
+    const pkg = await fakePackage();
+    await writeFile(join(pkg.root, ".scriptc"), "not a directory\n");
+    const output = join(pkg.root, "read-only.o");
+    await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+    expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+  },
+);

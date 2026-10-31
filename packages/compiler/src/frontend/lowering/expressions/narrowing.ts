@@ -179,6 +179,7 @@ export function lowerTernary(
     // with nested empty-array branches. Carry the whole record layout
     // through those branches before constructing their fresh fields.
     const ownJoin = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    const ownUnion = ownJoin?.kind === "union" ? ownJoin : null;
     const recordJoin =
       ctxMapped?.kind === "record" ? ctxMapped : ownJoin?.kind === "record" ? ownJoin : undefined;
     const lowerArm = (e: ts.Expression, siblingType?: IrType): IrExpr => {
@@ -226,6 +227,19 @@ export function lowerTernary(
           lowerer.widthLiftPlan(ownT, siblingType) === null
         ) {
           return lowerer.lowerArrayLiteral(lit, siblingType);
+        }
+      }
+      // A FRESH array-literal arm whose checker join is a UNION that does
+      // not already hold its own array type (`c ? [{ type: "text", text }]
+      // : replacement.content` joining `Block[]` with `(Image | Text)[]`):
+      // build the literal at the union so lowerExprExpecting's union-slot
+      // rule picks the complete arm. Nothing aliases a fresh literal, so
+      // any complete arm is the checker-accepted value; coercing the bare
+      // literal could only refuse when two array arms fit it.
+      if (lit && ownUnion) {
+        const ownT = lowerer.mapTypeOf(lowerer.typeOf(lit));
+        if (ownT?.kind === "array" && lowerer.widthLiftPlan(ownT, ownUnion) === null) {
+          return lowerer.lowerExprExpecting(lit, ownUnion);
         }
       }
       return lowerer.lowerExpr(e);
@@ -389,12 +403,14 @@ export function lowerTernary(
   }
 }
 
-/** Whether `expr` is the checked-dynamic Number/Boolean prototype value a
- * JavaScript source read (jsPrimitivePrototypeValue), or one of its
- * members: the value is the prototype OBJECT, not the wrapper's primitive,
- * so the checker's wrapper type must not extract a scalar from it. */
+/** Whether `expr` is the Number/Boolean prototype value a JavaScript
+ * source read (jsPrimitivePrototypeValue: dyn.builtinPrototype for Number,
+ * wrapper.booleanPrototype for Boolean), or one of its members: the value
+ * is the prototype OBJECT, not the wrapper's primitive, so the checker's
+ * wrapper type must not extract a scalar from it. */
 function isPrimitivePrototypeValue(expr: IrExpr): boolean {
-  if (expr.kind === "libCall") return expr.fn === "dyn.builtinPrototype";
+  if (expr.kind === "libCall")
+    return expr.fn === "dyn.builtinPrototype" || expr.fn === "wrapper.booleanPrototype";
   return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
 }
 

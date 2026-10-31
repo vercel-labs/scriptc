@@ -6,10 +6,11 @@
  * escapes, the 10000-char string cap and the per-line ` +` continuation
  * form), Buffer's <Buffer aa bb> hex form, and the LAYOUT engine — a
  * frame stack reproducing reduceToSingleString, isBelowBreakLength, and
- * groupArrayElements from Node v24's lib/internal/util/inspect.js for
- * maxArrayLength: 100 and maxStringLength: 10000, a numeric or false
- * compact (default 3), any breakLength (default 80) and a boolean sorted;
- * other non-default options fence in the frontend.
+ * groupArrayElements from Node v24's lib/internal/util/inspect.js for a
+ * non-negative integer or null maxArrayLength (default 100) and
+ * maxStringLength: 10000, a numeric or false compact (default 3), any
+ * breakLength (default 80) and a boolean sorted; other non-default
+ * options fence in the frontend.
  *
  * Lengths follow Node exactly: the break-length math counts UTF-16 code
  * units (JS .length); the grid-grouping math counts DISPLAY WIDTH. Node
@@ -395,16 +396,21 @@ static SCR_TL bool g_no_break;       /* breakLength: Infinity (console.table cel
 static SCR_TL double g_break_length = 80; /* ctx.breakLength */
 static SCR_TL double g_compact = 3;  /* ctx.compact: a number, -1 for false */
 static SCR_TL bool g_sorted;         /* ctx.sorted === true */
+static SCR_TL double g_max_array_length = 100; /* ctx.maxArrayLength */
 static SCR_TL double g_cur_depth;    /* ctx.currentDepth (last-entered composite) */
 
-/* util.inspect's breakLength, compact and sorted for the renders that
- * follow (compact false is -1); the call site restores 80, 3 and false
- * after its render. */
-void scr_insp_layout(double break_length, double compact, bool sorted) {
+/* util.inspect's breakLength, compact, sorted and maxArrayLength for the
+ * renders that follow (compact false is -1, null and Infinity arrive as
+ * Infinity); the call site restores 80, 3, false and 100 after its
+ * render. */
+void scr_insp_layout(double break_length, double compact, bool sorted, double max_array_length) {
   g_break_length = break_length;
   g_compact = compact;
   g_sorted = sorted;
+  g_max_array_length = max_array_length;
 }
+
+double scr_insp_max_array_length(void) { return g_max_array_length; }
 
 static InspFrame *insp_top(void) { return &g_frames[g_nframes - 1]; }
 
@@ -1065,9 +1071,9 @@ ScrStr *scr_insp_buffer(ScrBytes *b) {
 }
 
 /* ArrayBuffer/SharedArrayBuffer: formatArrayBuffer's
- * `[Uint8Contents]: <hex pairs>` (the first maxArrayLength = 100 bytes,
- * then ` ... N more byte(s)`) followed by the byteLength key, inside the
- * class braces. `[ArrayBuffer]` beyond depth. */
+ * `[Uint8Contents]: <hex pairs>` (the first maxArrayLength bytes, then
+ * ` ... N more byte(s)`) followed by the byteLength key, inside the class
+ * braces. `[ArrayBuffer]` beyond depth. */
 static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double recurse,
                                      double depth) {
   if (recurse > depth) {
@@ -1078,8 +1084,9 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
     return ib_take(&out);
   }
   size_t len = (size_t)scr_bytes_byte_len(h);
-  size_t shown = len < 100 ? len : 100;
-  uint8_t head[100];
+  size_t shown = (double)len < g_max_array_length ? len : (size_t)g_max_array_length;
+  uint8_t *head = shown ? malloc(shown) : NULL;
+  if (!head && shown) insp_oom();
   if (shown) scr_bytes_read(h, 0, head, shown);
   static const char hex[] = "0123456789abcdef";
   InspBuf contents = {0};
@@ -1089,6 +1096,7 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
     ib_char(&contents, hex[head[i] >> 4]);
     ib_char(&contents, hex[head[i] & 15]);
   }
+  free(head);
   if (len > shown) {
     char more[64];
     size_t remaining = len - shown;
@@ -1756,7 +1764,7 @@ static ScrStr *insp_inherited_tag(const ScrDyn *instance, const ScrStr *name) {
 }
 
 /* A native Set or Map held as a checked-dynamic value: `Set(n) { a, b }`,
- * `Map(n) { k => v }`, at most 100 entries like Node's maxArrayLength. */
+ * `Map(n) { k => v }`, at most maxArrayLength entries like Node. */
 /* Node's formatWeakCollection: the entries of a WeakMap or WeakSet are not
  * listed without showHidden, so the body is the one "<items unknown>"
  * entry, and past the depth limit the value prints as [WeakMap]. */
@@ -1812,19 +1820,41 @@ static ScrStr *scr_insp_native_iterator(ScrDyn *d, double recurse, double depth)
   scr_insp_begin(recurse + 1);
   scr_map_iter_enter(map);
   size_t shown = 0;
-  for (double i = scr_map_iter_skip(map, index); i < scr_map_iter_count(map) && shown < 100; i++) {
+  for (double i = scr_map_iter_skip(map, index);
+       i < scr_map_iter_count(map) && (double)shown < g_max_array_length; i++) {
     if (!scr_map_iter_live(map, i)) continue;
     shown++;
-    ScrDyn *item;
+    ScrStr *text;
     if (pairs) {
-      item = scr_dyn_new_arr();
-      scr_dyn_arr_push(item, scr_map_dyn_key(map, i));
-      scr_dyn_arr_push(item, kind == 3 ? scr_map_dyn_key(map, i) : scr_map_dyn_value(map, i));
+      /* formatMapIterInner lays each entry out as the pair `[ key, value ]`
+       * through reduceToSingleString, so maxArrayLength bounds the number
+       * of entries the iterator lists and never trims the pair itself: a
+       * Map Entries iterator at maxArrayLength 1 shows `[ 'a', 1 ]` before
+       * its "... 1 more item" tail. A key or value keeps its own limit
+       * inside the pair. */
+      scr_insp_begin(recurse + 1);
+      ScrDyn *key = scr_map_dyn_key(map, i);
+      ScrStr *slot = scr_insp_dyn(key, recurse + 1, depth);
+      scr_insp_entry(slot, false);
+      scr_str_release(slot);
+      ScrDyn *value = kind == 3 ? scr_dyn_retain(key) : scr_map_dyn_value(map, i);
+      scr_dyn_release(key);
+      slot = scr_insp_dyn(value, recurse + 1, depth);
+      scr_dyn_release(value);
+      scr_insp_entry(slot, false);
+      scr_str_release(slot);
+      ScrStr *empty = scr_str_new("", 0);
+      ScrStr *pb0 = scr_str_new("[", 1);
+      ScrStr *pb1 = scr_str_new("]", 1);
+      text = scr_insp_end(empty, pb0, pb1, recurse + 1, true, false);
+      scr_str_release(empty);
+      scr_str_release(pb0);
+      scr_str_release(pb1);
     } else {
-      item = kind == 2 && selection == 0 ? scr_map_dyn_value(map, i) : scr_map_dyn_key(map, i);
+      ScrDyn *item = kind == 2 && selection == 0 ? scr_map_dyn_value(map, i) : scr_map_dyn_key(map, i);
+      text = scr_insp_dyn(item, recurse + 1, depth);
+      scr_dyn_release(item);
     }
-    ScrStr *text = scr_insp_dyn(item, recurse + 1, depth);
-    scr_dyn_release(item);
     scr_insp_entry(text, false);
     scr_str_release(text);
   }
@@ -1893,7 +1923,7 @@ static ScrStr *scr_insp_dyn_collection(ScrDyn *d, double recurse, double depth, 
   scr_insp_begin(recurse + 1);
   scr_map_iter_enter(map);
   size_t shown = 0;
-  for (double i = 0; i < scr_map_iter_count(map) && shown < 100; i++) {
+  for (double i = 0; i < scr_map_iter_count(map) && (double)shown < g_max_array_length; i++) {
     if (!scr_map_iter_live(map, i)) continue;
     shown++;
     ScrDyn *key = scr_map_dyn_key(map, i);
@@ -2074,8 +2104,8 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
 }
 
 /* A numeric typed array (not a Buffer): `Uint8Array(n) [ ... ]` with
- * Node's maxArrayLength (100) and array grid, `[Uint8Array]` past the
- * depth limit. Borrows b; +1. */
+ * Node's maxArrayLength and array grid, `[Uint8Array]` past the depth
+ * limit. Borrows b; +1. */
 ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   char prefix[48];
   int pn = snprintf(prefix, sizeof prefix, "%s(%zu) [", scr_bytes_elem_name(b->elem), b->len);
@@ -2094,15 +2124,15 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
     return insp_styled_lit(tag, (size_t)n, INSP_SPECIAL);
   }
   scr_insp_begin(recurse + 1);
-  size_t shown = b->len < 100 ? b->len : 100;
+  size_t shown = (double)b->len < g_max_array_length ? b->len : (size_t)g_max_array_length;
   for (size_t i = 0; i < shown; i++) {
     ScrStr *s = insp_styled(scr_insp_f64(scr_bytes_get(b, (double)i)), INSP_NUMBER);
     scr_insp_entry(s, true);
     scr_str_release(s);
   }
-  bool more = b->len > 100;
+  bool more = shown < b->len;
   if (more) {
-    ScrStr *m = scr_insp_more_items((double)(b->len - 100));
+    ScrStr *m = scr_insp_more_items((double)(b->len - shown));
     scr_insp_entry(m, true);
     scr_str_release(m);
   }
@@ -2118,7 +2148,8 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   ScrStr *base = scr_str_new("", 0);
   ScrStr *b0 = scr_str_new(prefix, (size_t)pn);
   ScrStr *b1 = scr_str_new("]", 1);
-  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, nprops ? entries > 100 : more);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true,
+                             nprops ? (double)entries > g_max_array_length : more);
   scr_str_release(base);
   scr_str_release(b0);
   scr_str_release(b1);
@@ -2170,6 +2201,7 @@ typedef struct {
   double depth_number;
   double break_length;
   double compact;
+  double max_array_length;
   const ScrDyn *user_options;
   size_t nsaved;  /* the nested-context stack's depth before the call */
   size_t nframes; /* the frame stack's depth before the call */
@@ -2215,6 +2247,7 @@ double scr_insp_custom_call_begin(void) {
   sv->depth_number = g_depth_number;
   sv->break_length = g_break_length;
   sv->compact = g_compact;
+  sv->max_array_length = g_max_array_length;
   sv->user_options = g_user_options;
   g_colors = false;
   g_show_hidden = false;
@@ -2223,7 +2256,7 @@ double scr_insp_custom_call_begin(void) {
   g_depth_kind = 1;
   g_depth_number = 0;
   g_user_options = NULL;
-  scr_insp_layout(80, 3, false);
+  scr_insp_layout(80, 3, false, 100);
   return token;
 }
 
@@ -2240,7 +2273,7 @@ static InspCallSaved *insp_call_options_restore(size_t depth) {
   g_depth_kind = sv->depth_kind;
   g_depth_number = sv->depth_number;
   g_user_options = sv->user_options;
-  scr_insp_layout(sv->break_length, sv->compact, sv->sorted);
+  scr_insp_layout(sv->break_length, sv->compact, sv->sorted, sv->max_array_length);
   return sv;
 }
 
@@ -2394,7 +2427,7 @@ static ScrDyn *insp_user_options(double depth) {
   insp_opt_set(options, "colors", scr_dyn_new_bool(g_colors));
   insp_opt_set(options, "customInspect", scr_dyn_new_bool(true));
   insp_opt_set(options, "showProxy", scr_dyn_new_bool(false));
-  insp_opt_set(options, "maxArrayLength", scr_dyn_new_num(100));
+  insp_opt_set(options, "maxArrayLength", scr_dyn_new_num(g_max_array_length));
   insp_opt_set(options, "maxStringLength", scr_dyn_new_num(10000));
   insp_opt_set(options, "breakLength", scr_dyn_new_num(g_break_length));
   insp_opt_set(options, "compact", g_compact < 0 ? scr_dyn_new_bool(false) : scr_dyn_new_num(g_compact));
@@ -2828,12 +2861,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         return insp_styled(ib_take(&eb), INSP_SPECIAL);
       }
       scr_insp_begin(recurse + 1);
-      /* Node's maxArrayLength (100) counts output entries; a run of holes
-       * is one `<n empty items>` entry (formatSpecialArray). */
+      /* Node's maxArrayLength counts output entries; a run of holes is
+       * one `<n empty items>` entry (formatSpecialArray). */
       const unsigned char *presence = d->v.arr.presence;
       size_t i = 0;
       size_t shown = 0;
-      for (; i < len && shown < 100; shown++) {
+      for (; i < len && (double)shown < g_max_array_length; shown++) {
         if (presence && !presence[i]) {
           size_t next = i + 1;
           while (next < len && !presence[next]) next++;
@@ -2892,9 +2925,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         entries++;
       }
       /* Node's grouping leaves out the last entry when there are more
-       * entries than maxArrayLength (100): the `... more items` entry,
+       * entries than maxArrayLength: the `... more items` entry,
        * `[length]` under showHidden, or the last property. */
-      bool last_out = entries > 100;
+      bool last_out = (double)entries > g_max_array_length;
       ScrStr *base = scr_str_new("", 0);
       InspBuf ob = {0};
       ib_cstr(&ob, prefix);
@@ -3226,6 +3259,7 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
   o->break_length = 80;
   o->compact = 3;
   o->sorted = false;
+  o->max_array_length = 100;
   o->user_options = NULL;
 }
 
@@ -3235,11 +3269,12 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
 static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, double depth,
                                 double compact, bool colors) {
   double break_length = g_break_length, saved_compact = g_compact;
+  double saved_max_array_length = g_max_array_length;
   bool sorted = g_sorted, saved_colors = g_colors, saved_custom = g_custom_inspect;
   int saved_depth_kind = g_depth_kind;
   double saved_depth_number = g_depth_number;
   const ScrDyn *saved_user = g_user_options;
-  scr_insp_layout(o->break_length, compact, o->sorted);
+  scr_insp_layout(o->break_length, compact, o->sorted, o->max_array_length);
   g_colors = colors;
   g_custom_inspect = o->custom_inspect;
   g_depth_kind = o->depth_kind;
@@ -3251,7 +3286,7 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
   g_depth_kind = saved_depth_kind;
   g_depth_number = saved_depth_number;
   g_user_options = saved_user;
-  scr_insp_layout(break_length, saved_compact, sorted);
+  scr_insp_layout(break_length, saved_compact, sorted, saved_max_array_length);
   if (scr_exc_pending()) {
     scr_str_release(text);
     return NULL;
@@ -3623,8 +3658,9 @@ static bool insp_depth_option(const ScrDyn *value, ScrInspFormatOptions *o) {
 /* inspect's option keys (inspectDefaultOptions and stylize) over an
  * options object, as `inspect(value, options)` copies them. Options at
  * their defaults, depth, colors, compact (a number or false),
- * breakLength (a number) and sorted (a boolean) lower; other values of
- * the known options throw the SC2020 refusal. */
+ * breakLength (a number), sorted (a boolean) and maxArrayLength (a
+ * non-negative integer or null) lower; other values of the known options
+ * throw the SC2020 refusal. */
 bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o) {
   ScrDyn *view = NULL;
   if (options->kind == SCR_DYN_TYPED_REF) {
@@ -3679,13 +3715,24 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
     }
     o->sorted = value->v.b;
   }
+  INSP_OPT("maxArrayLength");
+  if (present) {
+    if (value->kind == SCR_DYN_NULL) {
+      o->max_array_length = INFINITY;
+    } else if (value->kind == SCR_DYN_NUM && value->v.num >= 0 && floor(value->v.num) == value->v.num) {
+      o->max_array_length = value->v.num;
+    } else {
+      insp_fmt_fence(o, "with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)");
+      goto done;
+    }
+  }
   /* The options whose non-default values change renderings this runtime
    * does not produce. */
   static const struct {
     const char *key;
-    int kind; /* 0: falsy, 1: true, 2: the number 100, 3: the number 10000 */
+    int kind; /* 0: falsy, 1: true, 2: the number 10000 */
   } fixed[] = {
-      {"showHidden", 0}, {"showProxy", 0}, {"maxArrayLength", 2}, {"maxStringLength", 3},
+      {"showHidden", 0}, {"showProxy", 0}, {"maxStringLength", 2},
       {"getters", 0},    {"numericSeparator", 0}, {"stylize", 0},
   };
   for (size_t i = 0; i < sizeof fixed / sizeof *fixed; i++) {
@@ -3693,7 +3740,7 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
     if (!present) continue;
     bool at_default = fixed[i].kind == 0   ? !scr_dyn_truthy(value)
                       : fixed[i].kind == 1 ? value->kind == SCR_DYN_BOOL && value->v.b
-                      : value->kind == SCR_DYN_NUM && value->v.num == (fixed[i].kind == 2 ? 100 : 10000);
+                                           : value->kind == SCR_DYN_NUM && value->v.num == 10000;
     /* The stylize function a custom inspect function received (options
      * passed back into util.inspect) is the default for its colors. */
     if (!at_default && strcmp(fixed[i].key, "stylize") == 0 && insp_own_stylize(value, o->colors))

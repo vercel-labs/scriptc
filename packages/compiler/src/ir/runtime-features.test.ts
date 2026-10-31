@@ -3,6 +3,7 @@ import { IR_VERSION } from "./serialize.js";
 import { DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
+  jsObjectModelFact,
   moduleRuntimeFeatures,
   moduleUsesHttp2,
   moduleUsesTlsCa,
@@ -251,6 +252,24 @@ describe("runtime feature snapshots", () => {
     const features = moduleRuntimeFeatures(mod);
     expect(features.stdlibPrototypeValue).toBe(true);
     expect(features.jsObjectModel).toBe(false);
+  });
+
+  test("Proxy.revocable and the Reflect entry points ride the JavaScript object model build", () => {
+    // t262-da §J: the proxy and Reflect entry points have no build column of
+    // their own; the fact ORs into jsObjectModel, so the program selects the
+    // one SCR_JS_OBJECT_MODEL build of scr_json.c and every other program
+    // keeps the default object.
+    const mod = module();
+    expect(moduleRuntimeFeatures(mod).dynProxyTier).toBe(false);
+    mod.functions[0]!.body.push(call("dyn.proxyRevocable"));
+    const features = moduleRuntimeFeatures(mod);
+    expect(features.dynProxyTier).toBe(true);
+    expect(features.jsObjectModel).toBe(false);
+    expect(jsObjectModelFact(features)).toBe(true);
+    // A Reflect entry point is the same fact.
+    const reflect = module();
+    reflect.functions[0]!.body.push(call("dyn.reflectConstruct"));
+    expect(moduleRuntimeFeatures(reflect).dynProxyTier).toBe(true);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {

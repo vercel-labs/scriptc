@@ -2755,10 +2755,28 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
 
 static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
 
+/* The proxy's own internal methods live with the proxy core below; these
+ * forward declarations keep the ordinary reflection paths reading as one
+ * walk. Each answers true with its result, or false with the exception
+ * pending (a throwing trap, a violated invariant, a revoked proxy). */
+#ifdef SCR_JS_OBJECT_MODEL
+static bool scr_dyn_proxy_get_prototype(ScrDyn *proxy, ScrDyn **result);
+static bool scr_dyn_proxy_set_prototype(ScrDyn *proxy, ScrDyn *prototype, bool *result);
+static bool scr_dyn_proxy_prevent_extensions(ScrDyn *proxy, bool *result);
+static bool scr_dyn_proxy_is_extensible(ScrDyn *proxy, bool *result);
+#endif
+
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
   if (scr_dyn_class_reflection_fence(object)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (object->kind == SCR_DYN_PROXY) {
+    ScrDyn *result = NULL;
+    if (!scr_dyn_proxy_get_prototype(object, &result)) return NULL;
+    return result;
+  }
+#endif
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (!view) return NULL;
@@ -2832,6 +2850,18 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     return scr_dyn_prototype_valid(prototype) ? scr_dyn_retain(object) : NULL;
   }
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object) || scr_dyn_class_reflection_fence(prototype)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (object->kind == SCR_DYN_PROXY) {
+    bool accepted = false;
+    if (!scr_dyn_proxy_set_prototype(object, prototype, &accepted)) return NULL;
+    if (!accepted) {
+      static const char message[] = "Proxy setPrototypeOf handler returned false";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    return scr_dyn_retain(object);
+  }
+#endif
   if (object->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
@@ -3131,7 +3161,20 @@ ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function) {
 
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (object->kind == SCR_DYN_PROXY) {
+    bool accepted = false;
+    if (!scr_dyn_proxy_prevent_extensions(object, &accepted)) return NULL;
+    if (!accepted) {
+      static const char message[] = "Proxy preventExtensions handler returned false";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    return scr_dyn_retain(object);
+  }
+#else
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.preventExtensions"); return NULL; }
+#endif
   ScrMap *collection = scr_dyn_native_collection(object);
   if (collection) {
     scr_map_prevent_extensions(collection);
@@ -3156,7 +3199,15 @@ ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
 
 bool scr_dyn_is_extensible(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (object->kind == SCR_DYN_PROXY) {
+    bool answer = false;
+    if (!scr_dyn_proxy_is_extensible(object, &answer)) return false;
+    return answer;
+  }
+#else
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isExtensible"); return false; }
+#endif
   if (scr_dyn_published_object(object)) return false;
   bool answer;
   if (scr_dyn_typed_ref_view_answer(object, scr_dyn_is_extensible_view, &answer)) return answer;
@@ -3291,6 +3342,19 @@ static void scr_dyn_proxy_invariant(void) {
   scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Every operation on a revoked proxy throws before its handler is
+ * consulted, with Node's message naming the internal method. */
+static void scr_dyn_proxy_revoked(const char *operation) {
+  ScrJsonBuf msg;
+  scr_jb_init(&msg);
+  scr_jb_puts(&msg, "Cannot perform '");
+  scr_jb_puts(&msg, operation);
+  scr_jb_puts(&msg, "' on a proxy that has been revoked");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&msg));
+}
+#endif
+
 ScrDyn *scr_dyn_proxy_new(const ScrDyn *target, const ScrDyn *handler) {
   if (!scr_dyn_to_primitive_result_is_object(target) || !scr_dyn_to_primitive_result_is_object(handler)) {
     static const char msg[] = "Cannot create proxy with a non-object as target or handler";
@@ -3323,6 +3387,12 @@ ScrDyn *scr_dyn_proxy_new(const ScrDyn *target, const ScrDyn *handler) {
 /* GetMethod observes handler mutations on every operation. Retain the
  * callable across invocation, since a trap may replace itself. */
 static ScrDyn *scr_dyn_proxy_trap(const ScrDyn *proxy, const char *name) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (proxy->v.proxy.revoked) {
+    scr_dyn_proxy_revoked(name);
+    return NULL;
+  }
+#endif
   ScrDyn *method = scr_dyn_obj_read(proxy->v.proxy.handler, name, strlen(name));
   if (!method || method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL) {
     scr_dyn_release(method);
@@ -3836,6 +3906,347 @@ void scr_dyn_proxy_delete(ScrDyn *proxy, const ScrStr *key) {
   if (!scr_exc_pending() && entry && !entry->configurable) scr_dyn_proxy_invariant();
   scr_dyn_release(result);
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* ── the proxy's reflection internal methods (SCR_JS_OBJECT_MODEL) ───────────
+ * Trap order is the specification's: a revoked proxy throws before the
+ * handler is read, then the trap runs, then the target invariant is
+ * checked. Each helper answers true with its result, or false with the
+ * exception pending. */
+static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len);
+
+/* The target's [[GetPrototypeOf]], through the ordinary walk (a proxy
+ * target runs its own trap). NULL with the exception pending. */
+static ScrDyn *scr_dyn_proxy_target_prototype(ScrDyn *proxy) {
+  return scr_dyn_get_prototype(proxy->v.proxy.target);
+}
+
+/* SameValue over the prototype slot: null, or object/function identity. */
+static bool scr_dyn_proto_same(const ScrDyn *a, const ScrDyn *b) {
+  if (!a || !b) return false;
+  if (a->kind == SCR_DYN_NULL || b->kind == SCR_DYN_NULL) return a->kind == b->kind;
+  return a == b;
+}
+
+static bool scr_dyn_proxy_get_prototype(ScrDyn *proxy, ScrDyn **result) {
+  ScrDyn *trap = scr_dyn_proxy_trap(proxy, "getPrototypeOf");
+  if (scr_exc_pending()) return false;
+  if (!trap) {
+    ScrDyn *prototype = scr_dyn_proxy_target_prototype(proxy);
+    if (!prototype) return false;
+    *result = prototype;
+    return true;
+  }
+  ScrDyn *args[] = { proxy->v.proxy.target };
+  ScrDyn *candidate = scr_dyn_proxy_call(proxy, trap, args, 1);
+  if (!candidate) return false;
+  if (!scr_dyn_prototype_valid(candidate)) {
+    scr_dyn_release(candidate);
+    if (!scr_exc_pending()) scr_dyn_proxy_invariant();
+    return false;
+  }
+  /* A non-extensible target pins the answer to its own prototype. */
+  bool extensible = scr_dyn_is_extensible(proxy->v.proxy.target);
+  if (scr_exc_pending()) { scr_dyn_release(candidate); return false; }
+  if (!extensible) {
+    ScrDyn *expected = scr_dyn_proxy_target_prototype(proxy);
+    bool same = expected && scr_dyn_proto_same(candidate, expected);
+    scr_dyn_release(expected);
+    if (scr_exc_pending()) { scr_dyn_release(candidate); return false; }
+    if (!same) {
+      scr_dyn_release(candidate);
+      scr_dyn_proxy_invariant();
+      return false;
+    }
+  }
+  *result = candidate;
+  return true;
+}
+
+static bool scr_dyn_proxy_set_prototype(ScrDyn *proxy, ScrDyn *prototype, bool *result) {
+  ScrDyn *trap = scr_dyn_proxy_trap(proxy, "setPrototypeOf");
+  if (scr_exc_pending()) return false;
+  if (!trap) {
+    /* A missing trap performs the target's own [[SetPrototypeOf]], and a
+     * refusal there is the boolean the caller answers: the false a cycle or
+     * a non-extensible target gives Reflect, which Object.setPrototypeOf
+     * turns into a throw of its own. */
+    *result = scr_dyn_reflect_set_prototype(proxy->v.proxy.target, prototype);
+    return !scr_exc_pending();
+  }
+  ScrDyn *args[] = { proxy->v.proxy.target, prototype };
+  ScrDyn *trap_result = scr_dyn_proxy_call(proxy, trap, args, 2);
+  if (!trap_result) return false;
+  bool accepted = scr_dyn_truthy(trap_result);
+  scr_dyn_release(trap_result);
+  if (accepted) {
+    bool extensible = scr_dyn_is_extensible(proxy->v.proxy.target);
+    if (scr_exc_pending()) return false;
+    if (!extensible) {
+      ScrDyn *expected = scr_dyn_proxy_target_prototype(proxy);
+      bool same = expected && scr_dyn_proto_same(prototype, expected);
+      scr_dyn_release(expected);
+      if (scr_exc_pending()) return false;
+      if (!same) {
+        scr_dyn_proxy_invariant();
+        return false;
+      }
+    }
+  }
+  *result = accepted;
+  return true;
+}
+
+static bool scr_dyn_proxy_prevent_extensions(ScrDyn *proxy, bool *result) {
+  ScrDyn *trap = scr_dyn_proxy_trap(proxy, "preventExtensions");
+  if (scr_exc_pending()) return false;
+  if (!trap) {
+    ScrDyn *applied = scr_dyn_prevent_extensions(proxy->v.proxy.target);
+    if (!applied) return false;
+    scr_dyn_release(applied);
+    *result = true;
+    return true;
+  }
+  ScrDyn *args[] = { proxy->v.proxy.target };
+  ScrDyn *trap_result = scr_dyn_proxy_call(proxy, trap, args, 1);
+  if (!trap_result) return false;
+  bool accepted = scr_dyn_truthy(trap_result);
+  scr_dyn_release(trap_result);
+  if (accepted) {
+    bool extensible = scr_dyn_is_extensible(proxy->v.proxy.target);
+    if (scr_exc_pending()) return false;
+    if (extensible) {
+      scr_dyn_proxy_invariant();
+      return false;
+    }
+  }
+  *result = accepted;
+  return true;
+}
+
+static bool scr_dyn_proxy_is_extensible(ScrDyn *proxy, bool *result) {
+  ScrDyn *trap = scr_dyn_proxy_trap(proxy, "isExtensible");
+  if (scr_exc_pending()) return false;
+  ScrDyn *args[] = { proxy->v.proxy.target };
+  ScrDyn *trap_result = trap ? scr_dyn_proxy_call(proxy, trap, args, 1) : NULL;
+  if (trap && !trap_result) return false;
+  /* The target is read after the trap, which may have changed it. */
+  bool target_answer = scr_dyn_is_extensible(proxy->v.proxy.target);
+  if (scr_exc_pending()) { scr_dyn_release(trap_result); return false; }
+  if (!trap) {
+    *result = target_answer;
+    return true;
+  }
+  bool answer = scr_dyn_truthy(trap_result);
+  scr_dyn_release(trap_result);
+  if (answer != target_answer) {
+    scr_dyn_proxy_invariant();
+    return false;
+  }
+  *result = answer;
+  return true;
+}
+
+/* [[Construct]]: the construct trap, which must answer an object. */
+static ScrDyn *scr_dyn_proxy_construct(ScrDyn *proxy, ScrDyn *arguments, ScrDyn *new_target,
+                                      const ScrStr *what) {
+  ScrDyn *trap = scr_dyn_proxy_trap(proxy, "construct");
+  if (scr_exc_pending()) return NULL;
+  if (!trap) return scr_dyn_construct(proxy->v.proxy.target, arguments, what);
+  ScrDyn *list = scr_dyn_new_arr();
+  for (size_t i = 0; i < arguments->v.arr.len; i++)
+    scr_dyn_arr_push(list, scr_dyn_retain(arguments->v.arr.items[i]));
+  ScrDyn *args[] = { proxy->v.proxy.target, list,
+                     new_target && new_target->kind != SCR_DYN_UNDEF ? new_target : proxy };
+  ScrDyn *result = scr_dyn_proxy_call(proxy, trap, args, 3);
+  scr_dyn_release(list);
+  if (!result) return NULL;
+  if (!scr_iterator_object(result)) {
+    scr_dyn_release(result);
+    static const char message[] = "Proxy construct trap returned a non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  return result;
+}
+
+static ScrDyn *scr_dyn_proxy_revoke_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrDyn *proxy = scr_box_get_ref(closure->caps[0]);
+  if (proxy && proxy->kind == SCR_DYN_PROXY) proxy->v.proxy.revoked = true;
+  scr_dyn_release(proxy);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+ScrDyn *scr_dyn_proxy_revocable(const ScrDyn *target, const ScrDyn *handler) {
+  ScrDyn *proxy = scr_dyn_proxy_new(target, handler);
+  if (!proxy) return NULL;
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_dyn_retain(proxy));
+  ScrDyn *revoke = scr_dyn_new_func(closure, scr_dyn_proxy_revoke_call, 0, "()", "");
+  ScrDyn *out = scr_dyn_new_obj();
+  scr_dyn_obj_set(out, "proxy", 5, proxy);
+  scr_dyn_obj_set(out, "revoke", 6, revoke);
+  return out;
+}
+
+/* V8's "<value> is not a constructor", the same description the function
+ * gate uses. */
+static void scr_ih_describe_value(ScrJsonBuf *b, const ScrDyn *v);
+
+/* IsConstructor: a function (a class included) or a proxy over one.
+ * Reflect.construct checks the target, then newTarget, and only then reads
+ * the argument list, because that read runs user getters. */
+static bool scr_dyn_reflect_constructor(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_FUNC) return true;
+  if (value->kind == SCR_DYN_PROXY) return scr_dyn_reflect_constructor(value->v.proxy.target);
+  return false;
+}
+
+static bool scr_dyn_reflect_require_constructor(const ScrDyn *value) {
+  if (scr_dyn_reflect_constructor(value)) return true;
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_ih_describe_value(&message, value);
+  scr_jb_puts(&message, " is not a constructor");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return false;
+}
+
+/* CreateListFromArrayLike for the Reflect entry points. */
+static ScrDyn *scr_dyn_reflect_arguments(const ScrDyn *arguments_list) {
+  ScrDyn *list = scr_dyn_new_arr();
+  if (!scr_iterator_object(arguments_list)) {
+    static const char message[] = "CreateListFromArrayLike called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return list;
+  }
+  ScrDyn *length = scr_iterator_read(arguments_list, "length", 6);
+  double count = 0;
+  bool ok = length && scr_dyn_number_coerce_js(length, &count);
+  scr_dyn_release(length);
+  if (!ok) return list;
+  if (count > 1000000) {
+    static const char message[] = "the arguments list exceeds the native argument limit";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return list;
+  }
+  for (size_t i = 0; (double)i < floor(count); i++) {
+    char key[32];
+    int size = snprintf(key, sizeof key, "%zu", i);
+    ScrDyn *value = scr_iterator_read(arguments_list, key, (size_t)size);
+    if (!value) break;
+    scr_dyn_arr_push(list, value);
+  }
+  return list;
+}
+
+static bool scr_dyn_reflect_object(const ScrDyn *target, const char *what) {
+  if (scr_dyn_to_primitive_result_is_object(target)) return true;
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, what);
+  scr_jb_puts(&message, " called on non-object");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return false;
+}
+
+ScrDyn *scr_dyn_reflect_get_prototype(ScrDyn *target) {
+  if (!scr_dyn_reflect_object(target, "Reflect.getPrototypeOf")) return NULL;
+  return scr_dyn_get_prototype(target);
+}
+
+bool scr_dyn_reflect_set_prototype(ScrDyn *target, ScrDyn *prototype) {
+  if (!scr_dyn_reflect_object(target, "Reflect.setPrototypeOf")) return false;
+  /* 26.1.14 step 2: the proto's validity is checked before the target's
+   * internal method runs, so before a proxy's trap. */
+  if (!scr_dyn_prototype_valid(prototype)) return false;
+  if (target->kind == SCR_DYN_PROXY) {
+    bool accepted = false;
+    if (!scr_dyn_proxy_set_prototype(target, prototype, &accepted)) return false;
+    return accepted;
+  }
+  /* OrdinarySetPrototypeOf in the specification's order: an unchanged
+   * prototype answers true before the extensibility check (so the
+   * Object.getPrototypeOf round trip on a non-extensible target answers true,
+   * and no identity-requiring setter call is attempted), a non-extensible
+   * target whose prototype would change answers false, and a cycle answers
+   * false where Object.setPrototypeOf throws. Ordinary objects compare their
+   * live prototype directly; the other kinds keep their established path. */
+  if (target->kind == SCR_DYN_OBJ || target->kind == SCR_DYN_ARR) {
+    ScrDyn *existing = scr_dyn_get_prototype(target);
+    bool unchanged = existing && scr_dyn_proto_same(existing, prototype);
+    scr_dyn_release(existing);
+    if (scr_exc_pending()) return false;
+    if (unchanged) return true;
+    if (!scr_dyn_is_extensible(target)) return false;
+  } else if (!scr_dyn_is_extensible(target)) {
+    ScrDyn *existing = scr_dyn_get_prototype(target);
+    bool unchanged = existing && scr_dyn_proto_same(existing, prototype);
+    scr_dyn_release(existing);
+    if (scr_exc_pending()) return false;
+    if (!unchanged) return false;
+  }
+  for (const ScrDyn *link = scr_dyn_chain_link(prototype); link;) {
+    if (link->kind == SCR_DYN_FUNC) {
+      ScrDyn *table = scr_dyn_fn_properties(link);
+      link = table;
+      scr_dyn_release(table); /* the function owns the table */
+    }
+    if (link == target) return false;
+    link = scr_dyn_proto_next(link);
+  }
+  ScrDyn *applied = scr_dyn_set_prototype(target, prototype);
+  if (!applied) return false;
+  scr_dyn_release(applied);
+  return true;
+}
+
+bool scr_dyn_reflect_prevent_extensions(ScrDyn *target) {
+  if (!scr_dyn_reflect_object(target, "Reflect.preventExtensions")) return false;
+  if (target->kind == SCR_DYN_PROXY) {
+    bool accepted = false;
+    if (!scr_dyn_proxy_prevent_extensions(target, &accepted)) return false;
+    return accepted;
+  }
+  ScrDyn *applied = scr_dyn_prevent_extensions(target);
+  if (!applied) return false;
+  scr_dyn_release(applied);
+  return true;
+}
+
+bool scr_dyn_reflect_is_extensible(ScrDyn *target) {
+  if (!scr_dyn_reflect_object(target, "Reflect.isExtensible")) return false;
+  return scr_dyn_is_extensible(target);
+}
+
+ScrDyn *scr_dyn_reflect_construct(ScrDyn *target, ScrDyn *arguments_list, ScrDyn *new_target) {
+  bool explicit_new_target = new_target && new_target->kind != SCR_DYN_UNDEF;
+  if (!scr_dyn_reflect_require_constructor(target)) return NULL;
+  if (explicit_new_target && !scr_dyn_reflect_require_constructor(new_target)) return NULL;
+  ScrDyn *list = scr_dyn_reflect_arguments(arguments_list);
+  if (scr_exc_pending()) { scr_dyn_release(list); return NULL; }
+  ScrStr *what = scr_str_new("Reflect.construct", 17);
+  ScrDyn *result;
+  if (target->kind == SCR_DYN_PROXY) {
+    result = scr_dyn_proxy_construct(target, list, new_target, what);
+  } else if (explicit_new_target && !scr_dyn_same_value(target, new_target)) {
+    /* Two boxes of one function value are one target, so the check is the
+     * value's identity, not the box's. */
+    static const char message[] =
+        "Reflect.construct with a newTarget other than the target is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    result = NULL;
+  } else {
+    result = scr_dyn_construct(target, list, what);
+  }
+  scr_str_release(what);
+  scr_dyn_release(list);
+  return result;
+}
+#endif
 
 ScrDyn *scr_dyn_new_bytes(const ScrBytes *b) {
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_BYTES);
@@ -8467,6 +8878,11 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (scr_ni_dyn_handle(callee))
     return scr_ni_dyn_ops->construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
+#ifdef SCR_JS_OBJECT_MODEL
+  /* `new proxy(...)`: the construct trap, with the proxy as newTarget. */
+  if (callee->kind == SCR_DYN_PROXY)
+    return scr_dyn_proxy_construct((ScrDyn *)callee, (ScrDyn *)args, NULL, what);
+#endif
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
       (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
     return scr_bytes_construct(callee, args, what);

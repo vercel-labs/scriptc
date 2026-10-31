@@ -4344,6 +4344,16 @@ function buildLibFnSignatures() {
     "dyn.getOwnPropertyDescriptors": { argTypes: [DYN], result: DYN },
     "dyn.preventExtensions": { argTypes: [DYN], result: DYN },
     "dyn.isExtensible": { argTypes: [DYN], result: BOOL },
+    // Proxy.revocable and the Reflect entry points. The JavaScript object
+    // model build of scr_json.c carries them (SCR_JS_OBJECT_MODEL,
+    // t262-da §J), so a program that calls one keeps every other program's
+    // scr_json.o byte-identical.
+    "dyn.proxyRevocable": { argTypes: [DYN, DYN], result: DYN },
+    "dyn.reflectGetPrototypeOf": { argTypes: [DYN], result: DYN },
+    "dyn.reflectSetPrototypeOf": { argTypes: [DYN, DYN], result: BOOL },
+    "dyn.reflectPreventExtensions": { argTypes: [DYN], result: BOOL },
+    "dyn.reflectIsExtensible": { argTypes: [DYN], result: BOOL },
+    "dyn.reflectConstruct": { argTypes: [DYN, DYN, DYN], result: DYN },
     "dyn.seal": { argTypes: [DYN], result: DYN },
     "dyn.isSealed": { argTypes: [DYN], result: BOOL },
     /** Object.isExtensible / Object.isSealed of a value whose kind is known

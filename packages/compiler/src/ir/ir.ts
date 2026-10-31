@@ -4078,6 +4078,12 @@ export type IrExpr =
        * evaluated; the AssertionError constructor consumes them, and a
        * call that passes clears them. */
       assertOptions?: { diff?: "full"; skipPrototype?: true };
+      /** An `emitter.on` or `emitter.onData` registration whose listener
+       * can read `this`: each call of the listener binds the receiver as
+       * `this`, as Node does. The checked-dynamic registrations
+       * (`emitter.onDyn`, `emitter.onDataDyn`, `emitter.onFlex`,
+       * `emitter.onAny`) always bind it. */
+      bindsThis?: true;
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,

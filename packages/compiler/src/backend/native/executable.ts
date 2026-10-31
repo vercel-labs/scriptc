@@ -213,6 +213,20 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   // Builtin functions read as values in JavaScript dependencies.
   unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
+  // A standard library prototype object read as a value in a JavaScript
+  // source: the dynamic tier's gated unit, whose work is JavaScript-only.
+  unit(
+    (u) => u.opts.stdlibPrototypeValue === true && u.opts.dynInvoke,
+    "scr_dyn_stdlib_prototype.c",
+  ),
+  // Array.prototype's generic algorithms over array-like receivers, and the
+  // Number/Boolean prototype objects as values: the dynamic tier's gated
+  // units, whose work is JavaScript-only.
+  unit((u) => u.opts.arrayLikeDispatch === true && u.opts.dynInvoke, "scr_dyn_array_like.c"),
+  unit(
+    (u) => u.opts.builtinPrototypeValue === true && u.opts.dynInvoke,
+    "scr_dyn_builtin_prototype.c",
+  ),
   // createRequire's computed require and require.resolve.
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
@@ -476,6 +490,8 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
   // scr_lib.c's path stat and zero Stats for the fs.watchFile poll.
   { define: "SCR_FS_WATCH_FILE", when: (opts) => opts.watchFile },
+  // scr_lib.c's file reads brand their bytes as Node's Buffer answers.
+  { define: "SCR_FS_BUFFER_BRAND", when: (opts) => opts.fsBufferBrand },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

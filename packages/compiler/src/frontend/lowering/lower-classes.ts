@@ -274,15 +274,45 @@ export function returnsOnlyThisValue(member: ts.MethodDeclaration): boolean {
   return valid;
 }
 
-export function functionLocalClass(decl: ts.ClassLikeDeclaration): boolean {
+/** True when evaluating this class definition creates a class VALUE more
+ * than once, so each evaluation must mint its own constructor object,
+ * prototype and statics. A function body runs per call, a loop body per
+ * iteration, and an instance field initializer (or constructor parameter
+ * default) per construction. A class expression nested in a STATIC member
+ * initializer, a computed key or the heritage follows its enclosing
+ * class's own evaluation, so the walk continues through those.
+ * Top-level definitions evaluated once keep the immortal template. */
+export function perEvaluationClass(decl: ts.ClassLikeDeclaration): boolean {
+  let child: ts.Node = decl;
   for (
     let parent: ts.Node | undefined = decl.parent;
     parent && !ts.isSourceFile(parent);
-    parent = parent.parent
+    child = parent, parent = parent.parent
   ) {
-    if (ts.isFunctionLike(parent)) return true;
+    if (ts.isFunctionLike(parent) || ts.isClassStaticBlockDeclaration(parent)) return true;
+    if (
+      ts.isForStatement(parent) ||
+      ts.isForInStatement(parent) ||
+      ts.isForOfStatement(parent) ||
+      ts.isWhileStatement(parent) ||
+      ts.isDoStatement(parent)
+    )
+      return true;
+    if ((ts.isClassDeclaration(parent) || ts.isClassExpression(parent)) && perInstanceMember(child))
+      return true;
   }
   return false;
+}
+
+/** True when `node` — the direct child of the enclosing class on the path
+ * to a nested class definition — is evaluated once per INSTANCE: an
+ * instance field with an initializer, or a constructor whose parameters
+ * have defaults (parameter properties included). */
+function perInstanceMember(node: ts.Node): boolean {
+  if (ts.isConstructorDeclaration(node))
+    return node.parameters.nodes.some((param) => param.initializer !== undefined);
+  if (!ts.isPropertyDeclaration(node) || node.initializer === undefined) return false;
+  return !ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword);
 }
 
 export function storedClassValueType(
@@ -296,7 +326,7 @@ export function storedClassValueType(
     return storedClassValueType(lowerer, expression.expression, visiting);
   if (
     ts.isClassExpression(expression) &&
-    !functionLocalClass(expression) &&
+    !perEvaluationClass(expression) &&
     !lowerer.collectingExprClasses.has(expression)
   ) {
     const info = lowerer.lowerClassExpressionInfo(expression);
@@ -343,7 +373,7 @@ export function storedClassValueType(
       if (
         declaration &&
         ts.isClassExpression(declaration) &&
-        !functionLocalClass(declaration) &&
+        !perEvaluationClass(declaration) &&
         !lowerer.collectingExprClasses.has(declaration)
       ) {
         const info = lowerer.lowerClassExpressionInfo(declaration);
@@ -2383,7 +2413,7 @@ export function collectClassShapeInner(
       }
     }
 
-    if (base?.localClass && !functionLocalClass(decl) && !computedBase && !factoryBaseExpression) {
+    if (base?.localClass && !perEvaluationClass(decl) && !computedBase && !factoryBaseExpression) {
       const heritage = decl.heritageClauses?.nodes.find(
         (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
       )?.types?.nodes[0];
@@ -2536,9 +2566,9 @@ export function collectClassShapeInner(
     };
     for (const member of decl.members.nodes) {
       if (
-        (functionLocalClass(decl) || checkedStatics) &&
+        (perEvaluationClass(decl) || checkedStatics) &&
         (isJsSourceFile(ts.getSourceFileOfNode(decl)) ||
-          (functionLocalClass(decl) && ts.isMethodDeclaration(member))) &&
+          (perEvaluationClass(decl) && ts.isMethodDeclaration(member))) &&
         (ts.isClassStaticBlockDeclaration(member) ||
           ts
             .getModifiers(member)
@@ -2552,7 +2582,7 @@ export function collectClassShapeInner(
         // order with the constructor's other initializers.
         const privateStatic =
           checkedStatics &&
-          !functionLocalClass(decl) &&
+          !perEvaluationClass(decl) &&
           (member as { name?: ts.PropertyName }).name !== undefined &&
           ts.isPrivateIdentifier((member as { name: ts.PropertyName }).name);
         if (!privateStatic) {
@@ -2562,7 +2592,7 @@ export function collectClassShapeInner(
         if (ts.isPropertyDeclaration(member)) runtimeStatics.push(member);
       }
       if (
-        functionLocalClass(decl) &&
+        perEvaluationClass(decl) &&
         isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
         (ts.isMethodDeclaration(member) || ts.isAccessor(member)) &&
         member.body &&
@@ -2670,7 +2700,7 @@ export function collectClassShapeInner(
           staticMethods.set(member.name.text, { params: shapes, ret: ft.ret, member });
           if (
             implicitMonoFile(ts.getSourceFileOfNode(decl)) &&
-            !functionLocalClass(decl) &&
+            !perEvaluationClass(decl) &&
             inst === undefined &&
             decl.typeParameters === undefined
           ) {
@@ -3432,7 +3462,7 @@ export function collectClassShapeInner(
         // a generic-class instantiation's member.
         if (
           implicitMonoFile(ts.getSourceFileOfNode(decl)) &&
-          !functionLocalClass(decl) &&
+          !perEvaluationClass(decl) &&
           ts.isIdentifier(member.name) &&
           !lowerer.virtualJsMethods.has(member) &&
           !lowerer.checkedJsOverrideMethods.has(member) &&
@@ -3684,7 +3714,7 @@ export function collectClassShapeInner(
             member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
           if (
             !fencedJsOverride &&
-            !functionLocalClass(decl) &&
+            !perEvaluationClass(decl) &&
             overridden.sig.gen === undefined &&
             // An async base's slot answers its promise: a Promise type, or
             // the checked-dynamic value of an untyped async method.
@@ -3798,7 +3828,7 @@ export function collectClassShapeInner(
           !returnAdapters.has(mName) &&
           (asyncMember || overridden.sig.async === true) &&
           !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
-          !functionLocalClass(decl) &&
+          !perEvaluationClass(decl) &&
           member.asteriskToken === undefined &&
           overridden.sig.gen === undefined &&
           !overridden.sig.abstract &&
@@ -4673,7 +4703,7 @@ export function collectClassShapeInner(
       lowerer.subclassLinks++;
     }
     lowerer.classes.set(className, info);
-    if (computedBase && !functionLocalClass(decl)) {
+    if (computedBase && !perEvaluationClass(decl)) {
       info.def.baseValueGlobal = `%g.${className}.computedBase`;
       lowerer.globalsList.push({
         id: info.def.baseValueGlobal,
@@ -4682,7 +4712,7 @@ export function collectClassShapeInner(
         mutable: false,
       });
     }
-    if (factoryBaseExpression && !functionLocalClass(decl)) {
+    if (factoryBaseExpression && !perEvaluationClass(decl)) {
       info.def.baseValueGlobal = `%g.${className}.computedBase`;
       lowerer.globalsList.push({
         id: info.def.baseValueGlobal,
@@ -4691,7 +4721,7 @@ export function collectClassShapeInner(
         mutable: false,
       });
     }
-    if (callableBase && !functionLocalClass(decl)) {
+    if (callableBase && !perEvaluationClass(decl)) {
       lowerer.globalsList.push(
         { id: callableBase.constructorId, name: `${className} base`, type: DYN, mutable: false },
         {
@@ -6063,10 +6093,13 @@ function privateNamesOnlyOnThis(expr: ts.ClassLikeDeclaration): boolean {
   return true;
 }
 
-/** Collect a class expression once per enclosing specialization. Function-local
- * evaluations allocate fresh constructor objects; top-level expressions use
- * immortal templates. Static initialization remains limited to whole top-level
- * initializers, where pendingClassExprInits preserves its evaluation point. */
+/** Collect a class expression once per enclosing specialization. A class
+ * definition the program can EVALUATE more than once (perEvaluationClass:
+ * a function body, a loop body, an instance initializer) allocates fresh
+ * constructor objects, so identity, statics and prototype belong to that
+ * evaluation; definitions evaluated once use immortal templates. Static
+ * initialization remains limited to whole top-level initializers, where
+ * pendingClassExprInits preserves its evaluation point. */
 export function lowerClassExpressionInfo(
   lowerer: Lowerer,
   expr: ts.ClassLikeDeclaration,
@@ -6087,7 +6120,6 @@ export function lowerClassExpressionInfo(
       "class expressions whose extends chain re-enters their own collection (a cyclic base through property assignments)",
     );
   }
-  let local = false;
   for (
     let p: ts.Node | undefined = expr.parent;
     p !== undefined && !ts.isSourceFile(p);
@@ -6096,8 +6128,8 @@ export function lowerClassExpressionInfo(
     if (ts.isClassStaticBlockDeclaration(p)) {
       lowerer.unsupported("SC1090", expr, "class expressions inside static blocks");
     }
-    if (ts.isFunctionLike(p)) local = true;
   }
+  const local = perEvaluationClass(expr);
   if (
     local &&
     expr.members.nodes.some((member) => member.name && ts.isPrivateIdentifier(member.name)) &&
@@ -7515,7 +7547,7 @@ function localSubclassesOf(lowerer: Lowerer, base: ts.Node): readonly ts.ClassLi
         if (
           (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
           node.heritageClauses !== undefined &&
-          functionLocalClass(node)
+          perEvaluationClass(node)
         ) {
           const extended = extendedClassNode(lowerer, node);
           if (extended) {
@@ -11028,8 +11060,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // starting at 0 (nothing buffered). A literal Buffer encoding folds
     // its alias at compile time; any other encoding argument is
     // normalized at run time (Node's normalizeEncoding, which throws
-    // ERR_UNKNOWN_ENCODING for an unknown name). Omitted means utf8,
-    // Node's default.
+    // ERR_UNKNOWN_ENCODING for an unknown name). An encoding that may not
+    // be a string takes strdec.encodingValue, which formats the error
+    // with %s. Omitted means utf8, Node's default.
     if (symbol && ts.symbolName(symbol) === "StringDecoder" && lowerer.isStdlibSymbol(symbol)) {
       const args = expr.arguments?.nodes ?? [];
       if (args.length > 1) {
@@ -11042,12 +11075,18 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         : encT!.isStringLiteralType()
           ? knownBufEncoding(encT!.value)
           : undefined;
+      const textual = (type: ts.Type): boolean =>
+        type.isUnionType()
+          ? ts.constituentTypes(type).every(textual)
+          : (type.flags &
+              (ts.TypeFlags.StringLike | ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
+            0;
       const encoding: IrExpr =
         encName !== undefined
           ? { kind: "strLit", value: encName, type: STRING, loc }
           : {
               kind: "libCall",
-              fn: "strdec.encoding",
+              fn: textual(encT!) ? "strdec.encoding" : "strdec.encodingValue",
               args: [lowerer.lowerExprExpecting(encNode!, DYN)],
               type: STRING,
               loc,

@@ -56,7 +56,11 @@ beforeAll(async () => {
     join(testDir, "../src/scr_shared.c"),
     ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
   ]);
-}, 60_000);
+  // The ASan + RC audit build of the whole runtime closure takes about 48 s
+  // on 8 cores when run alone, so the default hook budget flakes when many
+  // suites compile concurrently. The timeout only bounds this build; the
+  // oracle run below keeps its own 120 s budget.
+}, 180_000);
 
 // Runs against the committed case file, generated from Node v24's bundled
 // minimatch with matchGlobPattern's options (gen-glob-cases.mjs): curated

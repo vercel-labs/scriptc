@@ -106,11 +106,19 @@ export interface EarlyExecutableNativeFeatures {
   bigint: boolean;
   /** BigIntStats member reads: scr_stats_bigint.c. Absent (false) otherwise. */
   bigstats?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source: scr_dyn_stdlib_prototype.c. */
+  stdlibPrototypeValue?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** Array.prototype methods over array-like receivers: scr_dyn_array_like.c. */
+  arrayLikeDispatch?: boolean;
+  /** Number.prototype and Boolean.prototype as values:
+   * scr_dyn_builtin_prototype.c. */
+  builtinPrototypeValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -122,6 +130,7 @@ export interface EarlyExecutableNativeFeatures {
   textCodecDyn: boolean;
   watch: boolean;
   watchFile: boolean;
+  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -330,6 +339,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "textCodecDyn",
   "watch",
   "watchFile",
+  "fsBufferBrand",
   "foreignFfi",
   "nodeTest",
   "tls",

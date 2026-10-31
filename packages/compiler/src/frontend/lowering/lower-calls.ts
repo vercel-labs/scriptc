@@ -77,6 +77,7 @@ import {
   type IrLibFn,
   type IrLocal,
   type IrParam,
+  type IrRecordShape,
   type IrStmt,
   type IrType,
   NULL_T,
@@ -92,6 +93,7 @@ import {
   funcOf,
   isDynTypedRefType,
   isUnitType,
+  recordTextCodecClass,
   shapeHasAccessorSlots,
   shapeKeyOrders,
   typeEquals,
@@ -138,6 +140,7 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
+import { isPrimitivePrototypeRead } from "./expressions/property-access.js";
 import {
   lowerBufferConstruct,
   lowerBytesPrototypeSetCall,
@@ -191,7 +194,7 @@ import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
 } from "./builtins/process.js";
-import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
+import { recordMayKeepSource, recordSourceTest, throughRecordSource } from "./record-sources.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
@@ -302,6 +305,7 @@ import {
 
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { lowerRecordInheritedCall } from "./record-inherited.js";
+import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -1934,6 +1938,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         );
       }
     }
+    {
+      const unionCall = lowerUnionReceiverMethodCall(lowerer, expr, expr.expression);
+      if (unionCall) return unionCall;
+    }
     lowerer.unsupported("SC1090", expr, `method calls like '${ts.getTextOfNode(expr.expression)}'`);
   }
 
@@ -2763,8 +2771,12 @@ function objectToStringTag(lowerer: Lowerer, type: IrType): string | null {
       return "Symbol";
     case "array":
       return "Array";
-    case "record":
-      return "Object";
+    case "record": {
+      // TextEncoder and TextDecoder define Symbol.toStringTag on their
+      // prototypes.
+      const shape = lowerer.shapes.get(type.shapeId);
+      return (shape && recordTextCodecClass(shape)) ?? "Object";
+    }
     case "func":
     case "classval":
       return "Function";
@@ -2880,6 +2892,30 @@ function immediateObjectTagReceiver(
   return null;
 }
 
+/** Array.prototype methods whose `.<name>.call(receiver, ...)` form the
+ * array-like unit runs generically when `receiver` is not a native array:
+ * the rest of the prototype's methods besides the invoke unit's own set
+ * (at, slice, indexOf, lastIndexOf, includes and the higher-order
+ * callbacks). */
+const ARRAY_LIKE_BORROW_METHODS = new Set([
+  "concat",
+  "copyWithin",
+  "fill",
+  "flat",
+  "flatMap",
+  "join",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "splice",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "unshift",
+  "with",
+]);
+
 const ARRAY_BORROW_METHODS = new Set([
   "at",
   "every",
@@ -2916,7 +2952,9 @@ function lowerArrayPrototypeBorrowCall(
   const method = access.expression;
   if (
     method.questionDotToken ||
-    !ARRAY_BORROW_METHODS.has(method.name.text) ||
+    !(
+      ARRAY_BORROW_METHODS.has(method.name.text) || ARRAY_LIKE_BORROW_METHODS.has(method.name.text)
+    ) ||
     !ts.isPropertyAccessExpression(method.expression) ||
     method.expression.questionDotToken ||
     method.expression.name.text !== "prototype" ||
@@ -2931,7 +2969,12 @@ function lowerArrayPrototypeBorrowCall(
   const args = call.arguments.nodes.slice(1).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
   return {
     kind: "libCall",
-    fn: "dyn.arrayProtoCall",
+    // The array-like unit runs an extended method's algorithm over a
+    // receiver that is not a native array and delegates the rest to the
+    // invoke unit's dispatch.
+    fn: ARRAY_LIKE_BORROW_METHODS.has(method.name.text)
+      ? "dyn.arrayLikeProtoCall"
+      : "dyn.arrayProtoCall",
     args: [
       receiver,
       { kind: "strLit", value: method.name.text, type: STRING, loc },
@@ -3706,6 +3749,58 @@ function isFreshCallResult(node: ts.Expression): boolean {
   return ts.isCallExpression(e);
 }
 
+/** A METHOD call on a union receiver whose arms declare the member with
+ * DIFFERENT signatures (`OAuthAuth | ApiKeyAuth` both declare `login`, one
+ * with an options parameter): no single static signature picks an arm, and
+ * JavaScript does not pick one either — it reads the property off the value
+ * and calls it. Box the receiver into the checked-dynamic value and lower
+ * the read and the call dynamically, so the member lookup and the call stay
+ * checked (a missing member throws V8's own TypeError) and the result
+ * crosses back through the expected type's checked conversion. Null when
+ * the receiver is not a union of object/record arms with a dyn-safe layout,
+ * leaving the method-call fence in place. */
+function lowerUnionReceiverMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || call.questionDotToken) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const value = tryLowerExpression(lowerer, access.expression);
+  if (value?.type.kind !== "union") return null;
+  const union = lowerer.unions.get(value.type.unionId);
+  if (!union || !union.arms.every((arm) => arm.kind === "object" || arm.kind === "record")) {
+    return null;
+  }
+  if (!lowerer.dynConvertible(value.type)) return null;
+  const loc = locOf(call);
+  const boxed = lowerer.coerceToExpected(value, DYN);
+  const local = lowerer.declareHiddenLocal("%unionReceiver", DYN);
+  const receiver: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
+  const member: IrExpr = {
+    kind: "dynKeyGet",
+    value: receiver,
+    key: { kind: "strLit", value: access.name.text, type: STRING, loc },
+    type: DYN,
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: boxed, loc }],
+    result: {
+      kind: "dynCall",
+      callee: member,
+      receiver,
+      calleeName: ts.getTextOfNode(access),
+      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
 /** METHOD calls on dyn receivers (`pkg.name.replace(...)`, `rawName.split`,
  * `ws.packages.filter(...)` — JSON.parse-derived values): validate the
  * receiver's dyn kind, extract, and ride the STATIC method machinery — the
@@ -3949,6 +4044,12 @@ function lowerDynReceiverMethodCall(
   )
     recv = lowerer.coerceToExpected(recv, DYN);
   if (recv.type.kind !== "dyn") return null;
+  // `Number.prototype.m(...)` reads the prototype OBJECT, whose `m` is its
+  // own member, so every primitive specialization below — which assumes a
+  // primitive receiver and coerces the value it is given — would be wrong.
+  // The shared dispatch reads the member and calls it with the prototype as
+  // `this`, which is Node's answer for the wrapper around +0 / false.
+  const prototypeReceiver = isPrimitivePrototypeRead(lowerer, access.expression);
   if (
     access.name.text === "normalize" &&
     call.arguments.nodes.length <= 1 &&
@@ -4059,7 +4160,7 @@ function lowerDynReceiverMethodCall(
   // prototype declares (Array carries includes/indexOf/slice too), so no
   // other kind inherits them. Shared names would need a receiver-kind
   // dispatch — they keep the fence.
-  if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable) {
+  if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable && !prototypeReceiver) {
     // A checked-dynamic object can still carry its OWN member of that
     // name: zod's schemas assign `trim`, `toLowerCase` and `startsWith`
     // in their constructors (`z.string().trim().min(1)`), an object's
@@ -4090,6 +4191,7 @@ function lowerDynReceiverMethodCall(
   // runtime dispatch.
   if (
     !ownCallable &&
+    !prototypeReceiver &&
     isDynPrimitiveKindMethod(access.name.text) &&
     !lowerer.chainBlocked(access, call)
   ) {
@@ -4110,6 +4212,7 @@ function lowerDynReceiverMethodCall(
     access.name.text === "toString" &&
     call.arguments.nodes.length <= 1 &&
     !ownCallable &&
+    !prototypeReceiver &&
     !(checkerUntyped && jsAssignsOwnToString(lowerer, access.expression))
   ) {
     const argument = call.arguments.nodes[0];
@@ -4128,7 +4231,7 @@ function lowerDynReceiverMethodCall(
   // Every dyn kind's prototype chain declares valueOf, and the runtime
   // answers each kind's own: primitives and plain objects themselves, a
   // Date its time value, an own or inherited valueOf member its result.
-  if (access.name.text === "valueOf" && call.arguments.nodes.length === 0) {
+  if (access.name.text === "valueOf" && call.arguments.nodes.length === 0 && !prototypeReceiver) {
     const webAssembly = lowerWebAssemblyValueOf(lowerer, access.expression, recv, locOf(call));
     if (webAssembly !== null) return webAssembly;
     return {
@@ -7612,6 +7715,35 @@ export function recordKeysArrayCall(
       }
       body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
+      // A record that kept undeclared keys answers for-in through its live
+      // kept view, exactly as Object.keys does at its call site. Gated on
+      // the shape being one a kept width spread builds (a shape that keeps
+      // no source stays byte-identical to main) and on the shape holding a
+      // source at all.
+      if (
+        lowerer.keyOrder.keptSourceShapes.has(argIr.shapeId) &&
+        recordMayKeepSource(lowerer, argIr)
+      ) {
+        body.unshift({
+          kind: "if",
+          cond: recordSourceTest(ref, loc),
+          then: [
+            {
+              kind: "return",
+              value: {
+                kind: "libCall",
+                fn: "dyn.objKeyStrings",
+                args: [{ kind: "dynFrom", value: ref, liveRef: true, type: DYN, loc }],
+                type: resultT,
+                loc,
+              },
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
       fn.body = body;
     };
     finalize();
@@ -7673,6 +7805,33 @@ export function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLo
     body,
     loc,
   });
+  // A record that kept undeclared keys answers an undeclared key through
+  // its kept view: the declared branches above stay exact (the table's
+  // placeholders only fill declared names the record owns), and the
+  // closed-shape `false` fallback becomes the view's own-key test when a
+  // kept width spread builds this shape.
+  if (!shape.indexValue && recordMayKeepSource(lowerer, recT)) {
+    const fn = lowerer.liftedFns[lowerer.liftedFns.length - 1]!;
+    lowerer.shapeOrderHelperFinalizers.push(() => {
+      if (!lowerer.keyOrder.keptSourceShapes.has(shapeId)) return;
+      const last = fn.body[fn.body.length - 1]!;
+      if (last.kind !== "return") return;
+      last.value = {
+        kind: "logical",
+        op: "&&",
+        left: recordSourceTest(rRef, loc),
+        right: {
+          kind: "libCall",
+          fn: "dyn.hasOwn",
+          args: [{ kind: "dynFrom", value: rRef, liveRef: true, type: DYN, loc }, kRef],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    });
+  }
   return helper;
 }
 
@@ -7987,6 +8146,47 @@ function isDynEntryPairsType(lowerer: Lowerer, t: IrType): boolean {
   const field = (name: string): IrType | undefined =>
     shape.fields.find((f) => f.name === name)?.type;
   return field("0")?.kind === "string" && field("1")?.kind === "dyn";
+}
+
+/** True when the expression is statically a PLAIN OBJECT at runtime: a dyn
+ *  object literal, or a record (a literal, a clone, or any expression of a
+ *  record type, which dynFrom boxes field by field). Both build an ordinary
+ *  object whose fields are own data properties, which the plain-object
+ *  descriptor reader answers exactly. Every other expression (a variable of
+ *  any other type, a call, an array, a function) may be an object of any
+ *  kind with inherited fields, so it takes the entry points whose
+ *  ToPropertyDescriptor reads every object kind (dyn.definePropertyShapes
+ *  and its siblings). */
+export function isPlainObjectLiteral(expr: IrExpr): boolean {
+  if (expr.kind === "dynObjLit") return true;
+  if (expr.kind !== "dynFrom") return false;
+  const value = expr.value;
+  return value.kind === "dynObjLit" || value.type.kind === "record";
+}
+
+/** True when the expression is a plain property-descriptor map for
+ *  Object.defineProperties or Object.create: a plain object
+ *  (isPlainObjectLiteral) whose every field is a plain object too. A dyn
+ *  literal's field values are checked with isPlainObjectLiteral and a
+ *  record's fields by their types, since dynFrom boxes a record-typed field
+ *  into an ordinary object. A map with any other field (`{ a: view }`, where
+ *  `view` is a DataView or an array) takes the any-object entry points. */
+export function isPlainDescriptorMap(
+  expr: IrExpr,
+  getRecord: (shapeId: string) => IrRecordShape | undefined,
+): boolean {
+  if (!isPlainObjectLiteral(expr)) return false;
+  const literal = expr.kind === "dynFrom" ? expr.value : expr;
+  if (literal.kind === "dynObjLit")
+    return (literal.fields ?? []).every((field) => isPlainObjectLiteral(field.value));
+  if (literal.type.kind !== "record") return false;
+  const shape = getRecord(literal.type.shapeId);
+  return (
+    shape !== undefined &&
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.every((field) => field.type.kind === "record")
+  );
 }
 
 function lowerObjectStaticCall(
@@ -8369,7 +8569,12 @@ function lowerObjectStaticCall(
       if (descriptors.type.kind === "dyn")
         return {
           kind: "libCall",
-          fn: "dyn.objCreateWithProperties",
+          // A descriptor map built by an expression, or a literal map with a
+          // descriptor built by one, may hold an array, a function or an
+          // object with inherited fields.
+          fn: isPlainDescriptorMap(descriptors, (id) => lowerer.shapes.get(id))
+            ? "dyn.objCreateWithProperties"
+            : "dyn.objCreateWithPropertiesShapes",
           args: [proto, descriptors],
           type: DYN,
           loc,
@@ -8382,6 +8587,9 @@ function lowerObjectStaticCall(
   if (member === "assign") {
     const prototype = lowerClassPrototypeAssign(lowerer, call);
     if (prototype) return prototype;
+    // A standard-library prototype value as the target is a write through it.
+    if (call.arguments.nodes.length > 0)
+      fenceDatePrototypeWriteCall(lowerer, call.arguments.nodes[0]!);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       call.arguments.nodes.length > 0 &&
@@ -8460,8 +8668,16 @@ function lowerObjectStaticCall(
       const sProbe = tryLowerExpression(lowerer, call.arguments.nodes[1]!);
       // CHECKED-DYNAMIC target and source (the JS file-scope
       // object-literal identity story): the runtime dyn copy — own
-      // members of the source land on the target, which returns.
-      if (tProbe?.type.kind === "dyn") {
+      // members of the source land on the target, which returns. A
+      // CLASS-INSTANCE target joins them when the call's own RESULT type
+      // is checked-dynamic: that is the `C & { extra }` intersection
+      // (mapClassExpandoIntersection), whose value IS the instance, so
+      // the same dyn copy writes the expando members onto its view and
+      // answers the instance — identity and prototype intact.
+      if (
+        tProbe?.type.kind === "dyn" ||
+        (tProbe?.type.kind === "object" && lowerer.mapTypeOf(lowerer.typeOf(call))?.kind === "dyn")
+      ) {
         const loc = locOf(call);
         const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
         const rawSource = lowerer.lowerExpr(call.arguments.nodes[1]!);
@@ -8471,8 +8687,10 @@ function lowerObjectStaticCall(
         if (ts.isObjectLiteralExpression(targetNode))
           fenceClassCopyIntoFreshObject(lowerer, call, call.arguments.nodes[1]!, rawSource);
         const source = lowerer.coerceToExpected(rawSource, DYN);
-        if (target.type.kind === "dyn" && source.type.kind === "dyn") {
-          return { kind: "libCall", fn: "dyn.assign", args: [target, source], type: DYN, loc };
+        const dynTarget =
+          target.type.kind === "dyn" ? target : lowerer.coerceToExpected(target, DYN);
+        if (dynTarget.type.kind === "dyn" && source.type.kind === "dyn") {
+          return { kind: "libCall", fn: "dyn.assign", args: [dynTarget, source], type: DYN, loc };
         }
       }
       // A CLASS-INSTANCE target and a plain record source whose fields are
@@ -8694,8 +8912,13 @@ function lowerObjectStaticCall(
     (member === "getOwnPropertyDescriptor" && call.arguments.nodes.length === 2)
   ) {
     if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) return null;
-    let target = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
     const targetNode = call.arguments.nodes[0]!;
+    // Object.defineProperty/defineProperties over a standard-library prototype
+    // value: a typed Date never observes a dynamic definition there, so the
+    // write keeps the fence it reached before the value existed. The
+    // descriptor READ below is not a write and stays open.
+    if (member === "defineProperty") fenceDatePrototypeWriteCall(lowerer, targetNode);
+    let target = tryLowerExpression(lowerer, targetNode);
     // The checker gives C.prototype the instance type, but its lowered
     // value is the shared prototype table, not an instance to unbox.
     const prototypeTarget =
@@ -8772,7 +8995,10 @@ function lowerObjectStaticCall(
     if (descriptor.type.kind !== "dyn") return null;
     return {
       kind: "libCall",
-      fn: "dyn.defineProperty",
+      // A descriptor built by an expression may be an array, a function or an
+      // object with inherited fields, which only the any-object entry point
+      // reads; a plain object literal keeps the plain-object reader.
+      fn: isPlainObjectLiteral(descriptor) ? "dyn.defineProperty" : "dyn.definePropertyShapes",
       args: [target, key, descriptor],
       type: DYN,
       loc: locOf(call),
@@ -8790,6 +9016,10 @@ function lowerObjectStaticCall(
     call.arguments.nodes.length === 2 &&
     !call.arguments.nodes.some((a) => ts.isSpreadElement(a))
   ) {
+    // A standard-library prototype value as the target is a write through it,
+    // exactly like the defineProperty form above: a typed Date never observes
+    // a definition made on the dynamic prototype object.
+    fenceDatePrototypeWriteCall(lowerer, call.arguments.nodes[0]!);
     const prototype = lowerClassPrototypeDescriptors(lowerer, call, member);
     if (prototype) return prototype;
     let target = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
@@ -8837,7 +9067,12 @@ function lowerObjectStaticCall(
       if (descs.type.kind === "dyn") {
         return {
           kind: "libCall",
-          fn: "dyn.defineProps",
+          // As for Object.create above: a descriptor map built by an
+          // expression, or a literal map with a descriptor built by one, takes
+          // the any-object entry point.
+          fn: isPlainDescriptorMap(descs, (id) => lowerer.shapes.get(id))
+            ? "dyn.defineProps"
+            : "dyn.definePropsShapes",
           args: [target, descs],
           type: DYN,
           loc: locOf(call),

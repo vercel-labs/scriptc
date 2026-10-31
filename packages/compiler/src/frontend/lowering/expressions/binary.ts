@@ -39,7 +39,7 @@ import {
   lowerAbsenceProbe,
   lowerDynMemberAssignment,
   lowerDereferencedElementAssignment,
-  lowerOptionalNumber,
+  lowerOperatorNumber,
   lowerPresenceOperand,
   nullishBranches,
   operandPairs,
@@ -1007,8 +1007,8 @@ export function lowerCompoundValueToTarget(
     loc: locOf(expr.left),
   };
   const rhs = lowerer.lowerExpr(expr.right);
-  const numericRead = lowerOptionalNumber(lowerer, read, loc);
-  const numericRhs = lowerOptionalNumber(lowerer, rhs, loc);
+  const numericRead = lowerOperatorNumber(lowerer, read, loc);
+  const numericRhs = lowerOperatorNumber(lowerer, rhs, loc);
 
   if (
     compound === "+" &&
@@ -2054,7 +2054,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     );
   };
   const arithmeticNumber = (operand: IrExpr, node: ts.Expression): IrExpr =>
-    lowerOptionalNumber(lowerer, operand, loc, node);
+    lowerOperatorNumber(lowerer, operand, loc, node);
   const arithmeticLeft = strictEquality ? left : arithmeticNumber(left, expr.left);
   const arithmeticRight = strictEquality ? right : arithmeticNumber(right, expr.right);
   const bothNum = arithmeticLeft.type.kind === "f64" && arithmeticRight.type.kind === "f64";

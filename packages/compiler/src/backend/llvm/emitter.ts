@@ -255,7 +255,12 @@ import { emitCallExpr } from "./expr-calls.js";
 import { emitDynamicExpr } from "./expr-dynamic.js";
 import { emitIntrinsicExpr, emitSerializationExpr, emitAsyncExpr } from "./expr-async.js";
 import { PublishWalkers } from "./publish.js";
-import { computeImmutableFields, stableGlobals, type ImmutableFields } from "../immutability.js";
+import {
+  computeConstructionFacts,
+  computeImmutableFields,
+  stableGlobals,
+  type ImmutableFields,
+} from "../immutability.js";
 import { computeCycleMutability, hierarchyUnitOfClass } from "../cycle-mutability.js";
 import { computePublishedTypes, type PublishedTypes } from "../publication.js";
 import { emitExpr } from "./expr-dispatch.js";
@@ -1606,6 +1611,9 @@ export class LlEmitter {
   /** Static types whose values can be published (@scriptc/threads): their
    * stores carry the frozen-object guard. Null without publish calls. */
   readonly publishedTypes: PublishedTypes | null;
+  /** Constructor stores that write a field's first value (immutability.ts
+   * computeConstructionFacts): they store without releasing an old value. */
+  readonly freshFieldStores: ReadonlySet<IrStmt>;
   /** Construction-only class and record fields (immutability.ts); null
    * where the facts are disabled. */
   private readonly immutableFields: ImmutableFields | null;
@@ -2199,7 +2207,9 @@ export class LlEmitter {
     // and per async fiber; WASI, Windows and library builds have none.
     const triple = (options.targetTriple ?? "").toLowerCase();
     const windows = triple === "" ? process.platform === "win32" : triple.includes("windows");
-    this.publishedTypes = computePublishedTypes(mod, this.nodeIndex);
+    const construction = computeConstructionFacts(mod, this.nodeIndex);
+    this.freshFieldStores = construction.freshStores;
+    this.publishedTypes = computePublishedTypes(mod, this.nodeIndex, construction);
     const mt = computeMayThrow(mod, {
       stackChecks: !this.wasi && mod.lib === undefined && !windows,
       published: this.publishedTypes,
@@ -7750,6 +7760,7 @@ export class LlEmitter {
     field: string,
     nullable: NullableRefField,
     value: IrExpr,
+    fresh: boolean,
   ): void {
     let next: string;
     if (
@@ -7774,6 +7785,10 @@ export class LlEmitter {
       next = this.unionToNullable(this.emitUnionProjection(value).name, nullable);
     }
     const { ptr } = this.classFieldPtr(obj, className, field, "compressed");
+    if (fresh) {
+      this.storeRef(ptr, next);
+      return;
+    }
     const old = this.loadRef(ptr, false);
     this.storeRef(ptr, next);
     this.releaseHeap(old, nullable.arm);

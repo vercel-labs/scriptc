@@ -2253,6 +2253,29 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** A numeric operand of an operator: the binary arithmetic and bitwise six
+ * (and their ordering comparisons), unary `+`, `-` and `~`, and compound
+ * assignment's read and right side. JavaScript applies ToNumber to a
+ * `null`/`undefined` LITERAL — 0 and NaN — so the operand lowers to a
+ * number literal, the form every other ToNumber fold already uses.
+ *
+ * Other numeric uses keep `lowerOptionalNumber`'s optional-union handling
+ * alone, because their callers fold a unit literal themselves: a builtin's
+ * ToNumber argument emits the same NaN, and an element key keeps its
+ * property-key semantics (`a[null]` reads `a.null`, not `a[0]`). Only a
+ * JavaScript source reaches this with a unit operand; TypeScript rejects the
+ * position (TS18050) before any lowering runs.
+ */
+export function lowerOperatorNumber(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  loc: SrcLoc,
+  narrowedNode?: ts.Expression,
+): IrExpr {
+  if (operand.kind === "unitLit") return numLit(operand.unit === "null" ? 0 : NaN, loc);
+  return lowerOptionalNumber(lowerer, operand, loc, narrowedNode);
+}
+
 /** A number argument of a builtin that converts it with ToNumber (Math
  * functions, String.fromCharCode, the global isNaN/isFinite, DataView
  * offsets and values). ToNumber(undefined) is NaN, so a missing value — an

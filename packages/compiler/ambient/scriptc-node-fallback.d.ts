@@ -932,6 +932,7 @@ interface BufferConstructor {
    * optional byte offset/length shares x's storage (the subarray rule). */
   from(data: ArrayBuffer | SharedArrayBuffer, byteOffset?: number, length?: number): Buffer;
   from(data: Uint8Array | readonly number[]): Buffer;
+  of(...items: number[]): Buffer;
   alloc(size: number, fill?: string | number | Uint8Array, encoding?: BufferEncoding): Buffer;
   compare(buf1: Uint8Array, buf2: Uint8Array): number;
   /* alloc without the zero-fill guarantee. Below Buffer.poolSize >>> 1

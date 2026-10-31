@@ -74,3 +74,16 @@ report("receiver-effects", function () {
   return pick().has.call({}, 1);
 });
 console.log("reads " + reads);
+
+// A method read through a receiver that is missing (an out-of-bounds element
+// of a `Set[]`): the member access on undefined throws Node's TypeError
+// before the method value exists, rather than answering the builtin function.
+const sets = [s];
+const maps = [m];
+report("set-method-missing-receiver", function () {
+  return typeof sets[1].has;
+});
+report("map-method-missing-receiver", function () {
+  return typeof maps[4].get;
+});
+console.log("present receivers " + typeof sets[0].has + " " + typeof maps[0].get);

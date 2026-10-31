@@ -641,11 +641,58 @@ export function patchAndBump(): number {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 300_000);
+
+  // A sloppy implicit-global write creates the name on Node's global object
+  // when its island module runs. Native code has no global object, so a
+  // native user module that reads the name is SC8020, and a native npm
+  // package that reads it joins the island set, where the global exists.
+  test("a native read of an island's implicit global", async () => {
+    const dir = implicitGlobalProject("readers");
+    const cache = mkdtempSync(join(tmpdir(), "scriptc-implicit-global-cache-"));
+    const islandCache = mkdtempSync(join(tmpdir(), "scriptc-island-cache-"));
+    const previous = process.env["SCRIPTC_CACHE_DIR"];
+    process.env["SCRIPTC_CACHE_DIR"] = cache;
+    try {
+      const reader = await compile(join(dir, "reader-main.js"), {
+        outPath: join(dir, "reader-main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      expect(reader.ok).toBe(false);
+      if (reader.ok) return;
+      const read = reader.diagnostics.find((d) => d.code === "SC8020");
+      expect(read?.loc.file.endsWith("reader-main.js")).toBe(true);
+      expect(read?.message).toContain("'counter'");
+      const viaPackage = await compile(join(dir, "package-main.js"), {
+        outPath: join(dir, "package-main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      if (!viaPackage.ok)
+        throw new Error(viaPackage.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(viaPackage.islands?.packages).toEqual(["reads-global"]);
+      expect(viaPackage.islands?.modules.map((file) => basename(file))).toEqual(["legacy.cjs"]);
+      const out = await run(join(dir, "package-main"), [], {
+        ...process.env,
+        XDG_CACHE_HOME: islandCache,
+      });
+      expect(out).toEqual({ stdout: "42\n", stderr: "", code: 0 });
+    } finally {
+      if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = previous;
+      rmSync(cache, { recursive: true, force: true });
+      rmSync(islandCache, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
 });
 
 /** A CommonJS program whose entry requires a sloppy-mode module that writes
  * an undeclared name (an implicit global), and a strict-mode sibling whose
- * write throws. */
+ * write throws, a reader that reads the global natively, and an npm package
+ * that reads it. */
 function implicitGlobalProject(name: string): string {
   const dir = mkdtempSync(join(tmpdir(), `scriptc-implicit-global-${name}-`));
   writeFileSync(join(dir, "package.json"), "{}\n");
@@ -671,6 +718,28 @@ function implicitGlobalProject(name: string): string {
   writeFileSync(
     join(dir, "strict.cjs"),
     ['"use strict";', "strictCounter = 1;", "module.exports = {};", ""].join("\n"),
+  );
+  // Both readers run after legacy.cjs created the global.
+  writeFileSync(
+    join(dir, "reader-main.js"),
+    'require("./legacy.cjs");\nconsole.log(counter + 1);\n',
+  );
+  mkdirSync(join(dir, "node_modules/reads-global"), { recursive: true });
+  writeFileSync(
+    join(dir, "node_modules/reads-global/package.json"),
+    '{"name":"reads-global","version":"1.0.0","main":"index.js","types":"index.d.ts"}\n',
+  );
+  writeFileSync(
+    join(dir, "node_modules/reads-global/index.js"),
+    "module.exports = function read() {\n  return counter + 1;\n};\n",
+  );
+  writeFileSync(
+    join(dir, "node_modules/reads-global/index.d.ts"),
+    "declare function read(): number;\nexport = read;\n",
+  );
+  writeFileSync(
+    join(dir, "package-main.js"),
+    'const read = require("reads-global");\nrequire("./legacy.cjs");\nconsole.log(read());\n',
   );
   return dir;
 }

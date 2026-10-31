@@ -416,6 +416,22 @@ export function nodeIslandPatchedReadDiag(
   };
 }
 
+/** SC8020 — native code reads a name that only an island module's sloppy
+ * implicit-global write creates: the global lives on Node's global object,
+ * which the native build does not have. */
+export function nodeIslandImplicitGlobalReadDiag(
+  name: string,
+  writerFile: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8020",
+    message: `'${name}' is created as an implicit global by ${writerFile}, which runs in a Node island; the native build has no global object, so this read cannot see it. Declare '${name}' in this module, or move the code that reads it into ${writerFile}.`,
+    loc,
+    hint: "a declared binding holds the same value in both tiers",
+  };
+}
+
 /** SC8020 — a stateful module the program compiles is duplicated across
  * the Node island boundary (an explicit "duplicate", or a form NI-6 cannot
  * share yet): each side has its own state. */

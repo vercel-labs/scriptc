@@ -12,7 +12,7 @@ import { resolveBareModule } from "../frontend/resolve.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "../frontend/workspace-registry.js";
 import { moduleSourceCandidates } from "../frontend/module-source-candidates.js";
-import { scanModuleFacts, type CjsRead, type NodeIslandMarker } from "./detect.js";
+import { scanModuleFacts, type CjsRead, type GlobalRead, type NodeIslandMarker } from "./detect.js";
 import { stripProblem, type StripProblem } from "./type-strip.js";
 import { originOf, packageDirOf, type Origin } from "./origin.js";
 
@@ -25,6 +25,9 @@ export interface ScannedModule {
   markers: NodeIslandMarker[];
   /** Members the module reads through a builtin's CommonJS object (H3.4). */
   cjsReads: CjsRead[];
+  /** Names the module reads that it declares nowhere and no builtin
+   * provides: each resolves on the global object at run time. */
+  globalReads: GlobalRead[];
   /** A user TypeScript module with a `builtin-patch` marker that Node
    * cannot run with type stripping only (H3.5): it stays native. */
   stripProblem: StripProblem | null;
@@ -160,7 +163,7 @@ export function scanFiles(
     // (H3.2): its other markers are JavaScript semantics, and sloppy
     // parsing is never required of TypeScript.
     const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
-    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [] };
+    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [], globalReads: [] };
     if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
     let markers = userTs
       ? facts.markers.filter((marker) => marker.reason === "builtin-patch")
@@ -173,6 +176,7 @@ export function scanFiles(
       packageName: at === null ? null : at.name,
       markers,
       cjsReads: facts.cjsReads,
+      globalReads: facts.globalReads,
       stripProblem: userTs && markers.length > 0 ? stripProblem(program, sf) : null,
       dropped: opts.dropped,
     });

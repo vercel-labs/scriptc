@@ -1,10 +1,11 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import type { CompileFailure, CompileRequestOptions } from "../compile-types.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
   checkerPanicDiag,
   nodeIslandEntryPatchDiag,
+  nodeIslandImplicitGlobalReadDiag,
   nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
   nodeIslandPatchedReadDiag,
@@ -549,12 +550,43 @@ function decideNodeIslands(
       }
     }
   }
+  // Who else must see an implicit global (H3.4): a sloppy write creates the
+  // name on Node's global object when its island module runs, and native
+  // code has no global object to read it from. An npm package that reads
+  // the name joins the island set (its Node sees the global); a user module
+  // or the entry is SC8020.
+  const readerGlobals = new Map<
+    string,
+    { packageDir: string; global: string; writerFile: string }
+  >();
+  const createdGlobals =
+    policy.mode === "auto" ? implicitGlobalWrites(fe, modules) : new Map<string, string>();
+  if (createdGlobals.size > 0) {
+    for (const m of scan.modules) {
+      if (modules.has(m.file)) continue;
+      for (const read of m.globalReads) {
+        const writerFile = createdGlobals.get(read.name);
+        if (writerFile === undefined) continue;
+        if (m.origin === "npm" && m.packageName !== null && m.packageDir !== null) {
+          if (!readerGlobals.has(m.packageName) && !refused.has(m.packageName))
+            readerGlobals.set(m.packageName, {
+              packageDir: m.packageDir,
+              global: read.name,
+              writerFile,
+            });
+        } else if (m.origin === "user") {
+          errors.push(nodeIslandImplicitGlobalReadDiag(read.name, writerFile, read.loc));
+        }
+      }
+    }
+  }
   if (errors.length > 0) return { packages: new Map(), modules: new Map(), notes: [], errors };
   if (
     refused.size === 0 &&
     policy.forcedNode.size === 0 &&
     modules.size === 0 &&
-    readerPackages.size === 0
+    readerPackages.size === 0 &&
+    readerGlobals.size === 0
   )
     return null;
   const report = buildNodeIslandReport({
@@ -655,6 +687,29 @@ function decideNodeIslands(
       ),
     );
   }
+  // npm packages that read an implicit global an island module creates join
+  // the island set: the global lives on their Node's global object.
+  for (const [name, reader] of readerGlobals) {
+    if (packages.has(name)) continue;
+    const version = packageVersionOf(reader.packageDir);
+    const reason = `it reads '${reader.global}', the implicit global island module ${reader.writerFile} creates`;
+    packages.set(name, {
+      name,
+      version,
+      dir: reader.packageDir,
+      class: "object-model",
+      reason,
+    });
+    notes.push(
+      nodeIslandNoteDiag(
+        name,
+        version,
+        "object-model",
+        reason,
+        fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 },
+      ),
+    );
+  }
   for (const island of [...modules.values()].sort((a, b) =>
     a.file < b.file ? -1 : a.file > b.file ? 1 : 0,
   ))
@@ -666,6 +721,30 @@ function decideNodeIslands(
       }),
     );
   return packages.size === 0 && modules.size === 0 ? null : { packages, modules, notes, errors };
+}
+
+/** The names the island modules' sloppy implicit-global writes create, each
+ * with the file that creates it. Preflight reports each write as an SC1091
+ * whose range is the write target. */
+function implicitGlobalWrites(
+  fe: ReturnType<FrontendFactory>,
+  modules: ReadonlyMap<string, IslandModule>,
+): Map<string, string> {
+  const globals = new Map<string, string>();
+  const sources = new Map<string, string>();
+  for (const d of fe.preflight) {
+    if (d.code !== "SC1091" || d.reason !== "implicit-global-write") continue;
+    const file = d.loc.file;
+    if (!modules.has(file)) continue;
+    let source = sources.get(file);
+    if (source === undefined) {
+      source = readFileSync(file, "utf8");
+      sources.set(file, source);
+    }
+    const name = source.slice(d.loc.start, d.loc.end);
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) && !globals.has(name)) globals.set(name, file);
+  }
+  return globals;
 }
 
 /** The builtin module a patched member belongs to ("fs" of

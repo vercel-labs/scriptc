@@ -22,6 +22,7 @@ export const DIAGNOSTIC_CODES = {
   SC0005: "duplicate lexical declaration in a block or switch statement list",
   SC0006: "lexical declaration colliding with a var in the same block",
   SC0007: "declaration in a single-statement position",
+  SC0008: "arguments referenced from a class field initializer or static block",
   SC1010: "package imports outside the supported set",
   SC1012: "default exports/imports (residual edges)",
   SC1013: "namespace imports (residual edges)",

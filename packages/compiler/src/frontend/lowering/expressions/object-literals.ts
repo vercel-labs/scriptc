@@ -247,11 +247,21 @@ function propertyFunctionName(lowerer: Lowerer, name: ts.PropertyName): string |
   if (ts.isComputedPropertyName(name)) {
     const literal = literalComputedKey(lowerer, name);
     if (literal !== null) return literal;
-    // A symbol key names the function `[description]`.
+    // A symbol key names the function `[description]`; a symbol with no
+    // description names it the empty string (SetFunctionName, ECMA-262
+    // 7.3.24 step 2: the string is "" for an undefined description).
     let key = name.expression;
     while (ts.isParenthesizedExpression(key)) key = key.expression;
     const symbol = classSymbolKeyOf(lowerer, key);
-    if (symbol) return `[${symbolFieldDisplayName(symbol.fieldName).slice("Symbol(".length, -1)}]`;
+    if (symbol) {
+      const description = symbolFieldDisplayName(symbol.fieldName).slice("Symbol(".length, -1);
+      // `Symbol("")` HAS the description "" and names its function "[]";
+      // only an absent description (`Symbol()`) names it "" (SetFunctionName,
+      // ECMA-262 7.3.24 step 2). Both print `Symbol()`.
+      if (symbol.described) return `[${description}]`;
+      // A typed source keeps the "[]" spelling its IR always carried.
+      return isJsSourceFile(ts.getSourceFileOfNode(name)) ? "" : "[]";
+    }
     const wellKnown = ts.isPropertyAccessExpression(key)
       ? lowerer.stdlibGlobalMember(key, "Symbol")
       : null;

@@ -1253,15 +1253,24 @@ export function lowerPropertyAccessExpr(
       // by the property or function it reads. A builtin function value
       // keeps its length when that is not its adapter's parameter count
       // (`Math.max.length` is 2).
+      // A binding boxes under the function's own JavaScript identity when
+      // the read site cannot name it (`ref.name` of `var ref; ref = function
+      // () {}`): jsValueIdentities answers what the binding holds.
+      const identity = lowerer.functionIdentityOfValue(probed, expr.expression);
       const fnName =
-        builtinValueNameOf(expr.expression, lowerer) ?? jsFuncNameOf(expr.expression, lowerer);
-      const fnLength = lowerer.builtinFunctionIdentity(probed).fnLength;
+        builtinValueNameOf(expr.expression, lowerer) ??
+        jsFuncNameOf(expr.expression, lowerer) ??
+        identity.fnName;
+      const fnLength = identity.fnLength;
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: probed,
         type: DYN,
         ...(fnName !== null ? { fnName } : {}),
         ...(fnLength !== undefined ? { fnLength } : {}),
+        // The type names more than one function (a union of function
+        // types): the value's own closure answers `length`.
+        ...(identity.fnLengthFromValue === true ? { fnLengthFromValue: true as const } : {}),
         loc,
       };
       const key: IrExpr = {

@@ -117,8 +117,12 @@ typedef struct ScrClosure {
    * collected. */
   ScrBox *props;
   uint32_t function_kind; /* SCR_CLOSURE_KIND_* bits */
-  /* The root's `length` as boxed values report it; meaningful only when
-   * identity is set (the root's own boxes carry their arity). */
+  /* An ADAPTER's root `length` as boxed values report it; meaningful only
+   * when identity is set (the root's own boxes carry their arity). A ROOT
+   * keeps its JavaScript function's ExpectedArgumentCount here instead,
+   * encoded as length + 1 (0 = unrecorded): a box whose static type cannot
+   * name the declaration reads the value's own length there
+   * (dynFrom.fnLengthFromValue, IrFunction.jsLength in the compiler). */
   uint32_t identity_length;
   /* The JS function this closure stands for. NULL means the closure is
    * its own identity. A signature adapter (the same function viewed

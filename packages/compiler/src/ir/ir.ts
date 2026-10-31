@@ -2008,6 +2008,14 @@ export interface IrFunction {
    * captures that takes jsval parameters. The backend gives each function
    * value boxed from this closure a jsval call entry into it. */
   jsEntry?: string;
+  /** A JavaScript source function's `length` (ECMAScript
+   * ExpectedArgumentCount, ECMA-262 15.1.3): the parameters before the
+   * first defaulted or rest one, which the IR signature no longer spells.
+   * The backend records it on the function's closure, where a box that
+   * cannot name the declaration reads it back (dynFrom.fnLengthFromValue).
+   * JavaScript sources only: a typed program's functions carry no field,
+   * so its IR is unchanged. */
+  jsLength?: number;
   /** The function's execution tier (ir/tiers.ts). Absent means static: the
    * function may use dynamic values only through boundary operations
    * (dynFrom, dynCheck, kind tests) and moves, which the validator enforces
@@ -3549,6 +3557,14 @@ export type IrExpr =
       /** A boxed function's `length` when it differs from its parameter
        * count (builtin function values). */
       fnLength?: number;
+      /** The box takes its `length` from the function VALUE it wraps, not
+       * from the static type: the type names more than one declaration (a
+       * union of function types, a conditional over one, any value that
+       * flows through a binding), so no single declaration's
+       * ExpectedArgumentCount describes it. The backend reads the length
+       * the value's closure records (IrFunction.jsLength), falling back to
+       * what the signature alone would report. */
+      fnLengthFromValue?: true;
     }
   /** CALLING a dyn value — `fn(a, b)` where fn is checked-dynamic (an
    * implicit-any JS binding, a dyn record member, a dynKeyGet result).

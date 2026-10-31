@@ -1026,8 +1026,12 @@ ScrDyn *scr_dyn_collection_construct(const ScrStr *klass, ScrDyn *seed) {
   bool overridden = adder != builtin;
   scr_dyn_release(builtin);
   /* The collection exists already; an adder that is still the builtin fills
-   * it with the native bulk insert. */
-  if (!overridden) {
+   * it with the native bulk insert, which takes the whole seed before the
+   * first entry lands. A seed the runtime has to step through the iterator
+   * protocol runs the program between steps, and the adder getter may have
+   * captured this collection, so those seeds insert one entry per step and
+   * each step sees the entries added so far. */
+  if (!overridden && scr_dyn_seed_packs_natively(seed)) {
     scr_dyn_release(adder);
     if (!scr_dyn_native_collection_insert_seed(collection, seed)) {
       scr_dyn_release(collection);

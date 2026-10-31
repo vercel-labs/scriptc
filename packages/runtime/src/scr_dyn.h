@@ -1562,6 +1562,11 @@ ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell);
 /* True for typed capsules that iterate through the protocol (a compiled
  * synchronous generator) rather than through their materialized view. */
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value);
+/* Whether a collection constructor's seed yields its values without running
+ * program code: arrays, strings, bytes, typed views and collections pack, a
+ * native iterator drains. Every other iterable steps through the iterator
+ * protocol, so the constructor inserts one entry per step. */
+bool scr_dyn_seed_packs_natively(const ScrDyn *seed);
 /* Map constructor seeds: retain array inputs for live iteration, accept
  * nullish inputs as empty, and validate each entry before reading 0/1. */
 ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src);

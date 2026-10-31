@@ -19979,6 +19979,20 @@ bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
   return scr_dyn_sync_generator(value);
 }
 
+/* Whether a collection constructor's seed gives its values without running
+ * program code: arrays, strings, bytes and collections pack, a native
+ * iterator drains. Any other iterable walks the iterator protocol, whose
+ * steps run the program. */
+bool scr_dyn_seed_packs_natively(const ScrDyn *seed) {
+  if (seed->kind == SCR_DYN_ARR || seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES)
+    return true;
+  if (seed->kind == SCR_DYN_TYPED_REF) return !scr_dyn_iterates_by_protocol(seed);
+  if (seed->kind != SCR_DYN_HANDLE) return false;
+  if (seed->v.handle.tag == SCR_DYNH_ITERATOR || seed->v.handle.tag == SCR_DYNH_MAP) return true;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(seed);
+  return ops->iter_step || ops->iter_pack;
+}
+
 #ifdef SCR_JS_TIER
 /* ── dynamic-tier primitives (scr_dyn.h, SCR_JS_TIER) ─────────────────── */
 

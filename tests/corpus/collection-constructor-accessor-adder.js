@@ -195,6 +195,64 @@ function setNullishSkipsGetter() {
   console.log("set nullish seeds read the getter:", reads, "sizes:", fromNull.size, empty.size);
 }
 
+function mapStepsSeeInsertedEntries() {
+  let captured;
+  Object.defineProperty(Map.prototype, "set", {
+    configurable: true,
+    get() {
+      captured = this;
+      return builtinSet;
+    },
+  });
+  const sizes = [];
+  const iterable = {
+    [Symbol.iterator]() {
+      let i = 0;
+      return {
+        next() {
+          // The getter handed the iterator this collection, so each step
+          // sees the entries the constructor added so far.
+          sizes.push(captured.size);
+          if (i === 2) return { value: undefined, done: true };
+          i += 1;
+          return { value: ["k" + i, i], done: false };
+        },
+      };
+    },
+  };
+  const map = new Map(iterable);
+  restoreMapSet();
+  console.log("map steps see sizes:", sizes.join(","), "size:", map.size, "get k2:", map.get("k2"));
+}
+
+function setStepsSeeInsertedValues() {
+  let captured;
+  Object.defineProperty(Set.prototype, "add", {
+    configurable: true,
+    get() {
+      captured = this;
+      return builtinAdd;
+    },
+  });
+  const sizes = [];
+  const iterable = {
+    [Symbol.iterator]() {
+      let i = 0;
+      return {
+        next() {
+          sizes.push(captured.size);
+          if (i === 3) return { value: undefined, done: true };
+          i += 1;
+          return { value: i, done: false };
+        },
+      };
+    },
+  };
+  const set = new Set(iterable);
+  restoreSetAdd();
+  console.log("set steps see sizes:", sizes.join(","), "size:", set.size, "has 3:", set.has(3));
+}
+
 mapGetterSeesInstance();
 mapAccessorAdder();
 mapGetterThrows();
@@ -202,3 +260,5 @@ nullishSkipsGetter();
 setGetterSeesInstance();
 setAccessorAdder();
 setNullishSkipsGetter();
+mapStepsSeeInsertedEntries();
+setStepsSeeInsertedValues();

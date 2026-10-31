@@ -1112,22 +1112,28 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       // and a spread copies its source shape's order, known when every value
       // of that shape proves it. A fresh literal arm (`labels && { labels }`)
       // qualifies, as does a same-shape clone. Other values of the shape may
-      // take another order; this literal does not copy them.
-      const target = declaredTable(literal.type.shapeId);
+      // take another order; this literal does not copy them, unless it spreads
+      // the shape itself, whose value was built elsewhere and needs the
+      // shape-level proof.
+      const shapeId = literal.type.shapeId;
+      const target = declaredTable(shapeId);
+      const spreadsSelf = segments.some(
+        (segment) => segment.kind === "spread" && segment.shapeId === shapeId,
+      );
       if (
         target !== null &&
         literalInTableOrder(
-          literal.type.shapeId,
+          shapeId,
           segments,
           target.table,
           target.keySet,
           new Set(),
-          false,
+          spreadsSelf && stableTable(shapeId, new Set()) !== null,
         )
       )
         continue;
       keptWidths.add(wrapper);
-      notes.keptSourceShapes.add(literal.type.shapeId);
+      notes.keptSourceShapes.add(shapeId);
       for (const segment of note.segments)
         if (segment.kind === "spread") shapesIn(segment.value.type, early, earlySeen);
     }

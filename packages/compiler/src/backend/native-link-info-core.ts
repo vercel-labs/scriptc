@@ -139,9 +139,6 @@ export interface NativeLinkFeatures {
    * scr_dyn_array_like.c. Absent (false) otherwise, so programs that never
    * call one over an array-like keep their exact link line. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype or Boolean.prototype read as a value:
-   * scr_dyn_builtin_prototype.c. Absent (false) otherwise. */
-  builtinPrototypeValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;

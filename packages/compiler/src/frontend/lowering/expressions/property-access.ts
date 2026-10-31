@@ -5802,10 +5802,16 @@ function jsPrimitivePrototypeValue(
 ): IrExpr | null {
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const loc = locOf(expr);
-  const value = (kind: string): IrExpr => ({
+  const value = (kind: "Number" | "Boolean"): IrExpr => ({
     kind: "libCall",
     fn: "dyn.builtinPrototype",
-    args: [{ kind: "strLit", value: kind, type: STRING, loc }],
+    args: [
+      { kind: "strLit", value: kind, type: STRING, loc },
+      // The compiled constructor value the prototype belongs to: the unit
+      // answers it as the constructor's `prototype` member, so
+      // `Object(1).constructor.prototype === Number.prototype`.
+      lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN),
+    ],
     type: DYN,
     loc,
   });

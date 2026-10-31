@@ -1128,9 +1128,6 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
   arrayLikeDispatch: rule({ fns: ["dyn.arrayLikeProtoCall"] }),
-  /** Number.prototype and Boolean.prototype as values
-   * (scr_dyn_builtin_prototype.c). */
-  builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     fns: [
@@ -1438,8 +1435,11 @@ const RUNTIME_FEATURE_RULES = {
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
-  /** Primitive wrapper objects (scr_js_wrapper.c). */
-  primitiveWrapper: rule({ prefixes: ["wrapper."] }),
+  /** Primitive wrapper objects (scr_js_wrapper.c), which also own
+   * Number.prototype and Boolean.prototype: the value a JavaScript source
+   * reads through dyn.builtinPrototype, and the compiled constructor's
+   * `prototype` member of the same object. */
+  primitiveWrapper: rule({ prefixes: ["wrapper."], fns: ["dyn.builtinPrototype"] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1535,7 +1535,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdlibPrototypeValue: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
-    builtinPrototypeValue: false,
     dynTier: false,
     ecdh: false,
     x509: false,

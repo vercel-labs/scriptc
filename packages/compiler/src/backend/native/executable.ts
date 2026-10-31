@@ -219,14 +219,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.stdlibPrototypeValue === true && u.opts.dynInvoke,
     "scr_dyn_stdlib_prototype.c",
   ),
-  // Array.prototype's generic algorithms over array-like receivers, and the
-  // Number/Boolean prototype objects as values: the dynamic tier's gated
-  // units, whose work is JavaScript-only.
+  // Array.prototype's generic algorithms over array-like receivers: the
+  // dynamic tier's gated unit, whose work is JavaScript-only.
   unit((u) => u.opts.arrayLikeDispatch === true && u.opts.dynInvoke, "scr_dyn_array_like.c"),
-  unit(
-    (u) => u.opts.builtinPrototypeValue === true && u.opts.dynInvoke,
-    "scr_dyn_builtin_prototype.c",
-  ),
   // createRequire's computed require and require.resolve.
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),

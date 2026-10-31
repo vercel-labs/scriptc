@@ -112,9 +112,6 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype and Boolean.prototype as values
-   * (scr_dyn_builtin_prototype.c). */
-  builtinPrototypeValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
   recordViewPartial: boolean;
@@ -341,7 +338,6 @@ export function effectiveRuntimeFeatures(
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
-    builtinPrototypeValue: features.builtinPrototypeValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     recordViewPartial: features.recordViewPartial === true,

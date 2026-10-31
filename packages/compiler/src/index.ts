@@ -847,7 +847,6 @@ async function compileExecutableNative(
     ...(features.builtinValues ? { builtinValues: true } : {}),
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
-    ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     events: features.events,
     emitter: features.emitter,

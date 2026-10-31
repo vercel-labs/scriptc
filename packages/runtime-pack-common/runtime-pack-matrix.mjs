@@ -85,8 +85,6 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
-  // Number.prototype and Boolean.prototype read as values in JavaScript.
-  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.

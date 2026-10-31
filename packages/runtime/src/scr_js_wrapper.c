@@ -320,8 +320,29 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
                                     : scr_js_wrapper_boolean_members;
   for (const ScrJsWrapperMember *m = members; m->name; m++)
     scr_js_wrapper_define_hidden(prototype, m->name, scr_js_wrapper_method_value(m->name, kind, m->length));
+  /* The constructor's own `prototype` member is this object, as in Node:
+   * `Boolean.prototype === Object(true).constructor.prototype`, and every
+   * wrapper's chain ends here. It is non-writable, non-enumerable and
+   * non-configurable, like a builtin constructor's. */
+  scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
   scr_js_wrapper_prototypes[kind] = prototype;
   return prototype;
+}
+
+/* `Number.prototype` / `Boolean.prototype` read as a JavaScript value
+ * (dyn.builtinPrototype): the wrapper unit's prototype object, so the
+ * program that reads the value and the program's wrappers share ONE object
+ * per kind. `kind` spells the constructor the frontend marked ("String",
+ * "Number" or "Boolean"); `constructor` is that compiled constructor value
+ * (borrowed), which receives the prototype. +1. */
+ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor) {
+  for (int k = 0; k < 3; k++) {
+    size_t len = strlen(scr_js_wrapper_names[k]);
+    if (kind->len == len && memcmp(kind->data, scr_js_wrapper_names[k], len) == 0)
+      return scr_dyn_retain(scr_js_wrapper_prototype(k, constructor));
+  }
+  scr_trap("scriptc: unknown builtin prototype kind\n");
+  return NULL;
 }
 
 /* The wrapper of kind `kind` over `primitive` (borrowed; already the

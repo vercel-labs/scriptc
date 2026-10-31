@@ -116,9 +116,6 @@ export interface EarlyExecutableNativeFeatures {
   dynBuiltinStream: boolean;
   /** Array.prototype methods over array-like receivers: scr_dyn_array_like.c. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype and Boolean.prototype as values:
-   * scr_dyn_builtin_prototype.c. */
-  builtinPrototypeValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;

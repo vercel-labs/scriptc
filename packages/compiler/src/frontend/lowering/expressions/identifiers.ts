@@ -29,6 +29,7 @@ import {
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
+  cjsNamespaceModule,
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
   wholeExportValue,
@@ -1062,6 +1063,30 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "SC1090",
         expr,
         `the mixin function '${expr.text}' as a value (mixin calls compile per call site — call it directly)`,
+      );
+    }
+  }
+  // A DEFAULT import of a CommonJS program module binds module.exports
+  // itself (Node's ESM-CJS interop). When the module's retained
+  // `module.exports = <value>` is a single value, that VALUE is the binding
+  // (`import hljs from "highlight.js/lib/core.js"`: core.js ends in
+  // `var highlight = HLJS({}); module.exports = highlight`, so the import is
+  // the highlighter instance). A table-exporting module keeps the namespace
+  // reading — its members resolve through the export table — and falls
+  // through to the fences below.
+  {
+    const binding = lowerer.checker.getSymbolAtLocation(expr);
+    const dep =
+      binding !== undefined && binding.declarations.some((d) => ts.isImportClause(d))
+        ? lowerer.cjsModuleBindingDepOf(expr)
+        : null;
+    if (dep !== null && !cjsNamespaceModule(lowerer, dep)) {
+      const value = wholeExportValue(lowerer, dep, expr);
+      if (value !== null) return value;
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'${expr.text}' as a value (the module's 'module.exports =' value has no static representation)`,
       );
     }
   }

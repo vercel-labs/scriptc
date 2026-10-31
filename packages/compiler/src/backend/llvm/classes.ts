@@ -115,8 +115,10 @@ export class LlClassMeta {
   /** Compact classes: each field's GEP index, by its index in def.fields. */
   compactSlots: number[] = [];
   /** Compact classes: whether each field (by its index in def.fields) holds
-   * a compact class instance as a 32-bit index (COMPACT_REF) rather than a
-   * pointer: compactRefLoadLines decodes it, compactRefStoreLines encodes it. */
+   * a 32-bit reference (COMPACT_REF) rather than a pointer: to a compact
+   * class instance, or to an array, map, set or class instance in the
+   * allocator's window (LlEmitter.windowRefType). compactRefLoadLines decodes
+   * it, compactRefStoreLines encodes it. */
   compressed: boolean[] = [];
   /** Compact classes with an inline array field (ir/inline-arrays.ts): the
    * field's slot holds the element count as an i32, and the elements follow
@@ -695,10 +697,11 @@ export function compactHeaderWord(meta: LlClassMeta): number {
 }
 
 /** Lines that decode the 32-bit reference `idx` (an i32) of a compressed
- * field into the pointer `out`. The program-lifetime region lies below
- * 32 GiB (LlvmTargetOptions.lowRegion), so a reference is the instance's
- * address over 8 and 0 is NULL: one shift, which x86-64 folds into the
- * address of the next load. `t` names the temporaries. */
+ * field into the pointer `out`. The allocator's window, which holds the
+ * program-lifetime region, lies below 32 GiB (LlvmTargetOptions.lowRegion),
+ * so a reference is the object's address over 8 and 0 is NULL: one shift,
+ * which x86-64 folds into the address of the next load. `t` names the
+ * temporaries. */
 export function compactRefLoadLines(idx: string, out: string, t: string): string[] {
   return [
     `  ${t}.z = zext i32 ${idx} to i64`,
@@ -707,7 +710,7 @@ export function compactRefLoadLines(idx: string, out: string, t: string): string
   ];
 }
 
-/** Lines that encode the pointer `ptr` (NULL or a compact class instance)
+/** Lines that encode the pointer `ptr` (NULL or an object in the window)
  * as the 32-bit reference `out` (an i32) a compressed field stores. */
 export function compactRefStoreLines(ptr: string, out: string, t: string): string[] {
   return [
@@ -717,8 +720,8 @@ export function compactRefStoreLines(ptr: string, out: string, t: string): strin
   ];
 }
 
-/** The storage type of a compressed field (LlClassMeta.compressed): a
- * 32-bit index into the program-lifetime region. */
+/** The storage type of a compressed field (LlClassMeta.compressed): an
+ * object's address over 8, below 32 GiB. */
 export const COMPACT_REF = "i32";
 
 /** Lines that allocate `%o`, `size` zeroed bytes in the program-lifetime
@@ -832,9 +835,10 @@ export function assignCompactLayouts(
         `llvm emitter bug: compact class ${meta.def.name} does not extend its base's layout`,
       );
     const elems = inherited.map((e) => ({ ...e }));
-    // A reference to a compact class instance is a 32-bit index into the
-    // program-lifetime region (compactRefLoadLines); inherited fields keep the
-    // base's choice.
+    // A field whose values all lie below 32 GiB (compressedRef: compact
+    // class instances, and arrays, maps, sets and instances in the window)
+    // holds a 32-bit reference (compactRefLoadLines); inherited fields keep
+    // the base's choice.
     const compressed = meta.def.fields.map((_, i) =>
       i < baseCount
         ? base!.compressed[i]!
@@ -1185,9 +1189,9 @@ export function emitClassShapes(
     const fieldIndex = (i: number): number => classFieldSlot(meta, i);
     // Teardown, trace and gcFree see each slot's storage type: a nullable
     // class field holds the instance pointer (NULL for the unit arm), and
-    // every class retain/release/visit entry point is NULL-tolerant. A
-    // compressed field refers to a compact instance, which nothing releases
-    // or traces, so they skip it.
+    // every class retain/release/visit entry point is NULL-tolerant.
+    // Compressed fields belong to compact classes, whose instances are never
+    // freed and are no collector candidates, so they skip them.
     const indexedFields = [
       ...ownedFields(cls)
         .filter(({ i }) => meta.compressed[i] !== true)
@@ -1311,7 +1315,7 @@ export function emitClassShapes(
         lines.push(
           ...segmentPrologueLines(),
           ...loads.flat(),
-          ...emitObjectFree(host, traced, "weak", "%sg.own"),
+          ...emitObjectFree(host, traced, "weak", "%sg.own", sizeOf),
           ...segmentTeardownLines(ownType, (prefix) =>
             refFields.flatMap((f, t) => release(prefix, f, t)),
           ),
@@ -1322,7 +1326,7 @@ export function emitClassShapes(
       if (runtimePrefix) lines.push(...regCall("td", runtimePrefix.drop, ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
       if (meta.threadSlot) lines.push(...slotForgetLines(host, struct, meta, "tdw"));
-      lines.push(...emitObjectFree(host, traced));
+      lines.push(...emitObjectFree(host, traced, "weak", null, sizeOf));
     };
 
     if (meta.hierarchy) {
@@ -1426,7 +1430,7 @@ export function emitClassShapes(
       ];
       const fieldsTeardown: string[] = [];
       teardown(fieldsTeardown);
-      const free = emitObjectFree(host, traced);
+      const free = emitObjectFree(host, traced, "weak", null, sizeOf);
       destroyBody.push(
         ...fieldsTeardown.slice(0, fieldsTeardown.length - free.length),
         `  call void @scr_arr_subclass_drop(ptr %o)`,
@@ -1728,7 +1732,7 @@ export function emitClassShapes(
         host.declare(`declare void @scr_arr_subclass_gc_drop(ptr)`);
         gf.push(`  call void @scr_arr_subclass_gc_drop(ptr %o)`);
       }
-      gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
+      gf.push(...emitObjectFree(host, true, "weak", null, sizeOf), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
   }

@@ -613,10 +613,12 @@ export interface LlvmTargetOptions {
   /** Translated WebAssembly memories check bounds explicitly instead of
    * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
   wasmBoundsChecks?: boolean;
-  /** The executable can reserve its program-lifetime region below 32 GiB
-   * (lowRegionTarget): fields that refer to compact class instances then
-   * store the instance's address over 8 in 32 bits (classes.ts
-   * compactRefLoadLines). Elsewhere they keep 8-byte pointers. */
+  /** The executable can reserve the allocator's window, which holds its
+   * program-lifetime region, below 32 GiB (lowRegionTarget): compact class
+   * fields that refer to compact class instances, or to arrays, maps, sets
+   * and class instances in the window, then store the object's address over
+   * 8 in 32 bits (classes.ts compactRefLoadLines). Elsewhere they keep 8-byte
+   * pointers. */
   lowRegion?: boolean;
   /** The x86-64 level the program's code may require (`--target-cpu`):
    * every emitted function carries it as its `target-cpu`. Unset, code
@@ -1078,7 +1080,7 @@ export class LlEmitter {
   readonly fieldAliasTags = new Map<string, number>();
   readonly fieldPointerTags = new Map<string, number>();
   /** The field pointers (classFieldPtr) of this function whose fields hold
-   * 32-bit references to compact class instances (LlClassMeta.compressed):
+   * 32-bit references (LlClassMeta.compressed):
    * loadField/loadRef decode them and storeField/storeRef encode them. */
   readonly compressedFieldPtrs = new Set<string>();
   /** Compact class instances live in the program-lifetime region below
@@ -2447,6 +2449,8 @@ export class LlEmitter {
       // Worker programs keep one allocator per script thread: the inline
       // paths address its thread-local state.
       threadLocalAlloc: mod.workers === true,
+      // Linux executables find a block's owner in the chunk map.
+      windowMap: options.lowRegion === true,
       rcHelpers: this.rcHelpers,
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
@@ -2632,17 +2636,20 @@ export class LlEmitter {
         this.classMeta,
         (root) => programLifetimeClass(this.shapeHost, root) && !root.threadSlot,
         (cls) => classFieldTypes(this.shapeHost, cls, this.int32Slots),
-        // Executables whose region lies below 32 GiB hold compact class
-        // instances there (scr_plr_alloc), so fields referring to one store
-        // a 32-bit reference: the field's type, the class of a
-        // `C | undefined` or `C | null` pointer, or the reference arm of a
-        // nullable pointer field, is a compact class. `C | null | undefined`
-        // keeps the pointer: its null is a sentinel outside the region.
+        // Executables whose window lies below 32 GiB hold compact class
+        // instances there (scr_plr_alloc), and arrays, maps, sets and other
+        // class instances too, so fields referring to one store a 32-bit
+        // reference: the field's type, the class of a `C | undefined` or
+        // `C | null` pointer, or the reference arm of a nullable pointer
+        // field, is a compact class, or windowRefType holds. `C | null |
+        // undefined` keeps the pointer: its null is a sentinel outside the
+        // region.
         mod.lib === undefined && options.lowRegion === true
           ? (cls, i, isCompact) => {
               const f = cls.fields[i]!;
               if (this.inlineUnions.classField(cls.name, f.name)) return false;
               if (this.compactRefType(f.type, isCompact)) return true;
+              if (this.windowRefType(f.type, isCompact)) return true;
               const nullable =
                 f.type.kind === "union" && this.nullableUnions.single(f.type.unionId) === null
                   ? this.nullableFields.get(cls.name, f.name)
@@ -4952,6 +4959,26 @@ export class LlEmitter {
       single.arm.kind === "object" &&
       isCompact(single.arm.className)
     );
+  }
+
+  /** Whether values of `t` are NULL or a refcounted object that lies in the
+   * allocator's window below 32 GiB, so that a compact class field of type
+   * `t` can store it as a 32-bit reference: an array, map or set, or an
+   * instance of a class that is not compact and that the program allocates
+   * (not the runtime's Error hierarchy, whose instances the runtime
+   * allocates), or one of these or `undefined`/`null` (NULL). Strings keep
+   * 8-byte pointers: literals lie in the executable's image. */
+  windowRefType(t: IrType, isCompact: (className: string) => boolean): boolean {
+    const target = (u: IrType): boolean => {
+      if (u.kind === "array" || u.kind === "map" || u.kind === "set") return true;
+      if (u.kind !== "object" || isCompact(u.className)) return false;
+      const meta = this.classMeta.get(u.className);
+      return meta !== undefined && meta.root.def.runtime !== true;
+    };
+    if (target(t)) return true;
+    if (t.kind !== "union") return false;
+    const single = this.nullableUnions.single(t.unionId);
+    return single !== null && single.nullTag < 0 && target(single.arm);
   }
 
   /** Whether arrays of `elem` hold 32-bit references (SCR_ELEM_CREF). */

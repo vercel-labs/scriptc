@@ -1073,6 +1073,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(
       `@${inst.sym}_data = internal constant [${n} x ${slot}] [ ${inst.slots.map(slotValue).join(", ")} ], align 8`,
       `@${inst.sym} = internal global %ScrArr { ${emitter.sizeType} -1, i32 ${n}, i32 ${n}, i8 2, i8 0, i16 0, i32 ${n}, ptr @${inst.sym}_data }`,
+      // The site's heap copy of the header (expr-primitives.ts).
+      ...(emitter.compactRegion ? [`@${inst.sym}_win = internal global ptr null, align 8`] : []),
     );
   }
   if (emitter.templateStringsInstances.size > 0) out.push(``);

@@ -174,6 +174,8 @@ export interface ShapeHost {
   readonly sizeType: "i32" | "i64";
   /** Worker executables: the inline allocator state is thread-local. */
   readonly threadLocalAlloc?: boolean;
+  /** The inline frees read the chunk map (alloc.ts AllocHost.windowMap). */
+  readonly windowMap?: boolean;
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
   /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
@@ -1934,7 +1936,13 @@ export function iterativeTeardownDefinitions(
       `  %it.v${i} = load ptr, ptr %it.f${i}`,
     ]),
     `  store ptr null, ptr %sg.own`,
-    ...emitObjectFree(host, false, observers, "%sg.own"),
+    ...emitObjectFree(
+      host,
+      false,
+      observers,
+      "%sg.own",
+      `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${S})`,
+    ),
     `  br label %it.freed`,
     `it.freed:`,
     `  %it.k = load ptr, ptr %sg.own`,
@@ -2323,12 +2331,12 @@ export function emitRecordShapes(
       freeBody.push(
         ...segmentPrologueLines(),
         ...loads,
-        ...emitObjectFree(host, traced, observers, "%sg.own"),
+        ...emitObjectFree(host, traced, observers, "%sg.own", sizeOf),
         ...segmentTeardownLines(ownType, (prefix) =>
           refMembers.flatMap((m, i) => release(prefix, m, i)),
         ),
       );
-    else freeBody.push(...emitObjectFree(host, traced, observers));
+    else freeBody.push(...emitObjectFree(host, traced, observers, null, sizeOf));
     // A segmented shape whose every reference field holds its own type, with
     // no collector header and no frozen bit in its count, tears down in one
     // loop (iterativeTeardownDefinitions).
@@ -2533,7 +2541,7 @@ export function emitRecordShapes(
           `  call void ${releaseSym(host, m.type)}(ptr %v${i}) ; ${llvmCommentText(m.name)} (acyclic)`,
         );
       });
-      gf.push(...emitObjectFree(host, true, observers), `  ret void`, `}`, ``);
+      gf.push(...emitObjectFree(host, true, observers, null, sizeOf), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
   }

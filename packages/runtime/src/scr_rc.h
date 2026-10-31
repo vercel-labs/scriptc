@@ -334,8 +334,10 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
  *
  * Worker executables (SCR_WORKERS) give every script thread its own
  * allocator: `scr_sa` is thread-local and describes the thread's ARENA, one
- * of SCR_SA_ARENAS equal slices of a single process-wide reservation, so
- * the owning arena of any block is address arithmetic. A thread claims an
+ * of SCR_SA_ARENAS. Every arena carves its blocks from chunks of one
+ * process-wide reservation (the window, below), and the chunk table names
+ * the arena and size class of each chunk, so the owner of any block is one
+ * table entry. A thread claims an
  * arena on its first allocation and parks it (free lists and bump pointers
  * intact) when it exits; the next thread to claim it continues from there.
  * On Linux an exiting thread that carved much first returns the pages of
@@ -409,7 +411,7 @@ void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset);
  * cache line in 3 of every 4 slots, which costs more on scattered access
  * to records of that size than the smaller block saves. Widening the block
  * rather than sharing the 64-byte class keeps the class lookup free of a
- * special case. Slices start page-aligned, so a class whose block size is
+ * special case. Chunks start page-aligned, so a class whose block size is
  * a multiple of 16 keeps its blocks 16-byte aligned. */
 #define SCR_SA_FINE_MAX 128u /* the largest request with an 8-byte-step class */
 #define SCR_SA_WIDE 6u       /* the class of 49 to 56-byte requests */
@@ -431,25 +433,76 @@ typedef struct ScrSaBlock {
   struct ScrSaBlock *next;
 } ScrSaBlock;
 
-/* One reservation split into SCR_SA_NCLASS equal slices, one per class, so
- * a block's class is its slice index: (p - base) >> shift. span is 0 until
- * the first refill reserves (and stays 0 if the host refuses).
+/* The window: one process-wide reservation [base, base + span), handed out
+ * in chunks of 1 << SCR_SA_CHUNK_SHIFT bytes. Each arena carves a size
+ * class from chunks of its own, one at a time, and the chunk table
+ * (scr_sa_chunks) records the owner of each chunk handed out: the arena's
+ * tag and the class, (tag << 8) | class, or 0 for a chunk that holds no
+ * small blocks (program-lifetime objects, or not handed out). A block p of
+ * the calling thread's arena is one whose entry
+ * scr_sa_chunks[(p - base) >> SCR_SA_CHUNK_SHIFT] has the thread's tag;
+ * its class is the entry's low byte. base and span are the window's in
+ * every thread; span is 0 until the first refill reserves (and stays 0 if
+ * the host refuses), and 0 again once the thread parks its arena. The
+ * state's tag field holds the arena's tag already shifted, (index + 1) << 8,
+ * so entry ^ tag is below 256 exactly for the arena's chunks, and is then
+ * the class. While the thread holds no arena the tag is SCR_SA_TAG_NONE and
+ * span is 0.
  *
  * scr_sa exists in EVERY build, and its layout is an ABI: the LLVM backend
  * inlines the fast paths into emitted constructors and releases
- * (llvm/alloc.ts) as `{ i64, i64, i32, [40 x ptr], [40 x ptr], [40 x ptr] }`
- * on 64-bit targets. Where SCR_SMALL_ALLOC is 0 the state is never written,
- * so the emitted fast paths see no free block, no bump room and an empty
- * span, and always take their out-of-line slow path (scr_rt_calloc /
+ * (llvm/alloc.ts) as
+ * `{ i64, i64, i32, [40 x ptr], [40 x ptr], [40 x ptr] }` on 64-bit
+ * targets, and reads scr_sa_chunks or scr_sa_chunk_map, which every build
+ * defines. Where SCR_SMALL_ALLOC is 0 the state keeps its initial value, so
+ * the emitted fast paths see no free block, no bump room, an empty span and
+ * an empty chunk map, and always take their out-of-line slow path (scr_rt_calloc /
  * scr_rt_free → the system allocator) — the sanitizer and RC-audit lanes
  * therefore see every logical allocation and free without the compiler
  * knowing which runtime it links against. The emitted fast paths also skip
  * scr_obj_alloc_note/scr_obj_free_note, which is sound because those are
  * no-ops whenever the allocator is live (SCR_RC_AUDIT implies
  * SCR_SMALL_ALLOC == 0). */
+/* The window's chunks are 4 MiB, and it holds at most SCR_SA_WINDOW_CHUNKS
+ * of them (28 GiB): on Linux it lies in [4 GiB, 32 GiB), below the 32 GiB
+ * that 32-bit references (address >> 3) reach, together with the
+ * program-lifetime region (scr_plr_alloc). */
+#define SCR_SA_CHUNK_SHIFT 22u
+#define SCR_SA_CHUNK ((size_t)1 << SCR_SA_CHUNK_SHIFT)
+#define SCR_SA_WINDOW_CHUNKS 7168u
+/* The chunk table (see above): written when a chunk is handed out or comes
+ * back, read by every free. */
+extern uint16_t scr_sa_chunks[SCR_SA_WINDOW_CHUNKS];
+/* The chunk map: the same entries, indexed by address >> SCR_SA_CHUNK_SHIFT
+ * over the first 32 GiB of the address space, while the window lies there
+ * (on Linux, [4 GiB, 32 GiB)); all 0 otherwise. The inline frees read it
+ * without the window's base: a block in a chunk whose entry carries the
+ * thread's tag is the thread's, and anything else (a system block, another
+ * arena's, or every block while the map is empty) takes the slow path. */
+#define SCR_SA_MAP_CHUNKS 8192u
+extern uint16_t scr_sa_chunk_map[SCR_SA_MAP_CHUNKS];
+/* The classes' slices (programs without workers): when the window has room
+ * (scr_alloc.c), its first scr_sa_slice_span bytes are one slice per small
+ * class, 1 << SCR_SA_SLICE_SHIFT bytes each, and a class carves its chunks
+ * from its slice before it takes chunks elsewhere in the window. A block p
+ * with p - base < scr_sa_slice_span is then the one arena's, of class
+ * (p - base) >> SCR_SA_SLICE_SHIFT, which the frees find without the chunk
+ * map. scr_sa_slice_span is 0 until the window is reserved, and stays 0 in
+ * programs with workers and in windows too small for the slices. The LLVM
+ * backend inlines the same test (llvm/alloc.ts SA_SLICE_SHIFT). The test of
+ * the allocator overrides the shift. */
+#ifndef SCR_SA_SLICE_SHIFT
+#define SCR_SA_SLICE_SHIFT 28u
+#endif
+#define SCR_SA_SLICE_CHUNKS (1u << (SCR_SA_SLICE_SHIFT - SCR_SA_CHUNK_SHIFT))
+extern uintptr_t scr_sa_slice_span;
+/* The tag of a thread that holds no arena: no chunk entry carries it, and
+ * an entry of 0 xors to above 255 with it. */
+#define SCR_SA_TAG_NONE 0x7f00u
+
 typedef struct ScrSaState {
   uintptr_t base, span;
-  unsigned shift;
+  uint64_t tag; /* below 65536: the inline frees xor it with a chunk entry */
   ScrSaBlock *free[SCR_SA_NCLASS];
   char *bump[SCR_SA_NCLASS], *lim[SCR_SA_NCLASS];
 } ScrSaState;
@@ -483,7 +536,7 @@ _Static_assert(offsetof(ScrThreadHot, sa) == 0 && offsetof(ScrThreadHot, cyc_liv
 extern ScrSaState scr_sa;
 #endif
 #if UINTPTR_MAX == UINT64_MAX
-_Static_assert(offsetof(ScrSaState, span) == 8 && offsetof(ScrSaState, shift) == 16 &&
+_Static_assert(offsetof(ScrSaState, span) == 8 && offsetof(ScrSaState, tag) == 16 &&
                    offsetof(ScrSaState, free) == 24 && offsetof(ScrSaState, bump) == 344 &&
                    offsetof(ScrSaState, lim) == 664 && sizeof(ScrSaState) == 984,
                "llvm/alloc.ts inlines the small-object allocator against this layout");
@@ -515,13 +568,19 @@ void scr_sa_thread_shares(void);
 void scr_sa_loop_waiting(bool waiting);
 #define SCR_SA_FREE_FOREIGN(p) scr_sa_free_foreign(p)
 #else
-#define SCR_SA_FREE_FOREIGN(p) free(p)
 #define scr_sa_thread_shares() ((void)0)
+#if SCR_SMALL_ALLOC
+/* A block outside the allocator's own chunks: the system's. */
+void scr_sa_free_foreign(void *p);
+#define SCR_SA_FREE_FOREIGN(p) scr_sa_free_foreign(p)
+#else
+#define SCR_SA_FREE_FOREIGN(p) free(p)
+#endif
 #endif
 
 #if SCR_SMALL_ALLOC
 /* Refill miss: reserves on first use, falls back to the system allocator
- * for large blocks, n == 0, an exhausted slice, or a refused reservation. */
+ * for large blocks, n == 0, an exhausted window, or a refused reservation. */
 void *scr_sa_slow(size_t n, bool zero);
 
 static inline void *scr_sa_take(size_t n, bool zero) {
@@ -545,15 +604,53 @@ static inline void *scr_sa_take(size_t n, bool zero) {
 
 static inline void *scr_mem_alloc(size_t n) { return scr_sa_take(n, false); }
 static inline void *scr_mem_calloc(size_t n) { return scr_sa_take(n, true); }
+/* Blocks a 32-bit reference may name: strings with their characters, class
+ * instances, records and closures. Up to SCR_SA_MAX bytes they are small
+ * blocks; above, they come from the window's large classes (scr_alloc.c), so
+ * that they lie in the window as small blocks do. Freed with scr_mem_free. */
+void *scr_sa_slow_ref(size_t n, bool zero);
+static inline void *scr_mem_alloc_ref(size_t n) {
+  return n - 1 < SCR_SA_MAX ? scr_sa_take(n, false) : scr_sa_slow_ref(n, false);
+}
+static inline void *scr_mem_calloc_ref(size_t n) {
+  return n - 1 < SCR_SA_MAX ? scr_sa_take(n, true) : scr_sa_slow_ref(n, true);
+}
+void *scr_mem_realloc_ref(void *p, size_t n);
+/* The usable bytes of a block of scr_mem_alloc, scr_mem_alloc_ref or the
+ * system allocator. */
+size_t scr_mem_block_size(const void *p);
 
 static inline void scr_mem_free(void *p) {
+#ifndef SCR_WORKERS
+  {
+    uintptr_t off = (uintptr_t)p - scr_sa.base;
+    if (off < scr_sa_slice_span) {
+      ScrSaBlock *b = p;
+      uintptr_t c = off >> SCR_SA_SLICE_SHIFT;
+      b->next = scr_sa.free[c];
+      scr_sa.free[c] = b;
+      return;
+    }
+  }
+#endif
+#ifdef __linux__
+  uintptr_t ci = (uintptr_t)p >> SCR_SA_CHUNK_SHIFT;
+  /* Compare the index itself: compilers otherwise test p's high bits and
+   * shift again for the load. */
+  __asm__("" : "+r"(ci));
+  if (ci < SCR_SA_MAP_CHUNKS) {
+    uint64_t c = scr_sa_chunk_map[ci] ^ scr_sa.tag;
+#else
   uintptr_t off = (uintptr_t)p - scr_sa.base;
   if (off < scr_sa.span) {
-    ScrSaBlock *b = p;
-    unsigned c = (unsigned)(off >> scr_sa.shift);
-    b->next = scr_sa.free[c];
-    scr_sa.free[c] = b;
-    return;
+    uint64_t c = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT] ^ scr_sa.tag;
+#endif
+    if (c < 256) { /* the thread's chunk; c is its class */
+      ScrSaBlock *b = p;
+      b->next = scr_sa.free[c];
+      scr_sa.free[c] = b;
+      return;
+    }
   }
   SCR_SA_FREE_FOREIGN(p);
 }
@@ -561,6 +658,10 @@ static inline void scr_mem_free(void *p) {
 static inline void *scr_mem_alloc(size_t n) { return malloc(n); }
 static inline void *scr_mem_calloc(size_t n) { return calloc(1, n); }
 static inline void scr_mem_free(void *p) { free(p); }
+static inline void *scr_mem_alloc_ref(size_t n) { return malloc(n); }
+static inline void *scr_mem_calloc_ref(size_t n) { return calloc(1, n); }
+void *scr_mem_realloc_ref(void *p, size_t n);
+size_t scr_mem_block_size(const void *p);
 #endif
 
 /* Inline twins of scr_cyc_alloc/scr_cyc_free for hot runtime allocation
@@ -578,7 +679,7 @@ extern SCR_TL void (*scr_weak_dispose_hook)(void *);
 static inline void *scr_cyc_alloc_inline(size_t size, ScrCycType *type) {
   if (size > SIZE_MAX - sizeof(ScrCycHdr)) scr_trap("scriptc: out of memory\n");
   uint32_t id = scr_cyc_type_id(type);
-  ScrCycHdr *h = (ScrCycHdr *)scr_mem_calloc(sizeof(ScrCycHdr) + size);
+  ScrCycHdr *h = (ScrCycHdr *)scr_mem_calloc_ref(sizeof(ScrCycHdr) + size);
   if (!h) scr_trap("scriptc: out of memory\n");
   h->id = (uint16_t)id;
   scr_cyc_live++;

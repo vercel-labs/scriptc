@@ -75,9 +75,16 @@ test("web streams and Node islands select an async build that defines both", () 
 
 test("scr_lib.c builds once per flavor, whatever the program's features", () => {
   // A file read brands its bytes and fs.watchFile's stat entry points are
-  // always defined, so neither a read nor a poll selects a second build.
+  // always defined, so neither a read nor a poll selects a second build. The
+  // unit's one other object is the JavaScript object model twin (t262-da
+  // §J), which answers the checked-dynamic Date annexB accessors.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_lib.c");
-  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "js-om",
+    "js-om-workers",
+  ]);
   const plain = { workers: false, watchFile: false };
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([]);
@@ -125,6 +132,27 @@ test("every scr_json build has a JavaScript object model twin", () => {
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
   expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([
     "SCR_RECORD_VIEW_PARTIAL",
+  ]);
+});
+
+test("a dynamic Date annexB accessor selects the JavaScript object model build", () => {
+  // A program whose IR calls getYear/setYear on a dynamic receiver has the
+  // dateAnnexB fact, which ORs into jsObjectModel (t262-da §J). scr_lib.c
+  // builds once per flavor (#2765), so its one object model twin answers
+  // both names and the accessor adds no variant column of its own.
+  const plain = { workers: false, jsObjectModel: false };
+  expect(selected("scr_lib.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  // The worker build keeps its thread block beside the object model.
+  expect(selected("scr_lib.c", { workers: true, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+    "SCR_WORKERS",
+  ]);
+  // A program that reaches neither keeps the default object, byte for byte.
+  expect(selected("scr_lib.c", plain).defines).toEqual([]);
+  expect(selected("scr_lib.c", { workers: true, jsObjectModel: false }).defines).toEqual([
+    "SCR_WORKERS",
   ]);
 });
 

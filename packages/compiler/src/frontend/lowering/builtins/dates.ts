@@ -59,10 +59,10 @@ const DATE_FIELD_SETTERS: ReadonlyMap<string, { code: number; max: number }> = n
   ["setUTCFullYear", { code: 14, max: 3 }],
 ]);
 
-/** Whether `name` is a Date setter scriptc lowers: setTime or a field
- * setter. */
+/** Whether `name` is a Date setter scriptc lowers: setTime, the annexB
+ * setYear or a field setter. */
 export function isDateSetter(name: string): boolean {
-  return name === "setTime" || DATE_FIELD_SETTERS.has(name);
+  return name === "setTime" || name === "setYear" || DATE_FIELD_SETTERS.has(name);
 }
 
 const DATE_TEXT_FNS: ReadonlyMap<string, IrLibFn> = new Map([
@@ -72,7 +72,7 @@ const DATE_TEXT_FNS: ReadonlyMap<string, IrLibFn> = new Map([
 ]);
 
 export const DATE_METHOD_HINT =
-  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleTimeString(), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported; locale and options arguments, toLocaleDateString() and the Intl.DateTimeFormat surface have no lowering";
+  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleTimeString(), the local/UTC calendar getters and setters, setTime(), setYear(), getYear() and getTimezoneOffset() are supported; locale and options arguments, toLocaleDateString() and the Intl.DateTimeFormat surface have no lowering";
 
 /** Date statics and methods on Date objects (a TimeClip'd millisecond
  * time value with identity): getters, text forms and setters.
@@ -210,6 +210,18 @@ export function dateValueMethod(name: string, value: IrExpr, loc: SrcLoc): IrExp
   }
   if (name === "toUTCString") {
     return { kind: "libCall", fn: "date.toUTCString", args: [value], type: STRING, loc };
+  }
+  if (name === "getYear") {
+    // B.2.3.1: YearFromTime(LocalTime(t)) - 1900, which is getFullYear()'s
+    // value minus 1900 (NaN, the invalid date's time value, stays NaN).
+    return {
+      kind: "bin",
+      op: "-",
+      left: { kind: "libCall", fn: "date.getFullYear", args: [value], type: F64, loc },
+      right: { kind: "numLit", value: 1900, type: F64, loc },
+      type: F64,
+      loc,
+    };
   }
   const fn = own(DATE_GETTER_FNS, name);
   if (fn !== undefined) {
@@ -389,6 +401,52 @@ export function dateSetterTime(
     return { kind: "varRef", localId: arg.id, type: F64, loc };
   });
   const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  if (name === "setYear") {
+    // B.2.3.2 steps 6–7: NaN stays NaN; a year whose ToInteger is in 0–99
+    // becomes 1900 + that integer. The rest is setFullYear's own field
+    // replacement, over the time value read after the argument converts,
+    // as V8 does (an argument that calls a setter changes what is kept).
+    const year = args[0] ?? number(Number.NaN);
+    const integer = lowerer.declareHiddenLocal("%dateArg", F64);
+    stmts.push({
+      kind: "varDecl",
+      localId: integer.id,
+      init: { kind: "libCall", fn: "math.trunc", args: [year], type: F64, loc },
+      loc,
+    });
+    const whole: IrExpr = { kind: "varRef", localId: integer.id, type: F64, loc };
+    const inRange: IrExpr = {
+      kind: "logical",
+      op: "&&",
+      left: { kind: "bin", op: "<=", left: number(0), right: whole, type: BOOL, loc },
+      right: { kind: "bin", op: "<=", left: whole, right: number(99), type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+    const mapped: IrExpr = {
+      kind: "ternary",
+      // An invalid year is the one value unequal to itself.
+      cond: { kind: "bin", op: "!==", left: year, right: year, type: BOOL, loc },
+      then: number(Number.NaN),
+      else_: {
+        kind: "ternary",
+        cond: inRange,
+        then: { kind: "bin", op: "+", left: whole, right: number(1900), type: F64, loc },
+        else_: year,
+        type: F64,
+        loc,
+      },
+      type: F64,
+      loc,
+    };
+    return {
+      kind: "libCall",
+      fn: "date.setFields",
+      args: [time, number(6), number(1), mapped, number(0), number(0), number(0)],
+      type: F64,
+      loc,
+    };
+  }
   if (name === "setTime")
     return {
       kind: "libCall",

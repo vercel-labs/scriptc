@@ -13781,6 +13781,25 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
   DATE_GET("getUTCMilliseconds", scr_date_get_milliseconds);
   DATE_GET("getTimezoneOffset", scr_date_get_timezone_offset);
 #undef DATE_GET
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The annexB accessors (B.2.3.1 and B.2.3.2), in the JavaScript object
+   * model build (t262-da §J). setYear converts the year first, as the other
+   * setters do, maps a year whose ToInteger is 0-99 to 1900 + that integer,
+   * and otherwise keeps setFullYear's fields. */
+  if (!strcmp(method, "getYear")) return scr_dyn_new_num(scr_date_get_full_year_local(ms) - 1900);
+  if (!strcmp(method, "setYear")) {
+    double y = NAN;
+    if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &y)) return NULL;
+    double t = ((ScrDate *)ptr)->ms;
+    if (!isnan(y)) {
+      double whole = trunc(y);
+      if (whole >= 0 && whole <= 99) y = 1900 + whole;
+    }
+    double next = scr_date_set_fields(t, SCR_DATE_SET_FULL_YEAR, 1, y, 0, 0, 0);
+    ((ScrDate *)ptr)->ms = next;
+    return scr_dyn_new_num(next);
+  }
+#endif
   static const char message[] = "Native Date method has no lowering";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return NULL;
@@ -13844,6 +13863,9 @@ static const char *const scr_native_date_methods[] = {
   "getUTCMilliseconds", "getTimezoneOffset", "setTime", "setMilliseconds", "setSeconds",
   "setMinutes", "setHours", "setDate", "setMonth", "setFullYear", "setUTCMilliseconds",
   "setUTCSeconds", "setUTCMinutes", "setUTCHours", "setUTCDate", "setUTCMonth", "setUTCFullYear",
+#ifdef SCR_JS_OBJECT_MODEL
+  "getYear", "setYear",
+#endif
 };
 #define SCR_NATIVE_DATE_METHODS (sizeof scr_native_date_methods / sizeof scr_native_date_methods[0])
 static SCR_TL ScrDyn *scr_native_date_method_values[SCR_NATIVE_DATE_METHODS];

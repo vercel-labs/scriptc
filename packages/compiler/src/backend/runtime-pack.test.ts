@@ -336,10 +336,13 @@ describe("runtime pack manifests", () => {
     // dynamic-tier units too. A program without it keeps both off.
     const objectModel = effectiveRuntimeFeatures({ ...BASE, jsObjectModel: true });
     expect(objectModel).toMatchObject({ jsObjectModel: true, dynTier: true });
-    // The features that share the build OR into it: BigInt views today, so a
-    // program with them selects the object model build without naming it.
+    // The features that share the build OR into it: BigInt views and Date's
+    // annexB accessors today, so a program with them selects the object
+    // model build without naming it.
     const bigint = effectiveRuntimeFeatures({ ...BASE, bigintBytes: true });
     expect(bigint).toMatchObject({ bigintBytes: true, jsObjectModel: true, dynTier: true });
+    const annexB = effectiveRuntimeFeatures({ ...BASE, dateAnnexB: true });
+    expect(annexB).toMatchObject({ dateAnnexB: true, jsObjectModel: true, dynTier: true });
     const plain = effectiveRuntimeFeatures(BASE);
     expect(plain).toMatchObject({ jsObjectModel: false, dynTier: false, bigintBytes: false });
   });

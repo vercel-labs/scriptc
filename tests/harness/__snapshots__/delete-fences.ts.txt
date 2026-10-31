@@ -18,3 +18,10 @@ delete-fences.ts:33:3 - error SC1090: 'delete' of optional 'unknown'/'any' field
   33 |   delete u.structured;
      |   ^~~~~~~~~~~~~~~~~~~
   34 | }
+
+delete-fences.ts:47:3 - error SC1090: 'delete' through keys of 2 literals ('a', 'b'; delete one constant key at a time, or switch over the key) are not supported yet
+
+  46 | function dropTwo(which: "a" | "b"): void {
+  47 |   delete two[which];
+     |   ^~~~~~~~~~~~~~~~~
+  48 | }

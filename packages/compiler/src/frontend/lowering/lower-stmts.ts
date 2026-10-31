@@ -35,7 +35,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
-import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
+import { literalFieldKeys, runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -8026,6 +8026,24 @@ function declaresCheckedDynField(lowerer: Lowerer, type: IrType, name: string): 
   return arms.length > 0 && arms.every((arm) => declaresCheckedDynField(lowerer, arm, name));
 }
 
+/** The constant property key of a `delete` target: the name of a dot
+ * access, or the one key of a bracket access spelled as a literal or
+ * proved by a literal-typed binding (`const key = "a"`). A key of several
+ * literals folds to nothing — deleting it would need per-key dispatch, so
+ * the record branch refuses and names the keys. Consistent with keyed
+ * record reads/writes (literalFieldKeys), the key expression is not
+ * evaluated: only a literal or an identifier folds, and an identifier
+ * read is pure. */
+function constantDeleteKey(lowerer: Lowerer, target: ts.Expression): string | null {
+  if (ts.isPropertyAccessExpression(target)) return target.name.text;
+  if (!ts.isElementAccessExpression(target)) return null;
+  const keyNode = target.argumentExpression;
+  if (ts.isStringLiteralLike(keyNode)) return keyNode.text;
+  if (!ts.isIdentifier(keyNode)) return null;
+  const keys = literalFieldKeys(lowerer, keyNode);
+  return keys?.length === 1 ? keys[0]! : null;
+}
+
 /** Statement-position `delete`: process.env keys → process.envUnset
  * (unsetenv), pure `Record<string, T>` keys → recordKeyDelete (the
  * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
@@ -8185,13 +8203,12 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       loc,
     };
   }
-  // The constant property key of the target (dot access or a literal
-  // bracket), when there is one.
-  const constantKey = ts.isPropertyAccessExpression(target)
-    ? target.name.text
-    : ts.isStringLiteral(target.argumentExpression)
-      ? target.argumentExpression.text
-      : null;
+  // The constant property key of the target: dot access, a literal
+  // bracket, or an element access whose key is a literal-typed binding
+  // (`const key = "a"; delete r[key]`) — the same stance a keyed record
+  // read/write takes (literalFieldKeys): identifier evaluation is pure, so
+  // skipping it matches JavaScript.
+  const constantKey = constantDeleteKey(lowerer, target);
   // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
   // which has no ABSENT state yet (an omitted such field already reads as
   // present), so it cannot delete. Name that reason instead of calling
@@ -8247,6 +8264,19 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     }
     if (optionalCheckedDynDelete) {
       lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
+    }
+    // A key of SEVERAL literals names no single slot: say that instead of
+    // blaming a field the caller never named.
+    const keyNames =
+      constantKey === null && ts.isElementAccessExpression(target)
+        ? literalFieldKeys(lowerer, target.argumentExpression)
+        : null;
+    if (keyNames !== null && keyNames.length > 1) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'delete' through keys of ${keyNames.length} literals (${keyNames.map((k) => `'${k}'`).join(", ")}; delete one constant key at a time, or switch over the key)`,
+      );
     }
     lowerer.unsupported(
       "SC1090",

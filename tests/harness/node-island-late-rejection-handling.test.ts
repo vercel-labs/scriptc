@@ -271,8 +271,7 @@ for (const { id, hosted, source, stdout, deferredHost } of cases) {
               ? deferredHost
                 ? 'import { requireModule } from "@scriptc/node";\n'
                 : 'import { start } from "checkpoint-host";\nstart();\n'
-              : "") +
-            (source ?? body()),
+              : "") + (source ?? body()),
         };
         if (deferredHost) {
           // Keep the Node oracle's explicit bridge entrypoint unchanged.

@@ -1,5 +1,5 @@
 import { recordToEnvPairs } from "./environment.js";
-import { boolLit, numLit } from "../../../ir/build.js";
+import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import { resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -11,9 +11,11 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrStmt,
   SPAWNRES_T,
   STRING,
   type SrcLoc,
+  UNDEFINED_T,
   arrayOf,
 } from "../../../ir/ir.js";
 import { staticForkModulePath } from "../../fork-target.js";
@@ -87,10 +89,12 @@ const NODE_SIGNAL_NAMES = new Set([
  * literal, validated against Node's table), `stdio` (the "pipe"/
  * "ignore"/"inherit" string form or a 3-tuple of those — non-piped
  * outputs read "" where Node types them null, spawnSync's documented
- * stance), and `windowsHide` (a POSIX no-op, evaluated for side
- * effects). Everything else (shell, cwd, env, input, maxBuffer, ...)
- * fences by name. The bare `{ encoding: "utf8" }` shape keeps its
- * historical cp.spawnSync lowering. */
+ * stance), `env` (a REPLACEMENT environment), `cwd` (the child's
+ * directory), `input` (the string piped to its stdin, `| undefined`
+ * meaning absent), and `windowsHide` (a POSIX no-op, evaluated for side
+ * effects). Everything else (shell, maxBuffer, ...) fences by name. The
+ * bare `{ encoding: "utf8" }` shape keeps its historical cp.spawnSync
+ * lowering. */
 export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
@@ -111,13 +115,33 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   let inMode = 0,
     outMode = 0,
     errMode = 0;
+  // stdio[0] is a pipe only when the option never says otherwise: "ignore"
+  // and "inherit" both take the child's fd 0 away, and Node drops `input`
+  // there instead of piping it.
+  let stdinPiped = true;
   // A RUNTIME stdio string (the defaultRunner idiom: `options?.stdio ??
   // "pipe"`) — accepted when its TYPE proves every arm is a supported
   // literal; the runtime maps the value to the modes at the call.
   let stdioStr: IrExpr | null = null;
   // The `env` option's [k,v,...] pairs, which replace the child's environment.
   let envPairs: IrExpr | null = null;
+  // `cwd` and `input` (the SCR_CHILD_CP_OPTIONS build). Presence rides
+  // apart from the value: "" is an ABSENT cwd (the runtime's len-0 test
+  // — a real empty cwd is invalid anyway) and undefined input means no
+  // stdin pipe at all, where "" pipes one that ends immediately.
+  const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  let cwd: IrExpr = emptyStr;
+  let input: IrExpr = emptyStr;
+  let hasInput: IrExpr = boolLit(false, loc);
+  let extOptions = false; // cwd or input present: the extended entry point
   let plain = true; // no behavior-changing option: the historical libCall
+  // A union-typed `input` is tested for undefined AND read as the value:
+  // one read lands in a hidden local the call's prelude declares, so a
+  // getter behind the read runs once, as it does in Node.
+  let inputRead: { id: string; init: IrExpr } | null = null;
+  // The options the extended entry point passes, in source order: the call's
+  // prelude evaluates them in that order, as the options object does.
+  const optionOrder: ("timeout" | "cwd" | "env" | "input")[] = [];
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -130,6 +154,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     const applyStdio = (node: ts.Expression): void => {
       const modeOf = (v: string, fd: 0 | 1 | 2): void => {
         if (v === "pipe") return; // the default modes
+        if (fd === 0) stdinPiped = false;
         if (v === "ignore") {
           if (fd === 1) outMode = 1;
           if (fd === 2) errMode = 1;
@@ -207,6 +232,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         }
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
+          optionOrder.push("timeout");
           plain = false;
           break;
         case "killSignal": {
@@ -232,13 +258,79 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         case "env":
           // A REPLACEMENT environment, as for spawn and execFileSync.
           envPairs = recordToEnvPairs(lowerer, m.value);
+          optionOrder.push("env");
           plain = false;
           break;
+        case "cwd":
+          cwd = lowerer.lowerExprExpecting(m.value, STRING);
+          optionOrder.push("cwd");
+          extOptions = true;
+          plain = false;
+          break;
+        case "input": {
+          // string | undefined, Node's exact member semantics (see
+          // execFileSync): the undefined arm is an ABSENT option. The
+          // presence test and the value share ONE read (the hidden local
+          // below), so any expression qualifies and a getter or call in it
+          // runs exactly once, as the options object's evaluation does.
+          if (lowerer.typeOf(m.value).flags & ts.TypeFlags.Undefined) break;
+          const it = lowerer.mapTypeOf(lowerer.typeOf(m.value));
+          const uTag = it?.kind === "union" ? lowerer.armTag(it.unionId, UNDEFINED_T) : -1;
+          const sTag = it?.kind === "union" ? lowerer.armTag(it.unionId, STRING) : -1;
+          if (it?.kind === "union" && uTag >= 0 && sTag >= 0) {
+            const readValue = lowerer.lowerExpr(m.value);
+            const slot = lowerer.declareHiddenLocal("%spawnSyncInput", readValue.type);
+            inputRead = { id: slot.id, init: readValue };
+            const read: IrExpr = varRef(slot.id, readValue.type, loc);
+            hasInput = {
+              kind: "unionIsTag",
+              unionId: it.unionId,
+              tag: uTag,
+              negated: true,
+              value: read,
+              type: BOOL,
+              loc,
+            };
+            input = {
+              kind: "ternary",
+              cond: {
+                kind: "unionIsTag",
+                unionId: it.unionId,
+                tag: uTag,
+                negated: false,
+                value: read,
+                type: BOOL,
+                loc,
+              },
+              then: emptyStr,
+              else_: {
+                kind: "unionNarrow",
+                unionId: it.unionId,
+                tag: sTag,
+                value: read,
+                type: STRING,
+                loc,
+              },
+              type: STRING,
+              loc,
+            };
+            optionOrder.push("input");
+            extOptions = true;
+            plain = false;
+            break;
+          }
+          input = lowerer.lowerExprExpecting(m.value, STRING);
+          optionOrder.push("input");
+          hasInput = boolLit(true, loc);
+          extOptions = true;
+          plain = false;
+          break;
+        }
         default:
           lowerer.noLowering(
             `spawnSync option '${m.name}'`,
             p,
-            "encoding, timeout, killSignal, stdio, env, and windowsHide are the supported options",
+            "encoding, timeout, killSignal, stdio, env, cwd, input, and windowsHide are the supported options",
           );
       }
     }
@@ -254,6 +346,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     );
   }
   if (stdioStr !== null) {
+    if (extOptions) {
+      lowerer.noLowering(
+        "spawnSync with a runtime stdio value and cwd or input",
+        optsNode!,
+        'pass stdio as a "pipe"/"ignore"/"inherit" literal when cwd or input is set',
+      );
+    }
     return {
       kind: "libCall",
       fn: "cp.spawnSyncStdioStr",
@@ -261,6 +360,65 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       type: SPAWNRES_T,
       loc,
     };
+  }
+  if (extOptions) {
+    // Node IGNORES `input` when stdio[0] takes the child's fd 0 away
+    // ("ignore" is /dev/null, "inherit" the parent's): the value never
+    // reaches the child, not a pipe. The OPTION still evaluates — the
+    // caller's expression is evaluated before the call in JavaScript — so
+    // the value rides the call with the presence flag cleared.
+    const ignoreInput = !stdinPiped;
+    // The call's prelude evaluates the command, the arguments and the
+    // options in source order, each into a hidden local the call reads, so
+    // an earlier option that changes a later one's value (a getter, a call)
+    // is seen as in Node. A union `input` lands in the hidden local its tag
+    // test and its value share. Literals need no local.
+    const prelude: IrStmt[] = [];
+    const bind = (name: string, value: IrExpr): IrExpr => {
+      if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
+        return value;
+      const local = lowerer.declareHiddenLocal(name, value.type);
+      prelude.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return varRef(local.id, value.type, loc);
+    };
+    const cmdArg = bind("%spawnSyncCmd", cmd);
+    const argvArg = bind("%spawnSyncArgs", argv);
+    let timeoutArg = timeout;
+    let cwdArg = cwd;
+    let inputArg = input;
+    let envArg = envPairs;
+    for (const option of optionOrder) {
+      if (option === "timeout") timeoutArg = bind("%spawnSyncTimeout", timeout);
+      else if (option === "cwd") cwdArg = bind("%spawnSyncCwd", cwd);
+      else if (option === "env" && envPairs !== null) envArg = bind("%spawnSyncEnv", envPairs);
+      else if (option === "input") {
+        if (inputRead !== null)
+          prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
+        else inputArg = bind("%spawnSyncInput", input);
+      }
+    }
+    const call: IrExpr = {
+      kind: "libCall",
+      fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
+      args: [
+        cmdArg,
+        argvArg,
+        timeoutArg,
+        killSignal,
+        numLit(inMode, loc),
+        numLit(outMode, loc),
+        numLit(errMode, loc),
+        cwdArg,
+        inputArg,
+        ignoreInput ? boolLit(false, loc) : hasInput,
+        ...(envArg !== null ? [envArg] : []),
+      ],
+      type: SPAWNRES_T,
+      loc,
+    };
+    return prelude.length === 0
+      ? call
+      : { kind: "seqExpr", stmts: prelude, result: call, type: SPAWNRES_T, loc };
   }
   return {
     kind: "libCall",
@@ -788,6 +946,9 @@ export function lowerExecFileCall(
         expr.arguments.nodes.length >= 3 ? expr.arguments.nodes[1] : undefined,
         loc,
       );
+  // `cwd` (the SCR_CHILD_CP_OPTIONS build): the child's directory, the
+  // one launch member the callback slice lacked.
+  let cwd: IrExpr | null = null;
   const optionsNode =
     expr.arguments.nodes.length === (shell ? 3 : 4)
       ? expr.arguments.nodes[shell ? 1 : 2]
@@ -840,11 +1001,13 @@ export function lowerExecFileCall(
             "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
           );
         }
+      } else if (member.name === "cwd") {
+        cwd = lowerer.lowerExprExpecting(member.value, STRING);
       } else {
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "only encoding: 'utf8' and a pure numeric maxBuffer are supported in the callback form",
+          "encoding: 'utf8', a pure numeric maxBuffer, and cwd are the supported options in the callback form",
         );
       }
     }
@@ -892,6 +1055,15 @@ export function lowerExecFileCall(
         `${what} callbacks whose ${i === 1 ? "stdout" : "stderr"} parameter is not 'string'`,
       );
     }
+  }
+  if (cwd !== null) {
+    return {
+      kind: "libCall",
+      fn: "cp.execFileCwd",
+      args: [cmd, argv, callback, boolLit(shell, loc), cwd],
+      type: CHILD_T,
+      loc,
+    };
   }
   return {
     kind: "libCall",

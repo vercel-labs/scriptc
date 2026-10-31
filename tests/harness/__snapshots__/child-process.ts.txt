@@ -32,15 +32,6 @@ child-process.ts:30:1 - error SC2020: 'execFile with 1 arguments' is part of the
 
   hint: the supported callback forms are execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback)
 
-child-process.ts:31:24 - error SC2020: 'execFile option 'cwd'' is part of the standard library types but has no scriptc lowering yet
-
-  30 | execFile("true");
-  31 | execFile("true", [], { cwd: "/tmp" }, () => {});
-     |                        ^~~~~~~~~~~
-  32 | const bufferLimit = 1024;
-
-  hint: only encoding: 'utf8' and a pure numeric maxBuffer are supported in the callback form
-
 child-process.ts:33:35 - error SC2020: 'execFile with a non-literal maxBuffer' is part of the standard library types but has no scriptc lowering yet
 
   32 | const bufferLimit = 1024;

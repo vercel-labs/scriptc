@@ -146,6 +146,18 @@ static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, b
   return d;
 }
 
+/* A stored spawnSync capture as the typed Buffer result.stdout/result.stderr
+ * read answers when no { encoding } option was given (SpawnSyncReturns<
+ * Buffer>): the captured bytes. Node's capture is a Buffer, so the brand is
+ * set as scr_child_sync_output's dynamic Buffers set it; a program can only
+ * observe it through the Buffer-brand reads the fsBufferBrand scan finds. */
+static ScrBytes *scr_spawn_res_capture_bytes(ScrStr *capture) {
+  ScrBytes *bytes = scr_bytes_from_data(
+      capture ? (const uint8_t *)capture->data : NULL, capture ? capture->len : 0);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+}
+
 /* execSync/execFileSync: the spawnSync result's status, signal, output,
  * pid, stdout and stderr. out/err move in (null for a stream that was not
  * piped); output is [null, stdout, stderr]. A child that never started
@@ -1050,6 +1062,12 @@ bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) { return scr_str_retain(r->out); }
 ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) { return scr_str_retain(r->err); }
+ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r) {
+  return scr_spawn_res_capture_bytes(r->out);
+}
+ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r) {
+  return scr_spawn_res_capture_bytes(r->err);
+}
 bool scr_spawn_res_has_signal(ScrSpawnRes *r) { return r->signal_name != NULL; }
 ScrStr *scr_spawn_res_signal(ScrSpawnRes *r) {
   return scr_str_new(r->signal_name, strlen(r->signal_name));
@@ -3063,6 +3081,12 @@ bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) { return scr_str_retain(r->out); }
 ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) { return scr_str_retain(r->err); }
+ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r) {
+  return scr_spawn_res_capture_bytes(r->out);
+}
+ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r) {
+  return scr_spawn_res_capture_bytes(r->err);
+}
 bool scr_spawn_res_has_signal(ScrSpawnRes *r) { return r->signal_name != NULL; }
 ScrStr *scr_spawn_res_signal(ScrSpawnRes *r) {
   return scr_str_new(r->signal_name, strlen(r->signal_name));

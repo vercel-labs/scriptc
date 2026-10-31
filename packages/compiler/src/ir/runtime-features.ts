@@ -857,15 +857,19 @@ export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
   return webcrypto && named;
 }
 
-/** The typed file reads that answer a ScrBytes: Node answers a Buffer, but
- * scr_lib.c brands it only in the SCR_FS_BUFFER_BRAND build, so a program
- * that can observe the difference links that build. */
+/** The typed reads that answer a ScrBytes: Node answers a Buffer, but the
+ * runtime honors the brand only in the SCR_FS_BUFFER_BRAND build of
+ * scr_lib.c's file reads (a spawnSync capture comes from scr_child.c, whose
+ * accessor always stamps it), so a program that can observe the difference
+ * links that build. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
   "fs.readFdSyncBytes",
   "fsp.readFileBytes",
   "fileHandle.readFileBytes",
+  "spawnRes.stdoutBytes",
+  "spawnRes.stderrBytes",
 ]);
 
 /** The bytesIntrinsic searches whose runtime branch reads the brand: a

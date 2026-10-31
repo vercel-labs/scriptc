@@ -25,3 +25,17 @@ delete-fences.ts:47:3 - error SC1090: 'delete' through keys of 2 literals ('a', 
   47 |   delete two[which];
      |   ^~~~~~~~~~~~~~~~~
   48 | }
+
+delete-fences.ts:61:1 - error SC1090: 'delete' of required record fields (the shape's slot cannot be removed — only an optional field (`f?: T`) has an absent state, which Object.keys, 'in', and JSON.stringify follow; make the field optional if the program must remove it) are not supported yet
+
+  60 | // @ts-expect-error -- a required field cannot be removed; the fence says why
+  61 | delete required.b;
+     | ^~~~~~~~~~~~~~~~~
+  62 | console.log(required.a);
+
+delete-fences.ts:73:1 - error SC1090: 'delete' of class fields (an instance's fields are its fixed layout — there is no per-field presence state, so Object.keys, 'in', and JSON.stringify would still report a deleted field; only optional record fields (`f?: T`) and Record<string, T> keys delete) are not supported yet
+
+  72 | // @ts-expect-error -- a class field cannot be removed; the fence says why
+  73 | delete pt.x;
+     | ^~~~~~~~~~~
+  74 | console.log(pt.y);

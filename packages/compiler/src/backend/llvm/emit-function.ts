@@ -3,9 +3,9 @@ import {
   type LlArgPackAndTrampolinePrologue,
   type LlEmitter,
   type LlScopeEntry,
-  SUSPENDS,
   UNOPTIMIZED_BOX_SLOTS,
   boxSlotCount,
+  mentionsSuspension,
 } from "./emitter.js";
 import { type IrFunction, type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
 import { BlockBuilder } from "./blocks.js";
@@ -1370,7 +1370,7 @@ export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
   const parks = new Set<string>();
   const work: string[] = [];
   for (const [name, text] of emitter.fnDefText) {
-    if (SUSPENDS.test(text)) {
+    if (mentionsSuspension(text)) {
       parks.add(name);
       work.push(name);
     }

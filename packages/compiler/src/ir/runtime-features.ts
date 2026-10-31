@@ -365,6 +365,48 @@ const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "valueOf",
 ]);
 
+/** Array.prototype's method names. A constant-key dynamic read of one on an array answers the method the array's implicit prototype installs, so the read links the dyn-invoke unit. Mirrors the method table in scr_dyn_invoke.c (runtime-registries.test.ts checks the two agree). */
+export const ARRAY_PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "at",
+  "concat",
+  "copyWithin",
+  "fill",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "lastIndexOf",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "unshift",
+  "slice",
+  "sort",
+  "splice",
+  "includes",
+  "indexOf",
+  "join",
+  "keys",
+  "entries",
+  "values",
+  "forEach",
+  "filter",
+  "flat",
+  "flatMap",
+  "map",
+  "every",
+  "some",
+  "reduce",
+  "reduceRight",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "with",
+  "toLocaleString",
+  "toString",
+]);
+
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
 const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.connected",
@@ -1034,6 +1076,13 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
+   * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
+   * own, so a program that never passes those options keeps the default
+   * object, byte for byte. */
+  childOptionExt: rule({
+    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+  }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -1145,14 +1194,19 @@ const RUNTIME_FEATURE_RULES = {
       "wrapper.objectTag",
       "wrapper.new",
       "wrapper.toObject",
+      // The Boolean prototype's methods run scr_js_wrapper_apply in the
+      // same unit, which calls scr_dyn_invoke.
+      "wrapper.booleanPrototype",
     ],
-    // Constant-key reads of Object.prototype member names answer the
-    // inherited member through scr_dyn_invoke.c.
+    // Constant-key reads of Object.prototype member names, and of
+    // Array.prototype method names on arrays, answer the inherited member
+    // through scr_dyn_invoke.c.
     expr: (node, _tables) =>
       node.kind === "dynInvoke" ||
       (node.kind === "dynKeyGet" &&
         node.key.kind === "strLit" &&
-        INHERITED_MEMBER_NAMES.has(node.key.value)),
+        (INHERITED_MEMBER_NAMES.has(node.key.value) ||
+          ARRAY_PROTOTYPE_MEMBER_NAMES.has(node.key.value))),
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
@@ -1205,6 +1259,7 @@ const RUNTIME_FEATURE_RULES = {
       "path.parseValue",
       "path.formatValue",
       "path.toNamespacedValue",
+      "dyn.installBuiltinStatics",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
@@ -1580,6 +1635,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    childOptionExt: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
@@ -1679,7 +1735,7 @@ function scanRuntimeFeatures(
   } else if (keepGoing()) everyModuleNode(mod, { expr, stmt: keepGoing, type });
   for (const { name, scan } of scans) if (scan.result()) features[name] = true;
   // Inline-cache sites of dynamic-tier functions use the tier's caches
-  // (scr_js_object.c, with the SCR_JS_TIER build of scr_json.c).
+  // (scr_js_object.c).
   if (!features.dynTier && mod.functions.some((fn) => fn.tier === "dynamic")) {
     const sites = new JsIcSites(mod);
     features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));

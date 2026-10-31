@@ -389,12 +389,14 @@ export function lowerTernary(
   }
 }
 
-/** Whether `expr` is the checked-dynamic Number/Boolean prototype value a
- * JavaScript source read (jsPrimitivePrototypeValue), or one of its
- * members: the value is the prototype OBJECT, not the wrapper's primitive,
- * so the checker's wrapper type must not extract a scalar from it. */
+/** Whether `expr` is the Number/Boolean prototype value a JavaScript
+ * source read (jsPrimitivePrototypeValue: dyn.builtinPrototype for Number,
+ * wrapper.booleanPrototype for Boolean), or one of its members: the value
+ * is the prototype OBJECT, not the wrapper's primitive, so the checker's
+ * wrapper type must not extract a scalar from it. */
 function isPrimitivePrototypeValue(expr: IrExpr): boolean {
-  if (expr.kind === "libCall") return expr.fn === "dyn.builtinPrototype";
+  if (expr.kind === "libCall")
+    return expr.fn === "dyn.builtinPrototype" || expr.fn === "wrapper.booleanPrototype";
   return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
 }
 
@@ -949,7 +951,7 @@ export function v8CalleeText(node: ts.Node): string {
 
 /** Node's TypeError for the operation consuming `node` when it holds a
  * value of type `found`, or null where Node would not throw. */
-function staleReadMessage(node: ts.Node, found: IrType): string | null {
+export function staleReadMessage(node: ts.Node, found: IrType): string | null {
   let child: ts.Node = node;
   let parent = node.parent;
   while (ts.isParenthesizedExpression(parent)) {

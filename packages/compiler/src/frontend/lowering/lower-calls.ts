@@ -15,7 +15,13 @@ import { lowerDateToPrimitiveCall } from "./builtins/dates.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
-import { lowerBuiltinClassCall } from "./builtins/builtin-class-dyn.js";
+import { isPureReference } from "./effect-free.js";
+import {
+  builtinClassKind,
+  builtinClassKindOf,
+  builtinClassValue,
+  lowerBuiltinClassCall,
+} from "./builtins/builtin-class-dyn.js";
 import { refuseModuleMemberThis } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
@@ -237,7 +243,11 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
-import { emitterRooted, lowerEmitterMethodCall } from "./lower-event-emitter.js";
+import {
+  emitOverrideAtOrAbove,
+  emitterRooted,
+  lowerEmitterMethodCall,
+} from "./lower-event-emitter.js";
 import { eventTargetApiMethod, lowerEventTargetMethodCall } from "./lower-event-target.js";
 import {
   dateRootOf,
@@ -408,6 +418,16 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // EventEmitter constructor initializes the receiver.
   const builtinClassCall = lowerBuiltinClassCall(lowerer, expr);
   if (builtinClassCall) return builtinClassCall;
+
+  // `R.<method>.call(thisArg, ...)` over EventEmitter.prototype's methods.
+  if (
+    ts.isPropertyAccessExpression(expr.expression) &&
+    !expr.expression.questionDotToken &&
+    expr.expression.name.text === "call"
+  ) {
+    const emitterMethod = lowerEmitterMethodValueCall(lowerer, expr, expr.expression);
+    if (emitterMethod) return emitterMethod;
+  }
 
   // require() of a JSON document: the shared parsed object.
   const json = lowerJsonRequireCall(lowerer, expr);
@@ -12270,4 +12290,118 @@ function lowerCheckedPrivateMethodCall(
 function checkedDynamicOperand(expr: IrExpr): IrExpr | null {
   if (expr.type.kind === "dyn") return expr;
   return expr.kind === "dynCheck" && expr.value.type.kind === "dyn" ? expr.value : null;
+}
+
+/** The class of the object `node` is statically, or null. */
+function objectClassOf(lowerer: Lowerer, node: ts.Expression): ClassInfo | null {
+  let t: IrType | null;
+  try {
+    t = lowerer.mapTypeOf(lowerer.typeOf(node));
+  } catch {
+    return null;
+  }
+  if (t?.kind !== "object") return null;
+  return lowerer.classes.get(t.className) ?? null;
+}
+
+/** The class of an EventEmitter instance (not a stream) that `node` is
+ * statically, or null. */
+function plainEmitterInfoOf(lowerer: Lowerer, node: ts.Expression): ClassInfo | null {
+  const info = objectClassOf(lowerer, node);
+  return info && emitterRooted(lowerer, info) && streamSidesOf(lowerer, info) === null
+    ? info
+    : null;
+}
+
+/** `R.<method>.call(thisArg, ...args)` where `R.<method>` is
+ * EventEmitter.prototype's method: R is `EventEmitter.prototype` or an
+ * EventEmitter instance (not a stream) whose class does not override
+ * `emit`, read without effects. Node runs the method with thisArg as
+ * `this`. A thisArg that is statically such an emitter takes the method's
+ * typed lowering with thisArg as the receiver and static dispatch (the
+ * super spelling); any other thisArg calls the untyped
+ * EventEmitter.prototype method, which works on the object's `_events`.
+ * Null for every other shape. */
+function lowerEmitterMethodValueCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const target = access.expression;
+  if (!ts.isPropertyAccessExpression(target) || target.questionDotToken) return null;
+  const member = target.name.text;
+  if (!EMITTER_API_MEMBERS.has(member)) return null;
+  const holderNode = target.expression;
+  const emitterKind = builtinClassKind(RUNTIME_EMITTER_CLASS)!;
+  const isPrototype =
+    ts.isPropertyAccessExpression(holderNode) &&
+    holderNode.name.text === "prototype" &&
+    builtinClassKindOf(lowerer, holderNode.expression) === emitterKind;
+  // `EventEmitter.prototype` is a builtin read; any other holder must be
+  // effect-free, or its getter (and its exceptions) would be skipped.
+  if (!isPrototype && !isPureReference(lowerer, holderNode)) return null;
+  const holder = isPrototype ? null : plainEmitterInfoOf(lowerer, holderNode);
+  if (!isPrototype && (!holder || (member === "emit" && emitOverrideAtOrAbove(holder))))
+    return null;
+  const args = call.arguments.nodes;
+  if (args.length === 0 || args.some(ts.isSpreadElement)) return null;
+  const thisArg = args[0]!;
+  const thisInfo = plainEmitterInfoOf(lowerer, thisArg);
+  const thisClass = objectClassOf(lowerer, thisArg);
+  if (
+    !thisInfo &&
+    thisClass !== null &&
+    emitterRooted(lowerer, thisClass) &&
+    streamSidesOf(lowerer, thisClass) !== null
+  ) {
+    // A stream keeps its own event table: the untyped method would read
+    // fields the compiled stream does not have.
+    lowerer.noLowering(
+      `EventEmitter.prototype.${member}.call on a stream`,
+      call,
+      "call the method on the stream directly",
+    );
+  }
+  if (thisInfo && member === "emit" && emitOverrideAtOrAbove(thisInfo)) {
+    lowerer.noLowering(
+      "EventEmitter.prototype.emit called on an instance whose class overrides emit",
+      call,
+      "call the override, or emit from a class that does not override emit",
+    );
+  }
+  if (thisInfo) {
+    const thisRef = lowerer.lowerExpr(thisArg);
+    if (thisRef.type.kind !== "object") return null;
+    return lowerEmitterMethodCall(
+      lowerer,
+      call,
+      target,
+      thisInfo,
+      { thisRef, cls: thisInfo },
+      args.slice(1),
+    );
+  }
+  const loc = locOf(call);
+  const prototype: IrExpr = {
+    kind: "dynKeyGet",
+    value: builtinClassValue(emitterKind, loc),
+    key: { kind: "strLit", value: "prototype", type: STRING, loc },
+    type: DYN,
+    loc,
+  };
+  return {
+    kind: "dynInvoke",
+    recv: {
+      kind: "dynKeyGet",
+      value: prototype,
+      key: { kind: "strLit", value: member, type: STRING, loc },
+      type: DYN,
+      loc,
+    },
+    method: "call",
+    calleeName: ts.getTextOfNode(access),
+    args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
 }

@@ -7,5 +7,6 @@ Exit codes and output written before the exception are preserved.
 Runtime errors expose `message` and Node's `code` as typed members.
 The other own properties Node gives them, such as a system error's `errno`, `syscall`, and `path`, a child process error's `status`, `stdout`, and `stderr`, or an assertion error's `actual` and `expected`, are readable through an untyped view of the error (for example a cast of a caught value) and appear in `util.inspect` output.
 
-Errors carry no stack frames.
-`console.log` and `util.inspect` print an Error in Node's stackless form, `[TypeError: message]`, where Node prints `TypeError: message` followed by stack frames; the two agree when `Error.stackTraceLimit` is `0`.
+Errors carry stack frames that name the function and the source file, without Node.js's `file:line:column` positions or internal frames.
+`console.log`, `util.format`, and `util.inspect` print an Error from its stack the way Node.js does: the frames under the `name: message` heading, brackets when the stack has no frame line, and a subclass's header named after its class (for example `Bailable [Error]: message`).
+Only the frames themselves diverge, so the output agrees with Node.js when `Error.stackTraceLimit` is `0`.

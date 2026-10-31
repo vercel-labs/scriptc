@@ -97,6 +97,7 @@ import {
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
+import { installBuiltinStatics } from "./builtin-statics.js";
 import { functionKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
@@ -4656,6 +4657,9 @@ export class Lowerer {
     "stdioPatchSites",
     "requestInitPropMutatedSyms",
     "classProtocols",
+    // A file's name and library status do not change while the program
+    // lowers, so the answer stays with the file that was asked about.
+    "stdlibFiles",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
@@ -9911,13 +9915,17 @@ export class Lowerer {
   }
 
   /** Final retention, pruning, and module assembly shared by ordinary emit
-   * and the retained reachability worklist. */
-  finishModule(functions: IrFunction[]): LowerResult {
+   * and the retained reachability worklist. `library` is true for a native
+   * library's emit, whose runtime has no builtin-statics unit. */
+  finishModule(functions: IrFunction[], library = false): LowerResult {
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
     finalizeRecordLinks(this, functions);
+    // The statics lookup installs before value boxing, so the function
+    // values it adds to the entry module are boxed with the rest.
+    if (!library) installBuiltinStatics(this, functions);
     boxBuiltinValuesChecked(this, functions);
     finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
@@ -10934,7 +10942,7 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    return { reachable, result: this.finishModule(functions) };
+    return { reachable, result: this.finishModule(functions, extraRoots !== undefined) };
   }
 
   /** What the steps before the worklist settled for a top-level
@@ -16506,12 +16514,22 @@ export class Lowerer {
    * members by name + this provenance, and everything else those files
    * declare hits the SC2020-family fence). The file half of every
    * supported-surface provenance check. */
-  readonly isStdlibFile = (sf: ts.SourceFile): boolean =>
-    sf.fileName === this.ambient ||
-    sf.fileName === this.overridesAmbient ||
-    isFallbackDtsPath(sf.fileName) ||
-    this.program.isSourceFileDefaultLibrary(sf) ||
-    (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+  readonly isStdlibFile = (sf: ts.SourceFile): boolean => {
+    let stdlib = this.stdlibFiles.get(sf);
+    if (stdlib === undefined) {
+      stdlib =
+        sf.fileName === this.ambient ||
+        sf.fileName === this.overridesAmbient ||
+        isFallbackDtsPath(sf.fileName) ||
+        this.program.isSourceFileDefaultLibrary(sf) ||
+        (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+      this.stdlibFiles.set(sf, stdlib);
+    }
+    return stdlib;
+  };
+  /** isStdlibFile's answer for each source file it was asked about: a file's
+   * name and library status do not change while the program lowers. */
+  private readonly stdlibFiles = new Map<ts.SourceFile, boolean>();
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);

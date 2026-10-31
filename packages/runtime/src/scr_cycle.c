@@ -2151,8 +2151,11 @@ static SCR_CYC_COMPACT void scr_cyc_doom_components(void) {
   }
 }
 
+SCR_TL void (*scr_cyc_pass_hook)(void) = NULL;
+
 static size_t scr_cyc_pass(unsigned gen_limit) {
   if (scr_collecting) return 0;
+  if (scr_cyc_pass_hook) scr_cyc_pass_hook();
   scr_cyc_route_bypassed();
   scr_collecting = true;
   scr_cyc_window_update();

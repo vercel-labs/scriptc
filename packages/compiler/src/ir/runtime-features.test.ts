@@ -191,6 +191,28 @@ describe("runtime feature snapshots", () => {
     }
   });
 
+  test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
+    const reads = (key: string): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "dynKeyGet",
+          value: { kind: "varRef", localId: "value", type: DYN, loc },
+          key: { kind: "strLit", value: key, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+      });
+      return mod;
+    };
+    for (const key of ["toString", "slice", "map", "findLastIndex"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(true);
+    for (const key of ["length", "name", "nope"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
+  });
+
   test("gates the fs read's Buffer brand on a typed read plus an observable brand", () => {
     const bytes = { kind: "bytes" as const, elem: "u8" as const };
     const data = { kind: "varRef" as const, localId: "data", type: bytes, loc };

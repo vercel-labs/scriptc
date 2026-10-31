@@ -594,7 +594,86 @@ export function patchAndBump(): number {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 300_000);
+
+  // A sloppy-mode write to an undeclared name creates a global at run time.
+  // The native tier has no global object, so the checker refuses the write
+  // (SC1091) and the module runs in a Node island instead (the user's policy
+  // for sloppy-only semantics, 2026-10-31). Strict-mode code keeps the
+  // refusal: there the write throws ReferenceError, which is an ordinary
+  // lowering gap rather than a sloppy semantic.
+  test("a sloppy implicit-global write islands the module", async () => {
+    const dir = implicitGlobalProject("island");
+    const cache = mkdtempSync(join(tmpdir(), "scriptc-implicit-global-cache-"));
+    const islandCache = mkdtempSync(join(tmpdir(), "scriptc-island-cache-"));
+    const previous = process.env["SCRIPTC_CACHE_DIR"];
+    process.env["SCRIPTC_CACHE_DIR"] = cache;
+    try {
+      const result = await compile(join(dir, "main.js"), {
+        outPath: join(dir, "main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["legacy.cjs"]);
+      const out = await run(join(dir, "main"), [], { ...process.env, XDG_CACHE_HOME: islandCache });
+      expect(out).toEqual({ stdout: "42\n43\n", stderr: "", code: 0 });
+      // The same write under a "use strict" prologue throws instead: the
+      // native refusal stands, and no island is chosen.
+      const strict = await compile(join(dir, "strict-main.js"), {
+        outPath: join(dir, "strict-main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      expect(strict.ok).toBe(false);
+      if (strict.ok) return;
+      expect(
+        strict.diagnostics.some((d) => d.code === "SC1091" && d.loc.file.endsWith("strict.cjs")),
+      ).toBe(true);
+      expect(strict.islands?.modules).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = previous;
+      rmSync(cache, { recursive: true, force: true });
+      rmSync(islandCache, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
 });
+
+/** A CommonJS program whose entry requires a sloppy-mode module that writes
+ * an undeclared name (an implicit global), and a strict-mode sibling whose
+ * write throws. */
+function implicitGlobalProject(name: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `scriptc-implicit-global-${name}-`));
+  writeFileSync(join(dir, "package.json"), "{}\n");
+  writeFileSync(
+    join(dir, "main.js"),
+    'const legacy = require("./legacy.cjs");\nconsole.log(legacy.read());\nlegacy.bump();\nconsole.log(legacy.read());\n',
+  );
+  writeFileSync(
+    join(dir, "legacy.cjs"),
+    [
+      "counter = 41;",
+      "function bump() {",
+      "  counter = counter + 1;",
+      "}",
+      "function read() {",
+      "  return counter + 1;",
+      "}",
+      "module.exports = { read, bump };",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(dir, "strict-main.js"), 'require("./strict.cjs");\n');
+  writeFileSync(
+    join(dir, "strict.cjs"),
+    ['"use strict";', "strictCounter = 1;", "module.exports = {};", ""].join("\n"),
+  );
+  return dir;
+}
 
 /** A CommonJS program whose entry requires a sloppy-mode module (a `with`
  * statement islands it under the default `--node-islands=auto`). The

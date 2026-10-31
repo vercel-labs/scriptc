@@ -474,6 +474,29 @@ function decideNodeIslands(
   const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
   const moduleDecision = moduleIslands(entryPath, policy, scan);
   const modules = moduleDecision.modules;
+  // A sloppy write to an undeclared name creates a global — a sloppy-only
+  // semantic the native tier does not implement, so the module runs in
+  // Node (the user's policy, 2026-10-31). The checker decides this one, not
+  // the syntax pre-scan: a write target needs bindings, and its sloppiness
+  // depends on the enclosing function and file strictness. Preflight
+  // reports it as SC1091 carrying the R2.4 reason. The entry stays native
+  // (a whole-file island is a different feature), and a strict-mode write
+  // is an ordinary lowering gap, so neither joins here.
+  if (policy.mode === "auto") {
+    for (const d of fe.preflight) {
+      if (d.code !== "SC1091" || d.reason !== "implicit-global-write") continue;
+      const file = d.loc.file;
+      if (modules.has(file) || sameFile(file, entryPath)) continue;
+      if (!isJsSourceFileName(file) || file.includes("/node_modules/")) continue;
+      const reason = classifyDiagnostic(d, "refusal");
+      modules.set(file, {
+        file,
+        class: reason.class,
+        reason: describe(reason),
+        decision: "auto",
+      });
+    }
+  }
   // Modules the lowering refused keep their first reason (the reload no
   // longer compiles them).
   for (const [file, island] of lowerModules) if (!modules.has(file)) modules.set(file, island);

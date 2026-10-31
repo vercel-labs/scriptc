@@ -15,6 +15,24 @@ const interval = setInterval(() => {
   if (count < 3) throw new Error("interval " + count);
   clearInterval(interval);
   process.off("uncaughtException", handler);
-  process.once("uncaughtException", (value, origin) => console.log("primitive", value, origin));
+  let observed;
+  process.once("uncaughtExceptionMonitor", (value, origin) => {
+    observed = value;
+    console.log("primitive-monitor", value === "immediate", value instanceof Error, origin);
+  });
+  process.once("uncaughtException", (value, origin) => {
+    console.log("primitive", value, origin);
+    console.log("primitive-identity", value === observed, value === "immediate", value instanceof Error);
+    process.once("uncaughtExceptionMonitor", (error) => {
+      observed = error;
+      console.log("error-monitor", error instanceof Error);
+    });
+    process.once("uncaughtException", (error, origin) => {
+      console.log("error-identity", error === observed);
+      console.log("error-guard", error instanceof Error);
+      if (error instanceof Error) console.log("error-message", error.message, origin);
+    });
+    setImmediate(() => { throw new Error("guarded"); });
+  });
   setImmediate(() => { throw "immediate"; });
 }, 10);

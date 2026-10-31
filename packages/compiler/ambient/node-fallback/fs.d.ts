@@ -426,10 +426,71 @@ declare module "node:fs" {
     readonly ctime: Date;
     readonly birthtime: Date;
   }
+  /* Error-first callbacks preserve the numeric or bigint snapshot selected
+   * by the options, including a union for a runtime-valued bigint flag. */
+  export interface StatOptions {
+    bigint?: boolean;
+  }
+  export function stat(
+    path: string | Uint8Array | URL,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats) => void,
+  ): void;
+  export function stat(
+    path: string | Uint8Array | URL,
+    options: (StatOptions & { bigint?: false }) | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats) => void,
+  ): void;
+  export function stat(
+    path: string | Uint8Array | URL,
+    options: StatOptions & { bigint: true },
+    callback: (err: NodeJS.ErrnoException | null, stats: BigIntStats) => void,
+  ): void;
+  export function stat(
+    path: string | Uint8Array | URL,
+    options: StatOptions | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats | BigIntStats) => void,
+  ): void;
+  export function lstat(
+    path: string | Uint8Array | URL,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats) => void,
+  ): void;
+  export function lstat(
+    path: string | Uint8Array | URL,
+    options: (StatOptions & { bigint?: false }) | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats) => void,
+  ): void;
+  export function lstat(
+    path: string | Uint8Array | URL,
+    options: StatOptions & { bigint: true },
+    callback: (err: NodeJS.ErrnoException | null, stats: BigIntStats) => void,
+  ): void;
+  export function lstat(
+    path: string | Uint8Array | URL,
+    options: StatOptions | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats | BigIntStats) => void,
+  ): void;
+  export function fstat(
+    fd: number,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats) => void,
+  ): void;
+  export function fstat(
+    fd: number,
+    options: (StatOptions & { bigint?: false }) | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats) => void,
+  ): void;
+  export function fstat(
+    fd: number,
+    options: StatOptions & { bigint: true },
+    callback: (err: NodeJS.ErrnoException | null, stats: BigIntStats) => void,
+  ): void;
+  export function fstat(
+    fd: number,
+    options: StatOptions | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: Stats | BigIntStats) => void,
+  ): void;
   /* throwIfNoEntry: false answers undefined for a missing entry (ENOENT or
    * ENOTDIR) instead of throwing. bigint: true answers BigIntStats. */
-  export interface StatSyncOptions {
-    bigint?: boolean;
+  export interface StatSyncOptions extends StatOptions {
     throwIfNoEntry?: boolean;
   }
   export function statSync(path: string | URL, options?: undefined): Stats;

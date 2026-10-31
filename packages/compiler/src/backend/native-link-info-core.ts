@@ -90,6 +90,10 @@ export interface NativeLinkFeatures {
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** Set.prototype method values, the ES2025 Set compositions and
+   * Object.getPrototypeOf of a Set: scr_dyn_set.c. Absent (false)
+   * otherwise. */
+  dynSet?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;

@@ -23,6 +23,7 @@ import {
   declaredMemberOf,
   fenceDatePrototypeWrite,
   isPromisePrototypeRead,
+  isSetPrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import { hostedStorageView, hostsAll } from "./expressions/hosted-narrowing.js";
@@ -1466,6 +1467,12 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     ts.isVariableDeclaration(nameNode.parent) &&
     !nameNode.parent.type &&
     isPromisePrototypeRead(lowerer, nameNode.parent.initializer)
+  )
+    return DYN;
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    !nameNode.parent.type &&
+    isSetPrototypeRead(lowerer, nameNode.parent.initializer)
   )
     return DYN;
   let type = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
@@ -6481,6 +6488,14 @@ export function lowerVarDecl(
           (existingValueForm(decl.initializer) || jsHoldsDynObject(lowerer, decl.initializer))))
     )
       g.type = DYN;
+    // %Set.prototype% is an ordinary object the checker types Set<any>.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+      !decl.type &&
+      !hasJsTypeAnnotation(decl) &&
+      isSetPrototypeRead(lowerer, decl.initializer)
+    )
+      g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
     // A module const keeps its initializer's record or array layout, as a
     // function's const does (keepsInitializerLayout).
@@ -6646,6 +6661,9 @@ export function lowerVarDecl(
     type = init.type;
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
+    type = DYN;
+  // %Set.prototype% is an ordinary object the checker types Set<any>.
+  if (!decl.type && !hasJsTypeAnnotation(decl) && isSetPrototypeRead(lowerer, decl.initializer))
     type = DYN;
   // A web stream value in JavaScript keeps its checked-dynamic identity.
   if (

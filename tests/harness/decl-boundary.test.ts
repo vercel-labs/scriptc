@@ -8,9 +8,12 @@
  * boundary under zod 4 and @hono/zod-validator. The rewrite test checks that
  * a file keeps its projection (no SC6102 note) where the rewrite has to
  * parenthesize a bare async arrow's parameter and cast the start of an
- * unbraced loop body. */
+ * unbraced loop body. The zod JSON test checks that `S.parse(JSON.parse(text))`
+ * with a statically known zod 3 schema compiles through the speculative
+ * JSON shape (zod-json.ts); npm.test.ts's zod3-json case checks its output
+ * against Node, fallbacks included. */
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
@@ -90,5 +93,26 @@ test(
         "/outcome 200 value 42\n" +
         "/outcome 200 reason late\n",
     );
+  },
+);
+
+test(
+  "S.parse(JSON.parse(text)) compiles through the schema's speculative JSON shape",
+  { timeout: 600_000 },
+  async () => {
+    const json = join(repoRoot, "tests/fixtures/npm/cases/zod3-json/main.ts");
+    mkdirSync(outDir, { recursive: true });
+    const result = await compile(json, {
+      outPath: join(outDir, "zod-json"),
+      outDir,
+      sanitize,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    expect((result.warnings ?? []).map((w) => w.code)).not.toContain("SC6102");
+    // One helper per site: the two Orders sites and the Point site.
+    const llvm = readFileSync(result.llvmPath, "utf8");
+    for (const site of [0, 1, 2]) expect(llvm).toContain(`__scriptc_zjson_${site}`);
   },
 );

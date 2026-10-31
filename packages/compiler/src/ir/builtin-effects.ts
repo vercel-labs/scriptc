@@ -735,6 +735,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.getOwnPropertyDescriptors",
   "dyn.preventExtensions",
   "dyn.isExtensible",
+  "dyn.proxyRevocable",
+  "dyn.reflectGetPrototypeOf",
+  "dyn.reflectSetPrototypeOf",
+  "dyn.reflectPreventExtensions",
+  "dyn.reflectIsExtensible",
+  "dyn.reflectConstruct",
   "dyn.seal",
   "dyn.isSealed",
   // an unmodeled integrity kind (a native handle, a promise) refuses

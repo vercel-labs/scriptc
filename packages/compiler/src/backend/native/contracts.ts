@@ -186,6 +186,9 @@ export interface CcOptions {
   /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
    * NULL for a field a partial record view does not have. */
   recordViewPartial?: boolean;
+  /** SCR_PROXY_TIER: Proxy.revocable, the Reflect entry points and the
+   * proxy reflection traps in scr_json.c. */
+  dynProxyTier?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument

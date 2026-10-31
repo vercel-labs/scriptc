@@ -1,4 +1,4 @@
-import { varRef } from "../../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
@@ -224,6 +224,58 @@ export function lowerReflectCall(
           loc,
         }
       : operation;
+  }
+  // Reflect.construct(target, argsList[, newTarget]): the dynamic tier's
+  // construction. An ordinary constructor builds its instance from its
+  // `prototype`, a Proxy runs its construct trap, and argsList is
+  // CreateListFromArrayLike — any object with a length, not only an array.
+  if (
+    reflectMember === "construct" &&
+    (call.arguments.nodes.length === 2 || call.arguments.nodes.length === 3) &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const loc = locOf(call);
+    const [target, argsList, newTarget] = call.arguments.nodes;
+    return {
+      kind: "libCall",
+      fn: "dyn.reflectConstruct",
+      args: [
+        lowerer.lowerExprExpecting(target!, DYN),
+        lowerer.lowerExprExpecting(argsList!, DYN),
+        newTarget ? lowerer.lowerExprExpecting(newTarget, DYN) : dynUndefinedExpr(loc),
+      ],
+      type: DYN,
+      loc,
+    };
+  }
+  // Reflect.getPrototypeOf, setPrototypeOf, preventExtensions and
+  // isExtensible: the Object operations with Reflect's argument and result
+  // shape. A non-object target throws; setPrototypeOf and preventExtensions
+  // answer the Proxy trap's boolean instead of throwing when it refuses.
+  if (
+    call.arguments.nodes.length === (reflectMember === "setPrototypeOf" ? 2 : 1) &&
+    (reflectMember === "getPrototypeOf" ||
+      reflectMember === "setPrototypeOf" ||
+      reflectMember === "preventExtensions" ||
+      reflectMember === "isExtensible") &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const loc = locOf(call);
+    const fn =
+      reflectMember === "getPrototypeOf"
+        ? "dyn.reflectGetPrototypeOf"
+        : reflectMember === "setPrototypeOf"
+          ? "dyn.reflectSetPrototypeOf"
+          : reflectMember === "preventExtensions"
+            ? "dyn.reflectPreventExtensions"
+            : "dyn.reflectIsExtensible";
+    return {
+      kind: "libCall",
+      fn,
+      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      type: reflectMember === "getPrototypeOf" ? DYN : BOOL,
+      loc,
+    };
   }
   if (lowerer.stdlibGlobalMember(access, "Reflect") !== "apply") return null;
   const loc = locOf(call);

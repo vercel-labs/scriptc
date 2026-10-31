@@ -33,6 +33,7 @@ const features = {
   computedRequire: false,
   warningReplace: false,
   recordViewPartial: false,
+  dynProxyTier: false,
   stdioExtended: false,
   streamWriteErrors: false,
   stdioWriteSlot: false,

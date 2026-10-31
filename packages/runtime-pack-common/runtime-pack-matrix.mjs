@@ -295,6 +295,18 @@ export function variantsFor(source) {
         defines: [...defines, "SCR_RECORD_VIEW_PARTIAL"],
       });
     }
+    // Proxy.revocable and the Reflect entry points compile into the
+    // SCR_PROXY_TIER build alone, so every build above needs its
+    // counterpart and a program that calls none keeps the default object,
+    // byte for byte.
+    for (const { id, when, defines } of variants.slice()) {
+      const suffix = id === "default" ? "" : `-${id}`;
+      variants.push({
+        id: `proxy-tier${suffix}`,
+        when: { ...when, dynProxyTier: true },
+        defines: [...defines, "SCR_PROXY_TIER"],
+      });
+    }
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.

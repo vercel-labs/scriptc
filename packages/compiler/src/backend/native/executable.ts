@@ -469,6 +469,10 @@ const RUNTIME_DEFINES: readonly {
   // scr_json.c's view slot answers NULL for a field a partial record view
   // does not have; only a program with a partial assertion selects it.
   { define: "SCR_RECORD_VIEW_PARTIAL", when: (opts) => opts.recordViewPartial },
+  // scr_json.c's SCR_PROXY_TIER build carries Proxy.revocable, the Reflect
+  // entry points and the proxy reflection traps; only a program that calls
+  // one selects it, so every other program keeps the default object.
+  { define: "SCR_PROXY_TIER", when: (opts) => opts.dynProxyTier },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
   // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form

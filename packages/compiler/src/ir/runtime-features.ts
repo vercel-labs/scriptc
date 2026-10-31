@@ -1430,6 +1430,19 @@ const RUNTIME_FEATURE_RULES = {
   recordViewPartial: rule({
     expr: (node) => node.kind === "dynCheck" && node.partialView === true,
   }),
+  /** Proxy.revocable, the Reflect entry points and the proxy reflection
+   * traps: the SCR_PROXY_TIER build of scr_json.c, whose revocation checks
+   * and trap completion every other program keeps out of its object. */
+  dynProxyTier: rule({
+    fns: [
+      "dyn.proxyRevocable",
+      "dyn.reflectGetPrototypeOf",
+      "dyn.reflectSetPrototypeOf",
+      "dyn.reflectPreventExtensions",
+      "dyn.reflectIsExtensible",
+      "dyn.reflectConstruct",
+    ],
+  }),
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
@@ -1594,6 +1607,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     utilPromisify: false,
     warningReplace: false,
     recordViewPartial: false,
+    dynProxyTier: false,
     wasm: false,
     webcrypto: false,
     zlib: false,

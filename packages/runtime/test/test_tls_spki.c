@@ -191,8 +191,8 @@ static void on_server_close(ScrClosure *cb) {
 static void on_client_close(ScrClosure *cb) {
   (void)cb;
   client_closed++;
-  /* Let the peer observe EOF itself; destroying it here could hide an alert. */
-  scr_net_server_close(server, NULL);
+  /* The accepted socket owns listener shutdown. Closing it here drops
+   * client_error_ls before the peer's deferred TLS hang-up is observed. */
 }
 
 static void on_client_error(ScrClosure *cb, ScrStr *msg) {
@@ -361,6 +361,8 @@ static void handshake(const char *dir) {
   }
   if (selected == CLIENT_SECONDARY) {
     check(late_held_bytes > 0, "secondary failure buffered an alert before final policy");
+    if (server_errors != 1 || strcmp(server_code, "ECONNRESET") != 0)
+      fprintf(stderr, "peer error count=%u code=%s\n", server_errors, server_code);
     check(server_errors == 1 && strcmp(server_code, "ECONNRESET") == 0,
           "peer observes closure, not the buffered fatal alert");
   }

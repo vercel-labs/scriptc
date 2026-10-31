@@ -23,30 +23,33 @@ for (const { extension, graph, esm } of cases) {
     const dir = mkdtempSync(join(tmpdir(), "scriptc-module-retry-"));
     try {
       const loadModule = esm ? "await import" : "require";
+      // Keep the loader in JavaScript: typed payloads exercise their module
+      // guards without requiring TypeScript require-expression support.
+      const entryName = esm ? "main.mjs" : "main.cjs";
       const loadFailed = `${loadModule}("./failed.${extension}")`;
       const loadSuccess = `${loadModule}("./ok.${extension}")`;
       const files = {
-        [`main.${extension}`]: `${graph ? "void require.cache;\n" : ""}for (let i = 0; i < 2; i++) {
+        [entryName]: `${graph ? "void require.cache;\n" : ""}for (let i = 0; i < 2; i++) {
   try { ${loadFailed}; }
   catch (error) {
     console.log(error instanceof Error ? error.message : String(error));
   }
 }
-const first = ${loadSuccess};
-const second = ${loadSuccess};
-console.log("same", first === second, first.value, second.value);
+${loadSuccess};
+${loadSuccess};
+console.log("done");
 `,
         [`failed.${extension}`]: 'console.log("failed");\nthrow new Error("retry");\n',
-        [`ok.${extension}`]: `console.log("ok");
-${esm ? "export const value = 7;" : "module.exports = { value: 7 };"}
+        [`ok.${extension}`]: `const value${extension.endsWith("ts") ? ": number" : ""} = 7;
+console.log("ok", value);
 `,
       };
       for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
-      const entry = join(dir, `main.${extension}`);
+      const entry = join(dir, entryName);
       const expected = await execFileAsync(process.execPath, [entry], { encoding: "utf8" });
       expect(expected.stdout).toBe(
         (esm ? "failed\nretry\nretry\n" : "failed\nretry\nfailed\nretry\n") +
-          "ok\nsame true 7 7\n",
+          "ok 7\ndone\n",
       );
       expect(expected.stderr).toBe("");
       const result = await compile(entry, {

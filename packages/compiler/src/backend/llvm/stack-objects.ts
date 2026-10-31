@@ -125,8 +125,9 @@ function ownsReferences(host: LlvmEmitterContext, type: IrType): boolean {
   );
 }
 
-/** The fields of a frame class that own references: refcounted, not inline
- * unions, and not compressed references to program-lifetime instances.
+/** The fields of a frame class that own references: refcounted and not
+ * inline unions. (Compressed fields belong to compact classes, which are
+ * never frame classes.)
  * Each has its storage type: a nullable class field holds the class pointer
  * itself, whatever form its union takes elsewhere (nullable-fields.ts). */
 function classReferenceFields(
@@ -262,8 +263,7 @@ export function stackObjectStruct(type: IrType): string {
 
 /** The reference fields of the frame object in `slot`, addressed from the
  * entry block so that every cleanup path can reach them. Inline union
- * fields copy bits and own nothing, and so do a class's compressed
- * references to program-lifetime instances. */
+ * fields copy bits and own nothing. */
 export function stackObjectFields(
   host: LlvmEmitterContext,
   type: IrType,

@@ -917,6 +917,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `@scr_error_vts = external ${tl}global [${RUNTIME_ERROR_CLASSES.size} x %ScrVt]`,
     `declare void @scr_init()`,
     ...(emitter.compactRegion ? [`declare void @scr_plr_init()`] : []),
+    // A compact field holding an array, a map, a set or a heap instance
+    // (emitter.windowRefs) keeps address >> 3 in 32 bits.
+    ...(emitter.windowRefs ? [`declare void @scr_sa_require_window()`] : []),
     `declare void @scr_lib_init(i32, ptr)`,
     ...(emitter.mod.workers ? [`declare void @scr_runtime_workers_v8()`] : []),
     ...(emitter.stackChecks?.size ? [`declare void @scr_stack_guard_init()`] : []),
@@ -1086,6 +1089,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(
       `@${inst.sym}_data = internal constant [${n} x ${slot}] [ ${inst.slots.map(slotValue).join(", ")} ], align 8`,
       `@${inst.sym} = internal global %ScrArr { ${emitter.sizeType} -1, i32 ${n}, i32 ${n}, i8 2, i8 0, i16 0, i32 ${n}, ptr @${inst.sym}_data }`,
+      // The site's heap copy of the header (expr-primitives.ts).
+      ...(emitter.compactRegion ? [`@${inst.sym}_win = internal global ptr null, align 8`] : []),
     );
   }
   if (emitter.templateStringsInstances.size > 0) out.push(``);
@@ -1224,6 +1229,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // Compressed fields hold addresses in the program-lifetime region, which
     // is reserved below 32 GiB before compiled code runs.
     ...(emitter.compactRegion ? [`  call void @scr_plr_init()`] : []),
+    // A reference block the window cannot serve ends the process here rather
+    // than reaching a compact field, which would truncate its address.
+    ...(emitter.windowRefs ? [`  call void @scr_sa_require_window()`] : []),
     // Each context (the main thread, every worker) installs its stack
     // guard before running compiled code that checks it.
     ...(emitter.stackChecks?.size ? [`  call void @scr_stack_guard_init()`] : []),

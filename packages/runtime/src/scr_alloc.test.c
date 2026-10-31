@@ -7,7 +7,20 @@
 #include <stdio.h>
 
 #if SCR_SMALL_ALLOC
-static bool owned(const void *p) { return (uintptr_t)p - scr_sa.base < scr_sa.span; }
+/* Whether p is a block of the calling thread's arena: in the window, in a
+ * chunk that carries the thread's tag. */
+static bool owned(const void *p) {
+  uintptr_t off = (uintptr_t)p - scr_sa.base;
+  return off < scr_sa.span && (scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT] & 0xff00) == scr_sa.tag;
+}
+/* The size class of a block of the calling thread's arena. */
+static unsigned class_of(const void *p) {
+  return scr_sa_chunks[((uintptr_t)p - scr_sa.base) >> SCR_SA_CHUNK_SHIFT] & 0xff;
+}
+/* The start of the window chunk holding p. */
+static uintptr_t chunk_of(const void *p) {
+  return scr_sa.base + (((uintptr_t)p - scr_sa.base) & ~(uintptr_t)(SCR_SA_CHUNK - 1));
+}
 #endif
 
 /* The allocator unit needs only scr_trap from the rest of the runtime: the
@@ -164,7 +177,7 @@ static void check_free_order(void) {
   for (; i < SYSTEM; i++) assert(!owned(ptrs[i]));
   for (; i < N; i++) {
     assert(owned(ptrs[i]));
-    unsigned c = (unsigned)(((uintptr_t)ptrs[i] - scr_sa.base) >> scr_sa.shift);
+    unsigned c = class_of(ptrs[i]);
     assert(!last[c] || (uintptr_t)ptrs[i] < last[c]);
     last[c] = (uintptr_t)ptrs[i];
   }
@@ -218,27 +231,35 @@ static bool cores_written(void) {
 }
 #endif
 
-/* A class slice carves contiguously from its start, across the points where
- * its limit is raised; on Linux the slices are huge-page aligned, the first
- * 8 MiB of a slice stay on small pages and the rest may use huge pages, a
- * helper thread faults in memory ahead of the limit, and only the slice up
- * to its limit is included in core dumps. Every fresh block
- * still reads as zero, wherever the limit steps and whoever faulted it. */
-static void check_slice_growth(void) {
+/* A class carves contiguously through each chunk it takes, across the
+ * points where its limit is raised, and continues at the start of another
+ * chunk when one is full; on Linux chunks are huge-page aligned, a class's
+ * first 8 MiB of chunks stay on small pages and later chunks may use huge
+ * pages, a helper thread faults in memory ahead of the limit, and only the
+ * carved part of a chunk is included in core dumps. Every fresh block still
+ * reads as zero, wherever the limit steps and whoever faulted it. */
+static void check_chunk_growth(void) {
   enum { SZ = 496, AFTER = 8 << 20, PAST = 3 * (2 << 20) + (1 << 20) };
   unsigned char *first = scr_mem_alloc(SZ), *prev = first;
-  assert(owned(first));
-  uintptr_t start = scr_sa.base + ((uintptr_t)scr_sa_class(SZ) << scr_sa.shift);
+  assert(owned(first) && class_of(first) == scr_sa_class(SZ));
+  uintptr_t start = chunk_of(first);
   assert((uintptr_t)first == start); /* a class nothing else has touched */
-  size_t blocks = (AFTER + PAST) / SZ;
+  size_t blocks = (AFTER + PAST) / SZ, chunks = 1;
+  unsigned char *huge = NULL; /* a block in the class's third chunk */
   for (size_t i = 1; i < blocks; i++) {
     unsigned char *p = scr_mem_alloc(SZ);
-    assert(p == prev + SZ);
+    if (p != prev + SZ) {
+      /* A new chunk, once the last one had no room for another block. */
+      assert((uintptr_t)p == chunk_of(p) && (uintptr_t)prev + 2 * SZ > chunk_of(prev) + SCR_SA_CHUNK);
+      if (++chunks == 3) huge = p;
+    }
+    assert(owned(p) && class_of(p) == scr_sa_class(SZ));
     for (size_t k = 0; k < SZ; k += 16) assert(p[k] == 0);
     p[0] = (unsigned char)i; /* commit the pages */
     p[SZ - 1] = (unsigned char)i;
     prev = p;
   }
+  assert(chunks == 4 && huge);
 #ifdef __linux__
   assert((scr_sa.base & ((2u << 20) - 1)) == 0);
   FILE *thp = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
@@ -247,25 +268,30 @@ static void check_slice_growth(void) {
     char flags[256];
     vm_flags(first, flags, sizeof flags);
     assert(strstr(flags, " nh") && !strstr(flags, " hg"));
-    vm_flags((void *)(start + AFTER), flags, sizeof flags);
+    vm_flags(huge, flags, sizeof flags);
     assert(strstr(flags, " hg") && !strstr(flags, " nh"));
   }
   /* Core dumps hold the carved blocks, where the kernel would write a core
-   * at all, but not the untouched rest of the reservation (" dd" is
-   * VM_DONTDUMP). */
+   * at all, but not the untouched rest of a chunk or of the window
+   * (" dd" is VM_DONTDUMP). */
   bool cores = cores_written();
   char flags[256];
   vm_flags(first, flags, sizeof flags);
   assert(!strstr(flags, " dd") == cores);
   vm_flags(prev + SZ - 1, flags, sizeof flags);
   assert(!strstr(flags, " dd") == cores);
-  vm_flags((void *)(start + ((uintptr_t)1 << scr_sa.shift) - 1), flags, sizeof flags);
-  assert(strstr(flags, " dd"));
+  /* Within a chunk the dumpable part ends on a 2 MiB grid past the limit. */
+  uintptr_t grid = (uintptr_t)2 << 20;
+  uintptr_t edge = (((uintptr_t)prev + SZ - chunk_of(prev)) + grid - 1) & ~(grid - 1);
+  if (!cores || edge < SCR_SA_CHUNK) {
+    vm_flags((void *)(chunk_of(prev) + SCR_SA_CHUNK - 1), flags, sizeof flags);
+    assert(strstr(flags, " dd"));
+  }
   vm_flags((void *)(scr_sa.base + scr_sa.span - 1), flags, sizeof flags);
   assert(strstr(flags, " dd"));
 #endif
   /* The blocks recycle through the free list like any others. */
-  for (size_t i = blocks; i-- > 0;) scr_mem_free(first + i * SZ);
+  scr_mem_free(first);
   assert(scr_mem_alloc(SZ) == first);
   scr_mem_free(first);
 }
@@ -314,7 +340,7 @@ static void check_heap_huge_pages(void) {
 enum { HANDOFF = 256 };
 static void *handoff[HANDOFF];
 static void *handed[HANDOFF]; /* the addresses, kept after the frees */
-static uintptr_t worker_base;
+static uint32_t worker_tag;
 
 static void *alloc_and_hand_off(void *arg) {
   (void)arg;
@@ -324,7 +350,7 @@ static void *alloc_and_hand_off(void *arg) {
     handed[i] = handoff[i];
     fill(handoff[i], 48, (unsigned char)i);
   }
-  worker_base = scr_sa.base;
+  worker_tag = scr_sa.tag;
   scr_sa_thread_park();
   return NULL;
 }
@@ -334,7 +360,7 @@ static void *reclaim_arena(void *arg) {
   /* The parked arena is the only free one besides main's: claimed again,
    * with the main thread's remote frees drained into its free lists. */
   void *p = scr_mem_alloc(48);
-  assert(scr_sa.base == worker_base);
+  assert(scr_sa.tag == worker_tag);
   bool recycled = false;
   for (unsigned i = 0; i < HANDOFF; i++) recycled |= p == handed[i];
   assert(recycled);
@@ -403,7 +429,7 @@ static void check_threads(void) {
   pthread_t t;
   assert(pthread_create(&t, NULL, alloc_and_hand_off, NULL) == 0);
   assert(pthread_join(t, NULL) == 0);
-  assert(worker_base != scr_sa.base);
+  assert(worker_tag != scr_sa.tag);
   for (unsigned i = 0; i < HANDOFF; i++) {
     assert(!owned(handoff[i]));
     verify(handoff[i], 48, (unsigned char)i);
@@ -525,8 +551,8 @@ static void *frontier_allocate(void *arg) {
     frontier_blocks[i] = p;
     if ((uintptr_t)p + FRONTIER_SIZE > frontier_hi) frontier_hi = (uintptr_t)p + FRONTIER_SIZE;
   }
-  uintptr_t c = ((uintptr_t)frontier_blocks[0] - scr_sa.base) >> scr_sa.shift;
-  frontier_end = scr_sa.base + ((c + 1) << scr_sa.shift);
+  /* The end of the chunk that holds the class's frontier. */
+  frontier_end = chunk_of(frontier_blocks[frontier_n - 1]) + SCR_SA_CHUNK;
   scr_sa_thread_shares();
   scr_sa_thread_park();
   return NULL;
@@ -585,7 +611,8 @@ enum { DISCARD_LARGE_SIZE = 64 << 10 };
 static unsigned char *old_blocks[DISCARD_OLD];
 static unsigned char **discard_blocks;
 static unsigned char *discard_large[DISCARD_LARGE];
-static uintptr_t discard_base, discard_lo, discard_hi;
+static uint32_t discard_tag;
+static uintptr_t discard_lo, discard_hi;
 static size_t block_size = DISCARD_SIZE; /* of the workers' and reusing threads' blocks */
 /* Whether discard workers claim the arena of discard_old_owner (no other worker holds it). */
 static bool discard_in_old_arena = true;
@@ -611,7 +638,7 @@ static void *discard_old_owner(void *arg) {
     assert(owned(old_blocks[i]));
     fill(old_blocks[i], DISCARD_SIZE, (unsigned char)i);
   }
-  discard_base = scr_sa.base;
+  discard_tag = scr_sa.tag;
   scr_sa_thread_park();
   return NULL;
 }
@@ -648,7 +675,7 @@ static void *discard_worker(void *arg) {
   scr_sa_thread_starting();
   allocate_discardable();
   /* None of the arena's older blocks or free blocks is reused. */
-  if (scr_sa.base == discard_base)
+  if (scr_sa.tag == discard_tag)
     for (unsigned i = 0; i < DISCARD_OLD; i++) assert(discard_lo > (uintptr_t)old_blocks[i]);
   else assert(!discard_in_old_arena);
   if (discard_shares) scr_sa_thread_shares();
@@ -683,7 +710,7 @@ static void *discard_reuse(void *arg) {
   for (size_t i = 0; i < DISCARD_BLOCKS; i++) {
     unsigned char *p = scr_mem_calloc(block_size);
     assert(p && owned(p));
-    assert(scr_sa.base == discard_base);
+    assert(scr_sa.tag == discard_tag);
     for (size_t k = 0; k < block_size; k++) assert(p[k] == 0);
     for (unsigned j = 0; j < DISCARD_OLD; j++) assert(p != old_blocks[j]);
     if ((uintptr_t)p < discard_lo || (uintptr_t)p >= discard_hi) reuse_outside++;
@@ -929,6 +956,23 @@ static void check_discard_waits_for_loop(void) {
  * zeroed. The test's thread plays the loop's. IDLE_SIZE is a class the
  * other checks leave unused. */
 enum { IDLE_BLOCKS = 1 << 20, IDLE_KEEP = 4096, IDLE_SIZE = 88 };
+
+/* The pages of [lo, hi) that lie in the calling thread's chunks of class c
+ * (other classes' chunks lie between them in the window); `*resident` is how
+ * many of them are resident. */
+static size_t class_pages(uintptr_t lo, uintptr_t hi, unsigned c, size_t *resident) {
+  size_t page = (size_t)sysconf(_SC_PAGESIZE), total = 0;
+  *resident = 0;
+  for (uintptr_t ch = chunk_of((void *)lo); ch < hi; ch += SCR_SA_CHUNK) {
+    if (!owned((void *)ch) || class_of((void *)ch) != c) continue;
+    uintptr_t from = ch > lo ? ch : lo, to = ch + SCR_SA_CHUNK < hi ? ch + SCR_SA_CHUNK : hi;
+    from &= ~(uintptr_t)(page - 1);
+    total += (to - from + page - 1) / page;
+    *resident += resident_pages(from, to);
+  }
+  return total;
+}
+
 static void check_idle_trim(void) {
   unsigned char **blocks = malloc(IDLE_BLOCKS * sizeof *blocks);
   unsigned char *kept[IDLE_BLOCKS / IDLE_KEEP];
@@ -945,12 +989,13 @@ static void check_idle_trim(void) {
     if (i % IDLE_KEEP == 0) kept[i / IDLE_KEEP] = blocks[i];
     else scr_mem_free(blocks[i]);
   }
-  size_t total = (hi - lo) / (size_t)sysconf(_SC_PAGESIZE);
-  assert(resident_pages(lo, hi) > total / 2);
+  unsigned c = class_of(kept[0]);
+  size_t resident, total = class_pages(lo, hi, c, &resident);
+  assert(resident > total / 2);
   scr_sa_loop_waiting(true);
   scr_sa_loop_waiting(false);
   /* One page per kept block stays, give or take the pages at run ends. */
-  assert(resident_pages(lo, hi) < total / 8);
+  assert(class_pages(lo, hi, c, &resident) == total && resident < total / 8);
   for (size_t k = 0; k < IDLE_BLOCKS / IDLE_KEEP; k++) verify(kept[k], IDLE_SIZE, (unsigned char)(k * IDLE_KEEP));
   size_t outside = 0;
   for (size_t i = 0; i < IDLE_BLOCKS / 2; i++) {
@@ -964,6 +1009,83 @@ static void check_idle_trim(void) {
   for (size_t i = 0; i < IDLE_BLOCKS / 2; i++) scr_mem_free(blocks[i]);
   for (size_t k = 0; k < IDLE_BLOCKS / IDLE_KEEP; k++) scr_mem_free(kept[k]);
   free(blocks);
+}
+
+/* Blocks a 32-bit reference may name (scr_mem_alloc_ref) that a worker
+ * keeping its memory apart takes above SCR_SA_MAX come from the window too:
+ * a discard returns its runs to the window and puts its large-class blocks
+ * back on the arena's free lists, from which the next thread takes them
+ * zeroed; a worker that shared keeps them. REF_SIZE is a large class the
+ * other checks leave unused. */
+enum { REF_BLOCKS = 32, REF_SIZE = 3000, REF_RUNS = 2 };
+#define REF_RUN_SIZE ((size_t)5 << 20)
+static unsigned char *ref_blocks[REF_BLOCKS], *ref_runs[REF_RUNS];
+static bool ref_shares;
+static uint32_t ref_tag;
+
+static bool ref_in_window(const void *p) { return (uintptr_t)p - scr_sa.base < scr_sa.span; }
+
+static unsigned ref_entry(const void *p) {
+  return scr_sa_chunks[((uintptr_t)p - scr_sa.base) >> SCR_SA_CHUNK_SHIFT];
+}
+
+static void *ref_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  for (unsigned i = 0; i < REF_BLOCKS; i++) {
+    ref_blocks[i] = scr_mem_alloc_ref(REF_SIZE);
+    assert(ref_blocks[i] && ref_in_window(ref_blocks[i]));
+    fill(ref_blocks[i], REF_SIZE, (unsigned char)(i + 1));
+  }
+  for (unsigned i = 0; i < REF_RUNS; i++) {
+    ref_runs[i] = scr_mem_alloc_ref(REF_RUN_SIZE);
+    assert(ref_runs[i] && ref_in_window(ref_runs[i]));
+    fill(ref_runs[i], REF_RUN_SIZE, (unsigned char)(i + 1));
+  }
+  /* Blocks it frees itself are no longer its to give back. */
+  for (unsigned i = 0; i < REF_BLOCKS; i += 2) {
+    scr_mem_free(ref_blocks[i]);
+    ref_blocks[i] = NULL;
+  }
+  scr_mem_free(ref_runs[0]);
+  ref_runs[0] = NULL;
+  ref_tag = scr_sa.tag;
+  if (ref_shares) scr_sa_thread_shares();
+  scr_sa_thread_park();
+  return NULL;
+}
+
+static void *ref_reuse(void *arg) {
+  (void)arg;
+  unsigned char *got[REF_BLOCKS];
+  unsigned reused = 0;
+  for (unsigned i = 0; i < REF_BLOCKS; i++) {
+    unsigned char *p = scr_mem_calloc_ref(REF_SIZE);
+    assert(p && ref_in_window(p));
+    for (size_t k = 0; k < REF_SIZE; k++) assert(p[k] == 0);
+    for (unsigned j = 1; j < REF_BLOCKS; j += 2) reused += p == ref_blocks[j];
+    got[i] = p;
+  }
+  /* In the worker's arena, the blocks it kept are free blocks again. */
+  if (scr_sa.tag == ref_tag) assert(reused == REF_BLOCKS / 2);
+  for (unsigned i = 0; i < REF_BLOCKS; i++) scr_mem_free(got[i]);
+  scr_sa_thread_park();
+  return NULL;
+}
+
+static void check_discard_ref_blocks(void) {
+  ref_shares = false;
+  run(ref_worker);
+  /* The run it kept went back to the window. */
+  assert(ref_entry(ref_runs[1]) == 0);
+  run(ref_reuse);
+
+  ref_shares = true;
+  run(ref_worker);
+  for (unsigned i = 1; i < REF_BLOCKS; i += 2) verify(ref_blocks[i], REF_SIZE, (unsigned char)(i + 1));
+  verify(ref_runs[1], REF_RUN_SIZE, 2);
+  for (unsigned i = 1; i < REF_BLOCKS; i += 2) scr_mem_free(ref_blocks[i]);
+  scr_mem_free(ref_runs[1]);
 }
 
 static void check_discard(void) {
@@ -1138,6 +1260,9 @@ static void check_program_lifetime_region(void) {
   unsigned char *a = scr_plr_alloc(20), *b = scr_plr_alloc(40);
   assert(((uintptr_t)a & 7) == 0 && b == a + 24);
   assert((uintptr_t)a >= ((uintptr_t)4 << 30) && (uintptr_t)b + 40 <= ((uintptr_t)32 << 30));
+  /* The region's chunks are the window's, and hold no small blocks. */
+  assert((uintptr_t)a - scr_sa.base < scr_sa.span || !scr_sa.span);
+  if (scr_sa.span) assert(scr_sa_chunks[((uintptr_t)a - scr_sa.base) >> SCR_SA_CHUNK_SHIFT] == 0);
   for (size_t i = 0; i < 40; i++) assert(b[i] == 0);
   size_t n = (size_t)3 << 20;
   unsigned char *big = scr_plr_alloc(n);
@@ -1179,11 +1304,373 @@ static void check_program_lifetime_region_threads(void) {
 #endif
 #endif
 
-int main(void) {
+
+#if defined(SCR_SA_WINDOW_TEST_CHUNKS) && SCR_SMALL_ALLOC
+#include <sys/wait.h>
+#include <unistd.h>
+/* A window of SCR_SA_WINDOW_TEST_CHUNKS chunks fills up: later small blocks
+ * come from the system allocator and behave as before, and freeing either
+ * kind is safe. */
+static void check_window_exhaustion(void) {
+  enum { SZ = 64, N = SCR_SA_WINDOW_TEST_CHUNKS * (SCR_SA_CHUNK / SZ) + 1000 };
+  static unsigned char *block[N];
+  size_t mine = 0, system = 0;
+  for (size_t i = 0; i < N; i++) {
+    block[i] = scr_mem_calloc(SZ);
+    assert(block[i] && aligned(block[i], SZ));
+    for (size_t k = 0; k < SZ; k++) assert(block[i][k] == 0);
+    fill(block[i], SZ, (unsigned char)i);
+    if (owned(block[i])) mine++;
+    else system++;
+  }
+  assert(mine > 0 && system >= 1000);
+  assert(scr_sa.span == ((uintptr_t)SCR_SA_WINDOW_TEST_CHUNKS << SCR_SA_CHUNK_SHIFT));
+  for (size_t i = 0; i < N; i++) {
+    verify(block[i], SZ, (unsigned char)i);
+    block[i] = scr_mem_realloc(block[i], SZ / 2);
+    verify(block[i], SZ / 2, (unsigned char)i);
+  }
+  for (size_t i = 0; i < N; i++) scr_mem_free(block[i]);
+  /* Freed blocks of the window are reused before the system's. */
+  unsigned char *again = scr_mem_alloc(SZ);
+  assert(owned(again));
+  scr_mem_free(again);
+}
+
+/* Reference blocks the window cannot serve fall back to the system
+ * allocator, as plain blocks do, and growing one keeps its contents: on a
+ * platform whose usable size the runtime cannot ask for (scr_mem_block_size
+ * without malloc_usable_size) only the system allocator knows the block's
+ * size, and a copy would read no bytes. check_window_exhaustion runs first:
+ * every chunk of the window is another class's. */
+static void check_window_ref_fallback(void) {
+  enum { SZ = 1024, N = 8 };
+  static unsigned char *block[N];
+  for (size_t i = 0; i < N; i++) {
+    block[i] = scr_mem_alloc_ref(SZ);
+    assert(block[i] && aligned(block[i], 16) && !owned(block[i]));
+    fill(block[i], SZ, (unsigned char)i);
+  }
+  unsigned char *grown = scr_mem_realloc_ref(block[3], 2 * SZ);
+  assert(grown && !owned(grown));
+  verify(grown, SZ, 3);
+  block[3] = grown;
+  for (size_t i = 0; i < N; i++) scr_mem_free(block[i]);
+}
+
+#ifdef __linux__
+/* Runs fn in a child and expects the heap-limit message and an abort: an
+ * allocation that needs the window could not have it. */
+static void expect_heap_limit(void (*fn)(void)) {
+  int fds[2];
+  assert(pipe(fds) == 0);
+  pid_t child = fork();
+  assert(child >= 0);
+  if (child == 0) {
+    (void)dup2(fds[1], 2);
+    close(fds[0]);
+    fn();
+    _exit(0); /* the allocation returned: it did not need the window */
+  }
+  close(fds[1]);
+  char out[256] = {0};
+  size_t got = 0;
+  ssize_t r;
+  while (got < sizeof out - 1 && (r = read(fds[0], out + got, sizeof out - 1 - got)) > 0) got += (size_t)r;
+  close(fds[0]);
+  int status = 0;
+  assert(waitpid(child, &status, 0) == child);
+  assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+  assert(strcmp(out, "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n") == 0);
+}
+
+/* Program-lifetime objects past the window end the process as Node does
+ * when its heap is full: its message and an abort. */
+static void fill_program_lifetime(void) {
+  scr_plr_init();
+  for (;;) (void)scr_plr_alloc((size_t)1 << 20);
+}
+
+/* So does a reference block, small or large, in a program that stores
+ * references in 32-bit fields (scr_sa_require_window): a field would keep
+ * the low bits of a system address, so the allocation ends the process
+ * instead of falling back. A thread that cannot claim an arena takes the
+ * same path. */
+static void fill_window_small_refs(void) {
+  scr_sa_require_window();
+  for (;;) (void)scr_mem_alloc_ref(64);
+}
+
+static void fill_window_large_refs(void) {
+  scr_sa_require_window();
+  for (;;) (void)scr_mem_alloc_ref((size_t)256 << 10);
+}
+
+static void check_window_heap_limit(void) {
+  expect_heap_limit(fill_program_lifetime);
+  expect_heap_limit(fill_window_small_refs);
+  expect_heap_limit(fill_window_large_refs);
+}
+#endif
+#endif
+
 #if SCR_SMALL_ALLOC
-  check_slice_growth(); /* first: its class must be untouched */
+/* Whether p lies in the window (any owner). */
+static bool in_window(const void *p) { return (uintptr_t)p - scr_sa.base < scr_sa.span; }
+
+#if defined(__linux__)
+/* The resident pages of [p, p + n). */
+static size_t resident_pages_at(const void *p, size_t n) {
+  size_t page = (size_t)sysconf(_SC_PAGESIZE), count = 0, np = (n + page - 1) / page;
+  unsigned char *vec = malloc(np);
+  assert(vec && mincore((void *)p, np * page, vec) == 0);
+  for (size_t i = 0; i < np; i++) count += vec[i] & 1;
+  free(vec);
+  return count;
+}
+#endif
+
+/* Blocks a 32-bit reference may name come from the window above SCR_SA_MAX
+ * too: large classes up to 2 MiB, runs of chunks beyond. They keep their
+ * contents through realloc, come back zeroed from calloc, and are reused. */
+static void check_large_blocks(void) {
+  static const size_t sizes[] = {513, 640, 641, 1000, 4096, 65536, 100000, (size_t)2 << 20,
+                                 ((size_t)2 << 20) + 1, (size_t)5 << 20, (size_t)9 << 20};
+  for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+    size_t n = sizes[i];
+    unsigned char *p = scr_mem_alloc_ref(n);
+    assert(p && in_window(p) && aligned(p, 16) && scr_mem_block_size(p) >= n);
+    fill(p, n, (unsigned char)i);
+    unsigned char *z = scr_mem_calloc_ref(n);
+    assert(z && in_window(z) && z != p);
+    for (size_t k = 0; k < n; k += 61) assert(z[k] == 0);
+    assert(z[n - 1] == 0);
+    fill(z, n, (unsigned char)(i + 1));
+    verify(p, n, (unsigned char)i);
+    scr_mem_free(z);
+    /* A freed block of a class is the next one of the class; it comes
+     * back zeroed from calloc. */
+    if (n <= ((size_t)2 << 20)) {
+      unsigned char *again = scr_mem_calloc_ref(n);
+      assert(again == z);
+      for (size_t k = 0; k < n; k += 61) assert(again[k] == 0);
+      scr_mem_free(again);
+    }
+    scr_mem_free(p);
+  }
+  /* A freed run is taken again first, and reads as zero. */
+  unsigned char *run = scr_mem_alloc_ref((size_t)9 << 20);
+  fill(run, (size_t)9 << 20, 3);
+  scr_mem_free(run);
+  unsigned char *run2 = scr_mem_calloc_ref((size_t)9 << 20);
+  assert(run2 == run);
+  for (size_t k = 0; k < ((size_t)9 << 20); k += 4093) assert(run2[k] == 0);
+  scr_mem_free(run2);
+  /* Growth keeps the contents and stays in the window, through
+   * scr_mem_realloc_ref and through scr_mem_realloc of a large block. */
+  size_t steps[] = {600, 3000, 70000, (size_t)3 << 20, (size_t)9 << 20, 5000};
+  unsigned char *g = scr_mem_alloc_ref(100);
+  fill(g, 100, 9);
+  size_t have = 100;
+  for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+    size_t n = steps[i];
+    g = (i % 2) ? scr_mem_realloc(g, n) : scr_mem_realloc_ref(g, n);
+    assert(g && (n <= SCR_SA_MAX || in_window(g)));
+    verify(g, have < n ? have : n, 9);
+    fill(g, n, 9);
+    have = n;
+  }
+  scr_mem_free(g);
+  /* Freed blocks give their pages back on a trim, and still serve. */
+  enum { NB = 64 };
+  static unsigned char *b[NB];
+  for (size_t i = 0; i < NB; i++) {
+    b[i] = scr_mem_alloc_ref(65536);
+    fill(b[i], 65536, (unsigned char)i);
+  }
+  for (size_t i = 0; i < NB; i++) scr_mem_free(b[i]);
+  scr_heap_trim();
+  for (size_t i = 0; i < NB; i++) {
+    b[i] = scr_mem_calloc_ref(65536);
+    assert(in_window(b[i]));
+    for (size_t k = 0; k < 65536; k += 509) assert(b[i][k] == 0);
+    fill(b[i], 65536, (unsigned char)(i + 7));
+  }
+  for (size_t i = 0; i < NB; i++) {
+    verify(b[i], 65536, (unsigned char)(i + 7));
+    scr_mem_free(b[i]);
+  }
+#if defined(__linux__)
+  /* A run grows by moving its pages to a larger run: the contents stay, and
+   * the old range returns to the window reading as zero, without resident
+   * pages. */
+  {
+    size_t small_run = (size_t)5 << 20, big_run = (size_t)21 << 20;
+    unsigned char *r = scr_mem_alloc_ref(small_run);
+    fill(r, small_run, 0x3c);
+    unsigned char *g2 = scr_mem_realloc_ref(r, big_run);
+    assert(g2 && g2 != r && in_window(g2));
+    verify(g2, small_run, 0x3c);
+    fill(g2, big_run, 0x5d);
+    assert(scr_sa_chunks[((uintptr_t)r - scr_sa.base) >> SCR_SA_CHUNK_SHIFT] == 0);
+    assert(resident_pages_at(r, small_run) == 0);
+    verify(g2, big_run, 0x5d);
+    scr_mem_free(g2);
+  }
+#endif
+  /* A class whose blocks are not whole pages: a trimmed block's last page
+   * kept its bytes, and calloc clears them too. */
+  enum { ODD = 10000 };
+  for (size_t i = 0; i < NB; i++) {
+    b[i] = scr_mem_alloc_ref(ODD);
+    fill(b[i], ODD, 0xa5);
+  }
+  for (size_t i = 0; i < NB; i++) scr_mem_free(b[i]);
+  scr_heap_trim();
+  for (size_t i = 0; i < NB; i++) {
+    b[i] = scr_mem_calloc_ref(ODD);
+    for (size_t k = 0; k < ODD; k++) assert(b[i][k] == 0);
+  }
+  for (size_t i = 0; i < NB; i++) scr_mem_free(b[i]);
+}
+#endif
+
+#if defined(SCR_WORKERS) && SCR_SMALL_ALLOC
+/* Large blocks freed by another thread go back to their arena, and a large
+ * run freed by another thread goes back to the window. */
+enum { LARGE_HANDOFF = 200 };
+static unsigned char *large_handoff[LARGE_HANDOFF];
+static void *large_allocate(void *arg) {
+  (void)arg;
+  for (size_t i = 0; i < LARGE_HANDOFF; i++) {
+    size_t n = i % 10 == 0 ? ((size_t)3 << 20) : 600 + i * 97;
+    large_handoff[i] = scr_mem_alloc_ref(n);
+    assert(large_handoff[i] && in_window(large_handoff[i]));
+    fill(large_handoff[i], 600, (unsigned char)i);
+  }
+  return NULL;
+}
+static void *large_reuse(void *arg) {
+  (void)arg;
+  /* This thread may claim the parked arena, whose remote list holds the
+   * blocks; either way its blocks are its own. */
+  for (size_t i = 0; i < LARGE_HANDOFF; i++) {
+    unsigned char *p = scr_mem_calloc_ref(600 + i * 97);
+    assert(p && in_window(p));
+    for (size_t k = 0; k < 600; k++) assert(p[k] == 0);
+    scr_mem_free(p);
+  }
+  return NULL;
+}
+static void check_large_threads(void) {
+  pthread_t t;
+  assert(pthread_create(&t, NULL, large_allocate, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  for (size_t i = 0; i < LARGE_HANDOFF; i++) {
+    verify(large_handoff[i], 600, (unsigned char)i);
+    scr_mem_free(large_handoff[i]); /* remote frees, and runs back to the window */
+  }
+  assert(pthread_create(&t, NULL, large_reuse, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+}
+#endif
+
+#if SCR_SMALL_ALLOC && defined(__linux__) && !defined(SCR_WORKERS) && !defined(SCR_SA_WINDOW_TEST_CHUNKS)
+/* A program without workers carves each small class from its slice at the
+ * start of the window: a block's class is its offset >> SCR_SA_SLICE_SHIFT.
+ * A class that outgrows its slice goes on in chunks elsewhere in the window,
+ * whose blocks the free finds through the chunk map. SLICE_SIZE is a class
+ * the other checks leave unused. */
+enum { SLICE_SIZE = 168 };
+static int cmp_ptr(const void *a, const void *b) {
+  uintptr_t x = (uintptr_t) * (unsigned char *const *)a, y = (uintptr_t) * (unsigned char *const *)b;
+  return x < y ? -1 : x > y;
+}
+static void check_slices(void) {
+  unsigned char *p = scr_mem_alloc(SLICE_SIZE);
+  assert(p && owned(p));
+  assert(scr_sa_slice_span == (uintptr_t)SCR_SA_NCLASS << SCR_SA_SLICE_SHIFT);
+  uintptr_t off = (uintptr_t)p - scr_sa.base;
+  assert(off < scr_sa_slice_span && (off >> SCR_SA_SLICE_SHIFT) == class_of(p));
+  scr_mem_free(p);
+  assert(scr_mem_alloc(SLICE_SIZE) == p);
+  scr_mem_free(p);
+  if (SCR_SA_SLICE_SHIFT > 24) return; /* overflow needs the test's small slices */
+  size_t n = ((size_t)2 << SCR_SA_SLICE_SHIFT) / SLICE_SIZE;
+  unsigned char **b = malloc(n * sizeof *b);
+  assert(b);
+  size_t outside = 0;
+  for (size_t i = 0; i < n; i++) {
+    b[i] = scr_mem_alloc(SLICE_SIZE);
+    assert(b[i] && owned(b[i]) && class_of(b[i]) == class_of(p));
+    fill(b[i], SLICE_SIZE, (unsigned char)i);
+    outside += (uintptr_t)b[i] - scr_sa.base >= scr_sa_slice_span;
+  }
+  assert(outside > n / 3);
+  for (size_t i = 0; i < n; i++) verify(b[i], SLICE_SIZE, (unsigned char)i);
+  unsigned char **old = malloc(n * sizeof *old);
+  assert(old);
+  memcpy(old, b, n * sizeof *b);
+  qsort(old, n, sizeof *old, cmp_ptr);
+  for (size_t i = 0; i < n; i++) scr_mem_free(b[i]);
+  /* Every block came back to the class, in the slice and past it: the next
+   * n blocks are the same ones. */
+  for (size_t i = 0; i < n; i++) {
+    b[i] = scr_mem_alloc(SLICE_SIZE);
+    assert(bsearch(&b[i], old, n, sizeof *old, cmp_ptr));
+  }
+  for (size_t i = 0; i < n; i++) scr_mem_free(b[i]);
+  free(old);
+  free(b);
+}
+#endif
+
+#if SCR_SMALL_ALLOC && defined(__linux__)
+/* The chunk map mirrors the chunk table while the window lies below 32 GiB,
+ * and the free paths find the thread's blocks there. A block freed through
+ * scr_sa_free_foreign, which every free takes while the map is empty, goes
+ * back to its class as well. */
+static void check_chunk_map(void) {
+  unsigned char *p = scr_mem_alloc(72);
+  assert(p && owned(p));
+  uintptr_t off = (uintptr_t)p - scr_sa.base;
+  if (scr_sa.base + scr_sa.span <= (uintptr_t)SCR_SA_MAP_CHUNKS << SCR_SA_CHUNK_SHIFT)
+    assert(scr_sa_chunk_map[(uintptr_t)p >> SCR_SA_CHUNK_SHIFT] == scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT]);
+  assert(scr_sa.tag != SCR_SA_TAG_NONE);
+#ifndef SCR_WORKERS
+  scr_sa_free_foreign(p);
+  unsigned char *q = scr_mem_alloc(72);
+  assert(q == p);
+  scr_mem_free(q);
+#else
+  scr_mem_free(p);
+#endif
+}
+#endif
+
+int main(void) {
+#if defined(SCR_SA_WINDOW_TEST_CHUNKS) && SCR_SMALL_ALLOC
+  check_window_exhaustion();
+  check_window_ref_fallback();
+#ifdef __linux__
+  check_window_heap_limit();
+#endif
+  printf("allocator checks passed: small window\n");
+  return 0;
+#endif
+#if SCR_SMALL_ALLOC
+  check_chunk_growth(); /* first: its class must be untouched */
 #endif
   check_classes();
+#if SCR_SMALL_ALLOC
+  check_large_blocks();
+#endif
+#if SCR_SMALL_ALLOC && defined(__linux__)
+  check_chunk_map();
+#endif
+#if SCR_SMALL_ALLOC && defined(__linux__) && !defined(SCR_WORKERS) && !defined(SCR_SA_WINDOW_TEST_CHUNKS)
+  check_slices();
+#endif
   check_alignment_and_zeroing();
   check_realloc();
   check_system_pointers();
@@ -1206,6 +1693,7 @@ int main(void) {
   setenv("SCR_SA_DISCARD_DELAY_MS", "100", 1);
   setenv("SCR_SA_DISCARD_DELAY_MAX_MS", "0", 1);
   check_threads();
+  check_large_threads();
 #if defined(__linux__) && defined(__GLIBC__)
   check_thread_heap_huge_pages();
 #endif
@@ -1213,6 +1701,7 @@ int main(void) {
   check_trim();
   check_release_frontiers();
   check_discard();
+  check_discard_ref_blocks();
   check_discard_delay_grows();
   check_discard_waits_for_loop();
   check_idle_trim();

@@ -2182,6 +2182,163 @@ function callableInstanceStringCall(
   };
 }
 
+/** Refuses a copying conversion at a call through a value whose checker
+ * signature keeps its own type parameters — the erased instance
+ * lowerGenericFnValue / erasedGenericInstance produce. The call itself
+ * needs no new rule: such a value's IR type is already the erased func
+ * type, so the ordinary func-value lane completes its arguments into the
+ * erased signature's `unknown` slots (records, arrays and collections box
+ * as live capsules, primitives as themselves) and leaves the result dyn
+ * for each use to convert, where a lie throws (dynCheck) instead of
+ * answering a value the program never had. Keeping the lane unchanged is
+ * what keeps every program that compiles today byte-identical. */
+function refuseCopyingErasureInstanceCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  callee: IrExpr,
+): void {
+  if (callee.type.kind !== "func") return;
+  const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(call.expression));
+  if (!sigs.some((sig) => sig.getTypeParameters().length > 0)) return;
+  refuseCopyingErasureBoundary(lowerer, call, callee.type);
+}
+
+/** Refuse an erased instantiation whose boundary conversion would COPY the
+ * value instead of carrying it by reference.
+ *
+ * Most conversions across the erased boundary are exact: records and arrays
+ * box into `unknown` as live capsules of themselves, and the checked unbox
+ * back answers the same object (object-model S1). Two conversions are not,
+ * and compiling them would silently hand the program a different object
+ * than Node's:
+ *
+ * - a promise payload crossing the boundary. The dynamic promise conversion
+ *   re-materializes the settled record rather than boxing it live, so a
+ *   `Promise<{ id: number }>` that crosses into `unknown` (or into a wider
+ *   promise) settles to a copy. This is a pre-existing dynamic-tier
+ *   behaviour — it is what `const u: unknown = await p` does today for a
+ *   `Promise<Record>` with no generics in sight — so the erased form must
+ *   not promise otherwise. A closure counts by its RESULT: calling a boxed
+ *   closure converts its result into `unknown`, so a callback returning a
+ *   promise of a record loses that record's identity (the createLimiter
+ *   shape: `async () => shared` over the boundary).
+ * - a record (or array) converting to a different record (or array) type: a
+ *   width conversion copies.
+ *
+ * Everything the rule names is a shape the compiler refuses today, so no
+ * program that compiles changes: these fences only replace a silent
+ * divergence with a diagnostic. */
+function refuseCopyingErasureBoundary(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  funcType: IrType & { kind: "func" },
+): void {
+  const argNodes = call.arguments.nodes;
+  for (let i = 0; i < argNodes.length && i < funcType.params.length; i++) {
+    const arg = argNodes[i]!;
+    if (ts.isSpreadElement(arg)) continue;
+    const reason = erasureCopyReason(lowerer, lowerer.irTypeOf(arg), funcType.params[i]!);
+    if (reason !== null) {
+      lowerer.unsupported(
+        "SC1090",
+        arg,
+        `passing this argument across the erased generic boundary (${reason}; JavaScript hands the same object over)`,
+      );
+    }
+  }
+  const reason = erasureCopyReason(lowerer, funcType.ret, lowerer.irTypeOf(call));
+  if (reason !== null) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `returning this call's result across the erased generic boundary (${reason}; JavaScript hands the same object back)`,
+    );
+  }
+}
+
+/** Why converting a value of type `src` at the erased boundary (`dst`)
+ * copies it, or null when the conversion is exact. */
+function erasureCopyReason(lowerer: Lowerer, src: IrType, dst: IrType): string | null {
+  if (typeEquals(src, dst)) return null;
+  if (src.kind === "dyn") {
+    // An unboxed capsule answers the same object; only re-materializing a
+    // promise's payload at settlement copies.
+    if (dst.kind === "promise" && promisePayloadHoldsStructure(lowerer, dst.inner))
+      return `its promise payload is re-materialized when it settles`;
+    return null;
+  }
+  if (dst.kind === "dyn") return dynCrossingCopyReason(lowerer, src);
+  if (src.kind === "record" && dst.kind === "record")
+    return `a '${lowerer.fmt(src)}' becomes the narrower '${lowerer.fmt(dst)}' by copying it`;
+  if (src.kind === "array" && dst.kind === "array")
+    return `a '${lowerer.fmt(src)}' becomes '${lowerer.fmt(dst)}' by copying it`;
+  if (src.kind === "promise" && dst.kind === "promise") {
+    if (dst.inner.kind === "dyn" && promisePayloadHoldsStructure(lowerer, src.inner))
+      return `the '${lowerer.fmt(src)}' payload is re-materialized when it settles`;
+    return erasureCopyReason(lowerer, src.inner, dst.inner);
+  }
+  if (src.kind === "func" && dst.kind === "func")
+    return erasureCopyReason(lowerer, src.ret, dst.ret);
+  return null;
+}
+
+/** Why a value of type `t` crossing INTO `unknown` copies, or null. A
+ * record or array boxes as a live capsule of itself; a function boxes as a
+ * callable whose RESULT converts the same way, so the result decides, and a
+ * record or array result comes back as a fresh value because the boxed
+ * callable converts it through the dynamic call; a promise's payload is
+ * re-materialized when it settles. */
+function dynCrossingCopyReason(lowerer: Lowerer, t: IrType): string | null {
+  if (t.kind === "func") {
+    const inner = dynCrossingCopyReason(lowerer, t.ret);
+    if (inner !== null) return inner;
+    if (structuredResultHoldsCopy(lowerer, t.ret))
+      return `a '${lowerer.fmt(t.ret)}' result is re-materialized when the boxed function returns it`;
+    return null;
+  }
+  if (t.kind === "union") {
+    const def = lowerer.unions.get(t.unionId);
+    for (const arm of def?.arms ?? []) {
+      const reason = dynCrossingCopyReason(lowerer, arm);
+      if (reason !== null) return reason;
+    }
+    return null;
+  }
+  if (t.kind !== "promise") return null;
+  return promisePayloadHoldsStructure(lowerer, t.inner)
+    ? `a promise of '${lowerer.fmt(t.inner)}' is re-materialized when it settles`
+    : null;
+}
+
+/** True when a boxed function's RESULT is a record or array, or a union with
+ * such an arm. The boxed callable converts that result through the dynamic
+ * call, which answers a fresh value, so the caller does not get the object
+ * the function returned. */
+function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "record" || t.kind === "array") return true;
+  if (t.kind !== "union") return false;
+  const def = lowerer.unions.get(t.unionId);
+  return def !== undefined && def.arms.some((arm) => structuredResultHoldsCopy(lowerer, arm));
+}
+
+/** True when a promise payload holds a value the dynamic tier re-materializes
+ * at settlement (records, arrays, class instances and their unions) rather
+ * than carrying by reference. */
+function promisePayloadHoldsStructure(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "record") {
+    const shape = lowerer.shapes.get(t.shapeId);
+    return !!shape && (shape.fields.length > 0 || shape.indexValue !== undefined);
+  }
+  if (t.kind === "array" || t.kind === "object") return true;
+  if (t.kind === "promise") return promisePayloadHoldsStructure(lowerer, t.inner);
+  if (t.kind === "func") return promisePayloadHoldsStructure(lowerer, t.ret);
+  if (t.kind === "union") {
+    const def = lowerer.unions.get(t.unionId);
+    return !!def && def.arms.some((arm) => promisePayloadHoldsStructure(lowerer, arm));
+  }
+  return false;
+}
+
 /** A call through an evaluated callee value: checked-dynamic callees,
  * function unions, typed-rest and runtime-arity closures. */
 export function lowerCallThroughValue(
@@ -2190,6 +2347,14 @@ export function lowerCallThroughValue(
   callee: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
+  // A callee value that keeps its call signature's OWN type parameters
+  // (`f(3)` where `f: <T>(x: T) => T`, a generic method's record slot, a
+  // generic result read back) is the ERASED instance — one function whose
+  // parameters and result are `unknown`, exactly the function JavaScript
+  // runs for every type argument. Its IR type is that erased func type, so
+  // the ordinary lanes below serve the call; only a boundary conversion
+  // that would COPY is refused instead of compiled.
+  refuseCopyingErasureInstanceCall(lowerer, expr, callee);
   // A CHECKED-DYNAMIC callee — `fn(a, b)` where fn is an implicit-any
   // JS binding (the mustCall body's `fn(...args)`), a dyn capture, or a
   // keyed read off a dyn value: the dynCall boundary. Arguments convert
@@ -10395,6 +10560,11 @@ export function lowerRecordFieldCall(
       );
     }
   }
+  // A generic member's field holds its erased instance, and the call
+  // through the field crosses the same boundary as one through the
+  // instance value itself: the conversions that would copy are refused
+  // here too.
+  refuseCopyingErasureInstanceCall(lowerer, call, callee);
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {
     kind: "callValue",

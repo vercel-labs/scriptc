@@ -5406,12 +5406,13 @@ function resolveImport7(
   from: ts.SourceFile,
   specifier: string,
   resolutionKind: "import" | "require" = "import",
+  report = true,
 ): ts.SourceFile | null {
   const resolved = resolveProjectModule(from.fileName, specifier);
   if (resolved !== null) return program.getSourceFile(resolved) ?? null;
   const npm = resolveNpmImport7(from.fileName, specifier, resolutionKind);
   return npm && isNpmStaticPackage(npm.packageName)
-    ? npmStaticProgramDep(program, npm.packageName, npm.typesFile)
+    ? npmStaticProgramDep(program, npm.packageName, npm.typesFile, report)
     : null;
 }
 
@@ -5483,25 +5484,37 @@ function npmStaticProgramFile(program: ts.Program, resolvedFile: string): ts.Sou
 /** The PROGRAM source file an opted-in --npm-static package's resolved
  * entry maps to, or null with the package marked an offender (resolution
  * still answering declarations, or the file missing from the type-checked
- * program — a path-identity mismatch between the two resolvers). */
+ * program — a path-identity mismatch between the two resolvers).
+ *
+ * `report` is false for the HEURISTIC graph walks (the type-only
+ * reachability and reexport planners): they over-count edges on purpose
+ * (any call with a leading string literal is a loading edge), so an
+ * unrelated file's `registerLanguage("diff", …)` must not resolve the
+ * literal `"diff"` through the require condition and classify that PACKAGE
+ * an offender. Only a real import edge decides a package's fate. */
 function npmStaticProgramDep(
   program: ts.Program,
   packageName: string,
   resolvedFile: string,
+  report = true,
 ): ts.SourceFile | null {
   if (!isJsSourceFileName(resolvedFile)) {
-    reportNpmStaticOffender(
-      packageName,
-      `its import resolves to '${resolvedFile}', not to runtime JavaScript`,
-    );
+    if (report) {
+      reportNpmStaticOffender(
+        packageName,
+        `its import resolves to '${resolvedFile}', not to runtime JavaScript`,
+      );
+    }
     return null;
   }
   const dep = npmStaticProgramFile(program, resolvedFile);
   if (dep === null) {
-    reportNpmStaticOffender(
-      packageName,
-      `its entry '${resolvedFile}' did not join the type-checked program`,
-    );
+    if (report) {
+      reportNpmStaticOffender(
+        packageName,
+        `its entry '${resolvedFile}' did not join the type-checked program`,
+      );
+    }
     return null;
   }
   return dep;
@@ -5877,7 +5890,7 @@ function preflight7(load: LoadResult): {
     spec: string,
     resolutionKind?: "import" | "require",
   ): ts.SourceFile | null =>
-    resolveImport7(program, sf, spec, resolutionKind) ??
+    resolveImport7(program, sf, spec, resolutionKind, false) ??
     npmStaticDepSf7(program, sf, spec, resolutionKind);
   const typeOnlyFiles = typeOnlyReachedFiles(
     program,

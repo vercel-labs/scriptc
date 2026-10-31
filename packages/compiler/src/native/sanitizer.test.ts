@@ -42,6 +42,7 @@ const features = {
   moduleNamespace: false,
   moduleNamespaceDyn: false,
   primitiveWrapper: false,
+  iteratorProto: false,
   regex: true,
   copying: false,
   textDecoderLegacy: false,

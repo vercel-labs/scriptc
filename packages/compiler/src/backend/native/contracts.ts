@@ -217,6 +217,8 @@ export interface CcOptions {
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
   primitiveWrapper?: boolean;
+  /** %Iterator% and %Iterator.prototype%: compiles scr_js_iterator.c. */
+  iteratorProto?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep

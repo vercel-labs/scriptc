@@ -790,6 +790,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run
   // user hooks and the guard refuses.
   "wrapper.new",
+  // %Iterator% (scr_js_iterator.c): construction always throws, and
+  // Iterator.from runs the value's iterator method and next getter.
+  "iterator.construct",
+  "iterator.from",
+  "iterator.instanceOf",
   "wrapper.toObject",
   "wrapper.objectTag",
   "wrapper.thisString",

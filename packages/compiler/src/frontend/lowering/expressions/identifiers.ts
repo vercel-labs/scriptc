@@ -1,4 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { isJsIteratorGlobal, iteratorConstructorExpr } from "../iterator-prototype.js";
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
@@ -890,6 +891,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     }
     if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
+      // %Iterator% in JavaScript: the live constructor (scr_js_iterator.c).
+      if (canonical === "Iterator" && isJsIteratorGlobal(lowerer, expr))
+        return iteratorConstructorExpr(loc);
       // Builtin constructors have real function values in both source
       // languages (TypeScript reads them as dynamic values).
       const builtinValue = builtinGlobalValueAt(

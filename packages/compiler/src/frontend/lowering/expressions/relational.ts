@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
@@ -116,6 +117,8 @@ const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] a
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const iteratorTest = lowerIteratorInstanceOf(lowerer, expr, loc);
+  if (iteratorTest !== null) return iteratorTest;
   const arrayClassTest = lowerArrayClassInstanceOf(lowerer, expr, loc);
   if (arrayClassTest !== null) return arrayClassTest;
   const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);

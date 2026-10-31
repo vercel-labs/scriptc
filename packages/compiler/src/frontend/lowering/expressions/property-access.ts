@@ -1,3 +1,4 @@
+import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
@@ -298,6 +299,27 @@ function isStatFsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression
   );
 }
 
+/** The Iterator.prototype helpers and the iterator members with no typed
+ * value lowering, read as values on a typed iterator in JavaScript.
+ * `next` and `return` answer the function Node's prototype chain holds
+ * (a generator's, or an iterator helper object's); `throw` is not here
+ * because an iterator helper object has none. */
+const TYPED_ITERATOR_MEMBER_VALUES = new Set([
+  "next",
+  "map",
+  "filter",
+  "take",
+  "drop",
+  "flatMap",
+  "reduce",
+  "toArray",
+  "forEach",
+  "some",
+  "every",
+  "find",
+  "return",
+]);
+
 /** The dgram.Socket methods its checked-dynamic handle answers as
  * function values (scr_dgram.c's scr_dgram_dyn_method_names). */
 const DGRAM_METHOD_VALUES = new Set([
@@ -316,6 +338,26 @@ const DGRAM_METHOD_VALUES = new Set([
   "ref",
   "unref",
 ]);
+
+/** A lib builtin iterator whose prototype chain holds no `return` in Node
+ * 24: the Array, String, Map and Set iterators. Generators and iterator
+ * helper objects do have one. */
+function builtinIteratorWithoutReturn(lowerer: Lowerer, node: ts.Expression): boolean {
+  const symbol = lowerer.typeOf(node).getSymbol();
+  if (symbol === undefined) return false;
+  const name = ts.symbolName(symbol);
+  if (
+    name !== "ArrayIterator" &&
+    name !== "StringIterator" &&
+    name !== "MapIterator" &&
+    name !== "SetIterator"
+  )
+    return false;
+  return (
+    symbol.declarations.length > 0 &&
+    symbol.declarations.every((d) => lowerer.isStdlibFile(ts.getSourceFileOfNode(d)))
+  );
+}
 
 function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
   let resolve: ts.Expression = expr;
@@ -2097,6 +2139,46 @@ export function lowerIntrinsicProperty(
   // because a write lowers the prototype read with the chain blocked.
   fenceDatePrototypeWrite(lowerer, expr);
   if (lowerer.chainBlocked(expr)) return null;
+  // Iterator.prototype, its members and Iterator's own members in
+  // JavaScript: the live objects (scr_js_iterator.c).
+  const iteratorMember = lowerIteratorMemberValue(lowerer, expr);
+  if (iteratorMember) return iteratorMember;
+  // A helper method read as a value on a typed iterator in JavaScript
+  // (`g().map === Iterator.prototype.map`), or a member the typed iterator
+  // has no lowering for (`[].values().return` is undefined): the value the
+  // runtime answers through the boxed iterator, exactly Node's.
+  if (
+    !expr.questionDotToken &&
+    TYPED_ITERATOR_MEMBER_VALUES.has(expr.name.text) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
+  ) {
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    if (recvT?.kind === "generator" && recvT.async !== true) {
+      // Node's builtin iterators (%ArrayIteratorPrototype%'s family) hold
+      // no `return`; a generator's and an iterator helper object's do.
+      if (expr.name.text === "return" && builtinIteratorWithoutReturn(lowerer, expr.expression))
+        return {
+          kind: "seqExpr",
+          stmts: [
+            {
+              kind: "exprStmt",
+              expr: lowerer.lowerExpr(expr.expression),
+              loc: locOf(expr.expression),
+            },
+          ],
+          result: dynUndefinedExpr(locOf(expr)),
+          type: DYN,
+          loc: locOf(expr),
+        };
+      return {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
+  }
   // Object.prototype.constructor: the Object constructor value.
   if (
     expr.name.text === "constructor" &&

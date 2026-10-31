@@ -1,3 +1,4 @@
+import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
   arrayClassMemberOwner,
@@ -137,6 +138,7 @@ import {
   lowerHelperReturnCall,
   lowerIteratorFromCall,
   lowerIteratorHelperCall,
+  lowerWidenedIteratorHelperCall,
 } from "./containers/iterator-helpers.js";
 import {
   lowerObjectAssignIndexShape,
@@ -1807,6 +1809,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // (untyped in fallback builds, so before the dyn receiver path) or
       // webcrypto.
       lowerWebCryptoMethodCall(lowerer, expr, expr.expression) ??
+      // A helper call on a JavaScript binding reassigned with a helper
+      // stage (`let it = g(); it = it.filter(...)`): the binding holds the
+      // checked value, and the dyn receiver path would read `filter` as
+      // Array.prototype's. Before it, so the runtime's helper answers.
+      lowerWidenedIteratorHelperCall(lowerer, expr) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
       lowerDynReceiverMethodCall(lowerer, expr, expr.expression) ??
@@ -8045,6 +8052,11 @@ function lowerIteratorStaticFence(
   if (!lowerer.isStdlibMember(access)) return null;
   const from = lowerIteratorFromCall(lowerer, call, access);
   if (from) return from;
+  // Any other argument in JavaScript: the runtime's Iterator.from.
+  if (access.name.text === "from" && !call.questionDotToken && !access.questionDotToken) {
+    const dynamic = lowerIteratorFromDyn(lowerer, call);
+    if (dynamic) return dynamic;
+  }
   lowerer.noLowering(
     `Iterator.${access.name.text}`,
     call,

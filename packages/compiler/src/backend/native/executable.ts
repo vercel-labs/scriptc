@@ -242,6 +242,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
+  // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).
+  unit((u) => u.opts.iteratorProto === true, "scr_js_iterator.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||

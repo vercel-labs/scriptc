@@ -103,3 +103,14 @@ test("the BigIntStats unit follows its own member-read gate, not bigint", () => 
   // name bigstats, so a bigint program keeps this unit out of its binary.
   expect(unit.predicate).toBe("bigstats");
 });
+
+test("reading a spawnSync result's error selects the child build with its fields", () => {
+  // A program that reads `.error` links the build that keeps the spawn errno
+  // and argv on the result and stamps Node's errnoException fields.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: true }).defines).toEqual([
+    "SCR_CHILD_ERR_FIELDS",
+  ]);
+  // A program that spawns but never reads `.error` keeps the default object
+  // and the result container exactly as they were, byte for byte.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: false }).defines).toEqual([]);
+});

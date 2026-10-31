@@ -200,6 +200,9 @@ export interface CcOptions {
   /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
    * (the write method as a value, its replacement, run-time-typed chunks). */
   stdioWriteSlot?: boolean;
+  /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
+   * errnoException fields (errno, syscall, path, spawnargs). */
+  childErrorFields?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;

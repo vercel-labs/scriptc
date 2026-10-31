@@ -85,6 +85,10 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** The spawnSync result's `.error` errnoException fields (errno, syscall,
+   * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
+   * (false) otherwise. */
+  childErrorFields?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent

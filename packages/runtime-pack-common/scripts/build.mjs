@@ -753,6 +753,7 @@ async function build() {
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",
+          "SCR_CHILD_ERR_FIELDS",
           "SCR_NODE_ISLANDS",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],

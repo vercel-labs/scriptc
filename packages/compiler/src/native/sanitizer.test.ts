@@ -18,6 +18,7 @@ const features = {
   streamDyn: false,
   handleProps: false,
   childLifecycle: false,
+  childErrorFields: false,
   declAdopt: false,
   typeOrigins: false,
   dynForAwait: false,

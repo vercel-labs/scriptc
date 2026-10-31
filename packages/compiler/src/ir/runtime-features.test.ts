@@ -355,4 +355,27 @@ describe("runtime feature snapshots", () => {
     );
     expect(moduleRuntimeFeatures(empty).fsBufferBrand).toBe(false);
   });
+
+  test("gates the spawn error's errnoException fields on reading it", () => {
+    // The `.error` read is what selects scr_child.c's SCR_CHILD_ERR_FIELDS
+    // build; a program that only spawns keeps the default object.
+    const reader = module();
+    reader.functions[0]!.body.push(call("spawnRes.error"));
+    expect(moduleRuntimeFeatures(reader)).toMatchObject({
+      childProcess: true,
+      childErrorFields: true,
+    });
+
+    const spawner = module();
+    spawner.functions[0]!.locals.push({
+      id: "r",
+      name: "r",
+      mutable: false,
+      type: { kind: "spawnRes" },
+    });
+    expect(moduleRuntimeFeatures(spawner)).toMatchObject({
+      childProcess: true,
+      childErrorFields: false,
+    });
+  });
 });

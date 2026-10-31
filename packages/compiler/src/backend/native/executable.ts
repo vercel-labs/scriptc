@@ -490,6 +490,10 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_FS_WATCH_FILE", when: (opts) => opts.watchFile },
   // scr_lib.c's file reads brand their bytes as Node's Buffer answers.
   { define: "SCR_FS_BUFFER_BRAND", when: (opts) => opts.fsBufferBrand },
+  // scr_child.c's spawnSync result keeps the spawn errno and argv so
+  // `.error` answers Node's errnoException fields (errno, syscall, path,
+  // spawnargs); a program that never reads `.error` keeps the default build.
+  { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

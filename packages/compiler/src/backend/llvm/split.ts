@@ -493,10 +493,7 @@ function shardModule(
   // power-of-two buckets, retaining the canonical path when even two would
   // exceed the budget. Small modules allow one target-sized shared budget.
   const sharedBytes =
-    [...preamble, ...globalDecls].reduce(
-      (bytes, line) => bytes + Buffer.byteLength(line) + 1,
-      0,
-    ) +
+    [...preamble, ...globalDecls].reduce((bytes, line) => bytes + Buffer.byteLength(line) + 1, 0) +
     Buffer.byteLength(tail("program-globals.ll")) +
     functions.reduce((bytes, fn) => bytes + Buffer.byteLength(fn.declaration) + 1, 0);
   const bucketLimit = Math.floor(Math.max(sourceBytes, DEFAULT_TARGET_BYTES) / sharedBytes) - 1;

@@ -1271,9 +1271,7 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
           return line.replace(" {", ` !dbg !${10 + Number(definition[1])} {`);
         }
         if (line === "}") location = null;
-        return location !== null && line.startsWith("  ")
-          ? `${line}, !dbg !${location}`
-          : line;
+        return location !== null && line.startsWith("  ") ? `${line}, !dbg !${location}` : line;
       });
     const source = [
       ...("fallback" in options ? ['@"quoted global" = global i64 0'] : []),

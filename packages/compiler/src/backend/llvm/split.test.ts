@@ -368,7 +368,10 @@ attributes #0`,
     ]);
     const main = join(dir, "main.c");
     const entry = mangleFunction("public_entry");
-    await writeFile(main, `long long ${entry}(void); int main(void) { return ${entry}() != 18; }\n`);
+    await writeFile(
+      main,
+      `long long ${entry}(void); int main(void) { return ${entry}() != 18; }\n`,
+    );
     const binary = join(dir, "program");
     execFileSync("clang", [main, merged, "-o", binary]);
     const symbols = spawnSync("dsymutil", [binary], { encoding: "utf8" });

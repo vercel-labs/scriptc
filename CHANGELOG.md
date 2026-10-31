@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Native TLS rejects certificates with compromised public keys, including selected trust anchors, and reports the same verification result through typed and dynamic socket properties. Optional verification records `CERT_REVOKED` or `UNSPECIFIED` without authorizing the peer.
+
 <!-- release:start -->
 
 ## 0.4.7

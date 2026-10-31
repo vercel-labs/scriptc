@@ -48,7 +48,10 @@ export const ADOPTED_OPTIONS = [
  * preflight codes — SC0005 (duplicate lexical declaration in a block or
  * switch statement list), SC0006 (lexical declaration colliding with a
  * `var` in the same block), SC0007 (declaration in a single-statement
- * position). A relaxation that needs one of those rules to keep firing must
+ * position), SC0008 (an ImportCall argument list the grammar does not
+ * allow), SC0009 (a private name with no declaring enclosing class) and
+ * SC0010 (an assignment target that is not a variable or property access).
+ * A relaxation that needs one of those rules to keep firing must
  * land with the matching rule in that pass, not rely on this table. */
 
 export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([

@@ -1539,10 +1539,17 @@ export interface TypeMapperCtx {
   /** Successful context-free mappings, keyed by the
    * TypeScript server's stable type id. A generated facade can reference the
    * same large record/function type thousands of times; remapping its full
-   * member graph each time is quadratic work. Generic/mixin contexts opt out
-   * through canMemoizeType because the same checker type can map differently
-   * under different instantiation bindings. */
+   * member graph each time is quadratic work. Generic contexts memoize per
+   * binding context instead (typeMemoFor), because the same checker type maps
+   * differently under different instantiation bindings; mixin contexts still
+   * opt out through canMemoizeType. */
   typeMemo?: Map<number, IrType>;
+  /** The memo for the binding context active now (Lowerer.currentTypeMemo):
+   * the top-level memo outside generic bindings, and one memo per installed
+   * pair of binding maps inside them. Takes the place of typeMemo when set;
+   * a hook rather than a field so that copies of the context made inside a
+   * binding scope keep following the lowerer's current scope. */
+  typeMemoFor?: () => Map<number, IrType>;
   canMemoizeType?: () => boolean;
   /** True for files the Lowerer actually compiles (its module order). A
    * class type can reach the entry through the TYPE world alone — a jsdoc
@@ -2091,7 +2098,7 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // answers keep separate memo entries. Type ids are non-negative integers.
   const memoKey = memoizable ? typeId * 2 + (ctx.emptyLiteralArm ? 1 : 0) : null;
   if (memoKey !== null) {
-    const memo = ctx.typeMemo?.get(memoKey);
+    const memo = (ctx.typeMemoFor?.() ?? ctx.typeMemo)?.get(memoKey);
     if (memo !== undefined) return memo;
   }
   const sensitivityAtEntry = contextResolutions;
@@ -2142,7 +2149,10 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ctx.erasingSignature === undefined &&
       (ctx.canMemoizeType?.() ?? true)
     ) {
-      ctx.typeMemo?.set(memoKey, mapped);
+      // Read the hook again rather than reusing the entry's memo: the write
+      // condition rechecks the binding context, and a hook is what keeps a
+      // context copy made inside a binding scope pointed at that scope.
+      (ctx.typeMemoFor?.() ?? ctx.typeMemo)?.set(memoKey, mapped);
     }
     return mapped;
   } finally {

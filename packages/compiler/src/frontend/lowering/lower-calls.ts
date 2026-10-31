@@ -7777,11 +7777,12 @@ export function recordKeysArrayCall(
       }
       body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
-      // A record that kept undeclared keys answers for-in through its live
-      // kept view, exactly as Object.keys does at its call site. Gated on
-      // the shape being one a kept width spread builds (a shape that keeps
-      // no source stays byte-identical to main) and on the shape holding a
-      // source at all.
+      // A record that kept the order of the sources a declared spread merge
+      // copied, or undeclared keys a width spread copied, answers for-in
+      // through its live kept view, exactly as Object.keys does at its call
+      // site. Gated on the shape being one a kept merge or kept width spread
+      // builds (every other shape stays byte-identical to main) and on the
+      // shape holding a source at all.
       if (
         lowerer.keyOrder.keptSourceShapes.has(argIr.shapeId) &&
         recordMayKeepSource(lowerer, argIr)

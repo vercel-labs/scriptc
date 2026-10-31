@@ -1998,8 +1998,11 @@ export class LlDyn {
     );
   }
 
-  /** `record.sourceNote(built, keys)`: the built record keeps `keys` as
-   * its source when they hold an undeclared key or another order. */
+  /** `record.sourceNote(built, keys)`: the built record keeps `keys` as its
+   * source when they hold an undeclared key (a width spread's copy) or
+   * another order: the declared keys a declared spread merge's sources
+   * supplied, in creation order, or a width spread's own keys in order
+   * (declared ones are placeholders; scr_record_source_note). */
   emitRecordSourceNote(B: BlockBuilder, built: string, keys: string, shapeId: string): void {
     const host = this.host;
     const shape = host.recordsById.get(shapeId)!;

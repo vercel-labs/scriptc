@@ -90,6 +90,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   youngNursery: boolean;
   eventTarget: boolean;
   wasm: boolean;
+  wasmVectors: boolean;
   dynTier: boolean;
   streamDyn: boolean;
   handleProps: boolean;
@@ -325,6 +326,7 @@ export function effectiveRuntimeFeatures(
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
+    wasmVectors: features.wasmVectors === true,
     dynTier: features.dynTier === true,
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,

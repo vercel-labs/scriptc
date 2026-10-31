@@ -436,6 +436,53 @@ describe("runtime pack manifests", () => {
     expect(fileHandle.archives.map((path) => path.split("/").at(-1))).toEqual(["zlib.a"]);
   });
 
+  test("scalar and vector Wasm programs select one consistent cell layout", async () => {
+    const { root, packagePath, manifest } = await fixture();
+    const unit = manifest.flavors.release!.runtime_units[0]!;
+    const scalar = unit.variants[0]!;
+    const vectors = unit.variants[1]!;
+    for (const flavor of Object.values(manifest.flavors)) {
+      flavor.runtime_units = [
+        {
+          source: "scr_wasm.c",
+          predicate: "wasm",
+          variants: [
+            {
+              ...scalar,
+              id: "default",
+              when: { wasmVectors: false },
+              defines: ["SCR_WASM_SCALAR_RUNTIME"],
+            },
+            { ...vectors, id: "vectors", when: { wasmVectors: true }, defines: [] },
+          ],
+        },
+      ];
+    }
+    await writeFile(join(root, "runtime-pack.json"), JSON.stringify(manifest));
+    for (const wasmVectors of [false, true]) {
+      const pack = await loadRuntimePack({
+        target: MACOS_ARM64_TARGET,
+        features: { ...BASE, wasm: true, ...(wasmVectors ? { wasmVectors: true } : {}) },
+        optimization: "release",
+        resolver: () => packagePath,
+      });
+      expect(pack.runtimeObjects.map((path) => basename(path))).toEqual([
+        wasmVectors ? "legacy.o" : "base.o",
+      ]);
+    }
+  });
+
+  test("runtime unit artifacts must stay inside the pack", async () => {
+    const { manifest } = await fixture();
+    const malformed = structuredClone(manifest);
+    Object.assign(malformed.flavors.release!.runtime_units[0]!.variants[0]!, {
+      path: "../escape.o",
+      sha256: "0".repeat(64),
+      size: 1,
+    });
+    expect(() => parseRuntimePackManifest(malformed)).toThrow("malformed");
+  });
+
   test("a stale manifest reports its identity independently from the package", async () => {
     const { packagePath, manifest, root } = await fixture();
     await writeFile(

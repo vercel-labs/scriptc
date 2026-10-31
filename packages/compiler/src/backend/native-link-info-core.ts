@@ -28,6 +28,8 @@ export interface NativeLinkFeatures {
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
    * without it keep their link identity. */
   wasm?: boolean;
+  /** ABI3 vector signatures/globals select the full WebAssembly runtime. */
+  wasmVectors?: boolean;
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;

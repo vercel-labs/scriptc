@@ -3,6 +3,8 @@ import { type IrModule } from "../ir/ir.js";
 import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { decodeBase64 } from "../wasm/base64.js";
+import { hasVectorInterfaces, parseWasmModule } from "../wasm/module.js";
 import { youngNurseryRequested } from "./young-nursery.js";
 
 export function executableLinkFeatures(mod: IrModule, largePages = false): NativeLinkFeatures {
@@ -18,6 +20,13 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
+    ...((mod.wasmModules ?? []).some((module) => {
+      const bytes = decodeBase64(module.bytes);
+      if (bytes === null) throw new Error("invalid embedded WebAssembly module encoding");
+      return hasVectorInterfaces(parseWasmModule(bytes));
+    })
+      ? { wasmVectors: true }
+      : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),

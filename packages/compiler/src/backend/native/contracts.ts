@@ -187,6 +187,7 @@ export interface CcOptions {
   eventTarget?: boolean;
   /** The WebAssembly API: compiles scr_wasm.c. */
   wasm?: boolean;
+  wasmVectors?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
   /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers

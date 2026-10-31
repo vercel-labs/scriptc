@@ -808,6 +808,7 @@ async function compileExecutableNative(
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
+    ...(features.wasmVectors ? { wasmVectors: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),

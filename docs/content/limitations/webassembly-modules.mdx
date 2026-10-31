@@ -5,7 +5,10 @@ Bytes the build did not see, including bytes produced at run time, reject with a
 `scriptc coverage` lists the modules a build finds, with their size, whether they validate, and the WebAssembly proposals they use.
 
 Translated modules can use the WebAssembly 2.0 feature set: the MVP plus sign-extension operators, non-trapping float-to-int conversions, bulk memory, multi-value, mutable globals, reference types, and extended constant expressions.
-Modules that use SIMD, threads, exception handling, tail calls, typed function references or GC, memory64, or multiple memories are not translated, so loading them rejects with a `CompileError` that names the proposal the module uses, and `WebAssembly.validate` answers `false` for them; packages that fall back to a scalar build when that happens, such as undici and es-module-lexer, take their fallback.
+Standard SIMD128 and relaxed SIMD instructions are translated, including vector globals, function signatures, indirect calls and imports between translated modules.
+JavaScript cannot represent `v128` values, so calling an exported function with vector parameters or results throws a `TypeError`, as does calling an ordinary JavaScript import with that signature.
+Exported vector globals can link modules, but their values cannot be read or assigned from JavaScript, and JavaScript cannot construct a vector global.
+Modules that use threads, exception handling, tail calls, typed function references or GC, memory64, or multiple memories are not translated, so loading them rejects with a `CompileError` that names the proposal the module uses, and `WebAssembly.validate` answers `false` for them.
 Invalid modules the build finds reject with a `CompileError` that includes the validation error.
 
 Supported: `WebAssembly.compile`, `instantiate` (with bytes or a `Module`), `validate`, `new WebAssembly.Module`, `new WebAssembly.Instance`, `new WebAssembly.Memory`, `new WebAssembly.Table`, `new WebAssembly.Global`, `WebAssembly.Module.imports`, `exports` and `customSections`, and `instanceof` for every class; the error classes `CompileError`, `LinkError` and `RuntimeError`, constructed with or without `new`; `globalThis.WebAssembly` and its `compile`, `instantiate` and `validate` functions as values.

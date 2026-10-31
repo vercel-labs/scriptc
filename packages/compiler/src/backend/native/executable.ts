@@ -464,6 +464,7 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
+  { define: "SCR_WASM_SCALAR_RUNTIME", when: (opts) => opts.wasm && !opts.wasmVectors },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   // scr_json.c's view slot answers NULL for a field a partial record view
   // does not have; only a program with a partial assertion selects it.

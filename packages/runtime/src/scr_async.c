@@ -1249,6 +1249,73 @@ static double scr_timer_coerce_ms(double ms) {
   return (double)(unsigned long long)ms; /* trunc: positive, finite, in range */
 }
 
+/* The warnings Node's Timeout constructor emits for a delay it sets to 1
+ * (lib/internal/timers.js): TimeoutOverflowWarning for one past
+ * TIMEOUT_MAX, and, once per process each, TimeoutNegativeWarning and
+ * TimeoutNaNWarning. process.emitWarning delivers them on the next tick:
+ * to the 'warning' listeners and the default report when the
+ * process-warning unit is linked, otherwise the default report alone. */
+static SCR_TL bool scr_timer_warned_negative = false;
+static SCR_TL bool scr_timer_warned_nan = false;
+SCR_TL int scr_timer_mocked_apis = 0;
+
+static void scr_timer_warn_tick(ScrClosure *self) {
+  ScrStr *name = (ScrStr *)scr_box_get_ref(self->caps[0]);
+  ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[1]);
+  if (scr_warning_emit_hook) {
+    char type[32];
+    snprintf(type, sizeof type, "%.*s", (int)name->len, name->data);
+    scr_warning_emit_hook(type, NULL, message);
+  } else {
+    fflush(stdout);
+    fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)name->len, name->data,
+            (int)message->len, message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    }
+  }
+  scr_str_release(name);
+  scr_str_release(message);
+}
+
+double scr_timer_user_delay(double after, double kind) {
+  if (after >= 1 && after <= 2147483647.0) return after;
+  int k = (int)kind;
+  /* mock.timers replaces the global function, which then builds no
+   * Timeout. */
+  if ((k & 3) < 2 && (scr_timer_mocked_apis & ((k & 3) == 1 ? 2 : 1))) return after;
+  /* An element read past the end of a number array is undefined in Node,
+   * the default delay, and reads as NaN here. */
+  if (after != after && (k & 4)) return after;
+  const char *type = NULL, *tail = NULL;
+  if (after > 2147483647.0) {
+    type = "TimeoutOverflowWarning";
+    tail = " does not fit into a 32-bit signed integer.\nTimeout duration was set to 1.";
+  } else if (after < 0 && !scr_timer_warned_negative) {
+    scr_timer_warned_negative = true;
+    type = "TimeoutNegativeWarning";
+    tail = " is a negative number.\nTimeout duration was set to 1.";
+  } else if (after != after && !scr_timer_warned_nan) {
+    scr_timer_warned_nan = true;
+    type = "TimeoutNaNWarning";
+    tail = " is not a number.\nTimeout duration was set to 1.";
+  }
+  if (type == NULL) return after;
+  ScrStr *number = scr_num_to_string_radix_f64(after, 10);
+  ScrStr *suffix = scr_str_new(tail, strlen(tail));
+  ScrStr *message = scr_str_concat(number, suffix);
+  scr_str_release(number);
+  scr_str_release(suffix);
+  ScrClosure *tick = scr_closure_new((void *)&scr_timer_warn_tick, 2);
+  tick->caps[0] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(tick->caps[0], scr_str_new(type, strlen(type)));
+  tick->caps[1] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(tick->caps[1], message);
+  scr_next_tick(tick);
+  return after;
+}
+
 void scr_set_timeout(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms);
   ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, 0, true, ms};

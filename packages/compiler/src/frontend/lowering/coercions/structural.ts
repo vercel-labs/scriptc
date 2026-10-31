@@ -13,6 +13,7 @@ import { typeKey } from "../../type-mapper.js";
 import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
 import type { Lowerer } from "../lowerer.js";
+import { recordLinkPair, registerLinkSite } from "../record-links.js";
 
 /** Convert structural values by copying their supported fields or elements.
  * Unlike JavaScript width subtyping, these conversions create fresh storage
@@ -130,6 +131,34 @@ export function applyWidthLift(
       if (!retag)
         throw new InternalCompilerError("lowerer bug: planned retag lift failed to intern");
       return { kind: "call", callee: retag, args: [value], type: dst, loc };
+    }
+    case "checkedRetag": {
+      if (dst.kind !== "union" || value.type.kind !== "union")
+        throw new InternalCompilerError("lowerer bug: checked retag lift shape");
+      const retag = lowerer.unionRetagHelper(
+        value.type.unionId,
+        dst.unionId,
+        loc,
+        new Set(lift.trappable),
+      );
+      if (!retag)
+        throw new InternalCompilerError("lowerer bug: planned checked retag lift failed to intern");
+      return { kind: "call", callee: retag, args: [value], type: dst, loc };
+    }
+    case "funcAdaptChecked": {
+      if (dst.kind !== "func" || value.type.kind !== "func")
+        throw new InternalCompilerError("lowerer bug: checked funcAdapt lift shape");
+      lowerer.coercions.checkedRetags++;
+      try {
+        const adapter = lowerer.funcCoerceAdapter(value.type, dst, loc);
+        if (!adapter)
+          throw new InternalCompilerError(
+            "lowerer bug: planned checked funcAdapt lift failed to intern",
+          );
+        return { kind: "call", callee: adapter, args: [value], type: dst, loc };
+      } finally {
+        lowerer.coercions.checkedRetags--;
+      }
     }
     case "unitRetag": {
       if (dst.kind !== "union" || value.type.kind !== "union")
@@ -527,11 +556,16 @@ export function recordWidthHelper(
   lowerer.coercionOriginNode = null;
   lowerer.coercionFieldOrigin = null;
   try {
-    lowerer.liftedFns.push(
-      buildRecordProjection(lowerer, name, fromT, to, plan, loc, (field) =>
-        declared === null ? null : fieldOrigin(lowerer.checker, declared, field),
-      ),
-    );
+    lowerer.coercions.methodFieldDepth++;
+    try {
+      lowerer.liftedFns.push(
+        buildRecordProjection(lowerer, name, fromT, to, plan, loc, (field) =>
+          declared === null ? null : fieldOrigin(lowerer.checker, declared, field),
+        ),
+      );
+    } finally {
+      lowerer.coercions.methodFieldDepth--;
+    }
   } finally {
     lowerer.coercionOriginNode = outerNode;
     lowerer.coercionFieldOrigin = outerField;
@@ -942,7 +976,13 @@ function buildRecordProjection(
   // instance's fields keep today's table.
   const copyOf = (node: IrExpr): IrExpr =>
     source.kind === "record" ? lowerer.keyOrder.copy(node, source.shapeId) : node;
-  return {
+  // In Node the converted value is the source object, whose other
+  // properties stay visible to its reflective surfaces: a copy of a record
+  // with properties the target does not declare can link to its source
+  // (record-links.ts).
+  const link =
+    source.kind === "record" ? recordLinkPair(lowerer, source.shapeId, target.id, loc) : null;
+  const projection: IrFunction = {
     name,
     params: [{ localId, name: parameter, type: source }],
     returnType: result,
@@ -1011,6 +1051,8 @@ function buildRecordProjection(
     ],
     loc,
   };
+  if (link !== null) registerLinkSite(lowerer, link, projection);
+  return projection;
 }
 
 /** Records and arrays (and unions holding them), whose identity a live

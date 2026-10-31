@@ -31,9 +31,22 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
+  /** The program asserts a record literal to a wider record type (a partial
+   * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
+   * Absent for every program without one, so their objects stay identical. */
+  recordViewPartial?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
+  /** writeFile's `flag` disposition or copyFile's mode argument:
+   * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
+  fsFlags?: boolean;
+  /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
+  strdecDyn?: boolean;
+  /** process.prependListener, stdin.isRaw or server.off: the
+   * SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and the
+   * SCR_NET_SERVER_OFF build of scr_net.c. */
+  processExtras?: boolean;
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
@@ -77,6 +90,9 @@ export interface NativeLinkFeatures {
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically:
+   * scr_dyn_integrity.c. Absent (false) for programs without it. */
+  dynIntegrityQueries?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
@@ -99,6 +115,10 @@ export interface NativeLinkFeatures {
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
+   * (false) otherwise, so other programs keep their exact link line. */
+  stdlibPrototypeValue?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;
@@ -115,6 +135,13 @@ export interface NativeLinkFeatures {
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** An Array.prototype method runs over an array-like receiver:
+   * scr_dyn_array_like.c. Absent (false) otherwise, so programs that never
+   * call one over an array-like keep their exact link line. */
+  arrayLikeDispatch?: boolean;
+  /** Number.prototype or Boolean.prototype read as a value:
+   * scr_dyn_builtin_prototype.c. Absent (false) otherwise. */
+  builtinPrototypeValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -131,6 +158,10 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
+  /** A typed fs read whose bytes value the program can observe as a Buffer:
+   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
+   * brand keep the default object. */
+  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;

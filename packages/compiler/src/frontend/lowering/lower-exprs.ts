@@ -27,6 +27,9 @@ import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
+import { recordMayKeepSource } from "./record-sources.js";
+import { recordStringCall } from "./record-links.js";
+import { nullProtoRecordShape } from "./null-prototype.js";
 import {
   lowerMaybePromiseAwait,
   maybePromiseUnionOf,
@@ -110,6 +113,7 @@ import {
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
 import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { heldEnvValueType } from "./builtins/environment.js";
 import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
@@ -2252,6 +2256,29 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** A numeric operand of an operator: the binary arithmetic and bitwise six
+ * (and their ordering comparisons), unary `+`, `-` and `~`, and compound
+ * assignment's read and right side. JavaScript applies ToNumber to a
+ * `null`/`undefined` LITERAL — 0 and NaN — so the operand lowers to a
+ * number literal, the form every other ToNumber fold already uses.
+ *
+ * Other numeric uses keep `lowerOptionalNumber`'s optional-union handling
+ * alone, because their callers fold a unit literal themselves: a builtin's
+ * ToNumber argument emits the same NaN, and an element key keeps its
+ * property-key semantics (`a[null]` reads `a.null`, not `a[0]`). Only a
+ * JavaScript source reaches this with a unit operand; TypeScript rejects the
+ * position (TS18050) before any lowering runs.
+ */
+export function lowerOperatorNumber(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  loc: SrcLoc,
+  narrowedNode?: ts.Expression,
+): IrExpr {
+  if (operand.kind === "unitLit") return numLit(operand.unit === "null" ? 0 : NaN, loc);
+  return lowerOptionalNumber(lowerer, operand, loc, narrowedNode);
+}
+
 /** A number argument of a builtin that converts it with ToNumber (Math
  * functions, String.fromCharCode, the global isNaN/isFinite, DataView
  * offsets and values). ToNumber(undefined) is NaN, so a missing value — an
@@ -2517,6 +2544,12 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
   const header = lowerer.lowerHttpHeadersElement(expr);
   if (header) return header;
 
+  // A keyed read through a value HELD from process.env (`const env =
+  // process.env; env[k] ?? fallback`) aliases the live table: the ordinary
+  // lowering is getenv, whose `string | undefined` result already carries
+  // the missing arm this probe reconstructs for record keys.
+  if (heldEnvValueType(lowerer, expr.expression) !== null) return null;
+
   const receiverT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverT?.kind === "record") {
     const shape = lowerer.shapes.get(receiverT.shapeId);
@@ -2719,6 +2752,18 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
 /** An operand of `+` with a string: ToString of ToPrimitive with the
  * default hint, which tries a class instance's valueOf before toString. */
 export function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  // `+` converts an object with ToPrimitive's default hint, which tries
+  // valueOf before toString: a linked copy or a record with a kept source
+  // adds as its source does (record-links.ts).
+  if (
+    e.type.kind === "record" &&
+    recordMayKeepSource(lowerer, e.type) &&
+    lowerer.shapes
+      .get(e.type.shapeId)
+      ?.fields.every((f) => f.name !== "toString" && f.name !== "valueOf") === true &&
+    nullProtoRecordShape(lowerer, e.type) === null
+  )
+    return recordStringCall(lowerer, e, "primitive", e.loc, "toString");
   return (
     classToStringConversion(lowerer, e, "default", node) ??
     classUnionToString(lowerer, e, "default", node) ??

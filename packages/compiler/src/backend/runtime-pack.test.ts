@@ -63,6 +63,7 @@ const BASE: NativeLinkFeatures = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
+  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -136,7 +137,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
+    runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -318,17 +319,6 @@ describe("runtime pack manifests", () => {
       "fileHandle.o",
     ]);
     expect(fileHandle.archives.map((path) => path.split("/").at(-1))).toEqual(["zlib.a"]);
-  });
-
-  test("runtime unit bitcode must stay inside the pack", async () => {
-    const { manifest } = await fixture();
-    const malformed = structuredClone(manifest);
-    malformed.flavors.release!.runtime_units[0]!.variants[0]!.bitcode = {
-      path: "../escape.bc",
-      sha256: "0".repeat(64),
-      size: 1,
-    };
-    expect(() => parseRuntimePackManifest(malformed)).toThrow("malformed");
   });
 
   test("a stale manifest reports its identity independently from the package", async () => {

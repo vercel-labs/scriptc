@@ -122,6 +122,19 @@ function coerceSlot(lowerer: Lowerer, arg: IrExpr, want: IrType, what: string): 
     );
   }
   if (arg.type.kind === "union" && want.kind !== "union" && !containsDynOrUnit(want)) {
+    // A stored union at a slot whose signature names one concrete type: the
+    // checker approved the call, so the SITE's type is that slot type and the
+    // stored union is the declaration's wider one — an absence arm the
+    // compiler itself carries (a checked-dynamic JSON stringify's
+    // `string | undefined`), a stale capture, a widened inferred return.
+    // That is coerceToExpected's checked ARM rule, not a refusal to lay the
+    // union out: the proven arm's payload comes out, every other arm throws
+    // the existing catchable TypeError (divergence 38 — sound narrowing
+    // never reaches them). A union with no such arm keeps the refusal.
+    if (lowerer.armTag(arg.type.unionId, want) >= 0) {
+      const narrowed = lowerer.coerceToExpected(arg, want);
+      if (typeEquals(narrowed.type, want)) return narrowed;
+    }
     lowerer.pushDiag(unionMismatchDiag(lowerer.fmt(want), lowerer.fmt(arg.type), arg.loc));
     throw new PoisonError();
   }

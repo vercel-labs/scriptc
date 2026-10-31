@@ -5,7 +5,7 @@ import type { CompilationTiming } from "../../timing.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
-import { jsTruthy } from "./jsval.js";
+import { jsImmediates, jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
@@ -15,6 +15,7 @@ import {
   CYC_HDR,
   FIRST_EMITTED_CYC_KIND,
   inlineAllocSupported,
+  RECORD_KEPT_GATE,
   RECORD_SOURCES_GATE,
   WEAK_KEYS_GATE,
 } from "./alloc.js";
@@ -255,7 +256,12 @@ import { emitCallExpr } from "./expr-calls.js";
 import { emitDynamicExpr } from "./expr-dynamic.js";
 import { emitIntrinsicExpr, emitSerializationExpr, emitAsyncExpr } from "./expr-async.js";
 import { PublishWalkers } from "./publish.js";
-import { computeImmutableFields, stableGlobals, type ImmutableFields } from "../immutability.js";
+import {
+  computeConstructionFacts,
+  computeImmutableFields,
+  stableGlobals,
+  type ImmutableFields,
+} from "../immutability.js";
 import { computeCycleMutability, hierarchyUnitOfClass } from "../cycle-mutability.js";
 import { computePublishedTypes, type PublishedTypes } from "../publication.js";
 import { emitExpr } from "./expr-dispatch.js";
@@ -376,7 +382,7 @@ import {
   type ArenaPlan,
 } from "./arenas.js";
 import { children, type Node } from "./region-ir.js";
-import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
+import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -924,6 +930,7 @@ const POLL_EVERY_ITERATION = "%worker.poll.every";
 
 /** Runtime library calls (readsLoopMetrics). */
 const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
+const CLOSURE_KINDS: readonly IrNodeKind[] = ["closure"];
 
 /** [A-Za-z0-9_] */
 function isIdentifierByte(code: number): boolean {
@@ -1487,6 +1494,10 @@ export class LlEmitter {
   private readonly rcHelpersNoinline: boolean;
 
   readonly fnByName = new Map<string, IrFunction>();
+  /** Whether some closure has a jsval body (IrFunction.jsEntry): the
+   * dynamic tier's dynCall and dynInvoke sites then call a function value's
+   * jsval entry when it has one. */
+  jsEntries = false;
   /** Empty literals that construct with inline slots (appended-array-literals.ts). */
   appendedArrayLiterals: ReadonlySet<IrExpr> = new Set();
   /** Emitted LLVM text of every IR function body, by function name: the
@@ -1601,6 +1612,9 @@ export class LlEmitter {
   /** Static types whose values can be published (@scriptc/threads): their
    * stores carry the frozen-object guard. Null without publish calls. */
   readonly publishedTypes: PublishedTypes | null;
+  /** Constructor stores that write a field's first value (immutability.ts
+   * computeConstructionFacts): they store without releasing an old value. */
+  readonly freshFieldStores: ReadonlySet<IrStmt>;
   /** Construction-only class and record fields (immutability.ts); null
    * where the facts are disabled. */
   private readonly immutableFields: ImmutableFields | null;
@@ -1673,6 +1687,12 @@ export class LlEmitter {
   readonly arraySearchKinds = new Set<ArraySearchKind>();
   /** Typed-ref recipe constants by type key (lazy receivers). */
   readonly typedRefRecipes = new Map<string, string>();
+
+  /** The module links narrowed record copies to their sources
+   * (IrModule.recordLinks). */
+  hasRecordLinks(): boolean {
+    return (this.mod.recordLinks?.length ?? 0) > 0;
+  }
   /** ReadableStream.from adapters keep typed arrays by reference and box
    * one current element per pull. */
   readonly streamFromArrayAdapters = new Map<string, string>();
@@ -2182,7 +2202,10 @@ export class LlEmitter {
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
     this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
     this.ffiHasForeignCallback = hasForeignFfiCallback(mod.ffiImports ?? []);
-    for (const fn of mod.functions) this.fnByName.set(fn.name, fn);
+    for (const fn of mod.functions) {
+      this.fnByName.set(fn.name, fn);
+      if (fn.jsEntry !== undefined) this.jsEntries = true;
+    }
     this.appendedArrayLiterals = findAppendedArrayLiterals(mod, this.nodeIndex);
     for (const entry of mod.ffiImports ?? []) {
       this.ffiByName.set(entry.name, entry);
@@ -2191,7 +2214,9 @@ export class LlEmitter {
     // and per async fiber; WASI, Windows and library builds have none.
     const triple = (options.targetTriple ?? "").toLowerCase();
     const windows = triple === "" ? process.platform === "win32" : triple.includes("windows");
-    this.publishedTypes = computePublishedTypes(mod, this.nodeIndex);
+    const construction = computeConstructionFacts(mod, this.nodeIndex);
+    this.freshFieldStores = construction.freshStores;
+    this.publishedTypes = computePublishedTypes(mod, this.nodeIndex, construction);
     const mt = computeMayThrow(mod, {
       stackChecks: !this.wasi && mod.lib === undefined && !windows,
       published: this.publishedTypes,
@@ -2383,6 +2408,9 @@ export class LlEmitter {
       this.tracedUnions,
     );
     this.shapeHost = {
+      ...((mod.recordLinks?.length ?? 0) > 0
+        ? { recordSourcesGate: RECORD_KEPT_GATE, recordLinks: mod.recordLinks }
+        : {}),
       // Journal hooks only on emitters that can emit ranges (chunk
       // emitters, and emitters whose workers take a journal after the
       // fork), so the host's optional calls cost nothing otherwise.
@@ -2398,6 +2426,7 @@ export class LlEmitter {
         ? undefined
         : (table, key, value) => this.journal?.entry(table, key, value),
       compactArrayElem: (elem) => this.compactArrayElem(elem),
+      jsEntryClosures: () => this.jsEntryClosures(),
       compactRegion: () => this.compactRegion,
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
@@ -2457,6 +2486,7 @@ export class LlEmitter {
         );
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
+      closureNames: () => this.closureNames(),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
@@ -2800,6 +2830,40 @@ export class LlEmitter {
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 
+  /** The entry point and JavaScript name of each named function the
+   * module makes closures of: a declared function's wrapper (its interned
+   * closure's entry) or a lifted function's call target, with its
+   * displayName, else its sourceName. Function boxes without a static name
+   * look the closure's entry up in this table. */
+  private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  /** The declared functions `closureNames` lists by their wrapper. A scan
+   * sees closures in statements the emitter never reaches (a statement
+   * after a runtimeFence: the fence always jumps), so some of these names
+   * never enter `fnValues`; emitFnValueDefs defines their wrapper anyway,
+   * because the table's entry has to resolve. */
+  private readonly closureWrapperNames = new Set<string>();
+  closureNames(): readonly { entry: string; name: string }[] {
+    if (this.closureNameEntries !== undefined) return this.closureNameEntries;
+    const entries = new Map<string, string>();
+    const scan = this.nodeIndex.scan(CLOSURE_KINDS);
+    for (const fn of this.mod.functions) {
+      eachNodeOfKinds(fn, scan, (node) => {
+        if (node.kind !== "closure") return true;
+        const target = this.fnByName.get(node.fnName);
+        const name =
+          target?.displayName ??
+          (target?.sourceName !== "<anonymous>" ? target?.sourceName : undefined);
+        if (target === undefined || name === undefined || name === "") return true;
+        const entry =
+          target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        if (target.captures === undefined) this.closureWrapperNames.add(node.fnName);
+        if (!entries.has(entry)) entries.set(entry, name);
+        return true;
+      });
+    }
+    return (this.closureNameEntries = [...entries].map(([entry, name]) => ({ entry, name })));
+  }
+
   /** The dispose-observer gates the emitted frees and record writers test
    * (alloc.ts): defined after every helper is emitted, because dynCheck
    * builders, JSON schemas and weak collection constructors are requested
@@ -2810,7 +2874,10 @@ export class LlEmitter {
     );
     return [
       `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
-      `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`,
+      `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources || this.hasRecordLinks()}`,
+      ...(this.hasRecordLinks()
+        ? [`${RECORD_KEPT_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`]
+        : []),
       ``,
     ];
   }
@@ -2852,10 +2919,14 @@ export class LlEmitter {
 
   /** Env-signature wrappers + interned immortal closures for declared
    * functions used as values (the runtime ABI’s sc_w_/sc_fc_ pair): every
-   * mention of `f` yields the same pointer, so `f === f` holds. */
+   * mention of `f` yields the same pointer, so `f === f` holds. The
+   * closure-name table's wrapper entries are included even when their
+   * closure was never emitted (see closureWrapperNames). */
   emitFnValueDefs(): string[] {
     const out: string[] = [];
-    for (const name of this.fnValues) {
+    const names = new Set(this.fnValues);
+    for (const name of this.closureWrapperNames) names.add(name);
+    for (const name of names) {
       const fn = this.fnByName.get(name)!;
       const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
       const args = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`).join(", ");
@@ -5066,6 +5137,8 @@ export class LlEmitter {
         idx,
         (decl) => this.declare(decl),
         this.rcMode === undefined,
+        (text) => this.cstr(text),
+        this.shapeHost.recordViews?.partialTargets.has(shapeId) === true,
       );
     } else {
       p = this.B.tmp();
@@ -5570,6 +5643,30 @@ export class LlEmitter {
    * the fiber eagerly to its first suspension and returns the promise);
    * generator bodies via theirs (which only ALLOCATES the suspended
    * fiber and returns the generator object). */
+  private jsEntryClosureList: readonly JsEntryClosure[] | null = null;
+
+  /** The closures with a jsval body (IrFunction.jsEntry), on targets with
+   * jsval words. */
+  jsEntryClosures(): readonly JsEntryClosure[] {
+    if (this.jsEntryClosureList !== null) return this.jsEntryClosureList;
+    const list: JsEntryClosure[] = [];
+    if (this.jsEntries && jsImmediates(this))
+      for (const fn of this.fnByName.values()) {
+        const body = fn.jsEntry === undefined ? undefined : this.fnByName.get(fn.jsEntry);
+        if (body === undefined) continue;
+        list.push({
+          closure: this.callTarget(fn.name),
+          params: fn.params.map((p) => p.type),
+          ret: fn.returnType,
+          body: this.callTarget(body.name),
+          bodyParams: body.params.map((p) => p.type),
+          bodyRet: body.returnType,
+        });
+      }
+    this.jsEntryClosureList = list;
+    return list;
+  }
+
   callTarget(fnName: string): string {
     const fn = this.fnByName.get(fnName);
     if (fn?.generator !== undefined) return mangleGenSpawn(fnName);
@@ -7687,6 +7784,7 @@ export class LlEmitter {
     field: string,
     nullable: NullableRefField,
     value: IrExpr,
+    fresh: boolean,
   ): void {
     let next: string;
     if (
@@ -7711,6 +7809,10 @@ export class LlEmitter {
       next = this.unionToNullable(this.emitUnionProjection(value).name, nullable);
     }
     const { ptr } = this.classFieldPtr(obj, className, field, "compressed");
+    if (fresh) {
+      this.storeRef(ptr, next);
+      return;
+    }
     const old = this.loadRef(ptr, false);
     this.storeRef(ptr, next);
     this.releaseHeap(old, nullable.arm);
@@ -8563,6 +8665,8 @@ for (const op of [
   "dyn.promiseDynAdapterHelper",
   "dyn.dynFuncThunkHelper",
   "dyn.dynFuncBoxHelper",
+  "dyn.jsEntryThunk",
+  "dyn.unnamedFuncBoxHelper",
   "dyn.dynFuncAdapterHelper",
   "dyn.dynToStrHelper",
   "dyn.dynIterNHelper",

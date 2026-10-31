@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/assert-throws-shared-expected.ts"
+ ],
+ "diags": []
+}

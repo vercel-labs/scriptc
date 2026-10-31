@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-typed-chunk-read-paused.ts"
+ ],
+ "diags": []
+}

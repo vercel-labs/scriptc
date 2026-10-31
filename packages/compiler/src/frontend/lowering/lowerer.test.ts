@@ -17,7 +17,11 @@ import { classMethodValue } from "./class-method-values.js";
 const loc = { file: "island.ts", start: 0, end: 1 };
 const record = (shapeId: string): IrType => ({ kind: "record", shapeId });
 const context = () =>
-  new Lowerer({ getTypeChecker: () => ({}) } as Program, { fileName: loc.file } as SourceFile, []);
+  new Lowerer(
+    { getTypeChecker: () => ({}), getImplementationSourceFiles: () => [] } as unknown as Program,
+    { fileName: loc.file } as SourceFile,
+    [],
+  );
 
 test("reuses complete copy routes without repeating discriminator planning", () => {
   const lowerer = context();

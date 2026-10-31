@@ -28,6 +28,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
@@ -388,6 +389,15 @@ export function lowerTernary(
   }
 }
 
+/** Whether `expr` is the checked-dynamic Number/Boolean prototype value a
+ * JavaScript source read (jsPrimitivePrototypeValue), or one of its
+ * members: the value is the prototype OBJECT, not the wrapper's primitive,
+ * so the checker's wrapper type must not extract a scalar from it. */
+function isPrimitivePrototypeValue(expr: IrExpr): boolean {
+  if (expr.kind === "libCall") return expr.fn === "dyn.builtinPrototype";
+  return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -429,6 +439,10 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   // instead of misreading the payload (the dyn boundary's usual stance).
   // Object/array narrowings stay dyn-typed and keep their fences.
   if (expr.type.kind === "dyn") {
+    // Number.prototype and Boolean.prototype (and their members) are the
+    // prototype OBJECTS, though @types/node declares them with the wrapper
+    // interface: extracting the wrapper's numeric value would throw.
+    if (isPrimitivePrototypeValue(expr)) return expr;
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));
@@ -589,7 +603,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     if (
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       ts.isPropertyAccessExpression(node) &&
-      ["isTTY", "columns", "rows"].includes(node.name.text) &&
+      ["isTTY", "columns", "rows", "isRaw"].includes(node.name.text) &&
       lowerer.isStdlibMember(node)
     )
       return expr;
@@ -1408,6 +1422,14 @@ export function lowerAsExpression(
       loc: locOf(expr),
     };
   }
+  // A RECORD LITERAL asserted to a wider record type (`{ truncated: true }
+  // as TruncationResult`): keep the literal's own layout and let the
+  // asserted type view it (partial-assertions.ts). The record-to-record
+  // width copy below cannot build a value the literal does not have.
+  {
+    const partial = partialAssertionSite(lowerer, expr);
+    if (partial) return lowerPartialAssertion(lowerer, expr, partial);
+  }
   // `e as C` on a CATCH BINDING (`(err as Error).message`): the checked
   // extraction — an instanceof match extracts the payload, anything else
   // throws the catchable TypeError (dynCheck's trust-but-verify stance,
@@ -1445,13 +1467,40 @@ export function lowerAsExpression(
       (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
-  const inner = lowerer.lowerExpr(expr.expression);
+  // `{ ...message, content } as T`: the program claimed the literal's shape,
+  // so a union-valued member converts in a checked context — an arm the
+  // asserted target excludes throws the catchable TypeError (a lying
+  // assertion) instead of refusing the member (coercions.assertedOperand).
+  // Parentheses and non-null assertions name the same literal
+  // (`({ ...message, content }) as T`). An inner assertion or `satisfies`
+  // carries its own operand context.
+  let assertedSource = expr.expression;
+  while (ts.isParenthesizedExpression(assertedSource) || ts.isNonNullExpression(assertedSource))
+    assertedSource = assertedSource.expression;
+  const assertedOperand = assertedSource.kind === ts.SyntaxKind.ObjectLiteralExpression;
+  if (assertedOperand) lowerer.coercions.assertedOperand++;
+  let inner: IrExpr;
+  try {
+    inner = lowerer.lowerExpr(expr.expression);
+  } finally {
+    if (assertedOperand) lowerer.coercions.assertedOperand--;
+  }
   const use = runtimeOptionalUseOf(expr);
   if (inner.type.kind === "union" && runtimeOptionalAssertionErases(lowerer, expr, inner, use))
     return inner;
   if (inner.type.kind !== "dyn") {
     const targetTs0 = lowerer.checker.getTypeFromTypeNode(expr.type);
     const target = lowerer.mapTypeOf(targetTs0);
+    // A static assertion ERASES in Node, but the claim it makes still
+    // answers to the program: a slot this value reaches that no ordinary
+    // conversion covers (SC2002/SC2003) converts it CHECKED instead of
+    // refusing (coercions/asserted.ts) — a value outside the claimed shape
+    // throws the catchable TypeError, never a silent reinterpretation.
+    // Recorded before the branches below so every path carries it, the
+    // erasure included.
+    const claimable = (type: IrType | null | undefined): type is IrType =>
+      type?.kind === "union" || type?.kind === "record" || type?.kind === "array";
+    if (claimable(target) && claimable(inner.type)) lowerer.assertedValues.set(inner, target);
     // A PRESENCE PROBE of a member read through the assertion (`typeof
     // (u as R).member`, `(u as R).member !== undefined`): the read answers
     // off the value actually stored, since Node erases the assertion and an
@@ -1546,14 +1595,23 @@ export function lowerAsExpression(
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
     // widths and index-signature captures share their established copy
-    // semantics (and unsupported pairs report SC2002 at this assertion).
+    // semantics.
     if (
       inner.type.kind === "record" &&
       target?.kind === "record" &&
       inner.type.shapeId !== target.shapeId
     ) {
-      lowerer.assertedValues.set(inner, target);
-      return lowerer.coerceInto(expr, inner, target);
+      // A pair outside the width family (an index-signature record asserted
+      // to a record of its own keys: a `Record<string, V>` filled key by
+      // key and cast to `{ k: V }`) converts checked (assertedConversion):
+      // every claimed field validated, the value's own keys kept. The claim
+      // follows the value the assertion PRODUCED, not the operand it read —
+      // a generic body's operand keeps the caller's layout while its
+      // asserted result carries the target's — so later slots check the
+      // shape the assertion actually made.
+      const converted = lowerer.coerceInto(expr, inner, target);
+      if (converted !== inner) lowerer.assertedValues.set(converted, target);
+      return converted;
     }
     // `u as Arm` on a UNION value is `u!`'s spelling with a named arm
     // (`req.headers[h] as string`): the CHECKED single-arm extraction —
@@ -1587,15 +1645,9 @@ export function lowerAsExpression(
       const asserted = checkedClassUnionAssertion(lowerer, inner, target, locOf(expr));
       if (asserted) return asserted;
     }
-    // The erased value still answers to the assertion: a slot it cannot
-    // reach by an ordinary conversion converts it as asserted
-    // (assertedConversion).
-    if (
-      target &&
-      (target.kind === "union" || target.kind === "record" || target.kind === "array") &&
-      (inner.type.kind === "union" || inner.type.kind === "array")
-    )
-      lowerer.assertedValues.set(inner, target);
+    // The erased value still answers to the assertion (the claim recorded
+    // above): a slot it cannot reach by an ordinary conversion converts it
+    // as asserted (assertedConversion).
     return inner; // erasure, unchanged
   }
 

@@ -228,11 +228,30 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
   if (ts.isObjectLiteralExpression(arg)) {
     let acc: IrExpr = { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
     for (const prop of arg.properties.nodes) {
+      // `{ model }` appends the binding's value under its own name, like
+      // the `{ model: model }` spelling.
+      if (ts.isShorthandPropertyAssignment(prop)) {
+        const keyExpr: IrExpr = {
+          kind: "strLit",
+          value: (prop.name as ts.Identifier | ts.StringLiteral).text,
+          type: STRING,
+          loc: locOf(prop.name),
+        };
+        const value = lowerer.coerceInto(prop.name, lowerer.lowerShorthandValue(prop), STRING);
+        acc = {
+          kind: "libCall",
+          fn: "sp.with",
+          args: [acc, keyExpr, value],
+          type: SEARCH_PARAMS_T,
+          loc,
+        };
+        continue;
+      }
       if (!ts.isPropertyAssignment(prop) || prop.name === undefined) {
         lowerer.unsupported(
           "SC1090",
           prop,
-          "URLSearchParams record inits with spreads, accessors, or shorthand entries",
+          "URLSearchParams record inits with spreads or accessors",
         );
       }
       let key: string;

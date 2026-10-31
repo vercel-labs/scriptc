@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { setShapeOverlayMemoDir, shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
-import { nodeFrontendServices } from "./frontend/services-node.js";
+import { jsInferenceEnabled } from "./frontend/js-inference.js";
+import { createNodeFrontendServices, nodeFrontendServices } from "./frontend/services-node.js";
 import {
   runTypePatchCommand,
   type TypePatchCommandRequest,
@@ -172,7 +173,8 @@ import { serializeModuleParts } from "./ir/serialize.js";
 import { readTextParts, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
 import { compilerOwnedFileRoots } from "./frontend/dts-paths.js";
-import { loadProgram } from "./frontend/program-node.js";
+import { loadProgramWithServices } from "./frontend/program-node.js";
+import { programHostLoads } from "./frontend/services.js";
 import { runFrontend, type FrontendFactory } from "./frontend/pipeline.js";
 import {
   type ProvenanceSources,
@@ -484,7 +486,35 @@ const nodeFrontend: FrontendFactory = (
   externalTypes,
   libraryNpmStatic,
   options,
-) => runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+) => {
+  // One syntax parser for every load of this compile, and program hosts
+  // that serve several loads (FrontendServices.reuseProgramHosts).
+  const services = createNodeFrontendServices();
+  try {
+    services.reuseProgramHosts(programHostLoads());
+    const frontend = runFrontend(
+      entry,
+      (path, loadOptions) => loadProgramWithServices(path, services, loadOptions),
+      npmStatic,
+      externalTypes,
+      libraryNpmStatic,
+      options,
+    );
+    return {
+      ...frontend,
+      dispose: () => {
+        try {
+          frontend.dispose();
+        } finally {
+          services.close();
+        }
+      },
+    };
+  } catch (error) {
+    services.close();
+    throw error;
+  }
+};
 
 /** The checker's part of the executable cache key (`checkerCacheIdentity`), as the CLI's startup route computes it. */
 function checkerField(): { checker?: string } {
@@ -539,10 +569,11 @@ export async function compile(
 }
 
 /** Divergence warnings collected while a compile lowers (none when a cache
- * hit skips lowering). */
+ * hit skips lowering), and the Node islands the build ran. */
 interface CompileWarningSink {
   warnings: ScrDiagnostic[];
   sourceTexts: Map<string, string> | null;
+  islands?: { packages: string[]; modules: string[] };
 }
 
 /** The package.json texts type patch warnings point into, re-read for a
@@ -558,6 +589,15 @@ function cachedWarningSources(warnings: readonly ScrDiagnostic[]): Map<string, s
     }
   }
   return texts;
+}
+
+/** The Node islands a build ran, stored with its cache entry so a cache hit
+ * reports them again (a runner reads them to tell an island pass from a
+ * native one). */
+function islandFields(sink: CompileWarningSink | undefined): {
+  islands?: { packages: string[]; modules: string[] };
+} {
+  return sink?.islands === undefined ? {} : { islands: sink.islands };
 }
 
 /** The build's performance warnings (SC61xx), stored with its cache entry
@@ -585,8 +625,15 @@ function withCompileWarnings<T extends CompileRequestResult>(
   result: T,
   sink: CompileWarningSink,
 ): T {
-  if (!result.ok || sink.warnings.length === 0) return result;
-  return { ...result, warnings: sink.warnings, sourceTexts: sink.sourceTexts ?? new Map() };
+  if (!result.ok) return result;
+  const islands = sink.islands === undefined ? {} : { islands: sink.islands };
+  if (sink.warnings.length === 0) return { ...result, ...islands };
+  return {
+    ...result,
+    warnings: sink.warnings,
+    sourceTexts: sink.sourceTexts ?? new Map(),
+    ...islands,
+  };
 }
 
 /** Build-time API compatibility fence: a caller's existing CompileOptions
@@ -762,7 +809,11 @@ async function compileExecutableNative(
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.strdecDyn ? { strdecDyn: true } : {}),
+    ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
     ...(features.stdioWriteSlot ? { stdioWriteSlot: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
@@ -785,6 +836,7 @@ async function compileExecutableNative(
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
+    ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
@@ -793,6 +845,9 @@ async function compileExecutableNative(
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
+    ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
+    ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
+    ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     events: features.events,
     emitter: features.emitter,
@@ -815,6 +870,7 @@ async function compileExecutableNative(
     textCodecDyn: features.textCodecDyn,
     watch: features.watch,
     watchFile: features.watchFile,
+    fsBufferBrand: features.fsBufferBrand,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),
     ...(features.youngNursery ? { youngNursery: true } : {}),
@@ -1026,6 +1082,9 @@ interface PreparedExecutable {
   nativeFeatures: EarlyExecutableNativeFeatures;
   programSplit: ReturnType<typeof splitLlvmProgram>;
   sourceTexts: Map<string, string>;
+  /** The Node islands the build ran, reported with its result (a runner
+   * reads them to tell an island result from a native one). */
+  islands?: { packages: string[]; modules: string[] };
 }
 
 /** Finish frontend work in a separate scope so the AST, checker caches and
@@ -1103,6 +1162,8 @@ async function prepareExecutableInput(
     warningSink.warnings = prepared.warnings;
     warningSink.sourceTexts = sourceTexts;
   }
+  if (warningSink !== undefined && prepared.islands !== undefined)
+    warningSink.islands = prepared.islands;
 
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const defaultSourcePaths = {
@@ -1262,6 +1323,7 @@ async function prepareExecutableInput(
     nativeFeatures,
     programSplit,
     sourceTexts,
+    ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
   };
 }
 
@@ -1447,6 +1509,7 @@ type FrontendProcessResult =
       nativeFeatures: EarlyExecutableNativeFeatures;
       sourceTexts: [string, string][];
       warnings: ScrDiagnostic[];
+      islands?: { packages: string[]; modules: string[] };
       frontend: FrontendInputSnapshot;
     }
   | {
@@ -1507,6 +1570,8 @@ async function prepareExecutableInputInChild(
     warningSink.warnings = result.warnings;
     warningSink.sourceTexts = sourceTexts;
   }
+  if (warningSink !== undefined && result.kind === "prepared" && result.islands !== undefined)
+    warningSink.islands = result.islands;
   if (result.kind === "diagnostics")
     return { ok: false, diagnostics: result.diagnostics, sourceTexts };
   return {
@@ -1518,6 +1583,7 @@ async function prepareExecutableInputInChild(
     nativeFeatures: result.nativeFeatures,
     programSplit: null,
     sourceTexts,
+    ...(result.islands === undefined ? {} : { islands: result.islands }),
   };
 }
 
@@ -1595,6 +1661,7 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
         nativeFeatures: prepared.nativeFeatures,
         sourceTexts: [...prepared.sourceTexts],
         warnings: warnings.warnings,
+        ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
         frontend,
       };
     } else if (!prepared.ok) {
@@ -1941,6 +2008,9 @@ async function compileTracked(
       ...(heapCensusRequested() ? { heapCensus: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ...(shapeOverlayEnabled() ? { shapeOverlay: true as const } : {}),
+      ...(jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0"
+        ? { jsInference: true as const }
+        : {}),
       ffiProfile:
         opts.ffiProfilePath === undefined || ffiProfileBytes === null
           ? null
@@ -2007,6 +2077,8 @@ async function compileTracked(
       warningSink.warnings = earlyHit.performance;
       warningSink.sourceTexts = cachedWarningSources(earlyHit.performance);
     }
+    if (warningSink !== undefined && earlyHit.islands !== undefined)
+      warningSink.islands = earlyHit.islands;
     const executableCacheOptions = earlyCacheOptions;
     // Route/proof metadata is independently evictable. A full-compiler
     // fallback that still finds the validated payload repairs that lightweight
@@ -2253,6 +2325,7 @@ async function compileTracked(
               frontend: frontendInputs.snapshot(),
               ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
               ...performanceWarnings(warningSink),
+              ...islandFields(warningSink),
               ...profileMatchField(nativeProgramObject),
             });
             publishedExecutable = true;
@@ -2275,6 +2348,7 @@ async function compileTracked(
         frontend: frontendInputs.snapshot(),
         ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
         ...performanceWarnings(warningSink),
+        ...islandFields(warningSink),
         ...profileMatchField(nativeProgramObject),
       }).catch(() => undefined);
     }

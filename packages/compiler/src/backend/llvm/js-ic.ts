@@ -13,6 +13,9 @@
  *   keyed  dense array element at an integral number key: inline;
  *          otherwise scr_js_keyed_probe (string keys of ordinary objects)
  *   method dynInvoke's method read: scr_js_load_probe
+ *   call   a method dispatch helper's call: a capsule whose key is one of
+ *          the helper's plain class branches calls that branch's method
+ *          directly (capsuleCallSite); otherwise the helper
  *   literal an object literal's constant-key member: scr_js_store_probe,
  *          else scr_dyn_key_set
  *
@@ -35,6 +38,7 @@ import { mangleBorrowedFunction } from "../mangle.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { classFieldBase, classFieldIndex } from "./classes.js";
 import { DYN_KIND } from "./dyn.js";
+import { dispatchesCall } from "./integer-clones.js";
 import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { JS_BITS } from "./jsval-encoding.js";
 import { jsImmediates } from "./jsval.js";
@@ -57,7 +61,7 @@ export function jsIcMethods(host: Host): boolean {
   return (
     jsImmediates(host) &&
     host.currentTier === "dynamic" &&
-    jsIcMethodSites(host.currentFunctionName)
+    jsIcMethodSites(host.currentFunctionName, host.loopDepth > 0)
   );
 }
 
@@ -533,6 +537,320 @@ function inlineCapsuleLoad(
     incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
     B.br(join);
   });
+}
+
+/** A class instance's answer that a method dispatch helper gives by
+ * calling one compiled method: the branch `if (dyn.typedRefIs(p, KEY)) {
+ * M(R, p1, ..., pn); return [js.fromDyn](p) }` of a method that returns
+ * its receiver, or `{ return [js.fromDyn](M(R, p1, ..., pn)) }`, with R
+ * `dynCheck(p)` or an upcast of it. */
+interface CapsuleCall {
+  key: string;
+  className: string;
+  method: string;
+  /** The branch returns the receiver after the call. */
+  returnsReceiver: boolean;
+}
+
+/** A call of a method dispatch helper `%dyn.class.call.N(receiver,
+ * %dyn.class.callback.N(receiver), args..., calleeName)` whose class
+ * branches a site can call inline. */
+export interface CapsuleCallSite {
+  callback: IrFunction;
+  calls: CapsuleCall[];
+}
+
+/** The capsule call site a call from dynamic-tier code is, or null.
+ *
+ * The helper normalizes its receiver like a read helper, then tests each
+ * class branch; the callback the site calls before evaluating the
+ * arguments resolves own function-valued properties of bag classes. A
+ * capsule whose key is a branch's key calls the branch's method directly
+ * when the branch qualifies under capsuleReads' rule (every subclass the
+ * normalization can rebox the key to has a branch calling the same
+ * method) and the callback has no branch for the key or any of those
+ * subclasses, so it answers undefined for the capsule without effects.
+ * Module initializers call this way only inside loops (jsIcMethodSites). */
+export function capsuleCallSite(
+  host: Host,
+  e: ExprOf<"call">,
+  helper: IrFunction,
+): CapsuleCallSite | null {
+  if (!jsIcMethods(host) || !helper.name.startsWith("%dyn.class.call.")) return null;
+  if (helper.async !== undefined || helper.generator !== undefined) return null;
+  if (e.type.kind !== "jsval" && e.type.kind !== "dyn") return null;
+  const { params } = helper;
+  const arity = params.length - 3;
+  if (
+    arity < 0 ||
+    e.args.length !== params.length ||
+    params[1]!.localId !== "p.callback" ||
+    params[params.length - 1]!.localId !== "p.calleeName" ||
+    params.slice(2, -1).some((p, i) => p.localId !== `p.${i + 1}`)
+  )
+    return null;
+  const [receiver, resolve] = e.args;
+  if (
+    receiver?.kind !== "varRef" ||
+    resolve?.kind !== "call" ||
+    resolve.args.length !== 1 ||
+    !isLocal(resolve.args[0]!, receiver.localId)
+  )
+    return null;
+  const callback = host.fnByName.get(resolve.callee);
+  if (callback === undefined || callback.params.length !== 1) return null;
+  const resolved = callbackKeys(callback);
+  if (resolved === null) return null;
+  const branches = new Map<string, CapsuleCall | null>();
+  const self = params[0]!.localId;
+  for (const stmt of helper.body) {
+    if (normalizes(stmt, self)) continue;
+    if (stmt.kind !== "if" || stmt.else_ !== null) break;
+    if (notCapsule(stmt.cond, self) || classObjectTest(stmt.cond, self)) continue;
+    const key = brandKey(stmt.cond, self);
+    if (key === null) return null;
+    if (!branches.has(key)) branches.set(key, capsuleCall(host, stmt, self, key, arity));
+  }
+  const reboxes = normalizationTargets(host);
+  if (reboxes === null) return null;
+  const calls: CapsuleCall[] = [];
+  for (const call of branches.values()) {
+    if (call === null) continue;
+    const targets = reboxes.get(call.key) ?? [];
+    if (resolved.has(call.key) || targets.some((t) => resolved.has(`object:${t}`))) continue;
+    const same = targets.every((target) => {
+      const other = branches.get(`object:${target}`);
+      return (
+        other != null &&
+        other.method === call.method &&
+        other.returnsReceiver === call.returnsReceiver
+      );
+    });
+    if (same) calls.push(call);
+  }
+  return calls.length > 0 ? { callback, calls } : null;
+}
+
+/** The capsule keys a dispatch callback has branches for, or null when
+ * its body has another form: the normalization, branches on capsule or
+ * class-object tests, and a final return of undefined. */
+function callbackKeys(callback: IrFunction): Set<string> | null {
+  const value = callback.params[0]!.localId;
+  const keys = new Set<string>();
+  const body = callback.body;
+  for (let i = 0; i < body.length; i++) {
+    const stmt = body[i]!;
+    if (normalizes(stmt, value)) continue;
+    if (stmt.kind === "if" && stmt.else_ === null) {
+      if (notCapsule(stmt.cond, value) || classObjectTest(stmt.cond, value)) continue;
+      const key = brandKey(stmt.cond, value);
+      if (key === null) return null;
+      keys.add(key);
+      continue;
+    }
+    if (i === body.length - 1 && stmt.kind === "return" && returnsUndefined(stmt.value))
+      return keys;
+    return null;
+  }
+  return null;
+}
+
+/** `dyn.classIs(p, "classval:C")`: true only for a class object, never
+ * for a capsule. */
+function classObjectTest(cond: IrExpr, receiver: string): boolean {
+  return (
+    cond.kind === "libCall" &&
+    cond.fn === "dyn.classIs" &&
+    cond.args.length === 2 &&
+    isLocal(cond.args[0]!, receiver)
+  );
+}
+
+function returnsUndefined(value: IrExpr | null): boolean {
+  if (value?.kind === "libCall" && value.fn === "js.fromDyn" && value.args.length === 1)
+    value = value.args[0]!;
+  return (
+    value?.kind === "dynFrom" && value.value.kind === "unitLit" && value.value.unit === "undefined"
+  );
+}
+
+/** The method a class branch calls, or null for a branch of another
+ * form. */
+function capsuleCall(
+  host: Host,
+  branch: IrStmt & { kind: "if" },
+  receiver: string,
+  key: string,
+  arity: number,
+): CapsuleCall | null {
+  const [first, second] = branch.then;
+  let call: IrExpr | null | undefined;
+  let returnsReceiver: boolean;
+  if (branch.then.length === 2 && first?.kind === "exprStmt" && second?.kind === "return") {
+    call = first.expr;
+    let value = second.value;
+    if (value?.kind === "libCall" && value.fn === "js.fromDyn" && value.args.length === 1)
+      value = value.args[0]!;
+    if (value === null || !isLocal(value, receiver) || call.type.kind !== "void") return null;
+    returnsReceiver = true;
+  } else if (branch.then.length === 1 && first?.kind === "return") {
+    call = first.value;
+    if (call?.kind === "libCall" && call.fn === "js.fromDyn" && call.args.length === 1)
+      call = call.args[0]!;
+    returnsReceiver = false;
+  } else return null;
+  if (call?.kind !== "call" || call.args.length !== arity + 1) return null;
+  let self = call.args[0]!;
+  if (self.kind === "upcast") self = self.value;
+  if (self.kind !== "dynCheck" || !isLocal(self.value, receiver) || self.type.kind !== "object")
+    return null;
+  if (key !== `object:${self.type.className}`) return null;
+  if (!call.args.slice(1).every((a, i) => isLocal(a, `p.${i + 1}`))) return null;
+  if (!plainMethod(host, call.callee, returnsReceiver)) return null;
+  return { key, className: self.type.className, method: call.callee, returnsReceiver };
+}
+
+/** A method the site can call with the ordinary or borrowed ABI and a
+ * dyn, jsval or void result. */
+function plainMethod(host: Host, name: string, returnsReceiver: boolean): boolean {
+  const fn = host.fnByName.get(name);
+  if (fn === undefined || fn.async !== undefined || fn.generator !== undefined) return false;
+  if (fn.captures !== undefined) return false;
+  if (host.int32Abis.has(name)) return false;
+  if (dispatchesCall(host.integerClones, host.currentFunctionName, name)) return false;
+  const result = fn.returnType.kind;
+  return returnsReceiver ? result === "void" : result === "dyn" || result === "jsval";
+}
+
+/** A call of a method dispatch helper from dynamic-tier code whose class
+ * branches qualify (capsuleCallSite). A capsule with one of their keys
+ * skips the callback (it answers undefined for it) and calls the
+ * branch's method with the capsule's instance; anything else calls the
+ * callback before the arguments and then the helper, as the plain call
+ * does. The arguments are evaluated once, after the callback. */
+export function emitCapsuleCall(
+  host: Host,
+  e: ExprOf<"call">,
+  helper: IrFunction,
+  site: CapsuleCallSite,
+): LlValue {
+  const B = host.B;
+  const receiver = emitBorrowedInput(host, e.args[0]!);
+  const capsule = B.newLabel("iccall.cap");
+  const resolve = B.newLabel("iccall.cb");
+  const evaluate = B.newLabel("iccall.args");
+  const matched = site.calls.map(() => B.newLabel("iccall.k"));
+  kindIs(host, receiver.name, DYN_KIND.TYPED_REF, capsule, resolve);
+  B.startBlock(capsule);
+  // Capsules boxed by this program share its key constants.
+  const key = load(host, "ptr", receiver.name, 40);
+  site.calls.forEach((call, i) => {
+    const same = B.tmp();
+    B.line(`${same} = icmp eq ptr ${key}, ${host.cstr(call.key)}`);
+    const next = i + 1 < site.calls.length ? B.newLabel("iccall.t") : resolve;
+    B.condBr(same, matched[i]!, next);
+    if (next !== resolve) B.startBlock(next);
+  });
+  for (const label of matched) {
+    B.startBlock(label);
+    B.br(evaluate);
+  }
+  B.startBlock(resolve);
+  const resolved = helperCall(host, e.args[1] as ExprOf<"call">, site.callback, [receiver]);
+  const resolveEnd = B.currentLabel();
+  B.br(evaluate);
+  B.startBlock(evaluate);
+  // The branch a capsule takes, or -1 for the helper.
+  const branch = B.tmp();
+  const branches = matched.map((label, i) => `[ ${i}, %${label} ]`);
+  B.line(`${branch} = phi i32 ${[...branches, `[ -1, %${resolveEnd} ]`].join(", ")}`);
+  // The callback's result for an inline capsule is never read: undefined
+  // for a jsval result, null for a dyn one.
+  const unread =
+    site.callback.returnType.kind === "jsval"
+      ? `inttoptr (i64 ${JS_BITS.undefined} to ptr)`
+      : "null";
+  const cb = B.tmp();
+  const cbIn = matched.map((label) => `[ ${unread}, %${label} ]`);
+  B.line(`${cb} = phi ptr ${[...cbIn, `[ ${resolved}, %${resolveEnd} ]`].join(", ")}`);
+  host.own({ name: cb, type: site.callback.returnType });
+  const rest = e.args.slice(2).map((a) => emitBorrowedInput(host, a));
+  const slow = B.newLabel("iccall.slow");
+  const join = B.newLabel("iccall.j");
+  const calls = site.calls.map(() => B.newLabel("iccall.m"));
+  const cases = calls.map((label, i) => `i32 ${i}, label %${label}`).join(" ");
+  B.terminate(`switch i32 ${branch}, label %${slow} [ ${cases} ]`);
+  const incoming: string[] = [];
+  site.calls.forEach((call, i) => {
+    B.startBlock(calls[i]!);
+    const instance = load(host, "ptr", receiver.name, 16);
+    const self: LlValue = { name: instance, type: { kind: "object", className: call.className } };
+    const result = methodCall(host, call.method, [self, ...rest.slice(0, -1)]);
+    let out: string;
+    if (call.returnsReceiver) {
+      const held = host.retainFrame(receiver.name, DYN);
+      out = e.type.kind === "jsval" ? cellWord(host, held) : held;
+    } else {
+      const returned = host.fnByName.get(call.method)!.returnType;
+      out = returned.kind === e.type.kind ? result : asResult(host, result, e, true);
+    }
+    incoming.push(`[ ${out}, %${B.currentLabel()} ]`);
+    B.br(join);
+  });
+  B.startBlock(slow);
+  const result = helperCall(host, e, helper, [
+    receiver,
+    { name: cb, type: site.callback.returnType },
+    ...rest,
+  ]);
+  incoming.push(`[ ${result}, %${B.currentLabel()} ]`);
+  B.br(join);
+  B.startBlock(join);
+  const out = B.tmp();
+  B.line(`${out} = phi ptr ${incoming.join(", ")}`);
+  return host.own({ name: out, type: e.type });
+}
+
+/** A held cell as a jsval word. */
+function cellWord(host: Host, cell: string): string {
+  const B = host.B;
+  const bits = B.tmp();
+  const word = B.tmp();
+  const tagged = B.tmp();
+  B.line(`${bits} = ptrtoint ptr ${cell} to i64`);
+  B.line(`${word} = or i64 ${bits}, ${JS_BITS.cellTag}`);
+  B.line(`${tagged} = inttoptr i64 ${word} to ptr`);
+  return tagged;
+}
+
+/** A direct call of a compiled method with the site's evaluated
+ * (borrowed) arguments, as helperCall passes them. Returns the owned
+ * result, or "" for a void method. */
+function methodCall(host: Host, name: string, args: LlValue[]): string {
+  const B = host.B;
+  const method = host.fnByName.get(name)!;
+  const borrowed = host.callLifetimes.borrowed.get(name);
+  const argList = args
+    .map((a, i) => {
+      const type = method.params[i]!.type;
+      const value = borrowed?.has(i) ? a.name : host.retainFrame(a.name, type);
+      return `${host.llType(type)} ${value}`;
+    })
+    .join(", ");
+  const target = `@${borrowed ? mangleBorrowedFunction(name) : host.callTarget(name)}`;
+  if (method.returnType.kind === "void") {
+    const invoked = host.emitDirectCall(`call void ${target}(${argList})`, name);
+    if (!invoked && host.mayThrow.has(name)) host.emitPendingCheck();
+    return "";
+  }
+  let t = B.tmp();
+  const invoked = host.emitDirectCall(
+    `${t} = call ${host.llType(method.returnType)} ${target}(${argList})`,
+    name,
+  );
+  if (!invoked && host.mayThrow.has(name)) host.emitPendingCheck();
+  if (borrowed && host.borrowedReturns.has(name)) t = host.retainFrame(t, method.returnType);
+  return t;
 }
 
 /** Emits a call to a classified helper as a cache site. */

@@ -10,6 +10,7 @@ import type {
   IrFunction,
   IrGlobal,
   IrModule,
+  IrRecordLink,
   IrRecordShape,
   IrStmt,
   IrType,
@@ -1010,6 +1011,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       mod.lifetimeRegions === true,
       new Set(mod.threadSlotKeys ?? []),
       mod.declOrigins?.length ?? 0,
+      mod.recordLinks ?? [],
     );
   }
   return errors;
@@ -1030,6 +1032,7 @@ function validateFunction(
   lifetimeRegions: boolean,
   threadSlotKeys: ReadonlySet<string>,
   declOriginCount: number,
+  recordLinks: readonly IrRecordLink[],
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -3528,7 +3531,7 @@ function validateFunction(
         if (e.type.kind !== "dyn") err(`dynCall must be dyn-typed, got ${e.type.kind}`, e.loc);
         for (const a of e.args) {
           checkExpr(a);
-          if (a.type.kind !== "dyn")
+          if (a.type.kind !== "dyn" && !(a.type.kind === "jsval" && e.spreads === undefined))
             err(`dynCall argument of kind ${a.type.kind} (must be dyn)`, e.loc);
         }
         // The runtime-arity form: spread entries point into args (their
@@ -3556,7 +3559,7 @@ function validateFunction(
         if (e.type.kind !== "dyn") err(`dynInvoke must be dyn-typed, got ${e.type.kind}`, e.loc);
         for (const a of e.args) {
           checkExpr(a);
-          if (a.type.kind !== "dyn")
+          if (a.type.kind !== "dyn" && a.type.kind !== "jsval")
             err(`dynInvoke argument of kind ${a.type.kind} (must be dyn)`, e.loc);
         }
         break;
@@ -3851,6 +3854,22 @@ function validateFunction(
             return;
           }
           if (arm.kind !== "record") {
+            // A SCALAR PRIMITIVE arm under a literal key answers undefined:
+            // JS boxes the primitive, finds no such property, and gets
+            // undefined — the answer a record arm without the key gives.
+            // The frontend only emits this when the primitive's own type
+            // declares no such member, and the result must carry the
+            // undefined arm (the backend stores it).
+            if (
+              e.key.kind === "strLit" &&
+              (arm.kind === "string" ||
+                arm.kind === "f64" ||
+                arm.kind === "bool" ||
+                arm.kind === "bigint") &&
+              resultUnion?.arms.some((a) => a.kind === "undefinedT")
+            ) {
+              return;
+            }
             err(`unionKeyGet: arm ${i} of ${e.unionId} is ${arm.kind}, not a record`, e.loc);
             return;
           }
@@ -3871,6 +3890,14 @@ function validateFunction(
             }
             return;
           }
+          // A declared-only arm that lacks a literal key has no such own
+          // property: it answers undefined, like a unit arm.
+          if (
+            literal !== null &&
+            !shape.indexValue &&
+            resultUnion?.arms.some((a) => a.kind === "undefinedT")
+          )
+            return;
           if (!shape.indexValue && !(literal === null && shape.fields.length > 0)) {
             err(`unionKeyGet: arm ${i} of ${e.unionId} has no answer for the key`, e.loc);
           }
@@ -4154,6 +4181,7 @@ function validateFunction(
       e.fn === "emitter.emit" ||
       e.fn === "emitter.emitFlex" ||
       e.fn === "emitter.emitAny" ||
+      e.fn === "emitter.emitErrorValue" ||
       e.fn === "emitter.emitMixed" ||
       e.fn === "readable.new" ||
       e.fn === "writable.new" ||
@@ -4189,16 +4217,21 @@ function validateFunction(
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
       e.fn === "rl.createSignal";
+    // error.nodeThrow takes an optional fourth argument: the error's own
+    // `url` property (a string).
+    const optionalUrl = e.fn === "error.nodeThrow" && e.args.length === 4;
     // fs.unwatchFile's listener is optional, so its last slot may be
     // omitted (1 or 2 args) rather than extended.
     const optionalTail = e.fn === "fs.unwatchFile" ? 1 : 0;
     const arityOk = variadic
       ? e.args.length >= sig.argTypes.length
       : e.args.length === sig.argTypes.length ||
+        optionalUrl ||
         (optionalTail > 0 && e.args.length === sig.argTypes.length - optionalTail);
     if (!arityOk) {
       err(`libCall ${e.fn}: ${e.args.length} args, expected ${sig.argTypes.length}`, e.loc);
     }
+    if (optionalUrl) expectType(e.args[3]!, STRING, `libCall ${e.fn} arg 3`);
     e.args.forEach((a, i) => {
       checkExpr(a);
       const want = sig.argTypes[i];
@@ -4260,6 +4293,31 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    // A record link names a pair of the module's recordLinks: the copy has
+    // the pair's target type, the source (and linkSource's result) its
+    // source type.
+    if (e.fn === "record.link" || e.fn === "record.linkIs" || e.fn === "record.linkSource") {
+      const pairArg = e.args[e.fn === "record.link" ? 2 : 1];
+      const pair =
+        pairArg?.kind === "numLit"
+          ? recordLinks.find((link) => link.pair === pairArg.value)
+          : undefined;
+      if (!pair) {
+        err(`libCall ${e.fn} must name a pair of the module's recordLinks`, e.loc);
+        return true;
+      }
+      const copy = e.args[0];
+      if (copy?.type.kind !== "record" || copy.type.shapeId !== pair.to)
+        err(`libCall ${e.fn} copy must have the pair's target type`, e.loc);
+      const sourceType =
+        e.fn === "record.link" ? e.args[1]?.type : e.fn === "record.linkSource" ? e.type : null;
+      if (
+        sourceType !== null &&
+        (sourceType?.kind !== "record" || sourceType.shapeId !== pair.from)
+      )
+        err(`libCall ${e.fn} source must have the pair's source type`, e.loc);
+      return true;
+    }
     // ArraySpeciesCreate over an Array method's result, and Array.of /
     // Array.from on a class that extends Array: the result has the plain
     // result's array type.
@@ -4485,6 +4543,20 @@ function validateFunction(
         def.arms[1]!.kind === "undefinedT";
       if (!ok) {
         err(`libCall ${e.fn} must return the 'number | undefined' union`, e.loc);
+      }
+      return true;
+    }
+    if (e.fn === "process.stdinIsRaw") {
+      // Result is the module's interned `boolean | undefined` union
+      // (Node's undefined on a pipe-backed stdin).
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms[0]!.kind === "bool" &&
+        def.arms[1]!.kind === "undefinedT";
+      if (!ok) {
+        err(`libCall process.stdinIsRaw must return the 'boolean | undefined' union`, e.loc);
       }
       return true;
     }
@@ -5147,7 +5219,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "qs.parse") {
+    if (e.fn === "qs.parse" || e.fn === "qs.parseCustom") {
       // Result: a pure index-signature record whose value union
       // carries a string arm and a string[] arm (undefined tolerated
       // — @types/node's Dict — and f64 too: the header-family
@@ -6191,6 +6263,12 @@ function validateFunction(
           err(`libCall ${e.fn} payloads must be checked-dynamic`, e.loc);
         }
       }
+      if (
+        e.fn === "emitter.emitErrorValue" &&
+        e.args.slice(1).some((arg) => arg.type.kind !== "dyn")
+      ) {
+        err(`libCall emitter.emitErrorValue payloads must be checked-dynamic`, e.loc);
+      }
       if (e.fn === "emitter.emitMixed") {
         const count = e.args[2];
         const k = count?.kind === "numLit" ? count.value : -1;
@@ -6204,6 +6282,7 @@ function validateFunction(
         e.fn === "emitter.emit" ||
         e.fn === "emitter.emitFlex" ||
         e.fn === "emitter.emitAny" ||
+        e.fn === "emitter.emitErrorValue" ||
         e.fn === "emitter.emitMixed" ||
         e.fn === "emitter.hasTyped" ||
         e.fn === "emitter.listenersDyn" ||
@@ -6311,6 +6390,37 @@ function validateFunction(
         ) {
           err(`dynCheck against non-JSON-representable type ${e.type.kind}`, e.loc);
         }
+        if (e.partialView === true) {
+          // A partial record assertion (record-views.ts): the operand is a
+          // live record whose fields are a SUBSET of the target's, with
+          // equal types, so the view lacks only properties the record
+          // never had.
+          if (
+            e.type.kind !== "record" ||
+            e.value.kind !== "dynFrom" ||
+            e.value.liveRef !== true ||
+            e.value.value.type.kind !== "record"
+          ) {
+            err(`partialView dynCheck needs a live-record operand and a record target`, e.loc);
+            break;
+          }
+          const target = records.get(e.type.shapeId);
+          const source = records.get(e.value.value.type.shapeId);
+          if (!target || !source) {
+            err(`partialView dynCheck names an unknown record shape`, e.loc);
+            break;
+          }
+          for (const field of source.fields) {
+            const found = target.fields.find((f) => f.name === field.name);
+            if (!found || typeKey(found.type) !== typeKey(field.type)) {
+              err(
+                `partialView source field "${field.name}" is not a target field with an equal type`,
+                e.loc,
+              );
+              break;
+            }
+          }
+        }
         break;
       }
       default: {
@@ -6369,11 +6479,9 @@ function validateFunction(
           if (delegatedYield !== e) err("delegated yield outside a delegate resume", e.loc);
           if (e.type.kind !== "void" || e.captureCompletion) err("invalid delegated yield", e.loc);
         } else if (e.captureCompletion) {
-          if (
-            fn.async ||
-            e.type.kind !== "dyn" ||
-            !typeEquals(e.captureCompletion.returnType, fn.returnType)
-          ) {
+          // Both kinds capture: an async generator's delegation forwards
+          // the received completion to its delegate the same way.
+          if (e.type.kind !== "dyn" || !typeEquals(e.captureCompletion.returnType, fn.returnType)) {
             err("invalid captured generator completion", e.loc);
           }
         } else if (fn.generator.nextT.kind === "undefinedT") {

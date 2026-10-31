@@ -574,6 +574,37 @@ bool scr_stream_chunk_done(const struct ScrDyn *v);
 void scr_stream_transform_done_value(ScrStream *s, ScrError *err, struct ScrDyn *v);
 void scr_stream_flush_done_value(ScrStream *s, ScrError *err, struct ScrDyn *v);
 
+/* Typed object-mode chunks. A compiled push, completion or write of a
+ * record whose type has a descriptor (one internal constant per type,
+ * emitted by the compiler) keeps the record itself in the stream's
+ * buffers. A consumer that reads the chunk as a checked-dynamic value
+ * gets the record's capsule from `box`, the conversion compiled code
+ * uses for the record (same referent, so the same JS object). A side
+ * that is not in object mode, or a buffer that holds other values, takes
+ * the chunk boxed, as push(value) takes it. */
+typedef struct ScrStreamTypedDesc {
+  const char *key; /* the type key (the capsule's type key) */
+  size_t key_len;
+  void *(*retain)(void *);
+  void (*release)(void *);
+  struct ScrDyn *(*box)(void *rec); /* +1 capsule; borrows rec */
+} ScrStreamTypedDesc;
+/* push(rec): borrows rec. */
+bool scr_stream_push_typed(ScrStream *s, void *rec, const ScrStreamTypedDesc *desc);
+/* write(rec[, cb]): borrows rec; cb moves. */
+bool scr_stream_write_typed(ScrStream *s, void *rec, const ScrStreamTypedDesc *desc,
+                            ScrClosure *cb);
+/* callback(err, rec) of a transform or flush: rec borrowed, NULL when the
+ * callback passed no data; err moves. */
+void scr_stream_transform_done_typed(ScrStream *s, ScrError *err, void *rec,
+                                     const ScrStreamTypedDesc *desc);
+void scr_stream_flush_done_typed(ScrStream *s, ScrError *err, void *rec,
+                                 const ScrStreamTypedDesc *desc);
+/* A compiled write or transform callback's chunk declared with desc's
+ * type: the record (+1) when the write in progress carries one of that
+ * type, else NULL (the caller converts scr_stream_chunk_value). */
+void *scr_stream_chunk_typed(ScrStream *s, ScrBytes *chunk, const ScrStreamTypedDesc *desc);
+
 /* Runtime-backed streams (the fs streams in scr_fs_stream.c).
  * - construct: Node's _construct. The hook runs on a tick after
  *   construction; until construct_done's tick, reads, buffered writes,

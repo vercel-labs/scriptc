@@ -5,7 +5,12 @@
  * checks annotated listener parameters against it (unannotated non-empty
  * parameter lists have no static types and fence at the registration). */
 declare module "events" {
-  class EventEmitter {
+  /* Generic like @types/node's class: the type argument is the listener
+   * MAP, a pure typing aid with no runtime layout (Node erases it too), so
+   * `class Sink extends EventEmitter<Map>` adopts the same emitter base.
+   * The map stays unconstrained here — the members below are the untyped
+   * `...args: any[]` surface either way. */
+  class EventEmitter<EventMap = Record<string, any[]>> {
     constructor();
     static defaultMaxListeners: number;
     /* Listeners registered under this symbol observe 'error' emits first

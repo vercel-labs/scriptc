@@ -171,7 +171,8 @@ function loopBounds(fn: IrFunction, functions: ReadonlyMap<string, IrFunction>):
  * -0 (`1 / p` is not -Infinity). The copy then receives `p | 0`, which is
  * the same double, so it computes what the body would; its only caller
  * proves the parameter an int32, so it gets the i32 entry. Other values
- * run the body as before.
+ * run the body as before, whose loops the backend then emits once
+ * (`plainLoops`).
  *
  * Only plain synchronous functions qualify: not class members, no
  * captures, not the module entry, not dynamic-tier, at most
@@ -301,6 +302,7 @@ export function versionLoopBoundParameters(
         : [{ kind: "return", value: call, loc }];
     replaced.set(fn, {
       ...fn,
+      plainLoops: true,
       body: [{ kind: "if", cond: test!, then: run, else_: null, loc }, ...fn.body],
     });
   }

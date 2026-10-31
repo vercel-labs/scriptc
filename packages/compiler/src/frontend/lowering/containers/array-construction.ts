@@ -871,12 +871,30 @@ export function lowerArrayFromValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
         loc,
       });
       const value = lowerCheckedArrayFrom(lowerer, source!, loc, argument("0"), argument("1"));
+      // A function receiver other than Array itself (`Array.from` called
+      // through the Array value builds an ordinary array) is a subclass or
+      // a custom constructor.
+      const receiver = (): IrExpr => ({
+        kind: "libCall",
+        fn: "dyn.this",
+        args: [],
+        type: DYN,
+        loc,
+      });
       const constructorCheck: IrStmt = {
         kind: "if",
         cond: {
-          kind: "dynTest",
-          test: "function",
-          value: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+          kind: "logical",
+          op: "&&",
+          left: { kind: "dynTest", test: "function", value: receiver(), type: BOOL, loc },
+          right: {
+            kind: "dynScalarEq",
+            negated: true,
+            left: receiver(),
+            right: { kind: "libCall", fn: "dyn.arrayConstructor", args: [], type: DYN, loc },
+            type: BOOL,
+            loc,
+          },
           type: BOOL,
           loc,
         },
@@ -1089,6 +1107,19 @@ export function lowerArrayFromCall(
   // and materializes holes while keeping element reference identity.
   if ((args.length === 1 || args.length === 2) && !ts.isObjectLiteralExpression(args[0]!)) {
     const source = lowerer.lowerExpr(args[0]!);
+    // Array.from(s): the string iterator's code points, into a fresh
+    // array (scr_str_code_points already builds one, like Array.from).
+    // The checker can narrow the argument to a string while the binding
+    // keeps its nullable storage (`value.includes(x) && Array.from(value)`),
+    // so the site type decides and the read is coerced to that string.
+    if (
+      args.length === 1 &&
+      (source.type.kind === "string" ||
+        lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "string")
+    ) {
+      const str = source.type.kind === "string" ? source : lowerer.coerceToExpected(source, STRING);
+      return strCharsCall(str, loc);
+    }
     let src =
       source.type.kind === "string" && args.length === 2 ? strCharsCall(source, loc) : source;
     if (src.type.kind === "array") {

@@ -65,6 +65,27 @@ test("a loop-bounding parameter some caller passes unproven gets an int32 versio
   expect(body).toMatch(/fdiv double 0x3FF0000000000000, %\S+/);
 });
 
+test("the body a version leaves emits each loop once", async () => {
+  const llvm = await emitLlvm(`
+const fact: number[] = [];
+function fillFact(n: number): void {
+  fact[0] = 1;
+  for (let i = 1; i <= n; i++) fact[i] = fact[i - 1]! * i;
+}
+fillFact(Number(process.argv.length > 5 ? "7.5" : "6"));
+console.log(fact.join(" "));
+`);
+  expect(versions(llvm)).toEqual(["fillFact"]);
+  const loopBodies = (name: string): number => {
+    const body = new RegExp(`^define [^@]*@sc_\\w+?_${name}\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
+    return body.match(/^loop\.b\d+:/gm)?.length ?? 0;
+  };
+  // The body runs only for numbers the version does not take: its loop gets
+  // no speculative integer copy beside the ordinary one.
+  expect(loopBodies("fillFact")).toBe(1);
+  expect(loopBodies("fillFact_int32Params\\.i32")).toBe(1);
+});
+
 test("a module that reads stacks keeps a single body", async () => {
   const llvm = await emitLlvm(`${loops}\nconsole.log(typeof new Error("x").stack);\n`);
   expect(versions(llvm)).toEqual([]);

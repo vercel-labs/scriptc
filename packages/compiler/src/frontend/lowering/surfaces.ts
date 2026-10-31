@@ -1261,9 +1261,9 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // truncateSync's omitted len completes to 0 in lowerBuiltinModuleCall,
       // like accessSync's mode.
       truncateSync: { fn: "fs.truncateSync", params: [STRING, F64], result: VOID },
-      // The 2-argument form only: Node's mode flags (COPYFILE_EXCL, ...)
-      // land on the arity fence.
-      copyFileSync: { fn: "fs.copyFileSync", params: [STRING, STRING], result: VOID },
+      // The mode is libuv's copyfile flag bits (COPYFILE_EXCL, ...); the
+      // 2- and 3-argument forms lower in lowerBuiltinModuleCall.
+      copyFileSync: { fn: "fs.copyFileSync", params: [STRING, STRING, F64], result: VOID },
       // The callback form is special-cased in lowerBuiltinModuleCall: its
       // Error | null parameter is program-shaped and needs an emitted
       // adapter. The row still projects the static surface and routes the
@@ -1469,10 +1469,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         params: [STRING, STRING],
         result: { kind: "promise", inner: VOID },
       },
-      // The 2-argument form only, like copyFileSync.
+      // The 2- and 3-argument forms, like copyFileSync.
       copyFile: {
         fn: "fsp.copyFile",
-        params: [STRING, STRING],
+        params: [STRING, STRING, F64],
         result: { kind: "promise", inner: VOID },
       },
       mkdtemp: { fn: "fsp.mkdtemp", params: [STRING], result: { kind: "promise", inner: STRING } },
@@ -2069,6 +2069,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: STRING,
         valueParams: [{ mode: "required", type: STRING }],
       },
+      unescapeBuffer: { fn: "qs.unescapeBuffer", params: [STRING, BOOL], result: BYTES_U8 },
     },
     // node:punycode (deprecated): punycode.js 2.1.0's conversions over
     // strings (scr_url.c). ucs2.decode/encode are members of the module's
@@ -2271,15 +2272,20 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // The string source's check before a URL destination converts
     // (fs-paths.ts).
-    copyFileSync: ["fs.checkPath"],
+    copyFileSync: ["fs.checkPath", "fs.copyFileFlagsSync"],
     renameSync: ["fs.checkPath"],
-    copyFile: ["fs.checkPath"],
+    copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
     // The bytes-data form and the { mode } options form.
     // The bytes-data form, the { mode } options form, and the
     // file-descriptor data form.
-    writeFileSync: ["fs.writeFileSyncBytes", "fs.writeFileModeSync", "fs.writeFileSyncFd"],
+    writeFileSync: [
+      "fs.writeFileSyncBytes",
+      "fs.writeFileModeSync",
+      "fs.writeFileFlagsSync",
+      "fs.writeFileSyncFd",
+    ],
     appendFileSync: ["fs.appendFileSyncBytes"],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
@@ -2330,8 +2336,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode } options form.
-    writeFile: ["fsp.writeFileMode"],
+    // The string-data { mode, flag } options forms.
+    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
@@ -3768,25 +3774,28 @@ export function stdlibGlobalAliasNameOf(
   // These globals have provenance-aware call or member lowering, so a
   // stable snapshot keeps the same dispatch as the original global.
   // Other callable globals still use their ordinary value paths.
-  return [
-    "process",
-    "console",
-    "globalThis",
-    "performance",
-    "Array",
-    "Buffer",
-    "BigInt",
-    "Number",
-    "String",
-    "Boolean",
-    // Code generation from strings throws Node's EvalError at every call
-    // (code-generation.ts); zod 4 probes `const F = Function; new F("")`.
-    "Function",
-    "eval",
-  ].includes(name)
-    ? name
-    : null;
+  return SNAPSHOT_GLOBALS.has(name) ? name : null;
 }
+
+/** The globals a `const x = <global>` snapshot aliases (stdlibGlobalAliasNameOf).
+ * Node defines every one of them, so an optional step over one of them
+ * (`proc?.env`, `globalThis.process?.env`) is the plain member read. */
+export const SNAPSHOT_GLOBALS: ReadonlySet<string> = new Set([
+  "process",
+  "console",
+  "globalThis",
+  "performance",
+  "Array",
+  "Buffer",
+  "BigInt",
+  "Number",
+  "String",
+  "Boolean",
+  // Code generation from strings throws Node's EvalError at every call
+  // (code-generation.ts); zod 4 probes `const F = Function; new F("")`.
+  "Function",
+  "eval",
+]);
 
 /** `buffer.Buffer` through a buffer-module namespace binding (`var buffer
  * = require('buffer')`): the module's Buffer IS the global constructor. */

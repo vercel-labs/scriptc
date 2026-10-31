@@ -19,6 +19,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { invalidateTrackedPath } from "../input-tracker.js";
 
 export interface OverlayMemo {
   /** The build compiled without the overlay. */
@@ -60,11 +61,16 @@ export function textHash(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 32);
 }
 
-/** The memo key of a program's JavaScript files (name and text). */
+/** The memo key of a program's JavaScript files (name and text) and the
+ * shape and inference settings. */
 export function overlayMemoKey(files: readonly (readonly [string, string])[]): string {
   const hash = createHash("sha256");
   const settings = Object.keys(process.env)
-    .filter((k) => k.startsWith("SCRIPTC_SHAPE_") && !k.startsWith("SCRIPTC_SHAPE_CHECK"))
+    .filter(
+      (k) =>
+        (k.startsWith("SCRIPTC_SHAPE_") && !k.startsWith("SCRIPTC_SHAPE_CHECK")) ||
+        k === "SCRIPTC_INFER_JS",
+    )
     .sort();
   for (const k of settings)
     hash
@@ -95,6 +101,7 @@ export function writeOverlayMemo(key: string, memo: OverlayMemo): void {
     const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(temp, JSON.stringify(memo), { mode: 0o600 });
     renameSync(temp, path);
+    invalidateTrackedPath(path);
   } catch {
     // The memo only saves work; a build that cannot write it is unaffected.
   }

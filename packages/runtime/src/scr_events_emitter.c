@@ -87,6 +87,9 @@ typedef struct ScrEeEntry {
   const char *flex_sig;
   const char *flex_name;
   uint32_t flex_arity;
+  /* The typed-ref recipe the listener's calls bind the emitter as `this`
+   * with; NULL for listeners that cannot read `this`. */
+  const ScrDynTypedRefRecipe *recv;
   bool once;
   bool fired; /* a once entry that already ran (snapshot skip rule) */
   uint32_t refs;
@@ -502,7 +505,7 @@ static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b) {
 static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                               ScrClosure *orig /*moves; may be NULL*/,
                               ScrEeInvoke inv, const ScrDyn *dyn /*borrowed; may be NULL*/,
-                              bool once, bool prepend) {
+                              bool once, bool prepend, const ScrDynTypedRefRecipe *recv) {
   scr_ee_reg_ensure(em);
   scr_ee_emit_meta(em, "newListener", name, dyn);
   ScrEeBucket *b = scr_ee_bucket_ensure(em->reg, name);
@@ -519,6 +522,7 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
     e->flex_name = dyn->v.fn.name;
     e->flex_arity = dyn->v.fn.arity;
   }
+  e->recv = recv;
   e->once = once;
   e->refs = 1;
   if (b->n == b->cap) {
@@ -541,7 +545,7 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
 
 ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                             ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, cb, NULL, inv, NULL, once, prepend);
+  return scr_ee_add(em, name, cb, NULL, inv, NULL, once, prepend, NULL);
 }
 
 /* events.once(emitter, name): a pending promise of the event's arguments
@@ -624,7 +628,7 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
    * listener it announced is never added (the event's listener stays when
    * only the 'error' announcement throws). */
   ScrCaught *thrown = NULL;
-  scr_emitter_release(scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, true, false));
+  scr_emitter_release(scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, true, false, NULL));
   if (scr_exc_pending()) {
     thrown = scr_exc_take();
     scr_ee_unadd(em, name, st->event_cb);
@@ -632,7 +636,7 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
     st->event_cb = st->error_cb = NULL;
   } else if (st->error_cb != NULL) {
     ScrStr *error = scr_str_new("error", 5);
-    scr_emitter_release(scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, true, false));
+    scr_emitter_release(scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, true, false, NULL));
     if (scr_exc_pending()) {
       thrown = scr_exc_take();
       scr_ee_unadd(em, error, st->error_cb);
@@ -690,11 +694,17 @@ void scr_events_once_fire(ScrClosure *cb, ScrArr *args) {
  * an untyped emit of the same name invokes, with every argument as given.
  * cb must be a SCR_DYN_FUNC (the emitted scr_emitter_check_listener ran
  * first); adapter MOVES in, cb is borrowed. */
+ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv) {
+  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv,
+                    cb->kind == SCR_DYN_FUNC ? cb : NULL, once, prepend, recv);
+}
+
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv,
-                    cb->kind == SCR_DYN_FUNC ? cb : NULL, once, prepend);
+  return scr_emitter_on_dyn_this(em, name, cb, adapter, inv, once, prepend, NULL);
 }
 
 /* The typed adapters of a checked-dynamic listener on the events whose
@@ -734,21 +744,26 @@ static bool scr_ee_is_name(const ScrStr *name, const char *literal) {
  * names, and runtime-internal registries such as the worker events, whose
  * emits are untyped): its thunk alone. cb must be a function value (the
  * caller ran the listener check). */
-ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
-                                bool once, bool prepend) {
+ScrEmitter *scr_emitter_on_flex_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb, bool once,
+                                     bool prepend, const ScrDynTypedRefRecipe *recv) {
   if (cb->kind != SCR_DYN_FUNC) {
     scr_dyn_check_listener(cb, "listener");
     return scr_emitter_retain(em);
   }
-  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend);
+  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend, recv);
+}
+
+ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                bool once, bool prepend) {
+  return scr_emitter_on_flex_this(em, name, cb, once, prepend, NULL);
 }
 
 /* on/once/prepend* through an untyped value, under a name the program never
  * fixes a tuple for: the thunk, and under 'error' and the meta events, whose
  * tuples typed code and the runtime emit with, a runtime-built typed adapter
  * too. Installs the registry's dynamic half. */
-ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
-                               bool once, bool prepend) {
+ScrEmitter *scr_emitter_on_any_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv) {
   if (cb->kind != SCR_DYN_FUNC) {
     scr_dyn_check_listener(cb, "listener");
     return scr_emitter_retain(em);
@@ -762,9 +777,15 @@ ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
   }
   if (fire) {
     return scr_ee_add(em, name, scr_ee_dyn_adapter(cb, fire),
-                      scr_closure_retain(cb->v.fn.clo), &scr_ee_inv_fixed1, cb, once, prepend);
+                      scr_closure_retain(cb->v.fn.clo), &scr_ee_inv_fixed1, cb, once, prepend,
+                      recv);
   }
-  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend);
+  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend, recv);
+}
+
+ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                               bool once, bool prepend) {
+  return scr_emitter_on_any_this(em, name, cb, once, prepend, NULL);
 }
 
 /* The adapter-mediated registration (the LLVM backend): adapter is what
@@ -773,7 +794,14 @@ ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend);
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, NULL);
+}
+
+/* scr_emitter_on_via for a listener that can read `this` (scr_events_emitter.h). */
+ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv) {
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, recv);
 }
 
 /* ── fixed-arity invoke shims (scr_runtime.h's contract) ──────────────
@@ -1119,6 +1147,9 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
       flex_args = &message->decoded;
       flex_argc = 1;
     }
+    /* Node calls each listener with the emitter as `this`. The window holds
+     * the emitter borrowed: the emit's caller keeps it alive. */
+    if (e->recv) scr_dyn_this_push_typed(em, e->recv);
     if (flex_args && e->flex_invoke) {
       ScrDyn *answer = e->flex_invoke(e->flex_cb, flex_args, flex_argc);
       scr_dyn_release(answer); /* EventEmitter ignores callback results. */
@@ -1130,6 +1161,7 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
     } else {
       scr_ee_listener_mismatch(name, ap_template != NULL);
     }
+    if (e->recv) scr_dyn_this_pop();
     scr_ee_entry_unref(e);
   }
   if (snap != small) free(snap);
@@ -1193,13 +1225,29 @@ bool scr_emitter_has_typed(ScrEmitter *em, ScrStr *name) {
   return false;
 }
 
-/* Node's ERR_UNHANDLED_ERROR for a non-Error payload: the message quotes
- * util.inspect of the payload. This unit renders the primitive payloads
- * inspect prints plainly; others report that they are not supported. */
-static void scr_ee_unhandled_error(const ScrDyn *er) {
+/* Throws Node's ERR_UNHANDLED_ERROR for a non-Error payload: the message
+ * quotes `shown` (util.inspect of the payload) and `context` is the
+ * payload. */
+SCR_COLD static void scr_ee_throw_unhandled(const char *shown, size_t len, const ScrDyn *er) {
   ScrJsonBuf text;
   scr_jb_init(&text);
   scr_jb_puts(&text, "Unhandled error. (");
+  scr_jb_write(&text, shown, len);
+  scr_jb_putc(&text, ')');
+  ScrStr *message = scr_jb_finish(&text);
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(err, "ERR_UNHANDLED_ERROR");
+  scr_error_set_prop(err, "context", 7, scr_dyn_retain((ScrDyn *)er));
+  scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* ERR_UNHANDLED_ERROR through an untyped value. This unit renders the
+ * primitive payloads inspect prints plainly; others report that they are
+ * not supported. */
+static void scr_ee_unhandled_error(const ScrDyn *er) {
+  ScrJsonBuf text;
+  scr_jb_init(&text);
   bool shown = true;
   switch (er->kind) {
   case SCR_DYN_UNDEF: scr_jb_puts(&text, "undefined"); break;
@@ -1233,13 +1281,7 @@ static void scr_ee_unhandled_error(const ScrDyn *er) {
   }
   ScrStr *message = scr_jb_finish(&text);
   if (shown) {
-    ScrJsonBuf full;
-    scr_jb_init(&full);
-    scr_jb_write(&full, message->data, message->len);
-    scr_jb_putc(&full, ')');
-    ScrStr *rendered = scr_jb_finish(&full);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, rendered->data, rendered->len, "ERR_UNHANDLED_ERROR");
-    scr_str_release(rendered);
+    scr_ee_throw_unhandled(message->data, message->len, er);
   } else {
     const char *refusal =
         "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet";
@@ -1251,21 +1293,51 @@ static void scr_ee_unhandled_error(const ScrDyn *er) {
 /* emit('error', ...) through an untyped value: errorMonitor first; with no
  * 'error' listener an Error payload throws itself and anything else throws
  * ERR_UNHANDLED_ERROR, Node's contract; otherwise listeners receive the
- * arguments as given, and typed listeners the payload as an Error. */
-static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc) {
+ * arguments as given, and typed listeners the payload as an Error. `render`
+ * (util.inspect, when the call site links it) quotes the payload in the
+ * ERR_UNHANDLED_ERROR message; without it only primitive payloads render. */
+static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc,
+                                  ScrStr *(*render)(ScrDyn *, double, double)) {
   const ScrDyn *er = argc ? args[0] : scr_dyn_undefined();
   ScrError *err = scr_dyn_err_instanceof(er, SCR_ERR_ERROR) ? scr_errdyn_err_of(er) : NULL;
   bool had = false;
   if (!scr_ee_has(em->reg, "error")) {
     scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, err != NULL, err);
     if (!scr_exc_pending()) {
-      if (err) scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
-      else scr_ee_unhandled_error(er);
+      if (err) {
+        scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
+      } else if (render) {
+        ScrStr *shown = render((ScrDyn *)er, 0, 2);
+        if (scr_exc_pending()) {
+          /* A throwing inspect: Node quotes the payload's string conversion
+           * instead, whose own throw propagates. */
+          if (shown) scr_str_release(shown);
+          scr_exc_clear();
+          shown = scr_dyn_string_coerce_js(er);
+        }
+        if (shown) {
+          scr_ee_throw_unhandled(shown->data, shown->len, er);
+          scr_str_release(shown);
+        }
+      } else {
+        scr_ee_unhandled_error(er);
+      }
     }
   } else {
     had = scr_ee_emit_mixed_va(em, name, args, argc, err != NULL, err);
   }
   scr_error_release(err);
+  return had;
+}
+
+/* emit('error', ...args) from typed code whose payload is not statically
+ * an Error (the arguments boxed): scr_ee_emit_error_dyn, quoting the
+ * payload with `render`. */
+bool scr_emitter_emit_error_value(ScrEmitter *em, ScrDyn *const *args, size_t argc,
+                                  ScrStr *(*render)(ScrDyn *, double, double)) {
+  ScrStr *name = scr_str_new("error", 5);
+  bool had = scr_ee_emit_error_dyn(em, name, args, argc, render);
+  scr_str_release(name);
   return had;
 }
 
@@ -1288,7 +1360,7 @@ bool scr_emitter_emit_message(ScrEmitter *em, ScrStr *name, const struct ScrMess
  * typed listeners with a string name. */
 bool scr_emitter_emit_any(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc) {
   if (!scr_ee_is_error_monitor(name)) {
-    if (scr_ee_is_name(name, "error")) return scr_ee_emit_error_dyn(em, name, args, argc);
+    if (scr_ee_is_name(name, "error")) return scr_ee_emit_error_dyn(em, name, args, argc, NULL);
     if (scr_ee_is_name(name, "newListener") || scr_ee_is_name(name, "removeListener")) {
       ScrStr *s = argc && args[0]->kind == SCR_DYN_STR ? args[0]->v.str : NULL;
       return scr_ee_emit_mixed_va(em, name, args, argc, s != NULL, s);

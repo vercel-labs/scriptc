@@ -1,12 +1,21 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { F64, type IrType, RUNTIME_ERROR_CLASSES, STRING, typeKey } from "../../ir/ir.js";
+import {
+  BOOL,
+  F64,
+  isDynTypedRefType,
+  type IrType,
+  RUNTIME_ERROR_CLASSES,
+  STRING,
+  typeKey,
+} from "../../ir/ir.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { mockTimerSym } from "./lib-shared.js";
 import { FN_ATTRS } from "./shapes.js";
 import { registerReplay } from "./emit-journal.js";
+import { typedRefRecipe } from "./expr-calls.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -679,32 +688,46 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "process.onExit") {
+  if (e.fn === "process.onExit" || e.fn === "process.prependExit") {
     // Runtime adapters cover both shapes (the code is a plain double);
     // the registry owns the callback.
     const cbT = e.args[0]!.type;
     if (cbT.kind !== "func")
-      throw new InternalCompilerError("llvm emitter bug: process.onExit callback not a func");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
     const cb = host.emitExpr(e.args[0]!);
-    const once = host.emitExpr(e.args[1]!);
     host.toHeap(cb);
     const adapter = cbT.params.length === 0 ? "scr_exit_thunk0" : "scr_exit_thunk_code";
     host.declare(`declare void @${adapter}(ptr, double)`);
+    if (e.fn === "process.prependExit") {
+      host.declare(`declare void @scr_process_prepend_exit(ptr, ptr)`);
+      B.line(`call void @scr_process_prepend_exit(ptr ${cb.name}, ptr @${adapter})`);
+      return { name: "", type: e.type };
+    }
+    const once = host.emitExpr(e.args[1]!);
     host.declare(`declare void @scr_process_on_exit(ptr, ptr, i1 zeroext)`);
     B.line(`call void @scr_process_on_exit(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
     return { name: "", type: e.type };
   }
-  if (e.fn === "process.envGet" || e.fn === "process.columns" || e.fn === "process.rows") {
-    // getenv(3) / ioctl(TIOCGWINSZ): the runtime answers a +1 string or
-    // NULL (a width or a negative sentinel); the union construction is
-    // type-directed HERE — present wraps the value arm, absent yields
+  if (
+    e.fn === "process.envGet" ||
+    e.fn === "process.columns" ||
+    e.fn === "process.rows" ||
+    e.fn === "process.stdinIsRaw"
+  ) {
+    // getenv(3) / ioctl(TIOCGWINSZ) / termios: the runtime answers a +1
+    // string or NULL, or a number with a negative sentinel (the raw-mode
+    // flag rides the same double channel, 1/0/-1); the union construction
+    // is type-directed HERE — present wraps the value arm, absent yields
     // the interned immortal undefined-arm instance.
     if (e.type.kind !== "union")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
     const def = host.unionsById.get(e.type.unionId);
     const undefTag = undefinedArmTag(e.type, host.unionsById);
     const isEnv = e.fn === "process.envGet";
-    const valTag = def ? def.arms.findIndex((a) => a.kind === (isEnv ? "string" : "f64")) : -1;
+    const isRaw = e.fn === "process.stdinIsRaw";
+    const valTag = def
+      ? def.arms.findIndex((a) => a.kind === (isEnv ? "string" : isRaw ? "bool" : "f64"))
+      : -1;
     if (valTag < 0 || undefTag < 0)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const args = e.args.map((a) => host.emitExpr(a));
@@ -719,6 +742,10 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       host.declare(`declare ptr @scr_env_get(ptr)`);
       B.line(`${raw} = call ptr @scr_env_get(ptr ${args[0]!.name})`);
       B.line(`${present} = icmp ne ptr ${raw}, null`);
+    } else if (isRaw) {
+      host.declare(`declare double @scr_process_stdin_is_raw()`);
+      B.line(`${raw} = call double @scr_process_stdin_is_raw()`);
+      B.line(`${present} = fcmp oge double ${raw}, ${f64Lit(0)}`);
     } else {
       const runtimeFn = e.fn === "process.rows" ? "scr_process_rows" : "scr_process_columns";
       host.declare(`declare double @${runtimeFn}(double)`);
@@ -727,9 +754,18 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     }
     B.condBr(present, lp, la);
     B.startBlock(lp);
-    B.line(
-      `store ptr ${host.unionNewOwned(e.type.unionId, valTag, { name: raw, type: isEnv ? STRING : F64 })}, ptr ${slot}`,
-    );
+    if (isRaw) {
+      // The raw flag: 1/0 becomes the bool arm's i1.
+      const flag = B.tmp();
+      B.line(`${flag} = fcmp one double ${raw}, ${f64Lit(0)}`);
+      B.line(
+        `store ptr ${host.unionNewOwned(e.type.unionId, valTag, { name: flag, type: BOOL })}, ptr ${slot}`,
+      );
+    } else {
+      B.line(
+        `store ptr ${host.unionNewOwned(e.type.unionId, valTag, { name: raw, type: isEnv ? STRING : F64 })}, ptr ${slot}`,
+      );
+    }
     B.br(lj);
     B.startBlock(la);
     B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, undefTag)}, ptr ${slot}`);
@@ -740,6 +776,24 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     return host.own({ name: t, type: e.type });
   }
   return host.emitGenericLibCall(e);
+}
+
+/** The typed-ref recipe an emitter registration binds as its listener's
+ * `this` (the scr_emitter_on_*_this entries), or null for a registration
+ * that keeps the plain entry: a typed listener that cannot read `this`
+ * (not `bindsThis`), or a receiver type that does not box as a typed
+ * reference. Checked-dynamic listeners always bind it. */
+function listenerThisRecipe(host: LlvmEmitterContext, e: LibCallExpr): string | null {
+  const binds =
+    e.bindsThis === true ||
+    e.fn === "emitter.onDyn" ||
+    e.fn === "emitter.onDataDyn" ||
+    e.fn === "emitter.onFlex" ||
+    e.fn === "emitter.onAny";
+  const t = e.args[0]!.type;
+  if (!binds || t.kind !== "object" || !isDynTypedRefType(t)) return null;
+  if (host.shapeHost.isErrorClass(t.className)) return null;
+  return typedRefRecipe(host, t);
 }
 
 export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
@@ -811,10 +865,19 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const kind = host.emitExpr(e.args[0]!);
     const code = host.emitExpr(e.args[1]!);
     const msg = host.emitExpr(e.args[2]!);
-    host.declare(`declare void @scr_throw_node_coded(double, ptr, ptr)`);
-    B.line(
-      `call void @scr_throw_node_coded(double ${kind.name}, ptr ${code.name}, ptr ${msg.name})`,
-    );
+    if (e.args.length > 3) {
+      // The fourth argument: the error's own `url` property.
+      const url = host.emitExpr(e.args[3]!);
+      host.declare(`declare void @scr_throw_node_coded_url(double, ptr, ptr, ptr)`);
+      B.line(
+        `call void @scr_throw_node_coded_url(double ${kind.name}, ptr ${code.name}, ptr ${msg.name}, ptr ${url.name})`,
+      );
+    } else {
+      host.declare(`declare void @scr_throw_node_coded(double, ptr, ptr)`);
+      B.line(
+        `call void @scr_throw_node_coded(double ${kind.name}, ptr ${code.name}, ptr ${msg.name})`,
+      );
+    }
     const ty = host.llType(e.type);
     if (ty === "void") {
       host.emitAlwaysPendingUnwind();
@@ -858,6 +921,26 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "emitter.onFlex" || e.fn === "emitter.onAny") {
+    // The generic entries (lib-shared.ts) unless the receiver boxes as a
+    // typed reference: then the `_this` entry binds it as the listener's
+    // `this`. cb is borrowed; may throw ('newListener' listeners run).
+    const recv = listenerThisRecipe(host, e);
+    if (recv) {
+      host.usesTimers = true; // the leak warning's tick (emitter.on)
+      const args = e.args.map((a) => host.emitExpr(a));
+      const sym = e.fn === "emitter.onAny" ? "scr_emitter_on_any_this" : "scr_emitter_on_flex_this";
+      host.declare(`declare ptr @${sym}(ptr, ptr, ptr, i1 zeroext, i1 zeroext, ptr)`);
+      const t = B.tmp();
+      B.line(
+        `${t} = call ptr @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ` +
+          `i1 ${args[3]!.name}, i1 ${args[4]!.name}, ptr ${recv})`,
+      );
+      const out = host.own({ name: t, type: e.type });
+      host.emitPendingCheck();
+      return out;
+    }
+  }
   if (e.fn === "emitter.on") {
     // (recv, name, cb /moves — the identity/, once, prepend): the
     // listener registers through scr_emitter_on_via with an emitted
@@ -880,13 +963,17 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`${cbr} = call ptr @scr_closure_retain_v(ptr ${args[2]!.name})`);
     const wrapped = host.wrapEmitterListener(cbr, adapterFn);
     host.toHeap(args[2]!);
+    // A listener that reads `this` registers with the receiver's recipe.
+    const recv = listenerThisRecipe(host, e);
+    const sym = recv ? "scr_emitter_on_via_this" : "scr_emitter_on_via";
     host.declare(
-      `declare ptr @scr_emitter_on_via(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext)`,
+      `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recv ? ", ptr" : ""})`,
     );
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_emitter_on_via(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-        `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @${shim}, i1 ${args[3]!.name}, i1 ${args[4]!.name})`,
+      `${t} = call ptr @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
+        `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @${shim}, i1 ${args[3]!.name}, i1 ${args[4]!.name}` +
+        `${recv ? `, ptr ${recv}` : ""})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
@@ -906,13 +993,16 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const { fn: adapterFn, shim } = host.emitterFixedAdapter(adT);
     host.toHeap(args[3]!); // the frame's +1 moves into the wrapper's box
     const wrapped = host.wrapEmitterListener(args[3]!.name, adapterFn);
+    const recv = listenerThisRecipe(host, e);
+    const sym = recv ? "scr_emitter_on_dyn_this" : "scr_emitter_on_dyn";
     host.declare(
-      `declare ptr @scr_emitter_on_dyn(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext)`,
+      `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recv ? ", ptr" : ""})`,
     );
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_emitter_on_dyn(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-        `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @${shim}, i1 ${args[4]!.name}, i1 ${args[5]!.name})`,
+      `${t} = call ptr @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
+        `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @${shim}, i1 ${args[4]!.name}, i1 ${args[5]!.name}` +
+        `${recv ? `, ptr ${recv}` : ""})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
@@ -948,6 +1038,34 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     }
     const t = B.tmp();
     B.line(`${t} = ${call}`);
+    host.emitPendingCheck();
+    return { name: t, type: e.type };
+  }
+  if (e.fn === "emitter.emitErrorValue") {
+    // (recv, ...payload as dyn): emit('error') with a non-Error payload.
+    // The unhandled case renders the payload with util.inspect
+    // (scr_insp_dyn), which this call links.
+    const args = e.args.map((a) => host.emitExpr(a));
+    const n = args.length - 1;
+    let payload = "null";
+    if (n > 0) {
+      const arr = B.slot();
+      B.entryAllocas.push(`${arr} = alloca [${n} x ptr]`);
+      for (let i = 0; i < n; i++) {
+        const slot = B.tmp();
+        B.line(`${slot} = getelementptr inbounds [${n} x ptr], ptr ${arr}, i64 0, i64 ${i}`);
+        B.line(`store ptr ${args[i + 1]!.name}, ptr ${slot}`);
+      }
+      payload = arr;
+    }
+    host.declare(`declare ptr @scr_insp_dyn(ptr, double, double)`);
+    host.declare(
+      `declare zeroext i1 @scr_emitter_emit_error_value(ptr, ptr, ${host.sizeType}, ptr)`,
+    );
+    const t = B.tmp();
+    B.line(
+      `${t} = call i1 @scr_emitter_emit_error_value(ptr ${args[0]!.name}, ptr ${payload}, ${host.sizeType} ${n}, ptr @scr_insp_dyn)`,
+    );
     host.emitPendingCheck();
     return { name: t, type: e.type };
   }
@@ -1058,16 +1176,20 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const args = e.args.map((a) => host.emitExpr(a));
     const adapterFn = host.streamDataAdapter(cbT);
     host.declare(`declare void @scr_ee_inv_fixed3(ptr, ptr)`);
+    const recv = listenerThisRecipe(host, e);
+    const recvParam = recv ? ", ptr" : "";
+    const recvArg = recv ? `, ptr ${recv}` : "";
     const t = B.tmp();
     if (isDyn) {
       host.toHeap(args[3]!);
       const wrapped = host.wrapEmitterListener(args[3]!.name, adapterFn);
+      const sym = recv ? "scr_emitter_on_dyn_this" : "scr_emitter_on_dyn";
       host.declare(
-        `declare ptr @scr_emitter_on_dyn(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext)`,
+        `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recvParam})`,
       );
       B.line(
-        `${t} = call ptr @scr_emitter_on_dyn(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed3, i1 ${args[4]!.name}, i1 ${args[5]!.name})`,
+        `${t} = call ptr @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
+          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed3, i1 ${args[4]!.name}, i1 ${args[5]!.name}${recvArg})`,
       );
     } else {
       host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
@@ -1075,12 +1197,13 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       B.line(`${cbr} = call ptr @scr_closure_retain_v(ptr ${args[2]!.name})`);
       const wrapped = host.wrapEmitterListener(cbr, adapterFn);
       host.toHeap(args[2]!);
+      const sym = recv ? "scr_emitter_on_via_this" : "scr_emitter_on_via";
       host.declare(
-        `declare ptr @scr_emitter_on_via(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext)`,
+        `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recvParam})`,
       );
       B.line(
-        `${t} = call ptr @scr_emitter_on_via(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed3, i1 ${args[3]!.name}, i1 ${args[4]!.name})`,
+        `${t} = call ptr @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
+          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed3, i1 ${args[3]!.name}, i1 ${args[4]!.name}${recvArg})`,
       );
     }
     const out = host.own({ name: t, type: e.type });

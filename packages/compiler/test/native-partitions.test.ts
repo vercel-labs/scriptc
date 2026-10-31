@@ -93,6 +93,7 @@ async function emit(
     optLevel: "0" | "2";
     cache?: string;
     split?: boolean;
+    profileGenerate?: string;
     name: string;
   },
 ): Promise<string[]> {
@@ -120,6 +121,9 @@ async function emit(
     "/src/program.ts",
     ...(options.cache === undefined ? [] : ["--cache-dir", options.cache]),
     ...(options.split === true ? ["--split", "codegen"] : []),
+    ...(options.profileGenerate === undefined
+      ? []
+      : ["--profile-generate", options.profileGenerate]),
   ]);
   return outputs;
 }
@@ -592,6 +596,148 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(fewGrouped.get(`step${step}`)).toBe(fewPlain.get(`step${step}`));
     expect(fewGrouped.get("main")).toBe(fewPlain.get("main"));
   });
+
+  test.runIf(target?.llvmTriple.startsWith("x86_64") === true)(
+    "an x86-64-v3 copy shares its baseline copy's partition and takes its code unless it has wider vectors",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-cpu-copies-"));
+      dirs.push(dir);
+      // Copies as --cpu-dispatch emits them: `<name>.base` in #0 and
+      // `<name>.v3` in #1. Two callers each, so that every copy is placed by
+      // its own name. Each f calls h in its own tier; f and h have 128-bit
+      // vectors, g a 256-bit vector, and s only scalar code.
+      const pairs = 4;
+      const copies = (tier: "base" | "v3", group: number): string[] => [
+        `define internal void @h.${tier}(ptr %p) #${group} {`,
+        "  %v = load <2 x double>, ptr %p",
+        "  %w = fmul <2 x double> %v, splat (double 3.0)",
+        "  store <2 x double> %w, ptr %p",
+        "  ret void",
+        "}",
+        ...Array.from({ length: pairs }, (_, index) => [
+          `define internal void @f${index}.${tier}(ptr %p) #${group} {`,
+          "  %v = load <2 x double>, ptr %p",
+          `  %w = fadd <2 x double> %v, splat (double ${index + 1}.0)`,
+          "  store <2 x double> %w, ptr %p",
+          `  call void @h.${tier}(ptr %p)`,
+          "  ret void",
+          "}",
+        ]).flat(),
+        `define internal void @g.${tier}(ptr %p) #${group} {`,
+        "  %v = load <4 x double>, ptr %p",
+        "  %w = fadd <4 x double> %v, %v",
+        "  store <4 x double> %w, ptr %p",
+        "  ret void",
+        "}",
+        `define internal double @s.${tier}(double %x) #${group} {`,
+        "  %y = fadd double %x, 1.0",
+        "  ret double %y",
+        "}",
+      ];
+      const calls = (result: string): string[] =>
+        (["base", "v3"] as const).flatMap((tier) => [
+          ...Array.from(
+            { length: pairs },
+            (_, index) => `  call void @f${index}.${tier}(ptr @sink)`,
+          ),
+          `  call void @g.${tier}(ptr @sink)`,
+          `  %${result}.${tier} = call double @s.${tier}(double 1.0)`,
+        ]);
+      const source = [
+        "@sink = global [4 x double] zeroinitializer",
+        ...copies("base", 0),
+        ...copies("v3", 1),
+        "define void @other() {",
+        ...calls("o"),
+        "  ret void",
+        "}",
+        "define i32 @main() {",
+        ...calls("m"),
+        "  ret i32 0",
+        "}",
+        "attributes #0 = { noinline uwtable }",
+        'attributes #1 = { noinline uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" }',
+      ].join("\n");
+      // Each function's object and disassembly, by its name without the
+      // thin link's `.llvm.<n>` suffix.
+      const disassemble = async (objects: string[]) => {
+        const functions = new Map<string, { object: number; code: string }>();
+        for (const [index, object] of objects.entries()) {
+          const { stdout } = await execFileAsync("objdump", ["-dr", "--no-show-raw-insn", object]);
+          for (const part of stdout.split(/\n(?=[0-9a-f]+ <)/)) {
+            const name = /^[0-9a-f]+ <([^>]+)>:/.exec(part)?.[1]?.replace(/\.llvm\.\d+$/, "");
+            if (name !== undefined) functions.set(name, { object: index, code: part });
+          }
+        }
+        return (name: string) => {
+          const found = functions.get(name);
+          expect(found, name).toBeDefined();
+          return found!;
+        };
+      };
+      const at = await disassemble(
+        await emit(dir, source + "\n", { outputs: 8, optLevel: "2", name: "copies" }),
+      );
+      for (const stem of [
+        "h",
+        "g",
+        "s",
+        ...Array.from({ length: pairs }, (_, index) => `f${index}`),
+      ])
+        expect(at(`${stem}.v3`).object, stem).toBe(at(`${stem}.base`).object);
+      // 128-bit vectors: the v3 copies run the baseline's code (SSE2, without
+      // VEX encodings), and f's still calls h's v3 copy.
+      for (let index = 0; index < pairs; index++) {
+        const code = at(`f${index}.v3`).code;
+        expect(code).toMatch(/\saddpd\s/);
+        expect(code).not.toMatch(/\svaddpd\s/);
+        expect(code).toMatch(/[\s<]h\.v3(?:\.llvm\.\d+)?[-+>]/);
+      }
+      expect(at("h.v3").code).toMatch(/\smulpd\s/);
+      // A 256-bit vector keeps the v3 code, and so does scalar code.
+      expect(at("g.v3").code).toContain("%ymm");
+      expect(at("s.v3").code).toMatch(/\svaddsd\s/);
+      expect(at("g.base").code).not.toContain("%ymm");
+      // An instrumented build keeps every copy's code: a baseline body would
+      // count the v3 copy's executions against the baseline copy.
+      const counted = await disassemble(
+        await emit(dir, source + "\n", {
+          outputs: 8,
+          optLevel: "2",
+          profileGenerate: join(dir, "copies-%p.profraw"),
+          name: "counted",
+        }),
+      );
+      for (let index = 0; index < pairs; index++)
+        expect(counted(`f${index}.v3`).code).toMatch(/\svaddpd\s/);
+      expect(counted("h.v3").code).toMatch(/\svmulpd\s/);
+      // A profile that gives f0's baseline copy fewer runs than its v3 copy
+      // (collected on an x86-64-v3 machine) keeps f0's v3 code: the baseline
+      // body is optimized as colder code. f1 has no profile counts.
+      const profiled = source
+        .replace(
+          "define internal void @f0.v3(ptr %p) #1 {",
+          "define internal void @f0.v3(ptr %p) #1 !prof !90 {",
+        )
+        .replace(
+          "define internal void @f0.base(ptr %p) #0 {",
+          "define internal void @f0.base(ptr %p) #0 !prof !91 {",
+        );
+      const runs = await disassemble(
+        await emit(
+          dir,
+          [
+            profiled,
+            '!90 = !{!"function_entry_count", i64 1000}',
+            '!91 = !{!"function_entry_count", i64 0}',
+          ].join("\n") + "\n",
+          { outputs: 8, optLevel: "2", name: "runs" },
+        ),
+      );
+      expect(runs("f0.v3").code).toMatch(/\svaddpd\s/);
+      expect(runs("f1.v3").code).not.toMatch(/\svaddpd\s/);
+    },
+  );
 
   test("internal definitions nothing reaches are left out of every partition", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-unreachable-"));

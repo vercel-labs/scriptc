@@ -23,6 +23,7 @@ import {
   deferredSlotOr,
   dynCompoundValue,
   lowerOptionalNumber,
+  lowerOperatorNumber,
   operatorUnsupported,
   runtimeOptionalStorageOperand,
   symbolFieldTarget,
@@ -51,6 +52,7 @@ import { expandoWritableTarget } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
+import { partialFieldWriteError } from "../partial-assertions.js";
 import { errorPropertyWrite } from "../error-methods.js";
 import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -170,7 +172,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
                     type: F64,
                     loc,
                   } satisfies IrExpr)
-                : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+                : lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
@@ -198,7 +200,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "date") return dateTimeValue(raw, loc);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
-      const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+      const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind === "f64") return operand;
       // `+process.argv[2]`: a `string | undefined` (or other primitive
       // union) converts as Number(value) does.
@@ -240,7 +242,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // protocol. This is the static `any`/JS-lane answer for idioms
       // such as `while (~index)`, where inference may have widened an
       // otherwise numeric slot to the checked-dynamic tree.
-      const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+      const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "~", [raw.type]);
       return { kind: "unary", op: "~", operand, type: F64, loc };
     }
@@ -903,24 +905,75 @@ export function fieldSetStmt(
       loc,
     };
   }
-  return target.container === "class"
-    ? {
-        kind: "fieldSet",
-        obj: target.obj,
-        className: target.className,
-        field: target.field,
-        value,
-        ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
-        loc,
-      }
-    : {
-        kind: "recordSet",
-        obj: target.obj,
-        shapeId: target.shapeId,
-        field: target.field,
-        value,
-        loc,
-      };
+  if (target.container === "class")
+    return {
+      kind: "fieldSet",
+      obj: target.obj,
+      className: target.className,
+      field: target.field,
+      value,
+      ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
+      loc,
+    };
+  // A field some partial record assertion leaves unwritten (a partial
+  // record view, partial-assertions.ts): a view cannot grow a slot the
+  // asserted literal never wrote, so the write throws the catchable
+  // TypeError (Node would add the property — a documented divergence). The
+  // receiver and the value are evaluated first, as JavaScript does, and the
+  // presence test runs where the write would.
+  const refused = partialFieldWriteError(lowerer, target.shapeId, target.field, loc);
+  if (refused !== null) {
+    const obj = target.obj;
+    const saved = isSafeToRepeat(value)
+      ? null
+      : lowerer.declareHiddenLocal("%partialWriteValue", value.type);
+    // The receiver is saved whenever the value is: a right side can
+    // reassign the variable the receiver reads.
+    const stable =
+      isSafeToRepeat(obj) && saved === null
+        ? null
+        : lowerer.declareHiddenLocal("%partialWrite", obj.type);
+    const ref = stable ? varRef(stable.id, obj.type, loc) : obj;
+    const written = saved ? varRef(saved.id, value.type, loc) : value;
+    return {
+      kind: "block",
+      body: [
+        ...(stable ? [{ kind: "varDecl" as const, localId: stable.id, init: obj, loc }] : []),
+        ...(saved ? [{ kind: "varDecl" as const, localId: saved.id, init: value, loc }] : []),
+        {
+          kind: "if",
+          cond: {
+            kind: "recordHas",
+            obj: ref,
+            shapeId: target.shapeId,
+            field: target.field,
+            type: BOOL,
+            loc,
+          },
+          then: [],
+          else_: [{ kind: "exprStmt", expr: refused, loc }],
+          loc,
+        },
+        {
+          kind: "recordSet",
+          obj: ref,
+          shapeId: target.shapeId,
+          field: target.field,
+          value: written,
+          loc,
+        },
+      ],
+      loc,
+    };
+  }
+  return {
+    kind: "recordSet",
+    obj: target.obj,
+    shapeId: target.shapeId,
+    field: target.field,
+    value,
+    loc,
+  };
 }
 
 export function lowerFieldCompoundValue(
@@ -991,8 +1044,20 @@ export function lowerFieldCompoundValue(
         "%compoundOld",
       );
       const cur: IrExpr = { kind: "dynCheck", value: read, type: F64, loc };
+      const rawRhs: IrExpr = rhsNode
+        ? lowerer.lowerExpr(rhsNode)
+        : { kind: "numLit", value: 1, type: F64, loc };
+      // A `null`/`undefined` literal right side has no value of its own to
+      // hold in the temporary. In a JavaScript source `+` is the abstract
+      // operation (ToNumber for arithmetic, ToString for a string left
+      // operand — `s += null` appends "null"), so the unit crosses as the
+      // dynamic null rather than as the number it would convert to.
       const rhs = save(
-        rhsNode ? lowerer.lowerExpr(rhsNode) : { kind: "numLit", value: 1, type: F64, loc },
+        rawRhs.kind === "unitLit"
+          ? isJsSourceFile(ts.getSourceFileOfNode(access))
+            ? lowerer.coerceToExpected(rawRhs, DYN)
+            : lowerOperatorNumber(lowerer, rawRhs, loc)
+          : rawRhs,
         "%compoundRhs",
       );
       if (isJsSourceFile(ts.getSourceFileOfNode(access)) && lowerer.dynConvertible(rhs.type)) {
@@ -1027,7 +1092,7 @@ export function lowerFieldCompoundValue(
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
-          : lowerOptionalNumber(lowerer, rhs, loc);
+          : lowerOperatorNumber(lowerer, rhs, loc);
       if (numericRhs.type.kind !== "f64")
         compoundUnsupported(lowerer, access, op, F64, numericRhs.type);
       const value = save(
@@ -1084,14 +1149,33 @@ export function lowerFieldCompoundValue(
   } else {
     read = save(fieldRead, "%compoundOld");
   }
+  // A `null`/`undefined` literal right side converts before it reaches the
+  // temporary: a local cannot hold a bare unit value. Every other right side
+  // keeps its own type in the temporary, as before.
+  const rawRhs: IrExpr = rhsNode
+    ? lowerer.lowerExpr(rhsNode)
+    : { kind: "numLit", value: 1, type: F64, loc };
+  // `s += null` on a STRING field appends "null": the abstract `+` converts
+  // the unit to its primitive and, with a string left operand, to a string.
+  // The unit has no value of its own to hold in the temporary, so it crosses
+  // as the dynamic null; every other compound operation converts it to a
+  // number (`n += null` adds 0).
+  const unitConcat =
+    rawRhs.kind === "unitLit" &&
+    read.type.kind === "string" &&
+    isJsSourceFile(ts.getSourceFileOfNode(access));
   const rhs = save(
-    rhsNode ? lowerer.lowerExpr(rhsNode) : { kind: "numLit", value: 1, type: F64, loc },
+    rawRhs.kind === "unitLit"
+      ? unitConcat
+        ? lowerer.coerceToExpected(rawRhs, DYN)
+        : lowerOperatorNumber(lowerer, rawRhs, loc)
+      : rawRhs,
     "%compoundRhs",
   );
   const numericRhs: IrExpr =
     rhs.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(access))
       ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
-      : lowerOptionalNumber(lowerer, rhs, loc);
+      : lowerOperatorNumber(lowerer, rhs, loc);
   let value: IrExpr;
   let appended: IrExpr | null = null;
   const numericRead = lowerOptionalNumber(lowerer, read, loc, access);

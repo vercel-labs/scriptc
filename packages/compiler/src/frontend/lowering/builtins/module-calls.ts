@@ -36,7 +36,16 @@ import { jsCheckedBuiltinCall } from "../lower-builtin-values.js";
 import { type Lowerer } from "../lowerer.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 import { type ParamShape } from "../call-signatures.js";
-import { BYTES_U8, DYN, F64, type IrExpr, STRING, type SrcLoc, arrayOf } from "../../../ir/ir.js";
+import {
+  BYTES_U8,
+  DYN,
+  F64,
+  type IrExpr,
+  type IrLibFn,
+  STRING,
+  type SrcLoc,
+  arrayOf,
+} from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import { lowerProcessLoadEnvFile } from "./environment.js";
 import {
@@ -56,7 +65,12 @@ import {
   lowerPathFormatCall,
   lowerPathParseCall,
 } from "./operating-system.js";
-import { lowerQuerystringParseCall, lowerQuerystringStringifyCall } from "./querystring.js";
+import {
+  lowerQuerystringEscapeValueCall,
+  lowerQuerystringParseCall,
+  lowerQuerystringStringifyCall,
+  lowerQuerystringUnescapeBufferCall,
+} from "./querystring.js";
 import { lowerFsGlobCallbackCall, lowerFsGlobSyncCall, lowerFspGlobCall } from "./fs-glob.js";
 import { lowerV8HeapStatisticsCall } from "./v8.js";
 
@@ -221,6 +235,12 @@ export function lowerBuiltinModuleCall(
     if (bi.member === "stringify" || bi.member === "encode") {
       return lowerQuerystringStringifyCall(lowerer, expr, loc);
     }
+    if (bi.member === "unescapeBuffer")
+      return lowerQuerystringUnescapeBufferCall(lowerer, expr, loc);
+    if (bi.member === "escape") {
+      const escaped = lowerQuerystringEscapeValueCall(lowerer, expr, loc);
+      if (escaped) return escaped;
+    }
   }
   if (
     bi.module === "url" &&
@@ -335,6 +355,31 @@ export function lowerBuiltinModuleCall(
       ? lowerer.lowerExprExpecting(expr.arguments.nodes[1], F64)
       : { kind: "numLit", value: 0, type: F64, loc };
     return { kind: "libCall", fn: fn.fn, args: [path, second], type: fn.result, loc };
+  }
+  // copyFileSync(src, dest, mode?) and copyFile(src, dest, mode?): the
+  // mode is libuv's copyfile flag bits (COPYFILE_EXCL = 1, COPYFILE_FICLONE
+  // = 2, COPYFILE_FICLONE_FORCE = 4 — fs.constants.* reads bake to
+  // literals). The omitted form is the plain copy and keeps its libCall.
+  if (
+    (bi.module === "fs" && bi.member === "copyFileSync") ||
+    (bi.module === "fs/promises" && bi.member === "copyFile")
+  ) {
+    const count = expr.arguments.nodes.length;
+    if (count < 2 || count > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`${bi.member} with ${count} arguments`, expr);
+    }
+    const src = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+    const dest = lowerFsPath(lowerer, expr.arguments.nodes[1]!);
+    const modeNode = expr.arguments.nodes[2];
+    if (!modeNode) return { kind: "libCall", fn: fn.fn, args: [src, dest], type: fn.result, loc };
+    const flags: IrLibFn = bi.module === "fs" ? "fs.copyFileFlagsSync" : "fsp.copyFileFlags";
+    return {
+      kind: "libCall",
+      fn: flags,
+      args: [src, dest, lowerer.lowerExprExpecting(modeNode, F64)],
+      type: fn.result,
+      loc,
+    };
   }
   if (
     bi.module === "fs/promises" &&

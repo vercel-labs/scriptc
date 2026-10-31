@@ -9,6 +9,29 @@ export class CoercionState {
   // plan checks its other fields. Remove every assumption on unwind;
   // generated helpers must intern their names before building their bodies.
   readonly planning = new Set<string>();
+  /** > 0 while a record width plan plans or builds its fields: method
+   * fields may take checked function adapters (WidthLift funcAdaptChecked). */
+  methodFieldDepth = 0;
+  /** > 0 while a checked function adapter plans or builds: contravariant
+   * parameters may width-lift, and union fields may retag with trapping
+   * arms (WidthLift checkedRetag). */
+  checkedRetags = 0;
+  /** > 0 while a type assertion's operand lowers. The program claimed the
+   * value's shape, so a union slot inside it may retag with trapping arms
+   * (an arm the asserted target excludes throws, divergence 38's
+   * lying-assertion stance) instead of refusing the conversion. */
+  assertedOperand = 0;
+  /** Plans with the type assertion's checked context suspended: what the
+   * program's own types reach without the claim. */
+  withoutAssertedClaim<T>(plan: () => T): T {
+    const held = this.assertedOperand;
+    this.assertedOperand = 0;
+    try {
+      return plan();
+    } finally {
+      this.assertedOperand = held;
+    }
+  }
   // Registry revisions invalidate only fully validated copy-only routes.
   readonly copyRetags = new Map<string, { name: string; shapes: number; unions: number }>();
   // Provenance for checked extraction; consumers must not infer it from names.

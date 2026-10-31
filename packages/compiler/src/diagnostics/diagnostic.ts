@@ -72,7 +72,8 @@
  *            diagnostics/dynamic-tier.ts), package files whose projected
  *            declaration types were dropped (SC6102), and shape inference's
  *            overlay report: what it typed and how many inferred facts the
- *            build checks (SC6103, frontend/shape-inference)
+ *            build checks (SC6103, frontend/shape-inference), and InlineArray
+ *            fields that keep ordinary arrays (SC6105, contracts/check.ts)
  *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
  *            Acyclic or ProgramLifetime contract that does not hold or
  *            cannot be checked (SC7001–SC7009, contracts/check.ts)
@@ -234,6 +235,18 @@ export function nodeIslandModuleDiag(message: string, loc: SrcLoc): ScrDiagnosti
   };
 }
 
+/** SC8006 — a program module that runs in a Node island names a data file
+ * by a path where there is none while a file of that name is in its
+ * directory: the build ships data files by their exact path only. */
+export function nodeIslandDataFileDiag(message: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message,
+    loc,
+    hint: "name the data file by its path relative to the module that reads it; the build ships a Node island module's data files by their exact path",
+  };
+}
+
 /* ── SC6xxx: divergences from Node (warnings) ─────────────────────────── */
 
 /** SC6001 — a value passed to (or declared as) a narrower record type is
@@ -354,6 +367,55 @@ export function nativeSubclassOfIslandDiag(loc: SrcLoc, detail?: string): ScrDia
   };
 }
 
+/** SC8006 — the entry module patches a builtin module's CommonJS object.
+ * The entry always stays native (a whole-file island is a different
+ * feature), so the patch cannot run: it belongs in a module of its own,
+ * which then runs in a Node island. */
+export function nodeIslandEntryPatchDiag(
+  file: string,
+  member: string,
+  module: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `the entry module patches '${member}' on the CommonJS ${module} object; move the patch into a module of its own, which then runs in a Node island`,
+    loc,
+    hint: `the entry module ${file} stays native; only a separate module runs in Node`,
+  };
+}
+
+/** SC8006 — a user TypeScript module patches a builtin module's CommonJS
+ * object but uses syntax Node cannot run with type stripping only. */
+export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `'${file}' patches a builtin module's CommonJS object, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this patch",
+  };
+}
+
+/** SC8020 — native code reads a builtin module member that an island
+ * module patches: Node would show the read the patch, the native build
+ * cannot. ES module bindings of builtins never see the patch (in Node
+ * either), so the named import is the exact spelling. */
+export function nodeIslandPatchedReadDiag(
+  member: string,
+  patchFile: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const dot = member.indexOf(".");
+  const module = dot < 0 ? member : member.slice(0, dot);
+  const property = dot < 0 ? member : member.slice(dot + 1);
+  return {
+    code: "SC8020",
+    message: `'${member}' is patched by ${patchFile}, which runs in a Node island; Node would show this read through the CommonJS ${module} object the patch, the native build cannot. Use \`import { ${property} } from "node:${module}"\` (ES module bindings never see the patch, in Node either), or move this code into ${patchFile}.`,
+    loc,
+    hint: `node:${module} ES module bindings keep the original function, in Node too`,
+  };
+}
+
 /** SC8020 — a stateful module the program compiles is duplicated across
  * the Node island boundary (an explicit "duplicate", or a form NI-6 cannot
  * share yet): each side has its own state. */
@@ -450,6 +512,22 @@ export function nodeIslandNoteDiag(
     message: `package '${version === null ? pkg : `${pkg}@${version}`}' runs in a Node island: ${klass}: ${reason}`,
     loc,
     hint: "it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error",
+  };
+}
+
+/** SC8001 — a program module runs in a Node island (a note, once per island
+ * module in the build output; DESIGN.md note 1 §3.2). */
+export function nodeIslandModuleNoteDiag(
+  file: string,
+  klass: string,
+  reason: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8001",
+    message: `module '${file}' runs in a Node island: ${klass}: ${reason}`,
+    loc,
+    hint: "sloppy-mode code Node runs; --node-islands=off compiles this module natively instead",
   };
 }
 
@@ -690,9 +768,11 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   SC1052: { feature: "for-in loops", milestone: "M4" }, // for-of over arrays shipped in M1
   // SC1060 (switch statements) shipped — code retired, do not reuse.
   // SC1061 (exceptions: throw/try/catch/finally) shipped — code retired, do
-  // not reuse. (Identifier catch bindings shipped too; what remains rejected
-  // is destructuring patterns — SC1062 — un-narrowed binding uses —
-  // SC1063 — and jumps crossing a finally — SC1090.)
+  // not reuse. (Identifier catch bindings shipped too, and a catch clause
+  // that destructures ships through the checked-dynamic tree; what remains
+  // rejected is a destructuring pattern in a promise handler's parameter —
+  // SC1062 — un-narrowed binding uses — SC1063 — and jumps crossing a
+  // finally — SC1090.)
   SC1062: {
     feature: "destructuring catch clause bindings",
     milestone: "later",
@@ -793,6 +873,10 @@ export const FENCE_CODES: Record<string, { name: string; status: "unsupported" }
   },
   SC2013: {
     name: "npm package imports and values without native lowering",
+    status: "unsupported",
+  },
+  SC2014: {
+    name: "writes through a value held from process.env (a snapshot, not the live table)",
     status: "unsupported",
   },
   SC2020: {
@@ -1138,6 +1222,71 @@ export function computedRequireDiag(surface: string, loc: SrcLoc): ScrDiagnostic
     loc,
     milestone: "later",
     hint: 'require("<static string literal>") compiles the module into the program; native addons need a replacement through native FFI (https://scriptc.dev/ffi#replacing-a-node-api-addon)',
+  };
+}
+
+/** A write through a value HELD from `process.env` (`const env =
+ * process.env; env.X = "1"`, `delete env[k]`): the held value is a snapshot
+ * record of the environment, not the live table, so the write would land on
+ * the copy and be lost while Node's write reaches setenv(3) through the same
+ * object. Refuse at the write instead of letting it disappear. */
+export function heldEnvWriteDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2014",
+    message:
+      "a write through a value held from process.env is not supported: the held value is a snapshot copy of the environment, so the write would be lost while Node writes the real environment",
+    loc,
+    milestone: "later",
+    hint: "read and write the live variable directly (process.env.NAME or process.env[key]), or write into a fresh copy: const env = { ...process.env, NAME: value }",
+  };
+}
+
+/** A BINDING that holds `process.env` under a type which is not the env
+ * record (`const env: Record<string, string> = process.env as any`, a
+ * fixed-field annotation, `const { env } = process` with one): the hold is
+ * a snapshot record taken at the initializer, so its member reads would
+ * observe the environment as it was then, while Node's hold IS the
+ * environment object and reads the live table. Refuse where the hold is
+ * created rather than letting its reads drift silently. */
+export function heldEnvHoldDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2014",
+    message:
+      "a value held from process.env under a type other than the environment record (a string-keyed record of string | undefined) is not supported: the hold is a snapshot copy taken where it is created, so its reads would see the environment as it was then while Node reads the live environment",
+    loc,
+    milestone: "later",
+    hint: "hold process.env without changing its type (const env = process.env), read the live table directly (process.env.NAME), or copy the entries you need: const env = { ...process.env, NAME: value }",
+  };
+}
+
+/** A binding initialized from `process.env` that the program reassigns.
+ * Node's binding holds the environment object until the reassignment; the
+ * hold here is a snapshot copy, so reads and writes before the reassignment
+ * would miss the live environment, and a live alias would keep writing it
+ * after the binding holds something else. */
+export function heldEnvReassignedDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2014",
+    message:
+      "a reassigned binding that holds process.env is not supported: Node's binding holds the environment object until it is reassigned, while the hold here is a snapshot copy of the environment",
+    loc,
+    milestone: "later",
+    hint: "hold process.env in a binding that is never reassigned (const env = process.env), or copy the entries you need: let env = { ...process.env }",
+  };
+}
+
+/** An identity comparison (`===`, `==` and their negations) between a value
+ * held from `process.env` and another object that is not the environment.
+ * Node compares the environment object itself; the hold here is a snapshot
+ * record, so the answer could differ from Node's. */
+export function heldEnvIdentityDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2014",
+    message:
+      "comparing process.env or a value held from it by identity with another object is not supported: the value here is a snapshot copy of the environment, not the environment object",
+    loc,
+    milestone: "later",
+    hint: "compare the entries you need (env.NAME === other.NAME), or compare two holds of process.env, which are the same object",
   };
 }
 

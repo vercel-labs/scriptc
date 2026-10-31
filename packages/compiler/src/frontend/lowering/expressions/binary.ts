@@ -9,6 +9,8 @@ import {
 } from "../undefined-index.js";
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { recordStringCall } from "../record-links.js";
 import {
   BIGINT_T,
   BOOL,
@@ -39,7 +41,7 @@ import {
   lowerAbsenceProbe,
   lowerDynMemberAssignment,
   lowerDereferencedElementAssignment,
-  lowerOptionalNumber,
+  lowerOperatorNumber,
   lowerPresenceOperand,
   nullishBranches,
   operandPairs,
@@ -59,6 +61,10 @@ import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
+import {
+  noteDynamicIdentityComparison,
+  notePinnedIdentityComparison,
+} from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
@@ -73,6 +79,7 @@ import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
+import { emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
 import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
@@ -86,6 +93,7 @@ import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../s
 import { withUnitArm } from "../../type-mapper.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
+import { lowerEnvironmentIdentity } from "../builtins/environment.js";
 
 /** `v === undefined` / `v !== null` — the narrowing tests for unit-armed
  * unions. A union operand compared with a unit literal lowers to a
@@ -431,6 +439,23 @@ export function lowerNullishPair(
     const right = lowerer.lowerExprExpecting(expr.right, rest[0]!);
     return { kind: "nullish", left, right, type: rest[0]!, loc };
   }
+  // An EMPTY array-literal default (`''.match(re) ?? []`) has no element of
+  // its own, so it builds as the left's array arm (the emptyArrayLiteralArm
+  // rule the union slot and the contextual union share) and the whole
+  // expression answers the left's array type instead of the checker's
+  // `never[]`-flavored second arm. A JavaScript `[]` is `any[]` and keeps
+  // the dynamic path.
+  if (
+    rest.length === 1 &&
+    rest[0]!.kind === "array" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr.right))
+  ) {
+    const arm = emptyArrayLiteralArm(expr.right, rest);
+    if (arm) {
+      const right = lowerer.lowerExprExpecting(expr.right, arm);
+      if (typeEquals(right.type, arm)) return { kind: "nullish", left, right, type: arm, loc };
+    }
+  }
   let type = lowerer.irTypeOf(expr);
   // A runtime-optional read can reach the default even when declarations
   // call the left side present. Preserve a differently typed primitive
@@ -696,6 +721,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };
+  // String(sp) / `${new URLSearchParams(...)}`: URLSearchParams.toString,
+  // the serialized list (`?` stripped, pairs encoded).
+  if (e.type.kind === "searchParams")
+    return { kind: "libCall", fn: "sp.toString", args: [e], type: STRING, loc: e.loc };
   // String(date) / `${date}` / "" + date: Date's ToPrimitive prefers
   // toString().
   if (e.type.kind === "date")
@@ -900,6 +929,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
       // valueOf: ToPrimitive throws Node's TypeError.
       const nullProtoT = nullProtoRecordShape(lowerer, e.type);
       if (nullProtoT) return nullProtoToString(lowerer, e, nullProtoT);
+      // A linked copy or a record with a kept source converts as its
+      // source does (record-links.ts).
+      if (recordMayKeepSource(lowerer, e.type))
+        return recordStringCall(lowerer, e, "string", e.loc, "toString");
       return { kind: "toString", operand: e, type: STRING, loc: e.loc };
     }
   }
@@ -983,8 +1016,8 @@ export function lowerCompoundValueToTarget(
     loc: locOf(expr.left),
   };
   const rhs = lowerer.lowerExpr(expr.right);
-  const numericRead = lowerOptionalNumber(lowerer, read, loc);
-  const numericRhs = lowerOptionalNumber(lowerer, rhs, loc);
+  const numericRead = lowerOperatorNumber(lowerer, read, loc);
+  const numericRhs = lowerOperatorNumber(lowerer, rhs, loc);
 
   if (
     compound === "+" &&
@@ -1473,6 +1506,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         : "compound assignment as an expression (write `x op= e` as a statement, or spell out `x = x op e`)",
     );
   }
+  // An identity comparison with process.env or a value held from it
+  // compares the one environment object, which no snapshot can stand for.
+  {
+    const identity = lowerEnvironmentIdentity(lowerer, expr, loc);
+    if (identity) return identity;
+  }
   if (op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
     const nullTest = lowerLooseNullCompare(lowerer, expr, loc);
     if (nullTest) return nullTest;
@@ -1677,6 +1716,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
             ? { liveRef: true as const }
             : {}),
         };
+        if (reference.kind === "func")
+          noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left: scalarSide === left ? boxed : left,
@@ -1732,6 +1773,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           // reference kinds by identity (scr_dyn_strict_eq).
           scalarSide.type.kind === "dyn")
       ) {
+        // A generic declaration read through `unknown` compares as the
+        // function object it names, which is one object in JavaScript but
+        // one closed instance per signature here: the whole-program check
+        // refuses it when the program holds the declaration at more than
+        // one signature.
+        noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left,
@@ -2016,7 +2063,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     );
   };
   const arithmeticNumber = (operand: IrExpr, node: ts.Expression): IrExpr =>
-    lowerOptionalNumber(lowerer, operand, loc, node);
+    lowerOperatorNumber(lowerer, operand, loc, node);
   const arithmeticLeft = strictEquality ? left : arithmeticNumber(left, expr.left);
   const arithmeticRight = strictEquality ? right : arithmeticNumber(right, expr.right);
   const bothNum = arithmeticLeft.type.kind === "f64" && arithmeticRight.type.kind === "f64";
@@ -2615,6 +2662,17 @@ export function lowerStrictEquality(
   // assignable to the other — a tuple-typed listeners() element
   // against a prefix-declared handler): the pointer answers it.
   if (idLeft.type.kind === "func" && idRight.type.kind === "func") {
+    // Two pins of ONE generic declaration at different signatures are
+    // different compiled closures; the whole-program check refuses the
+    // compare (checkGenericIdentityPins).
+    notePinnedIdentityComparison(
+      lowerer,
+      node,
+      leftNode,
+      rightNode,
+      idLeft.kind === "closure" ? idLeft.fnName : undefined,
+      idRight.kind === "closure" ? idRight.fnName : undefined,
+    );
     return {
       kind: "bin",
       op: negated ? "!==" : "===",
@@ -2693,6 +2751,11 @@ export function lowerStrictEquality(
     };
   }
   if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
+    // A generic declaration read through `unknown` compares as the function
+    // object it names, which is one object in JavaScript but one closed
+    // instance per signature here: the whole-program check refuses it when
+    // the program holds the declaration at more than one signature.
+    noteDynamicIdentityComparison(lowerer, node, leftNode, rightNode);
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),

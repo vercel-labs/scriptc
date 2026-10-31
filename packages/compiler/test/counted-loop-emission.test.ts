@@ -79,7 +79,10 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
         "console.log(b[7], mix(8), c[0], shrink(new Uint8Array(8).fill(1)));",
         workers ? "if (!isMainThread) new Worker(new URL(import.meta.url));" : "",
       ].join("\n");
-    const emit = async (workers: boolean): Promise<string> => {
+    const emit = async (
+      workers: boolean,
+      options: Parameters<typeof emitLlvmModule>[1] = {},
+    ): Promise<string> => {
       const entry = join(dir, `${workers ? "worker" : "plain"}.ts`);
       await writeFile(entry, source(workers));
       const outPath = join(dir, `${workers ? "worker" : "plain"}.ir.json`);
@@ -89,14 +92,16 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
       // other targets read the process-wide alert word.
       return emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {
         targetTriple: "x86_64-unknown-linux-gnu",
+        ...options,
       });
     };
-    // Every emitted version of a function (the number and int32 entries).
+    // Every emitted version of a function (the number and int32 entries, and
+    // the copies of a dispatching build).
     const bodies = (ll: string, name: string): string =>
       [
         ...ll.matchAll(
           new RegExp(
-            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?(?:\\.base|\\.v3)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
             "g",
           ),
         ),
@@ -125,6 +130,20 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
     expect(codes).toMatch(/@llvm\.uadd\.sat\.i64\(i64 %\w+, i64 64\)/);
     expect(codes).toMatch(/@llvm\.umin\.i64\(i64 %\w+, i64 %\w+\)/);
     expect(codes).toMatch(/^loop\.poll\d+:$/m);
+    // Code for x86-64-v3 takes blocks of 128 iterations, one step of its
+    // vectorized loop over bytes.
+    const x86 = { targetTriple: "x86_64-unknown-linux-gnu" };
+    for (const options of [
+      { ...x86, targetCpu: "x86-64-v3" as const },
+      { ...x86, targetCpu: "x86-64-v4" as const },
+      { ...x86, cpuDispatch: true },
+    ])
+      expect(bodies(await emit(true, options), "codes"), JSON.stringify(options)).toMatch(
+        /@llvm\.uadd\.sat\.i64\(i64 %\w+, i64 128\)/,
+      );
+    expect(bodies(await emit(true, { ...x86, targetCpu: "x86-64-v2" }), "codes")).toMatch(
+      /@llvm\.uadd\.sat\.i64\(i64 %\w+, i64 64\)/,
+    );
     // A loop that assigns its array reads the new length on the next
     // iteration: it keeps the budget.
     const shrink = bodies(workerModule, "shrink");
@@ -280,9 +299,10 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     expect(rows).not.toMatch(/^loop\.poll\d+:$/m);
     expect(polls(rows)).toBeGreaterThan(0);
     // With a limit known only at run time the inner loops keep their polls.
-    // The innermost one is strip-mined, and a block that ends at the limit
+    // `open`'s int32 parameter version takes calls with int32 arguments. Its
+    // innermost loop is strip-mined, and a block that ends at the limit
     // leaves it without polling: only a block that ends short of it polls.
-    const open = body("open");
+    const open = body("open_int32Params");
     expect(polls(open)).toBeGreaterThan(polls(rows));
     expect(open).toMatch(/^loop\.poll\d+:$/m);
     const ends = [...open.matchAll(/^loop\.end\d+:$[\s\S]*?^\S/gm)].map((match) => match[0]);
@@ -291,6 +311,12 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     // A run of up to 16384 iterations is one block, polled as it leaves when
     // it took more than 64.
     expect(open).toMatch(/^loop\.poll\.run\d+:$/m);
+    // The body the version leaves runs for other arguments and emits each
+    // loop once: its loops poll without strip-mining.
+    const generic = body("open");
+    expect(polls(generic)).toBeGreaterThan(polls(rows));
+    expect(generic).not.toMatch(/^loop\.end\d+:$/m);
+    expect(generic).not.toMatch(/^loop\.poll\.run\d+:$/m);
     // Steps of 1 below 2^53 are exact, so 50 runs near it are bounded. From
     // 2^53, `j + 1 === j`: a counter ranging up to it can run without end
     // and keeps its poll.

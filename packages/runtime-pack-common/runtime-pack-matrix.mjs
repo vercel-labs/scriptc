@@ -62,6 +62,12 @@ export const BASE_RUNTIME_SOURCES = [
 export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
+  // writeFile's `flag` disposition and the fs/promises twins; the copyFile
+  // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
+  ["scr_fs_flags.c", "fsFlags"],
+  // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
+  // typed twins so a typed program keeps that object byte for byte.
+  ["scr_bytes_strdec_dyn.c", "strdecDyn"],
   // BigIntStats member reads (`statSync(p, { bigint: true })` members). The
   // bigstats gate is narrower than bigint, which every bigint value turns on.
   ["scr_stats_bigint.c", "bigstats"],
@@ -76,10 +82,18 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Island libCalls on native values typed by island declarations invoke
   // through the checked-dynamic path (scr_node_island_handle.c).
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
+  // Array.prototype generic algorithms over array-like receivers
+  // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
+  ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
+  // Number.prototype and Boolean.prototype read as values in JavaScript.
+  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
   ["scr_builtin_values.c", "builtinValues"],
+  // A standard library prototype object read as a value in JavaScript
+  // (`Date.prototype`); it calls the invoke unit's interned method table.
+  ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
@@ -165,6 +179,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  // Object.isExtensible and Object.isSealed of a value typed dynamically; a
+  // unit of its own so scr_json.c keeps its layout for every other program.
+  ["scr_dyn_integrity.c", "dynIntegrityQueries"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
@@ -263,6 +280,21 @@ export function variantsFor(source) {
       when: { dynTier: true, webStreams: true, nodeIsland: true },
       defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
     });
+    // A program with a partial record assertion (record-views.ts) links the
+    // build whose view slot answers NULL for a field the viewed record does
+    // not declare, so the emitted guard, clone helper and presence test can
+    // stop with the program's message instead of reading a bogus slot. The
+    // selector takes the variant with the most conditions, so each of the
+    // builds above needs its counterpart; every other program keeps the
+    // default object, byte for byte.
+    for (const { id, when, defines } of variants.slice()) {
+      const suffix = id === "default" ? "" : `-${id}`;
+      variants.push({
+        id: `record-view-partial${suffix}`,
+        when: { ...when, recordViewPartial: true },
+        defines: [...defines, "SCR_RECORD_VIEW_PARTIAL"],
+      });
+    }
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
@@ -294,6 +326,18 @@ export function variantsFor(source) {
       when: { watchFile: true },
       defines: ["SCR_FS_WATCH_FILE"],
     });
+    // Node answers a Buffer from a file read, and its brand is observable
+    // (Buffer.isBuffer, instanceof, inspect): a program that can observe it
+    // links the build that sets it. Combined with every variant above so a
+    // program that also polls keeps scr_watch_file's stat entry points
+    // (selectVariant takes the variant with the most conditions).
+    for (const { id, when, defines } of variants.slice()) {
+      variants.push({
+        id: `${id}-fs-buffer-brand`,
+        when: { ...when, fsBufferBrand: true },
+        defines: [...defines, "SCR_FS_BUFFER_BRAND"],
+      });
+    }
   }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
@@ -302,6 +346,37 @@ export function variantsFor(source) {
       id: "warning-replace",
       when: { warningReplace: true },
       defines: ["SCR_WARNING_REPLACE"],
+    });
+    // The process-prepend registries (processExtras) add
+    // scr_process_prepend_uncaught_exception, in a build of its own so the
+    // default object stays put for every program.
+    variants.push({
+      id: "process-extras",
+      when: { processExtras: true },
+      defines: ["SCR_PROCESS_EXTRAS"],
+    });
+    variants.push({
+      id: "warning-replace-process-extras",
+      when: { warningReplace: true, processExtras: true },
+      defines: ["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS"],
+    });
+  }
+  // copyFileSync's mode argument reuses scr_fs_cp.c's reflink walk, so the
+  // entry lives in a build of this unit rather than a unit of its own.
+  if (source === "scr_fs_cp.c") {
+    variants.push({
+      id: "flags",
+      when: { fsFlags: true },
+      defines: ["SCR_FS_FLAGS"],
+    });
+  }
+  // server.off / removeListener: the listener-removal entry, in a build of
+  // its own so a program that never removes a listener keeps the default.
+  if (source === "scr_net.c") {
+    variants.push({
+      id: "server-off",
+      when: { processExtras: true },
+      defines: ["SCR_NET_SERVER_OFF"],
     });
   }
   // Programs with web streams link the promise unit with native promise
@@ -356,6 +431,29 @@ export function variantsFor(source) {
       when: { stdioExtended: true, nodeIsland: true },
       defines: ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
     });
+    // processExtras adds the prepend registrations and stdin's raw-mode
+    // flag; the combinations above then need their own builds, since the
+    // variant with the most conditions is the one selected.
+    variants.push({
+      id: "process-extras",
+      when: { processExtras: true },
+      defines: ["SCR_PROCESS_EXTRAS"],
+    });
+    variants.push({
+      id: "process-extras-stdio-extended",
+      when: { processExtras: true, stdioExtended: true },
+      defines: ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED"],
+    });
+    variants.push({
+      id: "process-extras-node-island",
+      when: { processExtras: true, nodeIsland: true },
+      defines: ["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"],
+    });
+    variants.push({
+      id: "process-extras-stdio-extended-node-island",
+      when: { processExtras: true, stdioExtended: true, nodeIsland: true },
+      defines: ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
+    });
     // The typed process output write slot (the write method as a value, its
     // replacement, run-time-typed chunks): the shared write body, the
     // dynamic-chunk entry point and Node's anonymous write function. Every
@@ -376,6 +474,31 @@ export function variantsFor(source) {
         "stdio-extended-node-island-write-slot",
         { stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
         ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+    ])
+      variants.push({ id, when, defines });
+    // A program with both the process extras and the write slot needs both
+    // defines in one build.
+    for (const [id, when, defines] of [
+      [
+        "process-extras-write-slot",
+        { processExtras: true, stdioWriteSlot: true },
+        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "process-extras-stdio-extended-write-slot",
+        { processExtras: true, stdioExtended: true, stdioWriteSlot: true },
+        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "process-extras-node-island-write-slot",
+        { processExtras: true, nodeIsland: true, stdioWriteSlot: true },
+        ["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "process-extras-stdio-extended-node-island-write-slot",
+        { processExtras: true, stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
+        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
       ],
     ])
       variants.push({ id, when, defines });

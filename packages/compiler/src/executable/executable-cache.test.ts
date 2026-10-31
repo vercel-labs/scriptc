@@ -61,6 +61,7 @@ const native: EarlyExecutableNativeFeatures = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
+  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -221,7 +222,7 @@ test("early executable cache misses on source and resolution changes", async () 
   expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
 });
 
-test("early executable keys isolate compile modes, paths, implementation, checker, function layouts, and FFI manifests", async () => {
+test("early executable keys isolate compile modes, paths, implementation, checker, function layouts, shape inference, and FFI manifests", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
   tracker.run(() => trackedReadFile(f.source));
@@ -246,6 +247,8 @@ test("early executable keys isolate compile modes, paths, implementation, checke
     { ...f.options, profile: "profile-use:digest" },
     { ...f.options, functionLayout: "layout-digest" },
     { ...f.options, checker: "tsc-ts-executable-identity" },
+    { ...f.options, shapeOverlay: true },
+    { ...f.options, jsInference: true },
     { ...f.options, npmStatic: "auto" },
     { ...f.options, npmStatic: ["commander"] },
     { ...f.options, outPath: join(f.options.outDir, "other") },

@@ -248,6 +248,7 @@ typedef struct {
   size_t mature_dead;
   struct ScrCycKind *kinds;
   size_t kinds_cap;
+  struct ScrCycSite *sites;
 } ScrCycThread;
 static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_destroy_depth (scr_cyc_thread.destroy_depth)
@@ -291,6 +292,7 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_keep_base (scr_cyc_thread.keep_base)
 #define scr_cyc_kinds (scr_cyc_thread.kinds)
 #define scr_cyc_kinds_cap (scr_cyc_thread.kinds_cap)
+#define scr_cyc_sites (scr_cyc_thread.sites)
 #endif
 #ifndef SCR_WORKERS
 static SCR_TL unsigned scr_destroy_depth;
@@ -1077,6 +1079,19 @@ bool scr_cyc_collect_idle(void) {
  * at the mature level: it reclaims the promoted garbage once, and the window
  * judges the young cycles on their own.
  *
+ * Closures and the boxes that hold them are judged per closure body rather
+ * than as one runtime family. A program's closures are of both sorts: the
+ * callbacks of a walk that capture each other's bindings die with the walk,
+ * in cycles, while long-lived closures over long-lived state never die. As
+ * one family, the long-lived ones decide for all of them whenever they
+ * outnumber the dying ones among the walked candidates, and the dying
+ * cycles then wait for full passes. So a closure is judged by its function
+ * (ScrClosure.fn) and a box that holds a closure by that closure's
+ * function, in a per-thread table of SCR_CYC_SITES entries indexed by a
+ * hash of the function. Two functions that hash alike share an entry, and
+ * one that takes it starts from fresh counts, so a contended entry rarely
+ * completes a window and its closures stay at the nursery.
+ *
  * This changes only which generation an object is judged in. Any
  * generation assignment is sound (a restricted pass treats edges from older
  * objects as external), and a bypassing candidate is buffered like any
@@ -1111,6 +1126,50 @@ static SCR_TL size_t scr_cyc_kinds_cap;
 static size_t scr_cyc_nursery_bypassing = 0;
 #endif
 
+/* Closure bodies' statistics (see "closures ... are judged per closure
+ * body" above): a direct-mapped table, allocated on first use. */
+#define SCR_CYC_SITE_BITS 12
+#define SCR_CYC_SITES (1u << SCR_CYC_SITE_BITS)
+typedef struct ScrCycSite {
+  const void *fn;
+  ScrCycKind stats;
+} ScrCycSite;
+#ifndef SCR_WORKERS
+static SCR_TL ScrCycSite *scr_cyc_sites;
+#endif
+
+static inline size_t scr_cyc_site_index(const void *fn) {
+  return (size_t)((((uintptr_t)fn >> 4) * 0x9E3779B97F4A7C15ull) >> (64 - SCR_CYC_SITE_BITS));
+}
+
+/* The entry of `fn`, taking it over (with fresh counts) from the function
+ * that held it. */
+static SCR_CYC_COMPACT ScrCycKind *scr_cyc_site_claim(const void *fn) {
+  if (!scr_cyc_sites) {
+    scr_cyc_sites = calloc(SCR_CYC_SITES, sizeof *scr_cyc_sites);
+    if (!scr_cyc_sites) scr_cyc_oom();
+  }
+  ScrCycSite *site = &scr_cyc_sites[scr_cyc_site_index(fn)];
+#if SCR_CYC_INLINE_BUFFERING
+  if (site->stats.level[SCR_CYC_NURSERY].bypass) scr_cyc_nursery_bypassing--;
+#endif
+  memset(site, 0, sizeof *site);
+  site->fn = fn;
+  return &site->stats;
+}
+
+/* The function whose statistics judge a candidate of a closure or of a box
+ * that holds a closure, or NULL. */
+static inline const void *scr_cyc_site_fn(const void *obj, uint32_t kind) {
+  if (kind == SCR_CYC_KIND_CLOSURE) return ((const ScrClosure *)obj)->fn;
+  if (kind == SCR_CYC_KIND_BOX && ((const ScrBox *)obj)->kind == SCR_BOX_FUNC) {
+    const ScrClosure *closure;
+    memcpy(&closure, &((const ScrBox *)obj)->slot, sizeof closure);
+    return closure ? closure->fn : NULL;
+  }
+  return NULL;
+}
+
 /* The statistics of `kind` (nonzero), growing the table to cover it. */
 static SCR_CYC_COMPACT ScrCycKind *scr_cyc_kind_grow(uint32_t kind) {
   size_t cap = scr_cyc_kinds_cap ? scr_cyc_kinds_cap : 256;
@@ -1122,19 +1181,34 @@ static SCR_CYC_COMPACT ScrCycKind *scr_cyc_kind_grow(uint32_t kind) {
   scr_cyc_kinds_cap = cap;
   return &kinds[kind];
 }
-static inline ScrCycKind *scr_cyc_kind(uint32_t kind) {
-  return kind < scr_cyc_kinds_cap ? &scr_cyc_kinds[kind] : scr_cyc_kind_grow(kind);
+
+/* The statistics that judge `obj` (of `type`), or NULL when it has none
+ * yet; `claim` creates them. */
+static inline __attribute__((always_inline)) ScrCycKind *scr_cyc_stats(const void *obj,
+                                                                       const ScrCycType *type,
+                                                                       bool claim) {
+  uint32_t kind = type->kind;
+  const void *fn = scr_cyc_site_fn(obj, kind);
+  if (fn) {
+    ScrCycSite *sites = scr_cyc_sites;
+    if (sites) {
+      ScrCycSite *site = &sites[scr_cyc_site_index(fn)];
+      if (site->fn == fn) return &site->stats;
+    }
+    return claim ? scr_cyc_site_claim(fn) : NULL;
+  }
+  if (!kind) return NULL;
+  if (kind < scr_cyc_kinds_cap) return &scr_cyc_kinds[kind];
+  return claim ? scr_cyc_kind_grow(kind) : NULL;
 }
 
-/* Whether a candidate of this type at level `gen` (nursery or mature)
- * skips that level's passes (see above). The last candidate a bypass sends
- * past the level opens a probe window, with fresh counts, and a nursery
- * window asks for a mature pass first. */
-static inline __attribute__((always_inline)) bool scr_cyc_bypassed(const ScrCycType *type,
-                                                                  unsigned gen) {
-  uint32_t kind = type->kind;
-  if (kind >= scr_cyc_kinds_cap) return false;
-  ScrCycLevelStat *k = &scr_cyc_kinds[kind].level[gen];
+/* Whether a candidate judged by `stats` (NULL: none yet) at level `gen`
+ * (nursery or mature) skips that level's passes (see above). The last
+ * candidate a bypass sends past the level opens a probe window, with fresh
+ * counts, and a nursery window asks for a mature pass first. */
+static inline __attribute__((always_inline)) bool scr_cyc_bypassed(ScrCycKind *stats, unsigned gen) {
+  if (!stats) return false;
+  ScrCycLevelStat *k = &stats->level[gen];
   if (k->bypass == 0) return false;
   if (--k->bypass == 0) {
     k->walked = k->freed = 0;
@@ -1151,18 +1225,21 @@ static inline __attribute__((always_inline)) bool scr_cyc_bypassed(const ScrCycT
 /* The generation a release buffers an object into: its own, or past the
  * levels its type bypasses. Both run once per candidate that the routing
  * below moves, so they are inlined there too. */
-static inline __attribute__((always_inline)) unsigned scr_cyc_buffer_gen(const ScrCycType *type,
+static inline __attribute__((always_inline)) unsigned scr_cyc_buffer_gen(const void *obj,
+                                                                 const ScrCycType *type,
                                                                  unsigned gen) {
-  if (gen == SCR_CYC_NURSERY && scr_cyc_bypassed(type, SCR_CYC_NURSERY)) gen = SCR_CYC_MATURE;
-  if (gen == SCR_CYC_MATURE && scr_cyc_bypassed(type, SCR_CYC_MATURE)) gen = SCR_CYC_OLD;
+  ScrCycKind *stats = scr_cyc_stats(obj, type, false);
+  if (gen == SCR_CYC_NURSERY && scr_cyc_bypassed(stats, SCR_CYC_NURSERY)) gen = SCR_CYC_MATURE;
+  if (gen == SCR_CYC_MATURE && scr_cyc_bypassed(stats, SCR_CYC_MATURE)) gen = SCR_CYC_OLD;
   return gen;
 }
 
 /* A pass at `gen` (nursery or mature) walks a candidate of `type`: count
  * it, and decide the next window when this one is full. */
-static inline void scr_cyc_walked(const ScrCycType *type, unsigned gen) {
-  if (!type->kind) return;
-  ScrCycLevelStat *k = &scr_cyc_kind(type->kind)->level[gen];
+static inline void scr_cyc_walked(const void *obj, const ScrCycType *type, unsigned gen) {
+  ScrCycKind *stats = scr_cyc_stats(obj, type, true);
+  if (!stats) return;
+  ScrCycLevelStat *k = &stats->level[gen];
   if (++k->walked == SCR_CYC_BYPASS_WINDOW) {
 #if SCR_CYC_INLINE_BUFFERING
     bool before = k->bypass != 0;
@@ -1178,8 +1255,9 @@ static inline void scr_cyc_walked(const ScrCycType *type, unsigned gen) {
   }
 }
 /* A pass at `gen` (nursery or mature) frees an object of `type`. */
-static inline void scr_cyc_freed(const ScrCycType *type, unsigned gen) {
-  if (type->kind) scr_cyc_kind(type->kind)->level[gen].freed++;
+static inline void scr_cyc_freed(const void *obj, const ScrCycType *type, unsigned gen) {
+  ScrCycKind *stats = scr_cyc_stats(obj, type, true);
+  if (stats) stats->level[gen].freed++;
 }
 
 /* An inline append (scr_rc.h) leaves every nursery candidate in the nursery
@@ -1198,7 +1276,7 @@ static SCR_CYC_COMPACT void scr_cyc_route_bypassed(void) {
   for (size_t i = 0; i < nursery->n;) {
     void *obj = nursery->v[i];
     ScrCycHdr *h = scr_cyc_hdr(obj);
-    unsigned gen = scr_cyc_buffer_gen(scr_cyc_type(h), SCR_CYC_NURSERY);
+    unsigned gen = scr_cyc_buffer_gen(obj, scr_cyc_type(h), SCR_CYC_NURSERY);
     if (gen == SCR_CYC_NURSERY) {
       i++;
       continue;
@@ -1327,7 +1405,7 @@ void scr_cyc_on_release(void *obj) {
 #if SCR_CYC_INLINE_BUFFERING
   if (scr_cyc_append(h, obj)) return;
 #endif
-  if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_set_gen(h, scr_cyc_buffer_gen(scr_cyc_type(h), scr_cyc_gen(h)));
+  if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_set_gen(h, scr_cyc_buffer_gen(obj, scr_cyc_type(h), scr_cyc_gen(h)));
   unsigned gen = scr_cyc_gen(h);
   ScrVec *b = &scr_roots[gen];
   if (b->n == b->cap) {
@@ -2041,7 +2119,8 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
       if (!scr_cyc_is_buffered(h) && h->buf != SCR_CYC_ACYCLIC) {
         /* A survivor promoted into a level its type bypasses moves past
          * it, as a release would buffer it. */
-        if (scr_cyc_gen(h) == SCR_CYC_MATURE && scr_cyc_bypassed(scr_cyc_type(h), SCR_CYC_MATURE))
+        if (scr_cyc_gen(h) == SCR_CYC_MATURE &&
+            scr_cyc_bypassed(scr_cyc_stats(obj, scr_cyc_type(h), false), SCR_CYC_MATURE))
           scr_cyc_set_gen(h, SCR_CYC_OLD);
         scr_cyc_set_buffered(h, (uint32_t)scr_roots[scr_cyc_gen(h)].n);
         scr_cyc_push(&scr_roots[scr_cyc_gen(h)], obj);
@@ -2069,7 +2148,7 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
     void *obj = scr_white.v[i];
     ScrCycHdr *h = scr_cyc_hdr(obj);
     const ScrCycType *type = scr_cyc_type(h);
-    if (gen_limit < SCR_CYC_OLD) scr_cyc_freed(type, gen_limit);
+    if (gen_limit < SCR_CYC_OLD) scr_cyc_freed(obj, type, gen_limit);
     scr_cyc_mature_dead += scr_cyc_gen(h) == SCR_CYC_MATURE;
 #ifdef SCR_YIN
     if (scr_cyc_gen(h) == SCR_CYC_YOUNG) scr_yin_leave(h, obj);
@@ -2202,7 +2281,7 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
       for (size_t i = 0; i < scr_cands.n; i++) {
         ScrCycHdr *h = scr_cyc_hdr(scr_cands.v[i]);
         scr_cyc_clear_buffered(h);
-        scr_cyc_walked(scr_cyc_type(h), gen_limit);
+        scr_cyc_walked(scr_cands.v[i], scr_cyc_type(h), gen_limit);
       }
   }
   for (unsigned g = 0; g <= gen_limit && !scr_cyc_take; g++) {
@@ -2211,7 +2290,7 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
       if (gen_limit < SCR_CYC_OLD) {
         ScrCycHdr *h = scr_cyc_hdr(obj);
         scr_cyc_clear_buffered(h);
-        scr_cyc_walked(scr_cyc_type(h), gen_limit);
+        scr_cyc_walked(obj, scr_cyc_type(h), gen_limit);
       }
       scr_cyc_push(&scr_cands, obj);
     }
@@ -2429,6 +2508,8 @@ void scr_cyc_context_cleanup(void) {
   free(scr_cyc_kinds);
   scr_cyc_kinds = NULL;
   scr_cyc_kinds_cap = 0;
+  free(scr_cyc_sites);
+  scr_cyc_sites = NULL;
 #ifdef SCR_YIN
   ScrVec *young[] = {&scr_yin_stack, &scr_yin_dead, &scr_yin_xrel};
   for (size_t i = 0; i < sizeof young / sizeof young[0]; i++) {

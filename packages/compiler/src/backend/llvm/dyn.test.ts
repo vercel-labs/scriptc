@@ -46,8 +46,8 @@ function expectRelease(block: string, value: string, type: IrType) {
 
 for (const typedRest of [false, true]) {
   test(`dynamic thunk owns converted arguments before pending checks (rest=${typedRest})`, () => {
-    for (const inlineRc of [undefined, "release"] as const) {
-      const emitter = new LlEmitter(module, { inlineRc });
+    for (const options of [{}, { inlineRc: "release" }] as const) {
+      const emitter = new LlEmitter(module, options);
       const last: IrType = typedRest ? { kind: "array", elem: F64 } : STRING;
       const name = emitter.dyn.dynFuncThunkHelper({
         kind: "func",
@@ -87,8 +87,8 @@ for (const typedRest of [false, true]) {
 
 for (const type of [DYN, STRING, F64]) {
   test(`dynamic call thunk owns ${type.kind} results across pending checks`, () => {
-    for (const inlineRc of [undefined, "release"] as const) {
-      const emitter = new LlEmitter(module, { inlineRc });
+    for (const options of [{}, { inlineRc: "release" }] as const) {
+      const emitter = new LlEmitter(module, options);
       const name = emitter.dyn.dynFuncThunkHelper({ kind: "func", params: [STRING], ret: type });
       const paths = returnPaths(emitter, name, /(%\w+) = call (?:ptr|double) %\w+\(/, "dfkr");
       if (type.kind === "f64") expect(resultReleases(paths.unwind, paths.value)).toEqual([]);
@@ -103,8 +103,8 @@ for (const type of [DYN, STRING, F64]) {
 
 for (const type of [DYN, JSVAL, STRING, F64]) {
   test(`JavaScript entry owns ${type.kind} results across pending checks`, () => {
-    for (const inlineRc of [undefined, "release"] as const) {
-      const emitter = new LlEmitter(module, { inlineRc });
+    for (const options of [{}, { inlineRc: "release" }] as const) {
+      const emitter = new LlEmitter(module, options);
       const name = emitter.dyn.jsEntryThunk("callback", [JSVAL, DYN], type);
       const paths = returnPaths(emitter, name, /(%\w+) = call (?:ptr|double) @callback\(/, "jtr");
       if (type.kind === "f64") expect(resultReleases(paths.unwind, paths.value)).toEqual([]);
@@ -119,8 +119,8 @@ for (const type of [DYN, JSVAL, STRING, F64]) {
 
 for (const type of [DYN, STRING, F64, VOID]) {
   test(`typed callback adapter owns its dynamic result before returning ${type.kind}`, () => {
-    for (const inlineRc of [undefined, "release"] as const) {
-      const emitter = new LlEmitter(module, { inlineRc });
+    for (const options of [{}, { inlineRc: "release" }] as const) {
+      const emitter = new LlEmitter(module, options);
       const name = emitter.dyn.dynFuncAdapterHelper({ kind: "func", params: [STRING], ret: type });
       const paths = returnPaths(emitter, name, /(%\w+) = call ptr @scr_dyn_call\(/, "dfa");
       expectRelease(paths.unwind, paths.value, DYN);

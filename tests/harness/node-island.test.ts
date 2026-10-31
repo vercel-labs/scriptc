@@ -425,16 +425,19 @@ console.log("class", make().read(), make());
 ${rootEntry}
 `,
           "helper.mjs": `export function choose() {
+  // @ts-expect-error JavaScript permits reassignment of a function declaration.
   choose = () => "replacement";
   return "original";
 }
 function hidden() {
+  // @ts-expect-error JavaScript permits reassignment of a function declaration.
   hidden = () => "private-replacement";
   return "private-original";
 }
 export function choosePrivate() { return hidden(); }
 class Box { read() { return 7; } }
 export function make() {
+  // @ts-expect-error JavaScript permits reassignment of a function declaration.
   make = () => null;
   return new Box();
 }
@@ -504,6 +507,7 @@ process.disconnect();
         join(dir, "failed.cjs"),
         `function choose() { return "original"; }
 console.log("before", choose());
+// @ts-expect-error JavaScript permits reassignment of a function declaration.
 choose = () => "replacement";
 console.log("after", choose());
 throw new Error("retry");
@@ -550,6 +554,7 @@ function mark(name) { console.log(name); return name; }
 export class C { static value = mark("static"); }
 export default mark("default");
 export function choose() {
+  // @ts-expect-error JavaScript permits reassignment of a function declaration.
   choose = () => "replacement";
   return "original";
 }

@@ -23,6 +23,7 @@ import {
   trackedRealpath,
 } from "./input-tracker.js";
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
+import { isFrontendIsland } from "../node-islands/boundary.js";
 import { packageSourceText, typePatchSuppliesTypes } from "./type-patches/layer.js";
 
 let activePackages: ReadonlySet<string> = new Set();
@@ -340,6 +341,22 @@ function isNodeModulesPathNorm(path: string): boolean {
   return path.split("\\").join("/").includes("/node_modules/");
 }
 
+/** A TYPED island package's shipped-runtime file. The load keeps island
+ * packages out of --npm-static's name list, but the flag's maxNodeModuleJsDepth
+ * still admits their JS to the checker, where a real file SHADOWS the ambient
+ * `declare module` declarations the island's type roots provide (highlight.js:
+ * lib/core.js typed by JSDoc instead of types/index.d.ts, so the program's
+ * member reads lose the declarations the island is typed by). Hiding the
+ * runtime file keeps the island typed by its declarations, exactly as the
+ * flagless build types it; the island never compiles the file. Declarations
+ * stay, and an UNTYPED island package keeps the any-surface stub the shadow
+ * already serves for it (there is no declaration to shadow). */
+function isIslandRuntimeFile(path: string): boolean {
+  if (!/\.(js|cjs|mjs)$/.test(path) || !isNodeModulesPathNorm(path)) return false;
+  const pkg = npmPackageNameOf(path.split("\\").join("/"));
+  return pkg !== null && isFrontendIsland(pkg) && !packageIsUntyped(path);
+}
+
 /** Whether the package owning `path` is UNTYPED for the checker: no
  * "types"/"typings" claim, no root .d.ts entry, and no installed @types
  * twin along the walk-up — the packages whose flagless import surface is
@@ -581,6 +598,9 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
     hideFile: (path) => {
       // The copies of the package's declaration files the typedefs name.
       if (path.endsWith(NPM_STATIC_TYPES_SUFFIX) && isVirtualSource(path)) return false;
+      // An island package's shipped JS stays out of the checker (see
+      // isIslandRuntimeFile): its declarations are its whole surface.
+      if (isIslandRuntimeFile(path)) return true;
       const target = shadowTargetOf(path);
       if (!target) return false;
       if (isBundledShimForwarder(path)) return false;

@@ -13,6 +13,7 @@ import { typeKey } from "../../type-mapper.js";
 import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
 import type { Lowerer } from "../lowerer.js";
+import { recordLinkPair, registerLinkSite } from "../record-links.js";
 
 /** Convert structural values by copying their supported fields or elements.
  * Unlike JavaScript width subtyping, these conversions create fresh storage
@@ -977,7 +978,13 @@ function buildRecordProjection(
   // instance's fields keep today's table.
   const copyOf = (node: IrExpr): IrExpr =>
     source.kind === "record" ? lowerer.keyOrder.copy(node, source.shapeId) : node;
-  return {
+  // In Node the converted value is the source object, whose other
+  // properties stay visible to its reflective surfaces: a copy of a record
+  // with properties the target does not declare can link to its source
+  // (record-links.ts).
+  const link =
+    source.kind === "record" ? recordLinkPair(lowerer, source.shapeId, target.id, loc) : null;
+  const projection: IrFunction = {
     name,
     params: [{ localId, name: parameter, type: source }],
     returnType: result,
@@ -1046,6 +1053,8 @@ function buildRecordProjection(
     ],
     loc,
   };
+  if (link !== null) registerLinkSite(lowerer, link, projection);
+  return projection;
 }
 
 /** Records and arrays (and unions holding them), whose identity a live

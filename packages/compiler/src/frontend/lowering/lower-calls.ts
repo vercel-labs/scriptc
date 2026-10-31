@@ -77,6 +77,7 @@ import {
   type IrLibFn,
   type IrLocal,
   type IrParam,
+  type IrRecordShape,
   type IrStmt,
   type IrType,
   NULL_T,
@@ -139,6 +140,7 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
+import { isPrimitivePrototypeRead } from "./expressions/property-access.js";
 import {
   lowerBufferConstruct,
   lowerBytesPrototypeSetCall,
@@ -193,6 +195,12 @@ import {
   lowerProcessBuiltinModuleNamespace,
 } from "./builtins/process.js";
 import { recordMayKeepSource, recordSourceTest, throughRecordSource } from "./record-sources.js";
+import {
+  answerLinkedCopies,
+  linkedCopyBranches,
+  recordStringCall,
+  registerLinkedHelper,
+} from "./record-links.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
@@ -303,6 +311,7 @@ import {
 
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { lowerRecordInheritedCall } from "./record-inherited.js";
+import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -2889,6 +2898,30 @@ function immediateObjectTagReceiver(
   return null;
 }
 
+/** Array.prototype methods whose `.<name>.call(receiver, ...)` form the
+ * array-like unit runs generically when `receiver` is not a native array:
+ * the rest of the prototype's methods besides the invoke unit's own set
+ * (at, slice, indexOf, lastIndexOf, includes and the higher-order
+ * callbacks). */
+const ARRAY_LIKE_BORROW_METHODS = new Set([
+  "concat",
+  "copyWithin",
+  "fill",
+  "flat",
+  "flatMap",
+  "join",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "splice",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "unshift",
+  "with",
+]);
+
 const ARRAY_BORROW_METHODS = new Set([
   "at",
   "every",
@@ -2925,7 +2958,9 @@ function lowerArrayPrototypeBorrowCall(
   const method = access.expression;
   if (
     method.questionDotToken ||
-    !ARRAY_BORROW_METHODS.has(method.name.text) ||
+    !(
+      ARRAY_BORROW_METHODS.has(method.name.text) || ARRAY_LIKE_BORROW_METHODS.has(method.name.text)
+    ) ||
     !ts.isPropertyAccessExpression(method.expression) ||
     method.expression.questionDotToken ||
     method.expression.name.text !== "prototype" ||
@@ -2940,7 +2975,12 @@ function lowerArrayPrototypeBorrowCall(
   const args = call.arguments.nodes.slice(1).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
   return {
     kind: "libCall",
-    fn: "dyn.arrayProtoCall",
+    // The array-like unit runs an extended method's algorithm over a
+    // receiver that is not a native array and delegates the rest to the
+    // invoke unit's dispatch.
+    fn: ARRAY_LIKE_BORROW_METHODS.has(method.name.text)
+      ? "dyn.arrayLikeProtoCall"
+      : "dyn.arrayProtoCall",
     args: [
       receiver,
       { kind: "strLit", value: method.name.text, type: STRING, loc },
@@ -4010,6 +4050,12 @@ function lowerDynReceiverMethodCall(
   )
     recv = lowerer.coerceToExpected(recv, DYN);
   if (recv.type.kind !== "dyn") return null;
+  // `Number.prototype.m(...)` reads the prototype OBJECT, whose `m` is its
+  // own member, so every primitive specialization below — which assumes a
+  // primitive receiver and coerces the value it is given — would be wrong.
+  // The shared dispatch reads the member and calls it with the prototype as
+  // `this`, which is Node's answer for the wrapper around +0 / false.
+  const prototypeReceiver = isPrimitivePrototypeRead(lowerer, access.expression);
   if (
     access.name.text === "normalize" &&
     call.arguments.nodes.length <= 1 &&
@@ -4120,7 +4166,7 @@ function lowerDynReceiverMethodCall(
   // prototype declares (Array carries includes/indexOf/slice too), so no
   // other kind inherits them. Shared names would need a receiver-kind
   // dispatch — they keep the fence.
-  if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable) {
+  if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable && !prototypeReceiver) {
     // A checked-dynamic object can still carry its OWN member of that
     // name: zod's schemas assign `trim`, `toLowerCase` and `startsWith`
     // in their constructors (`z.string().trim().min(1)`), an object's
@@ -4151,6 +4197,7 @@ function lowerDynReceiverMethodCall(
   // runtime dispatch.
   if (
     !ownCallable &&
+    !prototypeReceiver &&
     isDynPrimitiveKindMethod(access.name.text) &&
     !lowerer.chainBlocked(access, call)
   ) {
@@ -4171,6 +4218,7 @@ function lowerDynReceiverMethodCall(
     access.name.text === "toString" &&
     call.arguments.nodes.length <= 1 &&
     !ownCallable &&
+    !prototypeReceiver &&
     !(checkerUntyped && jsAssignsOwnToString(lowerer, access.expression))
   ) {
     const argument = call.arguments.nodes[0];
@@ -4189,7 +4237,7 @@ function lowerDynReceiverMethodCall(
   // Every dyn kind's prototype chain declares valueOf, and the runtime
   // answers each kind's own: primitives and plain objects themselves, a
   // Date its time value, an own or inherited valueOf member its result.
-  if (access.name.text === "valueOf" && call.arguments.nodes.length === 0) {
+  if (access.name.text === "valueOf" && call.arguments.nodes.length === 0 && !prototypeReceiver) {
     const webAssembly = lowerWebAssemblyValueOf(lowerer, access.expression, recv, locOf(call));
     if (webAssembly !== null) return webAssembly;
     return {
@@ -5405,7 +5453,13 @@ function lowerDefaultToStringCall(
   // throws "<callee> is not a function".
   const nullProtoT = nullProtoRecordShape(lowerer, recvT);
   const missing = nullProtoT ? `${ts.getTextOfNode(access)} is not a function` : null;
-  if (!missing && pureObjectToStringReceiver(access.expression)) return constant;
+  // A linked copy or a record with a kept source answers as its source
+  // does (record-links.ts).
+  const linked = !missing && recvT.kind === "record" && recordMayKeepSource(lowerer, recvT);
+  if (!missing && pureObjectToStringReceiver(access.expression))
+    return linked
+      ? recordStringCall(lowerer, lowerer.lowerExpr(access.expression), "string", loc, "constant")
+      : constant;
   const recv = lowerer.lowerExpr(access.expression);
   const key = `objToStr:${typeKey(recv.type)}${missing ? `:${missing}` : ""}`;
   let helper = lowerer.valueHelpers.get(key);
@@ -5413,7 +5467,7 @@ function lowerDefaultToStringCall(
     helper = keyedHelperName(lowerer, "%obj.tostr", key);
     lowerer.valueHelpers.set(key, helper);
     const o = varRef("o.0", recv.type, loc);
-    lowerer.liftedFns.push({
+    const fn: IrFunction = {
       name: helper,
       params: [{ localId: "o.0", name: "o", type: recv.type }],
       returnType: STRING,
@@ -5429,7 +5483,10 @@ function lowerDefaultToStringCall(
         },
       ],
       loc,
-    });
+    };
+    lowerer.liftedFns.push(fn);
+    if (linked)
+      registerLinkedHelper(lowerer, fn, (recvT as IrType & { kind: "record" }).shapeId, "string");
   }
   return { kind: "call", callee: helper, args: [recv], type: STRING, loc };
 }
@@ -7707,6 +7764,7 @@ export function recordKeysArrayCall(
     finalize();
     lowerer.shapeOrderHelperFinalizers.push(finalize);
     lowerer.liftedFns.push(fn);
+    registerLinkedHelper(lowerer, fn, argIr.shapeId, "keys");
   }
   return { kind: "call", callee: helper, args: [receiver], type: resultT, loc };
 }
@@ -7749,7 +7807,7 @@ export function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLo
     ? { kind: "recordOvfHas", obj: rRef, shapeId, key: kRef, type: BOOL, loc }
     : { kind: "boolLit", value: false, type: BOOL, loc };
   body.push({ kind: "return", value: fallback, loc });
-  lowerer.liftedFns.push({
+  const fn: IrFunction = {
     name: helper,
     params: [
       { localId: "r.0", name: "r", type: recT },
@@ -7762,14 +7820,15 @@ export function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLo
     ],
     body,
     loc,
-  });
+  };
+  lowerer.liftedFns.push(fn);
+  registerLinkedHelper(lowerer, fn, shapeId, "hasOwn");
   // A record that kept undeclared keys answers an undeclared key through
   // its kept view: the declared branches above stay exact (the table's
   // placeholders only fill declared names the record owns), and the
   // closed-shape `false` fallback becomes the view's own-key test when a
   // kept width spread builds this shape.
   if (!shape.indexValue && recordMayKeepSource(lowerer, recT)) {
-    const fn = lowerer.liftedFns[lowerer.liftedFns.length - 1]!;
     lowerer.shapeOrderHelperFinalizers.push(() => {
       if (!lowerer.keyOrder.keptSourceShapes.has(shapeId)) return;
       const last = fn.body[fn.body.length - 1]!;
@@ -8104,6 +8163,82 @@ function isDynEntryPairsType(lowerer: Lowerer, t: IrType): boolean {
   const field = (name: string): IrType | undefined =>
     shape.fields.find((f) => f.name === name)?.type;
   return field("0")?.kind === "string" && field("1")?.kind === "dyn";
+}
+
+/** Object.seal, Object.freeze, Object.preventExtensions and their queries
+ * over a byte view (a typed array or a DataView) in JavaScript code. A view
+ * boxes BY REFERENCE and carries its integrity state on itself
+ * (ScrBytes.properties), so the checked-dynamic operations model it exactly:
+ * seal and freeze of a view with elements throw after making it
+ * non-extensible, as in V8. seal, freeze and preventExtensions answer the
+ * view itself, so the result converts back to the same view (a checked cast,
+ * which preserves its identity) wherever the element type admits the
+ * conversion — bytes<u8>, the DataView and Uint8Array case. A view of wider
+ * elements stays checked-dynamic, which the discarded statement form and a
+ * later comparison against the view both handle exactly. The queries answer
+ * a boolean. */
+export function lowerBytesIntegrity(
+  lowerer: Lowerer,
+  fn:
+    | "dyn.preventExtensions"
+    | "dyn.seal"
+    | "dyn.freeze"
+    | "dyn.isExtensible"
+    | "dyn.isSealed"
+    | "dyn.isFrozen",
+  view: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const query = fn.startsWith("dyn.is");
+  const result: IrExpr = {
+    kind: "libCall",
+    fn,
+    args: [lowerer.coerceToExpected(view, DYN)],
+    type: query ? BOOL : DYN,
+    loc,
+  };
+  return query ? result : lowerer.coerceToExpected(result, view.type);
+}
+
+/** True when the expression is statically a PLAIN OBJECT at runtime: a dyn
+ *  object literal, or a record (a literal, a clone, or any expression of a
+ *  record type, which dynFrom boxes field by field). Both build an ordinary
+ *  object whose fields are own data properties, which the plain-object
+ *  descriptor reader answers exactly. Every other expression (a variable of
+ *  any other type, a call, an array, a function) may be an object of any
+ *  kind with inherited fields, so it takes the entry points whose
+ *  ToPropertyDescriptor reads every object kind (dyn.definePropertyShapes
+ *  and its siblings). */
+export function isPlainObjectLiteral(expr: IrExpr): boolean {
+  if (expr.kind === "dynObjLit") return true;
+  if (expr.kind !== "dynFrom") return false;
+  const value = expr.value;
+  return value.kind === "dynObjLit" || value.type.kind === "record";
+}
+
+/** True when the expression is a plain property-descriptor map for
+ *  Object.defineProperties or Object.create: a plain object
+ *  (isPlainObjectLiteral) whose every field is a plain object too. A dyn
+ *  literal's field values are checked with isPlainObjectLiteral and a
+ *  record's fields by their types, since dynFrom boxes a record-typed field
+ *  into an ordinary object. A map with any other field (`{ a: view }`, where
+ *  `view` is a DataView or an array) takes the any-object entry points. */
+export function isPlainDescriptorMap(
+  expr: IrExpr,
+  getRecord: (shapeId: string) => IrRecordShape | undefined,
+): boolean {
+  if (!isPlainObjectLiteral(expr)) return false;
+  const literal = expr.kind === "dynFrom" ? expr.value : expr;
+  if (literal.kind === "dynObjLit")
+    return (literal.fields ?? []).every((field) => isPlainObjectLiteral(field.value));
+  if (literal.type.kind !== "record") return false;
+  const shape = getRecord(literal.type.shapeId);
+  return (
+    shape !== undefined &&
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.every((field) => field.type.kind === "record")
+  );
 }
 
 function lowerObjectStaticCall(
@@ -8468,7 +8603,12 @@ function lowerObjectStaticCall(
       if (descriptors.type.kind === "dyn")
         return {
           kind: "libCall",
-          fn: "dyn.objCreateWithProperties",
+          // A descriptor map built by an expression, or a literal map with a
+          // descriptor built by one, may hold an array, a function or an
+          // object with inherited fields.
+          fn: isPlainDescriptorMap(descriptors, (id) => lowerer.shapes.get(id))
+            ? "dyn.objCreateWithProperties"
+            : "dyn.objCreateWithPropertiesShapes",
           args: [proto, descriptors],
           type: DYN,
           loc,
@@ -8481,6 +8621,9 @@ function lowerObjectStaticCall(
   if (member === "assign") {
     const prototype = lowerClassPrototypeAssign(lowerer, call);
     if (prototype) return prototype;
+    // A standard-library prototype value as the target is a write through it.
+    if (call.arguments.nodes.length > 0)
+      fenceDatePrototypeWriteCall(lowerer, call.arguments.nodes[0]!);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       call.arguments.nodes.length > 0 &&
@@ -8559,8 +8702,16 @@ function lowerObjectStaticCall(
       const sProbe = tryLowerExpression(lowerer, call.arguments.nodes[1]!);
       // CHECKED-DYNAMIC target and source (the JS file-scope
       // object-literal identity story): the runtime dyn copy — own
-      // members of the source land on the target, which returns.
-      if (tProbe?.type.kind === "dyn") {
+      // members of the source land on the target, which returns. A
+      // CLASS-INSTANCE target joins them when the call's own RESULT type
+      // is checked-dynamic: that is the `C & { extra }` intersection
+      // (mapClassExpandoIntersection), whose value IS the instance, so
+      // the same dyn copy writes the expando members onto its view and
+      // answers the instance — identity and prototype intact.
+      if (
+        tProbe?.type.kind === "dyn" ||
+        (tProbe?.type.kind === "object" && lowerer.mapTypeOf(lowerer.typeOf(call))?.kind === "dyn")
+      ) {
         const loc = locOf(call);
         const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
         const rawSource = lowerer.lowerExpr(call.arguments.nodes[1]!);
@@ -8570,8 +8721,10 @@ function lowerObjectStaticCall(
         if (ts.isObjectLiteralExpression(targetNode))
           fenceClassCopyIntoFreshObject(lowerer, call, call.arguments.nodes[1]!, rawSource);
         const source = lowerer.coerceToExpected(rawSource, DYN);
-        if (target.type.kind === "dyn" && source.type.kind === "dyn") {
-          return { kind: "libCall", fn: "dyn.assign", args: [target, source], type: DYN, loc };
+        const dynTarget =
+          target.type.kind === "dyn" ? target : lowerer.coerceToExpected(target, DYN);
+        if (dynTarget.type.kind === "dyn" && source.type.kind === "dyn") {
+          return { kind: "libCall", fn: "dyn.assign", args: [dynTarget, source], type: DYN, loc };
         }
       }
       // A CLASS-INSTANCE target and a plain record source whose fields are
@@ -8793,8 +8946,13 @@ function lowerObjectStaticCall(
     (member === "getOwnPropertyDescriptor" && call.arguments.nodes.length === 2)
   ) {
     if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) return null;
-    let target = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
     const targetNode = call.arguments.nodes[0]!;
+    // Object.defineProperty/defineProperties over a standard-library prototype
+    // value: a typed Date never observes a dynamic definition there, so the
+    // write keeps the fence it reached before the value existed. The
+    // descriptor READ below is not a write and stays open.
+    if (member === "defineProperty") fenceDatePrototypeWriteCall(lowerer, targetNode);
+    let target = tryLowerExpression(lowerer, targetNode);
     // The checker gives C.prototype the instance type, but its lowered
     // value is the shared prototype table, not an instance to unbox.
     const prototypeTarget =
@@ -8871,7 +9029,10 @@ function lowerObjectStaticCall(
     if (descriptor.type.kind !== "dyn") return null;
     return {
       kind: "libCall",
-      fn: "dyn.defineProperty",
+      // A descriptor built by an expression may be an array, a function or an
+      // object with inherited fields, which only the any-object entry point
+      // reads; a plain object literal keeps the plain-object reader.
+      fn: isPlainObjectLiteral(descriptor) ? "dyn.defineProperty" : "dyn.definePropertyShapes",
       args: [target, key, descriptor],
       type: DYN,
       loc: locOf(call),
@@ -8889,6 +9050,10 @@ function lowerObjectStaticCall(
     call.arguments.nodes.length === 2 &&
     !call.arguments.nodes.some((a) => ts.isSpreadElement(a))
   ) {
+    // A standard-library prototype value as the target is a write through it,
+    // exactly like the defineProperty form above: a typed Date never observes
+    // a definition made on the dynamic prototype object.
+    fenceDatePrototypeWriteCall(lowerer, call.arguments.nodes[0]!);
     const prototype = lowerClassPrototypeDescriptors(lowerer, call, member);
     if (prototype) return prototype;
     let target = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
@@ -8936,7 +9101,12 @@ function lowerObjectStaticCall(
       if (descs.type.kind === "dyn") {
         return {
           kind: "libCall",
-          fn: "dyn.defineProps",
+          // As for Object.create above: a descriptor map built by an
+          // expression, or a literal map with a descriptor built by one, takes
+          // the any-object entry point.
+          fn: isPlainDescriptorMap(descs, (id) => lowerer.shapes.get(id))
+            ? "dyn.defineProps"
+            : "dyn.definePropsShapes",
           args: [target, descs],
           type: DYN,
           loc: locOf(call),
@@ -8995,6 +9165,22 @@ function lowerObjectStaticCall(
         ? extensible
         : { kind: "unary", op: "!", operand: extensible, type: BOOL, loc: locOf(call) };
     }
+    // A byte view carries its integrity state on itself and boxes by
+    // reference, so the checked-dynamic operations model these exactly.
+    if (value.type.kind === "bytes" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const operation = {
+        preventExtensions: "dyn.preventExtensions",
+        isExtensible: "dyn.isExtensible",
+        seal: "dyn.seal",
+        isSealed: "dyn.isSealed",
+      } as const;
+      return lowerBytesIntegrity(
+        lowerer,
+        operation[member as keyof typeof operation],
+        value,
+        locOf(call),
+      );
+    }
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -9009,11 +9195,16 @@ function lowerObjectStaticCall(
       };
     }
     if (value.type.kind === "dyn") {
+      // The kind is only known at runtime: the queries refuse a native
+      // handle or a promise, whose integrity state scriptc does not track
+      // (Object.preventExtensions and Object.seal do not change it, so any
+      // answer would be invented). The static arms above keep the plain
+      // queries for the kinds whose state is modeled.
       const operation = {
         preventExtensions: "dyn.preventExtensions",
-        isExtensible: "dyn.isExtensible",
+        isExtensible: "dyn.isExtensibleQuery",
         seal: "dyn.seal",
-        isSealed: "dyn.isSealed",
+        isSealed: "dyn.isSealedQuery",
       } as const;
       const fn = operation[member as keyof typeof operation];
       if (!member.startsWith("is")) noteUntypedIntegrity(lowerer, call.arguments.nodes[0]!);
@@ -9067,6 +9258,8 @@ function lowerObjectStaticCall(
           loc,
         };
     }
+    if (probedKind === "bytes" && isJsSourceFile(ts.getSourceFileOfNode(call)))
+      return lowerBytesIntegrity(lowerer, "dyn.isFrozen", lowerer.lowerExpr(argNode), locOf(call));
     const value = lowerer.lowerExprExpecting(argNode, DYN);
     return { kind: "libCall", fn: "dyn.isFrozen", args: [value], type: BOOL, loc: locOf(call) };
   }
@@ -9131,6 +9324,8 @@ function lowerObjectStaticCall(
       return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
     if (value.type.kind === "map" || value.type.kind === "set")
       return lowerNativeFreeze(lowerer, "collection.preventExtensions", value, locOf(call));
+    if (value.type.kind === "bytes" && isJsSourceFile(ts.getSourceFileOfNode(call)))
+      return lowerBytesIntegrity(lowerer, "dyn.freeze", value, locOf(call));
     lowerer.noLowering(
       "Object.freeze of a possibly-aliased value",
       call,
@@ -9550,7 +9745,6 @@ function lowerObjectStaticCall(
     helper = keyedHelperName(lowerer, `%obj.${member}`, key);
     const recT = argIr;
     const ref: IrExpr = { kind: "varRef", localId: "r.0", type: recT, loc };
-    const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: resultT, loc };
     const fn: IrFunction = {
       name: helper,
       params: [{ localId: "r.0", name: "r", type: recT }],
@@ -9562,197 +9756,297 @@ function lowerObjectStaticCall(
       body: [],
       loc,
     };
-    const finalize = (): void => {
-      const latest = lowerer.shapes.get(argIr.shapeId);
-      const current: import("../../ir/ir.js").IrRecordShape = latest !== undefined ? latest : shape;
-      const body: IrStmt[] = [
-        {
-          kind: "varDecl",
-          localId: "out.0",
-          init: { kind: "arrayLit", elems: [], type: resultT, loc },
+    // The statement that pushes field `f` of the record `obj` (of shape
+    // `shapeId`), or the reason its value cannot flow into the result.
+    const fieldPush = (
+      obj: IrExpr,
+      shapeId: string,
+      f: import("../../ir/ir.js").IrRecordShape["fields"][number],
+      out: IrExpr,
+    ): IrStmt | string => {
+      const raw: IrExpr = {
+        kind: "recordGet",
+        obj,
+        shapeId,
+        field: f.name,
+        type: f.type,
+        loc,
+      };
+      // The pushed element per member; null when the field's value
+      // cannot flow into the result element type.
+      const elemOf = (value: IrExpr, vt: IrType): IrExpr | null => {
+        if (!valueT) return null;
+        if (typeEquals(vt, valueT)) return value;
+        if (valueT.kind === "dyn" && lowerer.dynConvertible(vt))
+          return lowerer.coerceToExpected(value, DYN);
+        if (valueT.kind === "union" && vt.kind !== "union") {
+          const tag = lowerer.armTag(valueT.unionId, vt);
+          if (tag >= 0) {
+            return { kind: "unionWrap", unionId: valueT.unionId, tag, value, type: valueT, loc };
+          }
+        }
+        return null;
+      };
+      // Undefined-armed fields: the push is guarded by the field's
+      // presence; a narrowed push re-tags the non-undefined arm.
+      let guardUndefTag: number | null = null;
+      let value: IrExpr = raw;
+      let vt: IrType = f.type;
+      if (f.type.kind === "union") {
+        const undefTag = lowerer.armTag(f.type.unionId, UNDEFINED_T);
+        if (undefTag >= 0) {
+          guardUndefTag = undefTag;
+          const arms = lowerer.unions.get(f.type.unionId)?.arms ?? [];
+          const others = arms.filter((a): boolean => a.kind !== "undefinedT");
+          if (valueT?.kind === "dyn" || typeEquals(f.type, valueT ?? f.type)) {
+            // The field union IS the result union (single-field shapes):
+            // push the raw box — but then the undefined skip must NOT
+            // narrow. Handled below via vt === valueT.
+            value = raw;
+            vt = f.type;
+          } else if (others.length === 1) {
+            vt = others[0]!;
+            // A UNIT other arm (`null | undefined` fields — the mixed-
+            // defaults spread idiom; undefined was filtered above, so
+            // the unit is null): units carry no payload, so the guarded
+            // push writes the unit LITERAL — unionNarrow to a unit arm
+            // (and unionWrap of a narrowed unit) is malformed IR; the
+            // literal is the one legal unit spelling.
+            value = isUnitType(vt)
+              ? { kind: "unitLit", unit: "null", type: vt, loc }
+              : {
+                  kind: "unionNarrow",
+                  unionId: f.type.unionId,
+                  tag: lowerer.armTag(f.type.unionId, vt),
+                  value: raw,
+                  type: vt,
+                  loc,
+                };
+          } else {
+            return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
+          }
+        } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
+          return `field '${f.name}' is a union that cannot re-tag into the result element type`;
+        }
+      }
+      const coerced = elemOf(value, vt);
+      if (!coerced) {
+        return (
+          `field '${f.name}' of type '${lowerer.fmt(f.type)}' ` +
+          `cannot flow into the '${lowerer.fmt(valueT!)}' result element`
+        );
+      }
+      const pushOf = (element: IrExpr): IrStmt => ({
+        kind: "exprStmt",
+        expr: {
+          kind: "arrIntrinsic",
+          method: "push",
+          receiver: out,
+          args: [
+            member === "values"
+              ? element
+              : {
+                  kind: "recordLit",
+                  fields: [
+                    { name: "0", value: { kind: "strLit", value: f.name, type: STRING, loc } },
+                    { name: "1", value: element },
+                  ],
+                  type: tupleT!,
+                  loc,
+                },
+          ],
+          type: F64,
           loc,
         },
-      ];
-      // One walk per key order (see perKeyOrder).
+        loc,
+      });
+      let stmt = pushOf(coerced);
+      if (guardUndefTag !== null && f.type.kind === "union") {
+        if (value !== raw) {
+          // A narrowed push: a present field holding undefined pushes
+          // the result element's own undefined when it has one; a values
+          // array without one stores a present undefined element (a
+          // runtime-optional field the checker typed as required). An
+          // entries tuple slot has no spelling for it.
+          const undefinedElement = valueT ? lowerer.wrappedUndefined(valueT, loc) : null;
+          const undefinedPush: IrStmt | null = undefinedElement
+            ? pushOf(undefinedElement)
+            : member === "values"
+              ? {
+                  kind: "arraySetUndefined",
+                  arr: out,
+                  index: {
+                    kind: "arrIntrinsic",
+                    method: "length",
+                    receiver: out,
+                    args: [],
+                    type: F64,
+                    loc,
+                  },
+                  loc,
+                }
+              : null;
+          stmt = {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId: f.type.unionId,
+              tag: guardUndefTag,
+              negated: true,
+              value: raw,
+              type: BOOL,
+              loc,
+            },
+            then: [stmt],
+            else_: undefinedPush ? [undefinedPush] : null,
+            loc,
+          };
+        }
+        // Absent fields contribute nothing; present ones push their
+        // value, undefined included.
+        stmt = {
+          kind: "if",
+          cond: lowerer.recordFieldPresent(obj, shapeId, f.name, loc),
+          then: [stmt],
+          else_: null,
+          loc,
+        };
+      }
+      return stmt;
+    };
+    // The walk that pushes the fields of `obj` (of `current`) into out.0,
+    // one walk per key order (see perKeyOrder). `refused` answers a field
+    // whose value cannot flow into the result.
+    // The walk that pushes the fields of `obj` (of `current`) into the
+    // local `outId` and returns it, one walk per key order (see
+    // perKeyOrder). `refused` answers a field whose value cannot flow into
+    // the result.
+    const fieldWalk = (
+      obj: IrExpr,
+      current: import("../../ir/ir.js").IrRecordShape,
+      outId: string,
+      refused: (reason: string) => IrStmt,
+    ): IrStmt[] => {
+      const out: IrExpr = { kind: "varRef", localId: outId, type: resultT, loc };
       const orders = shapeKeyOrders(current);
       const walks = orders.map((): IrStmt[] => []);
       for (const [k, name] of orders.flatMap((order, k) =>
         order.map((name) => [k, name] as const),
       )) {
         const f = current.fields.find((x) => x.name === name)!;
-        const raw: IrExpr = {
-          kind: "recordGet",
-          obj: ref,
-          shapeId: argIr.shapeId,
-          field: f.name,
-          type: f.type,
-          loc,
-        };
-        // The pushed element per member; null when the field's value
-        // cannot flow into the result element type.
-        const elemOf = (value: IrExpr, vt: IrType): IrExpr | null => {
-          if (!valueT) return null;
-          if (typeEquals(vt, valueT)) return value;
-          if (valueT.kind === "dyn" && lowerer.dynConvertible(vt))
-            return lowerer.coerceToExpected(value, DYN);
-          if (valueT.kind === "union" && vt.kind !== "union") {
-            const tag = lowerer.armTag(valueT.unionId, vt);
-            if (tag >= 0) {
-              return { kind: "unionWrap", unionId: valueT.unionId, tag, value, type: valueT, loc };
-            }
-          }
-          return null;
-        };
-        // Undefined-armed fields: the push is guarded by the field's
-        // presence; a narrowed push re-tags the non-undefined arm.
-        let guardUndefTag: number | null = null;
-        let value: IrExpr = raw;
-        let vt: IrType = f.type;
-        if (f.type.kind === "union") {
-          const undefTag = lowerer.armTag(f.type.unionId, UNDEFINED_T);
-          if (undefTag >= 0) {
-            guardUndefTag = undefTag;
-            const arms = lowerer.unions.get(f.type.unionId)?.arms ?? [];
-            const others = arms.filter((a): boolean => a.kind !== "undefinedT");
-            if (valueT?.kind === "dyn" || typeEquals(f.type, valueT ?? f.type)) {
-              // The field union IS the result union (single-field shapes):
-              // push the raw box — but then the undefined skip must NOT
-              // narrow. Handled below via vt === valueT.
-              value = raw;
-              vt = f.type;
-            } else if (others.length === 1) {
-              vt = others[0]!;
-              // A UNIT other arm (`null | undefined` fields — the mixed-
-              // defaults spread idiom; undefined was filtered above, so
-              // the unit is null): units carry no payload, so the guarded
-              // push writes the unit LITERAL — unionNarrow to a unit arm
-              // (and unionWrap of a narrowed unit) is malformed IR; the
-              // literal is the one legal unit spelling.
-              value = isUnitType(vt)
-                ? { kind: "unitLit", unit: "null", type: vt, loc }
-                : {
-                    kind: "unionNarrow",
-                    unionId: f.type.unionId,
-                    tag: lowerer.armTag(f.type.unionId, vt),
-                    value: raw,
-                    type: vt,
-                    loc,
-                  };
-            } else {
-              lowerer.unsupported(
-                "SC1090",
-                call,
-                `Object.${member} over '${lowerer.fmt(argIr)}' (field '${f.name}' is a multi-arm union that ` +
-                  "cannot re-tag into the result element type — read the fields directly)",
-              );
-            }
-          } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
-            lowerer.unsupported(
-              "SC1090",
-              call,
-              `Object.${member} over '${lowerer.fmt(argIr)}' (field '${f.name}' is a union that cannot ` +
-                "re-tag into the result element type — read the fields directly)",
-            );
-          }
-        }
-        const coerced = elemOf(value, vt);
-        if (!coerced) {
-          lowerer.unsupported(
-            "SC1090",
-            call,
-            `Object.${member} over '${lowerer.fmt(argIr)}' (field '${f.name}' of type '${lowerer.fmt(f.type)}' ` +
-              `cannot flow into the '${lowerer.fmt(valueT!)}' result element — read the fields directly)`,
-          );
-        }
-        const pushOf = (element: IrExpr): IrStmt => ({
-          kind: "exprStmt",
-          expr: {
-            kind: "arrIntrinsic",
-            method: "push",
-            receiver: outRef,
-            args: [
-              member === "values"
-                ? element
-                : {
-                    kind: "recordLit",
-                    fields: [
-                      { name: "0", value: { kind: "strLit", value: f.name, type: STRING, loc } },
-                      { name: "1", value: element },
-                    ],
-                    type: tupleT!,
-                    loc,
-                  },
-            ],
-            type: F64,
-            loc,
-          },
-          loc,
-        });
-        let stmt = pushOf(coerced);
-        if (guardUndefTag !== null && f.type.kind === "union") {
-          if (value !== raw) {
-            // A narrowed push: a present field holding undefined pushes
-            // the result element's own undefined when it has one; a values
-            // array without one stores a present undefined element (a
-            // runtime-optional field the checker typed as required). An
-            // entries tuple slot has no spelling for it.
-            const undefinedElement = valueT ? lowerer.wrappedUndefined(valueT, loc) : null;
-            const undefinedPush: IrStmt | null = undefinedElement
-              ? pushOf(undefinedElement)
-              : member === "values"
-                ? {
-                    kind: "arraySetUndefined",
-                    arr: outRef,
-                    index: {
-                      kind: "arrIntrinsic",
-                      method: "length",
-                      receiver: outRef,
-                      args: [],
-                      type: F64,
-                      loc,
-                    },
-                    loc,
-                  }
-                : null;
-            stmt = {
-              kind: "if",
-              cond: {
-                kind: "unionIsTag",
-                unionId: f.type.unionId,
-                tag: guardUndefTag,
-                negated: true,
-                value: raw,
-                type: BOOL,
-                loc,
-              },
-              then: [stmt],
-              else_: undefinedPush ? [undefinedPush] : null,
-              loc,
-            };
-          }
-          // Absent fields contribute nothing; present ones push their
-          // value, undefined included.
-          stmt = {
-            kind: "if",
-            cond: lowerer.recordFieldPresent(ref, argIr.shapeId, f.name, loc),
-            then: [stmt],
-            else_: null,
-            loc,
-          };
-        }
-        walks[k]!.push(stmt);
+        const stmt = fieldPush(obj, current.id, f, out);
+        walks[k]!.push(typeof stmt === "string" ? refused(stmt) : stmt);
       }
-      body.push(...perKeyOrder(current, ref, walks, loc));
-      body.push({ kind: "return", value: outRef, loc });
-      fn.body = body;
+      return [
+        {
+          kind: "varDecl",
+          localId: outId,
+          init: { kind: "arrayLit", elems: [], type: resultT, loc },
+          loc,
+        },
+        ...perKeyOrder(current, obj, walks, loc),
+        { kind: "return", value: out, loc },
+      ];
+    };
+    const finalize = (): void => {
+      const latest = lowerer.shapes.get(argIr.shapeId);
+      const current: import("../../ir/ir.js").IrRecordShape = latest !== undefined ? latest : shape;
+      fn.body = fieldWalk(ref, current, "out.0", (reason) =>
+        lowerer.unsupported(
+          "SC1090",
+          call,
+          `Object.${member} over '${lowerer.fmt(argIr)}' (${reason} — read the fields directly)`,
+        ),
+      );
     };
     finalize();
     lowerer.arrHofHelpers.set(key, helper);
     lowerer.shapeOrderHelperFinalizers.push(finalize);
     lowerer.liftedFns.push(fn);
+    // A linked copy lists its source's fields. When one of them cannot
+    // flow into the result, the copy answers as a kept source does: its
+    // checked view's values, checked into the result (which throws).
+    registerLinkedHelper(lowerer, fn, argIr.shapeId, "custom");
+    lowerer.linkedHelperFinalizers.push(() => {
+      // The answer for the composed record of a link, which can itself be
+      // a linked copy or keep a checked source: their properties come first.
+      // `path` holds the record types the links followed so far. Two types
+      // can link both ways (each lacks an optional field of the other): a
+      // composed record of this helper's own type calls the helper, and one
+      // of another type on the path answers from its checked view.
+      const answerAt =
+        (path: ReadonlySet<string>) =>
+        (composed: IrExpr & { kind: "varRef" }): IrStmt[] => {
+          const composedT = composed.type as IrType & { kind: "record" };
+          const sourceShape = lowerer.shapes.get(composedT.shapeId)!;
+          const view: IrExpr = { kind: "dynFrom", value: composed, liveRef: true, type: DYN, loc };
+          const viewAnswer: IrStmt = {
+            kind: "return",
+            value: {
+              kind: "dynCheck",
+              value: {
+                kind: "libCall",
+                fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
+                args: [view],
+                type: DYN,
+                loc,
+              },
+              type: resultT,
+              loc,
+            },
+            loc,
+          };
+          if (composedT.shapeId === argIr.shapeId)
+            return [
+              {
+                kind: "return",
+                value: { kind: "call", callee: fn.name, args: [composed], type: resultT, loc },
+                loc,
+              },
+            ];
+          if (path.has(composedT.shapeId)) return [viewAnswer];
+          let fits = true;
+          const walk = fieldWalk(composed, sourceShape, linkedOut(fn, resultT), () => {
+            fits = false;
+            return {
+              kind: "exprStmt",
+              expr: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+              loc,
+            };
+          });
+          const further = linkedCopyBranches(
+            lowerer,
+            fn,
+            composed,
+            composedT.shapeId,
+            answerAt(new Set([...path, composedT.shapeId])),
+          );
+          if (!fits) return [...further, viewAnswer];
+          if (!recordMayKeepSource(lowerer, composedT)) return [...further, ...walk];
+          return [
+            ...further,
+            {
+              kind: "if",
+              cond: recordSourceTest(composed, loc),
+              then: [viewAnswer],
+              else_: null,
+              loc,
+            },
+            ...walk,
+          ];
+        };
+      answerLinkedCopies(lowerer, fn, argIr.shapeId, answerAt(new Set([argIr.shapeId])));
+    });
   }
   const callee = helper;
   return sourced((receiver) => ({ kind: "call", callee, args: [receiver], type: resultT, loc }));
+}
+
+/** A fresh hidden local of `fn` for a linked copy's values or entries. */
+function linkedOut(fn: IrFunction, type: IrType): string {
+  const id = `linkedOut.${fn.locals.length}`;
+  fn.locals.push({ id, name: "linkedOut", type, mutable: false });
+  return id;
 }
 
 /** An entries array consumed pair by pair right where it is built: a

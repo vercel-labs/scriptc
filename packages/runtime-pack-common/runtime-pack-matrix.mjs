@@ -82,10 +82,18 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Island libCalls on native values typed by island declarations invoke
   // through the checked-dynamic path (scr_node_island_handle.c).
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
+  // Array.prototype generic algorithms over array-like receivers
+  // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
+  ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
+  // Number.prototype and Boolean.prototype read as values in JavaScript.
+  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
   ["scr_builtin_values.c", "builtinValues"],
+  // A standard library prototype object read as a value in JavaScript
+  // (`Date.prototype`); it calls the invoke unit's interned method table.
+  ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
@@ -171,6 +179,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  // Object.isExtensible and Object.isSealed of a value typed dynamically; a
+  // unit of its own so scr_json.c keeps its layout for every other program.
+  ["scr_dyn_integrity.c", "dynIntegrityQueries"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],

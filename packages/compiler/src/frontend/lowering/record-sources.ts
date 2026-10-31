@@ -14,6 +14,7 @@
 import type { IrExpr, IrFunction, IrLocal, IrType, SrcLoc } from "../../ir/ir.js";
 import { BOOL, DYN, VOID, recordTextCodecClass, shapeHasAccessorSlots } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
+import { replaceThroughParents } from "../../ir/replace-children.js";
 import { varRef } from "../../ir/build.js";
 import { keyedHelperName } from "./stable-names.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
@@ -215,8 +216,8 @@ export type DeclareLocal = (name: string, type: IrType) => IrLocal;
  * every function body lowered, and a merge establishes it part-way through),
  * so the site keeps the static answer it built and records how to build the
  * source-aware one. The finalizer leaves the static answer in place when the
- * program keeps no source — such a program keeps today's IR byte for byte —
- * and otherwise writes the source-aware answer into the site
+ * program keeps no source — such a program keeps the IR it had before — and
+ * otherwise writes the source-aware answer into the site
  * (finalizePendingSourceAnswers). */
 export interface PendingSourceAnswer {
   /** The site's static answer, replaced in place when the fact holds. */
@@ -245,14 +246,6 @@ export function deferSourceAnswer(
   return node;
 }
 
-/** Rewrite `node` into `replacement`, keeping its object identity: the
- * parent already references it. */
-function replaceInPlace(node: IrExpr, replacement: IrExpr): void {
-  const target = node as unknown as Record<string, unknown>;
-  for (const key of Object.keys(target)) delete target[key];
-  Object.assign(target, replacement);
-}
-
 /** Settle the deferred answers (deferSourceAnswer) once the pass knows
  * whether the program keeps a record source. A program that does not keeps
  * every site's static answer, unchanged. One that does gets the source-aware
@@ -260,12 +253,19 @@ function replaceInPlace(node: IrExpr, replacement: IrExpr): void {
  * ordinary inline expression, and a receiver that must be evaluated once is
  * passed to a `%record.in.<hash>(v)` helper that owns the local holding it
  * (the caller has no function context left to declare one). */
-export function finalizePendingSourceAnswers(lowerer: Lowerer): void {
+export function finalizePendingSourceAnswers(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+): void {
   const pending = lowerer.pendingSourceAnswers;
   const sites = [...pending];
   pending.length = 0;
   if (!lowerer.recordSourcesPossible) return;
   const built = new Set<string>();
+  // Each answer replaces its site through the node that holds it
+  // (replaceThroughParents). A site of a unit that lowered again is no
+  // longer in any function, and its replacement finds no parent.
+  const replacements = new Map<IrExpr, IrExpr>();
   for (const site of sites) {
     const loc = site.node.loc;
     // An answer that declares no local keeps its own receiver and is
@@ -279,7 +279,7 @@ export function finalizePendingSourceAnswers(lowerer: Lowerer): void {
     };
     const inline = site.build(() => site.recv, inlineDeclare);
     if (inlineLocals.length === 0) {
-      replaceInPlace(site.node, inline);
+      replacements.set(site.node, inline);
       continue;
     }
     const name = keyedHelperName(lowerer, "%record.in", site.key);
@@ -315,6 +315,7 @@ export function finalizePendingSourceAnswers(lowerer: Lowerer): void {
         loc,
       });
     }
-    replaceInPlace(site.node, { kind: "call", callee: name, args: [site.recv], type: BOOL, loc });
+    replacements.set(site.node, { kind: "call", callee: name, args: [site.recv], type: BOOL, loc });
   }
+  for (const fn of functions) replaceThroughParents(fn.body, replacements);
 }

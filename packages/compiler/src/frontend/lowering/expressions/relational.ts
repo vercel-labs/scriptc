@@ -69,6 +69,7 @@ import {
   recordSourceAnswer,
 } from "../record-sources.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
+import { recordHasOwnHelper } from "../lower-calls.js";
 
 /** The class value an `instanceof` right-hand side holds. A JavaScript
  * object's property holding a program class (`holder.type`) reads as a
@@ -2139,35 +2140,21 @@ export function lowerInExpression(
       loc,
     };
   }
-  // A closed record built by a checked conversion keeps the own properties
-  // of its source that the shape does not declare beside it
-  // (record-sources.ts). `in` asks the VALUE for an own property, so an
-  // undeclared name answers from the live checked view when the record kept
-  // a source; a record that kept none answers the shape's (false) as before.
-  // Whether the program can keep one anywhere settles only after the pass,
-  // so the site keeps the static answer and the view is built at the end
-  // when the fact holds (deferSourceAnswer).
-  if (!inherited && recordMayKeepSource(lowerer, recv.type)) {
-    // Answered after the pass settles the fact: a program that keeps no
-    // source anywhere keeps this static answer, byte for byte
-    // (deferSourceAnswer).
-    return deferSourceAnswer(
-      lowerer,
-      staticAnswerAfter(recv, inherited, loc),
-      recv,
-      `record:${typeKey(recv.type)}:${key}`,
-      (view, declare) =>
-        recordSourceAnswer(
-          lowerer,
-          view(),
-          loc,
-          () => ({ kind: "boolLit", value: false, type: BOOL, loc }),
-          (live) => ({ kind: "dynHasKey", key, value: live, type: BOOL, loc }),
-          declare,
-        ),
-    );
-  }
-  return staticAnswerAfter(recv, inherited, loc);
+  // A key the type does not declare is an own key of a linked copy's
+  // source or of a kept source (record-links.ts, and the hasOwn helper's
+  // kept width spread answer); the helper call evaluates the receiver once.
+  if (!inherited && recordMayKeepSource(lowerer, recv.type))
+    return {
+      kind: "call",
+      callee: recordHasOwnHelper(lowerer, recv.type.shapeId, loc),
+      args: [recv, { kind: "strLit", value: key, type: STRING, loc }],
+      type: BOOL,
+      loc,
+    };
+  // Otherwise the answer is static; the key-order pass still reads the
+  // site as a presence test of the receiver's keys.
+  const answer = staticAnswerAfter(recv, inherited, loc);
+  return inherited ? answer : lowerer.keyOrder.sourceProbe(answer, recv, key);
 }
 
 /** A statically-decided `in` answer: a side-effect-free receiver folds away,

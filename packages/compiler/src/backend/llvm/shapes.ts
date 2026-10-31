@@ -3,7 +3,7 @@
  * their fields. Every allocation has a size_t reference count at offset zero
  * and participates in the runtime allocation audit. */
 import type { HeapCensus } from "./heap-census.js";
-import type { IrClassDef, IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
+import type { IrClassDef, IrModule, IrRecordLink, IrRecordShape, IrType } from "../../ir/ir.js";
 import {
   isIdentityCollectionKey,
   isRefCounted,
@@ -84,6 +84,11 @@ const CYC_MAX_TYPES = 32768;
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
+  /** The module's record links (IrModule.recordLinks); absent when none. */
+  readonly recordLinks?: readonly IrRecordLink[];
+  /** The gate a lookup of a checked record's kept source tests
+   * (alloc.ts RECORD_KEPT_GATE); RECORD_SOURCES_GATE when absent. */
+  readonly recordSourcesGate?: string;
   /** The counters of a build instrumented for the heap census (heap-census.ts). */
   readonly heapCensus?: HeapCensus | null;
   /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,

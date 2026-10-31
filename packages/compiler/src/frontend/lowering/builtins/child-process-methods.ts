@@ -15,6 +15,7 @@ import {
   STRING,
   VOID,
   canBoxFuncIntoDyn,
+  funcOf,
 } from "../../../ir/ir.js";
 import { type IrLibFn } from "../../../ir/builtin-signatures.js";
 import {
@@ -157,7 +158,7 @@ export function lowerChildMethodCall(
       event === "exit" || event === "close"
         ? narrowedExitListenerParams(lowerer, listenerNode)
         : [];
-    const cb =
+    let cb =
       narrowed.length > 0
         ? lowerWithCheckedParams(lowerer, listenerNode, narrowed)
         : lowerer.lowerExpr(call.arguments.nodes[1]!);
@@ -218,17 +219,30 @@ export function lowerChildMethodCall(
           : "error listeners with more than one parameter (use (err) or ())",
       );
     }
+    // The listener's parameter list survives the adapter below (it wraps
+    // the same closure shape); reading it once keeps the narrowing.
+    let listenerParams = cb.type.kind === "func" ? cb.type.params : [];
     if (cb.type.ret.kind !== "void") {
-      // `() => 5` IS assignable to a void-returning listener slot; the
-      // registry's call ABI is void, so a value-returning closure is
-      // fenced instead of being called through the wrong ABI.
-      lowerer.unsupported(
-        "SC1090",
-        call.arguments.nodes[1]!,
-        "listeners returning a value (make the callback body a block, or return nothing)",
-      );
+      // Node drops every listener's return value: `on("close", async (…) => …)`
+      // ends in a discarded promise, and an annotated `(): number => 5`
+      // answers a number nobody reads. Adopt the slot's void through the
+      // closure adapter, which calls the listener and discards the result
+      // (the same shape every other void callback slot takes). A promise
+      // the listener returns is dropped exactly as Node drops it — a
+      // rejection still reaches the runtime's unhandled-rejection
+      // tracking, which fires at settlement, not at the drop.
+      const adopted = lowerer.coerceToExpected(cb, funcOf(listenerParams, VOID));
+      if (adopted.type.kind !== "func" || adopted.type.ret.kind !== "void") {
+        lowerer.unsupported(
+          "SC1090",
+          call.arguments.nodes[1]!,
+          "listeners whose returned value cannot be discarded (make the callback body a block, or return nothing)",
+        );
+      }
+      cb = adopted;
+      listenerParams = adopted.type.kind === "func" ? adopted.type.params : listenerParams;
     }
-    const param = cb.type.params[0];
+    const param = listenerParams[0];
     if (event === "exit" || event === "close") {
       const armsOk =
         param === undefined ||
@@ -249,7 +263,7 @@ export function lowerChildMethodCall(
       // The optional SECOND parameter is Node's signal: the terminating
       // signal's name as `Signals | null` — a string | null union here
       // (the interned adapter builds it at fire time).
-      const sigParam = cb.type.params[1];
+      const sigParam = listenerParams[1];
       const sigOk =
         sigParam === undefined ||
         (sigParam.kind === "union" &&

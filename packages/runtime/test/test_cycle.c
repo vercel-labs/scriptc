@@ -1108,6 +1108,76 @@ static void check_probe_window_runs_mature_pass(void) {
   scr_collect_cycles();
 }
 
+/* Closures are judged per function (ScrClosure.fn) in the nursery bypass:
+ * closures of a function whose candidates always survive go past the
+ * nursery, and those of another function are still walked there. These
+ * objects stand in for closures: the collector reads only the function
+ * pointer of a closure-kind object, at ScrClosure.fn's offset. */
+typedef struct FakeClosure {
+  size_t rc;
+  void *fn;
+  struct FakeClosure *next;
+} FakeClosure;
+_Static_assert(offsetof(FakeClosure, fn) == offsetof(ScrClosure, fn), "fake closures keep fn where ScrClosure does");
+static size_t fake_closure_traced;
+static void fake_closure_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  fake_closure_traced++;
+  visit(((FakeClosure *)obj)->next, ctx);
+}
+static void fake_closure_free(void *obj) { scr_cyc_free(obj); }
+static ScrCycType fake_closure_type = { &fake_closure_trace, &fake_closure_free, SCR_CYC_KIND_CLOSURE };
+static void fake_body_long_lived(void) {}
+static void fake_body_short_lived(void) {}
+
+static FakeClosure *make_fake_closure(void (*fn)(void)) {
+  FakeClosure *c = scr_cyc_alloc(sizeof(*c), &fake_closure_type);
+  c->rc = 1;
+  c->fn = (void *)fn;
+  return c;
+}
+
+/* Trace calls spent on PROBE fresh, externally owned closures of `fn`, by
+ * nursery passes only (see probe_bypass_walks). */
+static size_t fake_closure_walks(FakeClosure **owned, size_t probe, void (*fn)(void)) {
+  scr_collect_cycles();
+  size_t before = fake_closure_traced;
+  for (size_t i = 0; i < probe; i++) {
+    owned[i] = make_fake_closure(fn);
+    owned[i]->rc++;
+    owned[i]->rc--;
+    scr_cyc_on_release(owned[i]);
+  }
+  run_release_passes();
+  return fake_closure_traced - before;
+}
+
+static void check_bypass_per_closure_function(void) {
+  enum { WINDOW = 8192, LIVE = 3 * WINDOW, PROBE = 4096 };
+  FakeClosure **live = calloc(LIVE + 2 * PROBE, sizeof(*live));
+  if (!live) scr_trap("cycle test: out of memory\n");
+  size_t nlive = 0;
+  for (; nlive < LIVE; nlive++) {
+    live[nlive] = make_fake_closure(fake_body_long_lived);
+    live[nlive]->rc++;
+    live[nlive]->rc--;
+    scr_cyc_on_release(live[nlive]);
+    scr_cyc_pass_at(SCR_CYC_NURSERY);
+  }
+  size_t walks = fake_closure_walks(live + nlive, PROBE, fake_body_long_lived);
+  nlive += PROBE;
+  check(walks < PROBE / 2, "closures of a function whose closures always survive were not bypassed");
+  walks = fake_closure_walks(live + nlive, PROBE, fake_body_short_lived);
+  nlive += PROBE;
+  check(walks >= PROBE, "closures of another function were bypassed with them");
+  for (size_t i = 0; i < nlive; i++) {
+    live[i]->rc = 0;
+    scr_cyc_on_dead(live[i]);
+    scr_cyc_free(live[i]);
+  }
+  free(live);
+  scr_collect_cycles();
+}
+
 /* The mature level's bypass: a type whose mature candidates keep surviving
  * goes straight to the old generation, its dead cycles are found by full
  * passes, and once its objects die at the mature level again it is judged
@@ -1788,6 +1858,7 @@ int main(void) {
   check_death_brings_full_pass();
   check_nursery_bypass();
   check_mature_bypass();
+  check_bypass_per_closure_function();
   check_probe_window_runs_mature_pass();
   check_probe_sees_candidate_rings();
   check_rebuffer_past_mature();

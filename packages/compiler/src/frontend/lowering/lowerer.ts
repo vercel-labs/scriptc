@@ -4581,6 +4581,7 @@ export class Lowerer {
       checkedTable("collectingClassDeclarations", () => this.collectingClassDeclarations.size),
       checkedTable("genericClassInstances", () => this.genericClassInstances.length),
       checkedTable("mainPrelude", () => this.mainPrelude.length),
+      checkedTable("sharedFunctionInitializers", () => this.sharedFunctionInitializers.length),
       checkedTable("structuralFnInfos", () => this.structuralFnInfos.size),
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
@@ -15547,6 +15548,9 @@ export class Lowerer {
   /** Statements %main runs before any module initializer: runtime
    * registrations the lowering passes add. */
   readonly mainPrelude: IrStmt[] = [];
+
+  /** Initializers that allocate shared functions before module evaluation in every context. */
+  readonly sharedFunctionInitializers: string[] = [];
 
   buildMain(): IrFunction {
     return buildMain(this);

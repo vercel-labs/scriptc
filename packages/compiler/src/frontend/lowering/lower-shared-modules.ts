@@ -46,6 +46,7 @@ import {
   islandSharedPath,
 } from "./lower-node-island.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
+import { InternalCompilerError } from "../../errors.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
 
@@ -516,6 +517,30 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
   // module's header): the module tree ships these as placeholders.
   for (const plan of plans) lowerer.nodeIslandModules.addProvided(plan.path);
   return plans;
+}
+
+/** Instantiate only the callable; module evaluation still owns every authored initializer. */
+export function lowerSharedFunctionValue(
+  lowerer: Lowerer,
+  declaration: ts.FunctionDeclaration,
+): IrExpr {
+  const ctx = newFnCtx(false, null, null, VOID);
+  if (lowerer.pendingClassExprInits.length !== 0)
+    throw new InternalCompilerError("shared function instantiation has pending class effects");
+  lowerer.fnStack.push(ctx);
+  try {
+    const value = lowerer.lowerLambda(declaration);
+    if (
+      value.kind !== "closure" ||
+      value.captures.length !== 0 ||
+      ctx.locals.length !== 0 ||
+      lowerer.pendingClassExprInits.length !== 0
+    )
+      throw new InternalCompilerError("shared function instantiation depends on module evaluation");
+    return lowerer.coerceToExpected(value, DYN);
+  } finally {
+    lowerer.fnStack.pop();
+  }
 }
 
 /** Each declarator publishes its binding before the next initializer can call an island. */

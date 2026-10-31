@@ -4,6 +4,7 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Reassigned function declarations in shared modules are callable before an island enters them, and later module evaluation preserves their replacements.
 - Shared Node-island exports declared in one statement become visible to island callbacks after each declaration, so later initializers can read earlier bindings.
 
 <!-- release:start -->

@@ -1049,6 +1049,10 @@ ScrDyn *scr_dyn_new_null(void);
 ScrDyn *scr_dyn_new_bool(bool b);
 ScrDyn *scr_dyn_new_num(double n);
 ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed);
+/* The bulk insert of a constructor seed into an existing native Set or Map
+ * handle, for a collection the checked-dynamic constructor created before it
+ * read the adder. False with the exception pending. */
+bool scr_dyn_native_collection_insert_seed(ScrDyn *collection, const ScrDyn *seed);
 ScrDyn *scr_dyn_native_set(ScrMap *value); /* borrowed backing, +1 box */
 bool scr_dyn_native_set_is(const ScrDyn *value);
 /* The ES2025 compositions over a set-like argument (scr_dyn_collections.c):
@@ -1737,6 +1741,13 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind);
  * runtime Error instances inherit their exact builtin constructor token.
  * The result is owned. */
 ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len);
+/* The same read with an explicit receiver: an accessor found on `d` runs
+ * with `receiver` as `this`. The keyed collection constructor reads the
+ * class's adder off %<Class>.prototype% while the new collection is the
+ * receiver, so a getter-installed member sees the collection. The result is
+ * owned. */
+ScrDyn *scr_dyn_obj_read_with_receiver(const ScrDyn *d, const char *key, size_t key_len,
+                                       const ScrDyn *receiver);
 /* A compiler-emitted read site with a constant key keeps one of these in
  * zero-initialized thread-local storage: the entry position where the key
  * was last found as an own data property and a reference to the interned

@@ -1081,7 +1081,6 @@ function buildSetCombineFn(
  * checked-dynamic constructor, which consults the prototype and steps the
  * iterable (and closes it when `add` throws). Every other program keeps the
  * bulk native construction. */
-const collectionPrototypePatchCache = new WeakMap<ts.SourceFile, Set<string>>();
 
 export function jsSourcePatchesSetPrototype(lowerer: Lowerer, node: ts.Node): boolean {
   return jsSourcePatchesCollectionPrototype(lowerer, node, "Set");
@@ -1103,12 +1102,15 @@ export function jsSourcePatchesCollectionPrototype(
 ): boolean {
   const file = ts.getSourceFileOfNode(node);
   if (!isJsSourceFile(file)) return false;
-  let cached = collectionPrototypePatchCache.get(file);
+  let cached = lowerer.collectionPrototypePatches.get(file);
   if (cached === undefined) {
-    cached = new Set();
-    collectionPrototypePatchCache.set(file, cached);
+    cached = new Map();
+    lowerer.collectionPrototypePatches.set(file, cached);
   }
-  if (cached.has(klass)) return true;
+  // Both answers are cached: a file with many constructors that never
+  // patches the prototype scans it once, not once per constructor.
+  const known = cached.get(klass);
+  if (known !== undefined) return known;
   const isPrototype = (expr: ts.Node | undefined): boolean => {
     if (!expr) return false;
     let node: ts.Node = expr;
@@ -1164,7 +1166,7 @@ export function jsSourcePatchesCollectionPrototype(
     ts.forEachChild(child, visit);
   };
   ts.forEachChild(file, visit);
-  if (patched) cached.add(klass);
+  cached.set(klass, patched);
   return patched;
 }
 

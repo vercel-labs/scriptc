@@ -46,9 +46,10 @@ static bool scr_set_is_object(const ScrDyn *v) {
 /* One row per keyed collection the dynamic tier can hold. `members` are the
  * prototype's own function-valued data properties (the prototype builder adds
  * the `size` accessor, Symbol.iterator, Symbol.toStringTag and constructor);
- * `adder` is the member the constructor reads off the prototype and calls per
- * iterated value. The storage of every class lives in its handle ops
- * (scr_json.c), so a member call delegates through scr_dyn_invoke. */
+ * `adder` is the member the constructor reads off the new collection
+ * (through the prototype, with the collection as the getter's `this`) and
+ * calls per iterated value. The storage of every class lives in its handle
+ * ops (scr_json.c), so a member call delegates through scr_dyn_invoke. */
 typedef struct {
   const char *klass;
   const char *adder;
@@ -997,35 +998,42 @@ ScrDyn *scr_dyn_collection_construct(const ScrStr *klass, ScrDyn *seed) {
    * adder. */
   if (seed->kind == SCR_DYN_NULL || seed->kind == SCR_DYN_UNDEF)
     return scr_collection_new(cls, scr_dyn_undefined());
-  ScrDyn *adder = NULL;
+  /* A program that never materialized %<Class>.prototype% cannot have
+   * replaced the adder, so the native constructor's bulk insert runs. */
   ScrDyn *prototype = scr_collection_prototypes[cls - scr_collection_classes];
-  if (prototype) {
-    adder = scr_set_prop(prototype, cls->adder);
-    if (!adder) return NULL;
-    ScrStr *klass_name = scr_str_new(cls->klass, strlen(cls->klass));
-    ScrStr *adder_name = scr_str_new(cls->adder, strlen(cls->adder));
-    ScrDyn *builtin = scr_dyn_builtin_method(klass_name, adder_name);
-    scr_str_release(klass_name);
-    scr_str_release(adder_name);
-    if (!builtin) {
-      scr_dyn_release(adder);
+  if (!prototype) return scr_collection_new(cls, seed);
+  /* Map/Set ( [ iterable ] ) creates the collection and then reads the adder
+   * off it, so a getter-installed `set`/`add` runs with the new collection as
+   * `this`. */
+  ScrDyn *collection = scr_collection_new(cls, scr_dyn_undefined());
+  if (!collection) return NULL;
+  ScrDyn *adder = scr_dyn_obj_read_with_receiver(prototype, cls->adder, strlen(cls->adder),
+                                                 collection);
+  if (!adder) {
+    scr_dyn_release(collection);
+    return NULL;
+  }
+  ScrStr *klass_name = scr_str_new(cls->klass, strlen(cls->klass));
+  ScrStr *adder_name = scr_str_new(cls->adder, strlen(cls->adder));
+  ScrDyn *builtin = scr_dyn_builtin_method(klass_name, adder_name);
+  scr_str_release(klass_name);
+  scr_str_release(adder_name);
+  if (!builtin) {
+    scr_dyn_release(adder);
+    scr_dyn_release(collection);
+    return NULL;
+  }
+  bool overridden = adder != builtin;
+  scr_dyn_release(builtin);
+  /* The collection exists already; an adder that is still the builtin fills
+   * it with the native bulk insert. */
+  if (!overridden) {
+    scr_dyn_release(adder);
+    if (!scr_dyn_native_collection_insert_seed(collection, seed)) {
+      scr_dyn_release(collection);
       return NULL;
     }
-    bool overridden = adder != builtin;
-    scr_dyn_release(builtin);
-    if (!overridden) {
-      scr_dyn_release(adder);
-      adder = NULL;
-    }
-  }
-  /* Without an overridden adder, the native constructor's bulk insert runs;
-   * a program that never materialized %<Class>.prototype% cannot have
-   * replaced it. */
-  if (!adder) return scr_collection_new(cls, seed);
-  ScrDyn *collection = scr_collection_new(cls, scr_dyn_undefined());
-  if (!collection) {
-    scr_dyn_release(adder);
-    return NULL;
+    return collection;
   }
   bool ok = true;
   if (!scr_dyn_is_callable(adder)) {

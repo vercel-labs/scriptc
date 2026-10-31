@@ -16135,6 +16135,11 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
   return scr_dyn_obj_read_receiver(d, key, key_len, d);
 }
 
+ScrDyn *scr_dyn_obj_read_with_receiver(const ScrDyn *d, const char *key, size_t key_len,
+                                       const ScrDyn *receiver) {
+  return scr_dyn_obj_read_receiver(d, key, key_len, receiver);
+}
+
 /* Read-site caches (ScrDynReadIc). A hit is exactly the first step of
  * scr_dyn_obj_read_receiver: the receiver's own data property. The builtin
  * Object.prototype answers through its reflection fence instead, so it
@@ -19346,18 +19351,64 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
 }
 
-ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
-  ScrDyn *items = NULL;
-  if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
-    items = scr_dyn_seed_values(seed);
-    if (!items) return NULL;
+/* Insert a constructor seed into a native Set or Map handle with the bulk
+ * insert, without running program code. The checked-dynamic collection
+ * constructor creates its collection before it reads the adder (an accessor
+ * getter runs with the collection as `this`), so an adder that turns out to
+ * be the builtin fills this already-created collection. False with the
+ * exception pending. */
+bool scr_dyn_native_collection_insert_seed(ScrDyn *collection, const ScrDyn *seed) {
+  if (scr_dyn_native_set_is(collection)) {
+    ScrDyn *items = NULL;
+    if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
+      items = scr_dyn_seed_values(seed);
+      if (!items) return false;
+    }
+    ScrMap *set = scr_map_retain(collection->v.handle.ptr);
+    if (items)
+      for (size_t i = 0; i < items->v.arr.len; i++)
+        scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
+    scr_map_release(set);
+    scr_dyn_release(items);
+    return true;
   }
+  if (scr_dyn_native_map_is(collection)) {
+    ScrDyn *entries = scr_dyn_map_seed_entries(seed);
+    if (!entries) return false;
+    ScrMap *map = scr_map_retain(collection->v.handle.ptr);
+    bool ok = true;
+    for (size_t i = 0; i < entries->v.arr.len; i++) {
+      ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
+      if (!entry) {
+        ok = false;
+        break;
+      }
+      ScrDyn *key = scr_dyn_entry_read(entry, 0);
+      ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
+      scr_dyn_release(entry);
+      if (value) scr_map_dyn_set(map, key, value, false);
+      scr_dyn_release(key);
+      scr_dyn_release(value);
+      if (scr_exc_pending()) {
+        ok = false;
+        break;
+      }
+    }
+    scr_map_release(map);
+    scr_dyn_release(entries);
+    return ok;
+  }
+  return false;
+}
+
+ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
   ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
-  if (items) for (size_t i = 0; i < items->v.arr.len; i++) scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
   ScrDyn *result = scr_dyn_native_set(set);
   scr_map_release(set);
-  scr_dyn_release(items);
-  return result;
+  if (!result) return NULL;
+  if (scr_dyn_native_collection_insert_seed(result, seed)) return result;
+  scr_dyn_release(result);
+  return NULL;
 }
 
 bool scr_dyn_native_set_is(const ScrDyn *value) {
@@ -19465,24 +19516,13 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
 }
 
 ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed) {
-  ScrDyn *entries = scr_dyn_map_seed_entries(seed);
-  if (!entries) return NULL;
   ScrMap *map = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
-  for (size_t i = 0; i < entries->v.arr.len; i++) {
-    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
-    if (!entry) break;
-    ScrDyn *key = scr_dyn_entry_read(entry, 0);
-    ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
-    scr_dyn_release(entry);
-    if (value) scr_map_dyn_set(map, key, value, false);
-    scr_dyn_release(key);
-    scr_dyn_release(value);
-    if (scr_exc_pending()) break;
-  }
-  scr_dyn_release(entries);
-  ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_native_map(map);
+  ScrDyn *result = scr_dyn_native_map(map);
   scr_map_release(map);
-  return result;
+  if (!result) return NULL;
+  if (scr_dyn_native_collection_insert_seed(result, seed)) return result;
+  scr_dyn_release(result);
+  return NULL;
 }
 
 bool scr_dyn_native_map_is(const ScrDyn *value) {

@@ -12,6 +12,7 @@ import {
   nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
   npmStaticRefusalDiag,
+  nativePackageDiag,
   iceDiag,
   isCheckerPanic,
   stdioPatchAcrossIslandsDiag,
@@ -531,6 +532,9 @@ function decideNodeIslands(
     string,
     { packageDir: string; member: string; patchFile: string }
   >();
+  // A package the build marks native stays native: a read that only an
+  // island could satisfy is SC8003, once per package and construct.
+  const forcedNativeReads = new Set<string>();
   if (policy.mode === "auto" && patchedMembers.size > 0) {
     for (const m of scan.modules) {
       if (modules.has(m.file)) continue;
@@ -538,6 +542,20 @@ function decideNodeIslands(
         const patchFile = patchFileOf(patchedMembers, read.member);
         if (patchFile === undefined) continue;
         if (m.origin === "npm" && m.packageName !== null && m.packageDir !== null) {
+          if (policy.forcedNative.has(m.packageName)) {
+            const key = `${m.packageName}:${read.member}`;
+            if (!forcedNativeReads.has(key)) {
+              forcedNativeReads.add(key);
+              errors.push(
+                nativePackageDiag(
+                  m.packageName,
+                  `it reads '${read.member}' through the CommonJS ${builtinModuleOf(read.member)} object, which island module ${patchFile} patches; a native read cannot see the patch`,
+                  fe.npmImportSites.get(m.packageName) ?? read.loc,
+                ),
+              );
+            }
+            continue;
+          }
           if (!readerPackages.has(m.packageName) && !refused.has(m.packageName))
             readerPackages.set(m.packageName, {
               packageDir: m.packageDir,
@@ -568,6 +586,20 @@ function decideNodeIslands(
         const writerFile = createdGlobals.get(read.name);
         if (writerFile === undefined) continue;
         if (m.origin === "npm" && m.packageName !== null && m.packageDir !== null) {
+          if (policy.forcedNative.has(m.packageName)) {
+            const key = `${m.packageName}:${read.name}`;
+            if (!forcedNativeReads.has(key)) {
+              forcedNativeReads.add(key);
+              errors.push(
+                nativePackageDiag(
+                  m.packageName,
+                  `it reads '${read.name}', which island module ${writerFile} creates as an implicit global; the native build has no global object, so the read cannot see it`,
+                  fe.npmImportSites.get(m.packageName) ?? read.loc,
+                ),
+              );
+            }
+            continue;
+          }
           if (!readerGlobals.has(m.packageName) && !refused.has(m.packageName))
             readerGlobals.set(m.packageName, {
               packageDir: m.packageDir,

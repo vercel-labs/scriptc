@@ -359,13 +359,14 @@ describe.skipIf(skip)("Node islands in-process", () => {
 
     /** A build with a cache of its own: a hit reports the islands but not
      * the SC8001 notes, and these tests read the notes. */
-    async function buildDir(dir: string, name: string) {
+    async function buildDir(dir: string, name: string, native: readonly string[] = []) {
       return withFreshBuildCache(() =>
         compile(join(dir, "main.ts"), {
           outPath: join(dir, name),
           outDir: dir,
           sanitize,
           libnode: pack!,
+          ...(native.length === 0 ? {} : { nodeIslands: { native } }),
         }),
       );
     }
@@ -419,6 +420,41 @@ console.log(result.text, fs.readFileSync("payload.txt", "utf8"));
       expect(read).toBeDefined();
       expect(read).toContain("fs.readFileSync");
       expect(read).toContain("loader.ts");
+    }, 300_000);
+
+    // A package that reads the patched member joins the island set, where the
+    // patch exists. A package marked native stays native: the island does not
+    // take it, and the read is SC8003 rather than a build whose package sees
+    // the unpatched function.
+    test("a package that reads the patched member is islanded, or SC8003 when marked native", async () => {
+      const main = `import reader from "payload-reader";
+import { loadPayload } from "./loader.ts";
+const result = await loadPayload();
+console.log(reader.payload.trim(), result.text);
+`;
+      const typed = {
+        "node_modules/payload-reader/index.d.ts":
+          "declare const reader: { payload: string };\nexport default reader;\n",
+        "node_modules/payload-reader/package.json":
+          '{ "name": "payload-reader", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+      };
+      const islanded = copyCorpus("read-package", main, typed);
+      const joined = await buildDir(islanded, "main");
+      expect(messages(joined)).toEqual([]);
+      expect(joined.ok).toBe(true);
+      if (!joined.ok) return;
+      expect(joined.islands?.packages).toEqual(["payload-reader"]);
+      expect(joined.islands?.modules.map((file) => basename(file))).toEqual(["loader.ts"]);
+      const marked = copyCorpus("read-package-native", main, typed);
+      const blocked = await buildDir(marked, "main", ["payload-reader"]);
+      expect(blocked.ok).toBe(false);
+      if (blocked.ok) return;
+      const list = messages(blocked);
+      const read = list.find((m) => m.startsWith("SC8003:"));
+      expect(read).toBeDefined();
+      expect(read).toContain("'payload-reader'");
+      expect(read).toContain("fs.readFileSync");
+      expect(blocked.islands?.packages ?? []).toEqual([]);
     }, 300_000);
 
     test("--node-islands=off makes the patch a native refusal again", async () => {
@@ -674,6 +710,23 @@ export function patchAndBump(): number {
         throw new Error(viaPackage.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
       expect(viaPackage.islands?.packages).toEqual(["reads-global"]);
       expect(viaPackage.islands?.modules.map((file) => basename(file))).toEqual(["legacy.cjs"]);
+      // A package the build marks native stays native: the island does not
+      // take it, and the global it reads is SC8003 rather than a built
+      // executable that reads an absent global.
+      const marked = await compile(join(dir, "package-main.js"), {
+        outPath: join(dir, "package-native"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+        nodeIslands: { native: ["reads-global"] },
+      });
+      expect(marked.ok).toBe(false);
+      if (marked.ok) return;
+      const blocked = marked.diagnostics.find((d) => d.code === "SC8003");
+      expect(blocked?.message).toContain("'reads-global'");
+      expect(blocked?.message).toContain("'counter'");
+      expect(blocked?.loc.file.endsWith("package-main.js")).toBe(true);
+      expect(marked.islands?.packages ?? []).toEqual([]);
       const out = await run(join(dir, "package-main"), [], {
         ...process.env,
         XDG_CACHE_HOME: islandCache,

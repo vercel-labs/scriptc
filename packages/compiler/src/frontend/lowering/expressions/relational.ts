@@ -58,9 +58,10 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import { hasGlobalFunctionValue } from "../global-function-values.js";
 import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
-import { NARROW_FIRST, sideEffectFreeOptionValue } from "../surfaces.js";
+import { NARROW_FIRST, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
@@ -687,6 +688,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         "SC1090",
         expr,
         "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
+      );
+    }
+    // A builtin global function value read off the global (`parseInt`,
+    // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
+    // no prototype to test against, so the test keeps the refusal the
+    // global's identity token answered.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      hasGlobalFunctionValue(stdlibGlobalNameOf(lowerer, expr.right) ?? "")
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr.right,
+        "'instanceof' right-hand sides other than classes declared in the program",
       );
     }
     // A checked-dynamic right-hand side (a constructor read from a table, a
@@ -1703,9 +1718,21 @@ export function lowerInExpression(
   // A PRIMITIVE receiver: JavaScript's ToObject step throws Node's TypeError
   // for every primitive (`'x' in 5` included), and the throw precedes the
   // key's ToPropertyKey — the key is a compile-time literal on every path
-  // that reaches here, so only the receiver's own evaluation remains.
+  // that reaches here, so only the receiver's own evaluation remains. The
+  // message spells the receiver's value, so a receiver the IR cannot
+  // re-evaluate (`receiver()`) evaluates once into a hidden local.
   if (isPrimitiveValueType(recv.type)) {
-    return throwAfterEach([recv], inOperatorTypeError(lowerer, key, recv, BOOL, loc), loc);
+    if (isUnitType(recv.type) || isSafeToRepeat(recv)) {
+      return throwAfterEach([recv], inOperatorTypeError(lowerer, key, recv, BOOL, loc), loc);
+    }
+    const slot = lowerer.declareHiddenLocal("%inReceiver", recv.type);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: slot.id, init: recv, loc }],
+      result: inOperatorTypeError(lowerer, key, varRef(slot.id, recv.type, loc), BOOL, loc),
+      type: BOOL,
+      loc,
+    };
   }
   const classInfo =
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;

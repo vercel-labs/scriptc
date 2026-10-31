@@ -99,6 +99,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   typeOrigins: boolean;
   dynForAwait: boolean;
   dynIntegrityQueries: boolean;
+  genBind: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -119,6 +120,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   computedRequire: boolean;
   warningReplace: boolean;
   recordViewPartial: boolean;
+  /** The JavaScript object model build (t262-da §J): the runtime code every
+   * feature reached only from JavaScript sources shares, the
+   * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
+   * dynTier. */
+  jsObjectModel: boolean;
   stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
@@ -317,6 +323,14 @@ export function effectiveRuntimeFeatures(
   const httpEffective = features.http || nativeFetch;
   const tlsEffective = features.tls || nativeFetch;
   const tlsCaEffective = features.tlsCa || tlsEffective;
+  // The JavaScript object model build (t262-da §J): the features reached only
+  // from JavaScript sources OR into one define and one runtime feature, so
+  // their migrations share one build of each unit they touch instead of one
+  // build column per feature. Only a feature present on this branch is named
+  // here; BigInt views (bigintBytes), array attributes (arrayAttrs) and
+  // handle property tables (handleProps) are added by the PRs that rebase
+  // onto this build.
+  const jsObjectModel = features.jsObjectModel === true;
   return {
     ...features,
     fsBufferBrand: features.fsBufferBrand === true,
@@ -324,7 +338,9 @@ export function effectiveRuntimeFeatures(
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
-    dynTier: features.dynTier === true,
+    // The JavaScript object model build's code is the dynamic tier's, so a
+    // program with it links the dynamic-tier units too.
+    dynTier: features.dynTier === true || jsObjectModel,
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
@@ -333,6 +349,7 @@ export function effectiveRuntimeFeatures(
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
+    genBind: features.genBind === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
@@ -347,6 +364,7 @@ export function effectiveRuntimeFeatures(
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     recordViewPartial: features.recordViewPartial === true,
+    jsObjectModel,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioWriteSlot: features.stdioWriteSlot === true,

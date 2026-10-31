@@ -1,7 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
 import { BOOL, DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
-import { moduleRuntimeFeatures, moduleUsesHttp2, moduleUsesTlsCa } from "./runtime-features.js";
+import {
+  JS_OBJECT_MODEL_LIB_FNS,
+  moduleRuntimeFeatures,
+  moduleUsesHttp2,
+  moduleUsesTlsCa,
+} from "./runtime-features.js";
 
 describe("runtime feature snapshots", () => {
   const loc = { file: "features.ts", start: 0, end: 0 };
@@ -55,6 +60,28 @@ describe("runtime feature snapshots", () => {
       type: { kind: "bigint" },
     });
     expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
+  });
+
+  test("gates the call-time parameter bind unit on a barriered generator", () => {
+    const mod = module();
+    const generator = (bindAtCall: boolean): IrModule["functions"][number] => ({
+      name: bindAtCall ? "pick" : "plain",
+      params: [],
+      locals: [],
+      returnType: VOID,
+      body: [],
+      loc,
+      generator: {
+        yieldT: STRING,
+        nextT: VOID,
+        resultType: { kind: "record", shapeId: "gen-result" },
+        ...(bindAtCall ? { bindAtCall: true as const } : {}),
+      },
+    });
+    mod.functions.push(generator(false));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(false);
+    mod.functions.push(generator(true));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(true);
   });
 
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
@@ -189,6 +216,28 @@ describe("runtime feature snapshots", () => {
       mod.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(true);
     }
+  });
+
+  test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
+    const reads = (key: string): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "dynKeyGet",
+          value: { kind: "varRef", localId: "value", type: DYN, loc },
+          key: { kind: "strLit", value: key, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+      });
+      return mod;
+    };
+    for (const key of ["toString", "slice", "map", "findLastIndex"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(true);
+    for (const key of ["length", "name", "nope"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
   });
 
   test("gates the fs read's Buffer brand on a typed read plus an observable brand", () => {
@@ -354,5 +403,18 @@ describe("runtime feature snapshots", () => {
       "r0",
     );
     expect(moduleRuntimeFeatures(empty).fsBufferBrand).toBe(false);
+  });
+
+  test("the JavaScript object model build owns no entry yet", () => {
+    // t262-da §J: the features only a JavaScript source reaches share one
+    // runtime feature, whose entry list the slices fill as they land. This
+    // branch lists none, so a program with a sibling dynamic feature keeps
+    // the default objects.
+    expect(JS_OBJECT_MODEL_LIB_FNS.size).toBe(0);
+    const mod = module();
+    mod.functions[0]!.body.push(call("dyn.stdlibPrototype"));
+    const features = moduleRuntimeFeatures(mod);
+    expect(features.stdlibPrototypeValue).toBe(true);
+    expect(features.jsObjectModel).toBe(false);
   });
 });

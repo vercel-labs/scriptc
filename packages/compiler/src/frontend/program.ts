@@ -5564,6 +5564,15 @@ function declarationHasRuntimeFile(declaration: ts.SourceFile): boolean {
   return false;
 }
 
+/** Whether two resolutions name the same module file. Their spellings differ
+ * routinely — a tsconfig `paths` answer keeps the project's spelling where
+ * the npm resolver answers realpath'd — so the real paths decide. */
+function sameResolvedFile(a: string, b: string): boolean {
+  const normalize = (path: string): string => path.replaceAll("\\", "/");
+  if (normalize(a) === normalize(b)) return true;
+  return normalize(trackedRealpath(a) ?? a) === normalize(trackedRealpath(b) ?? b);
+}
+
 function preflight7(load: LoadResult): {
   diags: ScrDiagnostic[];
   moduleOrder: ts.SourceFile[];
@@ -6172,13 +6181,30 @@ function preflight7(load: LoadResult): {
       // Project modules win before npm fallback: this is the source graph
       // tsgo type-checked for tsconfig paths, package imports/self-references,
       // and provenance entries. Ordinary packages still answer null here.
-      const projDep = isBare ? resolveImport7(program, sf, spec) : null;
-      // "#" specifiers can never name an npm package — they are the
-      // imports-field family, resolved by the project arm above.
-      const npm =
-        isBare && projDep === null && !spec.startsWith("#")
-          ? resolveNpmImport7(sf.fileName, spec)
-          : null;
+      const projectAnswer = isBare ? resolveImport7(program, sf, spec) : null;
+      let projDep = projectAnswer;
+      let npm: ReturnType<typeof resolveNpmImport7> = null;
+      if (isBare && !spec.startsWith("#")) {
+        // A tsconfig `paths` target can name an installed package's directory
+        // (pi maps "typebox": ["./node_modules/typebox"]): its declarations
+        // are the package's own, so Node resolves the same specifier to the
+        // same answer and the import is an npm import after all. The npm arm
+        // below owns it then — its runtime refusal, npm-static membership and
+        // island policy included. A mapping whose answer the npm resolver does
+        // not reproduce stays a project import (and its SC1010).
+        const installed =
+          projectAnswer !== null &&
+          projectAnswer.isDeclarationFile &&
+          isNodeModulesPath(projectAnswer.fileName)
+            ? resolveNpmImport7(sf.fileName, spec)
+            : null;
+        if (installed !== null && sameResolvedFile(installed.typesFile, projectAnswer!.fileName)) {
+          projDep = null;
+          npm = installed;
+        } else if (projectAnswer === null) {
+          npm = resolveNpmImport7(sf.fileName, spec);
+        }
+      }
       if (npm && isNodeTypesPath(npm.typesFile)) {
         diags.push(unsupportedDiag("SC1010", locOf7(stmt), unsupportedModuleFeatureOf(spec)));
         continue;

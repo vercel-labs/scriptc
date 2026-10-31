@@ -2688,10 +2688,17 @@ export function lowerDynMemberAssignment(
   const loc = locOf(expr);
   const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
   const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
-  const keyValue = ts.isElementAccessExpression(target)
+  const boxedKey = ts.isElementAccessExpression(target)
     ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
     : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
-  const key = lowerer.declareHiddenLocal("%setKey", DYN);
+  // A key that is a string before boxing is its own property key: the
+  // write takes it as a string, without boxing it and coercing it back.
+  const stringKey =
+    ts.isElementAccessExpression(target) &&
+    boxedKey.kind === "dynFrom" &&
+    boxedKey.value.type.kind === "string";
+  const keyValue = stringKey ? boxedKey.value : boxedKey;
+  const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2720,8 +2727,12 @@ export function lowerDynMemberAssignment(
         kind: "exprStmt",
         expr: {
           kind: "libCall",
-          fn: "dyn.keySetComputed",
-          args: [varRef(receiver.id, DYN, loc), varRef(key.id, DYN, loc), stored],
+          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+          args: [
+            varRef(receiver.id, DYN, loc),
+            varRef(key.id, stringKey ? STRING : DYN, loc),
+            stored,
+          ],
           type: VOID,
           loc,
         },

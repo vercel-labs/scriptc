@@ -130,11 +130,7 @@ import {
   staticImportNamespaceType,
 } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
-import {
-  deleteToObjectTypeError,
-  isPrimitiveValueType,
-  throwAfterEach,
-} from "./primitive-throws.js";
+import { lowerPrimitiveBaseDelete, isPrimitiveValueType } from "./primitive-throws.js";
 import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
@@ -8114,24 +8110,17 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     if (unionDelete) return unionDelete;
   }
   let obj = lowerer.lowerExpr(target.expression);
-  // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key.
-  // null and undefined throw Node's TypeError; every other primitive has a
-  // temporary wrapper with no such property, so the answer is `true` — and
-  // the key still evaluated first (`delete x[i++]` counts i in Node).
+  // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key,
+  // and the base's type decides the answer — null and undefined throw
+  // Node's TypeError, `?.` on a nullish base short-circuits to `true`
+  // without evaluating the key, and every other primitive deletes from its
+  // ToObject wrapper (a String's indexes and `length` refuse the delete).
   if (isPrimitiveValueType(obj.type)) {
-    const unit = isUnitType(obj.type);
-    // The key runs first either way, but only a non-nullish base gets to
-    // CONVERT it: ToObject throws the nullish case before ToPropertyKey, so
-    // its key's toString never runs while a number's wrapper converts it.
-    const key = unit
-      ? ts.isPropertyAccessExpression(target)
-        ? ({ kind: "strLit", value: target.name.text, type: STRING, loc } as IrExpr)
-        : lowerer.lowerExpr(target.argumentExpression)
-      : lowerKey();
-    const result: IrExpr = unit
-      ? deleteToObjectTypeError(VOID, loc)
-      : { kind: "boolLit", value: true, type: BOOL, loc };
-    return { kind: "exprStmt", expr: throwAfterEach([obj, key], result, loc), loc };
+    return {
+      kind: "exprStmt",
+      expr: lowerPrimitiveBaseDelete(lowerer, expr, target, obj, VOID),
+      loc,
+    };
   }
   // `delete this.stack` in an Error subclass that declares a `stack`
   // accessor (quickjs-wasi's JSException): V8 gives each error an own

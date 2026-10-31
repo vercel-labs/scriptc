@@ -2,7 +2,7 @@
 // and every form that needs an object throws Node's own TypeError. The
 // checker's opinions about those operands are opinions about TypeScript
 // input, so a JavaScript source keeps the runtime answer and the error text
-// byte-for-byte.
+// Node gives.
 function report(fn) {
   try {
     return `ok ${String(fn())}`;
@@ -108,8 +108,7 @@ console.log(report(() => new mutating.Ctor((mutating.Ctor = Box))));
 console.log("slot now", typeof mutating.Ctor, new mutating.Ctor(7).size);
 
 // `delete` runs ToObject on the base after the key: null and undefined throw,
-// while every other primitive deletes from a temporary wrapper and answers
-// true.
+// while every other primitive deletes from a temporary wrapper.
 console.log(report(() => delete (null).x));
 console.log(report(() => delete (undefined).x));
 console.log(report(() => delete (true).x));
@@ -122,6 +121,37 @@ function recordedDeleteKey() {
 }
 console.log(report(() => delete (null)[recordedDeleteKey()]));
 console.log(deleteOrder.join(","));
+
+// A String wrapper carries its indexes and `length` as non-configurable own
+// properties, so deleting one is refused: false in sloppy code, and the
+// TypeError that names the wrapper's class in this module's strict code
+// (8703 covers the sloppy answer). The checker calls a String's index
+// signature read-only and declines these deletes; the runtime answers them.
+const letters = "abc";
+// @ts-ignore: JavaScript deletes a String index.
+console.log(report(() => delete letters[0]));
+// @ts-ignore: JavaScript deletes a String's `length`.
+console.log(report(() => delete letters.length));
+// @ts-ignore: JavaScript deletes a String index the value does not have.
+console.log(report(() => delete letters[3]));
+// @ts-ignore: JavaScript deletes a String index.
+console.log(report(() => delete "abc"[1]));
+console.log(report(() => delete (5)[0]));
+
+// An optional delete on a nullish base short-circuits: the answer is true
+// and the key never evaluates.
+const optionalDeleteOrder = [];
+function optionalDeleteKey() {
+  optionalDeleteOrder.push("key");
+  return 0;
+}
+console.log(report(() => delete (null)?.[optionalDeleteKey()]));
+console.log(report(() => delete (undefined)?.[optionalDeleteKey()]));
+console.log(report(() => delete (void 0)?.[optionalDeleteKey()]));
+console.log(optionalDeleteOrder.length);
+// @ts-ignore: JavaScript deletes a String index.
+console.log(report(() => delete letters?.[optionalDeleteKey()]));
+console.log(optionalDeleteOrder.length);
 
 // A non-nullish primitive's wrapper reaches ToPropertyKey, so an object
 // key's toString runs; the nullish path throws first and never converts.
@@ -148,6 +178,21 @@ const unrunKey = passthrough({
 console.log(report(() => delete (null)[unrunKey]));
 console.log(conversions.join(","));
 
+// A Symbol key survives ToPropertyKey: it names no property of the wrapper,
+// so the delete answers true instead of failing the string conversion. (The
+// checker declines indexing a String with a Symbol; the runtime runs it.)
+const symbolKey = passthrough(Symbol.iterator);
+// @ts-ignore: JavaScript deletes a String's Symbol key.
+console.log(report(() => delete "abc"[symbolKey]));
+const otherSymbolKey = passthrough(Symbol("q"));
+// @ts-ignore: JavaScript deletes a String's Symbol key.
+console.log(report(() => delete "abc"[otherSymbolKey]));
+// @ts-ignore: JavaScript deletes a String's Symbol key.
+console.log(report(() => delete letters[symbolKey]));
+// @ts-ignore: JavaScript deletes a String's Symbol key.
+delete "abc"[otherSymbolKey];
+console.log("symbol statement delete ok");
+
 // The statement form answers the same way.
 delete (5).x;
 console.log("statement delete ok");
@@ -159,6 +204,16 @@ try {
 }
 delete (5)[convertingKey];
 console.log(conversions.join(","));
+
+// A non-nullish primitive receiver of `in` evaluates once, and the throw
+// spells that one value.
+let stringReceiverRuns = 0;
+function stringReceiver() {
+  stringReceiverRuns += 1;
+  return "abc";
+}
+console.log(report(() => "x" in stringReceiver()));
+console.log(stringReceiverRuns);
 
 // A member read on a nullish receiver throws before anything else runs, and
 // the call form reads the member first, so its arguments never evaluate.

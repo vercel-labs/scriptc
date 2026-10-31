@@ -1036,10 +1036,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const arg = optionalCallValue(lowerer, argNode) ?? lowerer.lowerExpr(argNode);
     const converted = lowerBigIntConstructorValue(lowerer, arg, loc);
     if (converted) return converted;
+    // Report the type the program wrote, which is the type the checker has
+    // narrowed to here. The stored union only shows up when it is what
+    // actually blocks the conversion.
+    const narrowed = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    const shown = narrowed && !typeEquals(narrowed, arg.type) ? narrowed : arg.type;
     lowerer.noLowering(
-      `BigInt of ${lowerer.fmt(arg.type)} values`,
+      `BigInt of ${lowerer.fmt(shown)} values`,
       argNode,
-      "string, number, boolean, and bigint arguments are supported",
+      bigintRefusalHint(lowerer, arg, narrowed),
     );
   }
 
@@ -1354,34 +1359,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       (expr.expression.text === "atob" || expr.expression.text === "btoa") &&
       lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
     ) {
-      const name = expr.expression.text;
-      if (expr.arguments.nodes.length === 0) {
-        return { kind: "libCall", fn: "str.b64Missing", args: [], type: STRING, loc };
-      }
-      if (expr.arguments.nodes.length > 1) {
-        lowerer.noLowering(`${name} with ${expr.arguments.nodes.length} arguments`, expr);
-      }
-      const argNode = expr.arguments.nodes[0]!;
-      const v = lowerer.lowerExpr(argNode);
-      let data: IrExpr;
-      if (v.type.kind === "dyn") {
-        data = v;
-      } else if (v.kind === "unitLit" || lowerer.dynConvertible(v.type)) {
-        data = { kind: "dynFrom", value: v, type: DYN, loc };
-      } else {
-        lowerer.noLowering(
-          `${name} with a '${lowerer.fmt(v.type)}' argument`,
-          argNode,
-          "string-convertible arguments lower (Node ToStrings the value — convert it explicitly)",
-        );
-      }
-      return {
-        kind: "libCall",
-        fn: name === "atob" ? "str.atob" : "str.btoa",
-        args: [data],
-        type: STRING,
-        loc,
-      };
+      return lowerBase64Call(lowerer, expr, expr.expression.text, loc);
     }
 
     // global function executes — callFn(globalGet(name)) — and the
@@ -2666,6 +2644,35 @@ function lowerNumberConstructorValue(
   );
 }
 
+/** Whether a stored union arm converts on its own. A whole dynamic
+ * argument takes dyn.bigintConstructor instead, so dyn is never a
+ * dispatched arm. */
+function bigintArmLowers(arm: IrType): boolean {
+  return (
+    arm.kind === "bigint" ||
+    arm.kind === "string" ||
+    arm.kind === "f64" ||
+    arm.kind === "bool" ||
+    arm.kind === "bytes" ||
+    arm.kind === "array" ||
+    isUnitType(arm)
+  );
+}
+
+/** The hint for a BigInt argument no conversion covers. Lowering dispatches
+ * on the STORED union, which a call-site guard need not narrow; when the
+ * checker sees a different type, name both and point at the arms that stand
+ * in the way, rather than pasting the whole tagged storage at the reader. */
+function bigintRefusalHint(lowerer: Lowerer, arg: IrExpr, narrowed: IrType | null): string {
+  const supported =
+    "string, number, boolean, bigint, byte views, and array arguments are supported";
+  if (!narrowed || arg.type.kind !== "union" || typeEquals(narrowed, arg.type)) return supported;
+  const arms = lowerer.unions.get(arg.type.unionId)?.arms ?? [];
+  const blocking = arms.filter((arm) => !bigintArmLowers(arm)).map((arm) => lowerer.fmt(arm));
+  if (blocking.length === 0) return supported;
+  return `the checker narrows the argument to ${lowerer.fmt(narrowed)}, but the stored value can also hold ${blocking.join(" | ")} at run time; ${supported}`;
+}
+
 /** A runtime-optional local retains its full tagged storage even after a
  * checker guard. Dispatch BigInt by the actual value, including nullish
  * TypeErrors, rather than interpreting that storage as the narrowed arm. */
@@ -2682,7 +2689,10 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
   // as that element, none as 0n, several throw the SyntaxError for the
   // joined text), a Buffer's is its UTF-8 decoding and a DataView's is
   // "[object DataView]". The runtime value tells them apart, as for String.
-  if (arg.type.kind === "bytes") {
+  // An array reaches the same ToPrimitive: its text is the elements joined
+  // with "," (`[5]` reads "5", `[]` reads ""), whichever element types it
+  // holds, and BigInt parses that.
+  if (arg.type.kind === "bytes" || arg.type.kind === "array") {
     const text: IrExpr = {
       kind: "toString",
       operand: { kind: "dynFrom", value: arg, type: DYN, loc },
@@ -2723,19 +2733,7 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
   if (arg.type.kind !== "union") return null;
   const unionId = arg.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
-  if (
-    !arms ||
-    !arms.every(
-      (arm) =>
-        arm.kind === "bigint" ||
-        arm.kind === "string" ||
-        arm.kind === "f64" ||
-        arm.kind === "bool" ||
-        arm.kind === "bytes" ||
-        isUnitType(arm),
-    )
-  )
-    return null;
+  if (!arms || !arms.every(bigintArmLowers)) return null;
   const key = `bigint.scalar:${unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
@@ -5254,7 +5252,9 @@ function lowerArrayIsArrayCall(
   if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") return folded;
   // A computed argument (`Array.isArray(make())`, `Array.isArray([1, 2])`)
   // still answers from its static type, so evaluate the argument for its
-  // effects and discard the value.
+  // effects and discard the value. `undefined`/`null` lower to a bare unitLit,
+  // which carries no effect and is not a valid IR expression statement.
+  if (arg.kind === "unitLit") return folded;
   return {
     kind: "seqExpr",
     stmts: [{ kind: "exprStmt", expr: arg, loc }],
@@ -12424,6 +12424,44 @@ function lowerEmitterMethodValueCall(
     calleeName: ts.getTextOfNode(access),
     args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
+    loc,
+  };
+}
+
+/** atob(data) / btoa(data), the globals and node:buffer's members (the same
+ * functions in Node): str.atob / str.btoa over the argument as a dyn value,
+ * str.b64Missing for the zero-argument call. */
+export function lowerBase64Call(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  name: "atob" | "btoa",
+  loc: SrcLoc,
+): IrExpr {
+  if (expr.arguments.nodes.length === 0) {
+    return { kind: "libCall", fn: "str.b64Missing", args: [], type: STRING, loc };
+  }
+  if (expr.arguments.nodes.length > 1) {
+    lowerer.noLowering(`${name} with ${expr.arguments.nodes.length} arguments`, expr);
+  }
+  const argNode = expr.arguments.nodes[0]!;
+  const v = lowerer.lowerExpr(argNode);
+  let data: IrExpr;
+  if (v.type.kind === "dyn") {
+    data = v;
+  } else if (v.kind === "unitLit" || lowerer.dynConvertible(v.type)) {
+    data = { kind: "dynFrom", value: v, type: DYN, loc };
+  } else {
+    lowerer.noLowering(
+      `${name} with a '${lowerer.fmt(v.type)}' argument`,
+      argNode,
+      "string-convertible arguments lower (Node ToStrings the value — convert it explicitly)",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: name === "atob" ? "str.atob" : "str.btoa",
+    args: [data],
+    type: STRING,
     loc,
   };
 }

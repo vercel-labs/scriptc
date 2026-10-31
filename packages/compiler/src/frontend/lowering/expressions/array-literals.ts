@@ -488,6 +488,9 @@ export function lowerArrayLiteral(
       needsStateBuild = true;
     }
   }
+  // A spread before an element shifts that element's array index away
+  // from its literal position by an amount only known at run time.
+  const firstSpread = expr.elements.nodes.findIndex((n) => ts.isSpreadElement(n));
   const elems: IrExpr[] = expr.elements.nodes.map((el, i): IrExpr => {
     if (ts.isSpreadElement(el)) {
       // `[...xs, b]`: xs must be an array of the literal's own element
@@ -695,6 +698,29 @@ export function lowerArrayLiteral(
       lowered = raw;
     } else {
       lowered = lowerer.lowerExprExpecting(el, type.elem);
+      // A checked-dynamic element of a `(T | undefined)[]` can hold
+      // undefined, which a check against T rejects although the element
+      // type admits it: convert against the optional element type and let
+      // the store keep the present undefined.
+      if (
+        type.optionalElements === true &&
+        primitiveElement(type.elem) &&
+        lowered.kind === "dynCheck" &&
+        lowered.value.type.kind === "dyn"
+      ) {
+        const optional: IrType = {
+          kind: "union",
+          unionId: lowerer.unions.intern([type.elem, UNDEFINED_T]),
+        };
+        needsStateBuild = true;
+        const checked = lowerer.coerceInto(el, lowered.value, optional);
+        if (checked.kind !== "dynCheck") return checked;
+        // The check runs where the literal stores its element, so a
+        // failure names that position ($[0]) rather than the root. An
+        // element after a spread keeps the root: the spread moves its
+        // array index by an amount only known at run time.
+        return firstSpread < 0 || i < firstSpread ? { ...checked, pathIndex: i } : checked;
+      }
     }
     if (!typeEquals(lowered.type, type.elem)) lowerer.badType(el, lowerer.typeOf(el));
     return lowered;

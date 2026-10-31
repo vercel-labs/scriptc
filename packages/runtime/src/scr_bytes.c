@@ -2843,7 +2843,9 @@ static bool scr_enc_eq_ci(const ScrStr *raw, const char *name) {
   return true;
 }
 
-ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
+/* The canonical spelling of a Buffer encoding name in any ASCII case, or
+ * NULL for a name Node's tables do not hold. */
+static const char *scr_enc_alias(const ScrStr *raw) {
   static const struct { const char *from; const char *to; } map[] = {
     {"utf8", "utf8"}, {"utf-8", "utf8"}, {"hex", "hex"},
     {"base64", "base64"}, {"base64url", "base64url"},
@@ -2852,10 +2854,14 @@ ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
     {"ucs2", "utf16le"}, {"ucs-2", "utf16le"},
   };
   for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
-    if (scr_enc_eq_ci(raw, map[i].from)) {
-      return scr_str_new(map[i].to, strlen(map[i].to));
-    }
+    if (scr_enc_eq_ci(raw, map[i].from)) return map[i].to;
   }
+  return NULL;
+}
+
+ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
+  const char *to = scr_enc_alias(raw);
+  if (to) return scr_str_new(to, strlen(to));
   static const char prefix[] = "Unknown encoding: ";
   const size_t prefix_len = sizeof prefix - 1;
   if (raw->len > SIZE_MAX - prefix_len) scr_bytes_oom();
@@ -2868,6 +2874,22 @@ ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
                            "ERR_UNKNOWN_ENCODING");
   free(msg);
   return NULL;
+}
+
+/* Node's normalizeEncoding: an empty name reads as utf8; any other name
+ * normalizes as getEncodingOps does, unknown names throwing
+ * ERR_UNKNOWN_ENCODING. */
+ScrStr *scr_bytes_normalize_encoding_empty_utf8(const ScrStr *raw) {
+  if (raw->len == 0) return scr_str_new("utf8", 4);
+  return scr_bytes_normalize_encoding(raw);
+}
+
+/* Buffer.byteLength's encoding read: an unknown name counts as utf8
+ * instead of throwing. */
+ScrStr *scr_bytes_normalize_encoding_or_utf8(const ScrStr *raw) {
+  const char *to = scr_enc_alias(raw);
+  if (to) return scr_str_new(to, strlen(to));
+  return scr_str_new("utf8", 4);
 }
 
 /* new StringDecoder(encoding) with an encoding known only at run time:
@@ -4099,6 +4121,33 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
   memcpy(b->data + o, encd->data, k);
   scr_bytes_release(encd);
   return (double)k;
+}
+
+/* buf.write(string, offset?, length?, enc) with an encoding name only
+ * known at run time. Node validates the offset and length before it reads
+ * the name, so a bad range reports ERR_OUT_OF_RANGE even when the name is
+ * unknown too; an empty name reads as utf8. */
+static double scr_bytes_write_str_dyn_impl(ScrBytes *b, const ScrStr *s,
+                                           const ScrStr *enc, double offset,
+                                           double len, bool has_len) {
+  if (!scr_bytes_validate_off("offset", offset, (double)b->len)) return 0;
+  if (has_len && !scr_bytes_validate_off("length", len, (double)b->len)) return 0;
+  ScrStr *normalized = scr_bytes_normalize_encoding_empty_utf8(enc);
+  if (!normalized) return 0;
+  double written = scr_bytes_write_str(b, s, normalized, offset, len, has_len);
+  scr_str_release(normalized);
+  return written;
+}
+
+double scr_bytes_write_str_dyn(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
+                               double offset) {
+  return scr_bytes_write_str_dyn_impl(b, s, enc, offset, 0, false);
+}
+
+double scr_bytes_write_str_dyn_len(ScrBytes *b, const ScrStr *s,
+                                   const ScrStr *enc, double offset,
+                                   double len) {
+  return scr_bytes_write_str_dyn_impl(b, s, enc, offset, len, true);
 }
 
 /* Buffer.concat(list, totalLength): the same concatenation truncated or

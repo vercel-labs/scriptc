@@ -23,6 +23,7 @@ import { numLit, strLit } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
+import { isStrictCode } from "./strict-mode.js";
 
 /** IR types whose JS value is a primitive: no own or inherited properties,
  * so a property read, `in`, or `delete` coerces it — and `in` throws.
@@ -181,57 +182,62 @@ export function throwAfterEach(values: readonly IrExpr[], thrown: IrExpr, loc: S
     : { kind: "seqExpr", stmts, result: thrown, type: thrown.type, loc };
 }
 
-/** Expression-position `delete` (`const ok = delete x.y`): the value is
- * `true` — or Node's ToObject TypeError for a nullish base — which is
- * exactly the answer for a primitive receiver. Every other receiver keeps
- * the statement-position-only fence. */
+/** Expression-position `delete` (`const ok = delete x.y`). Every receiver but
+ * a primitive keeps the statement-position-only fence. */
 export function lowerDeleteExpression(lowerer: Lowerer, expr: ts.DeleteExpression): IrExpr {
-  const loc = locOf(expr);
   let target: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(target)) target = target.expression;
   if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
     const obj = lowerer.lowerExpr(target.expression);
     if (isPrimitiveValueType(obj.type)) {
-      const unit = isUnitType(obj.type);
-      const key = ts.isPropertyAccessExpression(target)
-        ? null
-        : unit
-          ? // ToObject throws before ToPropertyKey: the key runs, nothing
-            // converts it.
-            lowerer.lowerExpr(target.argumentExpression)
-          : // A non-nullish primitive's wrapper does reach ToPropertyKey, so
-            // an object key's toString runs (and its throw propagates); a
-            // primitive key converts without user code.
-            primitiveBaseKey(lowerer, target.argumentExpression, loc);
-      const result: IrExpr = unit
-        ? deleteToObjectTypeError(BOOL, loc)
-        : { kind: "boolLit", value: true, type: BOOL, loc };
-      return throwAfterEach(key === null ? [obj] : [obj, key], result, loc);
+      return lowerPrimitiveBaseDelete(lowerer, expr, target, obj, BOOL);
     }
   }
   lowerer.unsupported("SC1090", expr, "delete expressions");
 }
 
-/** ToPropertyKey of a key on a NON-nullish primitive base: a dyn key runs
- * its own conversion, a primitive key converts without user code, and any
- * other representation (a record, a class instance lowered natively) keeps
- * a written refusal rather than dropping its conversion. */
-function primitiveBaseKey(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
-  const raw = lowerer.lowerExpr(node);
-  switch (raw.type.kind) {
-    case "string":
-    case "f64":
-    case "bool":
-    case "bigint":
-    case "symbol":
-      return raw;
-    case "dyn":
-      return { kind: "libCall", fn: "dyn.toStringCoerce", args: [raw], type: STRING, loc };
-    default:
-      return lowerer.unsupported(
-        "SC1090",
-        node,
-        `'delete' with a '${lowerer.fmt(raw.type)}' key on a primitive base`,
-      );
+/** `delete` on a primitive base, whose ToObject step gives the answer. The
+ * base evaluates first, then the key:
+ *
+ * - a nullish base throws Node's ToObject TypeError before the key's
+ *   ToPropertyKey, so the key runs without converting (and, through `?.`,
+ *   the chain short-circuits instead: the answer is `true` and the key
+ *   never runs);
+ * - any other primitive deletes from the ToObject wrapper. A String
+ *   wrapper carries its indexes and `length` as non-configurable own
+ *   properties, so deleting one answers `false` in sloppy code and throws
+ *   the TypeError in strict code, while every other primitive's wrapper
+ *   owns nothing. The runtime does the ToPropertyKey, which preserves a
+ *   Symbol key.
+ *
+ * `resultType` is the replaced expression's own type (never materialized). */
+export function lowerPrimitiveBaseDelete(
+  lowerer: Lowerer,
+  expr: ts.DeleteExpression,
+  target: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  obj: IrExpr,
+  resultType: IrType,
+): IrExpr {
+  const loc = locOf(expr);
+  const unit = isUnitType(obj.type);
+  if (unit && target.questionDotToken) {
+    // `base?.[key]` on a nullish base: the chain is undefined, the delete
+    // answers true, and the key does not evaluate.
+    return throwAfterEach([obj], { kind: "boolLit", value: true, type: BOOL, loc }, loc);
   }
+  const key = ts.isPropertyAccessExpression(target)
+    ? (strLit(target.name.text, loc) as IrExpr)
+    : lowerer.lowerExpr(target.argumentExpression);
+  if (unit) return throwAfterEach([obj, key], deleteToObjectTypeError(resultType, loc), loc);
+  return {
+    kind: "libCall",
+    fn: "dyn.primitiveDelete",
+    args: [
+      lowerer.coerceToExpected(obj, DYN),
+      lowerer.coerceToExpected(key, DYN),
+      { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc },
+    ],
+    type: BOOL,
+    loc,
+  };
 }

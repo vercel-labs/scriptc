@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { createRuntimePackMatrix } from "../runtime-pack-matrix.mjs";
+import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
 
 const matrix = createRuntimePackMatrix({
   target: { object_format: "elf" },
@@ -92,6 +92,48 @@ test("a file read whose bytes the program can observe selects the branded build"
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([
     "SCR_FS_WATCH_FILE",
+  ]);
+});
+
+test("every scr_json build has a JavaScript object model twin", () => {
+  // The JavaScript object model build (t262-da §J) is one column for every
+  // runtime feature only a JavaScript source reaches: each scr_json.c build
+  // gets one twin, so any combination of features selects a build that
+  // carries the object model's code.
+  const variants = variantsFor("scr_json.c");
+  expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
+    "default",
+    "record-view-partial",
+    "js-om",
+    "js-om-record-view-partial",
+  ]);
+  for (const variant of variants) {
+    if (!variant.id.startsWith("js-om")) continue;
+    expect(variant.when.jsObjectModel).toBe(true);
+    expect(variant.defines).toContain("SCR_JS_OBJECT_MODEL");
+  }
+  // A program with the object model, and nothing else, selects its build...
+  expect(selected("scr_json.c", { workers: false, jsObjectModel: true }).id).toBe("js-om");
+  expect(selected("scr_json.c", { workers: false, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  // ...keeps the record-view twin beside a partial record assertion...
+  const partial = { workers: false, jsObjectModel: true, recordViewPartial: true };
+  expect(selected("scr_json.c", partial).id).toBe("js-om-record-view-partial");
+  expect(selected("scr_json.c", partial).defines).toEqual([
+    "SCR_RECORD_VIEW_PARTIAL",
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  // ...and keeps the worker build when the program starts threads.
+  expect(selected("scr_json.c", { workers: true, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+    "SCR_WORKERS",
+  ]);
+  // A program that reaches none of the features keeps the default object.
+  expect(selected("scr_json.c", { workers: false }).id).toBe("default");
+  expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
+  expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([
+    "SCR_RECORD_VIEW_PARTIAL",
   ]);
 });
 

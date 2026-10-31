@@ -712,7 +712,7 @@ describe("K9: library-mode refusals", () => {
     });
     expect(diags[0]!.code).toBe("SC4002");
     expect(diags[0]!.message).toContain("'nope'");
-    expect(diags[0]!.hint).toContain("facade");
+    expect(diags[0]!.hint).toContain("exported wrapper function");
   });
 
   test("SC4003: a parameter outside the marshalling classes", async () => {

@@ -158,6 +158,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_mailbox.c",
     "scr_message.c",
   ),
+  // A generator that binds its parameters at the call (scr_gen_bind.c).
+  unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
@@ -462,13 +464,15 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
-  // scr_json.c's SCR_JS_TIER build exports the dynamic tier's cache primitives; only
-  // programs with dynamic-tier code select it.
-  { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   // scr_json.c's view slot answers NULL for a field a partial record view
   // does not have; only a program with a partial assertion selects it.
   { define: "SCR_RECORD_VIEW_PARTIAL", when: (opts) => opts.recordViewPartial },
+  // The JavaScript object model build (t262-da §J): the code the runtime
+  // features only a JavaScript source reaches share. Its objects are separate
+  // builds selected by runtime-pack-matrix.mjs, so the source build must name
+  // the same builds.
+  { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
   // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
@@ -486,8 +490,8 @@ const RUNTIME_DEFINES: readonly {
   // scr_events.c's typed process output write slot.
   { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,
-  // scr_json.c's and scr_dyn_builtin_class.c's instanceof over its classes,
-  // and scr_fetch.c's bodies of its streams.
+  // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
+  // bodies of its streams.
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },

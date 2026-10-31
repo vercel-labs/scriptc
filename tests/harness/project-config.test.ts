@@ -787,24 +787,22 @@ test("node-types: callback exec uses the typed ExecException overloads", async (
   expect(stdout).toBe('typed-exec err\n"Command failed: exit 2\\n"\n');
 });
 
-test("node-types: exec's numeric ExecException.code remains a named fence", async () => {
-  const dir = outDirFor("node-child-exec-code-fences");
-  const entry = join(nodeTypesDir, "child-exec-code-fences.ts");
+test("node-types: the exec/execFile callback error exposes Node's metadata members", async () => {
+  const dir = outDirFor("node-child-exec-error-fields");
+  const entry = join(nodeTypesDir, "child-exec-error-fields.ts");
   const result = await compile(entry, {
-    outPath: join(dir, "child-exec-code-fences"),
+    outPath: join(dir, "child-exec-error-fields"),
     outDir: dir,
     sanitize,
   });
-  expect(result.ok).toBe(false);
-  if (result.ok) return;
-  expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-    "SC2020",
-    "SC2020",
-    "SC2020",
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
   ]);
-  for (const diagnostic of result.diagnostics) {
-    expect(diagnostic.message).toContain("ExecException.code");
-  }
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
 test("node-types: fs functions take URL paths under @types/node's PathLike", async () => {

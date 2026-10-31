@@ -26,6 +26,25 @@ function freshDynValue(value: IrExpr): boolean {
   );
 }
 
+/** typeKey with `?` after every `(T | undefined)[]` at any depth: the
+ * checked conversion to `number[]` and to `(number | undefined)[]` accept
+ * different elements though the two types share a typeKey, so each needs
+ * its own helper. */
+function adoptionKey(t: IrType): string {
+  switch (t.kind) {
+    case "array":
+      return `array<${adoptionKey(t.elem)}>${t.optionalElements ? "?" : ""}`;
+    case "map":
+      return `map<${adoptionKey(t.key)},${adoptionKey(t.value)}>`;
+    case "set":
+      return `set<${adoptionKey(t.elem)}>`;
+    case "promise":
+      return `promise<${adoptionKey(t.inner)}>`;
+    default:
+      return typeKey(t);
+  }
+}
+
 /** The implicit checked conversion of a dynamic value into a typed slot
  * (`const row: Row = data`, an `any` argument for a typed parameter). When
  * the target holds a record or an array and the value may have another
@@ -42,7 +61,7 @@ export function adoptingDynCheck(
 ): IrExpr {
   if (!holdsReference(lowerer, target) || freshDynValue(value))
     return { kind: "dynCheck", value, type: target, loc };
-  const key = `dynadopt:${typeKey(target)}`;
+  const key = `dynadopt:${adoptionKey(target)}`;
   let name = lowerer.coercions.retags.get(key);
   if (!name) {
     name = keyedHelperName(lowerer, "%dyn.adopt", key);

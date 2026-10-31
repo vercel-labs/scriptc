@@ -81,3 +81,13 @@ const maybe: Narrow | undefined = other;
 if (maybe !== undefined) maybe.id = 6;
 console.log(other.id);
 
+// Array targets that differ only in whether their elements may be undefined
+// convert through separate helpers, so the one that accepts undefined keeps
+// its elements.
+const plainSource: any = [1, 2];
+const plain: number[] = plainSource;
+console.log(plain.length, plain === plainSource);
+const maybeSource: any = [1, undefined, 3];
+const maybeNumbers: (number | undefined)[] = maybeSource;
+console.log(maybeNumbers.length, maybeNumbers[1], maybeNumbers === maybeSource);
+

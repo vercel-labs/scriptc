@@ -31,7 +31,8 @@ export const STR_INTRINSIC_SIGS: Record<
   normalize: { argTypes: [STRING], minArgs: 1, result: STRING },
   isWellFormed: { argTypes: [], minArgs: 0, result: BOOL },
   toWellFormed: { argTypes: [], minArgs: 0, result: STRING },
-  cpAt: { argTypes: [F64], minArgs: 1, result: STRING },
+  byteLength: { argTypes: [], minArgs: 0, result: F64 },
+  cpAtByte: { argTypes: [F64], minArgs: 1, result: STRING },
 };
 
 /** Per-method signature for regexIntrinsic. test/source/flags take the

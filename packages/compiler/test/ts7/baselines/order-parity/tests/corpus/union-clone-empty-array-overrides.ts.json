@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-clone-empty-array-overrides.ts"
+ ],
+ "diags": []
+}

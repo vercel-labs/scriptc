@@ -39,9 +39,11 @@
  *    JSON.parse's wording rather than tsc's, the one message-text delta on
  *    that path (no snapshot pins it). */
 
+import { isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
+import { isSourcePhaseImport } from "./ts7/ast-node.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
   commonJsModuleSyntaxDiag,
@@ -97,6 +99,7 @@ import {
   configurePackageShims,
   isPackageShimFile,
   isShimmedImport,
+  isUnloadedPackage,
   npmStaticOmitsPackage,
 } from "./package-shims.js";
 import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
@@ -104,6 +107,8 @@ import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
   ambientDtsPath,
   fallbackDtsPath,
+  fallbackModulesNamedIn,
+  isFallbackDtsPath,
   isNodeTypesPath,
   overridesDtsPath,
   tsgoPath,
@@ -121,6 +126,7 @@ import {
   isRelativeSpecifier,
   isWorkspacePackageName,
   npmPackageNameOf,
+  packageNameOfSpecifier,
   registerWorkspacePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
@@ -131,6 +137,7 @@ import {
   JS_RELAXED_TSC_CODES,
 } from "./tsc-codes.js";
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { earlyErrorDiagnostics7 } from "./early-errors.js";
 import { forkTargetPaths } from "./fork-target.js";
 import { workerTargetPaths } from "./worker-target.js";
 import {
@@ -139,8 +146,23 @@ import {
   typeOnlyReachedFiles,
 } from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
-import { planDeclProjection, type DeclProjection } from "./decl-projection.js";
-import { reportShapes } from "./shape-inference/index.js";
+import {
+  planDeclProjection,
+  resetDeclBoundaryOrigins,
+  type DeclProjection,
+} from "./decl-projection.js";
+import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
+import { resetDeclOriginVersions } from "./lowering/decl-origin.js";
+import {
+  reportShapes,
+  resetShapeOverlay,
+  shapeOverlayDone,
+  shapeOverlayEnabled,
+  shapeOverlayer,
+  captureShapeOverlayState,
+  type ShapeOverlayLoadState,
+} from "./shape-inference/index.js";
+import { jsInferenceEnabled } from "./js-inference.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -358,6 +380,9 @@ export interface TypeWorldDifferences {
 export interface LoadResult {
   program: ts.Program;
   entry: ts.SourceFile;
+  /** Shape inference's overlay state for this load (restored before its
+   * lowering: a later load resets the per-process registry). */
+  shapeOverlayState?: ShapeOverlayLoadState;
   /** User source files in Node's evaluation order: depth-first postorder
    * of the import graph from the entry, each module once. The entry is
    * last. Empty until checkPreflight runs (and empty when preflight fails
@@ -374,6 +399,11 @@ export interface LoadResult {
    * literal import(), fork() or Worker reaches with them. Filled by
    * checkPreflight. */
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  /** Program modules only a literal import() loads whose static graph
+   * Node's resolution refuses: each such import() rejects with the refusal
+   * instead of failing the build, and the module never joins the compiled
+   * graph. Filled by checkPreflight. */
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** Node's startup refusal, when the graph carries an import edge Node
    * rejects before ANY module evaluates — a RESOLUTION refusal (a bare
    * specifier nothing installed resolves, an exports/imports map that
@@ -477,7 +507,7 @@ function visitNpmStaticDeclarationClosure(
     if (normalized !== packageRoot && !normalized.startsWith(packageRoot + "/")) return;
     if (seen.has(path)) return;
     seen.add(path);
-    const source = trackedReadFile(path);
+    const source = packageSourceText(path);
     if (source === null) return;
     onSource(path, source);
     for (const specifier of npmStaticDeclarationReexports(services.parse(path, source, "ts"))) {
@@ -526,6 +556,11 @@ export interface StartupCrash {
   message: string;
   className: "%Error" | "%TypeError" | "%SyntaxError";
   loc: { file: string; start: number; end: number };
+  /** Node's error code, for the refusals that carry one. */
+  code?: string;
+  /** The error's own `url` property: the missing file's URL, for Node's
+   * ERR_MODULE_NOT_FOUND of an import() whose target does not exist. */
+  url?: string;
 }
 
 /** True when a coverage mapping names one exact bare host module. TypeScript
@@ -612,6 +647,27 @@ function externalTypeFileClosure7(
   return new Map([...ownersByFile].map(([file, owners]) => [file, [...owners]] as const));
 }
 
+/** The fallback declaration files of the Node modules the program's files
+ * name (fallbackModulesNamedIn) that the program does not hold yet. Each
+ * file is read as tsgo reads it; the TypeScript libraries and scriptc's own
+ * declarations name no module that needs a file. */
+function fallbackModuleRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
+  const names = program.getSourceFileNames();
+  const held = new Set(names.filter(isFallbackDtsPath).map((name) => tsgoPath(name)));
+  const ambient = ambientDtsPath();
+  const overrides = overridesDtsPath();
+  const roots = new Set<string>();
+  for (const name of names) {
+    const path = tsgoPath(name);
+    if (held.has(path) || path === ambient || path === overrides) continue;
+    if (/\/lib\.[^/]*\.d\.ts$/.test(path) && program.getSourceFileMetadata(name)?.isDefaultLibrary)
+      continue;
+    for (const file of fallbackModulesNamedIn(host.sourceText(name) ?? ""))
+      if (!held.has(file)) roots.add(file);
+  }
+  return [...roots];
+}
+
 /** Program roots hidden behind canonical createRequire bindings. tsgo
  * discovers ordinary import/require edges itself, but a source binding
  * returned by createRequire is intentionally just a function to the type
@@ -662,6 +718,14 @@ function createRequireProgramRoots7(program: ts.Program): string[] {
     }
   }
   return [...roots].sort();
+}
+
+/** Whether the tsc gate can keep a file's diagnostics when the program
+ * loads: it drops all of an opted-in package's files and of the package
+ * shims (keptErrors in preflight also drops unselected package JavaScript,
+ * which is not known yet here, so those files are still checked). */
+function tscGateFileKept(fileName: string): boolean {
+  return npmStaticPackageOfPath(fileName) === null && !isPackageShimFile(fileName);
 }
 
 /** Classify the explicitly selected installed package's own sources. */
@@ -847,6 +911,9 @@ function loadProgram7(
   /** The declaration-typed boundary's projection (decl-projection.ts):
    * answers rewritten user files for the lowering world, or null. */
   projector?: (program: ts.Program) => DeclProjection | null,
+  /** Shape inference's typed overlay (shape-inference/overlay.ts):
+   * rewritten package JavaScript for the lowering world, or null. */
+  overlayer?: (program: ts.Program, round: number) => ReadonlyMap<string, string> | null,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -888,12 +955,23 @@ function loadProgram7(
     }
     options = { ...options, paths };
   }
-  const coreRoots = [entryPath, ambientDtsPath(), nodeTypes ?? fallbackDtsPath()];
+  // Without @types/node the fallback declarations stand in: the core file,
+  // and a Node module's file once a program file names the module
+  // (fallbackModuleRoots7). The modules the entry names join the first
+  // program.
+  const coreRoots = [
+    entryPath,
+    ambientDtsPath(),
+    ...(nodeTypes === null
+      ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
+      : [nodeTypes]),
+  ];
   const programRoots = [...coreRoots];
   let program = host.createProgram([...programRoots, overridesDtsPath()], options);
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
+        ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
         ...entryPackageProgramRoots7(program, entryPath, rootNpmStaticEdges),
         ...createRequireProgramRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
@@ -904,7 +982,7 @@ function loadProgram7(
       );
       if (extraRoots.length === 0) break;
       program.dispose();
-      programRoots.push(...extraRoots);
+      for (const root of extraRoots) programRoots.push(root);
       program = host.createProgram([...programRoots, overridesDtsPath()], options);
       if (pass === 31) throw new Error("static program-root discovery did not converge");
     }
@@ -933,7 +1011,7 @@ function loadProgram7(
       const original = program;
       // The project world must read the original text too, so it is built
       // before the rewritten files are served, and only when it is needed.
-      const diagnostics = ts.getPreEmitDiagnostics(original);
+      const diagnostics = ts.getPreEmitDiagnostics(original, tscGateFileKept);
       const errors = diagnostics.some((d) => d.category === ts.DiagnosticCategory.Error);
       tscWorld = {
         program: original,
@@ -981,11 +1059,53 @@ function loadProgram7(
         } else {
           tscWorld = {
             program: original,
-            diagnostics: ts.getPreEmitDiagnostics(original),
+            diagnostics: ts.getPreEmitDiagnostics(original, tscGateFileKept),
             projectWorld: null,
             declWorldFallback: true,
           };
         }
+      }
+    }
+    // Shape inference's overlay: package files typed from proven facts. The
+    // tsc gate keeps reading the files as written. loadProgram resets the
+    // overlay registry before the lowering world's load.
+    const overlayOriginals = new Map<string, string | null>();
+    if (overlayer !== undefined && jsx.refusal === null) {
+      // Rounds: structural rewrites, then the typed overlay of the rebuilt
+      // program (shape-inference/index.ts).
+      const timeShapes = process.env["SCRIPTC_DEBUG_SHAPE_TIME"] !== undefined;
+      for (let round = 0; round < 3; round++) {
+        const t0 = timeShapes ? performance.now() : 0;
+        const overlay = overlayer(program, round);
+        if (timeShapes)
+          process.stderr.write(
+            `[shape-time] round ${round} overlayer ${(performance.now() - t0).toFixed(0)} ms\n`,
+          );
+        if (overlay === null || overlay.size === 0) break;
+        const t1 = timeShapes ? performance.now() : 0;
+        const before = program;
+        // The tsc gate reads the files as written: its diagnostics are
+        // taken before the overlay's files replace them on the host, and
+        // its project world (load.projectWorld()) is built over the files
+        // as written.
+        if (tscWorld === undefined)
+          tscWorld = {
+            program: before,
+            diagnostics: ts.getPreEmitDiagnostics(before),
+            projectWorld: null,
+            declWorldFallback: true,
+          };
+        for (const file of overlay.keys())
+          if (!overlayOriginals.has(file))
+            overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
+        for (const [file, text] of overlay) host.addVirtualFile(file, text);
+        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        if (tscWorld.program !== before) before.dispose();
+        if (timeShapes)
+          process.stderr.write(
+            `[shape-time] round ${round} gate+program ${(performance.now() - t1).toFixed(0)} ms\n`,
+          );
+        if (shapeOverlayDone()) break;
       }
     }
     const entry = program.getSourceFile(entryPath);
@@ -995,6 +1115,7 @@ function loadProgram7(
     return {
       program,
       entry,
+      shapeOverlayState: captureShapeOverlayState(),
       moduleOrder: [],
       configDiags: config.diags,
       ...(declBoundaryNotes.length > 0 ? { declBoundaryNotes } : {}),
@@ -1008,7 +1129,10 @@ function loadProgram7(
       externalTypeSpecifiersByFile,
       ...(tscWorld === undefined ? {} : { jsxSources: jsx.sources }),
       ...(tscWorld === undefined ? {} : { tscWorld }),
-      projectWorld: () => (projectWorld ??= host.createProgram(programRoots, options)),
+      projectWorld: () =>
+        (projectWorld ??= withFilesAsWritten(host, overlayOriginals, () =>
+          host.createProgram(programRoots, options),
+        )),
       disposeAll: () => {
         try {
           projectWorld?.dispose();
@@ -1034,6 +1158,27 @@ export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   /** Exact host module specifiers paired with their declaration paths. */
   externalTypes?: readonly (readonly [string, string])[];
+}
+
+/** Runs `build` with the overlay's files served as written (their original
+ * texts), then serves the overlay's texts again. */
+function withFilesAsWritten<T>(
+  host: ts.Ts7Host,
+  originals: ReadonlyMap<string, string | null>,
+  build: () => T,
+): T {
+  if (originals.size === 0) return build();
+  const overlaid = new Map<string, string>();
+  for (const [file, text] of originals) {
+    const current = host.virtualFileText(file);
+    if (current !== undefined) overlaid.set(file, current);
+    if (text !== null) host.addVirtualFile(file, text);
+  }
+  try {
+    return build();
+  } finally {
+    for (const [file, text] of overlaid) host.addVirtualFile(file, text);
+  }
 }
 
 export function loadProgram(
@@ -1068,6 +1213,11 @@ export function loadProgram(
   // JavaScript, even when named. A registry entry's `sourceVersions`
   // (chalk 6) compile from their own source.
   configurePackageShims(entryPath);
+  resetDeclBoundaryOrigins();
+  resetDeclOriginVersions();
+  // The project's type patches (type-patches/layer.ts), read by every host
+  // this load creates; nothing at all without `scriptc.typePatches`.
+  configureTypePatches(entryPath, (path, text, kind) => services.parse(path, text, kind));
   const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])].filter(
     (name) => !npmStaticOmitsPackage(entryPath, name),
   );
@@ -1244,12 +1394,22 @@ export function loadProgram(
           return projection;
         };
   try {
+    // The overlay registry is per process and describes the lowering
+    // world's load: a load without the overlay must not see an earlier
+    // load's overlay files. The authored world (authored()) is a second load
+    // of the same build, which preflight can create after the overlay
+    // rounds, so it leaves the registry as this load set it.
+    resetShapeOverlay();
     const load = loadProgram7(
       host,
       entryPath,
       externalTypes,
       npmStaticPackages.length > 0,
       projector,
+      (npmStaticPackages.length > 0 && shapeOverlayEnabled()) ||
+        (jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0")
+        ? shapeOverlayer
+        : undefined,
     );
     // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
     const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
@@ -1291,10 +1451,9 @@ export function loadProgram(
  * packages whose declarations the boundary projects from. */
 function declBoundaryUserFiles(program: ts.Program, packages: readonly string[]): string[] {
   const out: string[] = [];
-  for (const sf of program.getSourceFiles()) {
+  for (const sf of program.getImplementationSourceFiles()) {
     const name = sf.fileName.split("\\").join("/");
-    if (sf.isDeclarationFile || name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name))
-      continue;
+    if (name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name)) continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
     const text = sf.text;
     if (
@@ -1327,12 +1486,19 @@ function declBoundaryDroppedDiag(file: string): ScrDiagnostic {
  * preflight diagnostics. Preserve the caller's complete load shape when
  * mutating it, including its owned services and disposal callback. */
 export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
-  const { diags, moduleOrder, startupCrash, inlineRequireCycleCalls, moduleEdges } =
-    preflight7(load);
+  const {
+    diags,
+    moduleOrder,
+    startupCrash,
+    inlineRequireCycleCalls,
+    moduleEdges,
+    dynamicImportRejections,
+  } = preflight7(load);
   load.moduleOrder = moduleOrder;
   load.startupCrash = startupCrash;
   load.inlineRequireCycleCalls = inlineRequireCycleCalls;
   load.moduleEdges = moduleEdges;
+  load.dynamicImportRejections = dynamicImportRejections;
   return diags;
 }
 
@@ -1371,8 +1537,16 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   // runtime meaning in a JS file.
   if (d.code >= 8000 && d.code <= 8999) return true;
   if (JS_ANY_OPERATOR_CODES.has(d.code)) {
-    return ts.flattenDiagnosticMessageText(d, "\n").includes("'any'");
+    const text = ts.flattenDiagnosticMessageText(d, "\n");
+    // A primitive wrapper operand (`new Number(1) * 2`): the operator
+    // converts it with ToPrimitive, as for any object.
+    return text.includes("'any'") || /'(Number|String|Boolean)'/.test(text);
   }
+  // An index write on a String wrapper (`new String("ab")[5] = "q"`): Node
+  // adds the property past the end and ignores writes to the read-only
+  // index properties (sloppy) or throws (strict), as the object does.
+  if (d.code === 2542 && ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'"))
+    return true;
   // The deprecated Buffer(...) call without `new`, which Node's Buffer
   // function accepts (containers/bytes.ts lowers it), and fs.ReadStream(...)
   // and fs.WriteStream(...), which construct their stream
@@ -2524,24 +2698,36 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
 /** How a use of a createRequire loader lowers:
  * - "static": a literal call or a literal resolution query, which erases
  *   the loader value.
- * - "deferred": a call with a computed specifier or another argument shape,
- *   or `resolve` / `resolve.paths` read as a value, inside the try block
- *   of a try statement in the same function. The call throws a runtime
- *   fence, and the resolve value is a function that throws one when called
- *   (module-resolution.ts), so the statement's catch clause handles them
- *   (packages that look for optional native addons).
- * - "computed": the same shapes outside a try block.
+ * - "runtime": in JavaScript source, a call with a computed specifier, a
+ *   require.resolve call with a computed request, or `resolve` read as a
+ *   value. The runtime resolves the specifier like Node
+ *   (module-resolution.ts, scr_require.c).
+ * - "deferred": in JavaScript source, inside the try block of a try
+ *   statement in the same function, the other shapes: spread arguments,
+ *   require.resolve with another argument count, and `resolve.paths` with
+ *   a computed request or read as a value. The call throws a runtime
+ *   fence, and the resolve.paths value is a function that throws one when
+ *   called (module-resolution.ts), so the statement's catch clause handles
+ *   them (packages that look for optional native addons).
+ * - "computed": the "runtime" uses in TypeScript source, and the
+ *   "deferred" shapes outside a try block.
  * - "escaping": the loader itself as a value, writes, optional calls, and
  *   other members. */
 const COMPUTED_CREATE_REQUIRE_REASON =
-  "its createRequire result is used with a computed specifier, or its resolve as a value, outside a try block (static requires need literal specifiers)";
+  "its createRequire result is used with a computed specifier in TypeScript, or with spread arguments or resolve.paths outside a try block (static requires need literal specifiers)";
 
-type CreateRequireUse7 = "static" | "deferred" | "computed" | "escaping";
+type CreateRequireUse7 = "static" | "runtime" | "deferred" | "computed" | "escaping";
 
 function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
+  const use = createRequireUseShape7(expr);
+  return use === "runtime" && !isJsSourceFile(ts.getSourceFileOfNode(expr)) ? "computed" : use;
+}
+
+function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
   let use: ts.Node = expr;
   while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
   let member = false;
+  let paths = false;
   if (
     ts.isPropertyAccessExpression(use.parent) &&
     use.parent.expression === use &&
@@ -2555,16 +2741,26 @@ function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
       use.parent.expression === use &&
       use.parent.name.text === "paths" &&
       !use.parent.questionDotToken
-    )
+    ) {
       use = use.parent;
+      paths = true;
+    }
   }
   const call = use.parent;
   if (ts.isCallExpression(call) && call.expression === use) {
     if (call.questionDotToken) return "escaping";
-    if (call.arguments.nodes.length === 1 && ts.isStringLiteralLike(call.arguments.nodes[0]!))
-      return "static";
+    const args = call.arguments.nodes;
+    if (args.length === 1 && ts.isStringLiteralLike(args[0]!)) return "static";
+    if (
+      !paths &&
+      !args.some((arg) => ts.isSpreadElement(arg)) &&
+      !(member && (args.length === 0 || args.length > 2))
+    )
+      return "runtime";
   } else if (!member || isAssignmentTarget7(use)) {
     return "escaping";
+  } else if (!paths) {
+    return "runtime";
   }
   return insideTryBlock7(use) ? "deferred" : "computed";
 }
@@ -2577,6 +2773,107 @@ function isAssignmentTarget7(node: ts.Node): boolean {
     parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
     parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
   );
+}
+
+/** True when the identifier is a reference position that WRITES: an
+ * assignment (or compound-assignment) target, a `++`/`--` operand, a
+ * for-in/for-of head, or an element of a destructuring pattern — through
+ * parentheses and pattern containers, exactly the shapes a sloppy-mode
+ * implicit global can be introduced by. */
+export function isJsWriteTarget7(node: ts.Node): boolean {
+  let cur: ts.Node = node;
+  for (;;) {
+    const parent: ts.Node | undefined = cur.parent;
+    if (parent === undefined) return false;
+    if (ts.isParenthesizedExpression(parent)) {
+      cur = parent;
+      continue;
+    }
+    if (ts.isBinaryExpression(parent))
+      return (
+        parent.left === cur &&
+        parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+      return (
+        parent.operand === cur &&
+        (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+          parent.operator === ts.SyntaxKind.MinusMinusToken)
+      );
+    if (ts.isForInStatement(parent) || ts.isForOfStatement(parent))
+      return parent.initializer === cur;
+    if (ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent)) {
+      cur = parent;
+      continue;
+    }
+    if (
+      (ts.isShorthandPropertyAssignment(parent) && parent.name === cur) ||
+      (ts.isPropertyAssignment(parent) && parent.initializer === cur) ||
+      ((ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent)) && parent.expression === cur)
+    ) {
+      cur = parent;
+      continue;
+    }
+    return false;
+  }
+}
+
+/** Nothing binds `node`: the tsc had no symbol, and a shorthand pattern's
+ * name has no VALUE binding either (its property symbol is the target, not a
+ * declaration of the name being written). */
+function undeclaredJsName7(
+  checker: ReturnType<ts.Program["getTypeChecker"]>,
+  node: ts.Identifier,
+): boolean {
+  const parent = node.parent;
+  if (parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === node)
+    return checker.getShorthandAssignmentValueSymbol(parent) === undefined;
+  return checker.getSymbolAtLocation(node) === undefined;
+}
+
+/** A `.js` WRITE to a name nothing declares (plan D-2/D-5). Sloppy mode
+ * resolves such a write by creating a property on Node's global object —
+ * process-wide state a native binary has no object for — so the program is
+ * refused at build time, under SC1091, whose text names the Node-island
+ * route those semantics need. A READ of the same name is admitted instead:
+ * it throws Node's own catchable `ReferenceError` at the access
+ * (lowering/expressions/identifiers.ts). TypeScript input never reaches
+ * either path — an undeclared name is a compile error there. */
+function jsUndeclaredWriteDiags(
+  program: ts.Program,
+  files: readonly ts.SourceFile[],
+): ScrDiagnostic[] {
+  const diags: ScrDiagnostic[] = [];
+  const checker = program.getTypeChecker();
+  for (const sf of files) {
+    if (!isJsSourceFileName(sf.fileName)) continue;
+    const stack: ts.Node[] = [sf];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      // An empty name is a parse-recovery artifact (`@import x = require(…)`
+      // in a JSDoc prologue leaves one behind), never a reference a program
+      // writes; the syntax error that created it is already reported.
+      if (
+        ts.isIdentifier(node) &&
+        node.text !== "" &&
+        isJsWriteTarget7(node) &&
+        undeclaredJsName7(checker, node)
+      )
+        diags.push(
+          unsupportedDiag(
+            "SC1091",
+            { file: sf.fileName, start: node.getStart(sf), end: node.end },
+            `writing the undeclared name '${node.text}' in a JavaScript source`,
+          ),
+        );
+      ts.forEachChild(node, (child) => {
+        stack.push(child);
+        return undefined;
+      });
+    }
+  }
+  return diags;
 }
 
 /** True when `node` is inside the try block of a try statement in the same
@@ -4446,7 +4743,7 @@ function cycleReachedDeferredReferences7(
     if (symbol === undefined) continue;
     const units = unitsOfName.get(name)!;
     unitsBySymbol.set(symbol, [...(unitsBySymbol.get(symbol) ?? []), ...units]);
-    allUnits.push(...units);
+    for (const unit of units) allUnits.push(unit);
   }
   // A named class expression's inner name (`class Impl { static x =
   // Impl.m(); }`) names the class inside its own body, as the binding it
@@ -4615,7 +4912,7 @@ export function moduleEarlyBindings(
   const out: CycleEarlyBinding[] = [];
   for (const sf of order) {
     if (sf.isDeclarationFile || exact.has(sf)) continue;
-    out.push(...moduleEarlyBindingsOf7(program, sf, order));
+    for (const binding of moduleEarlyBindingsOf7(program, sf, order)) out.push(binding);
   }
   program.analysis.moduleEarlyBindings = { key, bindings: out };
   return out;
@@ -5011,7 +5308,7 @@ function laterJobCallee7(checker: ts.TypeChecker, callee: ts.Expression): boolea
   // package declarations describe user code.
   return decls.every((d) => {
     const file = ts.getSourceFileOfNode(d).fileName;
-    return isNodeTypesPath(file) || file === fallbackDtsPath();
+    return isNodeTypesPath(file) || isFallbackDtsPath(file);
   });
 }
 
@@ -5243,12 +5540,30 @@ export function checkPreflightTs7(
   }
 }
 
+/** Whether a declaration file has the runtime file TypeScript pairs it
+ * with (`x.d.ts` with `x.js`, `x.d.mts` with `x.mjs`, `x.d.cts` with
+ * `x.cjs`): a specifier that resolves to the declaration then still names a
+ * module Node can load. */
+function declarationHasRuntimeFile(declaration: ts.SourceFile): boolean {
+  const name = declaration.fileName;
+  const pairs: [string, string][] = [
+    [".d.ts", ".js"],
+    [".d.mts", ".mjs"],
+    [".d.cts", ".cjs"],
+  ];
+  for (const [declared, runtime] of pairs)
+    if (name.endsWith(declared))
+      return trackedFileExists(name.slice(0, -declared.length) + runtime);
+  return false;
+}
+
 function preflight7(load: LoadResult): {
   diags: ScrDiagnostic[];
   moduleOrder: ts.SourceFile[];
   startupCrash: StartupCrash | null;
   inlineRequireCycleCalls: ReadonlySet<ts.Node>;
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]>;
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash>;
 } {
   const { program, entry } = load;
   const diags: ScrDiagnostic[] = [...load.configDiags];
@@ -5435,7 +5750,14 @@ function preflight7(load: LoadResult): {
     const sf = p.getSourceFile(d.fileName);
     return sf !== undefined && isCheckedJsSourceFile(sf, projectCheckJs);
   };
-  const errorsOf = (p: ts.Program): ts.Diagnostic[] => keptErrors(p, ts.getPreEmitDiagnostics(p));
+  // keptErrors drops every diagnostic of these files: the gate does not ask
+  // the checker for them.
+  const diagnosticsKept = (fileName: string): boolean =>
+    npmStaticPackageOfPath(fileName) === null &&
+    !unselectedPackageJsFile(fileName) &&
+    !isPackageShimFile(fileName);
+  const errorsOf = (p: ts.Program): ts.Diagnostic[] =>
+    keptErrors(p, ts.getPreEmitDiagnostics(p, diagnosticsKept));
   const keptErrors = (p: ts.Program, all: readonly ts.Diagnostic[]): ts.Diagnostic[] => {
     // First pass: every comment-side 2300's (file, name) — the partners
     // the second pass forgives.
@@ -5734,6 +6056,16 @@ function preflight7(load: LoadResult): {
           );
           continue;
         }
+        // A re-export from a Node island package that tsconfig `paths` maps
+        // to its installed directory: its declarations are no program
+        // module (the lowering reports the island boundary).
+        if (
+          projectReexport !== null &&
+          projectReexport.isDeclarationFile &&
+          !isRelativeSpecifier(fromSpec) &&
+          isFrontendIsland(packageNameOfSpecifier(fromSpec))
+        )
+          continue;
         const reDep = projectReexport;
         // `export * as ns from "./m"` re-exports the module NAMESPACE
         // object under a name: importers' `x.ns.member` reads resolve
@@ -5753,6 +6085,21 @@ function preflight7(load: LoadResult): {
             continue;
           }
         }
+        // A re-export whose specifier resolves ONLY to a declaration file
+        // has no runtime module to link (Node throws
+        // ERR_MODULE_NOT_FOUND), and a declaration file is not a program
+        // module: an edge to it would lower the declarations' own imports
+        // as code.
+        if (reDep !== null && reDep.isDeclarationFile && !declarationHasRuntimeFile(reDep)) {
+          diags.push(
+            unsupportedDiag(
+              "SC1010",
+              locOf7(stmt),
+              `the '${fromSpec}' re-export (it resolves only to type declarations — there is no runtime implementation to compile)`,
+            ),
+          );
+          continue;
+        }
         if (reDep && !reDep.fileName.endsWith(".json")) {
           deps.push({ dep: reDep, stmt });
           depPositions.get(sf)!.push({ dep: reDep, pos: ts.tokenStartOfNode(stmt) });
@@ -5761,6 +6108,14 @@ function preflight7(load: LoadResult): {
       }
       if (!ts.isImportDeclaration(stmt)) continue;
       if (erasedTypeOnlyImport(stmt)) continue;
+      // `import source x from "./x.wasm"` (TypeScript 7.1) binds the module's source object, such
+      // as a WebAssembly.Module; compiled programs do not support it yet.
+      if (isSourcePhaseImport(stmt.importClause)) {
+        diags.push(
+          unsupportedDiag("SC1090", locOf7(stmt), "source phase imports (`import source`)"),
+        );
+        continue;
+      }
 
       // Import-like nodes whose specifier the parse could not shape into a
       // string literal — the jsdoc `/** @import x = require(...) */`
@@ -5799,9 +6154,10 @@ function preflight7(load: LoadResult): {
         message: string,
         className: StartupCrash["className"],
         fallbackFeature: string,
+        code?: string,
       ): void => {
         refusals.get(sf)!.push({
-          crash: { message, className, loc: locOf7(stmt) },
+          crash: { message, className, loc: locOf7(stmt), ...(code !== undefined ? { code } : {}) },
           fallback: unsupportedDiag("SC1010", locOf7(stmt), fallbackFeature),
           pos: ts.tokenStartOfNode(stmt),
         });
@@ -5844,6 +6200,7 @@ function preflight7(load: LoadResult): {
               refusal.message,
               "%Error",
               `the '${spec}' package (its runtime resolution fails: ${refusal.message})`,
+              refusal.code,
             );
           }
           continue;
@@ -5856,6 +6213,16 @@ function preflight7(load: LoadResult): {
       // Node's startup crash with Node's exact message; what keeps a compile
       // fence is unsupported builtin or types-only surface.
       if (isBare && npmStaticDep === null) {
+        // A Node island package that tsconfig `paths` maps to its
+        // installed directory resolves to its declarations here: it loads
+        // in Node, typed by them, like an island package resolved through
+        // node_modules (scope-B NI-4).
+        if (
+          projDep !== null &&
+          projDep.isDeclarationFile &&
+          isFrontendIsland(packageNameOfSpecifier(spec))
+        )
+          continue;
         if (projDep !== null && projDep.isDeclarationFile) {
           diags.push(
             unsupportedDiag(
@@ -5881,6 +6248,7 @@ function preflight7(load: LoadResult): {
               `Invalid module "#" is not a valid internal imports specifier name imported from ${sf.fileName}`,
               "%TypeError",
               `the '#' import (Node rejects the bare '#' specifier as invalid)`,
+              "ERR_INVALID_MODULE_SPECIFIER",
             );
             continue;
           }
@@ -5901,6 +6269,7 @@ function preflight7(load: LoadResult): {
               `Package import specifier "${spec}" is not defined${pkgJson !== null ? ` in package ${pkgJson}` : ""} imported from ${sf.fileName}`,
               "%TypeError",
               `the '${spec}' import (no package.json imports-field entry maps it)`,
+              "ERR_PACKAGE_IMPORT_NOT_DEFINED",
             );
             continue;
           }
@@ -5909,7 +6278,7 @@ function preflight7(load: LoadResult): {
             const ambientNote = ambientDeclared(spec)
               ? `the '${spec}' module (it exists only as an ambient 'declare module' type surface — there is no runtime module to import)`
               : `the '${spec}' package (nothing installed resolves it)`;
-            refuse(refusal.message, "%Error", ambientNote);
+            refuse(refusal.message, "%Error", ambientNote, refusal.code);
             continue;
           }
           // Runtime-resolvable (or a shape the probe stays conservative
@@ -5929,6 +6298,22 @@ function preflight7(load: LoadResult): {
       const clause = stmt.importClause;
       const dep = isRelative ? resolveImport7(program, sf, spec) : (npmStaticDep ?? projDep);
       const isJson = dep !== null && dep.fileName.endsWith(".json");
+      // A specifier that resolves ONLY to a declaration file has no runtime
+      // module to link: Node throws ERR_MODULE_NOT_FOUND at this import.
+      // Declarations are not program modules — taking one as a module-order
+      // edge would lower its imports as if it were code (SC2013 for every
+      // specifier inside a package's `.d.ts`). Type-only imports were
+      // already erased above; this is the value form.
+      if (dep !== null && dep.isDeclarationFile && !isJson && !declarationHasRuntimeFile(dep)) {
+        diags.push(
+          unsupportedDiag(
+            "SC1010",
+            locOf7(stmt),
+            `the '${spec}' import (it resolves only to type declarations — there is no runtime implementation to compile)`,
+          ),
+        );
+        continue;
+      }
       // SELF-imports: the bindings alias this module's OWN declarations,
       // so a TOP-LEVEL read lexically above the aliased declaration is
       // Node's TDZ ReferenceError at runtime (exactly what tsc's TS2448
@@ -6015,7 +6400,12 @@ function preflight7(load: LoadResult): {
                 ),
               );
             }
-          } else if (dep === null && !(!isRelative && ambientModules.has(spec))) {
+          } else if (
+            dep === null &&
+            !(!isRelative && ambientModules.has(spec)) &&
+            // A Node island module's namespace (scope-B NI-4).
+            !(!isRelative && isFrontendIsland(packageNameOfSpecifier(spec)))
+          ) {
             diags.push(unsupportedDiag("SC1013", locOf7(clause.namedBindings)));
           }
         }
@@ -6194,7 +6584,11 @@ function preflight7(load: LoadResult): {
                 // optional-dependency try/require pattern), so no fence.
                 // Binding forms keep the fence: their downstream reads
                 // would need the module that never loads.
-                if (req.decl !== null || probeNodeRequireRefusal(sf.fileName, req.spec) === null) {
+                if (
+                  (req.decl !== null || probeNodeRequireRefusal(sf.fileName, req.spec) === null) &&
+                  // A Node island package: loaded in Node at the require (NI-4).
+                  !isFrontendIsland(packageNameOfSpecifier(req.spec))
+                ) {
                   diags.push(unsupportedDiag("SC1010", loc, unsupportedModuleFeatureOf(req.spec)));
                 }
               }
@@ -6202,6 +6596,10 @@ function preflight7(load: LoadResult): {
             }
           }
           if (earlyRequireFence(req, bindingKind, loc)) continue;
+          // A declaration file is never a runtime module (see the import
+          // arm): the require throws MODULE_NOT_FOUND in Node, so it is not
+          // a module-order edge.
+          if (dep !== null && dep.isDeclarationFile) continue;
           if (dep) deps.push({ dep });
         }
       }
@@ -6251,7 +6649,10 @@ function preflight7(load: LoadResult): {
           if (canonicalBuiltinModule(spec) === null && !processModuleAliasRequire7(spec, null)) {
             // Binding-less by construction — same require-site throw
             // channel as the statement-level form above.
-            if (probeNodeRequireRefusal(sf.fileName, spec) === null) {
+            if (
+              probeNodeRequireRefusal(sf.fileName, spec) === null &&
+              !isFrontendIsland(packageNameOfSpecifier(spec))
+            ) {
               diags.push(unsupportedDiag("SC1010", loc, unsupportedModuleFeatureOf(spec)));
             }
           }
@@ -6277,7 +6678,8 @@ function preflight7(load: LoadResult): {
             lazy ? { dep, lazy: true, call } : { dep, call };
           const projectDep = resolveImport7(program, sf, spec, "require");
           if (projectDep !== null) {
-            if (!projectDep.fileName.endsWith(".json")) deps.push(edgeTo(projectDep));
+            if (!projectDep.fileName.endsWith(".json") && !projectDep.isDeclarationFile)
+              deps.push(edgeTo(projectDep));
             continue;
           }
           if (isRelativeSpecifier(spec) || spec.startsWith("#")) continue;
@@ -6366,6 +6768,11 @@ function preflight7(load: LoadResult): {
   };
   visit(entry);
 
+  // ECMAScript's sloppy-mode WRITE to an undeclared name, which the JS
+  // relaxation above admits for READS (plan D-2): refused by name, with the
+  // island route in the text (SC1091).
+  for (const d of jsUndeclaredWriteDiags(program, order)) diags.push(d);
+
   // The startup crash Node's RESOLUTION phase reports: modules resolve
   // their request specifiers in source order, children linking depth-first
   // as each resolves (ModuleJob.syncLink) — a preorder walk over the
@@ -6375,6 +6782,7 @@ function preflight7(load: LoadResult): {
   // them). A found resolution crash wins over the CJS link check below:
   // Node's fetch/resolve phase runs before instantiate.
   let resolveCrash: StartupCrash | null = null;
+  const dynamicImportRejections = new Map<ts.SourceFile, StartupCrash>();
   {
     const seen = new Set<ts.SourceFile>();
     const walk = (sf: ts.SourceFile): StartupCrash | null => {
@@ -6394,6 +6802,45 @@ function preflight7(load: LoadResult): {
       return null;
     };
     resolveCrash = walk(entry);
+    // A module only a literal import() loads resolves its static graph when
+    // that import runs: Node rejects the import's promise with the first
+    // refusal it meets, before any module of that graph evaluates. Such a
+    // module never joins the compiled graph, and the refusals inside its
+    // graph are that rejection, not build failures.
+    const reach = (from: ts.SourceFile, into: Set<ts.SourceFile>): void => {
+      const stack = [from];
+      while (stack.length > 0) {
+        const sf = stack.pop()!;
+        if (into.has(sf)) continue;
+        into.add(sf);
+        for (const { dep } of depPositions.get(sf) ?? []) stack.push(dep);
+      }
+    };
+    const startup = new Set<ts.SourceFile>();
+    reach(entry, startup);
+    const covered = new Set<ts.SourceFile>();
+    for (const sf of userFiles) {
+      if (!sf.text.includes("import")) continue;
+      for (const call of moduleSourceCandidates(program, sf).calls) {
+        const arg = call.arguments.nodes[0];
+        if (call.expression.kind !== ts.SyntaxKind.ImportKeyword || arg === undefined) continue;
+        if (!ts.isStringLiteralLike(arg) || isUnloadedPackage(arg.text)) continue;
+        const root =
+          resolveImport7(program, sf, arg.text) ?? npmStaticDepSf7(program, sf, arg.text);
+        if (root === null || root.isDeclarationFile || startup.has(root)) continue;
+        // A module inside an already-rejected graph is `covered`, but a
+        // literal import() of it needs its OWN rejection entry: its graph
+        // rejects when that import runs, so it must not join the compiled
+        // graph (where lowering would fail) merely because another rejected
+        // import also reaches it. Walk each direct root independently.
+        if (dynamicImportRejections.has(root)) continue;
+        seen.clear();
+        const crash = walk(root);
+        if (crash === null) continue;
+        dynamicImportRejections.set(root, crash);
+        reach(root, covered);
+      }
+    }
     // The crash channel engages only for programs that OTHERWISE pass
     // preflight: when any other diagnostic already fails the build, every
     // refusal keeps its compile-fence fallback instead — the report names
@@ -6401,7 +6848,8 @@ function preflight7(load: LoadResult): {
     // get a diagnostic. (No reachable refusal → same: fallbacks only.)
     if (resolveCrash === null || diags.length > 0) {
       resolveCrash = null;
-      for (const cands of refusals.values()) {
+      for (const [sf, cands] of refusals) {
+        if (covered.has(sf) && !startup.has(sf)) continue;
         for (const c of cands) diags.push(c.fallback);
       }
     }
@@ -6416,12 +6864,18 @@ function preflight7(load: LoadResult): {
           esmNamedImportLinkCheck(program, entry, order, diags),
         );
 
+  // ECMAScript early errors the TypeScript checker does not model (plan
+  // §7.7 D-4): a JavaScript source the spec makes a SyntaxError fails here,
+  // before any lowering, exactly where a tsc parse error fails.
+  diags.push(...earlyErrorDiagnostics7(order, (sf) => isNodeEsmFile7(sf, program)));
+
   return {
     diags,
     moduleOrder: order,
     startupCrash: resolveCrash ?? linkCrash,
     inlineRequireCycleCalls,
     moduleEdges: edges,
+    dynamicImportRejections,
   };
 }
 
@@ -7094,7 +7548,13 @@ const nodeBuiltinNames: ReadonlySet<string> = new Set(builtinModules);
  * established (the phase-2 port kept every spelling); the world-neutral
  * helpers re-export from their focused modules. */
 
-export { ambientDtsPath, fallbackDtsPath, isNodeTypesPath, overridesDtsPath } from "./dts-paths.js";
+export {
+  ambientDtsPath,
+  fallbackDtsPath,
+  isFallbackDtsPath,
+  isNodeTypesPath,
+  overridesDtsPath,
+} from "./dts-paths.js";
 
 export {
   builtinDefaultImportModule,

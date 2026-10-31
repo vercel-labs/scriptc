@@ -305,10 +305,35 @@ test("a function holds a site when it calls a classified helper or dispatches a 
   expect(hasJsIcSite(caller, sites)).toBe(true);
   expect(hasJsIcSite(invoker, sites)).toBe(true);
   expect(hasJsIcSite(plain, sites)).toBe(false);
-  // Module initializers keep plain method dispatch (top-level handle
-  // wiring), while their property sites still cache.
+  // Module initializers keep plain method dispatch at top level (handle
+  // wiring), while their property sites still cache, and so do method
+  // sites in their loops.
   expect(hasJsIcSite({ ...invoker, name: "%init.0" }, sites)).toBe(false);
   expect(hasJsIcSite({ ...caller, name: "%init.0" }, sites)).toBe(true);
+  const looped: IrStmt = {
+    kind: "while",
+    cond: { kind: "boolLit", value: false, type: BOOL, loc },
+    body: invoker.body,
+    loc,
+  };
+  expect(hasJsIcSite({ ...invoker, name: "%init.0", body: [looped] }, sites)).toBe(true);
+});
+
+test("a function holds a site when an object literal has a constant-key member", () => {
+  const sites = sitesOf();
+  const literal = (key: IrExpr): IrFunction =>
+    helper(
+      "f",
+      ["o"],
+      [ret({ kind: "dynObjLit", fields: [{ key, value: ref("o") }], type: DYN, loc })],
+    );
+  expect(hasJsIcSite(literal(str("x")), sites)).toBe(true);
+  // `__proto__` sets the prototype, and a computed key has no constant
+  // name: both keep the generic member store.
+  expect(hasJsIcSite(literal(str("__proto__")), sites)).toBe(false);
+  expect(hasJsIcSite(literal(ref("k")), sites)).toBe(false);
+  // Module initializers build their literals once.
+  expect(hasJsIcSite({ ...literal(str("x")), name: "%init.0" }, sites)).toBe(false);
 });
 
 test("bag helpers that exit early for values no class branch matches are still the receiver", () => {

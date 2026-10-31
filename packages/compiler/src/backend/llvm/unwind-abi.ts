@@ -1,7 +1,14 @@
 /* The functions that propagate exceptions by unwinding instead of the
  * pending flag (see unwindAbiFunctions). */
-import type { IrExpr, IrModule } from "../../ir/ir.js";
-import { everyStmtList } from "../../ir/traverse.js";
+import type { IrExpr, IrModule, IrStmt } from "../../ir/ir.js";
+import { eachStringField } from "../../ir/fields.generated.js";
+import { eachNodeOfKinds, type IrNodeIndex } from "../../ir/node-index.js";
+import { InternalCompilerError } from "../../errors.js";
+
+/** The kinds of every recorded node, for eachNodeOfKinds over whole bodies. */
+const EVERY_KIND: ReadonlySet<string> = new Set();
+/** Virtual calls, which name the methods a vtable must reach. */
+const VIRTUAL_CALL_KINDS = ["virtualCall"] as const;
 
 /** How many calls above a `throw` functions keep the pending flag. */
 const THROW_LEVELS = 3;
@@ -65,20 +72,28 @@ function recursiveFunctions(edges: ReadonlyMap<string, readonly string[]>): Set<
  * `call` from emitted code that can lower it as an `invoke`: it is not
  * async or a generator, not a constructor, not a method a virtual call can
  * reach or one a vtable holds (an overridden method), not a closure
- * target, not the entry or a library export, not named by any node other
- * than a `call`'s callee, and not called from an async or generator body
- * (coroutine bodies keep plain calls).
+ * target or a closure's jsval body, not the entry or a library export,
+ * not named by any node other than a `call`'s callee, and not called from
+ * an async or generator body (coroutine bodies keep plain calls).
  *
- * A native unwind costs about 2 µs a raise and 0.1 µs a frame, against a
- * few nanoseconds for a flag test, so the functions an exception is likely to
- * cross many of keep the flag: those with a `throw` or rethrow of their own
+ * A native unwind costs about 0.05 µs a raise and 10 to 25 ns a frame on
+ * x86-64 (scr_unwind.c's cached plans) and about 2 µs a raise and 0.1 µs a
+ * frame through libgcc's unwinder, against a few nanoseconds for a flag
+ * test, so the functions an exception is likely to cross many of keep the
+ * flag: those with a `throw` or rethrow of their own
  * and those up to THROW_LEVELS calls above one (a handler near the throw
  * takes it without a native unwind), and the recursive ones (deep stacks
- * are recursions). */
+ * are recursions). With `rareExceptions` (`--exceptions=rare`) only the
+ * functions with a `throw` of their own keep the flag for that reason: the
+ * program throws rarely, so the flag tests after the calls of the others
+ * cost more than the raises. */
 export function unwindAbiFunctions(
   mod: IrModule,
   mayThrow: ReadonlySet<string>,
   excluded: ReadonlySet<string> = new Set(),
+  /** The module's node index: the bodies' nodes are read from it, in walk order, without walking. */
+  nodes?: IrNodeIndex,
+  rareExceptions = false,
 ): Set<string> {
   const names = new Set(mod.functions.map((fn) => fn.name));
   const blocked = new Set<string>(excluded);
@@ -88,6 +103,9 @@ export function unwindAbiFunctions(
   blocked.add("%error.name.read");
   blocked.add("%error.message.read");
   for (const entry of mod.lib?.exports ?? []) blocked.add(entry.fnName);
+  // A closure's jsval body is called through the function value's jsval
+  // entry (IrFunction.jsEntry), which runtime calls reach.
+  for (const fn of mod.functions) if (fn.jsEntry !== undefined) blocked.add(fn.jsEntry);
   // Methods a virtual call can reach, and the overridden methods of class
   // hierarchies (whose vtables list them), are called through pointers; the
   // others are called directly, like functions. A virtual call reaches its listed
@@ -96,16 +114,16 @@ export function unwindAbiFunctions(
   // class's method of that name.
   const classes = new Map((mod.classes ?? []).map((cls) => [cls.name, cls]));
   const anyClass = new Set<string>();
+  const virtualCalls = nodes?.scan(VIRTUAL_CALL_KINDS);
   for (const fn of mod.functions)
-    everyStmtList(fn.body, {
-      expr: (e: IrExpr) => {
-        if (e.kind !== "virtualCall") return true;
-        if (e.targets !== undefined) for (const target of e.targets) blocked.add(target);
-        else if (classes.has(e.className)) blocked.add(`%${e.className}.${e.method}`);
-        else anyClass.add(e.method);
-        return true;
-      },
-      stmt: () => true,
+    // Without the index (or for a function it didn't record) every node
+    // arrives, statements included: the kind test narrows, not a cast.
+    eachNodeOfKinds(fn, virtualCalls, (node) => {
+      if (node.kind !== "virtualCall") return true;
+      if (node.targets !== undefined) for (const target of node.targets) blocked.add(target);
+      else if (classes.has(node.className)) blocked.add(`%${node.className}.${node.method}`);
+      else anyClass.add(node.method);
+      return true;
     });
   // A hierarchy's vtables hold the methods declared by more than one of its
   // classes (an override and what it overrides).
@@ -129,13 +147,14 @@ export function unwindAbiFunctions(
   }
   // Any function a node names other than as a call's callee may be reached
   // through a pointer.
+  // Every string field counts (eachStringField), as a key walk of the node
+  // would find them; a call's callee does not.
   const referenced = new Set<string>();
-  const noteNames = (node: object, skip: string | undefined): void => {
-    for (const key in node) {
-      if (key === skip) continue;
-      const value = (node as Record<string, unknown>)[key];
-      if (typeof value === "string" && names.has(value)) referenced.add(value);
-    }
+  const noteName = (value: string): void => {
+    if (names.has(value)) referenced.add(value);
+  };
+  const noteCallName = (value: string, field: string): void => {
+    if (field !== "callee") noteName(value);
   };
   // The call graph, for the functions near a throw and the recursive ones.
   // Calls through values (closures, class values, dynamic calls, callbacks
@@ -159,9 +178,10 @@ export function unwindAbiFunctions(
       if (list === undefined) methodsNamed.set(m, (list = []));
       list.push(`%${cls.name}.${m}`);
     }
+  const everyNode = nodes?.scanExcept(EVERY_KIND);
   for (const fn of mod.functions) {
     const coroutine = fn.async === true || fn.generator !== undefined;
-    everyStmtList(fn.body, {
+    const visit = {
       expr: (e: IrExpr) => {
         const kind = e.kind as string;
         if (kind === "throw" || kind === "rethrow") throws.add(fn.name);
@@ -171,10 +191,10 @@ export function unwindAbiFunctions(
           // flag they keep landing pads out of the top-level code inlined
           // into the entry.
           if (coroutine || fn.name === mod.entry) blocked.add(e.callee);
-          noteNames(e, "callee");
+          eachStringField(e, noteCallName);
           return true;
         }
-        noteNames(e, undefined);
+        eachStringField(e, noteName);
         if (e.kind === "virtualCall")
           for (const target of e.targets ?? methodsNamed.get(e.method) ?? []) edge(fn.name, target);
         else if (e.kind === "new") {
@@ -190,13 +210,16 @@ export function unwindAbiFunctions(
         }
         return true;
       },
-      stmt: (s) => {
+      stmt: (s: IrStmt) => {
         const kind = s.kind as string;
         if (kind === "throw" || kind === "rethrow") throws.add(fn.name);
-        noteNames(s, undefined);
+        eachStringField(s, noteName);
         return true;
       },
-    });
+    };
+    eachNodeOfKinds(fn, everyNode, (node, statement) =>
+      statement ? visit.stmt(node as IrStmt) : visit.expr(node as IrExpr),
+    );
   }
   for (const name of referenced) {
     blocked.add(name);
@@ -206,25 +229,34 @@ export function unwindAbiFunctions(
   // THROW_LEVELS calls above it. The union narrowing helpers' throws (a
   // failed narrowing) don't count for their callers.
   for (const name of throws) blocked.add(name);
-  let level = [...throws].filter((name) => !name.startsWith("%union."));
-  const near = new Set(level);
-  for (let i = 0; i < THROW_LEVELS; i++) {
-    const next: string[] = [];
-    for (const name of level)
-      for (const caller of callers.get(name) ?? [])
-        if (!near.has(caller)) {
-          near.add(caller);
-          next.push(caller);
-        }
-    level = next;
+  if (!rareExceptions) {
+    let level = [...throws].filter((name) => !name.startsWith("%union."));
+    const near = new Set(level);
+    for (let i = 0; i < THROW_LEVELS; i++) {
+      const next: string[] = [];
+      for (const name of level)
+        for (const caller of callers.get(name) ?? [])
+          if (!near.has(caller)) {
+            near.add(caller);
+            next.push(caller);
+          }
+      level = next;
+    }
+    for (const name of near) blocked.add(name);
+    for (const name of recursiveFunctions(callees)) blocked.add(name);
   }
-  for (const name of near) blocked.add(name);
-  for (const name of recursiveFunctions(callees)) blocked.add(name);
   const result = new Set<string>();
   for (const fn of mod.functions) {
     if (!mayThrow.has(fn.name) || blocked.has(fn.name)) continue;
     if (fn.async === true || fn.generator !== undefined) continue;
     result.add(fn.name);
+  }
+  if (nodes !== undefined && process.env["SCRIPTC_EMIT_FACTS_VERIFY"] === "1") {
+    const walked = unwindAbiFunctions(mod, mayThrow, excluded, undefined, rareExceptions);
+    if (walked.size !== result.size || [...walked].some((name) => !result.has(name)))
+      throw new InternalCompilerError(
+        "unwind ABI: the functions read from the node index differ from a walk's",
+      );
   }
   return result;
 }
@@ -233,8 +265,8 @@ export function unwindAbiFunctions(
  * its own takes the exception. */
 export const UNWIND_RAISE = "call void @scr_unwind_raise()\n  unreachable";
 /** What the unwind of a landing pad ends with when no handler of the
- * function takes the exception: the unwind goes on (`resume`) with the
- * exception the landing pad stored in UNWIND_SLOT. The block builder
+ * function takes the exception: the unwind goes on (scr_unwind_resume) with
+ * the exception the landing pad stored in UNWIND_SLOT. The block builder
  * expands it (BlockBuilder.terminate). */
 export const UNWIND_RESUME = "resume { ptr, i32 } <unwind slot>";
 /** The function's slot for the exception its landing pads take. */
@@ -243,13 +275,17 @@ export const UNWIND_SLOT = "%unw.exc";
  * would call the sanitizer's no-return hook before it, which fails on fiber
  * stacks; scr_unwind_raise clears the unwound frames' shadow itself. */
 export const UNWIND_RAISE_DECLARATION = "declare void @scr_unwind_raise() cold";
+/** scr_unwind_resume's declaration. Landing pads call it with the
+ * exception they took to continue the unwind (BlockBuilder.resumeUnwind);
+ * like scr_unwind_raise, it is not `noreturn`. */
+export const UNWIND_RESUME_DECLARATION = "declare void @scr_unwind_resume(ptr) cold";
 
 /** The personality of functions with landing pads: the landing pads are
- * cleanups that scr_unwind_raise's forced unwind runs. */
+ * cleanups that scr_unwind_raise's unwind runs. */
 export const UNWIND_PERSONALITY = "personality ptr @__gcc_personality_v0";
 
-/** An unwind leaving the function: a raise, or a landing pad's `resume`. */
-const UNWINDS = /call void @scr_unwind_raise\(\)|\n\s+resume /;
+/** An unwind leaving the function: a raise, or a landing pad's resume. */
+const UNWINDS = /call void @scr_unwind_raise\(\)|call void @scr_unwind_resume\(/;
 /** A pending-flag test: the thread's exception word, the active cell, or the runtime query. */
 const PENDING_TEST = /@scr_exc_flag\b|%exc\.cell\b|@scr_exc_active\b|@scr_exc_pending\(/;
 
@@ -286,19 +322,60 @@ function argumentsEnd(line: string, open: number): number {
   return close;
 }
 
-/** A call that cannot unwind, marked so: only scr_unwind_raise and the
- * raising functions propagate an unwind (runtime code and every function
- * reached through a pointer return normally), so every other call is
- * `nounwind`, and the inliner keeps it a call where it inlines a raising
- * function at an invoke. */
+/** A call that cannot unwind, marked so: only scr_unwind_raise,
+ * scr_unwind_resume and the raising functions propagate an unwind (runtime
+ * code and every function reached through a pointer return normally), so
+ * every other call is `nounwind`, and the inliner keeps it a call where it
+ * inlines a raising function at an invoke. */
 function markNounwind(line: string): string {
   const call = line.indexOf("call ");
   const callee = CALLEE.exec(line.slice(call));
-  if (callee === null || callee[0] === "@scr_unwind_raise(") return line;
+  if (callee === null || callee[0] === "@scr_unwind_raise(" || callee[0] === "@scr_unwind_resume(")
+    return line;
   const close = argumentsEnd(line, call + callee.index + callee[0].length - 1);
   return close >= line.length
     ? line
     : `${line.slice(0, close + 1)} nounwind${line.slice(close + 1)}`;
+}
+
+/** The functions of `part`: its text split before each `define` line
+ * (`part.split(/\n(?=define )/)`), found with indexOf. */
+function splitFunctions(part: string): string[] {
+  const chunks: string[] = [];
+  let start = 0;
+  for (let at = part.indexOf("\ndefine "); at >= 0; at = part.indexOf("\ndefine ", at + 1)) {
+    chunks.push(part.slice(start, at));
+    start = at + 1;
+  }
+  chunks.push(part.slice(start));
+  return chunks;
+}
+
+/** Whether `code` can be part of a symbol name (`[\w.$%-]`). */
+function isNameCode(code: number): boolean {
+  return (
+    (code >= 97 && code <= 122) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 48 && code <= 57) ||
+    code === 95 /* _ */ ||
+    code === 46 /* . */ ||
+    code === 36 /* $ */ ||
+    code === 37 /* % */ ||
+    code === 45 /* - */
+  );
+}
+
+/** Calls `each` with every line of `chunk` that holds `call `, by its start
+ * and end offsets, once per line and in order. Lines without `call ` match
+ * neither CALL_LINE nor PLAIN_CALL. */
+function eachCallLine(chunk: string, each: (start: number, end: number) => void): void {
+  for (let at = chunk.indexOf("call "); at >= 0;) {
+    const start = chunk.lastIndexOf("\n", at) + 1;
+    let end = chunk.indexOf("\n", at);
+    if (end < 0) end = chunk.length;
+    each(start, end);
+    at = chunk.indexOf("call ", end);
+  }
 }
 
 /** The value a bridged call yields on its landing pad: the dummy a
@@ -318,7 +395,7 @@ function dummyValue(type: string): string {
  * these functions that emitDirectCall lowered are invokes already. */
 export function bridgePlainUnwindCalls(parts: string[]): string[] {
   const raisers = new Set<string>();
-  const split = parts.map((part) => part.split(/\n(?=define )/));
+  const split = parts.map(splitFunctions);
   for (const chunks of split)
     for (const chunk of chunks) {
       const m = DEFINE_NAME.exec(chunk);
@@ -359,28 +436,66 @@ export function bridgePlainUnwindCalls(parts: string[]): string[] {
       }
   }
   for (const name of invoked) if (!raisers.has(name) && testsFlag.has(name)) violations.add(name);
+  // Every mention of a raising function outside its `define` line, other
+  // than as the callee of a call or invoke, found with indexOf.
   for (const chunks of split)
     for (const chunk of chunks)
-      for (const line of chunk.split("\n")) {
-        if (line.startsWith("define ")) continue;
-        for (const m of line.matchAll(/@([\w.$%-]+)/g)) {
-          if (!raisers.has(m[1]!)) continue;
-          const at = m.index!;
-          if (
-            /(?:call|invoke) [^@]*$/.test(line.slice(0, at)) &&
-            line.charAt(at + m[0].length) === "("
-          )
-            continue;
-          violations.add(m[1]!);
+      for (let at = chunk.indexOf("@"); at >= 0;) {
+        let end = at + 1;
+        while (end < chunk.length && isNameCode(chunk.charCodeAt(end))) end++;
+        const next = chunk.indexOf("@", end);
+        if (end === at + 1) {
+          at = next;
+          continue;
         }
+        const name = chunk.slice(at + 1, end);
+        if (raisers.has(name)) {
+          const start = chunk.lastIndexOf("\n", at) + 1;
+          const line = chunk.slice(start, at);
+          if (
+            !line.startsWith("define ") &&
+            !(/(?:call|invoke) [^@]*$/.test(line) && chunk.charAt(end) === "(")
+          )
+            violations.add(name);
+        }
+        at = next;
       }
   if (violations.size > 0) throw new UnwindAbiViolation(violations);
   let personality = false;
+  let resumes = false;
   let counter = 0;
   const out = split.map((chunks) =>
     chunks
       .map((chunk) => {
         if (!DEFINE_NAME.test(chunk) || !chunk.includes("call ")) return chunk;
+        // A function without a plain call of a raising function only marks
+        // its calls nounwind: rewrite just its call lines.
+        let bridged = false;
+        const marks: { start: number; end: number; line: string }[] = [];
+        eachCallLine(chunk, (start, end) => {
+          if (bridged) return;
+          const line = chunk.slice(start, end);
+          const m = PLAIN_CALL.exec(line);
+          const callee = m === null ? undefined : (m[4] ?? m[7]);
+          if (m !== null && callee !== undefined && raisers.has(callee)) {
+            bridged = true;
+            return;
+          }
+          if (!CALL_LINE.test(line)) return;
+          const marked = markNounwind(line);
+          if (marked !== line) marks.push({ start, end, line: marked });
+        });
+        if (!bridged) {
+          if (marks.length === 0) return chunk;
+          const pieces: string[] = [];
+          let from = 0;
+          for (const mark of marks) {
+            pieces.push(chunk.slice(from, mark.start), mark.line);
+            from = mark.end;
+          }
+          pieces.push(chunk.slice(from));
+          return pieces.join("");
+        }
         const lines = chunk.split("\n");
         const resume = resumers.has(DEFINE_NAME.exec(chunk)![1]!);
         const result: string[] = [];
@@ -427,8 +542,11 @@ export function bridgePlainUnwindCalls(parts: string[]): string[] {
             result.push(
               `${pad}:`,
               `${indent}%ub.v.${n} = landingpad { ptr, i32 } cleanup`,
-              `${indent}resume { ptr, i32 } %ub.v.${n}`,
+              `${indent}%ub.e.${n} = extractvalue { ptr, i32 } %ub.v.${n}, 0`,
+              `${indent}call void @scr_unwind_resume(ptr %ub.e.${n})`,
+              `${indent}unreachable`,
             );
+            resumes = true;
             result.push(`${ok}:`);
           } else if (m[2] !== undefined) {
             const type = (m[3] ?? "").replace(RETURN_ATTRIBUTES, "").trim();
@@ -487,5 +605,7 @@ export function bridgePlainUnwindCalls(parts: string[]): string[] {
   );
   if (personality && !out.some((part) => part.includes("@__gcc_personality_v0(...)")))
     out[0] = `declare i32 @__gcc_personality_v0(...)\n${out[0]}`;
+  if (resumes && !out.some((part) => part.includes(UNWIND_RESUME_DECLARATION)))
+    out[0] = `${UNWIND_RESUME_DECLARATION}\n${out[0]}`;
   return out;
 }

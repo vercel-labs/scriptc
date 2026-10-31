@@ -61,3 +61,75 @@ console.log(scale(5), forward(6), rewrite(-1), scale_nativeNumber(1));
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("calls that omit a constant default or pass booleans take the variant, and unreached originals go", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-presence-calls-"));
+  try {
+    const entry = join(dir, "main.ts"),
+      outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+let ticks = 0;
+function tick(): number { ticks++; return ticks; }
+function scale(value: number, by: number = 2): number { return value * by; }
+function flag(on: boolean = true): string { return on ? "on" : "off"; }
+function stepped(value: number, step: number = tick()): number { return value + step; }
+function shown(value: number, extra?: number): string { return extra === undefined ? "-" : String(value + extra); }
+function held(value: number, by: number = 3): number { return value - by; }
+const keep = held;
+const values: number[] = [4];
+const on = values.length > 0;
+console.log(scale(values.length), scale(1, undefined), scale(2, on ? 5 : undefined), flag(), flag(on));
+console.log(stepped(1), stepped(2, 3), shown(1), shown(1, 2), held(5), keep(6));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const original = deserializeModule(await readFile(outPath, "utf8"));
+    const specialized = specializeNumericCalls(original);
+    expect(validateModule(specialized)).toEqual([]);
+    const names = new Set(specialized.functions.map((fn) => fn.name));
+    // Every call of scale and flag reaches the variant, so the originals go;
+    // held is also a value, and stepped's and shown's omitted arguments are
+    // not constants, so those keep theirs.
+    expect(
+      [...names].filter((name) => /^(scale|flag|stepped|shown|held)/.test(name)).sort(),
+    ).toEqual([
+      "flag.nativeNumber",
+      "held",
+      "held.nativeNumber",
+      "scale.nativeNumber",
+      "shown",
+      "shown.nativeNumber",
+      "stepped",
+      "stepped.nativeNumber",
+    ]);
+    expect(
+      specialized.functions.find((fn) => fn.name === "flag.nativeNumber")?.params[0]?.type.kind,
+    ).toBe("bool");
+    const calls: [string, string][] = [];
+    for (const fn of specialized.functions)
+      everyStmtList(fn.body, {
+        stmt: () => true,
+        expr: (expr) => {
+          if (expr.kind === "call" && /^(scale|flag|stepped|shown)/.test(expr.callee))
+            calls.push([expr.callee, expr.args.map((arg) => arg.kind).join(",")]);
+          return true;
+        },
+      });
+    expect(calls).toEqual([
+      ["scale.nativeNumber", "arrIntrinsic,numLit"],
+      ["scale.nativeNumber", "numLit,numLit"],
+      ["scale.nativeNumber", "numLit,ternary"],
+      ["flag.nativeNumber", "boolLit"],
+      ["flag.nativeNumber", "varRef"],
+      ["stepped", "numLit,unionWrap"],
+      ["stepped.nativeNumber", "numLit,numLit"],
+      ["shown", "numLit,unionWrap"],
+      ["shown.nativeNumber", "numLit,numLit"],
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

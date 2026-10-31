@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/frozen-record-untyped-writes.ts"
+ ],
+ "diags": []
+}

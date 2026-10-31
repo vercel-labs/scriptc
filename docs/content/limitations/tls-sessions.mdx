@@ -1,0 +1,3 @@
+TLS servers send no session tickets, so a connection to them cannot be resumed.
+A client's `'session'` event fires once per connection, when its handshake finishes and before `secureConnect`.
+Node fires it for each ticket the server sends, after `secureConnect`, and OpenSSL servers send two.

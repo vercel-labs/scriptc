@@ -1,0 +1,14 @@
+{
+  "profile_format": 1,
+  "name": "conformance-x509",
+  "entry": "lib.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "kx_",
+    "init_symbol": "kx_init",
+    "sink_register_symbol": "kx_set_panic_sink",
+    "collect_symbol": "kx_collect",
+    "result_reset_symbol": null
+  },
+  "exports": [{ "export": "describe", "symbol": "kx_describe", "params": [], "returns": "string" }]
+}

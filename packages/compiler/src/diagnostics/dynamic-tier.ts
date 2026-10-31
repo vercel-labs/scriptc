@@ -26,7 +26,14 @@ export type UntypedCause =
   | { kind: "any"; name: string }
   | { kind: "json-binding"; name: string }
   | { kind: "json" }
-  | { kind: "javascript" };
+  | { kind: "javascript" }
+  | {
+      kind: "slot";
+      name: string;
+      declaredType: string;
+      /** The declared type this is a dynamic piece of (push-down). */
+      owner?: string;
+    };
 
 export function causePhrase(cause: UntypedCause): string {
   switch (cause.kind) {
@@ -38,6 +45,10 @@ export function causePhrase(cause: UntypedCause): string {
       return "untyped `JSON.parse` result";
     case "javascript":
       return "untyped JavaScript file";
+    case "slot":
+      return cause.owner === undefined
+        ? `\`${cause.name}\` is a dynamic slot (declared \`${cause.declaredType}\`, which does not compile)`
+        : `\`${cause.name}\` is a dynamic piece of \`${cause.owner}\` (declared \`${cause.declaredType}\`, which does not compile)`;
   }
 }
 
@@ -95,5 +106,10 @@ export function renderPerformanceWarnings(diags: readonly ScrDiagnostic[]): stri
   const blocks = diags.map(
     (d) => `warning ${d.code}: ${d.message}${d.hint === undefined ? "" : `\n  hint: ${d.hint}`}`,
   );
-  return `${blocks.join("\n\n")}\n\nThe program compiled. Adding types to these functions lets scriptc compile them to faster code.`;
+  const closing = diags.every((d) => d.code === "SC6104")
+    ? "The program compiled. Declared types that compile keep these slots static."
+    : diags.every((d) => d.code === "SC6105")
+      ? "The program compiled. These fields keep their elements in ordinary arrays."
+      : "The program compiled. Adding types to these functions lets scriptc compile them to faster code.";
+  return `${blocks.join("\n\n")}\n\n${closing}`;
 }

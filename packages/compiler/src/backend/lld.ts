@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 function isFile(path: string): boolean {
   try {
@@ -46,4 +46,27 @@ export function lldLinkerArgs(
   return platform === "linux" && env["SCRIPTC_LINKER"] === undefined && driverFindsLld(driver, env)
     ? ["-fuse-ld=lld"]
     : [];
+}
+
+/**
+ * The link inputs for a Linux link without lld. The runtime's
+ * scr_glibc_math.c defines glibc's floor, fmod, frexp and a few others as
+ * hidden functions so that a program calling no other libm function starts
+ * without libm.so. That works with lld, which garbage-collects the unused
+ * definitions and decides `--as-needed` from the live code. GNU ld decides
+ * `--as-needed` before section GC, so the runtime's unreachable code keeps
+ * libm needed, and it keeps every regular definition of a name that a needed
+ * shared library also defines, hidden or not: the unit would add all of its
+ * code to every executable and save nothing. Its functions answer what
+ * glibc's do, so linking glibc's own instead is equivalent. A musl
+ * executable is static and has no libm.so to keep needed, so its links keep
+ * the unit, which replaces the libc's slower definitions there.
+ */
+export function inputsWithoutLld(
+  target: { readonly platform: string; readonly name: string },
+  inputs: readonly string[],
+): string[] {
+  return target.platform === "linux" && !target.name.endsWith("-musl")
+    ? inputs.filter((input) => basename(input) !== "scr_glibc_math.o")
+    : [...inputs];
 }

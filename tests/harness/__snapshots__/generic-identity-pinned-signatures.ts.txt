@@ -1,0 +1,27 @@
+generic-identity-pinned-signatures.ts:12:13 - error SC1090: comparing two values of the generic function 'ident' pinned at different signatures by identity (each pinned signature is a separate compiled function object; JavaScript has one) — hold 'ident' at a single signature, or compare values pinned to the same signature is not supported yet
+
+  11 | const j = ident<any>;
+  12 | console.log(num === anyPin);
+     |             ^~~~~~~~~~~~~~
+  13 | console.log(i === j);
+
+generic-identity-pinned-signatures.ts:13:13 - error SC1090: comparing two values of the generic function 'ident' pinned at different signatures by identity (each pinned signature is a separate compiled function object; JavaScript has one) — hold 'ident' at a single signature, or compare values pinned to the same signature is not supported yet
+
+  12 | console.log(num === anyPin);
+  13 | console.log(i === j);
+     |             ^~~~~~~
+  14 | // An alias nothing rewrites still names the pin it starts as.
+
+generic-identity-pinned-signatures.ts:16:13 - error SC1090: comparing two values of the generic function 'ident' pinned at different signatures by identity (each pinned signature is a separate compiled function object; JavaScript has one) — hold 'ident' at a single signature, or compare values pinned to the same signature is not supported yet
+
+  15 | const alias = anyPin;
+  16 | console.log(num === alias);
+     |             ^~~~~~~~~~~~~
+  17 | class Pins {
+
+generic-identity-pinned-signatures.ts:20:13 - error SC1090: comparing two values of the generic function 'ident' pinned at different signatures by identity (each pinned signature is a separate compiled function object; JavaScript has one) — hold 'ident' at a single signature, or compare values pinned to the same signature is not supported yet
+
+  19 | }
+  20 | console.log(num === new Pins().held);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~
+  21 | 

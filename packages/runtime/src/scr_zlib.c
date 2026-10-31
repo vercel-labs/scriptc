@@ -1,13 +1,10 @@
 /* node:zlib, the lowered slice: the one-shot zlib/raw-DEFLATE/gzip codecs
  * over u8 bytes with Node's DEFAULT options. Compiled ONLY when the program
  * uses zlib (native-toolchain.ts gates it exactly like scr_regex.c/libregexp),
- * so zlib-free binaries keep their historical link line. Host builds link
- * the system -lz; cross targets link the vendored zlib built per target
- * (ensureZlibObjects in native-toolchain.ts).
- *
- * Compressed OUTPUT bytes are zlib-version-dependent — the differential
- * corpus tests round-trips and fixed-blob inflation, never raw deflate
- * output. deflate of valid input cannot fail (OOM aborts); inflate of
+ * so zlib-free binaries keep their historical link line. Every build links
+ * the vendored zlib (packages/runtime/vendor/zlib), the copy Node bundles,
+ * so compressed bytes match Node's for the same parameters. deflate of valid
+ * input cannot fail (OOM aborts); inflate of
  * corrupt input THROWS Node's catchable Error (zlib's own msg text:
  * "incorrect header check", ...). */
 #include "scr_runtime.h"

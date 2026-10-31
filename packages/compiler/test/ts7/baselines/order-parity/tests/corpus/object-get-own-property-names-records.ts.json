@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/object-get-own-property-names-records.ts"
+ ],
+ "diags": []
+}

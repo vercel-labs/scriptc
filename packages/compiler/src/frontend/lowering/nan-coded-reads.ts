@@ -34,7 +34,9 @@ import { indexReadInBounds } from "./runtime-optional-bounds.js";
  * (or the length of a same-length, non-escaping typed array) is never
  * undefined, so it is not NaN-coded at all. An occurrence of a never-reassigned
  * NaN-coded binding under a dominating comparison with a number (`x >= 0 ?
- * x : y`) is neither undefined nor NaN there.
+ * x : y`) is neither undefined nor NaN there, and so is an occurrence of a
+ * reassigned one under a relational comparison (`while (i < j)`) that no
+ * write of the binding follows before the occurrence.
  *
  * Everything else keeps the established `number | undefined` lowering. */
 
@@ -249,8 +251,14 @@ export class NanCodedReads {
   private readonly returns = new Map<ts.Symbol, ReturnSlot>();
   /** Identifiers by text across the analyzed files. */
   private readonly names = new Map<string, ts.Identifier[]>();
+  /** The identifiers of each name, grouped by the symbol they resolve to
+   * (referencesOf), once `names` is complete. */
+  private readonly references = new Map<string, Map<ts.Symbol, ts.Identifier[]>>();
+  private named = false;
   private readonly symbolCache = new Map<ts.Node, ts.Symbol | null>();
   private readonly pneCache = new Map<ts.Node, ValueInfo | null>();
+  /** The written references of reassigned `let` bindings (writesOf). */
+  private readonly bindingWrites = new Map<ts.Symbol, readonly ts.Identifier[] | null>();
   private readonly pneReturnCache = new Map<ts.Symbol, ValueInfo | null>();
   private readonly fnEligibility = new Map<ts.Symbol, ts.FunctionLikeDeclaration | null>();
   private readonly callSites = new Map<ts.Symbol, ts.CallExpression[] | null>();
@@ -326,6 +334,7 @@ export class NanCodedReads {
         }
       });
     }
+    this.named = true;
     // A proven-present read is a plain number; only the rest may be
     // undefined. The proof needs every reference, so it runs after the walk.
     for (const [read, elem] of candidates)
@@ -445,6 +454,19 @@ export class NanCodedReads {
   }
 
   // ---- present reads ------------------------------------------------------
+
+  /** `xs[i]` whose index is a non-negative integer counter of the reading
+   * function and that a dominating `i < xs.length` guard bounds by the
+   * length: the read names an existing index. */
+  counterIndexInBounds(read: ts.ElementAccessExpression): boolean {
+    const index = peelTransparent(read.argumentExpression);
+    if (!ts.isIdentifier(index)) return false;
+    const symbol = this.symbolOf(index);
+    if (!symbol || !this.nonNegativeCounter(symbol)) return false;
+    const decl = this.host.declarationOf(symbol);
+    if (!decl || this.containingFunction(decl) !== this.containingFunction(read)) return false;
+    return indexReadInBounds(read);
+  }
 
   /** `t[i]` names an existing element: `i` is a non-negative integer
    * counter and a dominating guard bounds it by `t.length` (or by the
@@ -879,8 +901,8 @@ export class NanCodedReads {
         else if (!decl.initializer) slot.sources.push(null);
       }
     } else return null;
-    for (const id of this.names.get(nameNode.text) ?? []) {
-      if (id === nameNode || this.symbolOf(id) !== symbol) continue;
+    for (const id of this.referencesOf(symbol, nameNode.text)) {
+      if (id === nameNode) continue;
       const write = this.writeOf(id);
       if (write !== "read") slot.reassigned = true;
       if (write === "read") slot.uses.push(id);
@@ -893,6 +915,26 @@ export class NanCodedReads {
     }
     for (const use of slot.uses) this.useNodes.add(use);
     return slot;
+  }
+
+  /** The identifiers named `text` that resolve to `symbol`, in walk order.
+   * Each name's identifiers are resolved once, not once per binding. */
+  private referencesOf(symbol: ts.Symbol, text: string): readonly ts.Identifier[] {
+    const ids = this.names.get(text) ?? [];
+    if (!this.named) return ids.filter((id) => this.symbolOf(id) === symbol);
+    let bySymbol = this.references.get(text);
+    if (bySymbol === undefined) {
+      bySymbol = new Map();
+      for (const id of ids) {
+        const resolved = this.symbolOf(id);
+        if (resolved === null) continue;
+        const list = bySymbol.get(resolved);
+        if (list === undefined) bySymbol.set(resolved, [id]);
+        else list.push(id);
+      }
+      this.references.set(text, bySymbol);
+    }
+    return bySymbol.get(symbol) ?? [];
   }
 
   /** How an identifier reference touches its binding. */
@@ -1215,21 +1257,122 @@ export class NanCodedReads {
   }
 
   /** An occurrence of a never-reassigned number binding under a dominating
-   * comparison with a number that is never NaN (`x >= 0 ? x : y`): the
-   * comparison is false for undefined and for NaN, so here the binding
-   * holds a plain number that is not NaN, even when the binding itself is
-   * NaN-coded. */
+   * comparison with a number that is never NaN (`x >= 0 ? x : y`), or of a
+   * reassigned one under a relational comparison with no write in between
+   * (comparedSinceWrite): the comparison is false for undefined and for
+   * NaN, so here the binding holds a plain number that is not NaN, even
+   * when the binding itself is NaN-coded. */
   private guardedOccurrence(use: ts.Identifier): boolean {
     const symbol = this.symbolOf(use);
     if (!symbol) return false;
     const slot = this.bindingSlot(symbol);
-    return (
-      slot !== null &&
-      !slot.reassigned &&
-      !slot.arithmeticWrites &&
-      this.useNodes.has(use) &&
-      this.provenPresent(use, symbol)
-    );
+    if (slot === null || !this.useNodes.has(use)) return false;
+    if (!slot.reassigned && !slot.arithmeticWrites) return this.provenPresent(use, symbol);
+    return this.comparedSinceWrite(use, symbol);
+  }
+
+  /** An occurrence of a reassigned `let` binding under a dominating
+   * relational comparison of the binding with a number (`while (i < j)
+   * { … t[j] … j--; }`), which is false for undefined and for NaN, where no
+   * write of the binding runs between the comparison and the occurrence:
+   * every write is in the declaring function, none lies between the
+   * comparison and the occurrence, and no loop between them writes the
+   * binding (its next iteration would run the write before the
+   * occurrence). A while or for loop's condition guards its body: it runs
+   * again after every iteration (and a for loop's update), before the body
+   * does. */
+  private comparedSinceWrite(use: ts.Identifier, symbol: ts.Symbol): boolean {
+    const writes = this.writesOf(symbol, use.text);
+    if (writes === null) return false;
+    let child: ts.Node = use;
+    for (let n = use.parent; n && !ts.isFunctionLike(n); child = n, n = n.parent) {
+      let condition: ts.Expression | undefined;
+      if (ts.isIfStatement(n) && n.thenStatement === child) condition = n.expression;
+      else if (ts.isConditionalExpression(n) && n.whenTrue === child) condition = n.condition;
+      else if (
+        ts.isBinaryExpression(n) &&
+        n.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+        n.right === child
+      )
+        condition = n.left;
+      else if (ts.isWhileStatement(n) && n.statement === child) condition = n.expression;
+      else if (ts.isForStatement(n) && n.statement === child) condition = n.condition;
+      const comparison = condition && this.relationalComparison(condition, symbol);
+      if (comparison) {
+        // A for loop's update runs before its condition does again.
+        const update = ts.isForStatement(n) ? n.incrementor : undefined;
+        return writes.every(
+          (write) =>
+            write.end <= comparison.pos ||
+            write.pos >= use.end ||
+            (update !== undefined && write.pos >= update.pos && write.end <= update.end),
+        );
+      }
+      if (
+        (ts.isWhileStatement(n) ||
+          ts.isDoStatement(n) ||
+          ts.isForStatement(n) ||
+          ts.isForOfStatement(n) ||
+          ts.isForInStatement(n)) &&
+        writes.some((write) => write.pos >= n.pos && write.end <= n.end)
+      )
+        return false;
+    }
+    return false;
+  }
+
+  /** The written references of a `let` binding, or null when a closure or
+   * a class body writes it or reads it (a call or construction could then
+   * run between the comparison and the occurrence and write it, or the
+   * occurrence is in one). */
+  private writesOf(symbol: ts.Symbol, text: string): readonly ts.Identifier[] | null {
+    const cached = this.bindingWrites.get(symbol);
+    if (cached !== undefined) return cached;
+    const decl = this.host.declarationOf(symbol);
+    let result: ts.Identifier[] | null = null;
+    if (decl && ts.isVariableDeclaration(decl)) {
+      const home = this.enclosingFunction(decl);
+      result = [];
+      for (const id of this.referencesOf(symbol, text)) {
+        if (id === decl.name) continue;
+        if (this.enclosingFunction(id) !== home) {
+          result = null;
+          break;
+        }
+        if (this.writeOf(id) !== "read") result.push(id);
+      }
+    }
+    this.bindingWrites.set(symbol, result);
+    return result;
+  }
+
+  private enclosingFunction(node: ts.Node): ts.Node | undefined {
+    let n = node.parent;
+    while (n && !ts.isFunctionLike(n) && !ts.isClassLikeDeclaration(n) && !ts.isSourceFile(n))
+      n = n.parent;
+    return n;
+  }
+
+  /** A relational comparison of the binding with a number in the
+   * condition, which is false when the binding holds undefined or NaN. */
+  private relationalComparison(
+    condition: ts.Expression,
+    symbol: ts.Symbol,
+  ): ts.BinaryExpression | null {
+    const e = peelTransparent(condition);
+    if (!ts.isBinaryExpression(e)) return null;
+    const k = e.operatorToken.kind;
+    if (k === ts.SyntaxKind.AmpersandAmpersandToken)
+      return (
+        this.relationalComparison(e.left, symbol) ?? this.relationalComparison(e.right, symbol)
+      );
+    if (!RELATIONAL.has(k)) return null;
+    const left = peelTransparent(e.left);
+    const right = peelTransparent(e.right);
+    const names = (x: ts.Expression): boolean => ts.isIdentifier(x) && this.symbolOf(x) === symbol;
+    if (names(left) && this.host.isNumber(right)) return e;
+    if (names(right) && this.host.isNumber(left)) return e;
+    return null;
   }
 
   /** A dominating condition compares the never-reassigned binding with a

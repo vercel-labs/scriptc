@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { Ts7Api } from "./rpc-api.js";
-import { Ts7Host, type Ts7ApiOptions, type Ts7CompilerOptions } from "./program-host.js";
+import {
+  getPreEmitDiagnostics,
+  Ts7Host,
+  type Ts7ApiOptions,
+  type Ts7CompilerOptions,
+} from "./program-host.js";
 import { ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
 import { tsgoPath } from "./session-path.js";
 
@@ -68,6 +73,54 @@ test("implementation discovery leaves declaration trees lazy without skipping th
   }
   expect(() => program.getImplementationSourceFiles()).toThrow("disposed");
   expect(() => program.getSourceFileNames()).toThrow("disposed");
+});
+
+test("pre-emit diagnostics for kept files check only those, unless a global diagnostic appears", () => {
+  const { directory, entry } = fixture();
+  const other = join(directory, "other.ts");
+  const later = join(directory, "later.ts");
+  writeFileSync(
+    entry,
+    'import "./other.js";\nimport "./later.js";\nexport const n: number = "x";\n',
+  );
+  writeFileSync(other, "export const s: string = 1;\n");
+  writeFileSync(later, "export const b: boolean = 0;\n");
+  const { host } = makeHost(directory);
+  const program = host.createProgram([entry], options);
+  try {
+    const full = getPreEmitDiagnostics(program);
+    const keep = (name: string): boolean => name !== tsgoPath(other);
+    const checked = vi.spyOn(program.project.program, "checkedFileDiagnosticData");
+    const kept = getPreEmitDiagnostics(program, keep);
+    // The full answer without the left-out file's diagnostics, in the same order.
+    expect(full.some((diagnostic) => diagnostic.fileName === tsgoPath(other))).toBe(true);
+    expect(kept.map((diagnostic) => [diagnostic.fileName, diagnostic.code])).toEqual(
+      full
+        .filter((diagnostic) => diagnostic.fileName === undefined || keep(diagnostic.fileName))
+        .map((diagnostic) => [diagnostic.fileName, diagnostic.code]),
+    );
+    expect(kept).toHaveLength(2);
+    expect(checked).toHaveBeenCalledTimes(1);
+    expect(checked.mock.calls[0]![0]).not.toContain(tsgoPath(other));
+    // Keeping every file is the full check.
+    expect(getPreEmitDiagnostics(program, () => true)).toEqual(full);
+    expect(checked).toHaveBeenCalledTimes(1);
+    // A global diagnostic from the partial check, or a server without it: the full check.
+    for (const answer of [
+      {
+        files: [],
+        global: [{ fileName: undefined, pos: 0, end: 0, code: 2318, category: 1, text: "global" }],
+      },
+      null,
+    ]) {
+      checked.mockReturnValueOnce(
+        answer as ReturnType<typeof program.project.program.checkedFileDiagnosticData>,
+      );
+      expect(getPreEmitDiagnostics(program, keep)).toEqual(full);
+    }
+  } finally {
+    program.dispose();
+  }
 });
 
 test("the factory receives one connection with the host's filesystem and timing", () => {
@@ -278,5 +331,99 @@ test("closed hosts refuse every operation and release virtual contents", () => {
   expect(() => host.addVirtualFile(virtual, "again")).toThrow("closed");
   expect(() => host.parseConfigFile(entry)).toThrow("closed");
   expect(() => host.getTimingInfo()).toThrow("closed");
+  expect(() => host.createProgram([entry], options)).toThrow("closed");
+});
+
+/** What a program answers that a reused host could answer stale: its file
+ * list, each file's text, and its diagnostics. */
+function answers(program: ReturnType<Ts7Host["createProgram"]>) {
+  const names = [...program.getSourceFileNames()];
+  return {
+    names,
+    texts: names.map((name) => program.getSourceFile(name)?.text),
+    diagnostics: getPreEmitDiagnostics(program),
+  };
+}
+
+test("a rebound host answers as a new host when shadows, disk files and in-memory files change", () => {
+  const { directory, entry } = fixture();
+  const dep = join(directory, "dep.ts");
+  const extra = join(directory, "extra.d.ts");
+  const virtual = join(directory, "virtual.ts");
+  writeFileSync(
+    entry,
+    '/// <reference path="./extra.d.ts" />\nimport { value } from "./dep.js";\nimport { v } from "./virtual.js";\nexport const sum: number = value + extra + v;\n',
+  );
+  writeFileSync(dep, "export const value: number = 1;\n");
+  writeFileSync(extra, "declare const extra: number;\n");
+  // Load 1: dep.ts reads as a string-typed replacement, extra.d.ts is
+  // hidden, and virtual.ts exists in memory only.
+  const shadow = {
+    readFile: (path: string) =>
+      tsgoPath(path) === tsgoPath(dep) ? 'export const value: string = "1";\n' : undefined,
+    hideFile: (path: string) => tsgoPath(path) === tsgoPath(extra),
+  };
+  const factory = vi.fn((connection: Ts7ApiOptions) => new Ts7Api(connection));
+  const reused = new Ts7Host(factory, { cwd: directory, fsShadow: shadow }, () => {});
+  hosts.push(reused);
+  reused.addVirtualFile(virtual, "export const v = 2;\n");
+  const first = reused.createProgram([entry], options);
+  const firstAnswers = answers(first);
+  first.dispose();
+  expect(firstAnswers.diagnostics.map((d) => d.code).sort()).toEqual([2304, 2322, 6053]);
+  // Load 2: no shadow, no in-memory file, and dep.ts changed on disk
+  // without a change notification.
+  writeFileSync(dep, "export const value: boolean = true;\n");
+  reused.rebind(null);
+  const second = reused.createProgram([entry], options);
+  const fresh = makeHost(directory).host.createProgram([entry], options);
+  try {
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(answers(second)).toEqual(answers(fresh));
+    expect(
+      answers(second)
+        .diagnostics.map((d) => d.code)
+        .sort(),
+    ).toEqual([2307, 2365]);
+  } finally {
+    second.dispose();
+    fresh.dispose();
+  }
+  // Load 3: the first load's shadow again answers as it did.
+  writeFileSync(dep, "export const value: number = 1;\n");
+  reused.rebind(shadow);
+  reused.addVirtualFile(virtual, "export const v = 2;\n");
+  const third = reused.createProgram([entry], options);
+  try {
+    expect(answers(third)).toEqual(firstAnswers);
+  } finally {
+    third.dispose();
+  }
+});
+
+test("a reusable host returns to its owner on close and closes its connection only once", () => {
+  const { directory, entry } = fixture();
+  const released: Ts7Host[] = [];
+  let api!: Ts7Api;
+  const host = new Ts7Host(
+    (connection) => (api = new Ts7Api(connection)),
+    { cwd: directory },
+    (h) => released.push(h),
+  );
+  hosts.push(host);
+  const program = host.createProgram([entry], options);
+  program.dispose();
+  const close = vi.spyOn(api, "close");
+  host.close();
+  host.close();
+  expect(released).toEqual([host]);
+  expect(close).not.toHaveBeenCalled();
+  // Still open: the next load rebinds it.
+  host.rebind(null);
+  expect(host.loads).toBe(2);
+  host.createProgram([entry], options).dispose();
+  host.closeConnection();
+  host.close();
+  expect(close).toHaveBeenCalledTimes(1);
   expect(() => host.createProgram([entry], options)).toThrow("closed");
 });

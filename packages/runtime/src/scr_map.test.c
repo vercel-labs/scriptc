@@ -184,9 +184,11 @@ static void iterate_while_mutating(void) {
 
 static void modes(void) {
   ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
-  for (int i = 1; i <= 4; i++) scr_map_set_f64_f64(map, i, i);
-  assert(!map->ndense && !map->nbuckets); /* still a linear scan */
-  scr_map_set_f64_f64(map, 5, 5);
+  scr_map_set_f64_f64(map, 1, 1);
+  assert(!map->ndense && !map->nbuckets); /* one key: still a linear scan */
+  scr_map_set_f64_f64(map, 2, 2);
+  assert(map->ndense >= 16 && !map->nbuckets); /* from the second small integer key */
+  for (int i = 3; i <= 5; i++) scr_map_set_f64_f64(map, i, i);
   assert(map->ndense >= 16 && !map->nbuckets);
   for (int i = 6; i < 1000; i++) scr_map_set_f64_f64(map, i, i);
   assert(map->ndense >= 1000 && map->ndense <= 1000 + 1000 / 4 + 64); /* near the largest key */

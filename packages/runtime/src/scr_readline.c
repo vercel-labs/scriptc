@@ -105,7 +105,20 @@ void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err) {
   RlList *l = &rl->ev[ev];
   size_t n = l->n;
   if (n == 0) return;
-  RlEntry *snap = malloc(n * sizeof *snap);
+  /* One persistent line listener (the usual 'line' handler): no snapshot
+   * and no once-listener pass. The retain keeps the closure alive if the
+   * listener removes itself. */
+  if (n == 1 && ev == RL_EV_LINE && !l->v[0].once && !l->v[0].iter) {
+    RlEntry e = l->v[0];
+    if (scr_exc_pending()) return;
+    scr_closure_retain(e.cb);
+    ((ScrRlLineFn)e.fn)(e.cb, scr_str_retain(line));
+    scr_closure_release(e.cb);
+    return;
+  }
+  /* Most events have a listener or two: their snapshot stays on the stack. */
+  RlEntry small[4];
+  RlEntry *snap = n <= 4 ? small : malloc(n * sizeof *snap);
   if (!snap) scr_rl_oom();
   memcpy(snap, l->v, n * sizeof *snap);
   for (size_t i = 0; i < n; i++) {
@@ -139,7 +152,7 @@ void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err) {
     }
     if (!e.iter) scr_closure_release(e.cb);
   }
-  free(snap);
+  if (snap != small) free(snap);
 }
 
 ScrArr *scr_rl_history_of(ScrRl *rl) {
@@ -283,7 +296,50 @@ static void scr_rl_buf_append(ScrRl *rl, const char *p, size_t n) {
   rl->line_len += n;
 }
 
-/* kNormalWrite over decoded UTF-8 text. */
+/* The end of the line starting at `i` in text without a CR: the next LF,
+ * or n when the text ends first. */
+static size_t scr_rl_next_lf(const char *p, size_t i, size_t n) {
+  const char *lf = memchr(p + i, '\n', n - i);
+  return lf ? (size_t)(lf - p) : n;
+}
+
+/* Whether a LINE SEPARATOR (U+2028) or PARAGRAPH SEPARATOR (U+2029)
+ * starts at `i`: Node's lineEnding also ends a line there. */
+static bool scr_rl_separator_at(const char *p, size_t i, size_t n) {
+  return i + 2 < n && (unsigned char)p[i] == 0xE2 && (unsigned char)p[i + 1] == 0x80 &&
+         ((unsigned char)p[i + 2] == 0xA8 || (unsigned char)p[i + 2] == 0xA9);
+}
+
+/* Whether the text holds a line ending other than LF: CR, U+2028 or
+ * U+2029. */
+static bool scr_rl_rare_breaks(const char *p, size_t n) {
+  if (memchr(p, '\r', n) != NULL) return true;
+  for (const char *at = memchr(p, 0xE2, n); at != NULL;
+       at = memchr(at + 1, 0xE2, n - (size_t)(at + 1 - p))) {
+    if (scr_rl_separator_at(p, (size_t)(at - p), n)) return true;
+  }
+  return false;
+}
+
+/* The end of the line starting at `i`: the next LF, CR, U+2028 or U+2029,
+ * or n. */
+static size_t scr_rl_next_break(const char *p, size_t i, size_t n) {
+  while (i < n && p[i] != '\n' && p[i] != '\r' && !scr_rl_separator_at(p, i, n)) i++;
+  return i;
+}
+
+/* The length of the line ending at `end` (scr_rl_next_break's result):
+ * CRLF is two bytes, a separator three, LF and a lone CR one. */
+static size_t scr_rl_break_len(const char *p, size_t end, size_t n) {
+  if (p[end] == '\r') return end + 1 < n && p[end + 1] == '\n' ? 2 : 1;
+  return p[end] == '\n' ? 1 : 3;
+}
+
+/* kNormalWrite over decoded UTF-8 text. LF-only text (no CR, U+2028 or
+ * U+2029 in it) moves from LF to LF with memchr; other text splits at LF,
+ * CR, CRLF, U+2028 and U+2029, as Node's lineEnding does. The unfinished
+ * line before the text only joins the first line, so the rest of the text
+ * is never copied whole. */
 static void scr_rl_feed_text(ScrRl *rl, const char *p, size_t n) {
   if (rl->tty) {
     scr_rl_tty_ops->feed(rl, p, n);
@@ -296,45 +352,35 @@ static void scr_rl_feed_text(ScrRl *rl, const char *p, size_t n) {
     }
     rl->saw_return_at = 0;
   }
-  bool ending = false;
-  for (size_t i = 0; i < n && !ending; i++) ending = p[i] == '\n' || p[i] == '\r';
-  if (!ending) {
+  bool cr = n > 0 && scr_rl_rare_breaks(p, n);
+  size_t end = n == 0 ? 0 : cr ? scr_rl_next_break(p, 0, n) : scr_rl_next_lf(p, 0, n);
+  if (end == n) {
     if (n > 0) scr_rl_buf_append(rl, p, n);
     return;
   }
-  /* The unfinished line joins the new text; the scan runs over both. */
-  char *text = p ? (char *)p : (char *)"";
-  size_t len = n;
-  char *joined = NULL;
-  if (rl->line_len > 0) {
-    joined = malloc(rl->line_len + n);
-    if (!joined) scr_rl_oom();
-    memcpy(joined, rl->line_buf, rl->line_len);
-    memcpy(joined + rl->line_len, p, n);
-    text = joined;
-    len = rl->line_len + n;
-  }
-  rl->line_len = 0;
-  rl->saw_return_at = len > 0 && text[len - 1] == '\r' ? scr_now_ms() : 0;
+  rl->saw_return_at = p[n - 1] == '\r' ? scr_now_ms() : 0;
   /* Split first (the remainder becomes the new unfinished line before any
    * line is delivered, as in Node), then deliver in order. */
   size_t n_lines = 0, cap_lines = 0;
   ScrStr **lines = NULL;
   size_t start = 0;
-  for (size_t i = 0; i < len; i++) {
-    size_t adv;
-    if (text[i] == '\n') adv = 1;
-    else if (text[i] == '\r') adv = i + 1 < len && text[i + 1] == '\n' ? 2 : 1;
-    else continue;
+  while (end < n) {
     lines = scr_rl_grow(lines, &cap_lines, n_lines + 1, sizeof *lines);
-    lines[n_lines++] = scr_str_new(text + start, i - start);
-    i += adv - 1;
-    start = i + 1;
+    if (n_lines == 0 && rl->line_len > 0) {
+      scr_rl_buf_append(rl, p, end);
+      lines[n_lines++] = scr_str_new(rl->line_buf, rl->line_len);
+    } else {
+      lines[n_lines++] = scr_str_new(p + start, end - start);
+    }
+    start = end + scr_rl_break_len(p, end, n);
+    end = start >= n ? n : cr ? scr_rl_next_break(p, start, n) : scr_rl_next_lf(p, start, n);
   }
-  if (start < len) scr_rl_buf_append(rl, text + start, len - start);
-  free(joined);
+  rl->line_len = 0;
+  if (start < n) scr_rl_buf_append(rl, p + start, n - start);
+  /* Node delivers every line the chunk split, also after a line listener
+   * closes the interface; an exception a listener throws ends the chunk. */
   for (size_t i = 0; i < n_lines; i++) {
-    if (rl->closed || scr_exc_pending()) {
+    if (scr_exc_pending()) {
       scr_str_release(lines[i]);
       continue;
     }
@@ -364,6 +410,11 @@ static void scr_rl_feed_bytes(ScrRl *rl, const char *p, size_t n) {
     rl->parked = scr_rl_grow(rl->parked, &rl->parked_cap, rl->parked_len + n, 1);
     memcpy(rl->parked + rl->parked_len, p, n);
     rl->parked_len += n;
+    return;
+  }
+  /* ASCII with no held bytes decodes to itself: split it in place. */
+  if (rl->n_held == 0 && scr_bytes_ascii_span(p, n) == n) {
+    scr_rl_feed_text(rl, p, n);
     return;
   }
   size_t total = rl->n_held + n;
@@ -401,6 +452,12 @@ static void scr_rl_feed_end(ScrRl *rl) {
 void scr_rl_input_bytes(double id, ScrBytes *chunk) {
   ScrRl *rl = scr_rl_find(id);
   if (!rl || rl->closed) return;
+  /* The splitter copies every line it keeps before it delivers one, so it
+   * can read a chunk's own storage; shared memory is copied out first. */
+  if (!chunk->shared) {
+    scr_rl_feed_bytes(rl, (const char *)chunk->data, chunk->len);
+    return;
+  }
   char *p = malloc(chunk->len ? chunk->len : 1);
   if (!p) scr_rl_oom();
   scr_bytes_read(chunk, 0, p, chunk->len);

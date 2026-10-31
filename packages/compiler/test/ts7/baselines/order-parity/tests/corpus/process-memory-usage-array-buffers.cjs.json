@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-memory-usage-array-buffers.cjs"
+ ],
+ "diags": []
+}

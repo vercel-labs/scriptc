@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7508-pipeline-untyped-source-functions.mjs"
+ ],
+ "diags": []
+}

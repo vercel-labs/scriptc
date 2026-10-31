@@ -17,8 +17,9 @@ import {
 } from "../../../ir/ir.js";
 
 /** `os.userInfo()` — the passwd-entry snapshot, Node's uv_os_get_passwd
- * behind the call site's own mapped record shape: username = pw_name,
- * uid/gid = getuid/getgid, shell = pw_shell (as the `string | null`
+ * for the effective uid behind the call site's own mapped record shape:
+ * username = pw_name, uid/gid = pw_uid/pw_gid (the user's primary group,
+ * not the process gid; -1 on Windows), shell = pw_shell (as the `string | null`
  * union @types/node declares — POSIX always answers the string arm;
  * null is Node's Windows answer), homedir = pw_dir (the PASSWD home,
  * NOT os.homedir's $HOME-first cascade — Node's own split). The record
@@ -56,12 +57,12 @@ export function lowerOsUserInfoCall(
     } else if (f.name === "uid" && f.type.kind === "f64") {
       fields.push({
         name: f.name,
-        value: { kind: "libCall", fn: "process.getuid", args: [], type: F64, loc },
+        value: { kind: "libCall", fn: "os.userUid", args: [], type: F64, loc },
       });
     } else if (f.name === "gid" && f.type.kind === "f64") {
       fields.push({
         name: f.name,
-        value: { kind: "libCall", fn: "process.getgid", args: [], type: F64, loc },
+        value: { kind: "libCall", fn: "os.userGid", args: [], type: F64, loc },
       });
     } else if (f.name === "homedir" && f.type.kind === "string") {
       fields.push({

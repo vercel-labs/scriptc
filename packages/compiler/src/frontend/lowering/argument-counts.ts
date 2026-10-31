@@ -193,8 +193,7 @@ export function usedAsValue(
   const symbol = symbolAt(name);
   if (!symbol) return false;
   let found = false;
-  for (const sf of lowerer.program.getSourceFiles()) {
-    if (sf.isDeclarationFile) continue;
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
     ts.walkPreorder(sf, (n) => {
       if (found) return "stop";
       if (ts.isTypeNode(n)) return "skip";

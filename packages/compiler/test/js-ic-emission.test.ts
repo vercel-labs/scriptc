@@ -50,6 +50,10 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
     );
     expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
+    // Reads and writes test the first two entries inline: the second
+    // starts 40 bytes into the record.
+    for (const site of ["read", "write"])
+      expect(body(llvm, site)).toMatch(/getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 40$/m);
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
     expect(body(llvm, "call")).toContain("@scr_js_load_probe(");
     // A compound assignment stores its number result from the jsval: an
@@ -59,6 +63,37 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
     expect(body(llvm, "read")).toMatch(
       /@sc_bf__x25_dyn_class_property_\d+\(ptr %t\d+\) noinline cold/,
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("object literal members with constant keys add through store caches", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-literal-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+function make(v, k) { return { a: v, b: 2, [k]: 3 }; }
+var top = { t: 1 };
+console.log(JSON.stringify(make(1, "c")), top.t);
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(moduleUsesDynTier(mod)).toBe(true);
+    const llvm = emitLlvmModule(mod);
+    const make = body(llvm, "make");
+    // Each constant-key member tries its site's store cache first and
+    // falls back to the generic member store; the computed key keeps the
+    // generic store only.
+    expect(make.match(/@scr_js_store_probe\(/g)).toHaveLength(2);
+    expect(make.match(/@scr_dyn_key_set\(/g)).toHaveLength(2);
+    expect(make).toContain("@scr_dyn_key_set_computed(");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -103,6 +138,114 @@ console.log(read(o), read(p), read(t), at(dyn([5, 6]), 1), at(p, "x"), at(t, "ta
     expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("property reads answer class instances' declared fields inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-capsule-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+class Point {
+  constructor(x) { this.x = x; }
+}
+class Tagged extends Point {
+  constructor(x, tag) { super(x); this.tag = tag; }
+}
+class Gauge {
+  get x() { return 9; }
+}
+function dyn(v) { return v; }
+function read(o) { return o.x; }
+function tag(o) { return o.tag; }
+var p = dyn(new Point(4));
+var t = dyn(new Tagged(6, "t"));
+console.log(read(p), read(t), read(dyn(new Gauge())), read({ x: 1 }), tag(t));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    const read = body(llvm, "read");
+    // Point and Tagged instances load the field after one key compare
+    // each; Gauge's getter, and every other receiver, keeps the probe and
+    // the helper.
+    expect(read.match(/^icc\.m\d+:/gm)).toHaveLength(2);
+    expect(read).toContain("@scr_js_get_probe(");
+    expect(read).toMatch(/@sc_b?f__x25_dyn_class_property_\d+\(ptr %t\d+\) noinline cold/);
+    expect(body(llvm, "tag").match(/^icc\.m\d+:/gm)).toHaveLength(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("method calls on class instances call the method inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-capsule-call-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+class Cursor {
+  constructor(x) { this.x = x; }
+  step(d) { this.x += d; return this; }
+  sum(k) { return this.x * k; }
+}
+class Marker extends Cursor {
+  constructor(x, name) { super(x); this.name = name; }
+}
+class Fast extends Cursor {
+  step(d) { this.x += d * 2; return this; }
+}
+class Shadowed {
+  scale(k) { return k; }
+}
+function move(c) { return c.step(1); }
+function total(c) { return c.sum(3); }
+function scaled(c) { return c.scale(2); }
+var list = [0, 1, 2].map((i) => (i === 0 ? new Cursor(1) : i === 1 ? new Marker(2, "m") : new Fast(3)));
+var own = new Shadowed();
+own.scale = function (k) { return -k; };
+for (const c of list) console.log(move(c).x, total(c));
+console.log(total({ sum: (k) => k + 1 }), scaled(own), scaled(new Shadowed()));
+top: for (let i = 0; i < 2; i++) console.log(list[i].sum(i));
+console.log(list[2].sum(5));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    const inline = (fn: string): number => fn.match(/^iccall\.m\d+:/gm)?.length ?? 0;
+    // Fast overrides step, so the helper calls Cursor's step on Cursor and
+    // Marker capsules through a virtual call, and only Fast capsules call
+    // step inline. Every class answers sum with Cursor's, so all three
+    // call it inline; every other receiver keeps the callback and the
+    // helper.
+    const move = body(llvm, "move");
+    expect(inline(move)).toBe(1);
+    expect(move).toContain("@sc_bf__x25_dyn_class_receiver_x3a_Fast_step(");
+    expect(move).toMatch(/@sc_b?f__x25_dyn_class_callback_\d+\([^)]*\) noinline cold/);
+    expect(move).toMatch(/@sc_b?f__x25_dyn_class_call_\d+\([^)]*\) noinline cold/);
+    const total = body(llvm, "total");
+    expect(inline(total)).toBe(3);
+    expect(total).toMatch(/switch i32 %t\d+, label %iccall\.slow\d+ \[/);
+    // Shadowed's instances may have an own scale, so its capsules keep the
+    // callback, which reads it.
+    expect(inline(body(llvm, "scaled"))).toBe(0);
+    // A module initializer calls inline only inside its loops.
+    expect(inline(body(llvm, "_x25_init_0"))).toBe(3);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -170,7 +313,7 @@ console.log(lib.total([1, 2, 3]));
     expect(fn).toContain("@scr_js_keyed_probe(");
     // The length read answers from the native array's length.
     expect(fn).toContain("icg.rest");
-    expect(fn).toContain("@scr_js_get_probe(");
+    expect(fn).toContain("@scr_js_get_probe_native(");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

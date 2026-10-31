@@ -1,7 +1,7 @@
 import type { NativeOptimization } from "../backend/optimization.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { NativeCodegenError } from "../backend/native-codegen-core.js";
 import { requireNativeArtifact, runNativeTool } from "../backend/native-tools.js";
 import {
@@ -9,8 +9,13 @@ import {
   type NativeRuntimePack,
   type NativeRuntimeSelection,
 } from "../backend/runtime-pack-native.js";
-import { runtimePackFlavorKey, type RuntimePackMode } from "../backend/runtime-pack-core.js";
-import { LRE_SOURCES, ZLIB_SOURCES } from "../backend/vendor-inputs.js";
+import {
+  runtimePackFlavorKey,
+  selectedRuntimeUnits,
+  type RuntimePackManifest,
+  type RuntimePackMode,
+} from "../backend/runtime-pack-core.js";
+import { LRE_SOURCES, zlibInputs } from "../backend/vendor-inputs.js";
 import { contentDigest, type NativeCache } from "./cache.js";
 import type { NativeToolchain } from "./toolchain.js";
 
@@ -59,6 +64,41 @@ function sourceFingerprint(root: string): string {
   return hash.digest("hex");
 }
 
+/** The include root of the ICU C API headers the pack ships for
+ * scr_intl.c (manifest `headers`, all under `<root>/unicode/`), after each
+ * header matches its recorded size and sha256. @scriptc/runtime's sources
+ * carry no ICU headers, and a host's own ICU headers would bind another
+ * release's versioned symbols. */
+function icuIncludeRoot(selection: NativeRuntimeSelection, manifest: RuntimePackManifest): string {
+  const headers = manifest.headers ?? [];
+  if (headers.length === 0)
+    throw new NativeCodegenError(
+      "SC3003",
+      "the runtime pack has no ICU headers, which a sanitized Intl build compiles scr_intl.c against; reinstall the runtime package",
+    );
+  const root = dirname(dirname(headers[0]!.path));
+  for (const header of headers) {
+    let bytes: Buffer | null = null;
+    try {
+      bytes = readFileSync(join(selection.root, header.path));
+    } catch {
+      bytes = null;
+    }
+    if (
+      dirname(dirname(header.path)) !== root ||
+      basename(dirname(header.path)) !== "unicode" ||
+      bytes === null ||
+      bytes.length !== header.size ||
+      createHash("sha256").update(bytes).digest("hex") !== header.sha256
+    )
+      throw new NativeCodegenError(
+        "SC3003",
+        `runtime pack ICU header is missing or does not match its manifest: ${header.path}`,
+      );
+  }
+  return join(selection.root, root);
+}
+
 /** The installed pack's matrix also selects sanitizer source units and
  * feature defines, keeping native and seed runtime reachability aligned. */
 export function buildSanitizedRuntime(
@@ -99,10 +139,13 @@ export function buildSanitizedRuntime(
   const zlib = join(vendor, "zlib");
   const mbedtls = join(vendor, "mbedtls");
   const brotli = join(vendor, "brotli", "c");
+  const manifest = runtimePackManifest(selection);
   const cacheIdentity = contentDigest(
     JSON.stringify({
       schema: 1,
       sourceIdentity,
+      // The ICU headers are pack artifacts, outside the runtime sources.
+      headers: (manifest.headers ?? []).map((header) => header.sha256),
       compilerIdentity,
       driver,
       target: toolchain.target,
@@ -123,11 +166,9 @@ export function buildSanitizedRuntime(
     }
     return output;
   };
-  const manifest = runtimePackManifest(selection);
   const key = runtimePackFlavorKey(manifest, selection.flavor, mode);
   const flavor = manifest.flavors[key];
   if (flavor === undefined) throw new NativeCodegenError("SC3003", `runtime pack lacks ${key}`);
-  const wanted = new Set(selection.selected.runtime.map((artifact) => artifact.path));
   const common = [
     "-std=c11",
     "-pthread",
@@ -147,23 +188,39 @@ export function buildSanitizedRuntime(
     join(brotli, "include"),
     ...(toolchain.target.platform === "linux" ? ["-ffunction-sections", "-fdata-sections"] : []),
   ];
-  const runtimeObjects: string[] = [];
-  for (const unit of flavor.runtime_units) {
-    for (const variant of unit.variants) {
-      if (wanted.has(variant.path))
-        runtimeObjects.push(
-          compile(join(src, unit.source), unit.source.replace(/\.c$/, ".o"), [
-            ...common,
-            ...variant.defines.map((define) => "-D" + define),
-          ]),
-        );
-    }
-  }
+  // The units and variants the pack selection chose, compiled from source.
+  const units = selectedRuntimeUnits(flavor, selection.selected.features);
+  const icuInclude = units.some(({ source }) => source === "scr_intl.c")
+    ? ["-I", icuIncludeRoot(selection, manifest)]
+    : [];
+  const runtimeObjects = units.map(({ source, variant }) =>
+    compile(join(src, source), source.replace(/\.c$/, ".o"), [
+      ...common,
+      ...(source === "scr_intl.c" ? icuInclude : []),
+      ...variant.defines.map((define) => "-D" + define),
+    ]),
+  );
   const archives: string[] = [];
   for (const archive of selection.selected.archives) {
     const name = basename(archive.path)
       .replace(/^libscriptc-/, "")
       .replace(/\.a$/, "");
+    // ICU is the one vendored prerequisite this loop cannot rebuild: it is
+    // C++, and its archive compiles with Zig's C++ driver (ensureIcuArchive
+    // in backend/vendor-archives.ts) so it binds the packs' glibc floor —
+    // not the sanitizer lane's C driver. It is also by far the largest
+    // (~600 TUs), so instrumenting it would add a multi-minute C++ build to
+    // the first Intl program in every sanitized lane. The pack's archive is
+    // linked as shipped instead: this repository's ICU code (scr_intl.c)
+    // still compiles instrumented with every other runtime unit, against
+    // the ICU headers the pack ships beside the archive (icuIncludeRoot), and
+    // AddressSanitizer's interceptors cover ICU's allocations. The pack is
+    // installed beside the sources, not an evictable cache, so the path can
+    // be linked directly.
+    if (name === "icu") {
+      archives.push(join(selection.root, archive.path));
+      continue;
+    }
     let sources: readonly string[];
     let directory: string;
     let args: string[];
@@ -172,9 +229,10 @@ export function buildSanitizedRuntime(
       directory = quickjs;
       args = ["-std=c11", "-I", quickjs];
     } else if (name === "zlib") {
-      sources = ZLIB_SOURCES;
+      const inputs = zlibInputs(toolchain.target.llvmTriple);
+      sources = inputs.sources;
       directory = zlib;
-      args = ["-std=c11", "-I", zlib];
+      args = ["-std=c11", ...inputs.defines.map((define) => "-D" + define), "-I", zlib];
     } else if (name === "mbedtls") {
       directory = join(mbedtls, "library");
       sources = readdirSync(directory)

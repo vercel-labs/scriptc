@@ -14,6 +14,10 @@ import {
 } from "./npm-static-builtin-aliases.js";
 import { mayHoldUmdWrapper, unwrapUmdFactory } from "./npm-static-umd.js";
 import { mayHoldEnumIife, rewriteEnumIifes } from "./npm-static-enum-iife.js";
+import {
+  mayHoldNamespaceDefault,
+  rewriteNamespaceDefaults,
+} from "./npm-static-namespace-defaults.js";
 import { mayHoldTscBuiltinImport, unwrapTscBuiltinImports } from "./npm-static-tsc-helpers.js";
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
@@ -38,6 +42,25 @@ export interface RuntimeModuleResolver {
   lookupPaths: (fromFile: string, specifier: string) => readonly string[] | null;
 }
 
+/** How many loads of one compile a program host serves before a new one
+ * replaces it. tsc-ts keeps every syntax tree it builds for the life of its
+ * process, so a host grows with each load whose files differ from the last
+ * one's (on pi, by 200-400 MB a load); a new one starts empty. */
+export const PROGRAM_HOST_LOADS = 4;
+
+/** PROGRAM_HOST_LOADS, or SCRIPTC_TS7_HOST_LOADS (1: a new host per load,
+ * the comparison the host reuse parity test runs). */
+export function programHostLoads(env: NodeJS.ProcessEnv = process.env): number {
+  const value = env["SCRIPTC_TS7_HOST_LOADS"];
+  if (value === undefined || value === "") return PROGRAM_HOST_LOADS;
+  const loads = Number(value);
+  if (!Number.isSafeInteger(loads) || loads < 1)
+    throw new Error(
+      `SCRIPTC_TS7_HOST_LOADS must be a positive integer, not ${JSON.stringify(value)}`,
+    );
+  return loads;
+}
+
 /** Own the syntax and semantic services for a compiler client. The supplied
  * connection factory and optional evaluator provide host operations;
  * parsing, projection and filesystem resolution share their implementation
@@ -45,6 +68,10 @@ export interface RuntimeModuleResolver {
 export class FrontendServices {
   private parser: Ts7SourceParser | undefined;
   private closed = false;
+  /** How many loads one program host serves (reuseProgramHosts). */
+  private hostLoads = 1;
+  /** Reusable program hosts that no load holds. */
+  private readonly idleHosts: Ts7Host[] = [];
 
   constructor(
     private readonly createApi: Ts7ApiFactory,
@@ -77,9 +104,29 @@ export class FrontendServices {
       throw new Error("this compiler host does not provide compile-time evaluation");
     return evaluate(source, timeoutMs);
   }
+  /** Let every program host serve up to `loads` loads (reuseProgramHosts). */
+  reuseProgramHosts(loads: number): void {
+    this.ensureOpen();
+    this.hostLoads = loads > 1 ? loads : 1;
+  }
   createProgramHost(options?: Ts7HostOptions): Ts7Host {
     this.ensureOpen();
-    return new Ts7Host(this.createApi, { ...options, cwd: options?.cwd ?? this.cwd });
+    const cwd = options?.cwd ?? this.cwd;
+    // A timed host reports its own load's timing, so it is never reused.
+    if (this.hostLoads === 1 || options?.collectTiming === true)
+      return new Ts7Host(this.createApi, { ...options, cwd });
+    const index = this.idleHosts.findIndex((host) => host.cwd === cwd);
+    if (index >= 0) {
+      const host = this.idleHosts.splice(index, 1)[0]!;
+      host.rebind(options?.fsShadow);
+      return host;
+    }
+    return new Ts7Host(this.createApi, { ...options, cwd }, (released) => {
+      // The host's load closed it: keep its connection for the next load,
+      // unless it has served its share or these services are closed.
+      if (this.closed || released.loads >= this.hostLoads) released.closeConnection();
+      else this.idleHosts.push(released);
+    });
   }
   rewriteCjs(
     source: string,
@@ -139,6 +186,13 @@ export class FrontendServices {
     this.ensureOpen();
     if (!mayHoldEnumIife(source)) return null;
     return rewriteEnumIifes(this.parse(path, source, "js"));
+  }
+  /** A package module with its guarded namespace declarations
+   * (`var ns = ns || {}`) respelled as plain ones (null: none). */
+  namespaceDefaults(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!mayHoldNamespaceDefault(source)) return null;
+    return rewriteNamespaceDefaults(this.parse(path, source, "js"));
   }
   /** A package module with its requires of builtin-aliased polyfill
    * packages respelled as the builtins (null: none). */
@@ -203,6 +257,12 @@ export class FrontendServices {
     this.closed = true;
     const parser = this.parser;
     this.parser = undefined;
-    parser?.close();
+    // A host a load still holds closes when that load closes it.
+    const idle = this.idleHosts.splice(0);
+    try {
+      for (const host of idle) host.closeConnection();
+    } finally {
+      parser?.close();
+    }
   }
 }

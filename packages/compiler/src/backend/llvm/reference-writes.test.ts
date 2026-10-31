@@ -97,3 +97,46 @@ test("an array that is read back or escapes keeps its element writes", () => {
   const input = fill("input", [store("input", element("input"))]);
   expect(writes(input).conflicts(["a"], writes(input).summary("input"))).toBe(true);
 });
+
+test("a keyed record read depends on every field and keyed entry of records", () => {
+  const handler: IrType = { kind: "func", params: [F64], ret: F64 };
+  const table: IrType = { kind: "record", shapeId: "t" };
+  const key: IrExpr = { kind: "strLit", value: "k", type: { kind: "string" }, loc };
+  const read: IrExpr = {
+    kind: "recordKeyGet",
+    obj: ref("table", table),
+    shapeId: "t",
+    key,
+    type: { kind: "union", unionId: "hu" },
+    loc,
+  };
+  const keyedWrite: IrStmt = {
+    kind: "recordKeySet",
+    obj: ref("table", table),
+    shapeId: "t",
+    key,
+    value: ref("h", handler),
+    loc,
+  };
+  const fn = (name: string, body: IrStmt[]): IrFunction => ({
+    name,
+    loc,
+    returnType: F64,
+    params: [{ localId: "table", name: "table", type: table }],
+    locals: [
+      { id: "table", name: "table", type: table, mutable: false },
+      { id: "h", name: "h", type: handler, mutable: false },
+    ],
+    body,
+  });
+  const records = [{ id: "t", fields: [{ name: "add", type: handler }], indexValue: handler }];
+  const quiet = fn("quiet", []);
+  const writer = fn("writer", [keyedWrite]);
+  const functions = new Map([quiet, writer].map((f) => [f.name, f]));
+  const rw = new ReferenceWrites(functions, [], () => false, new Set(), { records });
+  rw.enter(quiet);
+  const keys = rw.readKeys(read);
+  expect(keys).toEqual(expect.arrayContaining(["r:*", "r:add"]));
+  expect(rw.conflicts(keys!, rw.summary("quiet"))).toBe(false);
+  expect(rw.conflicts(keys!, rw.summary("writer"))).toBe(true);
+});

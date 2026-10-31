@@ -14,4 +14,5 @@ class Box {
 const box = new Box();
 const loose: any = box;
 loose.size = 0.5;
-console.log([1.5, 2].map(double).join(","), box.size);
+const pick: (x: number) => number = double;
+console.log([1.5, 2].map(pick).join(","), box.size);

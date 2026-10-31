@@ -51,8 +51,11 @@ console.log(total, spaces("plain ascii text"), spaces(""));
 
     const spaces = body("spaces");
     // A string that is not ASCII is converted to units and published as the
-    // scan receiver once, before the loop, and its copy loads units.
-    expect(spaces).toMatch(/call void @scr_str_scan_units\(ptr %\S+\)/);
+    // scan receiver once, before the loop, and its copy loads units. The
+    // loop runs to the length, so it gives the runtime no range (NaN).
+    expect(spaces).toMatch(
+      /call void @scr_str_scan_units_for\(ptr %\S+, double 0x7FF8000000000000, double 0x7FF8000000000000\)/,
+    );
     // The copies follow the checked one: bytes, then units.
     const bytesAt = spaces.search(/^bytes\.version\.fast\d+:/m);
     const unitsAt = spaces.search(/^bytes\.version\.fast\.units\d+:/m);
@@ -127,25 +130,105 @@ console.log(words(text), words(text.replace(/a/g, "ä")), words("plain ascii"));
     // the runtime to publish `s` only when they differ.
     const guards = [
       ...words.matchAll(
-        /^bytes\.version\.publish\d+:[^\n]*\n\s+(%\S+) = load ptr, ptr @scr_str_scan\n\s+(%\S+) = icmp eq ptr \1, (%\S+)\n\s+br i1 \2, label %(bytes\.version\.publish\.load\d+), label %(bytes\.version\.publish\.units\d+)\n/gm,
+        /^bytes\.version\.publish\d+:[^\n]*\n\s+(%\S+) = load ptr, ptr @scr_str_scan\n\s+(%\S+) = icmp eq ptr \1, (%\S+)\n\s+br i1 \2, label %(bytes\.version\.publish\.load\d+), label %(bytes\.version\.publish\.units\d+)[^\n]*\n/gm,
       ),
     ];
     expect(guards.length).toBeGreaterThanOrEqual(2);
     for (const [, , , s, load, convert] of guards) {
-      const block = words.slice(words.search(new RegExp(`^${convert}:`, "m")));
-      expect(block).toMatch(
-        new RegExp(
-          `^${convert}:[^\\n]*\\n\\s+call void @scr_str_scan_units\\(ptr ${s}\\)\\n\\s+br label %${load}\\n`,
-        ),
+      // The block reads the loop's range and makes no other call.
+      const block = words
+        .slice(words.search(new RegExp(`^${convert}:`, "m")))
+        .match(new RegExp(`^${convert}:[^\\n]*\\n([\\s\\S]*?)\\n\\s+br label %${load}\\n`))!;
+      expect(block).not.toBeNull();
+      const lines = block[1]!.split("\n").map((line) => line.trim());
+      expect(lines.at(-1)).toMatch(
+        new RegExp(`^call void @scr_str_scan_units_for\\(ptr ${s}, double \\S+, double \\S+\\)$`),
+      );
+      expect(lines.slice(0, -1).filter((line) => /\bcall\b(?! double @llvm\.)/.test(line))).toEqual(
+        [],
       );
     }
-    const calls = words.match(/call void @scr_str_scan_units\(ptr %\S+\)/g)!;
+    const calls = words.match(
+      /call void @scr_str_scan_units_for\(ptr %\S+, double \S+, double \S+\)/g,
+    )!;
     expect(calls.length).toBe(guards.length);
 
     const exe = join(dir, "main");
     const built = await compile(entry, { outputKind: "exe", outDir: dir, outPath: exe });
     if (!built.ok) throw new Error(JSON.stringify(built.diagnostics));
     expect(execFileSync(exe, { encoding: "utf8" })).toBe("666 666 2\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loops over part of a string give the runtime the range of indexes they read", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-unit-reach-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      `
+function trim(text: string, start: number, end: number): string {
+  while (start < end && text.charCodeAt(start) === 32) start++;
+  return text.substring(start, end);
+}
+function hasBreak(text: string, pos: number, end: number): boolean {
+  for (let i = pos; i < end; i++) if (text.charCodeAt(i) === 10) return true;
+  return false;
+}
+let text = "";
+for (let k = 0; k < 2000; k++) text += k % 7 === 0 ? "  café\\n" : "  naïve façade";
+let kept = 0,
+  breaks = 0;
+for (let at = 0; at + 12 < text.length; at += 12) {
+  kept += trim(text, at, at + 12).length;
+  if (hasBreak(text, at, at + 12)) breaks++;
+}
+console.log(kept, breaks);
+`,
+    );
+    const outPath = join(dir, "main.ir.json");
+    const lowered = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!lowered.ok)
+      throw new Error(lowered.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const body = (name: string): string =>
+      ll.match(
+        new RegExp(
+          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{[\\s\\S]*?\\n\\}`,
+        ),
+      )![0];
+    // The publish block passes the loop's range with the receiver: the
+    // counter and the bound (a while loop), or the start and the limit (a
+    // counted loop), here the function's parameters.
+    for (const name of ["trim", "hasBreak"]) {
+      const block = body(name).match(
+        /^bytes\.version\.publish\.units\d+:[^\n]*\n([\s\S]*?)\n\s+br label %bytes\.version\.publish\.load\d+\n/m,
+      )!;
+      expect(block, name).not.toBeNull();
+      const [, lines] = block;
+      const call = lines!.match(
+        /call void @scr_str_scan_units_for\(ptr %\S+, double (%\S+), double (%\S+)\)/,
+      )!;
+      expect(call, name).not.toBeNull();
+      expect(call[1]).not.toBe(call[2]);
+    }
+
+    const exe = join(dir, "main");
+    const built = await compile(entry, { outputKind: "exe", outDir: dir, outPath: exe });
+    if (!built.ok) throw new Error(JSON.stringify(built.diagnostics));
+    let text = "";
+    for (let k = 0; k < 2000; k++) text += k % 7 === 0 ? "  café\n" : "  naïve façade";
+    let kept = 0,
+      breaks = 0;
+    for (let at = 0; at + 12 < text.length; at += 12) {
+      let start = at;
+      while (start < at + 12 && text.charCodeAt(start) === 32) start++;
+      kept += at + 12 - start;
+      if (text.slice(at, at + 12).includes("\n")) breaks++;
+    }
+    expect(execFileSync(exe, { encoding: "utf8" })).toBe(`${kept} ${breaks}\n`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

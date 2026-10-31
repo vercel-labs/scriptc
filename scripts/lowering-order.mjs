@@ -16,13 +16,16 @@
  *     [--seeds 1,2,3] [--jobs 8] [--entry <file.ts>]... [--out <dir>]
  *     [--fail-on names|content]
  *
+ * --stride and --offset sample the top-level corpus programs by number, or by
+ * a hash of the name of a program without one.
+ *
  * Needs a built compiler (pnpm build). Writes <out>/results.json and prints
  * a ranking of fields by the programs whose IR they change. With --fail-on,
  * it exits with status 1 when some program's IR differs between orders:
  * in any way (names), or beyond names and ids (content). */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { cpus, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -306,12 +309,25 @@ if (values["fail-on"] !== undefined && !["names", "content"].includes(values["fa
 const out = resolve(values.out);
 mkdirSync(out, { recursive: true });
 const seeds = values.seeds.split(",").filter(Boolean);
+/** A top-level corpus program's sampling key: its number, or, for a program
+ * named without one, a stable hash of its name (FNV-1a). */
+const programKey = (name) =>
+  /^\d+-/.test(name)
+    ? Number.parseInt(name, 10)
+    : [...name].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0, 2166136261);
+/** Numbered programs by number, then the named ones by name. */
+const programOrder = (a, b) =>
+  /^\d+-/.test(a) !== /^\d+-/.test(b)
+    ? /^\d+-/.test(a)
+      ? -1
+      : 1
+    : programKey(a) - programKey(b) || (a < b ? -1 : a > b ? 1 : 0);
 const corpus = join(root, "tests/corpus");
 const programs = [
   ...readdirSync(corpus)
-    .filter((name) => /^\d+-.*\.ts$/.test(name))
-    .filter((name) => Number.parseInt(name, 10) % Number(values.stride) === Number(values.offset))
-    .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+    .filter((name) => /^[\w-]+\.ts$/.test(name) && statSync(join(corpus, name)).isFile())
+    .filter((name) => programKey(name) % Number(values.stride) === Number(values.offset))
+    .sort(programOrder)
     .slice(0, Number(values.limit))
     .map((name) => join(corpus, name)),
   ...values.entry.map((entry) => resolve(entry)),

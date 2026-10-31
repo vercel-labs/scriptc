@@ -83,6 +83,9 @@ static inline void scr_str_hash_forget(ScrStr *s) {
 /* True only when every byte is proven below 0x80 (see above). */
 static inline bool scr_str_known_ascii(const ScrStr *s) { return s->ascii; }
 
+/* Record the UTF-16 length a string's producer counted (scr_string.c). */
+void scr_str_note_utf16_len(ScrStr *s, size_t units);
+
 /* Record a proven-ASCII fact. Immortal strings may live in read-only
  * memory and are shared across threads, so they are never written. */
 static inline void scr_str_note_ascii(ScrStr *s) {

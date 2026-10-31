@@ -9,13 +9,23 @@ import type { LlvmEmitterContext } from "./expr-context.js";
  * receiver slots loop-invariant. Untagged accesses and calls still alias
  * every category.
  *
- * Header loads are also `!invariant.load`: no store or call between the
- * construction of a view and its release changes them. Without it, a data
- * pointer load ahead of a bounds branch is sunk into the in-bounds block,
- * and LICM keeps a conditionally executed load inside the loop. */
+ * Header loads that only bound or address an access to the view are also
+ * `!invariant.load`: no store or call between the construction of a view
+ * and its release changes them, and their values reach only that access,
+ * which runs while the view is alive. Without it, a data pointer load
+ * ahead of a bounds branch is sunk into the in-bounds block, and LICM keeps
+ * a conditionally executed load inside the loop. */
 export function bytesHeaderAlias(host: LlvmEmitterContext): string {
   const tag = host.memoryAliasAttachment("bytes:header");
   return tag === "" ? "" : `${tag}, !invariant.load !{}`;
+}
+
+/** A header load whose value the program reads (`length`, `byteLength`)
+ * keeps the alias tag only. The value can outlive the view, and LLVM may
+ * move an invariant load to its use, past the release that frees the
+ * view. */
+export function bytesHeaderValueAlias(host: LlvmEmitterContext): string {
+  return host.memoryAliasAttachment("bytes:header");
 }
 
 /** Element storage's tag, and the alias scope of the access being emitted

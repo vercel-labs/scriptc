@@ -105,6 +105,11 @@ export function targetCpuField(cpu: TargetCpu | undefined): { targetCpu?: Target
   return cpu === undefined || cpu === "baseline" ? {} : { targetCpu: cpu };
 }
 
+/** Cache-key parts for a dispatching build: the tiers it carries. */
+export function cpuDispatchKeyParts(cpuDispatch: boolean | undefined): string[] {
+  return cpuDispatch === true ? ["cpu-dispatch-x86-64-v3"] : [];
+}
+
 /** The error for a level on a target that is not x86-64, or null. */
 export function targetCpuTargetRefusal(
   cpu: TargetCpu | undefined,

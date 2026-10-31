@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8420-x509-recursive-dyn-type.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,1 @@
+{ "name": "island-deferred-subclass", "private": true, "type": "module", "scriptc": { "packages": { "errkit": "node" } } }

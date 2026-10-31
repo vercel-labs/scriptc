@@ -21,9 +21,32 @@ export interface LlValue {
    * its absolute value is below `below` (a zero may be -0). Index consumers
    * use it in place of a round trip (integer-values.ts `indexInteger`). */
   wideInteger?: WideInteger;
+  /** An i1 SSA value (or `true`) that is true exactly when this number is
+   * not NaN: set by NaN-coded integer element reads and the wrapping sums
+   * of them, so ToInt32 consumers need no floating compare. */
+  ordered?: string;
+  /** An i64 equal to this number whenever `ordered` is true: the integer of
+   * a number that is an exact integer or NaN (a NaN-coded integer element
+   * read, a local that only holds those, or a sum, difference or product of
+   * them), so integer consumers need no conversion of the double. */
+  nanInteger?: string;
+  /** The sum `base + offset` of a number local and an integer literal of
+   * magnitude below 2^31: the base as the sum read it. Typed array indexes
+   * convert it instead of the sum (expr-bytes.ts). */
+  offsetIndex?: OffsetIndex;
   slot?: boolean;
+  /** A frame slot that usually stays NULL: its release tests it first. */
+  rarelyFilled?: boolean;
   /** A sequence local held in a capture box; release the box itself. */
   boxed?: boolean;
+  /** A group arena list slot (arenas.ts): the frame closes the newest
+   * arena on it, or drops the whole list, after its other temps. */
+  arena?: "close" | "drop";
+}
+
+export interface OffsetIndex {
+  base: string;
+  offset: number;
 }
 
 export interface WideInteger {

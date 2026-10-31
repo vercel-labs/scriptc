@@ -79,6 +79,9 @@ export interface PresenceBindings {
   sameBinding(node: ts.Identifier): boolean;
   /** The identifier is the global `undefined` value. */
   isUndefined(node: ts.Identifier): boolean;
+  /** The call's type is `never`: it throws or never returns (`fail(...)`
+   * declared to return `never`). */
+  neverReturns?(call: ts.CallExpression): boolean;
 }
 
 /** Proves that a read of a never-reassigned binding cannot observe
@@ -270,8 +273,10 @@ export function implies(
 function statementProvesPresence(statement: ts.Statement, bindings: PresenceBindings): boolean {
   if (ts.isIfStatement(statement)) {
     if (dereferences(statement.expression, bindings)) return true;
-    const thenExits = exitsAbruptly(statement.thenStatement);
-    const elseExits = statement.elseStatement ? exitsAbruptly(statement.elseStatement) : false;
+    const thenExits = exitsAbruptly(statement.thenStatement, bindings);
+    const elseExits = statement.elseStatement
+      ? exitsAbruptly(statement.elseStatement, bindings)
+      : false;
     if (thenExits && !elseExits) return implies(statement.expression, false, bindings);
     if (elseExits && !thenExits) return implies(statement.expression, true, bindings);
     return false;
@@ -287,9 +292,28 @@ function statementProvesPresence(statement: ts.Statement, bindings: PresenceBind
   return false;
 }
 
+/** Whether `call`, or a call or access its callee is made of, uses `?.`: a
+ * missing receiver or callee then ends the chain without making the call,
+ * whatever type the checker gives it. */
+function inOptionalChain(call: ts.CallExpression): boolean {
+  let e: ts.Expression = call;
+  for (;;) {
+    if (
+      ts.isCallExpression(e) ||
+      ts.isPropertyAccessExpression(e) ||
+      ts.isElementAccessExpression(e)
+    ) {
+      if (e.questionDotToken !== undefined) return true;
+      e = e.expression;
+    } else if (ts.isNonNullExpression(e) || ts.isParenthesizedExpression(e)) e = e.expression;
+    else return false;
+  }
+}
+
 /** The statement never completes normally: its last reachable statement
- * returns, throws, breaks, or continues. */
-function exitsAbruptly(statement: ts.Statement): boolean {
+ * returns, throws, breaks, continues, or calls a function that never
+ * returns. */
+function exitsAbruptly(statement: ts.Statement, bindings: PresenceBindings): boolean {
   if (
     ts.isReturnStatement(statement) ||
     ts.isThrowStatement(statement) ||
@@ -297,17 +321,22 @@ function exitsAbruptly(statement: ts.Statement): boolean {
     ts.isContinueStatement(statement)
   )
     return true;
+  if (ts.isExpressionStatement(statement)) {
+    let e = statement.expression;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    return ts.isCallExpression(e) && !inOptionalChain(e) && bindings.neverReturns?.(e) === true;
+  }
   if (ts.isBlock(statement)) {
     // A labeled statement inside could be the target of an inner break,
     // which resumes after it; only plain trailing exits count.
     const last = statement.statements.nodes[statement.statements.nodes.length - 1];
-    return last !== undefined && exitsAbruptly(last);
+    return last !== undefined && exitsAbruptly(last, bindings);
   }
   if (ts.isIfStatement(statement))
     return (
       !!statement.elseStatement &&
-      exitsAbruptly(statement.thenStatement) &&
-      exitsAbruptly(statement.elseStatement)
+      exitsAbruptly(statement.thenStatement, bindings) &&
+      exitsAbruptly(statement.elseStatement, bindings)
     );
   return false;
 }

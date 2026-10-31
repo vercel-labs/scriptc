@@ -109,6 +109,10 @@ ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
 ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                bool once, bool prepend);
 bool scr_emitter_emit_any(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc);
+/* emit('error', ...args) with a non-Error payload from typed code, the
+ * arguments boxed; `render` is util.inspect's dyn entry (scr_insp_dyn). */
+bool scr_emitter_emit_error_value(ScrEmitter *em, ScrDyn *const *args, size_t argc,
+                                  ScrStr *(*render)(ScrDyn *, double, double));
 ScrEmitter *scr_emitter_off_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb);
 /* The registry's checked-dynamic half (meta-event argument vectors and
  * rebuilt listener values), installed by the first on_any call; NULL in
@@ -123,6 +127,22 @@ extern SCR_TL const ScrEeDynOps *scr_ee_dyn;
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend);
+/* The same registrations for a listener that can read `this`: each call of
+ * the listener runs with the emitter as the receiver (scr_dyn_this_push_typed
+ * with `recv`, the typed-ref recipe of the registration's receiver type), as
+ * Node calls listeners with `this` set to the emitter. recv is a static
+ * constant. */
+typedef struct ScrDynTypedRefRecipe ScrDynTypedRefRecipe; /* scr_dyn.h */
+ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv);
+ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv);
+ScrEmitter *scr_emitter_on_flex_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb, bool once,
+                                     bool prepend, const ScrDynTypedRefRecipe *recv);
+ScrEmitter *scr_emitter_on_any_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv);
 /* Fixed-arity invoke shims for backends that cannot read a va_list
  * (LLVM textual IR is not va_arg-portable): shim k reads k POINTER-SIZE
  * slots off the emit tuple and calls cb->fn behind the fixed signature

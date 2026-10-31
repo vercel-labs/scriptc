@@ -25,17 +25,17 @@ fetch("https://example.invalid/", fetchInit);
 async function inspectResponse(url: string): Promise<void> {
   const response = await fetch(url);
   console.log(response.type);
-  response.clone();
+  response.formData();
 }
 void inspectResponse;
 ReadableStream.from(new Set([1, 2]));
 /* Members of SUPPORTED builtin modules beyond the lowered tables: they
  * typecheck under @types/node and fence with the module-qualified name —
  * calls and value reads alike. */
-import { watchFile } from "fs";
+import { openAsBlob } from "fs";
 import { EventEmitter, on } from "node:events";
 import { win32 } from "path";
-watchFile("x", () => {});
+openAsBlob("x");
 on(new EventEmitter(), "tick");
 console.log(win32.sep);
 /* URL getters and serialization lower under @types/node, but object-URL
@@ -108,8 +108,8 @@ async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.Crypt
   await crypto.subtle.getPublicKey(key, ["verify"]);
 }
 void publicKeyWithWebCrypto;
-/* Node's navigator global: typeof navigator and navigator.userAgent
- * compile; the other members fence by name. */
-const cores = navigator.hardwareConcurrency;
-void cores;
+/* Node's navigator global: navigator.locks (the Web Locks API) fences
+ * by name. */
+const locks = navigator.locks;
+void locks;
 // End of the declared-but-not-lowered surface.

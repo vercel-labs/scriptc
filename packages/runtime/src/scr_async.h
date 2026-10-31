@@ -23,6 +23,13 @@ ScrPromise *scr_tp_set_immediate(void);
 ScrPromise *scr_promise_new(void);
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
+/* A key every promise sharing `p`'s identity answers (each adapter box of
+ * a typed promise), creating the shared cell when `p` has none. */
+const void *scr_promise_identity_key(ScrPromise *p);
+/* A reference on a key from scr_promise_identity_key, for a table that
+ * keeps the key after the promises that share it are gone. */
+void scr_promise_identity_hold(const void *key);
+void scr_promise_identity_drop(const void *key);
 ScrPromise *scr_promise_retain(ScrPromise *p);
 void scr_promise_release(ScrPromise *p);
 void *scr_promise_retain_v(void *p);
@@ -143,6 +150,9 @@ void scr_promise_rethrow_top_level(ScrPromise *p);
  * value), or NULL with the rejection re-thrown into the awaiter. */
 ScrDyn *scr_await_dyn(ScrPromise *p);
 ScrDyn *scr_await_dyn_value_settled(ScrDyn *value);
+/* The native coroutine form's extraction: the body has already suspended
+ * until the value's promise settled, or taken the non-promise hop. */
+ScrDyn *scr_coro_await_dyn_value(ScrDyn *value);
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
@@ -154,6 +164,20 @@ ScrDyn *scr_await_dyn_value(ScrDyn *v);
  * settles a fresh result promise, answered BOXED (+1). Microtask-exact
  * ordering rides the fiber machinery. */
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin);
+/* A native reaction to a promise's settlement, as PerformPromiseThen with
+ * native steps: react(ctx, settled) runs as a reaction job once the promise
+ * settles (from the next microtask checkpoint when it already has), in
+ * subscription order among the promise's other reactions, and borrows the
+ * settled promise. drop(ctx), when non-NULL, runs after react, or when the
+ * promise goes away unsettled. The collector does not trace the context:
+ * the reaction's references count as outside references while it waits. */
+typedef struct ScrPromiseReaction {
+  void (*react)(void *ctx, ScrPromise *settled);
+  void (*drop)(void *ctx);
+} ScrPromiseReaction;
+/* Subscribes a native reaction to `p` (the descriptor outlives it) and
+ * marks `p` handled, as a `then` does. */
+void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable
  * refcounted snapshot of (store → dyn value) entries riding the fiber
@@ -430,6 +454,19 @@ ScrPromise *scr_immediate_promise(void);
 void scr_clear_interval(double handle);
 
 double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves in */
+/* A setTimeout/setInterval delay as given (after ToNumber): emits the
+ * warning Node's Timeout constructor emits when it sets the delay to 1
+ * (TimeoutOverflowWarning; TimeoutNegativeWarning and TimeoutNaNWarning
+ * once per process) on the next tick, and returns the delay unchanged.
+ * `kind` is 0 for the global setTimeout, 1 for the global setInterval,
+ * which emit nothing while mock.timers mocks them, and 2 for a node:timers
+ * import, which mock.timers leaves alone; bit 4 marks a delay read from an
+ * array element, whose NaN may be the undefined of a read past the end,
+ * which warns nothing. */
+double scr_timer_user_delay(double after, double kind);
+/* The mocked global timer functions (scr_test.c): bit 0 setTimeout, bit 1
+ * setInterval. */
+extern SCR_TL int scr_timer_mocked_apis;
 /* Queues `cb` (moved) on the MockTimers that mocks AbortSignal.timeout
  * (scr_test.c), NULL while it is not mocked. AbortSignal.timeout then
  * aborts its signal from that queue instead of arming a loop timer. */

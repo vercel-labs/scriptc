@@ -1,3 +1,9 @@
+import type { DiagnosticCode } from "../../diagnostics/codes.js";
+import {
+  arrayClassMemberOwner,
+  arrayOfClassInstance,
+  arrayRootOf,
+} from "./builtins/array-classes.js";
 import { keyedHelperName } from "./stable-names.js";
 import {
   isNewTarget,
@@ -6,6 +12,7 @@ import {
   lowerNewTargetName,
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import { lowerIslandExpr } from "./lower-node-island.js";
 import { lowerAwaitedUniformPromiseAll } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -20,7 +27,14 @@ import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
-import { lowerMaybePromiseAwait, maybePromiseUnionOf } from "./maybe-promise.js";
+import { recordMayKeepSource } from "./record-sources.js";
+import { recordStringCall } from "./record-links.js";
+import { nullProtoRecordShape } from "./null-prototype.js";
+import {
+  lowerMaybePromiseAwait,
+  maybePromiseUnionOf,
+  promiseArmedUnionOf,
+} from "./maybe-promise.js";
 import { checkedClassUnionAssertion } from "./class-assertions.js";
 import {
   BIGINT_T,
@@ -77,6 +91,8 @@ import { unitOnlyUnion } from "../type-mapper.js";
 import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import { everyExprChild } from "../../ir/traverse.js";
+import { declareContextLocal } from "./function-context.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./expressions/optional-chains.js";
 import { classToStringConversion, classUnionToString } from "./class-to-primitive.js";
 import { lowerCjsTopLevelThis, lowerRequireCacheElement } from "./lower-node-module.js";
@@ -89,14 +105,17 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary } from "./expressions/narrowing.js";
+import { lowerTernary, staleReadMessage } from "./expressions/narrowing.js";
+import { checkedArmExtraction } from "./coercions/unions.js";
 import {
   classFieldTarget,
   lowerPropertyAccessExpr,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
-import { lowerElementCompoundParts } from "./expressions/element-access.js";
+import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { heldEnvValueType } from "./builtins/environment.js";
+import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
@@ -280,6 +299,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   const chainRecv = lowerer.chainRecvByNode.get(expr);
   if (chainRecv) return { ...chainRecv, loc };
 
+  // Node islands (scope-B NI-4): member operations on island values and
+  // island import bindings. Programs without islands skip it.
+  if (lowerer.nodeIslands !== null) {
+    const island = lowerIslandExpr(lowerer, expr);
+    if (island !== null) return island;
+  }
+
   // --external-types supplies CHECKER truth only. A value rooted in one
   // of those declarations has no runtime implementation in scriptc, so
   // every use fences at its expression instead of accidentally lowering
@@ -406,6 +432,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const probe = lowerAbsenceProbe(lowerer, expr.expression);
       if (probe?.type.kind === "union") return probe;
     }
+    const dereferenced = dereferencedElementReceiver(lowerer, expr, loc);
+    if (dereferenced) return dereferenced;
+    const element = assertedElementOperand(lowerer, expr, loc);
+    if (element) return element;
     const inner = lowerer.lowerExpr(expr.expression);
     if (inner.type.kind === "union") {
       // `!` performs no runtime check: a missing array element stays
@@ -433,7 +463,34 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
       if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
-        const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, loc);
+        const unionId = inner.type.unionId;
+        const messages = assertedFailureMessages(lowerer, expr, unionId, target);
+        if (messages !== null && messages.size > 1) {
+          // Each failing arm throws the TypeError Node gives the operation
+          // that consumes the value (`x!.f` on null or on undefined).
+          const local = lowerer.declareHiddenLocal("%asserted", inner.type);
+          const extracted = checkedArmExtraction(
+            lowerer,
+            varRef(local.id, inner.type, loc),
+            lowerer.armTag(unionId, target),
+            target,
+            (found) => staleReadMessage(expr, found),
+          );
+          if (extracted)
+            return {
+              kind: "seqExpr",
+              stmts: [{ kind: "varDecl", localId: local.id, init: inner, loc }],
+              result: extracted,
+              type: target,
+              loc,
+            };
+        }
+        const helper = lowerer.narrowedArmHelper(
+          unionId,
+          target,
+          loc,
+          messages?.size === 1 ? [...messages][0] : undefined,
+        );
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, loc);
         }
@@ -503,7 +560,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // noImplicitThis, so the generic scope walk here is preflight-safe.
     const local = lowerer.resolveThis(expr);
     if (local) {
-      const value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      let value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      // `this` in a class declared `extends Array` is the array, except as
+      // the receiver of a member the class declares.
+      if (local.type.kind === "object") {
+        const arrayClass = lowerer.classes.get(local.type.className);
+        const parent = expr.parent;
+        if (
+          arrayClass &&
+          arrayRootOf(arrayClass) &&
+          !(
+            ts.isPropertyAccessExpression(parent) &&
+            parent.expression === expr &&
+            arrayClassMemberOwner(lowerer, parent) !== null
+          )
+        )
+          value = arrayOfClassInstance(arrayClass, value, loc);
+      }
       // `this.#x` in a function-local class's prototype method, whose `this`
       // is the call-site value: the field lives on the native instance of
       // this evaluation (checkedPrivateReceiver).
@@ -579,7 +652,24 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // any other super position (field reads, bare references) stays out.
     lowerer.unsupported("SC1090", expr, "'super' outside super() and super.method() calls");
   }
-  if (ts.isNewExpression(expr)) return lowerer.lowerNew(expr);
+  if (ts.isNewExpression(expr)) {
+    const value = lowerer.lowerNew(expr);
+    // `new X()` for a class declared `extends Array` is the array, except
+    // as the receiver of a member the class declares (as `this` above).
+    if (value.type.kind !== "object") return value;
+    const arrayClass = lowerer.classes.get(value.type.className);
+    if (!arrayClass || !arrayRootOf(arrayClass)) return value;
+    let operand: ts.Expression = expr;
+    while (ts.isParenthesizedExpression(operand.parent)) operand = operand.parent;
+    const parent = operand.parent;
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === operand &&
+      arrayClassMemberOwner(lowerer, parent) !== null
+    )
+      return value;
+    return arrayOfClassInstance(arrayClass, value, loc);
+  }
   if (ts.isAwaitExpression(expr)) {
     if (!lowerer.ctx.isAsync) {
       // A tsc-clean occurrence here is outside both an async function
@@ -617,9 +707,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             loc,
           };
         }
-        if (inner.kind === "union" || inner.kind === "dyn") {
-          // A union inner would need an arm-wise re-tag into the result
-
+        if (inner.kind === "union") {
+          // A UNION inner (`Promise<A | B> | undefined`): the awaited
+          // result is the checker's own `Awaited` of the operand, which
+          // the maybe-promise lowering already produces — it awaits the
+          // narrowed promise arm and coerces its settled union, and the
+          // unit arms keep JS's one-microtask hop. Only the promise-or-
+          // unit shape reaches here, so the maybe-promise union is the
+          // same union with its only data arms being units.
+          const armed = promiseArmedUnionOf(lowerer, value.type);
+          if (armed) return lowerMaybePromiseAwait(lowerer, expr, value, armed, loc);
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `awaiting '${lowerer.fmt(value.type)}' (the promise's inner type has no combined result union — await the promise arm after narrowing instead)`,
+          );
+        }
+        if (inner.kind === "dyn") {
           lowerer.unsupported(
             "SC1090",
             expr,
@@ -766,7 +870,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   const entry = UNSUPPORTED_EXPR[expr.kind];
   if (entry)
     lowerer.unsupported(
-      entry.code as `SC${number}` & keyof typeof UNSUPPORTED,
+      entry.code as DiagnosticCode & keyof typeof UNSUPPORTED,
       expr,
       entry.feature,
     );
@@ -1030,18 +1134,10 @@ function assertionOperand(
   loc: SrcLoc,
 ): IrExpr | null {
   if (inner.type.kind !== "union" || target === null || target.kind === "union") return null;
-  const arms = lowerer.unions.get(inner.type.unionId)?.arms;
-  if (
-    !arms?.some(isUnitType) ||
-    !arms.every(
-      (arm) =>
-        arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool" || isUnitType(arm),
-    )
-  )
-    return null;
-  // Array element reads keep their own handling of a missing element. A
-  // typed-array read is optional here only where its use tells undefined
-  // from NaN (assertedReadObservesUndefined).
+  if (!scalarUnion(lowerer, inner.type.unionId)) return null;
+  // Array element reads take assertedElementOperand or keep their own
+  // handling of a missing element. A typed-array read is optional here only
+  // where its use tells undefined from NaN (assertedReadObservesUndefined).
   let operand: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
   if (ts.isElementAccessExpression(operand)) {
@@ -1050,19 +1146,513 @@ function assertionOperand(
   }
   const use = convertingUseOf(lowerer, expr);
   if (use === null) return null;
-  if (use === "value") return inner;
+  if (use === "value" || use === "string") return inner;
   return lowerPrimitiveUnionNumber(lowerer, inner, expr, loc);
 }
 
-/** How the converting use of `x!` (see assertionOperand) reads it:
- * "number" where the use applies ToNumber, "value" where the consumer
- * lowers the union itself (strings, equality, truthiness), null for other
+/** `xs[i]!` on an array as the operand of a converting use (see
+ * assertionOperand). The read answers undefined for a missing element, as
+ * in Node, instead of trapping: a numeric use reads NaN for it, and other
+ * uses get the optional element value. Returns null for other reads and
  * uses. */
-function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number" | "value" | null {
+function assertedElementOperand(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  let read: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  if (!ts.isElementAccessExpression(read) || read.questionDotToken) return null;
+  // Plain arrays only: regex match results and other array subtypes keep
+  // their own element reads.
+  const receiverType = lowerer.typeOf(read.expression);
+  if (
+    !lowerer.checker.isArrayType(receiverType) ||
+    lowerer.mapTypeOf(receiverType)?.kind !== "array"
+  )
+    return null;
+  // A counter below the length reads an existing index: the read keeps
+  // its plain element access.
+  if (lowerer.nanCodedReads?.counterIndexInBounds(read)) return null;
+  const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (!target || !isScalarArm(target)) return null;
+  const use = convertingUseOf(lowerer, expr);
+  if (use === null) return null;
+  if (use === "string" && target.kind === "string")
+    return stringElementOrUndefined(lowerer, read, loc);
+  const probe = lowerAbsenceProbe(lowerer, read);
+  if (probe?.type.kind !== "union" || !scalarUnion(lowerer, probe.type.unionId)) return null;
+  if (use === "value" || use === "string") return probe;
+  return lowerer.stripUndefinedArm(probe.type).kind === "f64"
+    ? lowerOptionalNumber(lowerer, probe, loc)
+    : lowerPrimitiveUnionNumber(lowerer, probe, expr, loc);
+}
+
+/** `xs[i]!` on an array as the receiver of a member read
+ * (`xs[i]!.name`, `xs[i]!.size()`, `xs[i]![0]`). `!` performs no runtime
+ * check, so a missing element is undefined there and the member access
+ * throws Node's TypeError ("Cannot read properties of undefined (reading
+ * 'name')") instead of the bounds trap. The receiver is the element when it
+ * is present. A write (`xs[i]!.name = v`) is lowered as a statement by
+ * lowerDereferencedElementWrite, which evaluates the value before the
+ * receiver throws; elsewhere it keeps the bounds trap. Returns null for
+ * other reads and uses. */
+function dereferencedElementReceiver(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const use = runtimeOptionalUseOf(expr);
+  if (!use || isAssignmentTarget(use.access)) return null;
+  const parts = dereferencedElementParts(lowerer, expr, loc, false);
+  if (parts?.message == null) return null;
+  const message = parts.message;
+  const value: IrExpr = {
+    kind: "ternary",
+    cond: parts.present,
+    then: parts.element,
+    else_: nodeTypeError(message, parts.element.type, loc),
+    type: parts.element.type,
+    loc,
+  };
+  return parts.stmts.length === 0
+    ? value
+    : { kind: "seqExpr", stmts: parts.stmts, result: value, type: value.type, loc };
+}
+
+/** The parts of a member access through `xs[i]!` (see
+ * dereferencedElementReceiver): statements that evaluate the array and the
+ * index, whether the element is present, the element read, and Node's
+ * TypeError message for a missing one. A `write` holds its key, so its
+ * message may be left for dereferencedElementWrite to build from the key. */
+export function dereferencedElementParts(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  loc: SrcLoc,
+  write: boolean,
+): { stmts: IrStmt[]; present: IrExpr; element: IrExpr; message: IrExpr | null } | null {
+  let read: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  if (!ts.isElementAccessExpression(read) || read.questionDotToken) return null;
+  const receiverType = lowerer.typeOf(read.expression);
+  if (
+    !lowerer.checker.isArrayType(receiverType) ||
+    lowerer.mapTypeOf(receiverType)?.kind !== "array"
+  )
+    return null;
+  if (lowerer.nanCodedReads?.counterIndexInBounds(read)) return null;
+  const use = runtimeOptionalUseOf(expr);
+  if (!use || use.optional || use.complex || use.comma || use.kind === "call") return null;
+  // A write holds its key, so the message can name any number or string
+  // key (dereferencedElementWrite builds it).
+  const message =
+    memberAccessMessage(lowerer, use.access) ??
+    (write && ts.isElementAccessExpression(use.access) && namedKey(lowerer, use.access)
+      ? null
+      : undefined);
+  if (message === undefined) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(read.argumentExpression))?.kind !== "f64") return null;
+  // The element must already have the asserted type: an element union the
+  // assertion or a guard narrows keeps its checked narrow.
+  const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const declared = lowerer.mapTypeOf(receiverType);
+  if (
+    !target ||
+    declared?.kind !== "array" ||
+    declared.elem.kind === "void" ||
+    !typeEquals(declared.elem, target)
+  )
+    return null;
+  const arr = lowerer.lowerExpr(read.expression);
+  if (arr.type.kind !== "array" || !typeEquals(arr.type.elem, target)) return null;
+  const elem = arr.type.elem;
+  const index = lowerer.lowerExprExpecting(read.argumentExpression, F64);
+  // Plain reads (a local, a field of one) evaluate once more instead of
+  // through a hidden local: the receiver then stays a borrowed element
+  // read, like the plain `xs[i]` it replaces. An index that can assign
+  // can replace the array binding or field (`xs[(xs = other, 0)]!`), so the
+  // array is held before it, as JavaScript reads it first.
+  const stmts: IrStmt[] = [];
+  const plain = (value: IrExpr): boolean => isSafeToRepeat(value) || plainProjection(value);
+  const held = (value: IrExpr, name: string): IrExpr => {
+    const tmp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
+    return varRef(tmp.id, value.type, loc);
+  };
+  const a = !mayAssign(index) && plain(arr) ? arr : held(arr, "%elementArray");
+  const i = plain(index) || repeatableIndex(index) ? index : held(index, "%elementIndex");
+  return {
+    stmts,
+    present: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr: a, index: i, type: F64, loc },
+      right: numLit(1, loc),
+      type: BOOL,
+      loc,
+    },
+    element: { kind: "arrayGet", arr: a, index: i, type: elem, loc },
+    message,
+  };
+}
+
+/** A write through `xs[i]!` (`xs[i]!.name = v`, `xs[i]![k] = v`): as in
+ * Node, the array, the index, the key and the value evaluate in order (the
+ * statements), then a missing element makes the write throw Node's
+ * TypeError and a present one takes the write, which reads the element,
+ * the key and the value through `overrides`. Null for other targets. */
+export function dereferencedElementWrite(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+): {
+  stmts: IrStmt[];
+  present: IrExpr;
+  message: IrExpr;
+  overrides: { node: ts.Expression; value: IrExpr }[];
+} | null {
+  if (expr.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
+  const target = expr.left;
+  if (
+    !(ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) ||
+    target.questionDotToken ||
+    lowerer.chainRecvByNode.has(target.expression)
+  )
+    return null;
+  let receiver: ts.Expression = target.expression;
+  while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+  if (!ts.isNonNullExpression(receiver)) return null;
+  const loc = locOf(expr);
+  const keyValue = ts.isElementAccessExpression(target)
+    ? lowerer.lowerExpr(target.argumentExpression)
+    : null;
+  const rightValue = lowerer.lowerExpr(expr.right);
+  const parts = dereferencedElementParts(lowerer, receiver, loc, true);
+  if (parts === null) return null;
+  const stmts = [...parts.stmts];
+  let present = parts.present;
+  let element = parts.element;
+  // JavaScript reads the element before the key and the value. When either
+  // has an effect, which can replace, remove or add the element, its
+  // presence and value are read first; otherwise the write tests and reads
+  // it after them.
+  if (!unobservable(rightValue) || (keyValue !== null && !unobservable(keyValue))) {
+    const presentLocal = lowerer.declareHiddenLocal("%elementPresent", BOOL);
+    // Assigned only when the element is present.
+    const elementLocal = declareContextLocal(
+      lowerer.ctx,
+      "%elementValue",
+      element.type,
+      true,
+      undefined,
+      undefined,
+    );
+    stmts.push(
+      { kind: "varDecl", localId: presentLocal.id, init: present, loc },
+      { kind: "varDecl", localId: elementLocal.id, init: null, loc },
+    );
+    present = varRef(presentLocal.id, BOOL, loc);
+    stmts.push({
+      kind: "if",
+      cond: present,
+      then: [{ kind: "assign", localId: elementLocal.id, value: element, loc }],
+      else_: null,
+      loc,
+    });
+    element = varRef(elementLocal.id, element.type, loc);
+  }
+  const overrides: { node: ts.Expression; value: IrExpr }[] = [];
+  // The write lowers the node with or without its parentheses.
+  const override = (node: ts.Expression, value: IrExpr): void => {
+    for (let n: ts.Expression = node; ; n = n.expression) {
+      overrides.push({ node: n, value });
+      if (!ts.isParenthesizedExpression(n)) break;
+    }
+  };
+  const held = (value: IrExpr, name: string, inline: boolean): IrExpr => {
+    if (inline) return value;
+    // A call without a result evaluates to undefined.
+    if (value.type.kind === "void") {
+      stmts.push({ kind: "exprStmt", expr: value, loc });
+      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
+    }
+    const tmp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
+    return varRef(tmp.id, value.type, loc);
+  };
+  override(target.expression, element);
+  let message = parts.message;
+  if (ts.isElementAccessExpression(target) && keyValue !== null) {
+    // The key evaluates before the value, which can assign the binding or
+    // field it reads; a literal, or an unobservable key the value cannot
+    // change, may evaluate in the write.
+    const key = held(
+      keyValue,
+      "%elementWriteKey",
+      keyValue.kind === "numLit" ||
+        keyValue.kind === "strLit" ||
+        (unobservable(keyValue) && !mayAssign(rightValue)),
+    );
+    override(target.argumentExpression, key);
+    // The message names the key's value as the write evaluated it.
+    if (key !== keyValue || message === null)
+      message = keyMessage(messageHead(target), key, loc) ?? message;
+  }
+  // A value whose evaluation is unobservable may evaluate in the write
+  // itself, after the element is tested.
+  override(
+    expr.right,
+    held(rightValue, "%elementWriteValue", isSafeToRepeat(rightValue) || unobservable(rightValue)),
+  );
+  if (message === null) return null;
+  return { stmts, present, message, overrides };
+}
+
+/** dereferencedElementWrite in value position (`f(xs[i]!.name = v)`). */
+export function lowerDereferencedElementAssignment(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+): IrExpr | null {
+  const write = dereferencedElementWrite(lowerer, expr);
+  if (write === null) return null;
+  const loc = locOf(expr);
+  const value = lowerer.withExpressionOverrides(write.overrides, () => lowerer.lowerExpr(expr));
+  return {
+    kind: "seqExpr",
+    stmts: write.stmts,
+    result: {
+      kind: "ternary",
+      cond: write.present,
+      then: value,
+      else_: nodeTypeError(write.message, value.type, loc),
+      type: value.type,
+      loc,
+    },
+    type: value.type,
+    loc,
+  };
+}
+
+/** Whether evaluating `e` has no effect and cannot throw: a discardable
+ * expression, or the compiler's element-or-undefined read of one. */
+function unobservable(e: IrExpr): boolean {
+  if (e.kind === "call" && e.callee.startsWith("%arr.idxOr.")) return e.args.every(unobservable);
+  return isSafeToDiscard(e);
+}
+
+/** Whether evaluating `e` can assign a binding or a field: it contains an
+ * assignment, an increment, statements, a suspension, or a call that can
+ * run program code (a library call only through a function it is given). */
+function mayAssign(e: IrExpr): boolean {
+  switch (e.kind) {
+    case "call":
+      // The compiler's element-or-undefined read and union narrows run no
+      // program code.
+      if (!e.callee.startsWith("%arr.idxOr.") && !e.callee.startsWith("%union.narrow."))
+        return true;
+      break;
+    case "assignExpr":
+    case "incDec":
+    case "seqExpr":
+    case "callValue":
+    case "virtualCall":
+    case "dynCall":
+    case "dynInvoke":
+    case "ffiCall":
+    case "new":
+    case "newValue":
+    case "awaitExpr":
+    case "awaitUnionExpr":
+    case "yieldExpr":
+      return true;
+    case "closure":
+      return false;
+    case "libCall":
+      if (e.args.some((arg) => arg.type.kind === "func")) return true;
+      break;
+  }
+  return !everyExprChild(
+    e,
+    (child) => !mayAssign(child),
+    () => false,
+  );
+}
+
+/** Node's TypeError, thrown in place of a value of `type`. */
+export function nodeTypeError(message: IrExpr, type: IrType, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [numLit(1, loc), strLit("", loc), message],
+    type,
+    loc,
+  };
+}
+
+/** Whether `access` is the target of `=`. */
+function isAssignmentTarget(access: ts.Expression): boolean {
+  let outer: ts.Expression = access;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  return (
+    ts.isBinaryExpression(parent) &&
+    parent.left === outer &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  );
+}
+
+/** A local, a number literal, or a field or record member read through a
+ * local: reading it again has no effect and yields the same value. */
+function plainProjection(e: IrExpr): boolean {
+  if (e.kind === "varRef" || e.kind === "numLit") return true;
+  return (e.kind === "fieldGet" || e.kind === "recordGet") && plainProjection(e.obj);
+}
+
+/** A number computed from plain reads, number literals and the lengths of
+ * arrays read through them (`xs.length - 1`): evaluating it again, with
+ * nothing in between, has no effect and yields the same value. An element
+ * read through `xs[xs.length - 1]!` then evaluates its index twice instead
+ * of holding it in a hidden local, and stays a borrowed element read. */
+function repeatableIndex(e: IrExpr): boolean {
+  if (e.type.kind !== "f64") return false;
+  switch (e.kind) {
+    case "numLit":
+    case "varRef":
+    case "fieldGet":
+    case "recordGet":
+      return plainProjection(e);
+    case "bin":
+      return repeatableIndex(e.left) && repeatableIndex(e.right);
+    case "unary":
+      return repeatableIndex(e.operand);
+    case "arrIntrinsic":
+      return e.method === "length" && e.args.length === 0 && plainProjection(e.receiver);
+    default:
+      return false;
+  }
+}
+
+/** Node's TypeError message for a member access on undefined: reading the
+ * member, or setting it when the access is the target of `=`. Null when
+ * the key is not a name, a literal, or a plain read of a number or string
+ * (which the message reads a second time). */
+function memberAccessMessage(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression | ts.CallExpression,
+): IrExpr | null {
+  const head = messageHead(access);
+  const loc = locOf(access);
+  if (ts.isPropertyAccessExpression(access)) {
+    if (ts.isPrivateIdentifier(access.name)) return null;
+    return strLit(`${head}${access.name.text}')`, loc);
+  }
+  if (!ts.isElementAccessExpression(access)) return null;
+  const key = runtimeOptionalElementKey(access.argumentExpression);
+  if (key !== null) return strLit(`${head}${key}')`, loc);
+  let keyNode = access.argumentExpression;
+  while (ts.isParenthesizedExpression(keyNode)) keyNode = keyNode.expression;
+  if (!ts.isIdentifier(keyNode)) return null;
+  const keyType = lowerer.mapTypeOf(lowerer.typeOf(keyNode))?.kind;
+  if (keyType !== "f64" && keyType !== "string") return null;
+  const keyValue = lowerer.lowerExpr(keyNode);
+  if (!isSafeToRepeat(keyValue) || keyValue.type.kind !== keyType) return null;
+  return keyMessage(head, keyValue, loc);
+}
+
+/** The start of Node's TypeError message for a member access on undefined:
+ * setting the member when the access is the target of `=`, else reading
+ * it. */
+function messageHead(access: ts.Expression): string {
+  return isAssignmentTarget(access)
+    ? "Cannot set properties of undefined (setting '"
+    : "Cannot read properties of undefined (reading '";
+}
+
+/** Whether `access`'s key is typed a number or a string, which the message
+ * can name from its value. */
+function namedKey(lowerer: Lowerer, access: ts.ElementAccessExpression): boolean {
+  const kind = lowerer.mapTypeOf(lowerer.typeOf(access.argumentExpression))?.kind;
+  return kind === "f64" || kind === "string";
+}
+
+/** The message naming a key from its value (a number or a string), or null
+ * for another type. */
+function keyMessage(head: string, key: IrExpr, loc: SrcLoc): IrExpr | null {
+  if (key.type.kind !== "f64" && key.type.kind !== "string") return null;
+  const text: IrExpr =
+    key.type.kind === "string" ? key : { kind: "toString", operand: key, type: STRING, loc };
+  const concat = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "strConcat",
+    left,
+    right,
+    type: STRING,
+    loc,
+  });
+  return concat(concat(strLit(head, loc), text), strLit("')", loc));
+}
+
+/** A string array's element converted to a string: the element, or
+ * "undefined" for a missing index or a hole. */
+function stringElementOrUndefined(
+  lowerer: Lowerer,
+  read: ts.ElementAccessExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (lowerer.mapTypeOf(lowerer.typeOf(read.argumentExpression))?.kind !== "f64") return null;
+  const arr = lowerer.lowerExpr(read.expression);
+  if (arr.type.kind !== "array" || arr.type.elem.kind !== "string") return null;
+  const index = lowerer.lowerExprExpecting(read.argumentExpression, F64);
+  const stmts: IrStmt[] = [];
+  const held = (value: IrExpr, name: string): IrExpr => {
+    const tmp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
+    return varRef(tmp.id, value.type, loc);
+  };
+  // An index that can assign can replace the array binding or field, so
+  // the array is held before it, as JavaScript reads it first.
+  const a = !mayAssign(index) && isSafeToRepeat(arr) ? arr : held(arr, "%elementArray");
+  const i = isSafeToRepeat(index) ? index : held(index, "%elementIndex");
+  const value: IrExpr = {
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr: a, index: i, type: F64, loc },
+      right: numLit(1, loc),
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "arrayGet", arr: a, index: i, type: STRING, loc },
+    else_: strLit("undefined", loc),
+    type: STRING,
+    loc,
+  };
+  return stmts.length === 0 ? value : { kind: "seqExpr", stmts, result: value, type: STRING, loc };
+}
+
+function isScalarArm(arm: IrType): boolean {
+  return arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool" || isUnitType(arm);
+}
+
+/** A union of numbers, strings, booleans, null and undefined with at least
+ * one unit arm. */
+function scalarUnion(lowerer: Lowerer, unionId: string): boolean {
+  const arms = lowerer.unions.get(unionId)?.arms;
+  return !!arms?.some(isUnitType) && arms.every(isScalarArm);
+}
+
+/** How the converting use of `x!` (see assertionOperand) reads it:
+ * "number" where the use applies ToNumber, "string" where it converts the
+ * value to a string (a template span, `+` with a string), "value" where the
+ * consumer lowers the union itself (equality, truthiness, a comparison with
+ * a string), null for other uses. */
+function convertingUseOf(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+): "number" | "string" | "value" | null {
   let outer: ts.Expression = expr;
   while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
   const parent = outer.parent;
-  if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "value" : null;
+  if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "string" : null;
   if (ts.isTypeOfExpression(parent)) return "value";
   if (ts.isPrefixUnaryExpression(parent)) {
     if (parent.operator === ts.SyntaxKind.ExclamationToken) return "value";
@@ -1095,7 +1685,7 @@ function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number"
     if (op === ts.SyntaxKind.PlusEqualsToken && parent.right !== outer) return null;
     let partner = other;
     while (ts.isParenthesizedExpression(partner)) partner = partner.expression;
-    if (isString(other)) return ts.isNonNullExpression(partner) ? null : "value";
+    if (isString(other)) return ts.isNonNullExpression(partner) ? null : "string";
     if (!numericPartner(lowerer.typeOf(other))) return "value";
     return isString(expr) ? null : "number";
   }
@@ -1160,6 +1750,29 @@ const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
 
+/** The TypeErrors Node throws when the operation consuming `expr!` (a
+ * member read, a call) finds one of the union's other arms instead of
+ * `target`, or null when that operation does not throw for them (the
+ * stranded-value message applies). A call on a value of another arm throws
+ * "<callee> is not a function" in V8's spelling of the callee, because `!`
+ * is erased and the call itself throws. */
+function assertedFailureMessages(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  unionId: string,
+  target: IrType,
+): Set<string> | null {
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  const messages = new Set<string>();
+  for (const found of arms) {
+    if (typeEquals(found, target)) continue;
+    const message = staleReadMessage(expr, found);
+    if (message === null) return null;
+    messages.add(message);
+  }
+  return messages.size > 0 ? messages : null;
+}
+
 /** Whether the use of `t[i]!` tells undefined from NaN: a converting use
  * that takes the value itself (see convertingUseOf), or a destination that
  * holds a missing element (see assertedElementKeepsUndefined) other than a
@@ -1168,7 +1781,8 @@ export function assertedReadObservesUndefined(
   lowerer: Lowerer,
   node: ts.NonNullExpression,
 ): boolean {
-  if (convertingUseOf(lowerer, node) === "value") return true;
+  const use = convertingUseOf(lowerer, node);
+  if (use === "value" || use === "string") return true;
   let outer: ts.Expression = node;
   while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
   const parent = outer.parent;
@@ -1675,6 +2289,29 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** A numeric operand of an operator: the binary arithmetic and bitwise six
+ * (and their ordering comparisons), unary `+`, `-` and `~`, and compound
+ * assignment's read and right side. JavaScript applies ToNumber to a
+ * `null`/`undefined` LITERAL — 0 and NaN — so the operand lowers to a
+ * number literal, the form every other ToNumber fold already uses.
+ *
+ * Other numeric uses keep `lowerOptionalNumber`'s optional-union handling
+ * alone, because their callers fold a unit literal themselves: a builtin's
+ * ToNumber argument emits the same NaN, and an element key keeps its
+ * property-key semantics (`a[null]` reads `a.null`, not `a[0]`). Only a
+ * JavaScript source reaches this with a unit operand; TypeScript rejects the
+ * position (TS18050) before any lowering runs.
+ */
+export function lowerOperatorNumber(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  loc: SrcLoc,
+  narrowedNode?: ts.Expression,
+): IrExpr {
+  if (operand.kind === "unitLit") return numLit(operand.unit === "null" ? 0 : NaN, loc);
+  return lowerOptionalNumber(lowerer, operand, loc, narrowedNode);
+}
+
 /** A number argument of a builtin that converts it with ToNumber (Math
  * functions, String.fromCharCode, the global isNaN/isFinite, DataView
  * offsets and values). ToNumber(undefined) is NaN, so a missing value — an
@@ -1940,10 +2577,33 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
   const header = lowerer.lowerHttpHeadersElement(expr);
   if (header) return header;
 
+  // A keyed read through a value HELD from process.env (`const env =
+  // process.env; env[k] ?? fallback`) aliases the live table: the ordinary
+  // lowering is getenv, whose `string | undefined` result already carries
+  // the missing arm this probe reconstructs for record keys.
+  if (heldEnvValueType(lowerer, expr.expression) !== null) return null;
+
   const receiverT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverT?.kind === "record") {
     const shape = lowerer.shapes.get(receiverT.shapeId);
     if (shape && !shape.tuple && shape.indexValue && shape.indexValue.kind !== "dyn") {
+      return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
+    }
+    // A literal key the shape does not declare is absent from every value
+    // (lowerRecordKeyRead answers undefined), whatever type the checker gave
+    // the read. An optional chain keeps its own lowering, which reads a
+    // nullish receiver as undefined instead of converting it.
+    const literal = recordKeyLiteralText(expr.argumentExpression);
+    if (
+      !expr.questionDotToken &&
+      !hasOptionalChainGuard(expr.expression) &&
+      shape &&
+      !shape.tuple &&
+      !shape.indexValue &&
+      literal !== null &&
+      !OBJECT_PROTOTYPE_MEMBERS.has(literal) &&
+      !shape.fields.some((field) => field.name === literal)
+    ) {
       return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
     }
     return null;
@@ -2023,10 +2683,17 @@ export function lowerDynMemberAssignment(
   const loc = locOf(expr);
   const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
   const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
-  const keyValue = ts.isElementAccessExpression(target)
+  const boxedKey = ts.isElementAccessExpression(target)
     ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
     : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
-  const key = lowerer.declareHiddenLocal("%setKey", DYN);
+  // A key that is a string before boxing is its own property key: the
+  // write takes it as a string, without boxing it and coercing it back.
+  const stringKey =
+    ts.isElementAccessExpression(target) &&
+    boxedKey.kind === "dynFrom" &&
+    boxedKey.value.type.kind === "string";
+  const keyValue = stringKey ? boxedKey.value : boxedKey;
+  const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2055,8 +2722,12 @@ export function lowerDynMemberAssignment(
         kind: "exprStmt",
         expr: {
           kind: "libCall",
-          fn: "dyn.keySetComputed",
-          args: [varRef(receiver.id, DYN, loc), varRef(key.id, DYN, loc), stored],
+          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+          args: [
+            varRef(receiver.id, DYN, loc),
+            varRef(key.id, stringKey ? STRING : DYN, loc),
+            stored,
+          ],
           type: VOID,
           loc,
         },
@@ -2125,6 +2796,18 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
 /** An operand of `+` with a string: ToString of ToPrimitive with the
  * default hint, which tries a class instance's valueOf before toString. */
 export function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  // `+` converts an object with ToPrimitive's default hint, which tries
+  // valueOf before toString: a linked copy or a record with a kept source
+  // adds as its source does (record-links.ts).
+  if (
+    e.type.kind === "record" &&
+    recordMayKeepSource(lowerer, e.type) &&
+    lowerer.shapes
+      .get(e.type.shapeId)
+      ?.fields.every((f) => f.name !== "toString" && f.name !== "valueOf") === true &&
+    nullProtoRecordShape(lowerer, e.type) === null
+  )
+    return recordStringCall(lowerer, e, "primitive", e.loc, "toString");
   return (
     classToStringConversion(lowerer, e, "default", node) ??
     classUnionToString(lowerer, e, "default", node) ??
@@ -2359,6 +3042,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "url":
     case "searchParams":
     case "stats":
+    case "bigintStats":
     case "fileHandle":
     case "dir":
     case "spawnRes":
@@ -3118,11 +3802,9 @@ export function symbolFieldInfo(
   if (lowerer.chainBlocked(expr)) return null;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverIr?.kind !== "object") return null;
-  const info = lowerer.classes.get(receiverIr.className);
-  if (!info) {
-    lowerer.flushDeferredClass(receiverIr.className);
-    return null;
-  }
+  const info =
+    lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
+  if (!info) return null;
   const key = classSymbolKeyOf(lowerer, expr.argumentExpression);
   if (!key) return null;
   const field = info.symbolFields?.get(key.identity);

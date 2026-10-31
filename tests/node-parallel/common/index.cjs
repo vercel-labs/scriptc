@@ -4,11 +4,17 @@
 // test/common/index.js. Add a helper here, with Node's semantics, when a
 // lane's files need it.
 const assert = require("assert");
+const os = require("os");
 const { inspect } = require("util");
 
 const hasIntl = true;
+const enoughTestMem = os.totalmem() > 0x70000000; /* 1.75 Gb */
 const isDebug = false;
 const isWindows = process.platform === "win32";
+const isAIX = os.type() === "AIX";
+const isIBMi = os.type() === "OS400";
+const isSunOS = process.platform === "sunos";
+const hasCrypto = Boolean(process.versions.openssl);
 const mustCallChecks = [];
 
 function runCallChecks(exitCode) {
@@ -56,6 +62,13 @@ function mustCallAtLeast(fn, minimum) {
   return mustCallInner(fn, minimum, "minimum");
 }
 
+function mustSucceed(fn, exact) {
+  return mustCall(function (err, ...args) {
+    assert.ifError(err);
+    if (typeof fn === "function") return fn.apply(this, args);
+  }, exact);
+}
+
 function mustNotCall(msg) {
   return function mustNotCall() {
     assert.fail(msg || "function should not have been called");
@@ -85,6 +98,27 @@ function expectWarning(name, expected, code) {
   });
 }
 
+function expectsError(validator, exact) {
+  return mustCall((...args) => {
+    if (args.length !== 1) assert.fail(`Expected one argument, got ${inspect(args)}`);
+    const error = args.pop();
+    assert.strictEqual(Object.prototype.propertyIsEnumerable.call(error, "message"), false);
+    assert.throws(() => {
+      throw error;
+    }, validator);
+    return true;
+  }, exact);
+}
+
+function printSkipMessage(msg) {
+  console.log(`1..0 # Skipped: ${msg}`);
+}
+
+function platformTimeout(ms) {
+  if (isAIX || isIBMi) return (typeof ms === "bigint" ? 2n : 2) * ms;
+  return ms;
+}
+
 function invalidArgTypeHelper(input) {
   if (input == null) return ` Received ${input}`;
   if (typeof input === "function") return ` Received function ${input.name}`;
@@ -98,11 +132,37 @@ function invalidArgTypeHelper(input) {
   return ` Received type ${typeof input} (${inspected})`;
 }
 
-function spawnPromisified(...args) {
+function getArrayBufferViews(buf) {
+  const { buffer, byteOffset, byteLength } = buf;
+  const out = [];
+  const arrayBufferViews = [
+    Int8Array,
+    Uint8Array,
+    Uint8ClampedArray,
+    Int16Array,
+    Uint16Array,
+    Int32Array,
+    Uint32Array,
+    Float16Array,
+    Float32Array,
+    Float64Array,
+    BigInt64Array,
+    BigUint64Array,
+    DataView,
+  ];
+  for (const type of arrayBufferViews) {
+    const { BYTES_PER_ELEMENT = 1 } = type;
+    if (byteLength % BYTES_PER_ELEMENT === 0)
+      out.push(new type(buffer, byteOffset, byteLength / BYTES_PER_ELEMENT));
+  }
+  return out;
+}
+
+function spawnPromisified(command, args, options) {
   const { spawn } = require("child_process");
   let stderr = "";
   let stdout = "";
-  const child = spawn(...args);
+  const child = spawn(command, args, options);
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (data) => {
     stderr += data;
@@ -118,14 +178,45 @@ function spawnPromisified(...args) {
 }
 
 module.exports = {
+  enoughTestMem,
+  hasCrypto,
   hasIntl,
+  isAIX,
   isDebug,
+  isIBMi,
+  isSunOS,
   isWindows,
   mustCall,
   mustCallAtLeast,
   mustNotCall,
+  mustSucceed,
   skip,
   expectWarning,
+  getArrayBufferViews,
+  expectsError,
   invalidArgTypeHelper,
+  platformTimeout,
+  printSkipMessage,
   spawnPromisified,
+  get hasIPv6() {
+    const re = isWindows ? /Loopback Pseudo-Interface/ : isIBMi ? /\*LOOPBACK/ : /lo/;
+    const interfaces = os.networkInterfaces();
+    return Object.keys(interfaces).some(
+      (name) => re.test(name) && interfaces[name].some(({ family }) => family === "IPv6"),
+    );
+  },
+  inFreeBSDJail: false,
+  localhostIPv4: "127.0.0.1",
+  // The helpers below load their modules on first use, so that files of other
+  // lanes do not load node:net or the tmpdir helper.
+  get defaultAutoSelectFamilyAttemptTimeout() {
+    return require("net").getDefaultAutoSelectFamilyAttemptTimeout();
+  },
+  get PIPE() {
+    const path = require("path");
+    const pipePrefix = isWindows
+      ? "\\\\.\\pipe\\"
+      : path.relative(process.cwd(), `${require("./tmpdir").path}/`);
+    return path.join(pipePrefix, `node-test.${process.pid}.sock`);
+  },
 };

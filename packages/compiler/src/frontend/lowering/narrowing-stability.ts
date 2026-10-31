@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { heritageElementTarget } from "../heritage-elements.js";
 import { InternalCompilerError } from "../../errors.js";
 import { typeEquals } from "../../ir/ir.js";
 import type { IrType } from "../../ir/ir.js";
@@ -67,13 +68,12 @@ export class NarrowingStability {
     // Program-level queries before the program's files are split concern
     // declarations, never narrowed reads in function bodies.
     if (this.files === null) return null;
-    const position = widePosition(node);
-    if (position === null) return null;
     const cached = this.widened.get(node);
     if (cached !== undefined) return cached;
+    const position = widePosition(node);
     let result: ts.Type | null = null;
     try {
-      result = this.computeWidened(node, position);
+      if (position !== null) result = this.computeWidened(node, position);
     } finally {
       this.widened.set(node, result);
     }
@@ -675,8 +675,9 @@ export class NarrowingStability {
       if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.Decorator)) return true;
       for (const clause of node.heritageClauses?.nodes ?? []) {
         for (const heritage of clause.types.nodes) {
-          const e = heritage.expression;
-          if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return true;
+          const e = heritageElementTarget(heritage);
+          if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e) && !ts.isQualifiedName(e))
+            return true;
         }
       }
       return node.members.nodes.some(
@@ -915,6 +916,15 @@ const INERT_CONSTRUCTORS = new Set([
   "BigInt64Array",
   "BigUint64Array",
 ]);
+
+/** The receiver whose type widenedType reads for `node`: a property read in
+ * a slot that accepts its declared type (an argument, a return, a typed
+ * binding or literal). Whole-program analyses batch these receivers. */
+export function widenedReceiver(node: ts.Node): ts.Expression | null {
+  return ts.isPropertyAccessExpression(node) && widePosition(node) === "context"
+    ? node.expression
+    : null;
+}
 
 /** Where a stale narrowed read can keep its declared representation: the
  * receiver of `?.`, an absence/type/truthiness test, or a slot whose

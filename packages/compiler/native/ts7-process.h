@@ -12,7 +12,7 @@
 uint32_t scriptc_ts7_open(const uint8_t *executable, size_t executable_size,
                          const uint8_t *cwd, size_t cwd_size,
                          const uint8_t *callbacks, size_t callbacks_size,
-                         uint8_t timing);
+                         uint8_t timing, uint8_t libraries_from_disk);
 /* Connects to the shared checker server `name` (`--api --listen`) in this
  * user's private server directory, starting it in its own process group
  * with `--idle-exit idle_exit` and a limit of `memory` megabytes
@@ -25,7 +25,8 @@ uint32_t scriptc_ts7_attach(const uint8_t *name, size_t name_size,
                            const uint8_t *executable, size_t executable_size,
                            const uint8_t *cwd, size_t cwd_size,
                            const uint8_t *callbacks, size_t callbacks_size,
-                           uint8_t timing, uint32_t idle_exit, uint32_t memory);
+                           uint8_t timing, uint8_t libraries_from_disk, uint32_t idle_exit,
+                           uint32_t memory);
 int32_t scriptc_ts7_read(uint32_t handle, uint8_t *bytes, size_t size,
                         uint32_t offset, uint32_t length);
 int32_t scriptc_ts7_write(uint32_t handle, const uint8_t *bytes, size_t size,

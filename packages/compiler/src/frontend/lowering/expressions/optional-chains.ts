@@ -1,5 +1,5 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
-import { isSafeToDiscard } from "./evaluation-safety.js";
+import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
@@ -173,6 +173,39 @@ function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boole
   );
 }
 
+/** `f?.()` where the checker types the callee never-nullish: the guard can
+ * never short-circuit, so the step IS `f()`. `any`/`unknown` stay out — a
+ * type that could hold anything could hold nullish. */
+function neverNullishCallee(lowerer: Lowerer, node: ts.Expression): boolean {
+  const nullable =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  const parts = (type: ts.Type): readonly ts.Type[] =>
+    type.flags & ts.TypeFlags.Union ? constituentTypes(type) : [type];
+  return parts(lowerer.typeOf(node)).every((part) => !(part.flags & nullable));
+}
+
+/** `proc?.env` for `const proc = (globalThis as { process?: P }).process`,
+ * and `globalThis.process?.env`: the receiver is a global Node always
+ * defines (a snapshot alias is plumbing for the global itself), so the
+ * guarded step is the plain member read (the navigator rule). */
+function alwaysDefinedGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  // The bare global's own spelling (`console?.log`) keeps its existing path.
+  if (ts.isIdentifier(inner)) {
+    const symbol = lowerer.resolveValueSymbol(inner);
+    if (symbol === null || !lowerer.stdlibGlobalAliases.has(symbol)) return false;
+  } else if (!ts.isPropertyAccessExpression(inner)) {
+    return false;
+  }
+  const name = stdlibGlobalNameOf(lowerer, inner);
+  return name !== null && SNAPSHOT_GLOBALS.has(name);
+}
+
 export function lowerOptionalChain(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.PropertyAccessExpression | ts.ElementAccessExpression,
@@ -226,7 +259,7 @@ export function lowerOptionalChain(
   // reports its own diagnostics) instead of failing on the value read.
   // `navigator?.userAgent`: Node's navigator global is never nullish and
   // has no value form, so the guarded step is the plain member read.
-  if (isNavigatorGlobal(lowerer, recvNode)) {
+  if (isNavigatorGlobal(lowerer, recvNode) || alwaysDefinedGlobal(lowerer, recvNode)) {
     lowerer.chainHandled.add(dotNode);
     try {
       return lowerer.lowerExpr(expr);
@@ -235,6 +268,25 @@ export function lowerOptionalChain(
     }
   }
   let loweredReceiver: IrExpr | null;
+  // `rmSync?.(…)`: a callee the checker types never-nullish whose value has
+  // NO lowering at all — a module function exists only as a call (its value
+  // form is fenced). The guard cannot short-circuit, so the step is the
+  // plain call; re-dispatch it and let it report its own diagnostics when
+  // it has no lowering either.
+  if (
+    dotNode === expr &&
+    ts.isCallExpression(expr) &&
+    !alwaysPresentStdlibMethod(lowerer, recvNode) &&
+    neverNullishCallee(lowerer, recvNode) &&
+    tryLowerExpression(lowerer, recvNode) === null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
   if (dotNode === expr && alwaysPresentStdlibMethod(lowerer, recvNode)) {
     loweredReceiver = tryLowerExpression(lowerer, recvNode);
     if (loweredReceiver === null) {
@@ -449,24 +501,20 @@ export function lowerOptionalChain(
   // directly (no member dispatch exists to re-enter).
   if (dotNode === expr && ts.isCallExpression(expr)) {
     if (narrowed.kind !== "func") lowerer.badType(recvNode, lowerer.typeOf(recvNode));
-    const params = narrowed.params;
-    // Forwarded fixed tuples (`f?.(...args)`) complete into the slots.
-    if (expr.arguments.nodes.some(ts.isSpreadElement)) {
-      const completed = completeFuncValueArgs(lowerer, expr, narrowed, loc);
-      const call: IrExpr = {
-        kind: "callValue",
-        callee: recvRef,
-        args: completed,
-        type: narrowed.ret,
-        loc,
-      };
-      return lowerer.finishOptionalChain(expr, id, receiver, call, loc);
-    }
-    const args = expr.arguments.nodes.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
-    // Effect-free surplus arguments (a dropped `void` slot) are ignored.
-    while (narrowed.rest !== true && args.length > params.length && isSafeToDiscard(args.at(-1)!))
-      args.pop();
-    const body: IrExpr = { kind: "callValue", callee: recvRef, args, type: narrowed.ret, loc };
+    // The same completed function-value ABI an unguarded call uses: an
+    // omitted optional argument still reaches the callee as undefined
+    // (`cb?.onRetryFinished?.(false, attempt)` must see its third
+    // parameter), a forwarded tuple completes into the slots, and an
+    // effect-free surplus argument is ignored. The completion runs INSIDE
+    // the guard, so a nullish callee still evaluates no argument.
+    const completed = completeFuncValueArgs(lowerer, expr, narrowed, loc);
+    const body: IrExpr = {
+      kind: "callValue",
+      callee: recvRef,
+      args: completed,
+      type: narrowed.ret,
+      loc,
+    };
     return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
   }
 

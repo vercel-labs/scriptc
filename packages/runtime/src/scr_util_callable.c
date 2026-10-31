@@ -9,8 +9,8 @@
  * and reported on the next tick (scr_warning_emit_deferred), which also
  * applies process.noDeprecation and process.throwDeprecation. debuglog
  * matches sections against NODE_DEBUG as the process started and writes
- * Node's "SECTION PID: message" lines to stderr. All arguments are
- * borrowed. */
+ * Node's "SECTION PID: message" lines, formatted by scr_insp_format, to
+ * stderr. All arguments are borrowed. */
 #include "scr_runtime.h"
 
 #include <stdio.h>
@@ -311,7 +311,7 @@ ScrDyn *scr_util_deprecate(ScrDyn *fn, ScrDyn *msg, ScrDyn *code, ScrDyn *option
     return NULL;
   }
   ScrClosure *closure = scr_closure_new(NULL, UC_DEP_CAPS);
-  closure->function_kind = 4; /* an ordinary function with its own prototype */
+  closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
   closure->caps[UC_DEP_FN] = uc_box(scr_dyn_retain(fn));
   closure->caps[UC_DEP_MSG] = uc_box(scr_dyn_retain(msg));
   closure->caps[UC_DEP_CODE] = uc_box(scr_dyn_retain(code));
@@ -363,6 +363,66 @@ ScrDyn *scr_util_deprecate(ScrDyn *fn, ScrDyn *msg, ScrDyn *code, ScrDyn *option
   }
   scr_dyn_release(length);
   return deprecated;
+}
+
+/* ── util.isArray and util._extend ─────────────────────────────────────
+ * Node wraps both with its internal deprecate(): the first call while
+ * deprecation warnings are on reports DEP0044 or DEP0060 on the next tick,
+ * unless a util.deprecate wrapper already reported that code. */
+static SCR_TL bool uc_is_array_warned = false;
+static SCR_TL bool uc_extend_warned = false;
+
+static bool uc_internal_deprecation(bool *warned, const char *message, const char *code) {
+  if (scr_process_deprecation_flag_on(0) || *warned) return true;
+  *warned = true;
+  if (!uc_codes_warned) {
+    uc_codes_warned = scr_dyn_new_obj_null_proto();
+    scr_atexit(uc_codes_warned_teardown);
+  }
+  size_t code_len = strlen(code);
+  if (scr_dyn_obj_get(uc_codes_warned, code, code_len)) return true;
+  ScrStr *text = scr_str_new(message, strlen(message));
+  ScrDyn *msg = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrStr *key = scr_str_new(code, code_len);
+  bool ok = uc_emit(msg, "DeprecationWarning", key);
+  if (ok) scr_dyn_obj_set(uc_codes_warned, code, code_len, scr_dyn_new_bool(true));
+  scr_str_release(key);
+  scr_dyn_release(msg);
+  return ok;
+}
+
+bool scr_util_is_array_deprecated(const ScrDyn *value) {
+  if (!uc_internal_deprecation(&uc_is_array_warned,
+                               "The `util.isArray` API is deprecated. Please use `Array.isArray()` instead.",
+                               "DEP0044"))
+    return false;
+  return value->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(value);
+}
+
+/* util._extend(target, source): source's own enumerable string keys,
+ * assigned to target from the last key to the first; a source that is
+ * null or not an object leaves target as it is. +1. */
+ScrDyn *scr_util_extend(ScrDyn *target, ScrDyn *source) {
+  if (!uc_internal_deprecation(&uc_extend_warned,
+                               "The `util._extend` API is deprecated. Please use Object.assign() instead.",
+                               "DEP0060"))
+    return NULL;
+  bool object = source->kind == SCR_DYN_OBJ || source->kind == SCR_DYN_ARR || source->kind == SCR_DYN_TYPED_REF ||
+                source->kind == SCR_DYN_HANDLE || source->kind == SCR_DYN_BYTES || source->kind == SCR_DYN_PROMISE ||
+                source->kind == SCR_DYN_PROXY;
+  if (!object) return scr_dyn_retain(target);
+  ScrDyn *keys = scr_dyn_obj_keys(source);
+  if (!keys) return NULL;
+  for (size_t i = keys->v.arr.len; i-- > 0 && !scr_exc_pending();) {
+    ScrDyn *key = keys->v.arr.items[i];
+    ScrDyn *value = scr_dyn_reflect_get(source, key, source);
+    if (!value) break;
+    scr_dyn_key_set(target, key->v.str, value);
+    scr_dyn_release(value);
+  }
+  scr_dyn_release(keys);
+  return scr_exc_pending() ? NULL : scr_dyn_retain(target);
 }
 
 /* ── util.callbackify ──────────────────────────────────────────────────
@@ -497,7 +557,7 @@ ScrDyn *scr_util_callbackify(ScrDyn *original) {
     return NULL;
   }
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->function_kind = 4; /* an ordinary function with its own prototype */
+  closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
   closure->caps[0] = uc_box(scr_dyn_retain(original));
   ScrDyn *callbackified =
     scr_dyn_new_func(closure, uc_callbackified_call, 0, "native:util.callbackify", "callbackified");
@@ -531,163 +591,6 @@ ScrDyn *scr_util_callbackify(ScrDyn *original) {
   }
   scr_dyn_release(defined);
   return callbackified;
-}
-
-/* ── util.format over dyn arguments ────────────────────────────────────
- * formatWithOptionsInternal for debuglog's lines: the %-substitutions
- * (%s %d %i %f %j %o %O %c %%) with Node's argument cursor, then the
- * remaining arguments space-joined, strings verbatim and everything else
- * inspected. With terminal colors, primitives take inspect's default
- * styles; colored object renderings have no lowering. */
-static bool uc_primitive(const ScrDyn *value) {
-  return !uc_object(value);
-}
-
-static ScrStr *uc_inspect(ScrDyn *value, double depth, bool colors) {
-  if (!colors) return scr_insp_dyn(value, 0, depth);
-  if (!uc_primitive(value)) {
-    uc_fence("util.debuglog output of objects on a color terminal has no lowering");
-    return NULL;
-  }
-  const char *open = "\x1b[33m", *close = "\x1b[39m";
-  if (value->kind == SCR_DYN_UNDEF) open = "\x1b[90m";
-  else if (value->kind == SCR_DYN_NULL) open = "\x1b[1m", close = "\x1b[22m";
-  else if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_SYMBOL) open = "\x1b[32m";
-  ScrStr *text = scr_insp_dyn(value, 0, depth);
-  ScrJsonBuf b;
-  scr_jb_init(&b);
-  scr_jb_puts(&b, open);
-  scr_jb_put_str(&b, text);
-  scr_jb_puts(&b, close);
-  scr_str_release(text);
-  return scr_jb_finish(&b);
-}
-
-/* hasBuiltInToString's negative answer for checked objects: an own or
- * inherited toString the program defined. Symbol-keyed members (where
- * Symbol.toPrimitive would also count) are reported as unknown. */
-static int uc_custom_to_string(const ScrDyn *value) {
-  for (const ScrDyn *current = value; current && current->kind == SCR_DYN_OBJ; current = current->prototype) {
-    if (current->symbol_properties) return -1;
-    const ScrDyn *member = scr_dyn_obj_get(current, "toString", 8);
-    if (member) return member->kind == SCR_DYN_FUNC;
-  }
-  return 0;
-}
-
-static ScrStr *uc_format_s(ScrDyn *value) {
-  if (value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
-  if (value->kind == SCR_DYN_NUM) return scr_insp_f64(value->v.num);
-  if (value->kind == SCR_DYN_FUNC) {
-    uc_fence("util.debuglog %s of a function prints its source text, which a compiled binary does not keep");
-    return NULL;
-  }
-  if (value->kind == SCR_DYN_OBJ && scr_dyn_obj_get(value, "%error", 6) == NULL) {
-    int custom = uc_custom_to_string(value);
-    if (custom < 0) {
-      uc_fence("util.debuglog %s of objects with symbol-keyed members has no lowering");
-      return NULL;
-    }
-    if (custom) return scr_dyn_string_coerce_js(value);
-  }
-  return scr_insp_dyn_s(value, 0);
-}
-
-static ScrStr *uc_format_number(ScrDyn *value, int spec) {
-  if (value->kind == SCR_DYN_BIGINT && spec != 'f') return scr_bigint_inspect(value->v.bigint);
-  if (value->kind == SCR_DYN_SYMBOL) return scr_str_new("NaN", 3);
-  double number;
-  if (spec == 'd') {
-    if (value->kind == SCR_DYN_BIGINT) return scr_bigint_inspect(value->v.bigint);
-    if (!scr_dyn_number_coerce_js(value, &number)) return NULL;
-  } else {
-    ScrStr *text = scr_dyn_string_coerce_js(value);
-    if (!text) return NULL;
-    number = spec == 'i' ? scr_parse_int(text, 0) : scr_parse_float(text);
-    scr_str_release(text);
-  }
-  return scr_insp_f64(number);
-}
-
-static ScrStr *uc_format(ScrDyn *const *args, size_t argc, bool colors) {
-  if (argc == 0) return scr_str_new("", 0);
-  ScrJsonBuf out;
-  scr_jb_init(&out);
-  size_t a = 0;
-  const char *join = "";
-  if (args[0]->kind == SCR_DYN_STR) {
-    const ScrStr *first = args[0]->v.str;
-    if (argc == 1) {
-      scr_str_release(scr_jb_finish(&out));
-      return scr_str_retain((ScrStr *)first);
-    }
-    const char *text = first->data;
-    size_t last = 0;
-    for (size_t i = 0; first->len > 0 && i < first->len - 1; i++) {
-      if (text[i] != '%') continue;
-      int next = (unsigned char)text[++i];
-      if (a + 1 != argc) {
-        ScrStr *piece = NULL;
-        switch (next) {
-        case 's': piece = uc_format_s(args[++a]); break;
-        case 'j': piece = scr_util_format_j(args[++a]); break;
-        case 'd':
-        case 'i':
-        case 'f': piece = uc_format_number(args[++a], next); break;
-        case 'O': piece = uc_inspect(args[++a], 2, colors); break;
-        case 'o':
-          if (!uc_primitive(args[a + 1])) {
-            uc_fence("util.debuglog %o of objects renders hidden properties, which have no lowering; use %O");
-            break;
-          }
-          piece = uc_inspect(args[++a], 4, colors);
-          break;
-        case 'c':
-          a += 1;
-          piece = scr_str_new("", 0);
-          break;
-        case '%':
-          scr_jb_write(&out, text + last, i - last);
-          last = i + 1;
-          continue;
-        default:
-          continue;
-        }
-        if (!piece) {
-          scr_str_release(scr_jb_finish(&out));
-          return NULL;
-        }
-        if (last != i - 1) scr_jb_write(&out, text + last, i - 1 - last);
-        scr_jb_put_str(&out, piece);
-        scr_str_release(piece);
-        last = i + 1;
-      } else if (next == '%') {
-        scr_jb_write(&out, text + last, i - last);
-        last = i + 1;
-      }
-    }
-    if (last != 0) {
-      a++;
-      join = " ";
-      if (last < first->len) scr_jb_write(&out, text + last, first->len - last);
-    }
-  }
-  for (; a < argc; a++) {
-    scr_jb_puts(&out, join);
-    if (args[a]->kind == SCR_DYN_STR) {
-      scr_jb_put_str(&out, args[a]->v.str);
-    } else {
-      ScrStr *piece = uc_inspect(args[a], 2, colors);
-      if (!piece) {
-        scr_str_release(scr_jb_finish(&out));
-        return NULL;
-      }
-      scr_jb_put_str(&out, piece);
-      scr_str_release(piece);
-    }
-    join = " ";
-  }
-  return scr_jb_finish(&out);
 }
 
 /* ── util.debuglog ─────────────────────────────────────────────────────
@@ -755,7 +658,10 @@ static bool uc_debug_test(const ScrStr *section) {
 static ScrDyn *uc_debug_write(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   bool colors = scr_getenv("FORCE_COLOR") ? scr_util_terminal_colors()
                                           : scr_process_is_tty(2) && scr_util_terminal_colors();
-  ScrStr *message = uc_format(args, argc, colors);
+  ScrInspFormatOptions options;
+  scr_insp_format_defaults(&options, "util.debuglog");
+  options.colors = colors;
+  ScrStr *message = scr_insp_format(args, argc, &options);
   if (!message) return NULL;
   ScrDyn *set = uc_cap(closure, 0);
   char pid[64];
@@ -802,7 +708,7 @@ static ScrDyn *uc_debug_impl(bool enabled, ScrDyn *set) {
       scr_str_release(text);
     }
     ScrClosure *closure = scr_closure_new(NULL, 1);
-    closure->function_kind = 4;
+    closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
     closure->caps[0] = uc_box(scr_dyn_retain(set));
     impl = scr_dyn_new_func(closure, uc_debug_write, 0, "native:util.debuglog", "debug");
   } else {
@@ -911,4 +817,159 @@ ScrDyn *scr_util_debuglog(ScrDyn *section, ScrDyn *callback) {
     return NULL;
   }
   return logger;
+}
+
+/* ── util.diff(actual, expected) ───────────────────────────────────────
+ * Node's diff over strings (one entry per UTF-16 code unit) or arrays of
+ * strings: identical values answer an empty array before validation;
+ * otherwise each value must be a string or an array of strings
+ * (ERR_INVALID_ARG_TYPE naming `actual`, `actual[i]`, ...), and the answer
+ * is myersDiff's operation list reversed: [0, item] for kept items,
+ * [1, item] for items of actual and [-1, item] for items of expected. */
+typedef struct {
+  ScrStr **items;
+  size_t len;
+} UcDiffSeq;
+
+static void uc_diff_seq_free(UcDiffSeq *seq) {
+  for (size_t i = 0; i < seq->len; i++) scr_str_release(seq->items[i]);
+  free(seq->items);
+  seq->items = NULL;
+  seq->len = 0;
+}
+
+static bool uc_diff_input(const ScrDyn *value, const char *name, UcDiffSeq *out) {
+  out->items = NULL;
+  out->len = 0;
+  if (value->kind == SCR_DYN_STR) {
+    ScrStr *text = value->v.str;
+    size_t len = (size_t)scr_str_utf16_len(text);
+    out->items = malloc((len ? len : 1) * sizeof *out->items);
+    if (!out->items) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < len; i++) out->items[out->len++] = scr_str_char_at(text, (double)i);
+    return true;
+  }
+  ScrDyn *array = value->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(value)
+                      ? scr_dyn_typed_ref_materialize(value)
+                      : value->kind == SCR_DYN_ARR ? scr_dyn_retain((ScrDyn *)value) : NULL;
+  if (!array) {
+    scr_dyn_arg_type_fail(name, "of type string", value);
+    return false;
+  }
+  size_t len = array->v.arr.len;
+  out->items = malloc((len ? len : 1) * sizeof *out->items);
+  if (!out->items) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < len; i++) {
+    const ScrDyn *item = array->v.arr.presence && !array->v.arr.presence[i] ? scr_dyn_undefined()
+                                                                            : array->v.arr.items[i];
+    if (item->kind != SCR_DYN_STR) {
+      char element[64];
+      snprintf(element, sizeof element, "%s[%zu]", name, i);
+      scr_dyn_arg_type_fail(element, "of type string", item);
+      scr_dyn_release(array);
+      uc_diff_seq_free(out);
+      return false;
+    }
+    out->items[out->len++] = scr_str_retain(item->v.str);
+  }
+  scr_dyn_release(array);
+  return true;
+}
+
+static void uc_diff_push(ScrDyn *result, int op, ScrStr *item) {
+  ScrDyn *entry = scr_dyn_new_arr();
+  scr_dyn_arr_push(entry, scr_dyn_new_num((double)op));
+  scr_dyn_arr_push(entry, scr_dyn_new_str(item));
+  scr_dyn_arr_push(result, entry);
+}
+
+ScrDyn *scr_util_diff(ScrDyn *actual, ScrDyn *expected) {
+  if (scr_dyn_strict_eq(actual, expected)) return scr_dyn_new_arr();
+  UcDiffSeq a, e;
+  if (!uc_diff_input(actual, "actual", &a)) return NULL;
+  if (!uc_diff_input(expected, "expected", &e)) {
+    uc_diff_seq_free(&a);
+    return NULL;
+  }
+  size_t max = a.len + e.len;
+  if (max > 2147483647u) {
+    uc_diff_seq_free(&a);
+    uc_diff_seq_free(&e);
+    char message[160];
+    int n = snprintf(message, sizeof message,
+                     "The value of \"myersDiff input size\" is out of range. It must be < 2^31. Received %zu", max);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)n, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  /* Two distinct empty sequences: Node's myersDiff reads past its
+   * one-element state, finds no end and answers undefined, which the
+   * ArrayPrototypeReverse of util.diff rejects. The trace below would be read
+   * out of bounds. */
+  if (max == 0) {
+    uc_diff_seq_free(&a);
+    uc_diff_seq_free(&e);
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  size_t width = 2 * max + 1;
+  int32_t *v = calloc(width, sizeof *v);
+  int32_t **trace = malloc((max + 1) * sizeof *trace);
+  if (!v || !trace) scr_trap("scriptc: out of memory\n");
+  size_t levels = 0;
+  bool done = false;
+  for (size_t level = 0; level <= max && !done; level++) {
+    trace[levels] = malloc(width * sizeof **trace);
+    if (!trace[levels]) scr_trap("scriptc: out of memory\n");
+    memcpy(trace[levels], v, width * sizeof *v);
+    levels++;
+    long d = (long)level;
+    for (long k = -d; k <= d; k += 2) {
+      size_t offset = (size_t)(k + (long)max);
+      int32_t previous = offset > 0 ? v[offset - 1] : 0;
+      int32_t next = offset + 1 < width ? v[offset + 1] : 0;
+      long x = k == -d || (k != d && previous < next) ? next : (long)previous + 1;
+      long y = x - k;
+      while ((size_t)x < a.len && y >= 0 && (size_t)y < e.len && scr_str_eq(a.items[x], e.items[y])) {
+        x++;
+        y++;
+      }
+      v[offset] = (int32_t)x;
+      if ((size_t)x >= a.len && y >= 0 && (size_t)y >= e.len) {
+        done = true;
+        break;
+      }
+    }
+  }
+  /* backtrack: the operations from the end, which the answer reverses. */
+  ScrDyn *reversed = scr_dyn_new_arr();
+  long x = (long)a.len, y = (long)e.len;
+  for (long level = (long)levels - 1; level >= 0; level--) {
+    const int32_t *row = trace[level];
+    long k = x - y;
+    size_t offset = (size_t)(k + (long)max);
+    long prev_k;
+    if (k == -level || (k != level && row[offset - 1] < row[offset + 1])) prev_k = k + 1;
+    else prev_k = k - 1;
+    long prev_x = row[(size_t)(prev_k + (long)max)];
+    long prev_y = prev_x - prev_k;
+    while (x > prev_x && y > prev_y) {
+      uc_diff_push(reversed, 0, a.items[x - 1]);
+      x--;
+      y--;
+    }
+    if (level > 0) {
+      if (x > prev_x) uc_diff_push(reversed, 1, a.items[--x]);
+      else uc_diff_push(reversed, -1, e.items[--y]);
+    }
+  }
+  for (size_t i = 0; i < levels; i++) free(trace[i]);
+  free(trace);
+  free(v);
+  ScrDyn *result = scr_dyn_new_arr();
+  for (size_t i = reversed->v.arr.len; i-- > 0;) scr_dyn_arr_push(result, scr_dyn_retain(reversed->v.arr.items[i]));
+  scr_dyn_release(reversed);
+  uc_diff_seq_free(&a);
+  uc_diff_seq_free(&e);
+  return result;
 }

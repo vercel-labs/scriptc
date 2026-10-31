@@ -206,9 +206,30 @@ test("a target CPU level reaches every function attribute group and nothing else
   const plain = emitLlvmModule(module);
   expect(plain).not.toContain("target-cpu");
   const v3 = emitLlvmModule(module, { targetCpu: "x86-64-v3" });
-  expect(v3).toMatch(/^attributes #0 = \{ sanitize_address "target-cpu"="x86-64-v3" \}$/m);
+  expect(v3).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" \}$/m);
   expect(v3.replaceAll(' "target-cpu"="x86-64-v3"', "")).toBe(plain);
   expect(emitLlvmModule(module, { targetCpu: "baseline" })).toBe(plain);
+});
+
+test("only sanitized builds mark the emitted functions sanitize_address", () => {
+  const module = moduleFor([call()]);
+  const sanitized = emitLlvmModule(module);
+  expect(emitLlvmModule(module, { sanitizeAttributes: true })).toBe(sanitized);
+  expect(sanitized).toMatch(/^attributes #0 = \{ sanitize_address uwtable \}$/m);
+  const plain = emitLlvmModule(module, { sanitizeAttributes: false });
+  expect(plain).not.toContain("sanitize_address");
+  expect(plain).toMatch(/^attributes #0 = \{ uwtable \}$/m);
+  const v3 = emitLlvmModule(module, { sanitizeAttributes: false, targetCpu: "x86-64-v3" });
+  expect(v3).toMatch(/^attributes #0 = \{ uwtable "target-cpu"="x86-64-v3" \}$/m);
+});
+
+test("native functions get unwind tables and wasm32-wasi functions do not", () => {
+  const module = moduleFor([call()]);
+  expect(emitLlvmModule(module)).toMatch(/^attributes #0 = \{ sanitize_address uwtable \}$/m);
+  const wasi = emitLlvmModule(module, { wasi: true, pointerBits: 32, sanitizeAttributes: false });
+  expect(wasi).not.toContain("uwtable");
+  // A group needs an attribute: an ignored string attribute stands in.
+  expect(wasi).toMatch(/^attributes #0 = \{ "scriptc-function" \}$/m);
 });
 
 test("inline RC inlines every fast path at speed and keeps box releases as calls in release", () => {

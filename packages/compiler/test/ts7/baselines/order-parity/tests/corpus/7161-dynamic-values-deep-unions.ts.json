@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7161-dynamic-values-deep-unions.ts"
+ ],
+ "diags": []
+}

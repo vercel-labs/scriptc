@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../src/index.js";
-import type { IrModule } from "../src/ir/ir.js";
+import type { IrFunction, IrModule } from "../src/ir/ir.js";
 import { markInt32ArrayCandidates, selectInt32Arrays } from "../src/ir/int32-arrays.js";
+import { analyzeInt32Slots, type Int32Slots } from "../src/ir/int32-slots.js";
+import { serializeModule } from "../src/ir/serialize.js";
 
 async function emitLlvm(source: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-int32-elements-"));
@@ -189,8 +191,10 @@ test("a loop over a counter array tests its kind once on entry", async () => {
     /icmp eq i8 %\w+, 7\n\s+br i1 %\w+, label %kind\.fast\d+, label %kind\.wide/,
   );
   const rest = counter.slice(counter.search(/^kind\.fast\d+:/m));
-  // The fast copy is the last one, before the loop's exit.
-  const fast = rest.slice(0, rest.search(/^loop\.e\d+:/m));
+  // The fast copy is the last one, before the loop's exit or, when the
+  // loop is also versioned on `n`'s entry range, before the copy for other
+  // entry values.
+  const fast = rest.slice(0, rest.search(/^(loop\.e|entry\.slow)\d+:/m));
   expect(fast).not.toBe("");
   expect(fast).not.toMatch(/icmp eq i8 %\w+, 7/);
   expect(fast).toMatch(/add nsw i64 %\w+, 1/);
@@ -210,12 +214,12 @@ test("only the candidates the proof keeps are rewritten", async () => {
   // An array that reaches `join` is never proposed.
   expect(proposed.some((key) => key.startsWith("joined\0"))).toBe(false);
   // Without a kept candidate, the module is the input itself.
-  expect(selectInt32Arrays(mod, () => new Set())).toBe(mod);
+  expect(selectInt32Arrays(mod, () => ({ kept: new Set(), functions: null }))).toBe(mod);
   const kept = new Set(["compose\0p.0", "compose\0q.0"]);
-  const selected = selectInt32Arrays(
-    mod,
-    (marked) => new Set((marked.int32ArrayCandidates ?? []).filter((key) => kept.has(key))),
-  );
+  const selected = selectInt32Arrays(mod, (marked) => ({
+    kept: new Set((marked.int32ArrayCandidates ?? []).filter((key) => kept.has(key))),
+    functions: null,
+  }));
   expect(selected.int32ArrayCandidates).toEqual([...kept]);
   for (const fn of selected.functions)
     if (fn.name !== "compose") expect(fn).toBe(mod.functions.find((f) => f.name === fn.name));
@@ -258,4 +262,48 @@ test("arrays passed to helpers and held in module globals get 4-byte slots", asy
   );
   expect(functions(llvm, "mean")).not.toMatch(/getelementptr inbounds i32, ptr/);
   expect(llvm).toMatch(/@scr_arr_new(_small)?\(i32 7/);
+});
+
+/** The module selectInt32Arrays selects, the analysis of its last proof,
+ * and how many proofs it asked for: with `revising`, each proof revises
+ * the functions of candidates that drop. */
+function selection(
+  mod: IrModule,
+  revising: boolean,
+): { selected: IrModule; slots: Int32Slots; proofs: number } {
+  let slots: Int32Slots | null = null;
+  let proofs = 0;
+  const selected = selectInt32Arrays(mod, (marked, revise) => {
+    proofs++;
+    const latest = new Map<string, IrFunction>();
+    slots = analyzeInt32Slots(
+      marked,
+      revising && revise !== null
+        ? {
+            revise: (fnName, dropped) => {
+              const fn = revise(fnName, dropped);
+              latest.set(fnName, fn);
+              return fn;
+            },
+          }
+        : {},
+    );
+    const kept = new Set([...slots.int32Arrays, ...slots.checkedInt32Arrays]);
+    if (latest.size === 0) return { kept, functions: null };
+    return { kept, functions: marked.functions.map((fn) => latest.get(fn.name) ?? fn) };
+  });
+  return { selected, slots: slots!, proofs };
+}
+
+test("one proof that revises dropped candidates selects what rounds of proofs select", async () => {
+  for (const program of [source, sharedSource]) {
+    const mod = await lowerIr(program);
+    const rounds = selection(mod, false);
+    const revised = selection(mod, true);
+    // The rounds drop a candidate and prove the module again.
+    expect(rounds.proofs).toBeGreaterThan(1);
+    expect(revised.proofs).toBe(1);
+    expect(serializeModule(revised.selected, true)).toBe(serializeModule(rounds.selected, true));
+    expect(revised.slots.summary(revised.selected)).toBe(rounds.slots.summary(rounds.selected));
+  }
 });

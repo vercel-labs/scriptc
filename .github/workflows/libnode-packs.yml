@@ -1,0 +1,145 @@
+name: libnode packs
+
+# Builds the @scriptc/libnode-<platform> packs: the pinned Node.js release
+# as a shared library plus the scriptc bridge (packages/libnode-common).
+# A Node build takes about half an hour on 8 cores, so this workflow is
+# never part of the ordinary build or test path. It runs only when the pin,
+# the bridge or the pack packages change, or by hand, and it caches each
+# platform's libnode build by (Node release, configure flags, platform,
+# toolchain): a bridge-only change restores libnode from the cache and
+# rebuilds just the bridge in seconds.
+#
+# Linux packs build in the manylinux_2_28 images (AlmaLinux 8, glibc 2.28,
+# gcc-toolset-14), the glibc floor of Node's official Linux builds, on
+# native runners: Node disables its startup snapshot when cross-compiling.
+# Every pack is smoke-tested by a C program that loads it the way the
+# scriptc runtime does (packages/libnode-common/smoke/smoke.c).
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/libnode-*/**"
+      - "packages/runtime/src/scr_node_bridge.h"
+      - ".github/workflows/libnode-packs.yml"
+  pull_request:
+    paths:
+      - "packages/libnode-*/**"
+      - "packages/runtime/src/scr_node_bridge.h"
+      - ".github/workflows/libnode-packs.yml"
+
+concurrency:
+  # A fixed name: under workflow_call, github.workflow is the caller's, and
+  # sharing the caller's group would cancel the run as a deadlock.
+  group: libnode-packs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build libnode pack (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64-gnu
+            runner: ubuntu-24.04
+            image: quay.io/pypa/manylinux_2_28_x86_64
+            toolchain: manylinux_2_28-gcc-toolset-14
+          - platform: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux_2_28_aarch64
+            toolchain: manylinux_2_28-gcc-toolset-14
+          - platform: darwin-arm64
+            runner: macos-15
+            toolchain: macos-15-xcode-clang
+          - platform: darwin-x64
+            runner: macos-15-intel
+            toolchain: macos-15-xcode-clang
+    runs-on: ${{ matrix.runner }}
+    # A cold Linux build is ~30 minutes on 8 cores; the 3- and 4-core macOS
+    # runners are expected to take well over an hour. A cache hit is minutes.
+    timeout-minutes: 240
+    env:
+      SCRIPTC_LIBNODE_TOOLCHAIN: ${{ matrix.toolchain }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Compute the libnode cache key
+        id: key
+        run: node packages/libnode-common/scripts/cache-key.mjs --platform ${{ matrix.platform }} >> "$GITHUB_OUTPUT"
+
+      - name: Restore the libnode build
+        uses: actions/cache@v4
+        with:
+          path: .libnode-cache/${{ steps.key.outputs.path }}
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Build the pack (Linux, manylinux_2_28)
+        if: startsWith(matrix.platform, 'linux')
+        run: |
+          NODE_ROOT=$(dirname "$(dirname "$(command -v node)")")
+          docker run --rm --volume "$GITHUB_WORKSPACE:/work" --volume "$NODE_ROOT:/node:ro" \
+            --env SCRIPTC_LIBNODE_TOOLCHAIN --env SCRIPTC_LIBNODE_CACHE=/work/.libnode-cache \
+            --env CC=gcc --env CXX=g++ \
+            --env PATH=/opt/rh/gcc-toolset-14/root/usr/bin:/opt/python/cp312-cp312/bin:/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            --workdir /work ${{ matrix.image }} sh -c '
+              set -eu
+              dnf install --assumeyes --quiet zstd
+              pip install --quiet ninja
+              node packages/libnode-${{ matrix.platform }}/scripts/build.mjs --compress
+              node packages/libnode-common/scripts/verify.mjs packages/libnode-${{ matrix.platform }}
+              # The glibc 2.28 floor: load the pack where it was built.
+              node packages/libnode-common/scripts/smoke.mjs --platform ${{ matrix.platform }}
+              chown -R "$(stat -c %u:%g /work)" /work/packages /work/.libnode-cache
+            '
+
+      - name: Build the pack (macOS)
+        if: startsWith(matrix.platform, 'darwin')
+        env:
+          CC: clang
+          CXX: clang++
+          SCRIPTC_LIBNODE_CACHE: ${{ github.workspace }}/.libnode-cache
+        run: |
+          brew install ninja zstd
+          node packages/libnode-${{ matrix.platform }}/scripts/build.mjs --compress
+          node packages/libnode-common/scripts/verify.mjs packages/libnode-${{ matrix.platform }}
+
+      - name: Smoke-test the pack on the runner
+        run: node packages/libnode-common/scripts/smoke.mjs --platform ${{ matrix.platform }}
+
+      - name: Report sizes
+        run: |
+          {
+            echo "### @scriptc/libnode-${{ matrix.platform }} (Node ${{ steps.key.outputs.node }})"
+            echo
+            echo '```'
+            ls -l packages/libnode-${{ matrix.platform }} .libnode-cache/compressed/${{ matrix.platform }}
+            cat .libnode-cache/${{ steps.key.outputs.path }}/build.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: libnode-${{ matrix.platform }}
+          path: |
+            packages/libnode-${{ matrix.platform }}
+            !packages/libnode-${{ matrix.platform }}/scripts
+          retention-days: 30
+
+      - name: Upload compressed libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: libnode-${{ matrix.platform }}-zst
+          path: .libnode-cache/compressed/${{ matrix.platform }}
+          retention-days: 30

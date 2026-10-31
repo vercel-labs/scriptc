@@ -523,27 +523,45 @@ static void short_string_asserts(void) {
 }
 
 /* A loop's publish converts a non-ASCII receiver before any read, while a
- * lone read still walks bytes. ASCII receivers publish nothing. */
+ * lone read still walks bytes. ASCII receivers publish nothing. A loop
+ * that can read fewer than one unit per 16 bytes counts as one read. */
 static void scan_units_asserts(void) {
   ScrStr *s = scr_str_new("a\xC3\xA9\xF0\x9F\x98\x80" "b", 8); /* a é 😀 b */
   static const double codes[] = {97, 233, 0xD83D, 0xDE00, 98};
   if (scr_str_char_code_at(s, 0) != 97 || scr_str_scan.s == s) failed++;
-  scr_str_scan_units(s);
+  scr_str_scan_units_for(s, NAN, NAN);
   if (scr_str_scan.s != s || scr_str_scan.n != 5) failed++;
   for (size_t i = 0; i < 5; i++)
     if (scr_str_scan.n == 5 && (scr_str_scan.units[i] != codes[i] ||
                                 scr_str_char_code_at(s, (double)i) != codes[i])) failed++;
   if (!isnan(scr_str_char_code_at(s, 5))) failed++;
-  scr_str_scan_units(s); /* republishing keeps the same units */
+  scr_str_scan_units_for(s, NAN, NAN); /* republishing keeps the same units */
   const uint16_t *units = scr_str_scan.units;
-  scr_str_scan_units(s);
+  scr_str_scan_units_for(s, 0, 1);
   if (scr_str_scan.s != s || scr_str_scan.units != units) failed++;
   ScrStr *ascii = scr_str_new("plain", 5);
-  scr_str_scan_units(ascii);
+  scr_str_scan_units_for(ascii, NAN, NAN);
   if (scr_str_scan.s != s) failed++;
   scr_str_release(ascii);
   scr_str_release(s);
   if (scr_str_scan.s != NULL) failed++;
+  /* 200 units in 400 bytes: a loop over 25 indexes converts at once. */
+  char text[400];
+  for (size_t i = 0; i < sizeof text; i += 2) memcpy(text + i, "\xC3\xA9", 2);
+  ScrStr *wide = scr_str_new(text, sizeof text);
+  scr_str_scan_units_for(wide, 175, 200);
+  if (scr_str_scan.s != wide || scr_str_scan.n != 200 || scr_str_scan.units[199] != 233) failed++;
+  scr_str_release(wide);
+  /* A loop over 24 does not; each such loop counts as one read, so the
+   * 32nd converts (32 reads, one per 12.5 bytes). */
+  ScrStr *line = scr_str_new(text, sizeof text);
+  scr_str_scan_units_for(line, 24, 0);
+  if (scr_str_scan.s == line) failed++;
+  for (int i = 1; i < 31; i++) scr_str_scan_units_for(line, i, i + 1);
+  if (scr_str_scan.s == line) failed++;
+  scr_str_scan_units_for(line, 31, 32);
+  if (scr_str_scan.s != line || scr_str_scan.n != 200) failed++;
+  scr_str_release(line);
   total++;
 }
 #ifdef SCR_SIDX_TEST
@@ -587,10 +605,15 @@ static void sparse_slice_churn_asserts(void) {
 static void index_activity_asserts(void) {
   scr_sidx_test_reset_cache();
   ScrStr *strings[9];
+  /* A receiver of up to 16 bytes is decoded on each indexed read. */
+  ScrStr *shortest = scr_str_new("\xc3\xa9x", 3);
+  if (scr_str_char_code_at(shortest, 1) != 'x' || scr_sidx_test_active() != 0)
+    sidx_fail("short indexed read claimed a cursor");
+  scr_str_release(shortest);
   for (size_t i = 0; i < 9; i++) {
-    strings[i] = scr_str_new("\xc3\xa9x", 3);
+    strings[i] = scr_str_new("\xc3\xa9xxxxxxxxxxxxxxxxx", 19);
     /* Short lengths count directly; an indexed read claims a cursor. */
-    if (scr_str_utf16_len(strings[i]) != 2 || scr_sidx_test_active() != (i < 4 ? i : 4))
+    if (scr_str_utf16_len(strings[i]) != 18 || scr_sidx_test_active() != (i < 4 ? i : 4))
       sidx_fail("short length claimed a cursor");
     if (scr_str_char_code_at(strings[i], 1) != 'x') sidx_fail("cursor activation read");
     if (scr_sidx_test_active() != (i < 4 ? i + 1 : 4))
@@ -598,7 +621,7 @@ static void index_activity_asserts(void) {
   }
   for (size_t i = 0; i < 9; i++) scr_str_release(strings[i]);
   if (scr_sidx_test_active() != 0) sidx_fail("last cursor release stayed active");
-  ScrStr *s = scr_str_new("\xe4\xb8\xad", 3);
+  ScrStr *s = scr_str_new("\xe4\xb8\xadxxxxxxxxxxxxxxxx", 19);
   (void)scr_str_utf16_len(s);
   scr_sidx_test_reset_cache();
   if (scr_sidx_test_active() != 0) sidx_fail("cache reset stayed active");
@@ -904,6 +927,54 @@ static void local_navigation_asserts(void) {
   scr_sidx_test_reset_cache();
 }
 
+/* A scanner reading a mostly ASCII text front to back (positioned
+ * startsWith and substrings at increasing positions, with a non-ASCII
+ * character every 300 bytes) maps its positions through the ASCII run, so
+ * it walks only across the non-ASCII characters. */
+static void forward_scan_asserts(void) {
+  enum { ASCII = 300, UNITS = ASCII + 1, REPS = 100 };
+  char piece[ASCII + 2];
+  for (size_t i = 0; i < ASCII; i++) piece[i] = (char)('a' + i % 26);
+  memcpy(piece + ASCII, "\xC3\xA9", 2); /* é: one unit */
+  ScrStr *unit = scr_str_new(piece, sizeof piece);
+  ScrStr *s = scr_str_repeat(unit, REPS);
+  scr_str_release(unit);
+  scr_sidx_test_reset_cache();
+  if (scr_str_utf16_len(s) != UNITS * REPS) sidx_fail("forward scan length");
+  ScrStr *needle = scr_str_new("ab", 2);
+  scr_sidx_test_reset_steps();
+  for (size_t at = 0; at + 2 <= UNITS * REPS; at += 5) {
+    size_t offset = at % UNITS;
+    bool expected = offset + 1 < ASCII && offset % 26 == 0;
+    if (scr_str_starts_with_from(s, needle, (double)at) != expected) {
+      sidx_fail("forward startsWith");
+      break;
+    }
+    char want[4];
+    size_t n = 0;
+    for (size_t k = at; k < at + 2; k++) {
+      size_t o = k % UNITS;
+      if (o < ASCII) want[n++] = (char)('a' + o % 26);
+      else {
+        want[n++] = '\xC3';
+        want[n++] = '\xA9';
+      }
+    }
+    ScrStr *part = scr_str_substring(s, (double)at, (double)(at + 2));
+    bool same = part->len == n && memcmp(part->data, want, n) == 0;
+    scr_str_release(part);
+    if (!same) {
+      sidx_fail("forward substring");
+      break;
+    }
+  }
+  if (scr_sidx_test_walk_steps() > REPS * 16)
+    sidx_fail("forward reads walked between non-ASCII characters");
+  scr_str_release(needle);
+  scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
+
 /* An entry borrowed for a receiver must remain its entry when a second
  * string needs indexing. Fill the cursor tier so the needle would evict
  * precisely the receiver under a receiver-first lookup order. */
@@ -964,7 +1035,42 @@ static void ordering_asserts(void) {
   }
 }
 
+/* Template-literal concatenations (no head) of strings and numbers: the
+ * result holds exactly its bytes, whatever the numbers format to. */
+static int check_concat_capacity(void) {
+  ScrStr *a = scr_str_new("f", 1), *b = scr_str_new("_d", 2), *c = scr_str_new("", 0);
+  struct {
+    ScrStr *parts[4];
+    double nums[4];
+    size_t count;
+    const char *expected;
+  } cases[] = {
+      {{a, NULL, b, NULL}, {0, 7, 0, 2230}, 4, "f7_d2230"},
+      {{NULL, a}, {-1.5e-7, 0}, 2, "-1.5e-7f"},
+      {{NULL, NULL, NULL}, {1.7976931348623157e308, 0.1, -0.0}, 3, "1.7976931348623157e+3080.10"},
+      {{c, NULL, c}, {0, 42, 0}, 3, "42"},
+  };
+  int failed = 0;
+  for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    ScrStr *r = scr_str_concat_mixed(NULL, cases[i].parts, cases[i].nums, cases[i].count);
+    size_t want = strlen(cases[i].expected);
+    if (r->len != want || memcmp(r->data, cases[i].expected, want) != 0 || r->data[want] != '\0' ||
+        r->cap != r->len) {
+      fprintf(stderr, "concat case %zu: got \"%.*s\" len %zu cap %zu, want \"%s\" len %zu\n", i,
+              (int)r->len, r->data, r->len, (size_t)r->cap, cases[i].expected, want);
+      failed++;
+    }
+    scr_str_release(r);
+  }
+  scr_str_release(a);
+  scr_str_release(b);
+  scr_str_release(c);
+  fprintf(stderr, "%d concat capacity failures\n", failed);
+  return failed != 0;
+}
+
 int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "--concat-capacity") == 0) return check_concat_capacity();
   if (argc > 1 && strncmp(argv[1], "--crash-repeat", 14) == 0) {
     ScrStr *s = scr_str_new("ab", 2);
     double count = strcmp(argv[1], "--crash-repeat-inf") == 0
@@ -1186,6 +1292,7 @@ int main(int argc, char **argv) {
   index_activity_asserts();
   sparse_slice_churn_asserts();
   local_navigation_asserts();
+  forward_scan_asserts();
   positioned_suffix_eviction_asserts();
 #endif
 

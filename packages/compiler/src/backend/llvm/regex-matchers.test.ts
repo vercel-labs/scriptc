@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  canReplaceWith,
   compileRegexMatcher,
   regexLiteralBailReason,
   regexLiteralCaptures,
@@ -150,5 +151,48 @@ describe("regex literal matcher code", () => {
     const text = body("x[^a]", "i");
     expect(text).toContain("icmp ule i32");
     expect(text).not.toContain("constant [128 x i8]");
+  });
+});
+
+describe("regex literal replacers", () => {
+  test("take global, non-sticky, non-plain-text patterns and ASCII replacements without $", () => {
+    expect(canReplaceWith("a[bc]", "g", "<2>")).toBe(true);
+    expect(canReplaceWith("a[bc]", "gi", "")).toBe(true);
+    expect(canReplaceWith("a[bc]", "", "x")).toBe(false);
+    expect(canReplaceWith("a[bc]", "gy", "x")).toBe(false);
+    expect(canReplaceWith("a[bc]", "g", "$1")).toBe(false);
+    expect(canReplaceWith("a[bc]", "g", "é")).toBe(false);
+    // Plain text is a string search at run time.
+    expect(canReplaceWith("&", "g", "&amp;")).toBe(false);
+    expect(canReplaceWith("a\\.b", "g", "x")).toBe(false);
+    // Letters under i are not plain text.
+    expect(canReplaceWith("ab", "gi", "x")).toBe(true);
+  });
+
+  test("append the gap and the replacement and continue the search", () => {
+    const code = compileRegexMatcher("r", "<[^>]*>", "g", "i64", true, "|");
+    const text = code!.lines.join("\n");
+    expect(text).toContain('@r.rep = private unnamed_addr constant [1 x i8] c"|"');
+    expect(text).toContain("call void @scr_re_replace_out_reserve(ptr %out, i64 %m.need)");
+    expect(text).toContain("load <16 x i8>, ptr %m.src, align 1");
+    expect(text).toMatch(/br i1 %m\.past, label %nomatch, label %scan/);
+    expect(text).not.toContain("m.ret:");
+    expect(text).toContain("ret i32 %n.found");
+    // The search after a match is a 16-byte scan, not a memchr call.
+    expect(text).not.toContain("@memchr");
+    expect(code!.decls).toContain("declare void @scr_re_replace_out_reserve(ptr, i64)");
+    // Without vectors the gap is a memcpy.
+    const scalar = compileRegexMatcher("r", "<[^>]*>", "g", "i64", false, "|")!.lines.join("\n");
+    expect(scalar).not.toContain("<16 x i8>");
+    expect(scalar).toContain(
+      "call void @llvm.memcpy.p0.p0.i64(ptr %m.dst, ptr %m.src, i64 %m.gapw, i1 false)",
+    );
+  });
+
+  test("escape the replacement bytes and skip the copy of an empty one", () => {
+    const quoted = compileRegexMatcher("r", "a[bc]", "g", "i64", true, '"\\\n')!.lines.join("\n");
+    expect(quoted).toContain('c"\\22\\5C\\0A"');
+    const empty = compileRegexMatcher("r", "a[bc]", "g", "i64", true, "")!.lines.join("\n");
+    expect(empty).not.toContain("@r.rep");
   });
 });

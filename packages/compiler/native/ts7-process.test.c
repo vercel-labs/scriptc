@@ -1,6 +1,10 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
+/* macOS declares mkdtemp only with the Darwin extensions visible. */
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
 #include "ts7-process.h"
 #include <assert.h>
 #include <errno.h>
@@ -21,11 +25,13 @@
 static const char *executable;
 static const char *callbacks = "readFile,fileExists";
 
-static uint32_t start(const char *mode, int timing) {
+static uint32_t start_with(const char *mode, int timing, int libraries) {
   return scriptc_ts7_open((const uint8_t *)executable, strlen(executable),
                           (const uint8_t *)mode, strlen(mode),
-                          (const uint8_t *)callbacks, strlen(callbacks), (uint8_t)timing);
+                          (const uint8_t *)callbacks, strlen(callbacks), (uint8_t)timing, (uint8_t)libraries);
 }
+
+static uint32_t start(const char *mode, int timing) { return start_with(mode, timing, 0); }
 
 static void fail_message(void) {
   uint8_t message[1024];
@@ -83,11 +89,13 @@ static void argument_cases(void) {
     "", "a b", "double\"quote", "end\\", "many\\\\\"quotes\\\\", "a;&$()`'b", "h\xc3\xa9llo \xf0\x9f\x8c\x8d",
   };
   for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
-    for (int timing = 0; timing <= 1; timing++) {
+    for (int flags = 0; flags < 4; flags++) {
+      int timing = flags & 1, libraries = flags >> 1;
       char mode[256], expected[512];
       snprintf(mode, sizeof(mode), "argv:%s", values[i]);
-      snprintf(expected, sizeof(expected), "%s\n--callbacks=%s\n%s\n", values[i], callbacks, timing ? "timing" : "plain");
-      uint32_t id = start(mode, timing);
+      snprintf(expected, sizeof(expected), "%s\n--callbacks=%s\n%s\n%s", values[i], callbacks,
+               timing ? "timing" : "plain", libraries ? "libraries from disk\n" : "");
+      uint32_t id = start_with(mode, timing, libraries);
       assert(id != 0);
       uint8_t actual[512];
       read_exact(id, actual, strlen(expected));
@@ -141,16 +149,30 @@ static void exchange_cases(void) {
   scriptc_ts7_close(newer);
 }
 
+/* A reply that arrives after the read's poll window: the read waits for it. */
+static void slow_reply_cases(void) {
+  uint32_t id = start("slow-echo", 0);
+  assert(id != 0);
+  const uint8_t bytes[3] = {1, 2, 3};
+  uint8_t result[3] = {0};
+  for (unsigned round = 0; round < 3; round++) {
+    write_exact(id, bytes, sizeof(bytes), 0, sizeof(bytes));
+    read_exact(id, result, sizeof(result));
+    assert(memcmp(bytes, result, sizeof(bytes)) == 0);
+  }
+  scriptc_ts7_close(id);
+}
+
 static void failure_cases(void) {
   uint8_t bytes[1] = {42};
   const char *saved = executable;
   executable = "/scriptc/does-not-exist/tsgo";
   for (int i = 0; i < 30; i++) { assert(start("echo", 0) == 0); fail_message(); }
   executable = saved;
-  assert(scriptc_ts7_open(NULL, 0, bytes, 1, bytes, 1, 0) == 0);
-  assert(scriptc_ts7_open((const uint8_t *)"abc\0def", 7, bytes, 1, bytes, 1, 0) == 0);
-  assert(scriptc_ts7_open((const uint8_t *)executable, strlen(executable), NULL, 0, bytes, 1, 0) == 0);
-  assert(scriptc_ts7_open((const uint8_t *)executable, strlen(executable), bytes, 1, NULL, 0, 0) == 0);
+  assert(scriptc_ts7_open(NULL, 0, bytes, 1, bytes, 1, 0, 0) == 0);
+  assert(scriptc_ts7_open((const uint8_t *)"abc\0def", 7, bytes, 1, bytes, 1, 0, 0) == 0);
+  assert(scriptc_ts7_open((const uint8_t *)executable, strlen(executable), NULL, 0, bytes, 1, 0, 0) == 0);
+  assert(scriptc_ts7_open((const uint8_t *)executable, strlen(executable), bytes, 1, NULL, 0, 0, 0) == 0);
   for (int i = 0; i < 30; i++) {
     uint32_t id = start("exit", 0);
     assert(id != 0);
@@ -177,7 +199,7 @@ static void failure_cases(void) {
 static uint32_t attach(const char *name, const char *mode, uint32_t memory) {
   return scriptc_ts7_attach((const uint8_t *)name, strlen(name), (const uint8_t *)executable, strlen(executable),
                             (const uint8_t *)mode, strlen(mode), (const uint8_t *)callbacks, strlen(callbacks),
-                            0, 1, memory);
+                            0, 0, 1, memory);
 }
 
 static void expect_line(uint32_t id, const char *expected) {
@@ -200,9 +222,9 @@ static void attach_cases(void) {
   uint8_t bytes[4];
   snprintf(directory, sizeof(directory), "%s/scriptc", runtime);
   snprintf(socket_path, sizeof(socket_path), "%s/server.sock", directory);
-  // The first build starts the server with its idle time and memory limit.
-  // The server holds none of the build's descriptors, such as an output
-  // pipe its caller reads to the end.
+  // The first build starts the server with its idle time and memory limit,
+  // in the root directory. The server holds none of the build's descriptors,
+  // such as an output pipe its caller reads to the end.
   int output[2];
   assert(pipe(output) == 0);
   uint32_t first = attach("server", "listen", 123);
@@ -216,6 +238,7 @@ static void attach_cases(void) {
   snprintf(expected, sizeof(expected), "%s 1\n", socket_path);
   expect_line(first, expected);
   expect_line(first, "123\n");
+  expect_line(first, "/\n");
   write_exact(first, (const uint8_t *)"ping", 4, 0, 4);
   read_exact(first, bytes, 4);
   assert(memcmp(bytes, "ping", 4) == 0);
@@ -280,6 +303,7 @@ static int process_main(int argc, char **argv) {
   unsigned before = resource_count();
   argument_cases();
   exchange_cases();
+  slow_reply_cases();
   failure_cases();
 #ifndef _WIN32
   attach_cases();

@@ -11,6 +11,11 @@
  * definition can leak into a later block. */
 import { UNWIND_RESUME, UNWIND_SLOT } from "./unwind-abi.js";
 
+/** An inline dyn release call, and the comment that marks one emitted
+ * inside a loop: the sites limitInlineReleases keeps inline first. */
+export const DYN_RELEASE_CALL = "call void @sc_rc_release_dyn(";
+export const LOOP_SITE = " ; loop";
+
 export class BlockBuilder {
   private readonly blocks: { label: string; lines: string[]; term: string | null }[] = [];
   private cur: { label: string; lines: string[]; term: string | null };
@@ -35,6 +40,9 @@ export class BlockBuilder {
   /** Entry slots whose loads and stores render volatile, so no LLVM pass
    * promotes them to SSA values (see volatileSlotAccess). */
   volatileSlots: ReadonlySet<string> | null = null;
+  /** Loops of the IR function enclosing the lines being emitted; inline dyn
+   * releases inside one carry LOOP_SITE (shapes.ts limitInlineReleases). */
+  loopDepth = 0;
 
   constructor() {
     this.cur = { label: "entry", lines: [], term: null };
@@ -56,7 +64,10 @@ export class BlockBuilder {
   }
 
   line(s: string): void {
-    if (this.cur.term === null) this.cur.lines.push(`  ${this.withDebugLocation(s)}`);
+    if (this.cur.term === null) {
+      const marked = this.loopDepth > 0 && s.startsWith(DYN_RELEASE_CALL) ? s + LOOP_SITE : s;
+      this.cur.lines.push(`  ${this.withDebugLocation(marked)}`);
+    }
   }
 
   private withDebugLocation(s: string): string {
@@ -97,14 +108,24 @@ export class BlockBuilder {
       if (s === UNWIND_RESUME) {
         const exception = this.tmp();
         this.line(`${exception} = load { ptr, i32 }, ptr ${UNWIND_SLOT}`);
-        s = `resume { ptr, i32 } ${exception}`;
+        this.resumeUnwind(exception);
+        return;
       }
       this.cur.term = `  ${this.withDebugLocation(s)}`;
     }
   }
 
-  br(label: string): void {
-    this.terminate(`br label %${label}`);
+  /** Ends the block by continuing an unwind with `exception`, the value
+   * of a landing pad (UNWIND_RESUME_DECLARATION). */
+  resumeUnwind(exception: string): void {
+    const token = this.tmp();
+    this.line(`${token} = extractvalue { ptr, i32 } ${exception}, 0`);
+    this.line(`call void @scr_unwind_resume(ptr ${token})`);
+    this.terminate("unreachable");
+  }
+
+  br(label: string, attachment = ""): void {
+    this.terminate(`br label %${label}${attachment}`);
   }
 
   condBr(v: string, t: string, f: string, attachment = ""): void {

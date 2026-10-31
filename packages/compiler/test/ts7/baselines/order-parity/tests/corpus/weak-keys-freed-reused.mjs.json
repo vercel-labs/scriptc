@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/weak-keys-freed-reused.mjs"
+ ],
+ "diags": []
+}

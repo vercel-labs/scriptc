@@ -93,12 +93,39 @@ test("a row-sum nest runs two rows per pass behind its bounds and overlap test",
   // from the array the term reads.
   expect(JSON.stringify(go.init)).toContain('"fn":"bytes.disjoint"');
   expect(branch.else_).toBeNull();
-  const pairs = branch.then[0] as IrStmt & { kind: "for" };
+  // The four bounds, masked to the range the test proved, then the pairs.
+  expect(branch.then.slice(0, 4)).toMatchObject(
+    Array(4).fill({ kind: "varDecl", init: { op: "&", right: { value: 2 ** 25 - 1 } } }),
+  );
+  const pairs = branch.then[4] as IrStmt & { kind: "for" };
   expect(pairs.body.filter((s) => s.kind === "bytesSet")).toHaveLength(2);
-  const inner = pairs.body[2] as IrStmt & { kind: "for" };
-  // One read of u[j] for both rows, then the two sums.
-  expect(inner.body).toHaveLength(3);
+  const [, , inner, last] = pairs.body as [
+    IrStmt,
+    IrStmt,
+    IrStmt & { kind: "for" },
+    IrStmt & { kind: "if" },
+  ];
+  const column = inner.init as IrStmt & { kind: "varDecl" };
+  // Two columns per step: for each, one read of u[j] for both rows, then
+  // the two sums; the second column reads `column + 1`.
+  expect(inner.body).toHaveLength(6);
   expect(inner.body[0]).toMatchObject({ kind: "varDecl", init: { kind: "bytesIntrinsic" } });
+  expect(inner.body[3]).toMatchObject({
+    kind: "varDecl",
+    init: {
+      kind: "bytesIntrinsic",
+      args: [{ op: "+", left: { localId: column.localId }, right: { value: 1 } }],
+    },
+  });
+  expect(inner.cond).toMatchObject({ op: "<", right: { op: "-", right: { value: 1 } } });
+  expect(inner.update).toMatchObject({ value: { op: "+", right: { value: 2 } } });
+  // The last column of an odd count, `to - 1`.
+  expect(last.then).toHaveLength(3);
+  expect(last.then[0]).toMatchObject({
+    kind: "varDecl",
+    init: { args: [{ op: "-", right: { value: 1 } }] },
+  });
+  expect(last.else_).toBeNull();
   // The second row's term reads `row + 1`.
   const row = pairs.init?.kind === "varDecl" ? pairs.init.localId : "";
   expect((inner.body[2] as IrStmt & { kind: "assign" }).value).toMatchObject({
@@ -130,7 +157,7 @@ test("a row-sum nest runs two rows per pass behind its bounds and overlap test",
   expect(top.body).toHaveLength(4);
   expect(
     result.functions[0]!.locals.map((l) => l.id).filter((id) => id.startsWith("%pair.")),
-  ).toHaveLength(7);
+  ).toHaveLength(13);
 });
 
 test("nests whose term calls, writes or reads the sum keep their loops", () => {

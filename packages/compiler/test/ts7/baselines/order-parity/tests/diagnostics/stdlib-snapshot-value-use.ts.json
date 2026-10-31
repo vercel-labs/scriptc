@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/stdlib-snapshot-value-use.ts"
+ ],
+ "diags": []
+}

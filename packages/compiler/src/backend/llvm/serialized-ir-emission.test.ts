@@ -44,6 +44,7 @@ test("sort-heavy programs emit equal LLVM from memory and from serialized IR", a
           // compile() emits Linux textual LLVM with the unwinding ABI.
           unwindAbi: process.platform === "linux",
           objectAudit: sanitize,
+          sanitizeAttributes: sanitize,
           ...inlineRcOption(options.optimization, sanitize),
         });
         const text = typeof emitted === "string" ? emitted : emitted.join("");

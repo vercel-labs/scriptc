@@ -299,6 +299,21 @@ wrap empty: len 2 bytes 60 62
     expect(run.stdout).toBe(BUFFERS_EXPECTED);
   });
 
+  /* ── X509Certificate fields: scr_x509.c rides the archive ────────────── */
+
+  test("X509Certificate fields in a library", async () => {
+    const { archive, outDir } = await buildLibrary("x509", emission);
+    const probe = buildProbe("x509", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(
+      "C=US\nST=California\nL=San Francisco\nO=Example Org\nOU=Dev Team\nCN=Example Root CA\nemailAddress=ca@example.com" +
+        "|0123456789ABCDEF|Sep 27 16:33:52 2126 GMT|true|" +
+        "7C:5F:CA:18:57:BF:BD:FC:67:AC:BD:21:1C:67:E8:C3:73:48:35:4E:4D:95:A8:2B:83:FF:E0:5A:E7:0A:97:A9\n",
+    );
+  });
+
   /* ── cstring: NUL-terminated text in, out, and through callbacks ─────── */
 
   test("cstring parameters, results, and callback arguments", async () => {
@@ -371,7 +386,7 @@ globals: undefined fenced
     const run = runProbe(probe);
     expect(run.signal).toBeNull();
     expect(run.status).toBe(0);
-    expect(run.stdout).toBe("run: 20000\n".repeat(3));
+    expect(run.stdout).toBe("run: 40000\n".repeat(3));
   });
 
   /* ── K5/K6/K7: the trap channel ──────────────────────────────────────── */
@@ -599,7 +614,7 @@ survived, sink_calls=1
     const run = runProbe(probe);
     expect(run.signal).toBeNull();
     expect(run.status).toBe(0);
-    expect(run.stdout).toBe("run: 20000\n".repeat(3));
+    expect(run.stdout).toBe("run: 40000\n".repeat(3));
   });
 
   platformTest("K10: K5/K7 under ASan", async () => {
@@ -1063,7 +1078,7 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
 
   test("a code-keyed teachings entry rides a non-fence refusal as the attributed note", async () => {
     const diags = await refusal(
-      `export function f(): number { return (1234.5).toLocaleString().length; }\n`,
+      `export function f(): number { return (1234.5).toLocaleString("de-DE").length; }\n`,
       {
         exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }],
         determinism: {

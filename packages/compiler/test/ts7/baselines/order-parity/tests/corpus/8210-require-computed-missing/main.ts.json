@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8210-require-computed-missing/main.ts"
+ ],
+ "diags": []
+}

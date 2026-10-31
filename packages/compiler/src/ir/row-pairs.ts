@@ -7,10 +7,23 @@ import {
   type IrModule,
   type IrStmt,
 } from "./ir.js";
-import { everyExpr, everyExprChild, mapExprChildren, transformStmtList } from "./traverse.js";
+import {
+  everyExpr,
+  everyExprChild,
+  everyStmtList,
+  mapExprChildren,
+  transformStmtList,
+} from "./traverse.js";
+import { PRODUCT_COUNTER_BOUND } from "./integer-loops.js";
 
 /** Inner-loop expressions above this many nodes keep the loop as written. */
 const MAX_TERM_NODES = 64;
+
+/** The largest bound a paired nest runs with. Counters below
+ * PRODUCT_COUNTER_BOUND keep products of their sums exact, so the nest's
+ * counted loops take integer counters without a run-time guard (and its
+ * copy of the body). */
+const SMALL_BOUND = PRODUCT_COUNTER_BOUND - 1;
 
 /** The number operators a term may use: they run no other code and cannot
  * throw. */
@@ -196,7 +209,7 @@ function copy(
 }
 
 const bin = (
-  op: "+" | "-" | "&" | "|",
+  op: "+" | "-" | "/" | "&" | "|",
   left: IrExpr,
   right: IrExpr,
   loc: IrExpr["loc"],
@@ -210,7 +223,8 @@ const bin = (
 });
 
 /** Runs the row sums of `match` two rows per pass when the test holds and
- * as written otherwise. */
+ * as written otherwise. Each pass takes two columns per step, then the
+ * last column when their count is odd. */
 function pairRows(
   s: IrStmt & { kind: "for" },
   match: RowSum,
@@ -225,42 +239,93 @@ function pairRows(
     sum = fresh("sum"),
     next = fresh("next"),
     column = fresh("column");
-  const atColumn = (r: IrExpr & { kind: "varRef" }): IrExpr =>
-    r.localId === match.column ? { ...r, localId: column } : { ...r };
   // Element reads that do not depend on the row are read once per column
   // and shared by both rows.
-  const shared = new Map<IrExpr, string>();
-  const elements: IrStmt[] = [];
+  const sharedReads: IrExpr[] = [];
   const collect = (e: IrExpr): boolean => {
     if (e.kind === "bytesIntrinsic" && e.method === "get" && !readsLocal(e, match.row)) {
-      const id = fresh("element");
-      shared.set(e, id);
-      elements.push({ kind: "varDecl", localId: id, init: copy(e, atColumn), loc });
+      sharedReads.push(e);
       return true;
     }
     return everyExprChild(e, collect, () => true);
   };
   collect(match.term);
-  // The second row's term reads `row + 1`, so its counter sums stay visible
-  // to the counted-loop analysis.
-  const termAt = (rowExpr: () => IrExpr): IrExpr =>
-    copy(
-      match.term,
-      (r) => (r.localId === match.row ? rowExpr() : atColumn(r)),
-      (node) => {
-        const id = shared.get(node);
-        return id === undefined ? null : { kind: "varRef", localId: id, type: node.type, loc };
+  /** Both rows' additions at the column `columnAt()`: its shared element
+   * reads, then each row's sum. The second row's term reads `row + 1`, and
+   * the second column's `column + 1`, so their counter sums stay visible to
+   * the counted-loop analysis. */
+  const step = (columnAt: () => IrExpr): IrStmt[] => {
+    const at = (r: IrExpr & { kind: "varRef" }): IrExpr =>
+      r.localId === match.column ? columnAt() : { ...r };
+    const shared = new Map<IrExpr, string>();
+    const elements: IrStmt[] = sharedReads.map((read) => {
+      const id = fresh("element");
+      shared.set(read, id);
+      return { kind: "varDecl", localId: id, init: copy(read, at), loc };
+    });
+    const termAt = (rowExpr: () => IrExpr): IrExpr =>
+      copy(
+        match.term,
+        (r) => (r.localId === match.row ? rowExpr() : at(r)),
+        (node) => {
+          const id = shared.get(node);
+          return id === undefined ? null : { kind: "varRef", localId: id, type: node.type, loc };
+        },
+      );
+    return [
+      ...elements,
+      {
+        kind: "assign",
+        localId: sum,
+        value: bin(
+          "+",
+          ref(sum),
+          termAt(() => ref(row)),
+          loc,
+        ),
+        loc,
       },
-    );
+      {
+        kind: "assign",
+        localId: next,
+        value: bin(
+          "+",
+          ref(next),
+          termAt(() => bin("+", ref(row), num(1), loc)),
+          loc,
+        ),
+        loc,
+      },
+    ];
+  };
   const innerCond = match.inner.cond as IrExpr & { kind: "bin" };
+  const columnStart = (match.inner.init as IrStmt & { kind: "varDecl" }).init!;
+  // The bounds, as the paired nest reads them (see `small` below).
+  const low = fresh("low"),
+    high = fresh("high"),
+    first = fresh("first"),
+    last = fresh("last");
+  const bounds: IrStmt[] = (
+    [
+      [low, match.start],
+      [high, match.end],
+      [first, columnStart],
+      [last, innerCond.right],
+    ] as const
+  ).map(([id, bound]) => ({
+    kind: "varDecl",
+    localId: id,
+    init: bin("&", again(bound), num(SMALL_BOUND), loc),
+    loc,
+  }));
   const pairs: IrStmt = {
     kind: "for",
-    init: { kind: "varDecl", localId: row, init: again(match.start), loc },
+    init: { kind: "varDecl", localId: row, init: ref(low), loc },
     cond: {
       kind: "bin",
       op: "<",
       left: ref(row),
-      right: bin("-", again(match.end), num(1), loc),
+      right: bin("-", ref(high), num(1), loc),
       type: BOOL,
       loc,
     },
@@ -268,41 +333,40 @@ function pairRows(
     body: [
       { kind: "varDecl", localId: sum, init: { ...match.init }, loc },
       { kind: "varDecl", localId: next, init: { ...match.init }, loc },
+      // Both column bounds are int32, so `column < to - 1` is
+      // `column + 1 < to`. Each row adds its columns in order.
       {
         kind: "for",
-        init: {
-          kind: "varDecl",
-          localId: column,
-          init: again((match.inner.init as IrStmt & { kind: "varDecl" }).init!),
+        init: { kind: "varDecl", localId: column, init: ref(first), loc },
+        cond: {
+          ...innerCond,
+          left: ref(column),
+          right: bin("-", ref(last), num(1), loc),
+        },
+        update: { kind: "assign", localId: column, value: bin("+", ref(column), num(2), loc), loc },
+        body: [...step(() => ref(column)), ...step(() => bin("+", ref(column), num(1), loc))],
+        loc,
+      },
+      // An odd column count leaves the last column, `to - 1`.
+      {
+        kind: "if",
+        cond: {
+          kind: "logical",
+          op: "&&",
+          left: { ...innerCond, left: ref(first), right: ref(last) },
+          right: {
+            kind: "bin",
+            op: "===",
+            left: bin("&", bin("-", ref(last), ref(first), loc), num(1), loc),
+            right: num(1),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
           loc,
         },
-        cond: { ...innerCond, left: ref(column), right: again(innerCond.right) },
-        update: { kind: "assign", localId: column, value: bin("+", ref(column), num(1), loc), loc },
-        body: [
-          ...elements,
-          {
-            kind: "assign",
-            localId: sum,
-            value: bin(
-              "+",
-              ref(sum),
-              termAt(() => ref(row)),
-              loc,
-            ),
-            loc,
-          },
-          {
-            kind: "assign",
-            localId: next,
-            value: bin(
-              "+",
-              ref(next),
-              termAt(() => bin("+", ref(row), num(1), loc)),
-              loc,
-            ),
-            loc,
-          },
-        ],
+        then: step(() => bin("-", ref(last), num(1), loc)),
+        else_: null,
         loc,
       },
       { kind: "bytesSet", arr: { ...match.out }, index: ref(row), value: ref(sum), loc },
@@ -316,9 +380,13 @@ function pairRows(
     ],
     loc,
   };
-  // Both bounds are int32, so `row < end - 1` is `row + 1 < end`, and the
-  // nest has at least two rows. The overlap tests run only then, so they never
-  // read an array the program assigns only when there are rows. Rows are
+  // Every bound is an integer in [0, SMALL_BOUND] and not -0, so `row <
+  // end - 1` is `row + 1 < end` (and the same for the columns), and the
+  // masks in `bounds` leave the bounds unchanged while proving both
+  // counters' ranges.
+  // The nest has at least two rows. The column bounds' tests and the
+  // overlap tests run only then, so they never read an array the program
+  // assigns only when there are rows. Rows are
   // independent when the written array shares no byte with an array the
   // term reads; an array that is not there answers false.
   const int32 = (e: IrExpr): IrExpr => ({
@@ -329,9 +397,24 @@ function pairRows(
     type: BOOL,
     loc,
   });
+  const compare = (op: "<=" | ">=", e: IrExpr, value: number): IrExpr => ({
+    kind: "bin",
+    op,
+    left: again(e),
+    right: num(value),
+    type: BOOL,
+    loc,
+  });
+  // `1 / e > 0` holds for +0 and every positive bound, but not for -0:
+  // masking would turn a -0 start into +0, which a term can tell apart.
+  const small = (e: IrExpr): IrExpr[] => [
+    int32(e),
+    { kind: "bin", op: ">", left: bin("/", num(1), again(e), loc), right: num(0), type: BOOL, loc },
+    compare("<=", e, SMALL_BOUND),
+  ];
   const tests: IrExpr[] = [
-    int32(match.start),
-    int32(match.end),
+    ...small(match.start),
+    ...small(match.end),
     {
       kind: "bin",
       op: "<",
@@ -340,6 +423,8 @@ function pairRows(
       type: BOOL,
       loc,
     },
+    ...small(columnStart),
+    ...small(innerCond.right),
     ...match.reads.map((read): IrExpr => ({
       kind: "libCall",
       fn: "bytes.disjoint",
@@ -394,7 +479,7 @@ function pairRows(
         },
         loc,
       },
-      { kind: "if", cond: { ...paired }, then: [pairs], else_: null, loc },
+      { kind: "if", cond: { ...paired }, then: [...bounds, pairs], else_: null, loc },
       rest,
     ],
     loc,
@@ -413,12 +498,30 @@ function pairRows(
  * store into shares no byte with any array the term reads, so no row reads
  * another row's result. An odd row count runs its last row as written.
  * Otherwise the nest runs as written. Two independent sums take turns in
- * the inner loop, so neither waits on the other's addition. */
+ * the inner loop, so neither waits on the other's addition.
+ *
+ * The inner loop takes two columns per step, each row adding the first
+ * column's term and then the second's, and the last column on its own
+ * when the count is odd, so the additions keep their order. Both column
+ * bounds must also be int32 (so `column < to - 1` is `column + 1 < to`).
+ * Neighboring rows and columns share counter sums (`row + 1 + column` and
+ * `row + (column + 1)`), and the step's divisions have no dependence
+ * between them. */
 export function pairRowSums(mod: IrModule): IrModule {
   let changed = false;
   const functions = mod.functions.map((fn): IrFunction => {
     if (fn.async || fn.generator) return fn;
     const locals = new Map(fn.locals.map((local) => [local.id, local]));
+    // Most bodies hold no row sum: find one before copying the body.
+    let found = false;
+    everyStmtList(fn.body, {
+      expr: () => !found,
+      stmt: (s) => {
+        if (s.kind === "for" && matchRowSum(s, locals) !== null) found = true;
+        return !found;
+      },
+    });
+    if (!found) return fn;
     const added: IrLocal[] = [];
     const ids = new Set(fn.locals.map((local) => local.id));
     const fresh = (name: string): string => {

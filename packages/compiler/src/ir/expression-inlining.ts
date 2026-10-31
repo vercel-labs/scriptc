@@ -128,15 +128,24 @@ export function inlineExpressionFunctions(mod: IrModule): IrModule {
   const functions = mod.functions.map((fn) => {
     const locals = new Map(fn.locals.map((local) => [local.id, local]));
     const inLoops = callsInLoops(fn.body);
-    if (inLoops.size === 0) return fn;
+    // Each call the rewrite inlines: of an expression function, in a loop,
+    // with arguments the copy may repeat.
+    const inlinable = (e: IrExpr & { kind: "call" }): boolean => {
+      if (e.callee === fn.name) return false;
+      const target = expressions.get(e.callee);
+      return (
+        target !== undefined &&
+        target.fn.params.length === e.args.length &&
+        e.args.every((arg) => duplicableArgument(arg, locals))
+      );
+    };
+    if (![...inLoops].some((e) => e.kind === "call" && inlinable(e))) return fn;
     let inlined = false;
     const body = transformStmtList(fn.body, {
       stmt: (s) => s,
       expr: (e) => {
-        if (e.kind !== "call" || e.callee === fn.name || !inLoops.has(e)) return e;
-        const target = expressions.get(e.callee);
-        if (target === undefined || target.fn.params.length !== e.args.length) return e;
-        if (!e.args.every((arg) => duplicableArgument(arg, locals))) return e;
+        if (e.kind !== "call" || !inLoops.has(e) || !inlinable(e)) return e;
+        const target = expressions.get(e.callee)!;
         const args = new Map(target.fn.params.map((param, i) => [param.localId, e.args[i]!]));
         inlined = true;
         return copy(target.value, (ref) => {

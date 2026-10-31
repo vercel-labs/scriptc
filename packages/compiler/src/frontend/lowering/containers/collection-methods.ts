@@ -1,4 +1,5 @@
 import { keyedHelperName } from "../stable-names.js";
+import { primitiveElement } from "../array-values.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -43,6 +44,7 @@ import {
 } from "../collection-ingestion.js";
 import { strCharsCall } from "./array-construction.js";
 import { arrayElementRead } from "./array-iteration.js";
+import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { generatorDrain, lowerCollectionIteratorValue } from "../iterator-adapters.js";
@@ -74,6 +76,17 @@ export function lowerMapMethodCall(
   if (!probedUntyped && !lowerer.isStdlibMember(access) && name !== "has") return null;
   const loc = locOf(call);
   const value = lowerer.lowerExpr(access.expression);
+  // A receiver the checker types `Map<any, any>` (inference residue of an
+  // untyped `new Map()`) whose value has a concrete layout: its keys and
+  // values convert into that layout.
+  if (
+    value.type.kind === "map" &&
+    receiverIr.key.kind === "dyn" &&
+    receiverIr.value.kind === "dyn" &&
+    value.type.key.kind !== "dyn" &&
+    value.type.value.kind !== "dyn"
+  )
+    receiverIr = value.type;
   const receiver =
     lowerer.runtimeOptionalPropertyReceiver(access.expression, value, receiverIr, name) ?? value;
   if (receiver.type.kind !== "map") {
@@ -1134,9 +1147,20 @@ function setFromSeedValue(
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
   } else if (source.type.kind === "string" && setT.elem.kind === "string") {
-    seed = strCharsCall(lowerer, source, loc);
+    seed = strCharsCall(source, loc);
   } else if (source.type.kind === "array" && typeEquals(source.type.elem, setT.elem)) {
     seed = source;
+  } else if (
+    source.type.kind === "array" &&
+    primitiveElement(source.type.elem) &&
+    setT.elem.kind === "union" &&
+    lowerer.armTag(setT.elem.unionId, UNDEFINED_T) >= 0 &&
+    typeEquals(lowerer.stripUndefinedArm(setT.elem), source.type.elem)
+  ) {
+    // A `(T | undefined)[]` stores T elements: its present undefined
+    // elements copy as the Set's undefined.
+    seed = lowerer.coerceToExpected(source, arrayOf(setT.elem));
+    if (!typeEquals(seed.type, arrayOf(setT.elem))) return null;
   } else if (source.type.kind === "record") {
     const shape = lowerer.shapes.get(source.type.shapeId);
     if (!shape?.tuple || !shape.fields.every((field) => typeEquals(field.type, setT.elem)))
@@ -1259,8 +1283,8 @@ export function lowerMapSeedNew(
     );
   }
   // new Map(sp) / new Map(sp.entries()): the checked-dynamic view's live
-  // pairs seed the map in order.
-  if (isSearchParamsIterable(lowerer, argNode)) {
+  // pairs seed the map in order, and so do a MIMEParams's entries.
+  if (isSearchParamsIterable(lowerer, argNode) || isMimeParamsIterable(lowerer, argNode)) {
     return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
   }
   const input = collectionInput(lowerer, argNode);

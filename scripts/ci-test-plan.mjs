@@ -7,6 +7,7 @@ export const corpusFiles = [
   "tests/harness/differential.test.ts",
   "tests/harness/llvm-differential.test.ts",
   "tests/harness/npm.test.ts",
+  "tests/harness/npm-shape-overlay.test.ts",
   "tests/harness/server.test.ts",
   "tests/harness/test262.test.ts",
   "tests/harness/three.test.ts",
@@ -18,14 +19,17 @@ const cacheFile = "packages/compiler/src/backend/native-toolchain.test.ts";
 export const isolatedFiles = [
   ["self-hosting serialization", "tests/harness/self-hosting-serialization.test.ts"],
   ["self-hosting", "tests/harness/self-hosting.test.ts"],
-  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
   ["fetch", "tests/harness/fetch.test.ts"],
   ["surface manifest", "tests/harness/surface-manifest.test.ts"],
 ];
 // Suites that split their own tests across the shards (SCRIPTC_TEST_SHARD,
 // skipUnownedTest in tests/harness/shard.ts): every shard runs its share in
 // its own vitest process.
-export const caseShardedSideFiles = [["npm static", "tests/harness/npm-static.test.ts"]];
+export const caseShardedSideFiles = [
+  ["npm static", "tests/harness/npm-static.test.ts"],
+  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
+  ["three.js library", "tests/harness/three-library.test.ts"],
+];
 export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
@@ -133,6 +137,15 @@ export const darwinFiles = [
 export const leakSuppressions = fileURLToPath(
   new URL("../tests/harness/lsan.supp", import.meta.url),
 );
+
+// The sanitized three.js nodes build runs in its own Linux job
+// (three_nodes_san in .github/workflows/ci.yml). Beside the corpus's other
+// workers it took 860 to more than 1200 seconds, past its test timeout.
+export const sanitizedNodesJobEnv = { SCRIPTC_THREE_SANITIZED_NODES_JOB: "1" };
+
+function corpusThreeEnv(flavor, platform) {
+  return flavor === "san" && platform === "linux" ? sanitizedNodesJobEnv : {};
+}
 
 function corpusLeakEnv(flavor, platform) {
   if (flavor !== "san" || platform !== "linux") return {};
@@ -246,6 +259,7 @@ export function ciTestPlan({
       env: {
         ...env,
         ...corpusLeakEnv(flavor, platform),
+        ...corpusThreeEnv(flavor, platform),
         SCRIPTC_TEST_WORKERS: String(workers - sideWorkers),
         SCRIPTC_LLVM_TEST_MODE: "dev",
       },

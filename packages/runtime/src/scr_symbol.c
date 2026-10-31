@@ -85,6 +85,11 @@ ScrSym *scr_sym_well_known(ScrStr *name) {
   scr_str_release(description);
   symbol->reg_next = g_sym_well_known;
   g_sym_well_known = scr_sym_retain(symbol);
+  {
+    ScrDyn *key = scr_dyn_new_symbol(symbol);
+    scr_dyn_install_well_known_symbol(key);
+    scr_dyn_release(key);
+  }
   if (name->len == 8 && !memcmp(name->data, "iterator", 8)) {
     ScrDyn *key = scr_dyn_new_symbol(symbol);
     scr_dyn_install_iterator_symbol(key);
@@ -93,6 +98,11 @@ ScrSym *scr_sym_well_known(ScrStr *name) {
   if (name->len == 11 && !memcmp(name->data, "hasInstance", 11)) {
     ScrDyn *key = scr_dyn_new_symbol(symbol);
     scr_dyn_install_has_instance_symbol(key);
+    scr_dyn_release(key);
+  }
+  if (name->len == 7 && !memcmp(name->data, "species", 7)) {
+    ScrDyn *key = scr_dyn_new_symbol(symbol);
+    scr_dyn_install_species_symbol(key);
     scr_dyn_release(key);
   }
   if (name->len == 11 && !memcmp(name->data, "toStringTag", 11)) {
@@ -140,6 +150,11 @@ ScrSym *scr_sym_for(ScrStr *key) {
   s->reg_key = scr_str_retain(key);
   s->reg_next = g_sym_registry;
   g_sym_registry = scr_sym_retain(s);
+  if (key->len == 26 && !memcmp(key->data, "nodejs.util.inspect.custom", 26)) {
+    ScrDyn *custom = scr_dyn_new_symbol(s);
+    scr_dyn_install_inspect_custom_symbol(custom);
+    scr_dyn_release(custom);
+  }
   return s;
 }
 
@@ -318,7 +333,7 @@ static void scr_dirent_init(void) {
     scr_dyn_obj_set(proto, methods[i].name, strlen(methods[i].name),
                     scr_dyn_new_func(scr_closure_new(NULL, 0), methods[i].thunk, 0, "native:fs.Dirent",
                                      methods[i].name));
-    proto->v.obj.entries[proto->v.obj.len - 1].enumerable = false;
+    scr_dyn_obj_set_attrs_at(proto, scr_dyn_obj_count(proto) - 1, true, false, true);
   }
   ScrStr *desc = scr_str_new("type", 4);
   ScrSym *sym = scr_sym_new(desc);
@@ -335,15 +350,14 @@ void scr_dyn_dirent_finish(ScrDyn *obj) {
   scr_dyn_region_store(obj, NULL); /* a prototype store (ScrDynRegion) */
   scr_dyn_release(obj->prototype);
   obj->prototype = scr_dyn_retain(scr_dirent_prototype);
-  for (size_t i = 0; i < obj->v.obj.len; i++) {
-    ScrDynEntry *ent = &obj->v.obj.entries[i];
-    if (ent->key_len != 6 || memcmp(ent->key, "%dtype", 6) != 0) continue;
-    ent->enumerable = false;
+  size_t i = scr_dyn_obj_index_of(obj, "%dtype", 6);
+  if (i != SIZE_MAX) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(obj, i);
+    scr_dyn_obj_set_attrs_at(obj, i, ent.writable, false, ent.configurable);
     if (!obj->symbol_properties && !obj->symbol_keys)
-      scr_dyn_symbol_init_own(obj, scr_dirent_type_key, scr_dirent_type_storage, ent->value);
+      scr_dyn_symbol_init_own(obj, scr_dirent_type_key, scr_dirent_type_storage, ent.value);
     else
-      scr_dyn_symbol_key_set(obj, scr_dirent_type_key, ent->value);
-    break;
+      scr_dyn_symbol_key_set(obj, scr_dirent_type_key, ent.value);
   }
 }
 

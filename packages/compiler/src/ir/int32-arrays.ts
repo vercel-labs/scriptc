@@ -805,6 +805,41 @@ function rewriteCandidates(
   return { ...fn, body, locals: locals.filter((local) => !popLocals.has(local.id)) };
 }
 
+/** A module marked for its int32 array candidates: the candidates of
+ * each function (int32ArrayCandidates) and the element readers the marking
+ * inlines. */
+interface Int32ArrayMarking {
+  readonly mod: IrModule;
+  readonly readers: ReadonlyMap<string, IrFunction>;
+  readonly candidates: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/** markInt32ArrayCandidates with the candidates it marked; null when it
+ * marks none. */
+function markCandidates(
+  mod: IrModule,
+  keep: ReadonlySet<string> | null,
+  redirected: ReadonlySet<string>,
+): Int32ArrayMarking | null {
+  if (mod.lib !== undefined) return null;
+  const readers = new Map<string, IrFunction>();
+  for (const fn of mod.functions) if (isElementReader(fn)) readers.set(fn.name, fn);
+  const all = moduleInt32ArrayCandidates(mod, new Set(readers.keys()), keep, redirected);
+  if (all.size === 0) return null;
+  const keys = new Set<string>();
+  const functions = mod.functions.map((fn) => {
+    const candidates = all.get(fn.name);
+    if (!candidates) return fn;
+    for (const id of candidates) keys.add(int32ArrayKey(fn.name, id));
+    return rewriteCandidates(fn, candidates, readers);
+  });
+  return {
+    mod: { ...mod, functions, int32ArrayCandidates: [...keys] },
+    readers,
+    candidates: all,
+  };
+}
+
 /** Propose the module's int32 array candidates (int32ArrayKey keys in
  * `int32ArrayCandidates`), only those in `keep` when given, and rewrite
  * their functions. */
@@ -813,42 +848,126 @@ export function markInt32ArrayCandidates(
   keep: ReadonlySet<string> | null = null,
   redirected: ReadonlySet<string> = new Set(),
 ): IrModule {
-  if (mod.lib !== undefined) return mod;
-  const readers = new Map<string, IrFunction>();
-  for (const fn of mod.functions) if (isElementReader(fn)) readers.set(fn.name, fn);
-  const all = moduleInt32ArrayCandidates(mod, new Set(readers.keys()), keep, redirected);
-  if (all.size === 0) return mod;
-  const keys = new Set<string>();
-  const functions = mod.functions.map((fn) => {
-    const candidates = all.get(fn.name);
-    if (!candidates) return fn;
-    for (const id of candidates) keys.add(int32ArrayKey(fn.name, id));
-    return rewriteCandidates(fn, candidates, readers);
-  });
-  return { ...mod, functions, int32ArrayCandidates: [...keys] };
+  return markCandidates(mod, keep, redirected)?.mod ?? mod;
+}
+
+/** Revises a function of a module marked for int32 array candidates when
+ * some of them drop: the function marked for its candidates outside
+ * `dropped` (int32ArrayKey keys), which is the unmarked function when none
+ * is left. */
+export type Int32ArrayRevision = (fnName: string, dropped: ReadonlySet<string>) => IrFunction;
+
+/** What a proof of a marked module (selectInt32Arrays' `prove`) keeps. */
+export interface Int32ArrayProof {
+  /** The candidates it keeps. */
+  readonly kept: ReadonlySet<string>;
+  /** The functions of the module it proved, in module order, when it
+   * revised some through the Int32ArrayRevision it was given; otherwise
+   * null, for the marked module's own. */
+  readonly functions: readonly IrFunction[] | null;
 }
 
 /** The module the backend emits: rewritten for exactly the candidates the
- * int32 slot analysis (`prove`, returning its int32Arrays) keeps, so a
- * module without int32 arrays is `mod` itself. A dropped candidate's
- * rewrite is undone by marking again without it, until every candidate
- * marked is kept. `redirected` names the functions some of whose calls the
+ * int32 slot analysis (`prove`) keeps, so a module without int32 arrays is
+ * `mod` itself. `redirected` names the functions some of whose calls the
  * backend emits as calls of another function (a result-slot entry): their
- * parameters keep doubles. */
+ * parameters keep doubles.
+ *
+ * The proof of the marked module gets an Int32ArrayRevision: as candidates
+ * drop, it revises their functions and goes on proving the revised module,
+ * so one analysis ends with the module marked for the candidates it keeps.
+ * That module is the answer when marking for those candidates again proposes
+ * exactly them, in the functions the proof revised. A proof that cannot
+ * follow a revision answers null; then each round marks the module, proves
+ * it without revisions, and marks again without the dropped candidates,
+ * until a round keeps every candidate it marks (four rounds at most). */
 export function selectInt32Arrays(
   mod: IrModule,
-  prove: (marked: IrModule) => ReadonlySet<string>,
+  prove: (marked: IrModule, revise: Int32ArrayRevision | null) => Int32ArrayProof | null,
   redirected: (mod: IrModule) => ReadonlySet<string> = () => new Set(),
 ): IrModule {
-  let keep: ReadonlySet<string> | null = null;
   const others = redirected(mod);
-  for (let round = 0; round < 4; round++) {
+  const marking = markCandidates(mod, null, others);
+  if (marking === null) return mod;
+  const original = new Map(mod.functions.map((fn) => [fn.name, fn]));
+  const markedFunctions = new Map(marking.mod.functions.map((fn) => [fn.name, fn]));
+  // Each function's latest revision and the candidates it is marked for.
+  const revisions = new Map<string, { fn: IrFunction; ids: ReadonlySet<string> }>();
+  const revise: Int32ArrayRevision = (fnName, dropped) => {
+    const candidates = marking.candidates.get(fnName) ?? new Set<string>();
+    const ids = new Set<string>();
+    for (const id of candidates) if (!dropped.has(int32ArrayKey(fnName, id))) ids.add(id);
+    const latest = revisions.get(fnName);
+    if (latest !== undefined && latest.ids.size === ids.size) return latest.fn;
+    if (latest === undefined && ids.size === candidates.size) return markedFunctions.get(fnName)!;
+    const fn =
+      ids.size === 0
+        ? original.get(fnName)!
+        : rewriteCandidates(original.get(fnName)!, ids, marking.readers);
+    revisions.set(fnName, { fn, ids });
+    return fn;
+  };
+  const proof = prove(marking.mod, revise);
+  const proposed = marking.mod.int32ArrayCandidates ?? [];
+  let keep: ReadonlySet<string> | null = null;
+  let round = 0;
+  if (proof !== null && proof.functions === null) {
+    // The marked module itself was proved: the first round.
+    if (proposed.every((key) => proof.kept.has(key))) return marking.mod;
+    keep = new Set(proposed.filter((key) => proof.kept.has(key)));
+    round = 1;
+  } else if (proof !== null) {
+    const settled = settleRevisions(mod, marking, proof, revisions, others);
+    if (settled !== null) return settled;
+  }
+  for (; round < 4; round++) {
     const marked = markInt32ArrayCandidates(mod, keep, others);
     if (marked === mod) return mod;
-    const kept = prove(marked);
-    const proposed = marked.int32ArrayCandidates ?? [];
-    if (proposed.every((key) => kept.has(key))) return marked;
-    keep = new Set(proposed.filter((key) => kept.has(key)));
+    const kept = prove(marked, null)!.kept;
+    const roundProposed = marked.int32ArrayCandidates ?? [];
+    if (roundProposed.every((key) => kept.has(key))) return marked;
+    keep = new Set(roundProposed.filter((key) => kept.has(key)));
   }
   return mod;
+}
+
+/** The module marked for the candidates a revising proof kept, built from
+ * the functions it proved: null unless marking `mod` for those candidates
+ * proposes, in each function, exactly the candidates its proved function is
+ * marked for. `mod` itself when it proposes none. */
+function settleRevisions(
+  mod: IrModule,
+  marking: Int32ArrayMarking,
+  proof: Int32ArrayProof,
+  revisions: ReadonlyMap<string, { fn: IrFunction; ids: ReadonlySet<string> }>,
+  redirected: ReadonlySet<string>,
+): IrModule | null {
+  const kept = proof.kept;
+  const functions = proof.functions!;
+  if (functions.length !== mod.functions.length) return null;
+  const all = moduleInt32ArrayCandidates(
+    mod,
+    new Set(marking.readers.keys()),
+    new Set([...(marking.mod.int32ArrayCandidates ?? [])].filter((key) => kept.has(key))),
+    redirected,
+  );
+  const keys = new Set<string>();
+  for (let i = 0; i < mod.functions.length; i++) {
+    const fn = mod.functions[i]!;
+    const proved = functions[i]!;
+    const candidates = all.get(fn.name);
+    const revision = revisions.get(fn.name);
+    const marked = revision?.ids ?? marking.candidates.get(fn.name) ?? new Set<string>();
+    if ((candidates?.size ?? 0) !== marked.size) return null;
+    if (candidates !== undefined)
+      for (const id of candidates) {
+        if (!marked.has(id)) return null;
+        keys.add(int32ArrayKey(fn.name, id));
+      }
+    const expected =
+      revision?.fn ?? (marking.candidates.has(fn.name) ? marking.mod.functions[i]! : fn);
+    if (proved !== expected) return null;
+  }
+  if (all.size === 0) return mod;
+  return { ...mod, functions: [...functions], int32ArrayCandidates: [...keys] };
 }

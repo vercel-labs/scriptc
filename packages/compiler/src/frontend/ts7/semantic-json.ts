@@ -149,7 +149,7 @@ function parseJsonSlice<T>(bytes: Uint8Array, start: number, end: number): T {
 
 /** One element of a reply: null, or the object with leading id `id`. Objects
  * the caller already holds under that id are not decoded. */
-function replyElement<T extends { id: number }, R>(
+function replyElement<T extends object, R>(
   bytes: Uint8Array,
   start: number,
   end: number,
@@ -172,7 +172,7 @@ function replyElement<T extends { id: number }, R>(
  * reply is null. Objects the caller already holds under their id, which a
  * reply repeats whenever it names them, are returned from `cached` without
  * decoding their text; the rest are decoded and handed to `build`. */
-export function decodeSemanticObject<T extends { id: number }, R>(
+export function decodeSemanticObject<T extends object, R>(
   bytes: Uint8Array,
   cached: (id: number) => R | undefined,
   build: (data: T) => R,
@@ -187,7 +187,7 @@ export function decodeSemanticObject<T extends { id: number }, R>(
 /** A checker reply that is an array of objects (each with a numeric `id`) and
  * nulls, or null. An empty reply is null. Elements are resolved as in
  * decodeSemanticObject. */
-export function decodeSemanticObjects<T extends { id: number }, R>(
+export function decodeSemanticObjects<T extends object, R>(
   bytes: Uint8Array,
   cached: (id: number) => R | undefined,
   build: (data: T) => R,

@@ -4,9 +4,10 @@
  * direct index in the runtime (scr_map.c). Reads go through the internal
  * sc_map_entry_f64 helper (emitter.ts helperDefs), which LLVM inlines: it
  * resolves directly indexed maps without a call and other maps through
- * the internal sc_map_entry_f64_hashed probe, which hashes the key as the
- * runtime does and defers to scr_map_entry_f64 only for wide bucket
- * tables. Both only read memory. The generated code then reads the entry's
+ * the internal sc_map_entry_f64_hashed probe (sc_map_entry_f64_hashed_int
+ * for a key with an integer view), which hashes the key as the runtime
+ * does and defers to scr_map_entry_f64 only for wide bucket tables. Both
+ * only read memory. The generated code then reads the entry's
  * value slot itself and retains a reference value with the value type's own
  * retain, which is the adapter the collection was constructed with.
  * String-keyed reads use the same entry contract through the internal
@@ -31,6 +32,7 @@
 import type { IrExpr, IrType } from "../../ir/ir.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
+import { LOOPS } from "./loop-state.js";
 import { mapKeyAccess } from "./shapes.js";
 
 export const NUMBER_MAP_ENTRY_DECL = "declare ptr @scr_map_entry_f64(ptr, double)";
@@ -54,19 +56,22 @@ export function noteNumberMapKey(host: LlvmEmitterContext, key: LlValue, expr: I
 
 /** The entry for `key`, or null when absent. Valid until the next mutation.
  * A key with an integer view (noteNumberMapKey) tests the direct index on
- * that integer instead of converting the double back. */
+ * that integer instead of converting the double back. A lookup inside a
+ * loop of a small function (LOOPS.inlinedLookups) calls the helpers' `.loop`
+ * flavor, which inlines the hashed probe. */
 export function emitNumberMapEntry(host: LlvmEmitterContext, map: string, key: string): string {
   host.declare(NUMBER_MAP_ENTRY_DECL);
   const entry = host.B.tmp();
+  const flavor = host.loopDepth > 0 && LOOPS.of(host).inlinedLookups ? ".loop" : "";
   const integer = host.numberMapKeyIntegers.get(key);
   if (integer) {
     const wide = widenInteger(host, integer);
     host.B.line(
-      `${entry} = call ptr @sc_map_entry_f64_int(ptr ${map}, i64 ${wide}, double ${key})`,
+      `${entry} = call ptr @sc_map_entry_f64_int${flavor}(ptr ${map}, i64 ${wide}, double ${key})`,
     );
     return entry;
   }
-  host.B.line(`${entry} = call ptr @sc_map_entry_f64(ptr ${map}, double ${key})`);
+  host.B.line(`${entry} = call ptr @sc_map_entry_f64${flavor}(ptr ${map}, double ${key})`);
   return entry;
 }
 
@@ -150,14 +155,16 @@ export function emitStringMapGetScalar(
 }
 
 /** Map.get of a reference value: a +1 value, or null when absent — the
- * contract of scr_map_get_f64_ref. */
+ * contract of scr_map_get_f64_ref. `borrow`: the entry's own reference,
+ * without a retain, for a reader that finishes before the map can change. */
 export function emitNumberMapGetRef(
   host: LlvmEmitterContext,
   map: string,
   key: string,
   value: IrType,
+  borrow = false,
 ): string {
-  return emitMapEntryGetRef(host, emitNumberMapEntry(host, map, key), value);
+  return emitMapEntryGetRef(host, emitNumberMapEntry(host, map, key), value, false, borrow);
 }
 
 /** Map.get of a reference value under a string key, with scr_map_get_str_ref's
@@ -169,16 +176,25 @@ export function emitStringMapGetRef(
   key: string,
   value: IrType,
   compact = false,
+  borrow = false,
 ): string {
-  return emitMapEntryGetRef(host, emitStringMapEntry(host, map, key, compact), value, compact);
+  return emitMapEntryGetRef(
+    host,
+    emitStringMapEntry(host, map, key, compact),
+    value,
+    compact,
+    borrow,
+  );
 }
 
-/** The +1 value of a found entry, or null for a missing (null) entry. */
+/** The +1 value of a found entry (its own reference when `borrow`), or
+ * null for a missing (null) entry. */
 function emitMapEntryGetRef(
   host: LlvmEmitterContext,
   entry: string,
   value: IrType,
   compact = false,
+  borrow = false,
 ): string {
   const B = host.B;
   const found = B.tmp();
@@ -188,10 +204,8 @@ function emitMapEntryGetRef(
     join = B.newLabel("mapn.join");
   B.condBr(found, hit, miss);
   B.startBlock(hit);
-  const retained = host.retainFrame(
-    compact ? emitCompactMapSlot(host, entry) : emitNumberMapSlot(host, entry, "ptr"),
-    value,
-  );
+  const loaded = compact ? emitCompactMapSlot(host, entry) : emitNumberMapSlot(host, entry, "ptr");
+  const retained = borrow ? loaded : host.retainFrame(loaded, value);
   B.br(join);
   B.startBlock(miss);
   B.br(join);

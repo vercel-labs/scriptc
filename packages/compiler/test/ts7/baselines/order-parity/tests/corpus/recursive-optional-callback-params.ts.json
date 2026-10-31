@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/recursive-optional-callback-params.ts"
+ ],
+ "diags": []
+}

@@ -7,11 +7,13 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { mkdtemp, rename, rm, stat } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CcCompileError, subprocessFailureDetail } from "./native/process.js";
+import { NativeCodegenError } from "./native-codegen-core.js";
+import { staticExecutableRefusal, staticLinkFailureNote, staticLinkMapArgs } from "./targets.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import { parseLinkTraceFiles } from "./native/linker-fingerprint.js";
 import {
@@ -19,9 +21,15 @@ import {
   toolchainEnvironmentFingerprint,
 } from "./toolchain-environment.js";
 import { type NativeArtifactDependency } from "./native/contracts.js";
-import { RuntimePackError, stageRuntimePackArtifacts } from "./runtime-pack.js";
+import {
+  RuntimePackError,
+  stageRuntimePackArtifacts,
+  type RuntimePackSelection,
+} from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
-import { lldLinkerArgs } from "./lld.js";
+import { inputsWithoutLld, lldLinkerArgs } from "./lld.js";
+import { hugeTextLinkerArgs, rewriteHugeTextExecutable } from "./huge-text.js";
+import { systemLibraryLinkerArgs } from "./link-plan-core.js";
 import {
   createDarwinDebugSymbols,
   installDarwinDebugSymbols,
@@ -221,6 +229,38 @@ async function objectLinkerDependencyPaths(
     .sort();
 }
 
+/** Install the selected runtime pack's RUN-time data files (ICU's
+ * icudt78l.dat) beside the executable that links them. The compiler's link
+ * step is the only moment the executable's directory is known, and a data
+ * file next to the binary is what the runtime looks for first.
+ *
+ * A file already present at the pinned size is left alone: the pack ships
+ * one data set per file name, and re-copying 11.1 MiB on every build would
+ * be pure cost. The copy is atomic (private temporary, then rename) so two
+ * concurrent builds of the same program never observe a partial file. */
+export async function installRuntimeDataFiles(
+  selection: RuntimePackSelection,
+  outputPath: string,
+): Promise<void> {
+  if (selection.dataFiles.length === 0) return;
+  const outputDir = dirname(resolve(outputPath));
+  for (const source of selection.dataFiles) {
+    const destination = join(outputDir, basename(source));
+    const sourceSize = (await stat(source)).size;
+    const existing = await stat(destination).catch(() => null);
+    if (existing?.isFile() && existing.size === sourceSize) continue;
+    const temporary = join(
+      outputDir,
+      `.${basename(destination)}.scriptc-${process.pid}-${randomUUID()}`,
+    );
+    await copyFile(source, temporary);
+    await rename(temporary, destination).catch(async () => {
+      await rm(destination, { force: true });
+      await rename(temporary, destination);
+    });
+  }
+}
+
 export async function linkNativeExecutable(
   plan: NativeLinkPlan,
   options: {
@@ -237,21 +277,30 @@ export async function linkNativeExecutable(
     join(dirname(plan.outputPath), ".scriptc-runtime-pack-link-"),
   );
   const privateOut = join(privateOutRoot, basename(plan.outputPath));
+  const linkMap = join(privateOutRoot, "link.map");
+  const mapArgs = staticLinkMapArgs(plan.target, plan.staticLink === true, linkMap);
   let stagedRoot: string | null = null;
   try {
     const staged = await stageRuntimePackArtifacts(plan.runtimePack);
     stagedRoot = staged.root;
     // Linux links with lld when the default driver finds it.
     const lld = explicitLinker === undefined ? lldLinkerArgs(plan.target.platform, linker) : [];
-    const args = [
-      ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
-      ...lld,
-      ...plan.driverFlags,
-      ...plan.inputs.map((input) => staged.replacements.get(input) ?? input),
-      ...plan.systemLibraries.map((name) => `-l${name}`),
-      "-o",
-      privateOut,
-    ];
+    const zig = explicitLinker === undefined && plan.target.defaultLinker === "zig";
+    const linkArgs = (withLld: boolean): string[] => {
+      const inputs = plan.inputs.map((input) => staged.replacements.get(input) ?? input);
+      return [
+        ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
+        ...(withLld ? lld : []),
+        ...hugeTextLinkerArgs(plan.hugeText === true, (withLld && lld.length !== 0) || zig),
+        ...plan.driverFlags,
+        ...mapArgs,
+        ...(withLld ? inputs : inputsWithoutLld(plan.target, inputs)),
+        ...systemLibraryLinkerArgs(plan.target, plan.systemLibraries),
+        "-o",
+        privateOut,
+      ];
+    };
+    const args = linkArgs(lld.length !== 0);
     // The pack snapshots bracket both verification passes and private staging;
     // the program-object snapshot begins before helper emission. Snapshot the
     // remaining cache-bearing inputs before the linker consumes them, then
@@ -284,13 +333,15 @@ export async function linkNativeExecutable(
       // A failed link with lld runs again with the driver's default linker,
       // whose error (if any) is the one reported.
       if (lld.length === 0) throw error;
-      await execFileAsync(
-        linker,
-        args.filter((arg) => !lld.includes(arg)),
-      );
+      await execFileAsync(linker, linkArgs(false));
     });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
+    if (plan.hugeText === true) rewriteHugeTextExecutable(privateOut);
+    if (mapArgs.length !== 0) {
+      const refusal = staticExecutableRefusal(plan.target, true, await readFile(linkMap, "utf8"));
+      if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
+    }
     if (plan.darwinDebugSymbols) {
       await createDarwinDebugSymbols(privateOut);
       await installDarwinDebugSymbols(await readDarwinDebugSymbols(privateOut), plan.outputPath);
@@ -299,6 +350,7 @@ export async function linkNativeExecutable(
       await rm(plan.outputPath, { force: true });
       await rename(privateOut, plan.outputPath);
     });
+    await installRuntimeDataFiles(plan.runtimePack, plan.outputPath);
     if (plan.target.platform === "darwin" && !plan.darwinDebugSymbols) {
       await rm(`${plan.outputPath}.dSYM`, { recursive: true, force: true });
     }
@@ -310,12 +362,18 @@ export async function linkNativeExecutable(
       await options.onArtifactReady({ dependencies: preLinkDependencies }).catch(() => undefined);
     }
   } catch (error) {
-    if (error instanceof CcCompileError || error instanceof RuntimePackError) throw error;
+    if (
+      error instanceof CcCompileError ||
+      error instanceof RuntimePackError ||
+      error instanceof NativeCodegenError
+    )
+      throw error;
     const detail = subprocessFailureDetail(error);
     throw new CcCompileError(
       linker,
       detail,
-      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}`,
+      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}` +
+        staticLinkFailureNote(plan.target, plan.staticLink === true),
     );
   } finally {
     await Promise.all([

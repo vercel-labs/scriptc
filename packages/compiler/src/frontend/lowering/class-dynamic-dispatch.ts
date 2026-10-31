@@ -38,6 +38,7 @@ import {
 import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
+import { isSloppyAt } from "./frozen-records.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
@@ -81,6 +82,7 @@ import { isClassCallback } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
+import { keyedHelperName } from "./stable-names.js";
 import { DispatchSites } from "./dispatch-sites.js";
 import {
   emitterRooted,
@@ -90,6 +92,9 @@ import {
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
 import { STREAM_OPERATORS, operatorSignalOptions, reduceSignalSetup } from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
+
+/** The receiver local of a call rewritten for a getter-only name. */
+const GETTER_RECEIVER = "%dispatch.getter.receiver.";
 
 const STREAM_METHODS = new Set([
   "on",
@@ -1209,6 +1214,11 @@ export class ClassDynamicDispatch {
    * classes included: the value's capsule can be any of its subclasses. */
   private readonly boxedStatic = new Set<string>();
   private readonly dispatches = new Map<string, Dispatch>();
+  /** Per receiver local of a call rewritten for a getter-only name, the
+   * classes whose instances it already reads the getter on. A later wave
+   * that reaches another class with the getter rewrites the fallback call
+   * for that class. */
+  private readonly getterReceivers = new Map<string, ReadonlySet<string>>();
   private readonly properties = new Map<string, PropertyDispatch>();
   private readonly computed = new Map<
     string,
@@ -1895,6 +1905,108 @@ export class ClassDynamicDispatch {
       byMethod.set(method, matching);
       return matching;
     };
+    // A name some class declares as a getter, and no class as a method: on
+    // an instance of such a class the call reads the member (running the
+    // getter) before it evaluates the arguments, as JavaScript reads the
+    // callee first, and then calls what it read. Any other receiver keeps
+    // the runtime's method dispatch, which answers builtin methods of the
+    // same name (`n.toFixed(2)` while a class declares `get toFixed()`).
+    // The runtime reads fields and other own properties of class instances
+    // that early itself (scr_dyn_prepare_method).
+    const getterCapsules = (method: string): string[] => {
+      const keys = new Set<string>();
+      for (const { info, capsule } of this.propertyReceivers(lowerer, true))
+        if (findMethodOn(lowerer, info, `get:${method}`))
+          keys.add(typeKey({ kind: "object", className: capsule.def.name }));
+      return [...keys];
+    };
+    const getterCall = (
+      fn: IrFunction,
+      invoke: IrExpr & { kind: "dynInvoke" },
+      capsules: readonly string[],
+      covered: ReadonlySet<string> | undefined,
+    ): IrExpr => {
+      const loc = invoke.loc;
+      const receiverLocal = {
+        id: `${GETTER_RECEIVER}${this.getterReceivers.size}`,
+        name: "receiver",
+        type: DYN,
+        mutable: false,
+      };
+      fn.locals.push(receiverLocal);
+      const keys = new Set<string>(capsules);
+      if (covered) for (const key of covered) keys.add(key);
+      this.getterReceivers.set(receiverLocal.id, keys);
+      const calleeLocal = {
+        id: `%dispatch.callee.${fn.locals.length}`,
+        name: "callee",
+        type: DYN,
+        mutable: false,
+      };
+      fn.locals.push(calleeLocal);
+      const receiver = varRef(receiverLocal.id, DYN, loc);
+      const isCapsule = (key: string): IrExpr => ({
+        kind: "libCall",
+        fn: "dyn.typedRefIs",
+        args: [receiver, { kind: "strLit", value: key, type: STRING, loc }],
+        type: BOOL,
+        loc,
+      });
+      const cond = capsules.slice(1).reduce<IrExpr>(
+        (rest, key) => ({
+          kind: "ternary",
+          cond: isCapsule(key),
+          then: { kind: "boolLit", value: true, type: BOOL, loc },
+          else_: rest,
+          type: BOOL,
+          loc,
+        }),
+        isCapsule(capsules[0]!),
+      );
+      const read: IrExpr = {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: calleeLocal.id,
+            init: {
+              kind: "dynKeyGet",
+              key: { kind: "strLit", value: invoke.method, type: STRING, loc },
+              value: receiver,
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: {
+          kind: "dynCall",
+          callee: varRef(calleeLocal.id, DYN, loc),
+          receiver,
+          calleeName: invoke.calleeName,
+          ...(invoke.calleeNameValue ? { calleeNameValue: invoke.calleeNameValue } : {}),
+          args: invoke.args,
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: receiverLocal.id, init: invoke.recv, loc }],
+        result: {
+          kind: "ternary",
+          cond,
+          then: read,
+          else_: { ...invoke, recv: receiver },
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    };
     const candidateSets = new Map<string, ReadonlySet<ClassInfo>>();
     const candidateSet = (method: string): ReadonlySet<ClassInfo> => {
       let set = candidateSets.get(method);
@@ -2417,6 +2529,11 @@ export class ClassDynamicDispatch {
               computedRead.key.operand.type.kind === "f64"
                 ? computedRead.key
                 : null;
+            // A sloppy-mode write ignores a refused assignment
+            // (sloppyDynamicWrites), so its sites share their own helper,
+            // whose write takes the first such site's source range.
+            const sloppyWrite =
+              !!computedWrite && !reflect && isSloppyAt(lowerer, computedWrite.loc);
             const key = JSON.stringify([
               !!computedWrite,
               computedRead?.optional ?? false,
@@ -2425,6 +2542,7 @@ export class ClassDynamicDispatch {
               numericKey,
               reflect,
               !!indexKey,
+              ...(sloppyWrite ? ["sloppy"] : []),
             ]);
             let dispatch = this.computed.get(key);
             if (!dispatch) {
@@ -2956,6 +3074,19 @@ export class ClassDynamicDispatch {
               const info = lowerer.classes.get(name);
               return info && findStaticOn(lowerer, info, method)?.method;
             });
+          if (
+            invoke &&
+            expr.kind === "dynInvoke" &&
+            candidates(invoke.method).length === 0 &&
+            !staticCandidates(invoke.method)
+          ) {
+            // The other receivers' call a rewrite left in place tests only
+            // the classes that rewrite did not.
+            const covered =
+              expr.recv.kind === "varRef" ? this.getterReceivers.get(expr.recv.localId) : undefined;
+            const capsules = getterCapsules(invoke.method).filter((key) => !covered?.has(key));
+            if (capsules.length > 0) return getterCall(fn, expr, capsules, covered);
+          }
           if (
             !invoke ||
             (candidates(invoke.method).length === 0 &&
@@ -3915,7 +4046,7 @@ export class ClassDynamicDispatch {
         if (!dispatch.fn.params.some((param) => param.localId === dispatch.keyLocal))
           params.push({ localId: dispatch.keyLocal, name: "key", type: STRING });
         const helper: IrFunction = {
-          name: `%dyn.class.keys.${lowerer.liftedFns.length}`,
+          name: keyedHelperName(lowerer, "%dyn.class.keys", helperKey),
           params,
           returnType: dispatch.fn.returnType,
           locals: params.map((p) => ({
@@ -6793,24 +6924,41 @@ export class ClassDynamicDispatch {
           type: result,
           loc,
         };
+    // A void method dispatches its overrides with statements: a ternary
+    // has no void form.
+    let voidDispatch: IrStmt[] = [{ kind: "exprStmt", expr: call, loc }];
     for (const override of overrides.toReversed()) {
       const subType: IrType = { kind: "object", className: override.cls.def.name };
+      const isOverride: IrExpr = {
+        kind: "instanceOf",
+        value: receiver,
+        className: override.cls.def.name,
+        type: BOOL,
+        loc,
+      };
+      const overrideCall: IrExpr = {
+        kind: "call",
+        callee: override.callee,
+        args: [{ kind: "downcast", value: receiver, type: subType, loc }, ...args],
+        type: result,
+        loc,
+      };
+      if (result.kind === "void") {
+        voidDispatch = [
+          {
+            kind: "if",
+            cond: isOverride,
+            then: [{ kind: "exprStmt", expr: overrideCall, loc }],
+            else_: voidDispatch,
+            loc,
+          },
+        ];
+        continue;
+      }
       call = {
         kind: "ternary",
-        cond: {
-          kind: "instanceOf",
-          value: receiver,
-          className: override.cls.def.name,
-          type: BOOL,
-          loc,
-        },
-        then: {
-          kind: "call",
-          callee: override.callee,
-          args: [{ kind: "downcast", value: receiver, type: subType, loc }, ...args],
-          type: result,
-          loc,
-        },
+        cond: isOverride,
+        then: overrideCall,
         else_: call,
         type: result,
         loc,
@@ -6818,10 +6966,7 @@ export class ClassDynamicDispatch {
     }
     let body: IrStmt[];
     if (result.kind === "void")
-      body = [
-        { kind: "exprStmt", expr: call, loc },
-        { kind: "return", value: dynUndefinedExpr(loc), loc },
-      ];
+      body = [...voidDispatch, { kind: "return", value: dynUndefinedExpr(loc), loc }];
     else {
       const boxed = lowerer.coerceToExpected(call, DYN);
       if (boxed.type.kind !== "dyn") return fence();

@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/record-untyped-writes.ts",
+  "args": [
+    "4"
+  ]
+}

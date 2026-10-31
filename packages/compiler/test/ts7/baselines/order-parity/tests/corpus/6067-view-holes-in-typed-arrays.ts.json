@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6067-view-holes-in-typed-arrays.ts"
+ ],
+ "diags": []
+}

@@ -554,17 +554,23 @@ export function scalarizeLiteralResults(mod: IrModule): IrModule {
   }
   if (producers.size === 0) return mod;
   let changed = false;
+  const globalIds = new Set((mod.globals ?? []).map((g) => g.id));
   const functions = mod.functions.map((fn): IrFunction => {
     if (fn.async || fn.generator) return fn;
     const locals = new Map(fn.locals.map((l) => [l.id, l]));
-    const used = new Set([...locals.keys(), ...(mod.globals ?? []).map((g) => g.id)]);
-    collectLabels(fn.body, used);
+    // The names a fresh binding must avoid, collected when the first one is
+    // made: most functions inline no producer.
+    let used: Set<string> | null = null;
     let next = 0;
     const fresh = (): string => {
+      if (used === null) {
+        used = new Set(locals.keys());
+        collectLabels(fn.body, used);
+      }
       let id: string;
       do {
         id = `%literal.${next++}`;
-      } while (used.has(id));
+      } while (used.has(id) || globalIds.has(id));
       used.add(id);
       return id;
     };

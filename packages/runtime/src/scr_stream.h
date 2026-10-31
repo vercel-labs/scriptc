@@ -149,6 +149,18 @@ ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *messag
  * to pump rather than as a stream (false with an exception pending when
  * reading the value's members throws). */
 bool scr_stream_dyn_iterable_source(const struct ScrDyn *value);
+/* A checked-dynamic pipeline() stage the pipeline takes as a stream: a
+ * native stream (+1), or Duplex.from of a value that is not stream-like
+ * or a function, which the pipeline uses without piping into it; NULL
+ * with an exception otherwise (`message` for the unsupported shapes). */
+ScrStream *scr_stream_unbox_dyn_stage(const struct ScrDyn *value, const ScrStr *message);
+/* The iterable pipeline() pumps for a checked-dynamic first stage: a
+ * source function's result when `returned`, else a { readable, writable }
+ * pair's readable side or the value (+1, or NULL with an exception). */
+struct ScrDyn *scr_stream_dyn_source_value(const struct ScrDyn *value, bool returned);
+/* An untyped function stage's result before the last pipeline stage: the
+ * async iterable itself (+1), or NULL with ERR_INVALID_RETURN_VALUE. */
+struct ScrDyn *scr_stream_dyn_transform_result(const struct ScrDyn *value, const ScrStr *label);
 /* Handles that are Transforms (ScrDynHandleOps.transform: Cipheriv and
  * Decipheriv). scr_stream_of_handle: the handle's Transform (+1), built on
  * first use, or NULL when the value is not such a handle.
@@ -408,6 +420,14 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s,
 void scr_stream_cork(ScrStream *s);
 void scr_stream_uncork(ScrStream *s);
 
+#ifdef SCR_STREAM_WRITE_ERRORS
+/* An error-first write callback: wraps the user's zero-argument closure
+ * (which MOVES) so the compiler-built adapter (an ScrFsRenameFn,
+ * fn(cb, err-or-NULL)) receives the error this write completion carries
+ * (NULL is Node's null). */
+ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrError *));
+#endif
+
 /* Shared lifecycle. destroy's err is BORROWED (may be NULL). */
 ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err); /* recv +1 */
 /* Readable async-iterator return(): destroy with Node's AbortError payload;
@@ -544,12 +564,46 @@ ScrBytes *scr_stream_chunk_bytes(ScrStream *s, ScrBytes *chunk);
 struct ScrDyn *scr_stream_chunk_value(ScrStream *s, ScrBytes *chunk);
 ScrStr *scr_stream_chunk_encoding(ScrStream *s);
 ScrDyn *scr_stream_chunk_encoding_value(ScrStream *s);
+/* True when the write in progress is an object-mode write that passed no
+ * encoding argument (its encoding value is undefined). */
+bool scr_stream_chunk_encoding_undefined(ScrStream *s);
 /* emit('data', value) with a checked-dynamic chunk (borrowed). */
 bool scr_stream_emit_value(ScrStream *s, ScrStr *name, struct ScrDyn *v);
 /* Whether a dyn for-await step (readable.nextChunkDyn) answered the end. */
 bool scr_stream_chunk_done(const struct ScrDyn *v);
 void scr_stream_transform_done_value(ScrStream *s, ScrError *err, struct ScrDyn *v);
 void scr_stream_flush_done_value(ScrStream *s, ScrError *err, struct ScrDyn *v);
+
+/* Typed object-mode chunks. A compiled push, completion or write of a
+ * record whose type has a descriptor (one internal constant per type,
+ * emitted by the compiler) keeps the record itself in the stream's
+ * buffers. A consumer that reads the chunk as a checked-dynamic value
+ * gets the record's capsule from `box`, the conversion compiled code
+ * uses for the record (same referent, so the same JS object). A side
+ * that is not in object mode, or a buffer that holds other values, takes
+ * the chunk boxed, as push(value) takes it. */
+typedef struct ScrStreamTypedDesc {
+  const char *key; /* the type key (the capsule's type key) */
+  size_t key_len;
+  void *(*retain)(void *);
+  void (*release)(void *);
+  struct ScrDyn *(*box)(void *rec); /* +1 capsule; borrows rec */
+} ScrStreamTypedDesc;
+/* push(rec): borrows rec. */
+bool scr_stream_push_typed(ScrStream *s, void *rec, const ScrStreamTypedDesc *desc);
+/* write(rec[, cb]): borrows rec; cb moves. */
+bool scr_stream_write_typed(ScrStream *s, void *rec, const ScrStreamTypedDesc *desc,
+                            ScrClosure *cb);
+/* callback(err, rec) of a transform or flush: rec borrowed, NULL when the
+ * callback passed no data; err moves. */
+void scr_stream_transform_done_typed(ScrStream *s, ScrError *err, void *rec,
+                                     const ScrStreamTypedDesc *desc);
+void scr_stream_flush_done_typed(ScrStream *s, ScrError *err, void *rec,
+                                 const ScrStreamTypedDesc *desc);
+/* A compiled write or transform callback's chunk declared with desc's
+ * type: the record (+1) when the write in progress carries one of that
+ * type, else NULL (the caller converts scr_stream_chunk_value). */
+void *scr_stream_chunk_typed(ScrStream *s, ScrBytes *chunk, const ScrStreamTypedDesc *desc);
 
 /* Runtime-backed streams (the fs streams in scr_fs_stream.c).
  * - construct: Node's _construct. The hook runs on a tick after
@@ -669,6 +723,12 @@ void scr_stream_release(ScrStream *s);
 void *scr_stream_retain_v(void *s);
 void scr_stream_release_v(void *s);
 void scr_stream_trace(void *obj, ScrTraceVisit visit, void *ctx);
+/* The `callback` a write or writev option callback receives (+1): the
+ * same closure for every call, as Node passes one onwrite function. */
+ScrClosure *scr_stream_write_closure(ScrStream *s, void *fn);
+/* The `callback` any other option callback receives (+1), reused while the
+ * stream holds its only reference. */
+ScrClosure *scr_stream_done_closure(ScrStream *s, void *fn);
 void scr_stream_install(void);
 
 /* The loop's stream hook (scr_async.c): `pending` keeps the loop alive

@@ -1,8 +1,8 @@
 {
   "ffi_format": 6,
   "functions": [
-    { "name": "ts7NativeOpen", "symbol": "scriptc_ts7_open", "params": ["string", "string", "string", "bool"], "returns": "u32" },
-    { "name": "ts7NativeAttach", "symbol": "scriptc_ts7_attach", "params": ["string", "string", "string", "string", "bool", "u32", "u32"], "returns": "u32" },
+    { "name": "ts7NativeOpen", "symbol": "scriptc_ts7_open", "params": ["string", "string", "string", "bool", "bool"], "returns": "u32" },
+    { "name": "ts7NativeAttach", "symbol": "scriptc_ts7_attach", "params": ["string", "string", "string", "string", "bool", "bool", "u32", "u32"], "returns": "u32" },
     { "name": "ts7NativeRead", "symbol": "scriptc_ts7_read", "params": ["u32", "mutable-bytes", "u32", "u32"], "returns": "i32" },
     { "name": "ts7NativeWrite", "symbol": "scriptc_ts7_write", "params": ["u32", "bytes", "u32", "u32"], "returns": "i32" },
     { "name": "ts7NativePid", "symbol": "scriptc_ts7_pid", "params": ["u32"], "returns": "u32" },

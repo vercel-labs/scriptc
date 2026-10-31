@@ -8,6 +8,7 @@ import {
   type IrStmt,
 } from "./ir.js";
 import { mapExprChildren, mapStmtChildren } from "./traverse.js";
+import { type IrFieldWalker, walkStmtFields } from "./fields.generated.js";
 
 type CharAt = IrExpr & { kind: "strIntrinsic" };
 type UnitUse = IrExpr & { kind: "strEq" | "strCmp" };
@@ -300,24 +301,26 @@ function rewriteFunction(fn: IrFunction): IrFunction {
   // or as copies of another such local (a switch's discriminant temp).
   const reads = new Map<string, OptionalCharRead>();
   const copyOf = new Map<string, string>();
-  const collect = (value: unknown): void => {
-    if (Array.isArray(value)) for (const item of value) collect(item);
-    else if (value !== null && typeof value === "object") {
-      const node = value as Record<string, unknown>;
-      if (node.kind === "varDecl" && candidates.has(node.localId as string) && node.init) {
-        const id = node.localId as string;
-        const init = node.init as IrExpr;
-        const read = optionalCharRead(init);
-        if (read) reads.set(id, read);
-        else if (init.kind === "varRef" && reads.has(init.localId)) {
-          reads.set(id, reads.get(init.localId)!);
-          copyOf.set(id, init.localId);
-        }
+  // Whether a candidate string is declared from a charAt.
+  let charAtDeclared = false;
+  // The declarations, in the order a walk of every field finds them.
+  const collector: IrFieldWalker = {
+    node: (node) => {
+      if (node.kind !== "varDecl" || !candidates.has(node.localId) || !node.init) return;
+      const id = node.localId;
+      const init = node.init;
+      if (locals.get(id)?.type.kind === "string" && isCharAt(init)) charAtDeclared = true;
+      const read = optionalCharRead(init);
+      if (read) reads.set(id, read);
+      else if (init.kind === "varRef" && reads.has(init.localId)) {
+        reads.set(id, reads.get(init.localId)!);
+        copyOf.set(id, init.localId);
       }
-      for (const key in node) if (key !== "loc") collect(node[key]);
-    }
+    },
+    string: () => {},
   };
-  collect(fn.body);
+  // Both walks only record candidates: a function without one holds none.
+  if (candidates.size > 0) for (const stmt of fn.body) walkStmtFields(stmt, collector, false);
   const localTags = (operand: IrExpr): OptionalCharRead | null =>
     operand.kind === "varRef" ? (reads.get(operand.localId) ?? null) : null;
 
@@ -329,22 +332,22 @@ function rewriteFunction(fn: IrFunction): IrFunction {
   const note = (map: Map<string, number>, id: string): void => {
     map.set(id, (map.get(id) ?? 0) + 1);
   };
-  const count = (value: unknown): void => {
-    if (typeof value === "string") {
-      if (candidates.has(value)) note(mentions, value);
-    } else if (Array.isArray(value)) {
-      for (const item of value) count(item);
-    } else if (value !== null && typeof value === "object") {
-      const node = value as Record<string, unknown>;
+  const counter: IrFieldWalker = {
+    node: (node) => {
       const id = understoodMention(node, locals, reads, localTags);
       if (id !== null && candidates.has(id)) {
         note(understood, id);
         if (node.kind === "varDecl") note(declarations, id);
       }
-      for (const key in node) if (key !== "loc") count(node[key]);
-    }
+    },
+    string: (value) => {
+      if (candidates.has(value)) note(mentions, value);
+    },
   };
-  count(fn.body);
+  // Only candidates declared from a charAt or an optional read can be held
+  // (understoodMention), and the count only decides which are.
+  if (reads.size > 0 || charAtDeclared)
+    for (const stmt of fn.body) walkStmtFields(stmt, counter, false);
   // A copy is held only with its source, and the source's mention in the
   // copy's initializer is understood only while the copy is held.
   const held = new Set<string>();
@@ -486,14 +489,12 @@ function unitLocal(local: IrLocal): IrLocal {
  * over one-unit cases; a union local's declaration from an optional read,
  * or its test against a one-unit literal or for undefined. */
 function understoodMention(
-  node: Record<string, unknown>,
+  n: IrExpr | IrStmt,
   locals: ReadonlyMap<string, IrLocal>,
   reads: ReadonlyMap<string, OptionalCharRead>,
   localTags: (operand: IrExpr) => OptionalCharRead | null,
 ): string | null {
-  // count() visits every object in the body (types, locations, cases), so
-  // only the node kinds handled here are read as IR nodes
-  const kind = node.kind;
+  const kind = n.kind;
   if (
     kind !== "varDecl" &&
     kind !== "strEq" &&
@@ -504,7 +505,6 @@ function understoodMention(
     kind !== "unionIsTag"
   )
     return null;
-  const n = node as unknown as IrExpr | IrStmt;
   if (n.kind === "varDecl") {
     if (!n.init) return null;
     const local = locals.get(n.localId);

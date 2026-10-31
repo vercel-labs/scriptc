@@ -11,7 +11,7 @@ import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { emitNullableIsTag, emitNullablePresent } from "./union-repr.js";
-import { isObjectArm } from "./nullable-unions.js";
+import { isPointerIdentityArm } from "./nullable-unions.js";
 import { streamTypedRefEligible } from "../../ir/analysis.js";
 import {
   DYN,
@@ -27,11 +27,14 @@ import {
 } from "../../ir/ir.js";
 import { BYTES_ELEM_NUM, closureIdentityEqual } from "./common.js";
 import { DYN_KIND } from "./dyn.js";
-import { elemAccess, vAdapters } from "./shapes.js";
+import { elemAccess, releaseSym, vAdapters } from "./shapes.js";
+import { JS_BITS } from "./jsval-encoding.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { emitUnionWiden } from "./expr-records.js";
-import { emitJsIcMethod, jsIcMethods } from "./js-ic.js";
+import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
+import { jsImmediates } from "./jsval.js";
+import { jsIcLiteralKey } from "../../ir/js-ic.js";
 import { DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
@@ -116,11 +119,22 @@ export function emitDynamicExpr(
       if (v.type.kind === "func") {
         // A closure boxes as the checked-dynamic tree's function kind: retained closure +
         // the per-signature call thunk + the interned signature key. The
-        // best-effort name rides along (null when the lowering had none).
-        const name = e.fnName !== undefined && e.fnName !== "" ? host.cstr(e.fnName) : "null";
-        const box = host.dyn.dynFuncBoxHelper(v.type);
+        // best-effort name rides along (null when the lowering had none). A
+        // closure made here takes its name from the closure-name table at
+        // compile time.
         const t = B.tmp();
-        B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${name})`);
+        const name =
+          e.fnName !== undefined && e.fnName !== ""
+            ? e.fnName
+            : e.value.kind === "closure" && e.value.adapts !== true
+              ? host.closureNameOf(e.value.fnName)
+              : undefined;
+        if (name !== undefined) {
+          const box = host.dyn.dynFuncBoxHelper(v.type);
+          B.line(
+            `${t} = call ptr @${box}(ptr ${v.name}, ptr ${name === null ? "null" : host.cstr(name)})`,
+          );
+        } else B.line(`${t} = ${host.dyn.unnamedFuncBoxCall(v.type, v.name)}`);
         if (e.fnLength !== undefined) {
           host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);
           B.line(`call void @scr_dyn_function_set_length(ptr ${t}, i32 ${e.fnLength})`);
@@ -188,6 +202,30 @@ export function emitDynamicExpr(
         return out;
       }
       const args = e.args.map((a) => emitBorrowedInput(host, a));
+      host.declare(`declare ptr @scr_dyn_call(ptr, ptr, ${host.sizeType}, ptr)`);
+      const fast = jsEntrySites(host);
+      if (fast || args.some((a) => a.type.kind === "jsval")) {
+        const name = calleeName();
+        const t = emitJsvalArgumentsCall(
+          host,
+          callee.name,
+          receiver?.name ?? "null",
+          args,
+          fast,
+          (argsPtr) => {
+            const r = B.tmp();
+            B.line(`call void @scr_dyn_this_push_dyn(ptr ${receiver?.name ?? "null"})`);
+            B.line(
+              `${r} = call ptr @scr_dyn_call(ptr ${callee.name}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
+            );
+            B.line("call void @scr_dyn_this_pop()");
+            return r;
+          },
+        );
+        const out = host.own({ name: t, type: e.type });
+        host.emitPendingCheck();
+        return out;
+      }
       let argsPtr = "null";
       if (args.length > 0) {
         const arr = B.slot();
@@ -201,7 +239,6 @@ export function emitDynamicExpr(
         });
         argsPtr = arr;
       }
-      host.declare(`declare ptr @scr_dyn_call(ptr, ptr, ${host.sizeType}, ptr)`);
       const t = B.tmp();
       const name = calleeName();
       B.line(`call void @scr_dyn_this_push_dyn(ptr ${receiver?.name ?? "null"})`);
@@ -245,6 +282,39 @@ export function emitDynamicExpr(
           );
         }
       }
+      // Buffer.prototype method names take their scr_bytes_dyn.c entry, which
+      // runs them on Buffer receivers and dispatches any other receiver.
+      // Each call passes its method name's id slot, so only the first call
+      // looks the name up.
+      const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared_id";
+      const discardedPush =
+        discarded && e.method === "push" && invoke === "scr_dyn_invoke_prepared_id";
+      const fast = !discardedPush && invoke === "scr_dyn_invoke_prepared_id" && jsEntrySites(host);
+      if (fast || args.some((a) => a.type.kind === "jsval")) {
+        const name = discardedPush ? host.cstr(e.calleeName) : dynInvokeCalleeName(host, e);
+        if (discardedPush)
+          host.declare(
+            `declare void @scr_dyn_invoke_discard_id(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`,
+          );
+        else host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
+        const t = emitJsvalArgumentsCall(host, prepared, recv.name, args, fast, (argsPtr) => {
+          const site = `ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${host.methodIdSlot(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name}`;
+          if (discardedPush) {
+            B.line(`call void @scr_dyn_invoke_discard_id(${site})`);
+            return "null";
+          }
+          const r = B.tmp();
+          B.line(`${r} = call ptr @${invoke}(${site})`);
+          return r;
+        });
+        if (discardedPush) {
+          host.emitPendingCheck();
+          return { name: "", type: VOID };
+        }
+        const out = host.own({ name: t, type: e.type });
+        host.emitPendingCheck();
+        return out;
+      }
       let argsPtr = "null";
       if (args.length > 0) {
         const arr = B.slot();
@@ -258,11 +328,6 @@ export function emitDynamicExpr(
         });
         argsPtr = arr;
       }
-      // Buffer.prototype method names take their scr_bytes_dyn.c entry, which
-      // runs them on Buffer receivers and dispatches any other receiver.
-      // Each call passes its method name's id slot, so only the first call
-      // looks the name up.
-      const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared_id";
       // A statement-position push drops the new length, so its entry
       // need not box it.
       if (discarded && e.method === "push" && invoke === "scr_dyn_invoke_prepared_id") {
@@ -276,12 +341,7 @@ export function emitDynamicExpr(
         return { name: "", type: VOID };
       }
       host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
-      let name = host.cstr(e.calleeName);
-      if (e.calleeNameValue !== undefined) {
-        const value = emitBorrowedInput(host, e.calleeNameValue);
-        name = B.tmp();
-        B.line(`${name} = getelementptr inbounds %ScrStr, ptr ${value.name}, i32 1`);
-      }
+      const name = dynInvokeCalleeName(host, e);
       const t = B.tmp();
       B.line(
         `${t} = call ptr @${invoke}(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${host.methodIdSlot(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
@@ -316,9 +376,14 @@ export function emitDynamicExpr(
       const obj = B.tmp();
       B.line(`${obj} = call ptr @scr_dyn_new_obj()`);
       const out = host.own({ name: obj, type: e.type });
+      const cached = jsIcMethods(host);
       for (const f of e.fields ?? []) {
         const k = emitBorrowedInput(host, f.key);
         const v = emitBorrowedInput(host, f.value);
+        if (cached && jsIcLiteralKey(f.key) !== null) {
+          emitJsIcLiteralMember(host, obj, k.name, v.name);
+          continue;
+        }
         B.line(
           `call void @${f.key.type.kind === "dyn" ? "scr_dyn_key_set_computed" : "scr_dyn_key_set"}(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`,
         );
@@ -495,6 +560,28 @@ export function emitDynamicExpr(
           B.br(join);
           return;
         }
+        // A scalar primitive arm under a LITERAL key the frontend proved
+        // the primitive does not declare (`{ url?: string } | "pending"`
+        // read as `x?.url`): JS boxes the primitive, finds no such
+        // property, and answers undefined — the record arm's
+        // missing-key answer below.
+        if (
+          literal !== null &&
+          (arm.kind === "string" ||
+            arm.kind === "f64" ||
+            arm.kind === "bool" ||
+            arm.kind === "bigint")
+        ) {
+          const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
+          if (tag < 0 || e.type.kind !== "union") {
+            throw new InternalCompilerError(
+              "llvm emitter bug: unionKeyGet primitive arm without an undefined result arm",
+            );
+          }
+          B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, tag)}, ptr ${slot}`);
+          B.br(join);
+          return;
+        }
         if (arm.kind !== "record") throw new LlvmUnsupportedError(`unionKeyGet:${arm.kind}`, e.loc);
         const shape = host.recordShape(arm.shapeId);
         const payload = host.unionPeek(u.name, def.id);
@@ -538,6 +625,19 @@ export function emitDynamicExpr(
                   type: ft,
                 });
           B.line(`store ptr ${wrapped}, ptr ${slot}`);
+          B.br(join);
+          return;
+        }
+        // A declared-only arm without the literal key: the object has no
+        // such own property, so the read answers undefined.
+        if (literal !== null && !shape.indexValue) {
+          const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
+          if (tag < 0 || e.type.kind !== "union") {
+            throw new InternalCompilerError(
+              "llvm emitter bug: unionKeyGet missing key without an undefined result arm",
+            );
+          }
+          B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, tag)}, ptr ${slot}`);
           B.br(join);
           return;
         }
@@ -902,13 +1002,13 @@ export function emitDynamicExpr(
       if (!def)
         throw new InternalCompilerError(`llvm emitter bug: equality of unknown union ${e.unionId}`);
       const nullable = host.nullableUnions.get(def.id);
-      if (nullable && isObjectArm(nullable)) {
+      if (nullable && isPointerIdentityArm(nullable)) {
         // Object identity, and NULL === NULL for the unit arm: one compare.
         const eq = B.tmp();
         B.line(`${eq} = icmp ${e.negated ? "ne" : "eq"} ptr ${l.name}, ${r.name}`);
         return { name: eq, type: e.type };
       }
-      if (nullable) {
+      if (nullable && nullable.repr === "single" && nullable.arm.kind === "string") {
         // String arm: identical pointers are equal (the same string or the
         // same unit encoding); otherwise equal only when both hold strings
         // with the same bytes.
@@ -1382,4 +1482,136 @@ function messageListenerArg(e: ExprOf<"dynInvoke">): (IrType & { kind: "func" })
     return null;
   if (listener?.kind !== "dynFrom" || listener.value.type.kind !== "func") return null;
   return listener.value.type;
+}
+
+/** Whether a dynCall or dynInvoke site of the current function tests its
+ * callee for a jsval entry (emitJsvalArgumentsCall): dynamic-tier code of
+ * a module with closure jsval bodies, on targets with jsval words. */
+function jsEntrySites(host: LlvmEmitterContext): boolean {
+  return (
+    host.jsEntries &&
+    jsImmediates(host) &&
+    host.fnByName.get(host.currentFunctionName)?.tier === "dynamic"
+  );
+}
+
+/** A call of the function value `callee` (null for a site without one)
+ * with `args`, which may include jsval words (ir/jsval.ts). With `fast`,
+ * a callee boxed from a closure with a jsval body (ScrDyn.v.fn.js, +72)
+ * takes the arguments as words, a dyn argument under the cell tag, with
+ * `receiver` bound as `this` around the call. Every other call goes
+ * through `slow`, which takes an array of dyn arguments: the words boxed
+ * for it and released after it. Returns the owned dyn result (null on
+ * the slow path with an exception pending). */
+function emitJsvalArgumentsCall(
+  host: LlvmEmitterContext,
+  callee: string | null,
+  receiver: string,
+  args: readonly LlValue[],
+  fast: boolean,
+  slow: (argsPtr: string) => string,
+): string {
+  const B = host.B;
+  const n = args.length;
+  const result = B.slot();
+  B.entryAllocas.push(`${result} = alloca ptr`);
+  const lSlow = B.newLabel("jse.slow");
+  const lJoin = B.newLabel("jse.join");
+  if (fast && callee !== null) {
+    let words = "null";
+    if (n > 0) {
+      words = B.slot();
+      B.entryAllocas.push(`${words} = alloca [${n} x ptr]`);
+      args.forEach((a, i) => {
+        let word = a.name;
+        if (a.type.kind !== "jsval") {
+          const bits = B.tmp();
+          const tagged = B.tmp();
+          word = B.tmp();
+          B.line(`${bits} = ptrtoint ptr ${a.name} to i64`);
+          B.line(`${tagged} = or i64 ${bits}, ${JS_BITS.cellTag}`);
+          B.line(`${word} = inttoptr i64 ${tagged} to ptr`);
+        }
+        const p = B.tmp();
+        B.line(`${p} = getelementptr inbounds [${n} x ptr], ptr ${words}, i64 0, i64 ${i}`);
+        B.line(`store ptr ${word}, ptr ${p}`);
+      });
+    }
+    const lKind = B.newLabel("jse.kind");
+    const lFn = B.newLabel("jse.fn");
+    const lEntry = B.newLabel("jse.entry");
+    const present = B.tmp();
+    B.line(`${present} = icmp ne ptr ${callee}, null`);
+    B.condBr(present, lKind, lSlow);
+    B.startBlock(lKind);
+    const kindPtr = B.tmp();
+    const kind = B.tmp();
+    const isFn = B.tmp();
+    B.line(`${kindPtr} = getelementptr inbounds i8, ptr ${callee}, i64 8`);
+    B.line(`${kind} = load i32, ptr ${kindPtr}`);
+    B.line(`${isFn} = icmp eq i32 ${kind}, ${DYN_KIND.FUNC}`);
+    B.condBr(isFn, lFn, lSlow);
+    B.startBlock(lFn);
+    const entryPtr = B.tmp();
+    const entry = B.tmp();
+    const hasEntry = B.tmp();
+    B.line(`${entryPtr} = getelementptr inbounds i8, ptr ${callee}, i64 72 ; ->v.fn.js`);
+    B.line(`${entry} = load ptr, ptr ${entryPtr}`);
+    B.line(`${hasEntry} = icmp ne ptr ${entry}, null`);
+    B.condBr(hasEntry, lEntry, lSlow);
+    B.startBlock(lEntry);
+    const cloPtr = B.tmp();
+    const clo = B.tmp();
+    const word = B.tmp();
+    const value = B.tmp();
+    host.declare("declare void @scr_dyn_this_push_dyn(ptr)");
+    host.declare("declare void @scr_dyn_this_pop()");
+    host.declare("declare ptr @scr_js_to_dyn(ptr)");
+    B.line(`${cloPtr} = getelementptr inbounds i8, ptr ${callee}, i64 16 ; ->v.fn.clo`);
+    B.line(`${clo} = load ptr, ptr ${cloPtr}`);
+    B.line(`call void @scr_dyn_this_push_dyn(ptr ${receiver})`);
+    B.line(`${word} = call ptr ${entry}(ptr ${clo}, ptr ${words}, ${host.sizeType} ${n})`);
+    B.line("call void @scr_dyn_this_pop()");
+    B.line(`${value} = call ptr @scr_js_to_dyn(ptr ${word})`);
+    B.line(`store ptr ${value}, ptr ${result}`);
+    B.br(lJoin);
+  } else {
+    B.br(lSlow);
+  }
+  B.startBlock(lSlow);
+  let cells = "null";
+  const boxed: string[] = [];
+  if (n > 0) {
+    cells = B.slot();
+    B.entryAllocas.push(`${cells} = alloca [${n} x ptr]`);
+    args.forEach((a, i) => {
+      let cell = a.name;
+      if (a.type.kind === "jsval") {
+        host.declare("declare ptr @scr_js_to_dyn_borrow(ptr)");
+        cell = B.tmp();
+        B.line(`${cell} = call ptr @scr_js_to_dyn_borrow(ptr ${a.name})`);
+        boxed.push(cell);
+      }
+      const p = B.tmp();
+      B.line(`${p} = getelementptr inbounds [${n} x ptr], ptr ${cells}, i64 0, i64 ${i}`);
+      B.line(`store ptr ${cell}, ptr ${p}`);
+    });
+  }
+  const r = slow(cells);
+  for (const cell of boxed) B.line(`call void ${releaseSym(host.shapeHost, DYN)}(ptr ${cell})`);
+  B.line(`store ptr ${r}, ptr ${result}`);
+  B.br(lJoin);
+  B.startBlock(lJoin);
+  const out = B.tmp();
+  B.line(`${out} = load ptr, ptr ${result}`);
+  return out;
+}
+
+/** A dynInvoke's callee spelling for the runtime's error texts. */
+function dynInvokeCalleeName(host: LlvmEmitterContext, e: ExprOf<"dynInvoke">): string {
+  if (e.calleeNameValue === undefined) return host.cstr(e.calleeName);
+  const value = emitBorrowedInput(host, e.calleeNameValue);
+  const name = host.B.tmp();
+  host.B.line(`${name} = getelementptr inbounds %ScrStr, ptr ${value.name}, i32 1`);
+  return name;
 }

@@ -21,15 +21,15 @@ fenced.ts:27:15 - error SC2020: 'Response.type' is typed by @types/node but has 
   26 |   const response = await fetch(url);
   27 |   console.log(response.type);
      |               ^~~~~~~~~~~~~
-  28 |   response.clone();
+  28 |   response.formData();
 
   hint: the member is outside the native static handle projection
 
-fenced.ts:28:3 - error SC2020: 'Response.clone' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:28:3 - error SC2020: 'Response.formData' is typed by @types/node but has no scriptc lowering yet
 
   27 |   console.log(response.type);
-  28 |   response.clone();
-     |   ^~~~~~~~~~~~~~
+  28 |   response.formData();
+     |   ^~~~~~~~~~~~~~~~~
   29 | }
 
   hint: the native fetch runtime does not implement this Response operation
@@ -43,30 +43,21 @@ fenced.ts:31:21 - error SC2020: 'ReadableStream.from() over Set<number> iterable
 
   hint: arrays, Uint8Array, and strings are supported — spread other synchronous iterables into an array first: [...iterable]
 
-fenced.ts:38:1 - error SC2020: 'fs.watchFile' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:38:1 - error SC2020: 'fs.openAsBlob' is typed by @types/node but has no scriptc lowering yet
 
   37 | import { win32 } from "path";
-  38 | watchFile("x", () => {});
-     | ^~~~~~~~~~~~~~~~~~~~~~~~
+  38 | openAsBlob("x");
+     | ^~~~~~~~~~~~~~~
   39 | on(new EventEmitter(), "tick");
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 fenced.ts:39:1 - error SC2020: 'events.on' is typed by @types/node but has no scriptc lowering yet
 
-  38 | watchFile("x", () => {});
+  38 | openAsBlob("x");
   39 | on(new EventEmitter(), "tick");
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   40 | console.log(win32.sep);
-
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-fenced.ts:40:13 - error SC2020: 'PlatformPath.sep' is typed by @types/node but has no scriptc lowering yet
-
-  39 | on(new EventEmitter(), "tick");
-  40 | console.log(win32.sep);
-     |             ^~~~~~~~~
-  41 | /* URL getters and serialization lower under @types/node, but object-URL
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
@@ -151,41 +142,23 @@ fenced.ts:80:3 - error SC2020: 'RequestInit option 'integrity' in a static build
 
   hint: the compiler does not preserve this RequestInit member's conversion or transport behavior
 
-fenced.ts:84:3 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
-
-  83 |   const body = (await fetch(url)).body!;
-  84 |   body.tee();
-     |   ^~~~~~~~
-  85 |   const tee = body.tee;
-
-  hint: this operation is outside the native readable-stream implementation
-
-fenced.ts:85:15 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:85:15 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
 
   84 |   body.tee();
   85 |   const tee = body.tee;
      |               ^~~~~~~~
   86 |   body["tee"]();
 
-  hint: this operation is outside the native readable-stream implementation
+  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
 
-fenced.ts:86:3 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
-
-  85 |   const tee = body.tee;
-  86 |   body["tee"]();
-     |   ^~~~~~~~~~~
-  87 |   const bracketTee = body["tee"];
-
-  hint: this operation is outside the native readable-stream implementation
-
-fenced.ts:87:22 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:87:22 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
 
   86 |   body["tee"]();
   87 |   const bracketTee = body["tee"];
      |                      ^~~~~~~~~~~
   88 | }
 
-  hint: this operation is outside the native readable-stream implementation
+  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
 
 fenced.ts:93:23 - error SC2020: 'util.callbackify into a callback whose error parameter excludes null' is part of the standard library types but has no scriptc lowering yet
 
@@ -232,11 +205,29 @@ fenced.ts:108:9 - error SC2020: 'crypto.subtle.getPublicKey' is part of the stan
 
   hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC or AES-CTR, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, deriveBits and deriveKey with PBKDF2 or HKDF, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
 
-fenced.ts:113:15 - error SC2020: 'navigator.hardwareConcurrency' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:113:7 - error SC2020: 'LockManager' is typed by @types/node but has no scriptc lowering yet
 
-  112 |  * compile; the other members fence by name. */
-  113 | const cores = navigator.hardwareConcurrency;
-      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  114 | void cores;
+  112 |  * by name. */
+  113 | const locks = navigator.locks;
+      |       ^~~~~
+  114 | void locks;
 
-  hint: of Node's navigator global only typeof navigator and navigator.userAgent compile
+  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+fenced.ts:113:15 - error SC2020: 'navigator.locks' is typed by @types/node but has no scriptc lowering yet
+
+  112 |  * by name. */
+  113 | const locks = navigator.locks;
+      |               ^~~~~~~~~~~~~~~
+  114 | void locks;
+
+  hint: navigator.locks (the Web Locks API) has no lowering
+
+fenced.ts:114:6 - error SC2004: uses of 'locks' inherit the blocker on its declaration
+
+  113 | const locks = navigator.locks;
+  114 | void locks;
+      |      ^~~~~
+  115 | // End of the declared-but-not-lowered surface.
+
+  hint: the declaration of 'locks' did not compile — fix the diagnostic reported there and these sites clear with it

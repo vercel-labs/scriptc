@@ -1,0 +1,7 @@
+[req]
+distinguished_name = dn
+[dn]
+[ext]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature
+extendedKeyUsage = clientAuth

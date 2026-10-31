@@ -1,0 +1,6 @@
+generic-identity-multiple-pins.ts:11:21 - error SC1090: comparing the generic function 'ident' by identity while the program holds it at 2 different signatures (each is a separate compiled function object; JavaScript has one) — compare against a value pinned once, or hold 'ident' at a single signature are not supported yet
+
+  10 | const str: (x: string) => string = ident;
+  11 | console.log(num === ident, str("a"));
+     |                     ^~~~~
+  12 | 

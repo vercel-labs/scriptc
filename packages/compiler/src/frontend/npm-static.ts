@@ -23,6 +23,7 @@ import {
   trackedRealpath,
 } from "./input-tracker.js";
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
+import { packageSourceText, typePatchSuppliesTypes } from "./type-patches/layer.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -82,7 +83,7 @@ export function setNpmStaticTypeExports(
 function withTypeExportTypedefs(path: string, text: string | null): string | null {
   const typedefs = typeExportTypedefs.get(path.split("\\").join("/"));
   if (typedefs === undefined) return text;
-  const source = text ?? trackedReadFile(path);
+  const source = text ?? packageSourceText(path);
   return source === null ? text : `${source}\n${typedefs}\n`;
 }
 
@@ -100,6 +101,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
+  transformedPkgTexts.clear();
   realpathProbed.clear();
   aliasNames.clear();
 }
@@ -307,10 +309,25 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
   if (pkg["imports"] !== undefined) pkg["imports"] = transform(pkg["imports"]);
 }
 
+/** The transform of each package.json the fs shadow served, by path and the
+ * text it read. tsgo asks the host for one manifest many times while it
+ * resolves a load's imports, and the appending rule below only answers about
+ * the text; the package set that decides which manifests are transformed
+ * resets the table (setNpmStaticPackages). */
+const transformedPkgTexts = new Map<string, { source: string; transformed: string }>();
+
 /** npmStaticTransformPkgJson over a package.json TEXT (the fs shadow's
  * form). Malformed documents pass through untouched — resolution reports
  * them exactly as it always did. */
-function npmStaticTransformPkgJsonText(text: string): string {
+function npmStaticTransformPkgJsonText(path: string, text: string): string {
+  const hit = transformedPkgTexts.get(path);
+  if (hit !== undefined && hit.source === text) return hit.transformed;
+  const transformed = transformPkgJsonText(text);
+  transformedPkgTexts.set(path, { source: text, transformed });
+  return transformed;
+}
+
+function transformPkgJsonText(text: string): string {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -373,6 +390,7 @@ function packageIsUntyped(path: string): boolean {
     /* no package.json — keep probing */
   }
   if (untyped && trackedExists(`${pkgDir}/index.d.ts`)) untyped = false;
+  if (untyped && typePatchSuppliesTypes(pkgDir)) untyped = false;
   if (untyped) {
     // the @types twin, hoisted anywhere up the realm chain
     const mangled = mangledTypesName(dirName);
@@ -448,7 +466,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
       if (path.endsWith("/package.json") || path.endsWith("\\package.json")) {
         try {
           const source = trackedReadFile(path);
-          return source === null ? undefined : npmStaticTransformPkgJsonText(source);
+          return source === null ? undefined : npmStaticTransformPkgJsonText(path, source);
         } catch {
           return undefined;
         }
@@ -467,7 +485,11 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
         if (hit !== undefined) return hit ?? undefined;
         let rewritten: string | null = null;
         try {
-          let original = trackedReadFile(path);
+          // A project type patch (type-patches/layer.ts) edits the text
+          // as the package wrote it, before any rewrite reads its JSDoc
+          // (unrewritten files fall through to the host, which serves the
+          // patched text too).
+          let original = packageSourceText(path);
           // A bundle's CommonJS chunks move to their own modules first, so
           // every later pass (and this shadow, for each chunk) sees plain
           // CommonJS module text.
@@ -505,6 +527,10 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // literals they build.
           const enums = original === null ? null : services.enumIifes(original, path);
           if (enums !== null) original = enums;
+          // Guarded namespace declarations (`var ns = ns || {}`) read the
+          // hoisted `undefined`: the declaration is its default.
+          const namespaces = original === null ? null : services.namespaceDefaults(original, path);
+          if (namespaces !== null) original = namespaces;
           // A module that names its export object through a variable reaches
           // its members through `exports`.
           const exportsVar = original === null ? null : services.cjsExportsVar(original, path);
@@ -517,6 +543,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
             aliased !== null ||
             fnExports !== null ||
             enums !== null ||
+            namespaces !== null ||
             exportsVar !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);

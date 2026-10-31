@@ -7,7 +7,7 @@ afterAll(closeSourceParser);
 
 /** Every `use(x)` argument in `body`, in source order, with whether a
  * presence proof holds for it. Bindings are matched by name. */
-function proofs(body: string): boolean[] {
+function proofs(body: string, neverReturns?: (call: ts.CallExpression) => boolean): boolean[] {
   const file = parseSourceFile(
     "guards.ts",
     `declare function use(value: unknown): void;\n${body}`,
@@ -26,6 +26,7 @@ function proofs(body: string): boolean[] {
           presentAtUse(arg, {
             sameBinding: (other) => other.text === arg.text,
             isUndefined: (other) => other.text === "undefined",
+            ...(neverReturns === undefined ? {} : { neverReturns }),
           }),
         );
     }
@@ -113,4 +114,63 @@ test("a hoisted function declaration cannot rely on earlier statements", () => {
       return later;
     }`),
   ).toEqual([false, true]);
+});
+
+test("a call that never returns exits like a throw", () => {
+  // `fail` and `this.fail` are declared to return never; `log` returns.
+  const neverReturns = (call: ts.CallExpression): boolean => {
+    const callee = call.expression;
+    const name = ts.isIdentifier(callee)
+      ? callee.text
+      : ts.isPropertyAccessExpression(callee)
+        ? callee.name.text
+        : "";
+    return name === "fail";
+  };
+  const body = `function f(x: string) {
+      if (x === undefined) fail("missing");
+      use(x);
+    }
+    function g(x: string) {
+      if (x === undefined) { this.fail("missing"); }
+      use(x);
+    }
+    function h(x: string) {
+      if (x === undefined) log("missing");
+      use(x);
+    }`;
+  expect(proofs(body, neverReturns)).toEqual([true, true, false]);
+  // Without the checker's answer a call is an ordinary statement.
+  expect(proofs(body)).toEqual([false, false, false]);
+});
+
+test("a call in an optional chain does not exit, whatever its type", () => {
+  // Every call named `fail` has type never; `?.` skips the call when its
+  // receiver or callee is missing, so the statement completes.
+  const neverReturns = (call: ts.CallExpression): boolean => {
+    const callee = call.expression;
+    const name = ts.isIdentifier(callee)
+      ? callee.text
+      : ts.isPropertyAccessExpression(callee)
+        ? callee.name.text
+        : "";
+    return name === "fail";
+  };
+  const body = `function f(x: string, maybe: { fail(m: string): never }) {
+      if (x === undefined) maybe?.fail("missing");
+      use(x);
+    }
+    function g(x: string) {
+      if (x === undefined) { this.helper?.fail("missing"); }
+      use(x);
+    }
+    function h(x: string, fail: (m: string) => never) {
+      if (x === undefined) fail?.("missing");
+      use(x);
+    }
+    function i(x: string, maybe: { fail(m: string): never }) {
+      if (x === undefined) maybe!.fail("missing");
+      use(x);
+    }`;
+  expect(proofs(body, neverReturns)).toEqual([false, false, false, true]);
 });

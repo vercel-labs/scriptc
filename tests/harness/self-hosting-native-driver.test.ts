@@ -1,4 +1,4 @@
-import { verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
+import { seedBuildEnvironment, verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
 import { execFile, spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -26,6 +26,7 @@ import {
 } from "../../scripts/ci-native-bootstrap.mjs";
 import { withoutFirstLine } from "./large-artifacts.js";
 import { bootstrapStep } from "./self-hosting-timing.js";
+import { unbundlePlatformPackages } from "../../scripts/native-cli-bundle.mjs";
 
 const root = join(import.meta.dirname, "../..");
 const exec = promisify(execFile);
@@ -89,12 +90,7 @@ test(
               // seed avoids optimizing the huge compiler module before ASan can
               // exercise its complete traversal, serialization and LLVM emission.
               ...options,
-              env: {
-                ...process.env,
-                SCRIPTC_SAN: sanitize ? "1" : "",
-                SCRIPTC_NATIVE_EMIT_IR: "1",
-                SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
-              },
+              env: { ...process.env, ...seedBuildEnvironment(sanitize) },
             },
           ),
         );
@@ -110,6 +106,21 @@ test(
           join(packageDirectory, "package.json"),
         );
         cpSync(distribution, join(packageDirectory, "dist"), { recursive: true });
+        // The npm package depends on its LLVM helper and runtime pack. Link
+        // them into its node_modules, as pnpm links a workspace package's
+        // dependencies, so the package checks resolve them.
+        unbundlePlatformPackages(
+          join(packageDirectory, "dist"),
+          join(packageDirectory, "dist/bin/scriptc.json"),
+          "@scriptc/llvm-linux-x64-gnu",
+        );
+        mkdirSync(join(packageDirectory, "node_modules/@scriptc"), { recursive: true });
+        for (const name of ["llvm-linux-x64-gnu", "runtime-linux-x64-gnu"])
+          symlinkSync(
+            join(root, "packages", name),
+            join(packageDirectory, "node_modules/@scriptc", name),
+            "dir",
+          );
         writeFileSync(packageDirectory + ".ready", "ready\n");
       }
       // All compiler assets must survive moving the complete distribution.
@@ -166,7 +177,18 @@ test(
         expectedStderr = "",
         env: Record<string, string> = {},
       ) => {
-        const result = await exec(compiler, args, {
+        // An ASan-instrumented compiler's frames are several times larger, and
+        // its recursion over the compiler's own deep ASTs overflows the
+        // default 8 MiB stack (SC3004). Raise the soft limit to the hard limit
+        // for each sanitized compiler process, as a shell's ulimit would.
+        const [file, argv] =
+          sanitize && process.platform !== "win32"
+            ? [
+                "/bin/sh",
+                ["-c", 'ulimit -s "$(ulimit -H -s)" && exec "$0" "$@"', compiler, ...args],
+              ]
+            : [compiler, args];
+        const result = await exec(file, argv, {
           ...nativeOptions,
           env: { ...nativeOptions.env, ...env },
         }).catch((error: unknown) => {

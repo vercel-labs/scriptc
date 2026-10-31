@@ -7,7 +7,7 @@ import { expect, test } from "vitest";
 
 const exec = promisify(execFile);
 
-test("dynamic-tier shapes stay within the shape and key-byte budgets, and absent reads are cached", async () => {
+test("layouts stay within the layout and key-byte budgets, and dynamic-tier absent reads are cached", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "scriptc-js-object-"));
   const src = import.meta.dirname;
   const binary = join(scratch, "js-object");
@@ -18,7 +18,6 @@ test("dynamic-tier shapes stay within the shape and key-byte budgets, and absent
       "-Wall",
       "-Wextra",
       "-fsanitize=address,undefined",
-      "-DSCR_JS_TIER",
       "-I",
       src,
       "-o",
@@ -29,6 +28,7 @@ test("dynamic-tier shapes stay within the shape and key-byte budgets, and absent
         "scr_json.c",
         "scr_string.c",
         "scr_array.c",
+        "scr_arena.c",
         "scr_map.c",
         "scr_exception.c",
         "scr_error.c",

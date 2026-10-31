@@ -2,6 +2,6 @@ scriptc coverage tests/coverage-fixtures/js-gap/gap.js
 
   statements analyzed   5
   compile statically    5  (100%)
-    in dynamic tier     3  (operate on values typed only at runtime; --explain-dynamic lists them)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   fully static — all analyzed statements compile to native code.

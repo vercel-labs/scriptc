@@ -12,8 +12,10 @@ export class Ts7Api {
 
   constructor(rpc: Ts7RpcClient, fs: Ts7FileSystem, collectTiming = false) {
     try {
-      registerTs7FileSystem(rpc, fs);
-      this.session = new Ts7Session(rpc, collectTiming);
+      const session = new Ts7Session(rpc, collectTiming);
+      // Callbacks run inside requests, after initialize chose the protocol.
+      registerTs7FileSystem(rpc, fs, () => session.speaksTs71());
+      this.session = session;
     } catch (error) {
       rpc.close();
       throw error;

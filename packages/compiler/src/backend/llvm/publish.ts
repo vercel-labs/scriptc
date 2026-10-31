@@ -26,7 +26,6 @@ import { mapOf, STRING, typeKey } from "../../ir/ir.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS } from "./shapes.js";
 import { COMPACT_ID_MASK, compactRefLoadLines } from "./classes.js";
-import { shapeTagFn } from "./nullable-unions.js";
 import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -53,8 +52,9 @@ export interface PublishHost {
   readonly inlineUnions: InlineUnionFields;
   /** The nullable-pointer representation of a union, when it has one. */
   nullableArm(t: IrType): IrType | null;
-  /** The union's values are tagged record pointers (nullable-unions.ts). */
-  shapeUnion(t: IrType): boolean;
+  /** The tag helper of a union whose values are tagged record pointers or
+   * class instance pointers (nullable-unions.ts), or null. */
+  pointerTagFn(t: IrType): string | null;
   /** The struct index of a record shape's first field. */
   fieldBase(shapeId: string): number;
   /** Class layout: hierarchy membership, preorder interval, field slots
@@ -80,6 +80,10 @@ export interface PublishClassInfo {
    * `compressed` when the field holds a 32-bit reference (classes.ts
    * LlClassMeta.compressed), which the walker decodes. */
   fields: { name: string; index: number; type: IrType; compressed?: boolean }[];
+  /** An inline array field (classes.ts LlClassMeta.inlineTail), which
+   * `fields` leaves out: the GEP index of its i32 element count, the byte
+   * offset of its 32-bit references and their type. */
+  tail?: { name: string; countIndex: number; offset: number; elem: IrType };
 }
 
 /** scr_pub_mark's object kinds (SCR_PUB_KIND_* in scr_runtime.h), for the RC audit. */
@@ -258,12 +262,13 @@ export class PublishWalkers {
             ? []
             : [{ tag: a.tag, fn: a.fn, compact: this.compactRef(def.arms[a.tag]!) }],
         );
-        if (this.host.shapeUnion(t)) {
-          // The value is the record itself (or a unit encoding): no box to
-          // mark; the arm's walker marks and walks the record.
+        const tagFn = this.host.pointerTagFn(t);
+        if (tagFn !== null) {
+          // The value is the record or instance itself (or a unit
+          // encoding): no box to mark; the arm's walker marks and walks it.
           const lines = [head, `entry:`];
           lines.push(
-            `  %tag = call i32 ${shapeTagFn(t.unionId)}(ptr %o)`,
+            `  %tag = call i32 ${tagFn}(ptr %o)`,
             `  switch i32 %tag, label %done [ ${live.map((a) => `i32 ${a.tag}, label %arm${a.tag}`).join(" ")} ]`,
           );
           for (const a of live)
@@ -405,6 +410,7 @@ export class PublishWalkers {
       loc,
       info.idInRc,
       info.compact,
+      info.tail,
     );
   }
 
@@ -563,6 +569,7 @@ export class PublishWalkers {
     loc: SrcLoc,
     classId = false,
     compact = false,
+    tail?: PublishClassInfo["tail"],
   ): string[] {
     const lines = [
       head,
@@ -591,7 +598,33 @@ export class PublishWalkers {
       );
       n++;
     }
-    lines.push(`  br label %done`, `done:`, `  ret void`, `}`);
+    const tailFn =
+      tail === undefined ? null : this.walker(tail.elem, `${path}.${tail.name}[]`, loc);
+    if (tail !== undefined && tailFn !== null) {
+      // Each element of an inline array field, as a 32-bit reference.
+      lines.push(
+        `  br label %tail.pre`,
+        `tail.pre:`,
+        `  %tail.cp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${tail.countIndex} ; ${llvmComment(tail.name)}`,
+        `  %tail.n = load i32, ptr %tail.cp`,
+        `  %tail.at = getelementptr inbounds i8, ptr %o, i64 ${tail.offset}`,
+        `  br label %tail.head`,
+        `tail.head:`,
+        `  %tail.i = phi i32 [ 0, %tail.pre ], [ %tail.next, %tail.latch ]`,
+        `  %tail.end = icmp uge i32 %tail.i, %tail.n`,
+        `  br i1 %tail.end, label %done, label %tail.body`,
+        `tail.body:`,
+        `  %tail.p = getelementptr inbounds i32, ptr %tail.at, i32 %tail.i`,
+        `  %tail.r = load i32, ptr %tail.p`,
+        ...compactRefLoadLines(`%tail.r`, `%tail.v`, `%tail.d`),
+        ...this.push(`%tail.v`, tailFn, `tail`, this.compactRef(tail.elem)),
+        `  br label %tail.latch`,
+        `tail.latch:`,
+        `  %tail.next = add nuw i32 %tail.i, 1`,
+        `  br label %tail.head`,
+      );
+    } else lines.push(`  br label %done`);
+    lines.push(`done:`, `  ret void`, `}`);
     return lines;
   }
 }

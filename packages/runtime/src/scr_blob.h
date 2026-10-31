@@ -29,11 +29,19 @@ ScrDyn *scr_intl_segmenter_new(void);
 ScrDyn *scr_intl_segmenter_refusing(ScrStr *refusal);
 ScrStr *scr_process_builtin_id(ScrDyn *id, ScrArr *known);
 ScrDyn *scr_process_builtin_module(ScrStr *id, ScrDyn *getter);
+ScrDyn *scr_process_builtin_object(ScrStr *id, ScrDyn *getter, ScrArr *keys);
 ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member);
 /* A module namespace object as a checked-dynamic value (scr_module_namespace.c):
  * one handle per module `id`, whose reads call `getter` with the export
  * name when `keys` lists it. Borrows all three; +1 handle. */
 ScrDyn *scr_module_namespace_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
+/* A module namespace as checked-dynamic code sees it
+ * (scr_module_namespace_dyn.c): one non-extensible null-prototype object per
+ * module `id`, Node's sorted export names as enumerable read-only accessors
+ * whose getters call `getter` with the name, `Symbol.toStringTag` "Module"
+ * (the well-known symbol is `tag_key`), and Node's strict-mode write
+ * TypeErrors. Borrows all four; +1 object. */
+ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);
@@ -61,6 +69,10 @@ ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors);
 void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
 void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
 ScrDyn *scr_process_stdio(double fd);
+/* process.stdout/stderr.write(chunk) with a run-time chunk: Node's Writable
+ * validation, then a synchronous write. false with an exception pending when
+ * the chunk is invalid. */
+bool scr_process_stdio_write_dyn(double fd, ScrDyn *chunk);
 bool scr_dyn_process_stdio_is(const ScrDyn *value);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);
 

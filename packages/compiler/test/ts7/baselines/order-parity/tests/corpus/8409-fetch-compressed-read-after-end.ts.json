@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8409-fetch-compressed-read-after-end.ts"
+ ],
+ "diags": []
+}

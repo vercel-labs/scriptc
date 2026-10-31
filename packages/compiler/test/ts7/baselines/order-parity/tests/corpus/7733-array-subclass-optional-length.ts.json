@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7733-array-subclass-optional-length.ts"
+ ],
+ "diags": []
+}

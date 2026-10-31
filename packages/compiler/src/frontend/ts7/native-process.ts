@@ -10,6 +10,7 @@ declare function ts7NativeOpen(
   cwd: string,
   callbacks: string,
   timing: boolean,
+  librariesFromDisk: boolean,
 ): number;
 declare function ts7NativeAttach(
   name: string,
@@ -17,6 +18,7 @@ declare function ts7NativeAttach(
   cwd: string,
   callbacks: string,
   timing: boolean,
+  librariesFromDisk: boolean,
   idleExit: number,
   memory: number,
 ): number;
@@ -63,12 +65,26 @@ export class NativeTs7Process implements Ts7WireIo {
   private handle: number;
   readonly pid: number;
 
-  /** With `handle`, a connection to a shared checker server (attachNativeTs7Process). */
-  constructor(executable: string, cwd: string, collectTiming = false, handle = 0) {
+  /** With `handle`, a connection to a shared checker server (attachNativeTs7Process). With
+   * `librariesFromDisk`, the server reads its default library files from the disk
+   * (checkerReadsLibrariesFromDisk). */
+  constructor(
+    executable: string,
+    cwd: string,
+    collectTiming = false,
+    handle = 0,
+    librariesFromDisk = false,
+  ) {
     this.handle =
       handle !== 0
         ? handle
-        : ts7NativeOpen(executable, cwd, TS7_FILE_SYSTEM_CALLBACKS, collectTiming);
+        : ts7NativeOpen(
+            executable,
+            cwd,
+            TS7_FILE_SYSTEM_CALLBACKS,
+            collectTiming,
+            librariesFromDisk,
+          );
     if (this.handle === 0) throw nativeError("startup");
     this.pid = ts7NativePid(this.handle);
   }
@@ -125,6 +141,7 @@ export function attachNativeTs7Process(
   executable: string,
   cwd: string,
   collectTiming = false,
+  librariesFromDisk = false,
 ): NativeTs7Process | null {
   const handle = ts7NativeAttach(
     name,
@@ -132,6 +149,7 @@ export function attachNativeTs7Process(
     cwd,
     TS7_FILE_SYSTEM_CALLBACKS,
     collectTiming,
+    librariesFromDisk,
     CHECKER_SERVER_IDLE_EXIT,
     CHECKER_SERVER_MEMORY,
   );
@@ -142,6 +160,7 @@ export function spawnNativeTs7Wire(
   executable: string,
   cwd: string,
   collectTiming = false,
+  librariesFromDisk = false,
 ): Ts7Wire {
-  return new Ts7Wire(new NativeTs7Process(executable, cwd, collectTiming));
+  return new Ts7Wire(new NativeTs7Process(executable, cwd, collectTiming, 0, librariesFromDisk));
 }

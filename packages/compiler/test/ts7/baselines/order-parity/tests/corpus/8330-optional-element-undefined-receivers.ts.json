@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8330-optional-element-undefined-receivers.ts"
+ ],
+ "diags": []
+}

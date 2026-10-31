@@ -63,6 +63,8 @@ test.runIf(process.platform === "darwin")(
           "continue",
           "frame variable item->tag item->slot.arm0",
           "continue",
+          "frame variable item->tag",
+          "continue",
           "frame variable hoisted",
           "continue",
           "frame variable moduleValue",
@@ -91,6 +93,7 @@ test.runIf(process.platform === "darwin")(
           "item->tag = f64",
           "item->slot.arm0 = 6",
           "item->slot.arm0 = 7",
+          "item->tag = undefined",
           "hoisted = 13",
         ]) {
           expect(debug.stdout).toContain(value);

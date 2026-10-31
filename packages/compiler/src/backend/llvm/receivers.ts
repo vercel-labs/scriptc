@@ -1,4 +1,5 @@
 /* LlEmitter's receivers: receiver reads, and the analyses that decide when calls, receivers and returns borrow. */
+import { inlineFieldTail } from "./inline-arrays.js";
 import type { LlEmitter } from "./emitter.js";
 import {
   type IrExpr,
@@ -10,15 +11,27 @@ import {
 import type { LlValue } from "./expr-context.js";
 import { guardedValue } from "./borrowed-receivers.js";
 import { InternalCompilerError } from "../../errors.js";
+import { llvmQuoted } from "../literals.js";
 import { emitBorrowedArrayRead, emitProjectedArrayRead } from "./local-array-reads.js";
-import { emitStackMapRead, matchMapRead } from "./map-read-lifetimes.js";
+import {
+  emitBorrowedMapGet,
+  emitStackMapRead,
+  matchMapRead,
+  pointerMapGet,
+} from "./map-read-lifetimes.js";
 import { emitBorrowedResultCall, emitCallExpr } from "./expr-calls.js";
-import { emitCheckedNarrowReceiver } from "./checked-narrows.js";
+import { borrowsCheckedNarrow, emitCheckedNarrowReceiver } from "./checked-narrows.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
 import { emitDowncastGuard, emitUnionNarrowGuard } from "./narrow-guards.js";
 import { emitScalarOptional, isScalarOptionalSource } from "./local-union-storage.js";
 import { borrowableInputs } from "./borrowed-inputs.js";
-import { emitStackRecordKeyGet, scalarRecordKeyGet } from "./expr-records.js";
+import {
+  borrowedRecordKeyGetOr,
+  emitBorrowedRecordKeyGet,
+  emitStackRecordKeyGet,
+  pointerRecordKeyGet,
+  scalarRecordKeyGet,
+} from "./expr-records.js";
 import { type WalkBorrowHost, analyzeWalks } from "./walk-borrows.js";
 
 /** Read a receiver whose value is consumed immediately by a field or tag
@@ -92,6 +105,14 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
     return emitBorrowedResultCall(emitter, e);
   const arrayRead = emitter.optionalArrayReads.get(e);
   if (arrayRead) return emitProjectedArrayRead(emitter, arrayRead);
+  if (e.kind === "recordKeyGet" && emitter.canBorrowReceiver(e))
+    return emitBorrowedRecordKeyGet(emitter, e);
+  if (e.kind === "nullish" && emitter.canBorrowReceiver(e)) {
+    const read = borrowedRecordKeyGetOr(emitter, e);
+    if (read) return emitBorrowedRecordKeyGet(emitter, read, e.right);
+  }
+  if (e.kind === "mapIntrinsic" && emitter.canBorrowReceiver(e))
+    return emitBorrowedMapGet(emitter, e);
   const narrow = emitter.checkedNarrows.get(e);
   const narrowed = narrow ? emitCheckedNarrowReceiver(emitter, narrow) : null;
   if (narrowed) return narrowed;
@@ -114,6 +135,9 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   // A nullable-pointer field has no box to borrow. Projections use
   // emitUnionProjection; other borrowers get an owned heap box.
   if (emitter.nullableFieldGet(e)) return emitter.emitExpr(e);
+  // An inline array field has no array to borrow: its read makes a view.
+  if (e.kind === "fieldGet" && inlineFieldTail(emitter, e.className, e.field) !== undefined)
+    return emitter.emitExpr(e);
   if (e.kind === "recordGet" || e.kind === "fieldGet") {
     const receiver = emitter.emitReadReceiver(e.obj);
     if (e.kind === "recordGet") {
@@ -146,6 +170,12 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
       no = B.newLabel("read.else"),
       join = B.newLabel("read.join");
     B.condBr(cond.name, yes, no);
+    // Slots an arm's borrowed read fills (the owner of a `r[k] ?? d`
+    // default) may hold what the result points to: the enclosing frame
+    // releases them after the use, and the other arm's path leaves them
+    // empty so that release skips them.
+    const armSlots: LlValue[][] = [];
+    const ends: string[] = [];
     for (const [label, value] of [
       [yes, e.then],
       [no, e.else_],
@@ -154,9 +184,21 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
       emitter.frames.push([]);
       const result = emitter.emitReadReceiver(value);
       B.line(`store ptr ${result.name}, ptr ${slot}`);
-      emitter.releaseTemps(emitter.frames.pop()!);
+      const frame = emitter.frames.pop()!;
+      armSlots.push(frame.filter((entry) => entry.slot === true && entry.boxed !== true));
+      emitter.releaseTemps(frame.filter((entry) => entry.slot !== true || entry.boxed === true));
+      const end = B.newLabel("read.end");
+      ends.push(end);
+      B.br(end);
+    }
+    for (const [i, end] of ends.entries()) {
+      B.startBlock(end);
+      for (const entry of armSlots[1 - i]!) B.line(`store ptr null, ptr ${entry.name}`);
       B.br(join);
     }
+    for (const entries of armSlots)
+      for (const entry of entries)
+        emitter.ownSlot(entry.name, entry.type, entry.rarelyFilled === true);
     B.startBlock(join);
     const value = B.tmp();
     B.line(`${value} = load ptr, ptr ${slot}`);
@@ -187,8 +229,9 @@ export function canBorrowCallArgument(emitter: LlEmitter, value: IrExpr): boolea
   // An exact capsule owns its instance while the capsule's binding holds it.
   if (value.kind === "dynCheck" && value.exact)
     return value.value.kind === "varRef" && emitter.canBorrowCallArgument(value.value);
-  // An inline union field has no box to lend.
-  if (emitter.inlineFieldGet(value)) return false;
+  // An inline union field has no box to lend, an inline array field no
+  // array.
+  if (emitter.inlineFieldGet(value) || emitter.inlineArrayRead(value)) return false;
   // Class casts reinterpret the same pointer (prefix layouts).
   if ((value.kind === "upcast" || value.kind === "downcast") && value.value.type.kind === "object")
     return emitter.canBorrowCallArgument(value.value);
@@ -271,10 +314,15 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
     case "upcast":
       return emitter.canBorrowReceiver(e.value);
     // An inline union field has no box to lend: projections read it
-    // through emitReadReceiver's private stack box.
+    // through emitReadReceiver's private stack box. An inline array field
+    // has no array to lend.
     case "fieldGet":
     case "recordGet":
-      return !emitter.inlineFieldGet(e) && emitter.canBorrowReceiver(e.obj);
+      return (
+        !emitter.inlineFieldGet(e) &&
+        !emitter.inlineArrayRead(e) &&
+        emitter.canBorrowReceiver(e.obj)
+      );
     case "ternary":
       return emitter.canBorrowReceiver(e.then) && emitter.canBorrowReceiver(e.else_);
     case "seqExpr": {
@@ -294,7 +342,33 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
     // snapshot, so neither the callee nor a later argument may replace
     // what it was read from: a callee that preserves every edge cannot,
     // and any other one must leave the argument's locations unwritten.
+    // A keyed read lends the stored pointer while the record keeps it.
+    case "recordKeyGet":
+      return (
+        pointerRecordKeyGet(emitter, e) &&
+        emitter.canBorrowReceiver(e.obj) &&
+        emitter.referenceEffects.preserves(e.key)
+      );
+    // `r[k] ?? inherited(r, k)` lends a hit the same way; its default is
+    // owned by the statement frame (so never by a longer-lived alias).
+    case "nullish": {
+      const read = borrowedRecordKeyGetOr(emitter, e);
+      return read !== null && emitter.canBorrowReceiver(read);
+    }
+    // So does a Map.get while the map keeps it.
+    case "mapIntrinsic":
+      return (
+        pointerMapGet(emitter, e) &&
+        emitter.canBorrowReceiver(e.receiver) &&
+        emitter.referenceEffects.preserves(e.args[0]!)
+      );
     case "call": {
+      // A checked extraction lends the payload of the union it narrows
+      // (emitCheckedNarrowReceiver).
+      if (borrowsCheckedNarrow(emitter, e)) {
+        const narrow = emitter.checkedNarrows.get(e)!;
+        return emitter.canBorrowReceiver(narrow.value);
+      }
       if (!emitter.borrowedReturns.has(e.callee)) return false;
       if (!e.args.every((arg) => emitter.referenceEffects.preserves(arg))) return false;
       const preserving = emitter.referenceEffects.functions.has(e.callee);
@@ -386,12 +460,19 @@ export function analyzeBorrowedReturns(emitter: LlEmitter): void {
   }
 }
 
+/** The alias metadata of the module's field and memory categories. Each type
+ * node is named by its category (`field:<name>`, `array:header`, ...), not
+ * by its number: numbers follow the order in which the module's functions
+ * first use the categories, so an edit that adds one renumbers the rest. The
+ * LLVM helper renumbers each program partition's metadata, so a partition
+ * whose functions are unchanged keeps the same text and its cached
+ * artifacts. */
 export function fieldAliasMetadata(emitter: LlEmitter): string[] {
   if (emitter.fieldAliasTags.size === 0) return [];
   const lines = ['!0 = !{!"scriptc native fields"}'];
-  for (const tag of emitter.fieldAliasTags.values()) {
+  for (const [category, tag] of emitter.fieldAliasTags) {
     lines.push(
-      `!${tag - 1} = !{!"field.${tag}", !0, i64 0}`,
+      `!${tag - 1} = !{!${llvmQuoted(category)}, !0, i64 0}`,
       `!${tag} = !{!${tag - 1}, !${tag - 1}, i64 0}`,
     );
   }

@@ -187,6 +187,37 @@ function exactPowerOfTwo(value: number): number | null {
   return k >= 0 && k <= 52 && 2 ** k === value ? k : null;
 }
 
+/** The same speculated operand written twice: a local, a literal, or a
+ * power of two of the same exponent. */
+function sameOperand(a: IrExpr, b: IrExpr): boolean {
+  if (a.kind === "varRef") return b.kind === "varRef" && a.localId === b.localId;
+  if (a.kind === "numLit") return b.kind === "numLit" && Object.is(a.value, b.value);
+  return (
+    a.kind === "libCall" &&
+    b.kind === "libCall" &&
+    a.fn === "math.pow" &&
+    b.fn === "math.pow" &&
+    powerOfTwo(a) &&
+    powerOfTwo(b) &&
+    sameOperand(a.args[1]!, b.args[1]!)
+  );
+}
+
+/** `a - Math.floor(a / p) * p` (either factor order) with p a power of two
+ * and `a` a local or literal: the floor-mod of `a` by p. */
+function floorModPowerOfTwo(e: IrExpr): { value: IrExpr; power: IrExpr } | null {
+  if (e.kind !== "bin" || e.op !== "-" || e.right.kind !== "bin" || e.right.op !== "*") return null;
+  const { left, right } = e.right;
+  const [floor, power] =
+    left.kind === "libCall" && left.fn === "math.floor" ? [left, right] : [right, left];
+  if (floor.kind !== "libCall" || floor.fn !== "math.floor" || floor.args.length !== 1) return null;
+  const quotient = floor.args[0]!;
+  if (quotient.kind !== "bin" || quotient.op !== "/") return null;
+  if (!powerOfTwo(power) || !sameOperand(quotient.right, power)) return null;
+  if (e.left.kind !== "varRef" && e.left.kind !== "numLit") return null;
+  return sameOperand(quotient.left, e.left) ? { value: e.left, power } : null;
+}
+
 /** Whether `e` is a power of two speculation can shift by:
  * `Math.pow(2, n)` or a literal 2^k with k in [0, 52]. */
 function powerOfTwo(e: IrExpr): boolean {
@@ -202,6 +233,17 @@ function powerOfTwo(e: IrExpr): boolean {
 
 /** Typed-array element kinds whose elements are integers. */
 const INTEGER_ELEMENTS = new Set(["u8", "u8c", "i8", "u16", "i16", "u32", "i32"]);
+
+/** The values of each integer element kind. */
+const ELEMENT_RANGES: Record<string, { min: number; max: number }> = {
+  u8: { min: 0, max: 255 },
+  u8c: { min: 0, max: 255 },
+  i8: { min: -128, max: 127 },
+  u16: { min: 0, max: 65535 },
+  i16: { min: -32768, max: 32767 },
+  u32: { min: 0, max: 2 ** 32 - 1 },
+  i32: { min: -(2 ** 31), max: 2 ** 31 - 1 },
+};
 
 /** A typed-array element read of an integer kind with no effect: an
  * out-of-range read gives NaN, which fails its check. Float elements would
@@ -742,6 +784,9 @@ export interface ProvenLoopPlan {
   locals: Map<string, IntegerRange>;
   /** Statement-level writes computed as integers. */
   writes: Set<IrStmt>;
+  /** Expression-position `++`/`--` of shadowed bindings (`out[o++] = v`),
+   * computed on the shadows. */
+  increments: Set<IrExpr>;
 }
 
 /** Plan a proven integer loop. `cursors` are the loop's bounded bindings,
@@ -760,10 +805,17 @@ export function planProvenIntegerLoop(
 ): ProvenLoopPlan | null {
   if (cursors.size === 0) return null;
   const writes = new Map<string, IrStmt[]>();
+  const increments = new Map<string, IrExpr[]>();
   const refused = new Set<string>();
   let rejected = false;
   const expr = (e: IrExpr): boolean => {
-    if (e.kind === "assignExpr" || e.kind === "incDec") refused.add(e.localId);
+    // Every value a cursor holds in the loop lies in its loop range, so an
+    // increment of one writes an integer of that range.
+    if (e.kind === "incDec" && cursors.has(e.localId)) {
+      const list = increments.get(e.localId) ?? [];
+      list.push(e);
+      increments.set(e.localId, list);
+    } else if (e.kind === "assignExpr" || e.kind === "incDec") refused.add(e.localId);
     return everyExprChild(e, expr, nested);
   };
   const nested = (s: IrStmt): boolean => {
@@ -796,12 +848,13 @@ export function planProvenIntegerLoop(
   for (const s of loop.body) stmt(s);
   if (rejected) return null;
   const locals = new Map<string, IntegerRange>();
-  for (const [id, list] of writes) {
+  for (const id of new Set([...writes.keys(), ...increments.keys()])) {
     if (refused.has(id) || !eligible(id)) continue;
-    const exact = list.every((s) => {
-      const value = speculativeWriteTarget(s)!.value!;
-      return isSpeculableValue(value, false) && proven(value);
-    });
+    const exact =
+      (writes.get(id) ?? []).every((s) => {
+        const value = speculativeWriteTarget(s)!.value!;
+        return isSpeculableValue(value, false) && proven(value);
+      }) && (increments.get(id) ?? []).every(proven);
     if (exact) locals.set(id, cursors.get(id)!);
   }
   // Every binding a shadowed write reads is shadowed, already an integer,
@@ -813,15 +866,19 @@ export function planProvenIntegerLoop(
   for (let changed = true; changed;) {
     changed = false;
     for (const id of [...locals.keys()])
-      if (!writes.get(id)!.every((s) => grounded(speculativeWriteTarget(s)!.value!))) {
+      if (!(writes.get(id) ?? []).every((s) => grounded(speculativeWriteTarget(s)!.value!))) {
         locals.delete(id);
         changed = true;
       }
   }
   if (locals.size === 0) return null;
   const planned = new Set<IrStmt>();
-  for (const id of locals.keys()) for (const s of writes.get(id)!) planned.add(s);
-  return { locals, writes: planned };
+  const plannedIncrements = new Set<IrExpr>();
+  for (const id of locals.keys()) {
+    for (const s of writes.get(id) ?? []) planned.add(s);
+    for (const e of increments.get(id) ?? []) plannedIncrements.add(e);
+  }
+  return { locals, writes: planned, increments: plannedIncrements };
 }
 
 const SAFE = Number.MAX_SAFE_INTEGER;
@@ -858,6 +915,17 @@ export function emitSafeIntegerCheck(host: LlvmEmitterContext, value: string): [
   return [integer, ok];
 }
 
+/** The condition that a bounded value's exponent is above `limit`. A
+ * value test it replaces can fail only past that limit; testing the
+ * exponent alone, which is usually the same in every iteration of a loop,
+ * keeps the value out of the test. Past the limit the write bails to the
+ * double copy, also for a value the replaced test would have passed. */
+function exponentAbove(host: LlvmEmitterContext, bound: MaskBound, limit: number): string {
+  const above = host.B.tmp();
+  host.B.line(`${above} = icmp sgt i64 ${bound.exponent}, ${limit}`);
+  return above;
+}
+
 /** A condition that is true when an i64 lies outside the safe range. */
 function unsafeInteger(host: LlvmEmitterContext, value: string): string {
   const B = host.B;
@@ -884,6 +952,29 @@ function outsideRange(host: LlvmEmitterContext, value: string, low: number, high
     outside = outside === "false" ? above : either(host, outside, above);
   }
   return outside;
+}
+
+/** The range of an operand once its speculative evaluation continued: a
+ * literal's value, the range analysis' proof (well inside the safe
+ * integers), or for an integer element read, which bails on the NaN of an
+ * out-of-range index, the element kind's values. */
+function operandRange(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+): { min: number; max: number } | undefined {
+  const range = staticRange(host, e);
+  if (range || !isSpeculativeByteRead(e) || e.kind !== "bytesIntrinsic") return range;
+  return e.receiver.type.kind === "bytes" ? ELEMENT_RANGES[e.receiver.type.elem] : undefined;
+}
+
+/** An i64 the speculative evaluation has bounded to [0, 2^(exponent +
+ * shift)): the floor-mod of a value by 2^exponent, shifted left by `shift`.
+ * `exponent` is an i64 already checked to be in [0, 52]; in a loop it is
+ * usually the same value on every iteration, so a test on it alone is
+ * loop-invariant. */
+interface MaskBound {
+  exponent: string;
+  shift: number;
 }
 
 /** A literal's value or the range analysis' proof for an expression whose
@@ -916,6 +1007,7 @@ export function emitSpeculativeInteger(
   bail: (condition: string) => void,
   reads: ReadonlyMap<IrExpr, LlValue> = new Map(),
   integral = false,
+  bounds = new Map<string, MaskBound>(),
 ): string {
   const B = host.B;
   // A value the range analysis already proves takes the ordinary integer
@@ -950,16 +1042,67 @@ export function emitSpeculativeInteger(
     }
     case "bin": {
       if (e.op !== "+" && e.op !== "-" && e.op !== "*" && e.op !== "%") break;
-      const a = emitSpeculativeInteger(host, e.left, bail, reads, integral);
-      const b = emitSpeculativeInteger(host, e.right, bail, reads, integral);
+      // The floor-mod of a safe integer by 2^n (n in [0, 52]) is its low n
+      // bits, also for a negative value: in [0, 2^n), and never -0.
+      const mod = floorModPowerOfTwo(e);
+      if (mod) {
+        const value = emitSpeculativeInteger(host, mod.value, bail, reads, integral, bounds);
+        const n = exponentOf(host, mod.power, bail, reads, integral);
+        const mask = B.tmp(),
+          low = B.tmp();
+        B.line(`${mask} = sub i64 ${shiftOne(host, n)}, 1`);
+        B.line(`${low} = and i64 ${value}, ${mask}`);
+        bounds.set(low, { exponent: n, shift: 0 });
+        return low;
+      }
+      // A product with 2^n shifts: it is safe iff the other factor's
+      // magnitude is at most (2^53 - 1) >> n, and a zero product of a safe
+      // integer and a positive power is +0.
+      if (e.op === "*" && (powerOfTwo(e.right) || powerOfTwo(e.left))) {
+        const [factor, power] = powerOfTwo(e.right) ? [e.left, e.right] : [e.right, e.left];
+        const value = emitSpeculativeInteger(host, factor, bail, reads, integral, bounds);
+        const n = exponentOf(host, power, bail, reads, integral);
+        // A factor below 2^(m + s) times 2^k is below 2^(m + s + k), so
+        // safe when m + s + k <= 53.
+        const bound = bounds.get(value);
+        const k = power.kind === "numLit" ? exactPowerOfTwo(power.value) : null;
+        if (bound && k !== null) {
+          bail(exponentAbove(host, bound, 53 - bound.shift - k));
+          const product = B.tmp();
+          B.line(`${product} = shl nuw nsw i64 ${value}, ${n}`);
+          bounds.set(product, { exponent: bound.exponent, shift: bound.shift + k });
+          return product;
+        }
+        const limit = B.tmp(),
+          magnitude = B.tmp(),
+          outside = B.tmp(),
+          product = B.tmp();
+        B.line(`${limit} = ashr i64 ${SAFE}, ${n}`);
+        host.declare("declare i64 @llvm.abs.i64(i64, i1)");
+        B.line(`${magnitude} = call i64 @llvm.abs.i64(i64 ${value}, i1 true)`);
+        B.line(`${outside} = icmp ugt i64 ${magnitude}, ${limit}`);
+        bail(outside);
+        B.line(`${product} = shl nsw i64 ${value}, ${n}`);
+        return product;
+      }
+      const a = emitSpeculativeInteger(host, e.left, bail, reads, integral, bounds);
+      const b = emitSpeculativeInteger(host, e.right, bail, reads, integral, bounds);
       const result = B.tmp();
       if (e.op === "+" || e.op === "-") {
         // With one operand's range known, the other is checked against the
         // narrowed bounds before the operation: the check then depends on
         // no new value, and LLVM keeps the operation itself simple.
-        const right = staticRange(host, e.right);
-        const left = e.op === "+" ? staticRange(host, e.left) : undefined;
-        if (right) {
+        const right = operandRange(host, e.right);
+        const left = e.op === "+" ? operandRange(host, e.left) : undefined;
+        // A bounded operand, in [0, 2^(m + s)), plus one in [lo, hi] with
+        // |lo|, hi <= 2^52 is safe when m + s <= 52.
+        const bound = (value: string): MaskBound | undefined =>
+          e.op === "+" ? bounds.get(value) : undefined;
+        const aBound = right ? bound(a) : undefined;
+        const bBound = !right && left ? bound(b) : undefined;
+        if (aBound) bail(exponentAbove(host, aBound, 52 - aBound.shift));
+        else if (bBound) bail(exponentAbove(host, bBound, 52 - bBound.shift));
+        else if (right) {
           // a + b with b in [lo, hi] is safe iff a in [-SAFE - lo, SAFE - hi];
           // a - b iff a in [-SAFE + hi, SAFE + lo].
           const low = e.op === "+" ? -SAFE - right.min : -SAFE + right.max;

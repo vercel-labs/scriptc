@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#if !defined(_WIN32) && !defined(__wasi__)
+#include <signal.h>
+#endif
 #ifdef _WIN32
 #include <fcntl.h> /* _O_BINARY */
 #include <io.h>    /* _setmode, _fileno */
@@ -148,7 +151,7 @@ static void scr_enable_utf8_console_output(void) {
 }
 #endif
 
-void scr_runtime_abi_v43(void) {}
+void scr_runtime_abi_v48(void) {}
 
 void scr_init(void) {
 #ifdef SCR_WORKERS
@@ -179,6 +182,15 @@ void scr_init(void) {
    * stream immediately. */
   static char outbuf[1 << 16];
   setvbuf(stdout, outbuf, _IOFBF, sizeof outbuf);
+#if !defined(_WIN32) && !defined(__wasi__)
+  /* Node ignores SIGPIPE and SIGXFSZ: a write to a closed pipe or past
+   * RLIMIT_FSIZE fails with EPIPE or EFBIG, on any thread, instead of
+   * ending the process. A process.on listener replaces the disposition
+   * while it is registered (scr_events.c), and spawned children start with
+   * both at their default actions (scr_spawn_command). */
+  signal(SIGPIPE, SIG_IGN);
+  signal(SIGXFSZ, SIG_IGN);
+#endif
 #ifdef SCR_WORKERS
   }
 #endif
@@ -203,7 +215,7 @@ void scr_init(void) {
  * the stream differs. */
 /* A real definition lets relocatable library links localize this hook;
  * a tentative common symbol stays externally visible on Mach-O. */
-SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, bool wide) = NULL;
+SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, int flags) = NULL;
 SCR_TL bool (*scr_stdio_capture)(int fd, const void *data, size_t len) = NULL;
 
 SCR_TL bool scr_stdin_fed = false;
@@ -387,9 +399,12 @@ SCR_TL char *(*scr_console_indenter)(const char *line, size_t *used) = NULL;
 
 /* Console methods submit one formatted chunk to their backing stream before
  * returning, as Node's console does: a caller observing a live child sees
- * this line before the next JS turn. Errors are ignored (the global Node
- * console uses ignoreErrors=true for stream writes). */
-static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool global) {
+ * this line before the next JS turn. With ignoreErrors (the global console,
+ * and Console instances by default) a patched write receives the line and
+ * an error handler, and what it throws is discarded; without it the write
+ * receives only the line and its throw propagates, as in Node's
+ * kWriteToConsole. */
+static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool global, bool ignore_errors) {
 #if SCR_STDIO_DIRECT
   /* A large single string goes out without a copy: string + newline in one
    * vectored write. */
@@ -420,8 +435,9 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool glob
   }
   if (scr_stdio_write_hook) {
     /* A patched write receives the JavaScript string, lone surrogates kept. */
-    scr_stdio_write_hook(fd, line, used, wide);
-    if (scr_exc_pending()) scr_exc_clear();
+    scr_stdio_write_hook(fd, line, used,
+                         (wide ? SCR_STDIO_HOOK_WIDE : 0) | (ignore_errors ? SCR_STDIO_HOOK_CONSOLE : 0));
+    if (ignore_errors && scr_exc_pending()) scr_exc_clear();
   } else {
     if (wide) scr_wtf8_to_utf8(line, used);
     (void)scr_stdio_write_raw(fd, line, used);
@@ -430,7 +446,7 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool glob
 }
 
 void scr_console_log(size_t n, const ScrLogArg *args) {
-  scr_console_write(1, n, args, true);
+  scr_console_write(1, n, args, true, true);
 }
 
 /* console.error and console.warn. Runtime-internal stdout output that is
@@ -438,21 +454,21 @@ void scr_console_log(size_t n, const ScrLogArg *args) {
  * merged redirection (2>&1); JavaScript-visible stdout writes have already
  * been submitted. */
 void scr_console_error(size_t n, const ScrLogArg *args) {
-  scr_console_write(2, n, args, true);
+  scr_console_write(2, n, args, true, true);
 }
 
 void scr_console_log_parts(size_t n, const ScrLogArg *args) {
-  scr_console_write(1, n, args, true);
+  scr_console_write(1, n, args, true, true);
 }
 
 void scr_console_error_parts(size_t n, const ScrLogArg *args) {
-  scr_console_write(2, n, args, true);
+  scr_console_write(2, n, args, true, true);
 }
 
 /* A Console instance's line on process stdout (fd 1) or stderr (fd 2):
  * the global console's group indentation does not apply. */
-void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args) {
-  scr_console_write(fd == 2 ? 2 : 1, n, args, false);
+void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_errors) {
+  scr_console_write(fd == 2 ? 2 : 1, n, args, false, ignore_errors);
 }
 
 /* One JavaScript-visible raw write. Node's global console and process stream
@@ -481,8 +497,16 @@ int scr_stdio_write_raw(int fd, const void *data, size_t len) {
 #endif
 }
 
+/* A byte chunk (process.stdout.write(buffer), a stream piped to stdout). */
 bool scr_stdio_write(int fd, const void *data, size_t len) {
-  if (scr_stdio_write_hook) return scr_stdio_write_hook(fd, data, len, false);
+  if (scr_stdio_write_hook) return scr_stdio_write_hook(fd, data, len, SCR_STDIO_HOOK_BYTES);
+  (void)scr_stdio_write_raw(fd, data, len);
+  return true;
+}
+
+/* A string chunk that is plain UTF-8. */
+bool scr_stdio_write_text(int fd, const void *data, size_t len) {
+  if (scr_stdio_write_hook) return scr_stdio_write_hook(fd, data, len, 0);
   (void)scr_stdio_write_raw(fd, data, len);
   return true;
 }
@@ -490,7 +514,7 @@ bool scr_stdio_write(int fd, const void *data, size_t len) {
 /* A string chunk: a patched write receives the string itself; the stream
  * receives its UTF-8, each lone surrogate as U+FFFD. */
 static __attribute__((noinline)) bool scr_stdio_write_wide(int fd, const ScrStr *s) {
-  if (scr_stdio_write_hook) return scr_stdio_write_hook(fd, s->data, s->len, true);
+  if (scr_stdio_write_hook) return scr_stdio_write_hook(fd, s->data, s->len, SCR_STDIO_HOOK_WIDE);
   char *owned;
   const char *bytes = scr_str_utf8(s, &owned);
   (void)scr_stdio_write_raw(fd, bytes, s->len);
@@ -500,5 +524,5 @@ static __attribute__((noinline)) bool scr_stdio_write_wide(int fd, const ScrStr 
 
 bool scr_stdio_write_str(int fd, const ScrStr *s) {
   if (__builtin_expect(scr_wtf8_any(), 0) && !s->ascii) return scr_stdio_write_wide(fd, s);
-  return scr_stdio_write(fd, s->data, s->len);
+  return scr_stdio_write_text(fd, s->data, s->len);
 }

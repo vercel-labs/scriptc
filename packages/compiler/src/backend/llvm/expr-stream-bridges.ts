@@ -35,20 +35,24 @@ import {
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   FN_ATTRS,
+  arrOps,
   elemAccess,
   llFieldType,
   loadStructField,
   releaseSym,
+  traceAdapter,
   traceArg,
   vAdapters,
   type ShapeHost,
 } from "./shapes.js";
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
+import { inlineFieldTail } from "./inline-arrays.js";
 import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { emitPerKeyOrder } from "./key-orders.js";
+import { emitLinkedRecordBranches } from "./walkers.js";
 import { registerReplay } from "./emit-journal.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
@@ -184,7 +188,11 @@ export function streamTypedRefCommitAdapter(
   }
   if (t.kind === "array") {
     const commit = `${snapshot}_commit`;
-    const check = host.dyn.dynCheckHelper(t);
+    // A value the element type cannot hold stays in the array as a foreign
+    // element where the program can store one (LlEmitter.mayHoldForeign).
+    const check = host.mayHoldForeign(t.elem)
+      ? host.dyn.dynViewArrayHelper(t)
+      : host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
     host.declare(`declare void @scr_arr_outline(ptr)`);
     host.declare(`declare void @scr_arr_adopt_view_properties(ptr, ptr, ptr)`);
@@ -274,10 +282,13 @@ export function streamTypedRefCommitAdapter(
         });
     }
     const symbols = new Map((meta.def.symbolFields ?? []).map((symbol) => [symbol.field, symbol]));
+    // An inline array field is never written through a view
+    // (inline-array-views.ts), so its elements stay as they are.
     const fields = meta.def.fields.filter(
       (field) =>
         (isClassOwnEnumerableFieldName(field.name) || symbols.has(field.name)) &&
-        !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")),
+        !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")) &&
+        inlineFieldTail(host, t.className, field.name) === undefined,
     );
     for (const [index, field] of fields.entries()) {
       const next = `f${index}_next`;
@@ -748,6 +759,50 @@ function symbolKeyLines(
   };
 }
 
+/** The ScrStreamTypedDesc constant (scr_stream.h) of a record type an
+ * object-mode stream holds as the record itself, or null for a type whose
+ * chunks stay boxed: records without declared fields, with an index
+ * signature or accessor slots, tuples, the text codec records (they box as
+ * handles), and records the collector traces (a stream does not trace the
+ * records it holds). The constant's `box` converts the record as a
+ * live-reference conversion to dyn does (streamTypedRefBoxValue). */
+export function streamTypedDesc(host: LlvmEmitterContext, t: IrType): string | null {
+  if (t.kind !== "record") return null;
+  const shape = host.recordsById.get(t.shapeId);
+  if (
+    !shape ||
+    shape.fields.length === 0 ||
+    shape.indexValue !== undefined ||
+    shape.tuple ||
+    shapeHasAccessorSlots(shape) ||
+    shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func") ||
+    textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    traceAdapter(host.shapeHost, t) !== null
+  )
+    return null;
+  const key = typeKey(t);
+  const cacheKey = `std:${key}`;
+  const existing = host.resolveThunks.get(cacheKey);
+  if (existing) return `@${existing}`;
+  const sym = host.contentSymbol("sc_std_", key);
+  host.resolveThunks.set(cacheKey, sym);
+  host.journal?.allocated(sym, "streamTypedDesc", [t]);
+  const B = new BlockBuilder();
+  const boxed = streamTypedRefBoxValue(host, B, t, "%p");
+  B.terminate(`ret ptr ${boxed}`);
+  const rc = vAdapters(host.shapeHost, t);
+  host.resolveThunkDefs.push(
+    `define internal ptr @${sym}_box(ptr %p) ${FN_ATTRS} { ; box a typed stream chunk ${key}`,
+    B.render(),
+    `}`,
+    ``,
+    `@${sym} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr } { ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr ${rc.retain}, ptr ${rc.release}, ptr @${sym}_box }`,
+    ``,
+  );
+  host.journal?.built();
+  return `@${sym}`;
+}
+
 export function streamTypedRefBoxValue(
   host: LlvmEmitterContext,
   B: BlockBuilder,
@@ -792,13 +847,16 @@ export function streamTypedRefMaterializeAdapter(
   t: IrType,
 ): LlStreamTypedRefAdapter {
   const key = typeKey(t);
-  const existing = host.liveDynRefAdapters.get(key);
+  // A `(T | undefined)[]` stored as T elements shares T[]'s capsule type,
+  // but its adapters also store undefined elements.
+  const adapterKey = t.kind === "array" && t.optionalElements ? `${key}?` : key;
+  const existing = host.liveDynRefAdapters.get(adapterKey);
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
   const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
   const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
-  host.liveDynRefAdapters.set(key, adapter);
+  host.liveDynRefAdapters.set(adapterKey, adapter);
   host.journal?.allocated(
     snapshot.replace(/_materialize$/, ""),
     "streamTypedRefMaterializeAdapter",
@@ -1124,6 +1182,14 @@ export function streamTypedRefMaterializeAdapter(
       }
       B.terminate(`ret ptr ${out}`);
     } else {
+      // A copy linked to its source (IrModule.recordLinks) views as its
+      // composed record: the field operations below answer the declared
+      // fields from the copy, and the view the source's other properties.
+      emitLinkedRecordBranches(host.shapeHost, B, t.shapeId, "%p", (sourceT, composed) => {
+        const view = B.tmp();
+        B.line(`${view} = call ptr @${host.dyn.toDynHelper(sourceT)}(ptr ${composed})`);
+        return `ret ptr ${view}`;
+      });
       host.declare(`declare ptr @scr_dyn_new_obj()`);
       host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
       const out = B.tmp();
@@ -1232,6 +1298,21 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`call void @scr_dyn_arr_push_hole(ptr ${out})`);
       B.br(doneLabel);
       B.startBlock(undefinedLabel);
+      if (host.mayHoldForeign(elem)) {
+        // A foreign element (SCR_ARR_FOREIGN) holds its own value.
+        const foreign = B.tmp();
+        const foreignLabel = B.newLabel("live.array.foreign");
+        const presentUndefined = B.newLabel("live.array.present.undefined");
+        B.line(`${foreign} = fcmp oeq double ${state}, 3.0`);
+        B.condBr(foreign, foreignLabel, presentUndefined);
+        B.startBlock(foreignLabel);
+        host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+        const payload = B.tmp();
+        B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %p, double ${index}) ; +1`);
+        B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${payload})`);
+        B.br(doneLabel);
+        B.startBlock(presentUndefined);
+      }
       const undefinedValue = B.tmp();
       const retained = B.tmp();
       B.line(`${undefinedValue} = call ptr @scr_dyn_undefined()`);
@@ -1312,13 +1393,34 @@ function liveArrayOps(
   G.terminate(`ret ptr ${boxed}`);
 
   const S = new BlockBuilder();
+  if (t.optionalElements) {
+    // A `(T | undefined)[]` stores undefined as a present undefined.
+    const undef = host.dyn.isUndefined(S, "%v");
+    const storeUndefined = S.newLabel("live.array.undefined");
+    const other = S.newLabel("live.array.value");
+    S.condBr(undef, storeUndefined, other);
+    S.startBlock(storeUndefined);
+    host.declare(`declare void @scr_arr_set_undefined(ptr, double)`);
+    S.line(`call void @scr_arr_set_undefined(ptr %p, double %i)`);
+    S.terminate(`ret i1 true`);
+    S.startBlock(other);
+  }
   const fits = S.tmp();
   S.line(`${fits} = call zeroext i1 @${host.dyn.dynMatchHelper(elem)}(ptr %v)`);
   const store = S.newLabel("live.array.store");
   const refuse = S.newLabel("live.array.refuse");
   S.condBr(fits, store, refuse);
   S.startBlock(refuse);
-  S.terminate(`ret i1 false`);
+  if (host.mayHoldForeign(elem)) {
+    // The array keeps a value its element type cannot hold as a foreign
+    // element, and undefined as a present undefined.
+    host.declare(`declare zeroext i1 @scr_arr_set_foreign(ptr, double, ptr)`);
+    const kept = S.tmp();
+    S.line(`${kept} = call zeroext i1 @scr_arr_set_foreign(ptr %p, double %i, ptr %v)`);
+    S.terminate(`ret i1 ${kept}`);
+  } else {
+    S.terminate(`ret i1 false`);
+  }
   S.startBlock(store);
   const next = S.tmp();
   S.line(
@@ -1441,6 +1543,10 @@ function liveRecordOps(
   G.startBlock(bad);
   G.terminate(`unreachable`);
 
+  // Only a program that writes through a dynamic view needs the store
+  // hook (and its checked conversions), as for the commit adapter.
+  const setDefs = host.liveViewsReadOnly ? [] : liveRecordSet(host, t, `${snapshot}_set`, fields);
+
   const literals = fields.map((field) => `ptr ${host.internLiteral(field.name)}`);
   host.resolveThunkDefs.push(
     `define internal zeroext i1 @${has}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; live field presence of ${typeKey(t)}`,
@@ -1451,11 +1557,88 @@ function liveRecordOps(
     G.render(),
     `}`,
     ``,
+    ...setDefs,
     `@${names} = internal constant [${fields.length} x ptr] [${literals.join(", ")}]`,
-    // Mutable: the runtime fills the trailing key-array slot on first use.
-    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null }`,
+    // Mutable: the runtime fills the key-array slot on first use.
+    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null, ptr ${setDefs.length ? `@${snapshot}_set` : "null"} }`,
     ``,
   );
+}
+
+/** The `set` hook of a live record's ops table: stores a dynamic write of
+ * present field `index` into the native record in place, so the capsule
+ * never becomes a snapshot for it. A value the field type does not accept
+ * answers false with no side effects, leaving the snapshot path to raise
+ * the commit's diagnostic; an inline union field always does. */
+function liveRecordSet(
+  host: LlvmEmitterContext,
+  t: IrType & { kind: "record" },
+  sym: string,
+  fields: readonly IrRecordShape["fields"][number][],
+): string[] {
+  const shape = host.recordsById.get(t.shapeId)!;
+  const struct = mangleRecordStruct(t.shapeId);
+  const S = new BlockBuilder();
+  const labels = fields.map(() => S.newLabel("live.record.store"));
+  const refuse = S.newLabel("live.record.refuse");
+  S.terminate(
+    `switch ${host.sizeType} %i, label %${refuse} [ ${fields
+      .map((_, position) => `${host.sizeType} ${position}, label %${labels[position]}`)
+      .join(" ")} ]`,
+  );
+  fields.forEach((field, position) => {
+    S.startBlock(labels[position]!);
+    const inline = host.inlineUnions.record(field.type);
+    if (inline) {
+      S.br(refuse);
+      return;
+    }
+    const fits = S.tmp();
+    S.line(`${fits} = call zeroext i1 @${host.dyn.dynMatchHelper(field.type)}(ptr %v)`);
+    const check = S.newLabel("live.record.check");
+    S.condBr(fits, check, refuse);
+    S.startBlock(check);
+    const valueTy = host.llType(field.type);
+    const next = S.tmp();
+    S.line(
+      `${next} = call ${valueTy === "i1" ? "zeroext " : ""}${valueTy} @${host.dyn.dynCheckHelper(field.type)}(ptr %v, ptr null)`,
+    );
+    // A conversion that throws has already raised the write's error.
+    const pending = S.tmp();
+    for (const line of host.pendingTestLines(pending)) S.line(line.trimStart());
+    const write = S.newLabel("live.record.write");
+    const done = S.newLabel("live.record.done");
+    S.condBr(pending, done, write);
+    S.startBlock(write);
+    const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
+    const fieldPtr = S.tmp();
+    S.line(`${fieldPtr} = getelementptr inbounds %${struct}, ptr %p, i64 0, i32 ${index}`);
+    const fieldTy = llFieldType(field.type, false);
+    let stored = next;
+    if (fieldTy === "i8") {
+      stored = S.tmp();
+      S.line(`${stored} = zext i1 ${next} to i8`);
+    }
+    if (isRefCounted(field.type)) {
+      const old = S.tmp();
+      S.line(`${old} = load ptr, ptr ${fieldPtr}`);
+      S.line(`store ptr ${stored}, ptr ${fieldPtr} ; takes ownership`);
+      S.line(`call void ${releaseSym(host.shapeHost, field.type)}(ptr ${old})`);
+    } else {
+      S.line(`store ${fieldTy} ${stored}, ptr ${fieldPtr}`);
+    }
+    S.br(done);
+    S.startBlock(done);
+    S.terminate(`ret i1 true`);
+  });
+  S.startBlock(refuse);
+  S.terminate(`ret i1 false`);
+  return [
+    `define internal zeroext i1 @${sym}(ptr %p, ${host.sizeType} %i, ptr %v) ${FN_ATTRS} { ; live field store into ${typeKey(t)}`,
+    S.render(),
+    `}`,
+    ``,
+  ];
 }
 
 /** `@<snapshot>_rops` for a shape with orderVariants: a record-ops table
@@ -1481,7 +1664,7 @@ function liveRecordOrderSelect(
     B.render(),
     `}`,
     ``,
-    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select }`,
+    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select, ptr null }`,
     ``,
   );
 }
@@ -1579,6 +1762,27 @@ function classFieldDynValue(
   t: Extract<IrType, { kind: "object" }>,
   field: LlClassMeta["def"]["fields"][number],
 ): { boxed: string; nullable: NullableRefField | null; fieldValue: string } {
+  // An inline array field reads as a frozen array over the instance's
+  // elements (inline-arrays.ts), which the box keeps.
+  const tail = inlineFieldTail(host, t.className, field.name);
+  if (tail !== undefined) {
+    const countp = B.tmp(),
+      count = B.tmp(),
+      at = B.tmp(),
+      view = B.tmp();
+    B.line(
+      `${countp} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${meta.compactSlots[tail.field]!}`,
+    );
+    B.line(`${count} = load i32, ptr ${countp}`);
+    B.line(`${at} = getelementptr inbounds i8, ptr %p, i64 ${tail.tailOffset}`);
+    const ops = arrOps(host.shapeHost, { kind: "object", className: tail.elemClass });
+    host.declare(`declare ptr @scr_arr_view_cref(ptr, ptr, i32)`);
+    host.declare(`declare void @scr_arr_release(ptr)`);
+    B.line(`${view} = call ptr @scr_arr_view_cref(ptr ${ops}, ptr ${at}, i32 ${count})`);
+    const boxed = host.streamTypedRefBoxValue(B, field.type, view);
+    B.line(`call void @scr_arr_release(ptr ${view})`);
+    return { boxed, nullable: null, fieldValue: view };
+  }
   const { index, compressed } = classFieldIndex(meta, field.name, "compressed");
   const fieldPtr = B.tmp();
   let fieldValue = B.tmp();
@@ -1871,6 +2075,9 @@ export function streamFromArrayAdapter(
 }
 
 registerReplay("dynPromiseAdapter", (host, args) => dynPromiseAdapter(host, args[0] as IrType));
+registerReplay("streamTypedDesc", (host, args) =>
+  (streamTypedDesc(host, args[0] as IrType) ?? "").slice(1),
+);
 registerReplay("liveDynUnionRefAdapter", (host, args) =>
   liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
 );

@@ -6,6 +6,121 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.4.7
+
+### Highlights
+
+- **Node.js parity:**
+  - `Intl.Segmenter` splits text into graphemes and words, and `toLocaleString` uses the default locale, on Linux x64 (ICU 78.3). Malformed UTF-8 in directory entries and command-line arguments decodes to U+FFFD, as in Node.
+  - node:http emits Node's abort events, matches Node's outgoing header behavior, and checks `http.request` options before a socket opens. Sockets after `setEncoding` pipe decoded strings, untyped listen ports are validated, and net errors carry Node's system properties.
+  - node:querystring and node:string_decoder match Node 24 for values known only at run time, and node:path matches Node 24's path tests. `TextDecoder` matches Node's errors, options and printing.
+  - `structuredClone` copies Maps and Sets. `SharedArrayBuffer`, `DataView`, `BigInt64Array`, `BigUint64Array`, `Proxy` and `Intl` can be read as values. `process.memoryUsage()` counts ArrayBuffer storage.
+  - `import()` of a specifier that cannot be resolved rejects with `ERR_MODULE_NOT_FOUND`. fs reads return Buffers in programs that can observe the difference. Values held from `process.env` read the live environment.
+  - EventEmitter and stream listeners are called with the emitter as `this`, listeners that read `arguments` receive every argument, and the leak warning is delivered at exit. `'error'` events accept non-Error payloads.
+  - readline accepts listener values and ends lines at U+2028 and U+2029. `fs.watch` names the changed entry. `assert.throws` reports validation-object failures as Node does.
+  - Executables ignore SIGPIPE and SIGXFSZ, as Node does. Timer deadlines hold on macOS, and intervals re-arm as in Node. Timeout delay warnings are emitted, and untyped timer delays convert with ToNumber.
+  - `process.emitWarning`, `process.kill`, `process.chdir` and `os.userInfo` behave as in Node. Replacing `process.stdout.write` or `process.stderr.write` receives the arguments, Buffers and whole writes that Node passes.
+  - JavaScript semantics from Test262: each evaluation of a class expression creates its own class, private static members check their brand, wrapper objects for strings, numbers and booleans work in JavaScript sources, and Set, Map and weak-collection methods can be read as values.
+  - `for...in` runs over a value that may be null or undefined. A null or undefined destructuring source throws Node's TypeError. Functions held in records and arrays keep their names.
+- **Node islands:**
+  - Sloppy-mode modules and modules that patch builtins run in Node islands automatically.
+  - Islands can `require` CommonJS modules and hold builtin classes, and garbage cycles are collected across the program's heap and Node's.
+  - Island modules whose load is deterministic are deferred until first use, and shared modules resolve by real path, so caches reached through symbolic links work.
+- **Faster programs:**
+  - Untyped code calls methods of compiled class instances inline.
+  - Integer arithmetic: sums built on unsigned shifts stay in 32 bits, and loops are versioned on the range of locals they write as remainders. Saturating loops that run together test their exit every fourth iteration.
+  - Number-key map lookups test the direct index once and inline the probe in loops.
+  - Streams: taking from a Readable's buffered queue is constant time, object-mode stream callbacks do less work per chunk and keep typed records unboxed, and a line goes to a single line listener directly.
+  - fs streams read and write cached regular files on the loop thread, worker threads that allocate large blocks no longer reread the process's memory map, and constructors store their own fields without releasing a previous value.
+  - `--cpu-dispatch` keeps x86-64-v3 code from running slower than the baseline.
+  - Profile-guided builds compile the functions a profile never ran as cold code, and weigh profile matches by the profile's counts. The runtime profile is refreshed.
+  - x86_64 musl executables use SSE2 memory routines and the runtime's rounding and libm definitions.
+- **Faster builds:**
+  - The native compiler's optimization profile is refreshed: its code is 63.0 MB instead of 73.9 MB, so builds use less memory and run faster.
+  - Optimized partitions of builds without a profile run a lighter simplification before they are linked, and builds that use a profile keep the full one. Partition placement stays stable when an edit adds a small helper, so more partitions stay cached.
+  - A compile reads and stats each file once and reuses its type checker across module loads, and finished checker processes no longer stay as zombies.
+  - The type checker executable is written once, and builds with an empty cache no longer hash the runtime pack's artifacts again.
+  - Large modules decide in one pass whether fs reads must return Buffers.
+- **Memory and size:**
+  - Programs return freed memory sooner: large strings are freed when they are released, writes of large shared views go out in chunks, and the main thread returns free pages when its event loop waits.
+  - An HTTP response whose socket closes releases its completion callbacks, and the web view of an abandoned fetch body is released while its transfer runs.
+  - Intl executables ship ICU data without the categories no Intl form reads (21.5 MB smaller), and the runtime pack is 24 MB smaller on Linux x64.
+- **TypeScript:** an `import source` clause from TypeScript 7.1 is reported as unsupported instead of failing the build, and more record, union and generic patterns compile: spreads of unions with an absent arm, literal-union keys of one field type, partial record assertions, records cast from `unknown[]` elements, and `entries().filter` in generic bodies.
+
+<!-- release:end -->
+
+## 0.4.6
+
+### Highlights
+
+- **Node islands:** programs can load Node.js in-process on first use and run npm packages that scriptc doesn't compile in Node islands.
+  - Native values, closures and promises pass into islands by reference, and island handles, classes and collections can be used from compiled code.
+  - Modules are shared between a program and its islands, and island modules are evaluated only when the program uses them.
+  - Once Node loads, the runtime's event loop runs on Node's libuv, and programs exit cleanly with Node loaded.
+- **New options:**
+  - `--exceptions=rare` unwinds through recursive functions instead of checking a status after each call.
+  - `--static` builds static Linux executables (opt-in).
+  - `--large-pages` moves executable code onto huge pages; `--cpu-dispatch` adds x86-64-v3 copies of hot functions.
+  - Type patches replace a package's declaration files or supply missing declarations.
+  - The shape overlay types JavaScript from facts the compiler proves (opt-in).
+- **Faster programs:**
+  - Exceptions raise through cached unwind plans on x86-64 Linux, and every native function has an unwind table entry.
+  - Ordinary objects are stored as a layout plus value slots; unions of classes are the instance pointer itself; class instances that stay in their frame use frame storage.
+  - Object groups that die together are allocated in arenas, and the cycle collector does cheaper trial deletion and adapts its nursery trigger.
+  - The speed runtime is optimized with a committed runtime profile, and Math functions are computed as V8 does, with libm linked only when needed.
+  - Loops: short constant-count loops run together, for and while loops are versioned on the ranges their locals enter with, counted loops unroll by the period of a guard, and small leaf functions called from loops are inlined.
+  - Typed arrays: header fields are read once at a speculative loop's entry, products under bitwise operators stay in 32 bits, and shared typed-array elements are read and written with plain accesses at a counted loop's counter.
+  - Strings: UTF-16 indexes of long non-ASCII strings map in constant time, ASCII case converts eight bytes at a time, template literals allocate at their exact length, and strings iterate over their bytes.
+  - Untyped code: class instance fields are read inline at dynamic property sites with two inline-cache entries, native arrays iterate without type-name scans, and numbers pass to directly called untyped functions as JavaScript values.
+  - I/O: fs thread-pool completions and pool-thread writes make fewer syscalls; sockets, clients and agent entries register in constant time; fetch() reuses keep-alive connections; web streams, WritableStream and TransformStream run natively.
+  - Large executables map their text with 2 MiB pages, and freed heap pages are returned to the system after the frontend is disposed.
+- **Faster builds:**
+  - Small release and speed programs compile in balanced partitions, the entry module's top-level code gets its own partition, and unchanged partitions stay cached across edits.
+  - Optimized executables that stay one partition generate code concurrently, and emission's workers stay busy.
+  - The native compiler is laid out by context-sensitive profiles collected in two phases.
+  - Type checking uses a shared tsc-ts server by default on Linux and macOS, and lib diagnostics are reused across options and module sets that cannot change them.
+  - Rebuilds skip the helper version probe and the digests of unchanged files, and the CLI links without huge text pages, so cold builds use less memory.
+- **Node.js parity:**
+  - `Error.captureStackTrace`, Node's navigator, builtin globals read through the global object, and unhandled rejections reported in programs without async work.
+  - node:zlib is built on the zlib Node bundles; `Response.clone` and `Request.clone` work on typed values; fetch bodies have the members of a web ReadableStream; redirects whose chunked body has not ended are followed.
+  - Classes that extend Array compile; strings spread into their code points; frozen checked records stay frozen; sloppy-mode `this` is the global object.
+  - `util.format` runtime format strings, `inspect.custom` and colors, and untyped `promisify`.
+- **TypeScript:** scriptc reads TypeScript 7.1's binary AST format and API server beside 7.0's, and tsc-ts is updated to 0.0.10.
+
+## 0.4.5
+
+### Highlights
+
+- **Fixes:**
+  - Release builds read a typed array's length without a header load that could read a freed view.
+  - `net.Socket` `write()` returns Node's backpressure boolean and fires `'drain'`.
+  - Super calls in JavaScript method values call the declared base method.
+  - Calling a non-function through an asserted callee throws Node's TypeError.
+- **Faster programs:**
+  - Exceptions propagate by unwinding from directly called functions on Linux, instead of status checks after every call.
+  - Typed-array loops prove their bounds and keep their views disjoint in more cases, including views over shared memory in worker programs; integer loops stay in integers across nested counted loops, pure helper calls, powers of two and byte reads.
+  - Lone array callbacks run as loops with their bodies inlined, and row sums run two rows per pass.
+  - Number-key maps look keys up on their integer view and write updates through the entry the read found; small number-key maps use a direct index.
+  - Strings: base64 decodes eight characters at a time; Buffers fill, swap byte order and decode `utf16le` a word at a time; readline splits input in one scan; string scans over non-ASCII strings use their UTF-16 units.
+  - Untyped code: property caches also cache absent properties, object literal members go through the store caches, calls on plain arrays skip the method ladder, and dynamic values dispose without key-cache walks.
+  - JSON parses into discriminated unions, and dynamic values convert into nested unions, in one pass.
+  - BigInt division settles quotients from the top limbs, and limb shifts are vectorized.
+- **Faster builds:**
+  - Function bodies are emitted on up to eight workers, including in dev builds, and repeated work in LLVM module emission is cut.
+  - Linux executables link with lld when the driver finds it, and unchanged executables are reused without selecting the runtime pack.
+  - Dev builds reuse their frontend output after edits that keep token positions, and unchanged frontend inputs are checked by file identity before hashing.
+  - Lowering fetches only the syntax trees it reads, and the large compiler tables are built on first use.
+  - Release builds of the native compiler use a profile collected on the release commit.
+  - Type checking can use a tsc-ts server shared by later builds (opt-in).
+- **Node.js parity:**
+  - Crypto: RSA key generation lengths, RSA-PSS keys, encrypted private keys, `X509Certificate` fields and methods, and TLS certificates and `tls.Server` contexts.
+  - zlib: Brotli compression and decompression.
+  - Dates are mutable objects with Node's setters and conversions; URL hosts and paths parse as the URL Standard does, including non-ASCII hosts with UTS #46.
+  - `Math`, `JSON` and `Reflect` are real objects in JavaScript; objects can inherit from JavaScript class prototypes; typed arrays held as untyped values support named properties and `Symbol.species`.
+  - Error messages: `JSON.parse` syntax errors use V8's messages and positions; `Object.getPrototypeOf` of an Error answers `Error.prototype`.
+  - `util.inspect` of dynamic classes, functions and `%o` arguments, and `Symbol.toStringTag` fields and getters, match Node.
+- **npm packages:** more npm and CommonJS dependencies compile statically, including namespace-style packages with guarded declarations and `var` exports, and untyped Maps, Sets and arrays are typed from their uses.
+
 ## 0.4.4
 
 ### Highlights
@@ -28,8 +143,6 @@ All notable changes to scriptc will be documented in this file.
   - TypedArray methods run on typed arrays held as untyped values, and unions of typed-array classes compile. Borrowed `TypedArray.prototype.set` calls compile and throw Node's TypeError for other targets.
   - Split CommonJS `require` bindings, `__`-prefixed exports, string-key destructuring of `any` values, and record key order for values JavaScript built.
 - **npm packages:** zod 4 and `@hono/zod-validator` values are projected at the declaration boundary.
-
-<!-- release:end -->
 
 ## 0.4.3
 

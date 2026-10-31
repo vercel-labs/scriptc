@@ -91,8 +91,8 @@ function inferProgram(lowerer: Lowerer): Map<ts.Node, ts.Type> {
   const out = new Map<ts.Node, ts.Type>();
   const carriers = carrierTypes(lowerer);
   if (carriers === null) return out;
-  for (const file of lowerer.program.getSourceFiles()) {
-    if (file.isDeclarationFile || !isJsSourceFile(file)) continue;
+  for (const file of lowerer.program.getImplementationSourceFiles()) {
+    if (!isJsSourceFile(file)) continue;
     for (const candidate of inferFile(lowerer, file)) {
       const name =
         candidate.kind === "map"

@@ -24,7 +24,13 @@
 import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile } from "../program.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
-import { AtomTable, MODELED_GLOBALS, STRING_METHOD_RESULTS, type Atom } from "./domain.js";
+import {
+  AtomTable,
+  MODELED_GLOBALS,
+  OBJECT_PROTOTYPE_MEMBERS,
+  STRING_METHOD_RESULTS,
+  type Atom,
+} from "./domain.js";
 
 type Node = ts.Node;
 
@@ -36,6 +42,9 @@ export interface ValueNode {
   readonly onAtom: ((atom: Atom) => void)[];
   /** Every atom that arrives escapes. */
   escapeSink: string | null;
+  /** Widened (WIDEN_AT): the node holds ⊤, and every further atom that
+   * arrives escapes instead of flowing on. */
+  wide?: true;
 }
 
 export interface FunctionInfo {
@@ -70,11 +79,15 @@ export interface LiteralSite {
   readonly kind: "object" | "array";
   /** Static keys in creation order; null when a spread or computed key makes them unknown. */
   readonly keys: string[] | null;
+  /** The literal's own static keys (without spread contributions). */
+  readonly ownKeys: string[];
   readonly hasAccessor: boolean;
   readonly hasProto: boolean;
   readonly hasComputedKey: boolean;
   readonly spreads: number[];
   readonly inPackage: boolean;
+  /** The per-call-site clone that allocates it ("" outside clones). */
+  readonly ctx: string;
 }
 
 export interface Op {
@@ -129,6 +142,22 @@ export interface ShapeAnalysis {
   readonly escapedFunctions: ReadonlySet<FunctionInfo>;
   /** ES5 constructors: each function's default prototype object. */
   readonly protoOf: ReadonlyMap<Atom, Atom>;
+  /** ES5 constructor instances: the function atom whose `new` made each. */
+  readonly fnOfInstance: ReadonlyMap<Atom, Atom>;
+  /** Every value a declaration (parameter, variable, binding element) holds,
+   * merged over the analysis contexts it was analyzed in. */
+  declValues(decl: Node): Set<Atom>;
+  /** The classes a class declaration's chain contains, base last. */
+  classChain(decl: Node): Node[];
+  /** Whether every instance of a class has the own field `name` before
+   * any code can observe the instance. */
+  fieldSurelyPresent(decl: Node, name: string): boolean;
+  /** The atom of a primitive type (`undefined`, `number`, …). */
+  prim(name: string): Atom;
+  /** `if` statements in walked code whose condition is known: the branch
+   * whose condition values never allowed it is absent from `walkedBranches`. */
+  readonly branchIfs: ReadonlySet<ts.IfStatement>;
+  readonly walkedBranches: ReadonlySet<Node>;
 }
 
 /** Array.prototype members: other names on an array are own properties. */
@@ -174,6 +203,115 @@ const ARRAY_METHODS: ReadonlySet<string> = new Set([
 ]);
 const MAX_STEPS = 20_000_000;
 
+/** The well-known symbols, static members of `Symbol` (Node 24). */
+const WELL_KNOWN_SYMBOLS: ReadonlySet<string> = new Set([
+  "asyncDispose",
+  "asyncIterator",
+  "dispose",
+  "hasInstance",
+  "isConcatSpreadable",
+  "iterator",
+  "match",
+  "matchAll",
+  "replace",
+  "search",
+  "species",
+  "split",
+  "toPrimitive",
+  "toStringTag",
+  "unscopables",
+]);
+
+/** The members String.prototype, Number.prototype and Boolean.prototype
+ * define (Node 24); Object.prototype's come from OBJECT_PROTOTYPE_MEMBERS. */
+const PRIMITIVE_MEMBERS: Readonly<Record<"string" | "number" | "boolean", ReadonlySet<string>>> = {
+  string: new Set([
+    "at",
+    "charAt",
+    "charCodeAt",
+    "codePointAt",
+    "concat",
+    "endsWith",
+    "includes",
+    "indexOf",
+    "isWellFormed",
+    "lastIndexOf",
+    "localeCompare",
+    "match",
+    "matchAll",
+    "normalize",
+    "padEnd",
+    "padStart",
+    "repeat",
+    "replace",
+    "replaceAll",
+    "search",
+    "slice",
+    "split",
+    "startsWith",
+    "substr",
+    "substring",
+    "toLocaleLowerCase",
+    "toLocaleUpperCase",
+    "toLowerCase",
+    "toString",
+    "toUpperCase",
+    "toWellFormed",
+    "trim",
+    "trimEnd",
+    "trimStart",
+    "trimLeft",
+    "trimRight",
+    "valueOf",
+    "anchor",
+    "big",
+    "blink",
+    "bold",
+    "fixed",
+    "fontcolor",
+    "fontsize",
+    "italics",
+    "link",
+    "small",
+    "strike",
+    "sub",
+    "sup",
+    "length",
+    "constructor",
+  ]),
+  number: new Set([
+    "toExponential",
+    "toFixed",
+    "toLocaleString",
+    "toPrecision",
+    "toString",
+    "valueOf",
+    "constructor",
+  ]),
+  boolean: new Set(["toString", "valueOf", "constructor"]),
+};
+
+/** Per-call-site clones of an init factory, at most (SCRIPTC_SHAPE_SITE_CLONES;
+ * 0 turns them off), and the deepest chain of nested clones. */
+const SITE_CLONES = Number(process.env["SCRIPTC_SHAPE_SITE_CLONES"] ?? 64);
+const SITE_CLONE_DEPTH = 4;
+
+/** The prototypes a string, number or boolean member read reaches. */
+const PRIMITIVE_PROTOTYPES: ReadonlySet<string> = new Set([
+  "String.prototype",
+  "Number.prototype",
+  "Boolean.prototype",
+  "Object.prototype",
+]);
+
+function isPrimitivePrototype(a: Atom): boolean {
+  return a.kind === "builtin" && a.receiver === undefined && PRIMITIVE_PROTOTYPES.has(a.path ?? "");
+}
+
+/** The most atoms a value node tracks before it widens to ⊤
+ * (SCRIPTC_SHAPE_WIDEN overrides). */
+const WIDEN_AT = Number(process.env["SCRIPTC_SHAPE_WIDEN"] ?? 32);
+
 function list<T extends Node>(arr: { readonly nodes: readonly T[] } | undefined): readonly T[] {
   return arr?.nodes ?? [];
 }
@@ -205,7 +343,25 @@ function propertyNameText(name: Node): string | null {
   return null;
 }
 
+/** Whether an object literal has a spread or a key not known statically. */
+function hasUnknownKeys(node: Node): boolean {
+  if (!ts.isObjectLiteralExpression(node)) return false;
+  return list(node.properties).some((p) => {
+    if (ts.isSpreadAssignment(p)) return true;
+    const name = (p as { name?: Node }).name;
+    return name !== undefined && propertyNameText(name) === null;
+  });
+}
+
+const shortFiles = new Map<string, string>();
+
 function shortFile(fileName: string): string {
+  let short = shortFiles.get(fileName);
+  if (short === undefined) shortFiles.set(fileName, (short = shortFileOf(fileName)));
+  return short;
+}
+
+function shortFileOf(fileName: string): string {
   const norm = fileName.split("\\").join("/");
   const nm = norm.lastIndexOf("/node_modules/");
   if (nm >= 0) {
@@ -238,6 +394,47 @@ function isLoop(node: Node): boolean {
   );
 }
 
+/** Whether control can reach the end of `stmts`. False only when every
+ * path ends in a return or throw, or in a `while (true)`, `do … while
+ * (true)` or `for (;;)` loop with no break inside; anything else is
+ * assumed to complete. */
+function canComplete(stmts: readonly Node[]): boolean {
+  return stmts.every(canCompleteStatement);
+}
+
+function canCompleteStatement(s: Node): boolean {
+  if (ts.isReturnStatement(s) || ts.isThrowStatement(s)) return false;
+  if (ts.isBlock(s)) return canComplete(list(s.statements));
+  if (ts.isIfStatement(s))
+    return (
+      s.elseStatement === undefined ||
+      canCompleteStatement(s.thenStatement) ||
+      canCompleteStatement(s.elseStatement)
+    );
+  if (ts.isTryStatement(s)) {
+    if (s.finallyBlock !== undefined && !canCompleteStatement(s.finallyBlock)) return false;
+    return (
+      canCompleteStatement(s.tryBlock) ||
+      (s.catchClause !== undefined && canCompleteStatement(s.catchClause.block))
+    );
+  }
+  const endless =
+    ((ts.isWhileStatement(s) || ts.isDoStatement(s)) &&
+      s.expression.kind === ts.SyntaxKind.TrueKeyword) ||
+    (ts.isForStatement(s) && s.condition === undefined);
+  return !endless || containsBreak(s);
+}
+
+/** Whether a break statement occurs in `node`'s body, outside nested
+ * functions. */
+function containsBreak(node: Node): boolean {
+  return (
+    ts.forEachChild(node, (c) =>
+      ts.isBreakStatement(c) || (!ts.isFunctionLike(c) && containsBreak(c)) ? true : undefined,
+    ) === true
+  );
+}
+
 const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "map",
   "forEach",
@@ -258,11 +455,28 @@ const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "replaceAll",
 ]);
 
-export function analyzeShapes(program: ts.Program, checker: ts.TypeChecker): ShapeAnalysis {
-  return new Analyzer(program, checker).run();
+export interface AnalyzeOptions {
+  /** Per-call-site clones per function (default SCRIPTC_SHAPE_SITE_CLONES or 64). */
+  readonly siteClones?: number;
+}
+
+export function analyzeShapes(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  options: AnalyzeOptions = {},
+): ShapeAnalysis {
+  return new Analyzer(program, checker, options.siteClones ?? SITE_CLONES).run();
 }
 
 class Analyzer {
+  /** locLabel per node: sink reasons and atom labels name the same sites
+   * over and over, and each label reads the file's text for its line. */
+  private readonly locLabels = new Map<Node, string>();
+  private loc(node: Node): string {
+    let label = this.locLabels.get(node);
+    if (label === undefined) this.locLabels.set(node, (label = locLabel(node)));
+    return label;
+  }
   readonly atoms = new AtomTable();
   readonly nodes: ValueNode[] = [];
   readonly functions = new Map<string, FunctionInfo>();
@@ -273,6 +487,14 @@ class Analyzer {
   readonly escaped = new Map<Atom, string>();
   readonly topWriteNames = new Map<string, Node>();
   readonly topComputedWrites: Node[] = [];
+  /** Names a write may add to a primitive's prototype chain, or every name
+   * (`primitiveExtensionsAll`). A read of a name the chain lacks reads ⊤
+   * for them as well as undefined. */
+  private readonly primitiveExtensions = new Set<string>();
+  private primitiveExtensionsAll = false;
+  /** Reads of names a primitive's prototype chain lacks, by name; each
+   * takes ⊤ once a write may add the name. */
+  private readonly primitiveReads = new Map<string, number[]>();
   readonly fields = new Map<Atom, Map<string, number>>();
   readonly elements = new Map<Atom, number>();
   readonly top: Atom;
@@ -307,8 +529,9 @@ class Analyzer {
    * which may run after the call's own handling. */
   private readonly repeatingSites = new Set<Node>();
 
-  edgeFor(site: Node, callee: FunctionInfo): void {
-    const ctx = this.siteCtx.get(site);
+  edgeFor(site: Node, callee: FunctionInfo, args?: number[]): void {
+    const ctx =
+      (args !== undefined ? this.argsFrom.get(args) : undefined) ?? this.siteCtx.get(site);
     this.calls.push({
       caller: ctx?.caller ?? null,
       callee,
@@ -320,22 +543,68 @@ class Analyzer {
   constructor(
     private readonly program: ts.Program,
     private readonly checker: ts.TypeChecker,
+    private readonly siteCloneLimit: number,
   ) {
     this.top = this.atoms.intern("top", () => ({ kind: "top", label: "⊤" }));
   }
 
+  /** SCRIPTC_DEBUG_SHAPES_PROFILE: where the solver's steps go. */
+  private profileReport(): void {
+    const byNodeLabel = new Map<string, number>();
+    let atomsTotal = 0;
+    let maxAtoms = 0;
+    let onAtoms = 0;
+    let succ = 0;
+    for (const n of this.nodes) {
+      atomsTotal += n.atoms.size;
+      maxAtoms = Math.max(maxAtoms, n.atoms.size);
+      onAtoms += n.onAtom.length;
+      succ += n.succ.size;
+    }
+    const kinds = new Map<string, number>();
+    for (const a of this.atoms.atoms) kinds.set(a.kind, (kinds.get(a.kind) ?? 0) + 1);
+    const ctxPerFn = new Map<Node, number>();
+    for (const info of this.functions.values())
+      ctxPerFn.set(info.node, (ctxPerFn.get(info.node) ?? 0) + 1);
+    const topFns = [...ctxPerFn.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15);
+    const lines = [
+      `nodes ${this.nodes.length} atoms ${this.atoms.atoms.length} (${[...kinds].map(([k, v]) => `${k} ${v}`).join(", ")})`,
+      `solve ${this.solveMs.toFixed(0)} ms (nested walks included) checker ${this.checkerMs.toFixed(0)} ms in ${this.checkerCalls} calls`,
+      `node-atom pairs ${atomsTotal} max ${maxAtoms} edges ${succ} listeners ${onAtoms} functions ${this.functions.size} steps ${this.steps}`,
+      ...topFns.map(([n, c]) => `  ${c} contexts: ${locLabel(n)}`),
+      ...[...this.popsByAtom.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 15)
+        .map(([a, c]) => `  ${c} pops: atom ${a.kind} ${a.label}`),
+      ...[...this.popsByNode.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(
+          ([id, c]) =>
+            `  ${c} pops: node ${id} ${this.nodeLabel.get(id) ?? ""} atoms ${this.nodes[id]!.atoms.size} succ ${this.nodes[id]!.succ.size} listeners ${this.nodes[id]!.onAtom.length}`,
+        ),
+    ];
+    void byNodeLabel;
+    process.stderr.write(lines.map((l) => `[shapes-profile] ${l}\n`).join(""));
+  }
+  private readonly profiling = process.env["SCRIPTC_DEBUG_SHAPES_PROFILE"] !== undefined;
+  private readonly popsByAtom = new Map<Atom, number>();
+  private readonly popsByNode = new Map<number, number>();
+
   run(): ShapeAnalysis {
-    for (const sf of this.program.getSourceFiles()) {
-      if (sf.isDeclarationFile) continue;
+    for (const sf of this.program.getImplementationSourceFiles()) {
       const name = sf.fileName.split("\\").join("/");
       const inPackage = isPackageJsFile(sf);
       if (!inPackage && name.includes("/node_modules/")) continue;
       this.files.push(sf);
       if (inPackage) this.packageFiles++;
     }
-    for (const sf of this.files) this.checker.prefetchSourceFile(sf);
+    // Analysis resolves names and never asks for types: the program it
+    // runs on is usually replaced by the overlay's before lowering.
+    for (const sf of this.files) this.checker.prefetchSourceFileSymbols(sf);
     for (const sf of this.files) this.moduleBody(sf);
     this.finish();
+    if (this.profiling) this.profileReport();
     return {
       atoms: this.atoms,
       nodes: this.nodes,
@@ -358,6 +627,13 @@ class Analyzer {
       nodeLabel: this.nodeLabel,
       escapedFunctions: this.escapedFunctionCalls,
       protoOf: this.protoOf,
+      fnOfInstance: this.fnOfInstance,
+      declValues: (decl) => this.declValues(decl),
+      classChain: (decl) => this.classChain(decl),
+      fieldSurelyPresent: (decl, name) => this.fieldSurelyPresent(decl, name),
+      prim: (name) => this.prim(name),
+      branchIfs: this.branchIfs,
+      walkedBranches: this.walkedBranches,
     };
   }
 
@@ -378,7 +654,22 @@ class Analyzer {
   add(node: number, atom: Atom): void {
     const n = this.nodes[node]!;
     if (n.atoms.has(atom)) return;
+    if (n.wide === true) {
+      this.escape(atom, "a value set too large to track");
+      return;
+    }
     n.atoms.add(atom);
+    // Widening: a value set this large is merged code (a utility every
+    // value flows through). It becomes ⊤: its values escape, so the facts
+    // stay sound, and the solver stops multiplying constraints per atom.
+    if (n.atoms.size > WIDEN_AT) {
+      n.wide = true;
+      for (const a of n.atoms) this.escape(a, "a value set too large to track");
+      if (!n.atoms.has(this.top)) {
+        n.atoms.add(this.top);
+        this.worklist.push([node, this.top]);
+      }
+    }
     if (this.traceTop && atom === this.top && !this.topCause.has(node))
       this.topCause.set(
         node,
@@ -435,6 +726,26 @@ class Analyzer {
    * and which function each `new F()` instance atom belongs to. */
   readonly protoOf = new Map<Atom, Atom>();
   readonly fnOfInstance = new Map<Atom, Atom>();
+  /** Per dictionary atom, the prototypes it was created with (Object.create). */
+  private readonly dictProtos = new Map<Atom, number>();
+  /** Per object literal atom, the keys it has from its creation: another
+   * key may be absent when read (flow-insensitively, before its write). */
+  private readonly literalOwnKeys = new Map<Atom, ReadonlySet<string>>();
+  private readonly protoReads = new Set<string>();
+  /** Arrays whose elements an index read inside its bounds may still miss:
+   * shrunk (pop, shift, splice, a length write), holey (`new Array(n)`, a
+   * delete, a store at an index that is not proven in bounds or the end). */
+  private readonly unsafeArrays = new Set<Atom>();
+  /** Index reads proven in bounds by their loop (`for (let i = 0; i <
+   * a.length; i++) a[i]`): undefined joins them only if the array turns
+   * out unsafe (finish). */
+  private readonly guardedIndexReads: { recv: Atom; dst: number; done: boolean }[] = [];
+  private readonly boundsMemo = new Map<Node, boolean>();
+  dictProto(d: Atom): number {
+    let id = this.dictProtos.get(d);
+    if (id === undefined) this.dictProtos.set(d, (id = this.newNode()));
+    return id;
+  }
   protoAtom(fn: Atom): Atom {
     let p = this.protoOf.get(fn);
     if (p === undefined) {
@@ -450,12 +761,94 @@ class Analyzer {
     return p;
   }
 
+  /** A boolean literal: labeled `boolean` like any boolean, but its
+   * truthiness is known, so `if` statements on it walk one branch. */
+  boolLiteral(value: boolean): Atom {
+    return this.atoms.intern(`prim:boolean:${value}`, () => ({
+      kind: "prim",
+      label: "boolean",
+      literal: value,
+    }));
+  }
+
+  /** The analysis environment a deferred walk restores. */
+  private env(): WalkEnv {
+    return {
+      ctx: this.ctx,
+      ctxRoot: this.ctxRoot,
+      currentFn: this.currentFn,
+      loopDepth: this.loopDepth,
+    };
+  }
+
+  private inEnv(env: WalkEnv, walk: () => void): void {
+    const saved = this.env();
+    this.ctx = env.ctx;
+    this.ctxRoot = env.ctxRoot;
+    this.currentFn = env.currentFn;
+    this.loopDepth = env.loopDepth;
+    try {
+      walk();
+    } finally {
+      this.ctx = saved.ctx;
+      this.ctxRoot = saved.ctxRoot;
+      this.currentFn = saved.currentFn;
+      this.loopDepth = saved.loopDepth;
+    }
+  }
+
+  readonly branchIfs = new Set<ts.IfStatement>();
+  readonly walkedBranches = new Set<Node>();
+  /** Ifs whose branches wait for condition values; at the fixpoint, an
+   * `if` whose condition node stayed empty walks every waiting branch. */
+  private readonly pendingIfs: PendingIf[] = [];
+
+  /** An `if` walks a branch once a condition value allows it: the then
+   * branch on a value that may be truthy, the else branch on one that may
+   * be falsy. A branch no value allows is never walked, so its effects
+   * (returns, calls, writes) stay out of the facts; the overlay turns it
+   * into a checked internal error. */
+  private ifStatement(s: ts.IfStatement): void {
+    const cond = this.expr(s.expression);
+    this.branchIfs.add(s);
+    const pending: PendingIf = {
+      s,
+      cond,
+      env: this.env(),
+      thenDone: false,
+      elseDone: s.elseStatement === undefined,
+    };
+    this.pendingIfs.push(pending);
+    this.on(cond, (a) => {
+      if (!pending.thenDone && mayBeTruthy(a)) this.walkBranch(pending, "then");
+      if (!pending.elseDone && mayBeFalsy(a)) this.walkBranch(pending, "else");
+    });
+  }
+
+  private walkBranch(pending: PendingIf, which: "then" | "else"): void {
+    const branch = which === "then" ? pending.s.thenStatement : pending.s.elseStatement!;
+    if (which === "then") pending.thenDone = true;
+    else pending.elseDone = true;
+    this.walkedBranches.add(branch);
+    this.inEnv(pending.env, () => this.stmt(branch));
+  }
+
   builtin(path: string, receiver?: Atom): Atom {
     const key = receiver === undefined ? `builtin:${path}` : `builtin:${path}@${receiver.id}`;
     return this.atoms.intern(key, () => ({ kind: "builtin", label: path, path, receiver }));
   }
 
+  private solveMs = 0;
   solve(): void {
+    const started = this.profiling ? performance.now() : 0;
+    try {
+      this.solveLoop();
+    } finally {
+      if (this.profiling) this.solveMs += performance.now() - started;
+    }
+  }
+
+  private solveLoop(): void {
     while (this.worklist.length > 0) {
       if (++this.steps > MAX_STEPS) {
         this.budgetExceeded = true;
@@ -463,6 +856,10 @@ class Analyzer {
       }
       const [id, atom] = this.worklist.pop()!;
       const n = this.nodes[id]!;
+      if (this.profiling) {
+        this.popsByAtom.set(atom, (this.popsByAtom.get(atom) ?? 0) + 1);
+        this.popsByNode.set(id, (this.popsByNode.get(id) ?? 0) + 1);
+      }
       this.cause = id;
       for (const s of n.succ) this.add(s, atom);
       this.cause = null;
@@ -516,6 +913,8 @@ class Analyzer {
 
   escape(atom: Atom, reason: string): void {
     if (atom.kind === "prim" || atom.kind === "top") return;
+    // Unknown code may add any member to a primitive's prototype.
+    if (isPrimitivePrototype(atom)) this.extendPrimitives(null);
     if (atom.kind === "builtin" && atom.receiver === undefined) return;
     if (this.escaped.has(atom)) return;
     this.escaped.set(atom, reason);
@@ -561,12 +960,18 @@ class Analyzer {
     this.escapedFunctionCalls.add(info);
     this.activate(info);
     for (const p of info.params) this.add(p, this.top);
-    if (!info.isArrow && info.ownerClass === null) this.add(info.thisNode, this.top);
+    // Unknown code can call a class's method with any receiver too (through
+    // `Reflect.get` with a proxy as the receiver); in the program's own
+    // files its receiver is ⊤.
+    if (!info.isArrow && (info.ownerClass === null || !isPackageJsFile(info.node.getSourceFile())))
+      this.add(info.thisNode, this.top);
     this.sink(info.ret, reason);
   }
 
   /** Property names that untyped code writes on receivers that may be ⊤ (census). */
   noteTopWrite(name: string | null, node: Node): void {
+    // ⊤ may be a primitive's prototype.
+    this.extendPrimitives(name);
     if (name === null) {
       const first = this.topComputedWrites.length === 0;
       this.topComputedWrites.push(node);
@@ -586,6 +991,43 @@ class Analyzer {
       const id = this.fields.get(atom)?.get(name);
       if (id !== undefined) this.add(id, this.top);
     }
+  }
+
+  /** A read of a name a primitive's prototype chain lacks: ⊤ as well, now
+   * or once a write may add the name there. */
+  primitiveRead(name: string, dst: number): void {
+    if (this.primitiveExtensionsAll || this.primitiveExtensions.has(name)) {
+      this.add(dst, this.top);
+      return;
+    }
+    const reads = this.primitiveReads.get(name);
+    if (reads === undefined) this.primitiveReads.set(name, [dst]);
+    else reads.push(dst);
+  }
+
+  /** A write that may add `name` (any name when null) to String.prototype,
+   * Number.prototype, Boolean.prototype or Object.prototype. */
+  extendPrimitives(name: string | null): void {
+    if (this.primitiveExtensionsAll) return;
+    if (name === null || name === "__proto__") {
+      this.primitiveExtensionsAll = true;
+      for (const reads of this.primitiveReads.values())
+        for (const dst of reads) this.add(dst, this.top);
+      this.primitiveReads.clear();
+      return;
+    }
+    if (this.primitiveExtensions.has(name)) return;
+    this.primitiveExtensions.add(name);
+    for (const dst of this.primitiveReads.get(name) ?? []) this.add(dst, this.top);
+    this.primitiveReads.delete(name);
+  }
+
+  /** An operation that may add, replace or remove `name` (any name when
+   * null) on its receiver: a primitive's prototype, or ⊤, which may be one. */
+  prototypeWrite(recv: number, name: string | null): void {
+    this.on(recv, (t) => {
+      if (t.kind === "top" || isPrimitivePrototype(t)) this.extendPrimitives(name);
+    });
   }
 
   // ---- classes ---------------------------------------------------------------
@@ -644,6 +1086,53 @@ class Analyzer {
     return out;
   }
 
+  /** Whether every instance of a class has the own field `name` before any
+   * code can observe the instance. Construction runs from the base class
+   * down, each class's field initializers and then its constructor body:
+   * the field counts when a declaration or a `this.name = …` statement of
+   * the constructor body defines it ahead of anything that reads `this` or
+   * passes it on (a call with `this`, a method call on it, a closure, a
+   * field initializer or right-hand side that reads it) and ahead of an
+   * early `return`. */
+  fieldSurelyPresent(decl: Node, name: string): boolean {
+    for (const c of this.classChain(decl).reverse()) {
+      const members = list((c as ts.ClassLikeDeclaration).members);
+      for (const m of members) {
+        if (isStatic(m) || !ts.isPropertyDeclaration(m)) continue;
+        if (m.initializer !== undefined && observesThis(m.initializer)) return false;
+        if (propertyNameText(m.name) === name) return true;
+      }
+      const ctor = members.find(
+        (m): m is ts.ConstructorDeclaration =>
+          ts.isConstructorDeclaration(m) && m.body !== undefined,
+      );
+      for (const st of ctor === undefined ? [] : list(ctor.body!.statements)) {
+        const e = ts.isExpressionStatement(st) ? st.expression : undefined;
+        if (
+          e !== undefined &&
+          ts.isBinaryExpression(e) &&
+          e.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isPropertyAccessExpression(e.left) &&
+          e.left.expression.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+          if (observesThis(e.right)) return false;
+          if (e.left.name.text === name) return true;
+          continue;
+        }
+        // `super(…)` runs the base constructor, walked above.
+        if (
+          e !== undefined &&
+          ts.isCallExpression(e) &&
+          e.expression.kind === ts.SyntaxKind.SuperKeyword &&
+          !list(e.arguments).some(observesThis)
+        )
+          continue;
+        if (observesThis(st) || returnsEarly(st)) return false;
+      }
+    }
+    return false;
+  }
+
   lookupMember(
     decl: Node,
     name: string,
@@ -678,7 +1167,22 @@ class Analyzer {
 
   // ---- symbols -----------------------------------------------------------------
 
+  private checkerMs = 0;
+  private checkerCalls = 0;
+  private readonly resolved = new Map<Node, Node | undefined>();
   resolve(id: Node): Node | undefined {
+    if (this.resolved.has(id)) return this.resolved.get(id);
+    const started = this.profiling ? performance.now() : 0;
+    const out = this.resolveUncached(id);
+    if (this.profiling) {
+      this.checkerMs += performance.now() - started;
+      this.checkerCalls++;
+    }
+    this.resolved.set(id, out);
+    return out;
+  }
+
+  private resolveUncached(id: Node): Node | undefined {
     let sym = this.checker.getSymbolAtLocation(id);
     if (sym === undefined) return undefined;
     if (sym.flags & ts.SymbolFlags.Alias) {
@@ -700,7 +1204,7 @@ class Analyzer {
       if (this.traceTop)
         this.nodeLabel.set(
           id,
-          `binding ${(decl as { name?: { text?: string } }).name?.text ?? "?"}@${locLabel(decl)}${this.ctx !== "" ? ` [${this.ctx}]` : ""}`,
+          `binding ${(decl as { name?: { text?: string } }).name?.text ?? "?"}@${this.loc(decl)}${this.ctx !== "" ? ` [${this.ctx}]` : ""}`,
         );
     }
     return id;
@@ -718,6 +1222,24 @@ class Analyzer {
     return `${inside ? this.ctx : ""}|${this.nodeKey(node)}`;
   }
 
+  private declIndex: Map<number, number[]> | null = null;
+  declValues(decl: Node): Set<Atom> {
+    if (this.declIndex === null) {
+      this.declIndex = new Map();
+      for (const [key, id] of this.bindings) {
+        const k = Number(key.slice(key.lastIndexOf("|") + 1));
+        let l = this.declIndex.get(k);
+        if (l === undefined) this.declIndex.set(k, (l = []));
+        l.push(id);
+      }
+    }
+    const out = new Set<Atom>();
+    const k = this.nodeKeys.get(decl);
+    if (k === undefined) return out;
+    for (const id of this.declIndex.get(k) ?? []) for (const a of this.nodes[id]!.atoms) out.add(a);
+    return out;
+  }
+
   receiverCtx(atom: Atom): string {
     return atom.kind === "instance" || atom.kind === "class" ? `C${atom.id}` : "";
   }
@@ -729,7 +1251,14 @@ class Analyzer {
 
   // ---- functions ---------------------------------------------------------------
 
-  functionInfo(node: Node, ownerClass: Node | null, ctxArg = ""): FunctionInfo {
+  /** `lexicalThis`: an arrow's receiver node, for a clone walked away from
+   * the function that encloses the arrow. */
+  functionInfo(
+    node: Node,
+    ownerClass: Node | null,
+    ctxArg = "",
+    lexicalThis: number | null = null,
+  ): FunctionInfo {
     // A nested closure walked inside a clone shares the clone's context.
     const inherit =
       ctxArg === "" &&
@@ -760,7 +1289,7 @@ class Analyzer {
     const nameNode = (fn as { name?: Node }).name;
     const name = nameNode !== undefined ? (propertyNameText(nameNode) ?? "<computed>") : null;
     const owner = ownerClass !== null ? this.className(ownerClass) : null;
-    const label = `${owner !== null ? `${owner}.` : ""}${name ?? (ts.isConstructorDeclaration(node) ? "constructor" : "<fn>")}@${locLabel(node)}`;
+    const label = `${owner !== null ? `${owner}.` : ""}${name ?? (ts.isConstructorDeclaration(node) ? "constructor" : "<fn>")}@${this.loc(node)}`;
     const info: FunctionInfo = {
       node,
       ctx,
@@ -769,7 +1298,12 @@ class Analyzer {
       label: ctx === "" ? label : `${label} [${this.ctxLabel(ctx)}]`,
       params,
       rest,
-      thisNode: isArrow && this.currentFn !== null ? this.currentFn.thisNode : this.newNode(),
+      thisNode:
+        isArrow && lexicalThis !== null
+          ? lexicalThis
+          : isArrow && this.currentFn !== null
+            ? this.currentFn.thisNode
+            : this.newNode(),
       ret: this.newNode(),
       isArrow,
       isAsync: mods.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword),
@@ -804,7 +1338,7 @@ class Analyzer {
       if (p.dotDotDotToken !== undefined) {
         const arr = this.atoms.intern(`rest:${this.nodes.length}`, () => ({
           kind: "array",
-          label: `rest@${locLabel(p)}`,
+          label: `rest@${this.loc(p)}`,
           node: p,
         }));
         this.add(this.binding(p), arr);
@@ -813,8 +1347,11 @@ class Analyzer {
     }
     const body = fn.body;
     if (body !== undefined) {
-      if (ts.isBlock(body)) this.stmts(list(body.statements));
-      else this.edge(this.expr(body as ts.Expression), info.ret);
+      if (ts.isBlock(body)) {
+        this.stmts(list(body.statements));
+        // A call that runs off the end of the body returns undefined.
+        if (canComplete(list(body.statements))) this.add(info.ret, this.prim("undefined"));
+      } else this.edge(this.expr(body as ts.Expression), info.ret);
     }
     this.currentFn = saved;
     this.loopDepth = savedLoop;
@@ -847,7 +1384,7 @@ class Analyzer {
     const p = decl.parent;
     if (p !== undefined && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name))
       return p.name.text;
-    return `<class@${locLabel(decl)}>`;
+    return `<class@${this.loc(decl)}>`;
   }
 
   classAtoms(decl: Node): { cls: Atom; inst: Atom } {
@@ -888,7 +1425,7 @@ class Analyzer {
       ctx: "",
       root: null,
       walked: true,
-      label: `${label}.${suffix}@${locLabel(decl)}`,
+      label: `${label}.${suffix}@${this.loc(decl)}`,
       params: [],
       rest: -1,
       thisNode: this.newNode(),
@@ -975,7 +1512,9 @@ class Analyzer {
     spread: boolean,
     site: Node,
   ): void {
-    const key = `ctor:${this.nodeKey(decl)}:${instance.id}:${this.nodeKey(site)}`;
+    // The arguments' nodes too: one `new` site walked in several contexts
+    // (receiver classes, per-site clones) passes each context's values.
+    const key = `ctor:${this.nodeKey(decl)}:${instance.id}:${this.nodeKey(site)}:${args.join(",")}`;
     if (this.boundCalls.has(key)) return;
     this.boundCalls.add(key);
     const entry = this.ensureClass(decl);
@@ -988,7 +1527,7 @@ class Analyzer {
       this.activate(info);
       this.add(info.thisNode, instance);
       this.bindArgs(info, args, spread);
-      this.edgeFor(site, info);
+      this.edgeFor(site, info, args);
       return;
     }
     const base = this.baseClass(decl);
@@ -1024,7 +1563,7 @@ class Analyzer {
 
   /** Call of a function atom with a receiver node. */
   callFunction(
-    info: FunctionInfo,
+    callee: FunctionInfo,
     thisNode: number | null,
     args: number[],
     spread: boolean,
@@ -1033,15 +1572,16 @@ class Analyzer {
   ): void {
     // `() => Object.create(null)` helpers: each call site gets its own
     // dictionary, as if the helper were inlined.
-    if (this.isFactory(info.node)) {
+    if (this.isFactory(callee.node)) {
       const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
         kind: "dictionary",
-        label: `Object.create@${locLabel(site)}`,
+        label: `Object.create@${this.loc(site)}`,
         node: site,
       }));
       this.add(dst, d);
       return;
     }
+    const info = this.siteClone(callee, site, args) ?? callee;
     this.activate(info);
     const fnNode = info.node;
     const key = `call:${info.ctx}|${this.nodeKey(fnNode)}:${this.nodeKey(site)}:${thisNode ?? -1}:${dst}`;
@@ -1056,7 +1596,83 @@ class Analyzer {
     } else if (info.isGenerator) {
       this.add(dst, this.top);
     } else this.edge(info.ret, dst);
-    this.edgeFor(site, info);
+    this.edgeFor(site, info, args);
+  }
+
+  /** The prototype object of a class declaration (`C.prototype`). */
+  classProto(decl: Node): Atom {
+    return this.atoms.intern(`cproto:${this.nodeKey(decl)}`, () => ({
+      kind: "object",
+      label: `${this.className(decl)}.prototype`,
+      node: decl,
+    }));
+  }
+
+  /** Per-call-site clones of init factories: a function called from
+   * module initialization (top-level code outside loops, or another such
+   * clone) is analyzed once per call site, so the objects it creates are
+   * one allocation per site (`z.string()` and `z.object(…)` schemas,
+   * valibot's schema literals) instead of one per function. Clones run
+   * at most once, which makes their objects singletons. */
+  private readonly siteClones = new Map<Node, number>();
+  /** The site-clone context a literal at `node` is allocated in, or "". */
+  private siteCloneCtx(node: Node): string {
+    const root = this.ctxRoot;
+    if (!this.ctx.includes("@S") || root === null) return "";
+    const inside =
+      node.getSourceFile() === root.getSourceFile() && node.pos >= root.pos && node.end <= root.end;
+    return inside ? this.ctx : "";
+  }
+  private siteClone(info: FunctionInfo, site: Node, args: number[]): FunctionInfo | null {
+    if (this.siteCloneLimit === 0 || info.isGenerator || ts.isSourceFile(info.node)) return null;
+    if (ts.isClassLikeDeclaration(info.node)) return null;
+    // A function walked in an enclosing clone's or receiver's context reads
+    // and writes that context's bindings of the variables it captures. A
+    // clone is its own context root, so it would resolve them in the
+    // default context instead, and their writes would be lost.
+    if (info.root !== null && info.root !== info.node) return null;
+    // A class's constructor and methods run in receiver contexts of their
+    // own, rooted at each member: inside a clone they too would resolve the
+    // function's bindings in the default context.
+    if (this.declaresClass(info.node)) return null;
+    const sc = this.argsFrom.get(args);
+    if (sc === undefined || sc.inLoop || this.forceLoop || this.repeatingSites.has(site))
+      return null;
+    const caller = sc.caller;
+    if (caller === null) return null;
+    // The clone itself, not a closure created inside it (which inherits
+    // its context but may run any number of times).
+    const callerInit =
+      ts.isSourceFile(caller.node) || (caller.ctx.includes("@S") && caller.root === caller.node);
+    if (!callerInit) return null;
+    // A clone inside a clone keys on the whole chain of sites.
+    const chain = caller.ctx.includes("@S") ? caller.ctx.slice(caller.ctx.indexOf("@S")) : "";
+    if (chain.split("@S").length > SITE_CLONE_DEPTH) return null;
+    const ctx = `${info.ctx}${chain}@S${this.nodeKey(site)}`;
+    const existing = this.functions.get(`${ctx}|${this.nodeKey(info.node)}`);
+    if (existing !== undefined) return existing;
+    const count = this.siteClones.get(info.node) ?? 0;
+    if (count >= this.siteCloneLimit) return null;
+    this.siteClones.set(info.node, count + 1);
+    // The clone keeps the function's receiver: an arrow's lexical `this`,
+    // and whatever reaches a function's own `this`, such as the receiver
+    // `bind` supplies.
+    const clone = this.functionInfo(info.node, info.ownerClass, ctx, info.thisNode);
+    if (!clone.isArrow) this.edge(info.thisNode, clone.thisNode);
+    return clone;
+  }
+
+  private readonly classDeclarers = new Map<Node, boolean>();
+  /** Whether a class declaration or expression is anywhere inside `node`. */
+  private declaresClass(node: Node): boolean {
+    let r = this.classDeclarers.get(node);
+    if (r === undefined) {
+      const visit = (n: Node): true | undefined =>
+        ts.isClassLikeDeclaration(n) ? true : ts.forEachChild(n, visit);
+      r = ts.forEachChild(node, visit) === true;
+      this.classDeclarers.set(node, r);
+    }
+    return r;
   }
 
   private readonly factories = new Map<Node, boolean>();
@@ -1102,7 +1718,7 @@ class Analyzer {
   syntheticArray(site: Node, tag: string): Atom {
     return this.atoms.intern(`arr:${tag}:${this.nodeKey(site)}`, () => ({
       kind: "array",
-      label: `${tag}[]@${locLabel(site)}`,
+      label: `${tag}[]@${this.loc(site)}`,
       node: site,
     }));
   }
@@ -1148,8 +1764,9 @@ class Analyzer {
       return;
     }
     if (ts.isReturnStatement(s)) {
-      if (s.expression !== undefined && this.currentFn !== null)
-        this.edge(this.expr(s.expression), this.currentFn.ret);
+      if (this.currentFn === null) return;
+      if (s.expression !== undefined) this.edge(this.expr(s.expression), this.currentFn.ret);
+      else this.add(this.currentFn.ret, this.prim("undefined"));
       return;
     }
     if (ts.isFunctionDeclaration(s)) {
@@ -1170,7 +1787,12 @@ class Analyzer {
         const src = this.expr(s.expression);
         const target = this.newNode();
         if (ts.isForInStatement(s)) this.add(target, this.prim("string"));
-        else this.iterateInto(src, target, s);
+        else if (s.awaitModifier !== undefined) {
+          // `for await` awaits each value a sync iterable yields.
+          const yielded = this.newNode();
+          this.iterateInto(src, yielded, s);
+          this.awaitInto(yielded, target);
+        } else this.iterateInto(src, target, s);
         const init = s.initializer;
         if (ts.isVariableDeclarationList(init)) {
           for (const d of list(init.declarations)) {
@@ -1209,7 +1831,7 @@ class Analyzer {
       return;
     }
     if (ts.isThrowStatement(s)) {
-      this.sink(this.expr(s.expression), `thrown at ${locLabel(s)}`);
+      this.sink(this.expr(s.expression), `thrown at ${this.loc(s)}`);
       return;
     }
     if (
@@ -1223,6 +1845,10 @@ class Analyzer {
       this.expr(s.expression);
       return;
     }
+    if (ts.isIfStatement(s) && this.currentFn !== null) {
+      this.ifStatement(s);
+      return;
+    }
     // Blocks, ifs, switches, labels: walk children, evaluating expressions.
     ts.forEachChild(s, (child) => {
       if (ts.isExpression(child)) this.expr(child);
@@ -1234,6 +1860,13 @@ class Analyzer {
   varDecl(d: ts.VariableDeclaration): void {
     const b = this.binding(d);
     if (d.initializer !== undefined) this.edge(this.expr(d.initializer), b);
+    else {
+      // `let x;` holds undefined until it is assigned (a for-in/for-of
+      // binding gets its values from the loop).
+      const loop = d.parent?.parent;
+      if (loop === undefined || !(ts.isForOfStatement(loop) || ts.isForInStatement(loop)))
+        this.add(b, this.prim("undefined"));
+    }
     this.bindPattern(d.name, b);
   }
 
@@ -1276,12 +1909,16 @@ class Analyzer {
     this.on(src, (a) => {
       if (a.kind === "array" || a.kind === "collection") this.edge(this.element(a), dst);
       else if (a.kind === "prim" && a.label === "string") this.add(dst, this.prim("string"));
-      else if (a.kind === "prim" || a.kind === "object" || a.kind === "dictionary") {
-        /* not iterable (a TypeError): no value. Literals with a
-           Symbol.iterator member have a computed key; they are G sites. */
+      else if (a.kind === "object" && a.node !== undefined && hasUnknownKeys(a.node)) {
+        // An object literal with a computed key or a spread may have a
+        // Symbol.iterator or Symbol.asyncIterator member.
+        this.add(dst, this.top);
+        this.escape(a, `iterated at ${this.loc(site)}`);
+      } else if (a.kind === "prim" || a.kind === "object" || a.kind === "dictionary") {
+        /* not iterable (a TypeError): no value. */
       } else {
         this.add(dst, this.top);
-        if (a.kind !== "top") this.escape(a, `iterated at ${locLabel(site)}`);
+        if (a.kind !== "top") this.escape(a, `iterated at ${this.loc(site)}`);
       }
     });
   }
@@ -1292,12 +1929,20 @@ class Analyzer {
     const key = this.ctxKey(e);
     const memo = this.exprMemo.get(key);
     if (memo !== undefined) return memo;
-    const id = this.exprUncached(e);
+    let id = this.exprUncached(e);
+    // A member of an optional chain (`a?.b.c`, `f?.()`) is undefined when
+    // the chain short-circuits.
+    if ((e.flags & ts.NodeFlags.OptionalChain) !== 0) {
+      const out = this.newNode();
+      this.edge(id, out);
+      this.add(out, this.prim("undefined"));
+      id = out;
+    }
     this.exprMemo.set(key, id);
     if (this.traceTop && !this.nodeLabel.has(id))
       this.nodeLabel.set(
         id,
-        `expr ${e.getText().slice(0, 40).replace(/\s+/g, " ")}@${locLabel(e)}`,
+        `expr ${e.getText().slice(0, 40).replace(/\s+/g, " ")}@${this.loc(e)}`,
       );
     return id;
   }
@@ -1317,8 +1962,9 @@ class Analyzer {
       case ts.SyntaxKind.BigIntLiteral:
         return this.constNode(this.prim("bigint"));
       case ts.SyntaxKind.TrueKeyword:
+        return this.constNode(this.boolLiteral(true));
       case ts.SyntaxKind.FalseKeyword:
-        return this.constNode(this.prim("boolean"));
+        return this.constNode(this.boolLiteral(false));
       case ts.SyntaxKind.NullKeyword:
         return this.constNode(this.prim("null"));
       case ts.SyntaxKind.RegularExpressionLiteral:
@@ -1410,26 +2056,31 @@ class Analyzer {
         const recv = this.expr(target.expression);
         const name = ts.isPropertyAccessExpression(target) ? target.name.text : null;
         this.ops.push({ kind: "delete", recv, name, node: e });
+        this.prototypeWrite(recv, name);
       }
       return this.constNode(this.prim("boolean"));
     }
     if (ts.isPrefixUnaryExpression(e) || ts.isPostfixUnaryExpression(e)) {
       const operand = e.operand;
-      this.expr(operand);
+      const value = this.expr(operand);
+      if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken)
+        return this.constNode(this.prim("boolean"));
+      // `+x` is a number (a bigint throws); `-x`, `~x`, `++`/`--` keep a bigint.
+      if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.PlusToken)
+        return this.constNode(this.prim("number"));
+      const result = this.numericResult([value]);
       if (
         e.operator === ts.SyntaxKind.PlusPlusToken ||
         e.operator === ts.SyntaxKind.MinusMinusToken
       )
-        this.assignTo(operand, this.constNode(this.prim("number")));
-      if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken)
-        return this.constNode(this.prim("boolean"));
-      return this.constNode(this.prim("number"));
+        this.assignTo(operand, result);
+      return result;
     }
     if (ts.isSpreadElement(e)) return this.expr(e.expression);
     if (ts.isTaggedTemplateExpression(e)) return this.taggedTemplate(e);
     if (ts.isYieldExpression(e)) {
       if (e.expression !== undefined)
-        this.sink(this.expr(e.expression), `yielded at ${locLabel(e)}`);
+        this.sink(this.expr(e.expression), `yielded at ${this.loc(e)}`);
       return this.constNode(this.top);
     }
     if (ts.isMetaProperty(e)) return this.constNode(this.top);
@@ -1451,6 +2102,8 @@ class Analyzer {
         if (!forwarding) fn.usesArguments = true;
         const arr = this.syntheticArray(id, "arguments");
         for (const p of fn.params) this.edge(p, this.element(arr));
+        // Arguments past the declared parameters are not tracked.
+        this.add(this.element(arr), this.top);
         return this.constNode(arr);
       }
     }
@@ -1684,7 +2337,7 @@ class Analyzer {
     const spreads: number[] = [];
     const inPackage = isPackageJsFile(e.getSourceFile());
     const label = (): string =>
-      `{${keys.slice(0, 6).join(",")}${keys.length > 6 ? ",…" : ""}${keysKnown ? "" : ",…"}}@${locLabel(e)}`;
+      `{${keys.slice(0, 6).join(",")}${keys.length > 6 ? ",…" : ""}${keysKnown ? "" : ",…"}}@${this.loc(e)}`;
     // keys first, so the label is complete
     for (const p of list(e.properties)) {
       if (ts.isSpreadAssignment(p)) {
@@ -1702,11 +2355,11 @@ class Analyzer {
         hasProto = true;
       if (!keys.includes(key)) keys.push(key);
     }
-    const atom = this.atoms.intern(`obj:${this.nodeKey(e)}`, () => ({
-      kind: "object",
-      label: label(),
-      node: e,
-    }));
+    const sctx = this.siteCloneCtx(e);
+    const atom = this.atoms.intern(
+      sctx === "" ? `obj:${this.nodeKey(e)}` : `obj:${sctx}|${this.nodeKey(e)}`,
+      () => ({ kind: "object", label: label(), node: e, ...(sctx === "" ? {} : { ctx: sctx }) }),
+    );
     const n = this.newNode();
     this.add(n, atom);
     for (const p of list(e.properties)) {
@@ -1744,17 +2397,20 @@ class Analyzer {
       if (key !== null) this.edge(value, this.field(atom, key));
       else this.edge(value, this.anyField(atom));
     }
+    if (!this.literalOwnKeys.has(atom)) this.literalOwnKeys.set(atom, new Set(keys));
     if (!this.siteAtoms.has(atom) && this.siteAtoms.add(atom))
       this.sites.push({
         atom,
         node: e,
         kind: "object",
         keys: keysKnown ? keys : null,
+        ownKeys: keys,
         hasAccessor,
         hasProto,
         hasComputedKey,
         spreads,
         inPackage,
+        ctx: sctx,
       });
     return n;
   }
@@ -1893,11 +2549,16 @@ class Analyzer {
   }
 
   arrayLiteral(e: ts.ArrayLiteralExpression): number {
-    const atom = this.atoms.intern(`arr:${this.nodeKey(e)}`, () => ({
-      kind: "array",
-      label: `[]@${locLabel(e)}`,
-      node: e,
-    }));
+    const sctx = this.siteCloneCtx(e);
+    const atom = this.atoms.intern(
+      sctx === "" ? `arr:${this.nodeKey(e)}` : `arr:${sctx}|${this.nodeKey(e)}`,
+      () => ({
+        kind: "array",
+        label: `[]@${this.loc(e)}`,
+        node: e,
+        ...(sctx === "" ? {} : { ctx: sctx }),
+      }),
+    );
     const n = this.newNode();
     this.add(n, atom);
     const el = this.element(atom);
@@ -1916,11 +2577,13 @@ class Analyzer {
         node: e,
         kind: "array",
         keys: null,
+        ownKeys: [],
         hasAccessor: false,
         hasProto: hasHole,
         hasComputedKey: false,
         spreads: [],
         inPackage: isPackageJsFile(e.getSourceFile()),
+        ctx: sctx,
       });
     return n;
   }
@@ -1945,16 +2608,11 @@ class Analyzer {
       return n;
     }
     if (op >= ts.SyntaxKind.FirstCompoundAssignment && op <= ts.SyntaxKind.LastCompoundAssignment) {
-      this.expr(e.left);
-      this.expr(e.right);
-      const result = this.constNode(
-        op === ts.SyntaxKind.PlusEqualsToken ? this.top : this.prim("number"),
-      );
-      if (op === ts.SyntaxKind.PlusEqualsToken) {
-        this.nodes[result]!.atoms.clear();
-        this.add(result, this.prim("string"));
-        this.add(result, this.prim("number"));
-      }
+      const lv = this.expr(e.left);
+      const rv = this.expr(e.right);
+      // Arithmetic on bigints answers bigints; `+=` may also concatenate.
+      const result = this.numericResult([lv, rv]);
+      if (op === ts.SyntaxKind.PlusEqualsToken) this.add(result, this.prim("string"));
       this.assignTo(e.left, result);
       return result;
     }
@@ -2001,13 +2659,15 @@ class Analyzer {
           )
             this.add(n, this.prim("number"));
           if (a.kind === "top") this.add(n, this.prim("number"));
+          if (a.kind === "top" || (a.kind === "prim" && a.label === "bigint"))
+            this.add(n, this.prim("bigint"));
         };
         this.on(l, strOrNum);
         this.on(r, strOrNum);
         return n;
       }
       default:
-        return this.constNode(this.prim("number"));
+        return this.numericResult([l, r]);
     }
   }
 
@@ -2016,7 +2676,7 @@ class Analyzer {
     if (ts.isIdentifier(t)) {
       const decl = this.resolve(t);
       if (decl === undefined || decl.getSourceFile().isDeclarationFile) {
-        this.sink(value, `global write at ${locLabel(t)}`);
+        this.sink(value, `global write at ${this.loc(t)}`);
         return;
       }
       this.edge(value, this.binding(decl));
@@ -2086,8 +2746,21 @@ class Analyzer {
         return;
       case "prim":
         if (name === "length" && a.label === "string") this.add(dst, this.prim("number"));
-        else if (a.label === "string" || a.label === "number" || a.label === "boolean")
-          this.add(dst, this.builtin(`${a.label}.${name}`, a));
+        else if (a.label === "string" && /^\d+$/.test(name)) {
+          // An index past the end reads the prototype chain.
+          this.add(dst, this.prim("string"));
+          this.add(dst, this.prim("undefined"));
+          this.primitiveRead(name, dst);
+        } else if (a.label === "string" || a.label === "number" || a.label === "boolean") {
+          // A name the primitive's prototype chain lacks reads undefined,
+          // unless the program may add it there.
+          if (PRIMITIVE_MEMBERS[a.label].has(name) || OBJECT_PROTOTYPE_MEMBERS.has(name))
+            this.add(dst, this.builtin(`${a.label}.${name}`, a));
+          else {
+            this.add(dst, this.prim("undefined"));
+            this.primitiveRead(name, dst);
+          }
+        }
         return;
       case "instance": {
         const decl = a.node!;
@@ -2098,6 +2771,8 @@ class Analyzer {
           this.unknownKeysInto(a, dst);
           return;
         }
+        // Members stored on a class's prototype object after the fact.
+        for (const c of this.classChain(decl)) this.edge(this.field(this.classProto(c), name), dst);
         const member = this.lookupMember(decl, name, false);
         if (member?.kind === "method")
           this.add(
@@ -2114,6 +2789,15 @@ class Analyzer {
         }
         if (this.classChain(decl).some((c) => this.baseClass(c) === undefined))
           this.add(dst, this.top);
+        // A field the instance may lack reads undefined (`Late` sets `x`
+        // only on one branch). In the program's own files only.
+        if (
+          member === null &&
+          !OBJECT_PROTOTYPE_MEMBERS.has(name) &&
+          !isPackageJsFile(decl.getSourceFile()) &&
+          !this.fieldSurelyPresent(decl, name)
+        )
+          this.add(dst, this.prim("undefined"));
         this.edge(this.field(a, name), dst);
         this.unknownKeysInto(a, dst);
         return;
@@ -2121,7 +2805,9 @@ class Analyzer {
       case "class": {
         const decl = a.node!;
         if (name === "prototype" || name === "name") {
-          this.add(dst, name === "prototype" ? this.top : this.prim("string"));
+          // A class's prototype object: members stored on it later
+          // (`C.prototype.isVector3 = true`) are members of its instances.
+          this.add(dst, name === "prototype" ? this.classProto(decl) : this.prim("string"));
           this.fieldInto(a, name, dst);
           this.unknownKeysInto(a, dst);
           return;
@@ -2167,8 +2853,10 @@ class Analyzer {
         return;
       case "array":
         if (name === "length") this.add(dst, this.prim("number"));
-        else if (/^\d+$/.test(name)) this.edge(this.element(a), dst);
-        else {
+        else if (/^\d+$/.test(name)) {
+          this.edge(this.element(a), dst);
+          this.add(dst, this.prim("undefined"));
+        } else {
           // A named property, written by name or under an unknown key; an own field shadows a method.
           if (ARRAY_METHODS.has(name)) {
             this.add(dst, this.builtin(`array.${name}`, a));
@@ -2178,8 +2866,19 @@ class Analyzer {
         }
         return;
       case "object": {
+        // A read through a class's prototype object (`C.prototype.m`) may
+        // be any member: unknown, as before prototype objects were tracked.
+        if (
+          a.label.endsWith(".prototype") &&
+          a.node !== undefined &&
+          ts.isClassLikeDeclaration(a.node)
+        )
+          this.add(dst, this.top);
         this.edge(this.field(a, name), dst);
         this.edge(this.anyField(a), dst);
+        const own = this.literalOwnKeys.get(a);
+        if (own !== undefined && !own.has(name) && !OBJECT_PROTOTYPE_MEMBERS.has(name))
+          this.add(dst, this.prim("undefined"));
         if (this.namespaceAtoms.has(a) && name !== "exports") {
           this.loadConstraint(this.field(a, "exports"), name, dst, site);
         }
@@ -2203,10 +2902,23 @@ class Analyzer {
           this.add(dst, this.builtin(`object.${name}`, a));
         return;
       }
-      case "dictionary":
+      case "dictionary": {
         this.edge(this.anyField(a), dst);
         this.edge(this.field(a, name), dst);
+        // An absent key reads undefined, or what the prototype has.
+        this.add(dst, this.prim("undefined"));
+        const proto = this.dictProtos.get(a);
+        // Once per dictionary, name and destination: prototype chains can
+        // be cyclic in the analysis (`Object.create(this)`).
+        const key = `${a.id}:${name}:${dst}`;
+        if (proto !== undefined && !this.protoReads.has(key)) {
+          this.protoReads.add(key);
+          this.on(proto, (p) => {
+            if (p.kind !== "prim") this.loadAtom(p, name, dst, site);
+          });
+        }
         return;
+      }
       case "promise":
         if (name === "then" || name === "catch" || name === "finally")
           this.add(dst, this.builtin(`promise.${name}`, a));
@@ -2242,14 +2954,20 @@ class Analyzer {
     )
       this.add(dst, this.prim("number"));
     else if (path === "Math" && /^[A-Z0-9_]+$/.test(name)) this.add(dst, this.prim("number"));
-    else if (path === "Symbol") this.add(dst, this.prim("symbol"));
-    else if (path === "Error.instance" || path === "error") {
+    else if (path === "Symbol") {
+      // The well-known symbols are symbols; `Symbol.for` and `Symbol.keyFor`
+      // are functions (a call of a symbol would answer nothing).
+      if (WELL_KNOWN_SYMBOLS.has(name)) this.add(dst, this.prim("symbol"));
+      else if (name === "for" || name === "keyFor") this.add(dst, this.builtin(`Symbol.${name}`));
+      else this.add(dst, this.top);
+    } else if (path === "Error.instance" || path === "error") {
       if (name === "message" || name === "stack" || name === "name")
         this.add(dst, this.prim("string"));
       else this.add(dst, this.top);
     } else if (
       a.receiver === undefined &&
       MODELED_GLOBALS.has(path.split(".")[0]!) &&
+      !path.endsWith(".instance") &&
       path.split(".").length < 4
     )
       this.add(dst, this.builtin(`${path}.${name}`));
@@ -2262,7 +2980,7 @@ class Analyzer {
       switch (a.kind) {
         case "top":
           this.noteTopWrite(name, site);
-          this.sink(value, `stored into ⊤.${name} at ${locLabel(site)}`);
+          this.sink(value, `stored into ⊤.${name} at ${this.loc(site)}`);
           return;
         case "instance": {
           const member = this.lookupMember(a.node!, name, false);
@@ -2283,13 +3001,15 @@ class Analyzer {
           this.edge(value, this.field(a, name));
           return;
         case "array":
+          if (/^\d+$/.test(name) || name === "length") this.unsafeArrays.add(a);
           if (/^\d+$/.test(name)) this.edge(value, this.element(a));
           else if (name !== "length") this.edge(value, this.field(a, name));
           return;
         case "prim":
           return;
         default:
-          this.sink(value, `stored into ${a.label} at ${locLabel(site)}`);
+          if (isPrimitivePrototype(a)) this.extendPrimitives(name);
+          this.sink(value, `stored into ${a.label} at ${this.loc(site)}`);
       }
     });
   }
@@ -2301,11 +3021,20 @@ class Analyzer {
           this.add(dst, this.top);
           return;
         case "array":
+          // An index past the end (or a hole) reads undefined, unless the
+          // loop proves the index in bounds of an array without holes.
+          this.edge(this.element(a), dst);
+          if (this.indexInBounds(site)) this.guardedIndexReads.push({ recv: a, dst, done: false });
+          else this.add(dst, this.prim("undefined"));
+          return;
         case "collection":
           this.edge(this.element(a), dst);
           return;
         case "prim":
-          if (a.label === "string") this.add(dst, this.prim("string"));
+          if (a.label === "string") {
+            this.add(dst, this.prim("string"));
+            if (!this.indexInBounds(site)) this.add(dst, this.prim("undefined"));
+          }
           return;
         case "object":
         case "dictionary":
@@ -2324,6 +3053,8 @@ class Analyzer {
           copy();
           this.lateCopies.push(copy);
           if (a.kind === "instance" || a.kind === "class") this.add(dst, this.top);
+          // A key the object does not have reads undefined.
+          else this.add(dst, this.prim("undefined"));
           return;
         }
         default:
@@ -2338,12 +3069,13 @@ class Analyzer {
       switch (a.kind) {
         case "top":
           this.noteTopWrite(null, site);
-          this.sink(value, `stored into ⊤[k] at ${locLabel(site)}`);
+          this.sink(value, `stored into ⊤[k] at ${this.loc(site)}`);
           return;
         case "array":
           // An index, or a named property under an unknown key.
           this.edge(value, this.element(a));
           this.edge(value, this.anyField(a));
+          if (!this.indexInBounds(site) && !isAppendIndex(site)) this.unsafeArrays.add(a);
           return;
         case "prim":
           return;
@@ -2356,7 +3088,8 @@ class Analyzer {
           return;
         default:
           // As a store under a name: a builtin, promise or collection keeps it where it isn't tracked.
-          this.sink(value, `stored into ${a.label}[k] at ${locLabel(site)}`);
+          if (isPrimitivePrototype(a)) this.extendPrimitives(null);
+          this.sink(value, `stored into ${a.label}[k] at ${this.loc(site)}`);
       }
     });
   }
@@ -2415,8 +3148,20 @@ class Analyzer {
       }
       out.push(this.expr(a));
     }
+    // The walk context of this call (one argument list per call site and
+    // context): calls fire during solving, after the walk moved on.
+    this.argsFrom.set(out, {
+      caller: this.currentFn,
+      inLoop: this.loopDepth > 0 || this.forceLoop,
+    });
     return { args: out, spread };
   }
+
+  /** Per argument list (args()), the calling function and whether the call
+   * is in a loop, in the context the call was walked in. siteCtx keeps
+   * the first context per syntax node, which a site walked in several
+   * contexts (receiver classes, per-site clones) does not determine. */
+  private readonly argsFrom = new Map<number[], { caller: FunctionInfo | null; inLoop: boolean }>();
 
   call(e: ts.CallExpression): number {
     this.noteSite(e);
@@ -2432,7 +3177,7 @@ class Analyzer {
           if (inst.kind === "instance") this.callConstructorChain(base, inst, args, spread, e);
         });
       } else if (base === undefined)
-        for (const a of args) this.sink(a, `super(...) at ${locLabel(e)}`);
+        for (const a of args) this.sink(a, `super(...) at ${this.loc(e)}`);
       return dst;
     }
     // CommonJS `require("<spec>")` of an analyzed module: its exports (the
@@ -2488,6 +3233,7 @@ class Analyzer {
         else this.expr(callee.argumentExpression);
       }
       if (name !== null) this.ops.push({ kind: "read", recv, name, node: callee });
+      else this.ops.push({ kind: "computedRead", recv, name: null, node: callee });
       // Per receiver atom: the member it resolves to runs with that atom as `this`.
       const member = name;
       this.on(recv, (a) => {
@@ -2527,9 +3273,9 @@ class Analyzer {
         case "prim":
           return;
         default:
-          for (const x of args) this.sink(x, `argument of ⊤ call at ${locLabel(site)}`);
+          for (const x of args) this.sink(x, `argument of ⊤ call at ${this.loc(site)}`);
           if (recv !== null && a.kind === "top")
-            this.sink(recv, `receiver of ⊤ call at ${locLabel(site)}`);
+            this.sink(recv, `receiver of ⊤ call at ${this.loc(site)}`);
           this.add(dst, this.top);
       }
     });
@@ -2559,16 +3305,22 @@ class Analyzer {
             this.activate(info);
             this.add(info.thisNode, inst);
             this.bindArgs(info, args, spread);
-            this.edge(info.ret, dst);
-            this.edgeFor(e, info);
+            // `new` ignores a primitive result (and the undefined of a
+            // body that runs off its end) and yields the instance.
+            this.on(info.ret, (r) => {
+              if (r.kind !== "prim") this.add(dst, r);
+            });
+            this.edgeFor(e, info, args);
           }
           return;
         }
         case "builtin":
           this.constructBuiltin(a.path ?? "", args, dst, e);
           return;
+        case "prim":
+          return; // `new` of a primitive throws
         default:
-          for (const x of args) this.sink(x, `argument of ⊤ constructor at ${locLabel(e)}`);
+          for (const x of args) this.sink(x, `argument of ⊤ constructor at ${this.loc(e)}`);
           this.add(dst, this.top);
       }
     });
@@ -2583,7 +3335,7 @@ class Analyzer {
       case "WeakSet": {
         const c = this.atoms.intern(`coll:${this.nodeKey(site)}`, () => ({
           kind: "collection",
-          label: `${path}@${locLabel(site)}`,
+          label: `${path}@${this.loc(site)}`,
           node: site,
         }));
         this.add(dst, c);
@@ -2597,7 +3349,7 @@ class Analyzer {
         this.add(dst, this.builtin("Error.instance"));
         return;
       case "Promise": {
-        const p = this.promiseAtom(site, locLabel(site));
+        const p = this.promiseAtom(site, this.loc(site));
         this.add(this.field(p, "value"), this.top);
         this.add(dst, p);
         if (args[0] !== undefined) {
@@ -2623,18 +3375,21 @@ class Analyzer {
         this.add(dst, this.builtin("RegExp.instance"));
         return;
       case "Array": {
-        this.add(dst, this.syntheticArray(site, "Array"));
+        const arr = this.syntheticArray(site, "Array");
+        // `new Array(n)` has holes.
+        this.unsafeArrays.add(arr);
+        this.add(dst, arr);
         return;
       }
       case "Proxy":
         // The handler's traps run on every operation with the target.
         if (args[0] !== undefined)
           this.ops.push({ kind: "proxy", recv: args[0], name: null, node: site });
-        for (const x of args) this.sink(x, `argument of new Proxy at ${locLabel(site)}`);
+        for (const x of args) this.sink(x, `argument of new Proxy at ${this.loc(site)}`);
         this.add(dst, this.top);
         return;
       default:
-        for (const x of args) this.sink(x, `argument of new ${path} at ${locLabel(site)}`);
+        for (const x of args) this.sink(x, `argument of new ${path} at ${this.loc(site)}`);
         this.add(dst, this.top);
     }
   }
@@ -2661,13 +3416,13 @@ class Analyzer {
           this.callFunction(this.infoOfAtom(f)!, null, cbArgs, false, ret ?? this.newNode(), site);
           this.forceLoop = saved;
         } else if (f.kind === "top" || f.kind === "builtin") {
-          for (const x of cbArgs) this.sink(x, `argument of ⊤ callback at ${locLabel(site)}`);
+          for (const x of cbArgs) this.sink(x, `argument of ⊤ callback at ${this.loc(site)}`);
           if (ret !== null) this.add(ret, this.top);
         }
       });
     };
     const escapeAll = (): void => {
-      for (const x of args) this.sink(x, `argument of ${path} at ${locLabel(site)}`);
+      for (const x of args) this.sink(x, `argument of ${path} at ${this.loc(site)}`);
       this.add(dst, this.top);
     };
     // Methods of builtin receivers.
@@ -2689,6 +3444,7 @@ class Analyzer {
           case "pop":
           case "shift":
           case "at":
+            if (method !== "at") this.unsafeArrays.add(recv);
             this.edge(el, dst);
             this.add(dst, this.prim("undefined"));
             return;
@@ -2741,6 +3497,7 @@ class Analyzer {
           case "toSorted":
           case "toReversed":
           case "flat": {
+            if (method === "splice") this.unsafeArrays.add(recv);
             if (method === "filter") callback(0, [el, num, recvN], null);
             if (method === "sort" || method === "toSorted") callback(0, [el, el], null);
             if (method === "reverse" || method === "sort") {
@@ -2785,7 +3542,7 @@ class Analyzer {
             return;
         }
         escapeAll();
-        this.escape(recv, `array.${method} at ${locLabel(site)}`);
+        this.escape(recv, `array.${method} at ${this.loc(site)}`);
         return;
       }
       if (path.startsWith("string.") || path.startsWith("number.") || path.startsWith("boolean.")) {
@@ -2796,8 +3553,12 @@ class Analyzer {
           this.add(this.element(out), this.prim("undefined"));
           this.add(dst, out);
           this.add(dst, this.prim("null"));
-        } else if (r !== undefined) prim(r);
-        else if (method === "replace" || method === "replaceAll") prim("string");
+        } else if (method === "valueOf") prim(path.slice(0, path.indexOf(".")));
+        else if (r !== undefined) {
+          prim(r);
+          // An index out of range reads undefined.
+          if (method === "at" || method === "codePointAt") prim("undefined");
+        } else if (method === "replace" || method === "replaceAll") prim("string");
         else escapeAll();
         if (method === "replace" || method === "replaceAll")
           callback(1, [this.constNode(this.prim("string"))], null);
@@ -2806,15 +3567,17 @@ class Analyzer {
       if (path.startsWith("regexp.")) {
         if (method === "test") prim("boolean");
         else if (method === "exec") {
+          // The match and its capture groups; a group that did not take part is undefined.
           const out = this.syntheticArray(site, "exec");
           this.add(this.element(out), this.prim("string"));
+          this.add(this.element(out), this.prim("undefined"));
           this.add(dst, out);
           prim("null");
         } else escapeAll();
         return;
       }
       if (path.startsWith("promise.")) {
-        const out = this.promiseAtom(site, locLabel(site));
+        const out = this.promiseAtom(site, this.loc(site));
         const value = this.field(recv, "value");
         const ret = this.newNode();
         if (method === "then") {
@@ -2884,7 +3647,7 @@ class Analyzer {
           if (info !== undefined && args.length > 1) {
             this.activate(info);
             for (const p of info.params) this.add(p, this.top);
-            for (const x of args.slice(1)) this.sink(x, `bound argument at ${locLabel(site)}`);
+            for (const x of args.slice(1)) this.sink(x, `bound argument at ${this.loc(site)}`);
           }
           this.add(dst, recv);
           return;
@@ -2978,11 +3741,12 @@ class Analyzer {
         return;
       case "Object.assign": {
         this.ops.push({ kind: "assign", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(arg(0), null);
         this.on(arg(0), (t) => {
           for (const s of args.slice(1)) this.copyFields(s, t, site);
           if (t.kind === "top")
             for (const s of args.slice(1))
-              this.sink(s, `Object.assign into ⊤ at ${locLabel(site)}`);
+              this.sink(s, `Object.assign into ⊤ at ${this.loc(site)}`);
         });
         this.edge(arg(0), dst);
         return;
@@ -2991,29 +3755,37 @@ class Analyzer {
       case "Object.defineProperties":
       case "Reflect.defineProperty":
         this.ops.push({ kind: "defineProperty", recv: arg(0), name: null, node: site });
-        this.sink(arg(2), `property descriptor at ${locLabel(site)}`);
-        this.sink(arg(1), `property descriptor at ${locLabel(site)}`);
+        this.prototypeWrite(
+          arg(0),
+          path === "Object.defineProperties" ? null : literalKey(site, 1),
+        );
+        this.sink(arg(2), `property descriptor at ${this.loc(site)}`);
+        this.sink(arg(1), `property descriptor at ${this.loc(site)}`);
         this.edge(arg(0), dst);
         return;
       case "Object.setPrototypeOf":
       case "Reflect.setPrototypeOf":
         this.ops.push({ kind: "setPrototypeOf", recv: arg(0), name: null, node: site });
-        this.sink(arg(1), `prototype at ${locLabel(site)}`);
+        this.prototypeWrite(arg(0), null);
+        this.sink(arg(1), `prototype at ${this.loc(site)}`);
         this.edge(arg(0), dst);
         return;
       case "Object.create": {
         const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
           kind: "dictionary",
-          label: `Object.create@${locLabel(site)}`,
+          label: `Object.create@${this.loc(site)}`,
           node: site,
         }));
+        // Its members are inherited from the prototype argument.
+        this.edge(arg(0), this.dictProto(d));
+        if (args[1] !== undefined) this.sink(args[1], `property descriptors at ${locLabel(site)}`);
         this.add(dst, d);
         return;
       }
       case "Object.fromEntries": {
         const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
           kind: "dictionary",
-          label: `fromEntries@${locLabel(site)}`,
+          label: `fromEntries@${this.loc(site)}`,
           node: site,
         }));
         const pairs = this.newNode();
@@ -3062,7 +3834,7 @@ class Analyzer {
                 site,
               );
             else if (f.kind === "top")
-              this.sink(revived, `JSON.parse reviver at ${locLabel(site)}`);
+              this.sink(revived, `JSON.parse reviver at ${this.loc(site)}`);
           });
         this.edge(revived, dst);
         return;
@@ -3089,19 +3861,16 @@ class Analyzer {
                 site,
               );
             else if (f.kind === "top")
-              this.sink(serialized, `JSON.stringify replacer at ${locLabel(site)}`);
+              this.sink(serialized, `JSON.stringify replacer at ${this.loc(site)}`);
           });
         prim("string");
         prim("undefined");
         return;
       }
       case "Reflect.deleteProperty": {
-        const key = ts.isCallExpression(site) ? unparen(list(site.arguments)[1]!) : undefined;
-        const name =
-          key !== undefined && (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key))
-            ? key.text
-            : null;
+        const name = literalKey(site, 1);
         this.ops.push({ kind: "delete", recv: arg(0), name, node: site });
+        this.prototypeWrite(arg(0), name);
         prim("boolean");
         return;
       }
@@ -3118,7 +3887,7 @@ class Analyzer {
           if (c.kind === "builtin" && c.path === "Proxy")
             this.ops.push({ kind: "proxy", recv: listed, name: null, node: site });
         });
-        this.sink(listed, `argument of ${path} at ${locLabel(site)}`);
+        this.sink(listed, `argument of ${path} at ${this.loc(site)}`);
         escapeAll();
         return;
       }
@@ -3147,23 +3916,23 @@ class Analyzer {
         prim("bigint");
         return;
       case "Promise.resolve": {
-        const p = this.promiseAtom(site, locLabel(site));
+        const p = this.promiseAtom(site, this.loc(site));
         if (args[0] !== undefined) this.awaitInto(args[0], this.field(p, "value"));
         else this.add(this.field(p, "value"), this.prim("undefined"));
         this.add(dst, p);
         return;
       }
       case "Promise.reject": {
-        const p = this.promiseAtom(site, locLabel(site));
+        const p = this.promiseAtom(site, this.loc(site));
         this.add(dst, p);
-        if (args[0] !== undefined) this.sink(args[0], `rejection at ${locLabel(site)}`);
+        if (args[0] !== undefined) this.sink(args[0], `rejection at ${this.loc(site)}`);
         return;
       }
       case "Promise.all":
       case "Promise.allSettled":
       case "Promise.race":
       case "Promise.any": {
-        const p = this.promiseAtom(site, locLabel(site));
+        const p = this.promiseAtom(site, this.loc(site));
         const items = this.newNode();
         if (args[0] !== undefined) this.iterateInto(args[0], items, site);
         if (path === "Promise.all") {
@@ -3177,7 +3946,7 @@ class Analyzer {
         return;
       }
       case "promise.resolver":
-        for (const x of args) this.sink(x, `promise resolution at ${locLabel(site)}`);
+        for (const x of args) this.sink(x, `promise resolution at ${this.loc(site)}`);
         return;
     }
     if (path.startsWith("console.")) {
@@ -3200,15 +3969,227 @@ class Analyzer {
     escapeAll();
   }
 
+  /** Whether an index access `x[i]` reads inside the bounds of `x` on
+   * every evaluation: an enclosing `for (let i = <n ≥ 0>; i < x.length;
+   * i++ | ++i | i += <n > 0>)` whose body assigns neither `i` nor `x`.
+   * (The array's own length may still shrink or have holes: unsafeArrays.) */
+  indexInBounds(site: Node): boolean {
+    if (!ts.isElementAccessExpression(site) || site.questionDotToken !== undefined) return false;
+    const memo = this.boundsMemo.get(site);
+    if (memo !== undefined) return memo;
+    const out = this.indexInBoundsUncached(site);
+    this.boundsMemo.set(site, out);
+    return out;
+  }
+
+  private indexInBoundsUncached(site: ts.ElementAccessExpression): boolean {
+    const obj = unparen(site.expression);
+    const key = unparen(site.argumentExpression);
+    if (!ts.isIdentifier(obj) || !ts.isIdentifier(key)) return false;
+    const objDecl = this.resolve(obj);
+    const keyDecl = this.resolve(key);
+    if (objDecl === undefined || keyDecl === undefined) return false;
+    const names = (id: Node, decl: Node): boolean =>
+      ts.isIdentifier(id) && this.resolve(id) === decl;
+    for (let n: Node | undefined = site.parent; n !== undefined; n = n.parent) {
+      if (ts.isFunctionLike(n) || ts.isSourceFile(n)) return false;
+      if (!ts.isForStatement(n) || n.statement === undefined) continue;
+      if (!(site.pos >= n.statement.pos && site.end <= n.statement.end)) continue;
+      const cond = n.condition !== undefined ? unparen(n.condition) : undefined;
+      if (
+        cond === undefined ||
+        !ts.isBinaryExpression(cond) ||
+        cond.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
+        !names(unparen(cond.left), keyDecl)
+      )
+        continue;
+      const bound = unparen(cond.right);
+      if (
+        !ts.isPropertyAccessExpression(bound) ||
+        bound.name.text !== "length" ||
+        !names(unparen(bound.expression), objDecl)
+      )
+        continue;
+      // The index starts at a non-negative integer literal ...
+      const init = n.initializer;
+      let start: ts.Expression | undefined;
+      // (declared by the loop, so only the loop's own code can write it)
+      if (
+        init !== undefined &&
+        ts.isVariableDeclarationList(init) &&
+        (init.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0
+      ) {
+        const d = init.declarations.nodes.find((x) => x === keyDecl);
+        start = d !== undefined ? (d as ts.VariableDeclaration).initializer : undefined;
+      }
+      if (start === undefined || !nonNegativeIntegerLiteral(start)) continue;
+      if (!this.neverReassigned(objDecl)) continue;
+      // ... and only grows by integers,
+      const inc = n.incrementor !== undefined ? unparen(n.incrementor) : undefined;
+      const grows =
+        inc !== undefined &&
+        (((ts.isPostfixUnaryExpression(inc) || ts.isPrefixUnaryExpression(inc)) &&
+          inc.operator === ts.SyntaxKind.PlusPlusToken &&
+          names(unparen(inc.operand), keyDecl)) ||
+          (ts.isBinaryExpression(inc) &&
+            inc.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
+            names(unparen(inc.left), keyDecl) &&
+            positiveIntegerLiteral(inc.right)));
+      if (!grows) continue;
+      // ... and the body writes neither the index nor the array binding.
+      let written = false;
+      const visit = (m: Node): void => {
+        if (written) return;
+        if (
+          ts.isBinaryExpression(m) &&
+          m.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          m.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+          (names(unparen(m.left), keyDecl) || names(unparen(m.left), objDecl))
+        )
+          written = true;
+        else if (
+          (ts.isPostfixUnaryExpression(m) || ts.isPrefixUnaryExpression(m)) &&
+          (m.operator === ts.SyntaxKind.PlusPlusToken ||
+            m.operator === ts.SyntaxKind.MinusMinusToken) &&
+          (names(unparen(m.operand), keyDecl) || names(unparen(m.operand), objDecl))
+        )
+          written = true;
+        ts.forEachChild(m, (c) => {
+          visit(c);
+          return undefined;
+        });
+      };
+      visit(n.statement);
+      if (!written) return true;
+    }
+    return false;
+  }
+
+  private readonly reassignMemo = new Map<Node, boolean>();
+  /** Whether a binding keeps the value it is declared with: a `const`, or a
+   * parameter or variable that no code in its scope assigns. */
+  neverReassigned(decl: Node): boolean {
+    const memo = this.reassignMemo.get(decl);
+    if (memo !== undefined) return memo;
+    let out = false;
+    if (ts.isVariableDeclaration(decl) || ts.isParameter(decl)) {
+      const list = decl.parent;
+      if (
+        ts.isVariableDeclaration(decl) &&
+        list !== undefined &&
+        ts.isVariableDeclarationList(list) &&
+        (list.flags & ts.NodeFlags.Const) !== 0
+      )
+        out = true;
+      else {
+        let scope: Node | undefined = decl.parent;
+        while (scope !== undefined && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope))
+          scope = scope.parent;
+        if (scope !== undefined && ts.isIdentifier((decl as ts.VariableDeclaration).name)) {
+          const text = ((decl as ts.VariableDeclaration).name as ts.Identifier).text;
+          let written = false;
+          const target = (e: ts.Expression): boolean => {
+            const u = unparen(e);
+            return ts.isIdentifier(u) && u.text === text && this.resolve(u) === decl;
+          };
+          const visit = (m: Node): void => {
+            if (written) return;
+            if (
+              (ts.isBinaryExpression(m) &&
+                m.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                m.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+                target(m.left)) ||
+              ((ts.isPostfixUnaryExpression(m) || ts.isPrefixUnaryExpression(m)) &&
+                (m.operator === ts.SyntaxKind.PlusPlusToken ||
+                  m.operator === ts.SyntaxKind.MinusMinusToken) &&
+                target(m.operand))
+            )
+              written = true;
+            ts.forEachChild(m, (c) => {
+              visit(c);
+              return undefined;
+            });
+          };
+          visit(scope);
+          out = !written;
+        }
+      }
+    }
+    this.reassignMemo.set(decl, out);
+    return out;
+  }
+
+  /** The result of arithmetic over the operands: a number, or a bigint
+   * where an operand may be one. */
+  numericResult(operands: number[]): number {
+    const n = this.newNode();
+    this.add(n, this.prim("number"));
+    for (const o of operands)
+      this.on(o, (a) => {
+        if (a.kind === "top" || (a.kind === "prim" && a.label === "bigint"))
+          this.add(n, this.prim("bigint"));
+      });
+    return n;
+  }
+
   /** Re-run deferred field copies until nothing new flows. */
   finish(): void {
     for (;;) {
       const before = this.steps;
       for (const c of this.lateCopies) c();
       this.solve();
+      for (const o of this.ops)
+        if (o.kind === "delete" || o.kind === "lengthWrite")
+          for (const a of this.nodes[o.recv]!.atoms)
+            if (a.kind === "array") this.unsafeArrays.add(a);
+      for (const g of this.guardedIndexReads)
+        if (!g.done && this.unsafeArrays.has(g.recv)) {
+          g.done = true;
+          this.add(g.dst, this.prim("undefined"));
+        }
+      this.solve();
+      // A condition with no values at the fixpoint is one the analysis
+      // could not evaluate: walk both of its branches.
+      let walked = false;
+      for (const p of this.pendingIfs) {
+        if (this.nodes[p.cond]!.atoms.size > 0) continue;
+        if (!p.thenDone) {
+          this.walkBranch(p, "then");
+          walked = true;
+        }
+        if (!p.elseDone) {
+          this.walkBranch(p, "else");
+          walked = true;
+        }
+      }
+      if (walked) continue;
       if (this.steps === before || this.budgetExceeded) return;
     }
   }
+}
+
+function nonNegativeIntegerLiteral(e: ts.Expression): boolean {
+  const u = unparen(e);
+  return ts.isNumericLiteral(u) && Number.isInteger(Number(u.text)) && Number(u.text) >= 0;
+}
+
+function positiveIntegerLiteral(e: ts.Expression): boolean {
+  const u = unparen(e);
+  return ts.isNumericLiteral(u) && Number.isInteger(Number(u.text)) && Number(u.text) > 0;
+}
+
+/** `x[x.length] = v`: a store at the end, which appends without a hole. */
+function isAppendIndex(site: Node): boolean {
+  if (!ts.isElementAccessExpression(site)) return false;
+  const obj = unparen(site.expression);
+  const key = unparen(site.argumentExpression);
+  return (
+    ts.isIdentifier(obj) &&
+    ts.isPropertyAccessExpression(key) &&
+    key.name.text === "length" &&
+    ts.isIdentifier(unparen(key.expression)) &&
+    (unparen(key.expression) as ts.Identifier).text === obj.text
+  );
 }
 
 /** The export name of a CommonJS export declaration the checker resolves
@@ -3227,4 +4208,61 @@ function cjsExportName(decl: Node): string | null {
   )
     return decl.left.name.text;
   return null;
+}
+
+interface WalkEnv {
+  readonly ctx: string;
+  readonly ctxRoot: Node | null;
+  readonly currentFn: FunctionInfo | null;
+  readonly loopDepth: number;
+}
+
+interface PendingIf {
+  readonly s: ts.IfStatement;
+  readonly cond: number;
+  readonly env: WalkEnv;
+  thenDone: boolean;
+  elseDone: boolean;
+}
+
+/** The string literal a call passes as argument `i`, or null. */
+function literalKey(
+  site: ts.CallExpression | ts.TaggedTemplateExpression,
+  i: number,
+): string | null {
+  const key = ts.isCallExpression(site) ? list(site.arguments)[i] : undefined;
+  if (key === undefined) return null;
+  const k = unparen(key);
+  return ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) ? k.text : null;
+}
+
+/** Whether a value of the atom may be truthy (only `null`, `undefined` and
+ * the literal `false` never are; ⊤ may be anything). */
+function mayBeTruthy(a: Atom): boolean {
+  if (a.kind !== "prim") return true;
+  if (a.label === "null" || a.label === "undefined") return false;
+  return a.literal !== false;
+}
+
+/** Whether a value of the atom may be falsy (objects, arrays, functions,
+ * classes, promises and collections never are). */
+function mayBeFalsy(a: Atom): boolean {
+  if (a.kind === "top") return true;
+  if (a.kind !== "prim") return false;
+  return a.literal !== true;
+}
+
+/** Whether code reads `this` or `super`, at any depth. */
+function observesThis(node: Node): boolean {
+  if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword)
+    return true;
+  return ts.forEachChild(node, (child) => (observesThis(child) ? true : undefined)) === true;
+}
+
+/** Whether a constructor statement can end the constructor: a `return`
+ * outside the functions it declares. */
+function returnsEarly(node: Node): boolean {
+  if (ts.isReturnStatement(node)) return true;
+  if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return false;
+  return ts.forEachChild(node, (child) => (returnsEarly(child) ? true : undefined)) === true;
 }

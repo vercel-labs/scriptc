@@ -164,6 +164,8 @@ describe(`static fetch differential${sanitize ? " (sanitized)" : ""}`, () => {
     "static-abort-throw",
     "static-dispatch-throw",
     "static-response-json",
+    "static-clone",
+    "static-web-streams",
   ] as const;
   test.for(
     staticCases.flatMap((name) => (["llvm"] as const).map((backend) => [name, backend] as const)),
@@ -193,10 +195,15 @@ describe(`static fetch differential${sanitize ? " (sanitized)" : ""}`, () => {
     120_000,
   );
 
-  test.for(["llvm"] as const)(
-    "static fetch / %s backend settles an abandoned compressed response",
-    async () => {
-      const entry = join(fixturesRoot, "static-abandon/main.mts");
+  // static-abandon-view reads web-stream members of the body first, so the
+  // body has a ReadableStream view when it is dropped.
+  test.for([
+    ["static-abandon/main.mts", "llvm"],
+    ["static-abandon-view/main.mjs", "llvm"],
+  ] as const)(
+    "static fetch / %s / %s backend settles an abandoned compressed response",
+    async ([fixture]) => {
+      const entry = join(fixturesRoot, fixture);
       const binary = await build(entry);
       const [nodeRes, nativeRes] = await Promise.all([
         runBinary("node", [entry, baseUrl], undefined, 3_000),

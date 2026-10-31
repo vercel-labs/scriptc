@@ -13,11 +13,14 @@ ScrDyn *scr_json_parse(ScrStr *text);
 /* Compiler-emitted description of a statically known JSON.parse target
  * (`JSON.parse(text) as T`). Constant data in the program image; the LLVM
  * backend mirrors this layout ({size, size, ptr, ptr, ptr, ptr, ptr, ptr, size},
- * {ptr, size, size, ptr} and {size, [7 x size], [7 x ptr], ptr, ptr, ptr}).
- * Records list their declared fields (at most 64), each with its byte
- * offset in the record struct; bool fields are one byte, f64 fields
- * doubles, inline union fields a {uint32 tag, uint64 bits} pair, every
- * other kind a +1 pointer. Unions appear only as record field types. A
+ * {ptr, size, size, ptr}, {size, [7 x size], [7 x ptr], ptr, ptr, ptr, ptr},
+ * and for discriminated unions {ptr, size, size, ptr} with {ptr, size, size,
+ * ptr} cases). Records list their declared fields (at most 64), each with
+ * its byte offset in the record struct; bool fields are one byte, f64
+ * fields doubles, inline union fields a {uint32 tag, uint64 bits} pair,
+ * every other kind a +1 pointer. Unions appear as record field types;
+ * discriminated unions also as array elements and whole documents, whose
+ * values are the union's box (or its pointer, for a pointer union). A
  * record with an index signature names its index value type in `elem` and
  * its overflow map's offset in `ovf_offset`. */
 enum {
@@ -57,6 +60,22 @@ typedef struct {
   size_t offset;
   const ScrJsonSchema *type;
 } ScrJsonSchemaField;
+/* One string literal of a discriminated union's discriminant member and
+ * the record arm (canonical tag and schema) that holds it. */
+typedef struct {
+  const char *value;
+  size_t value_len;
+  size_t tag;
+  const ScrJsonSchema *record;
+} ScrJsonCase;
+/* A discriminated union's object arms by discriminant literal: every
+ * literal names one arm. */
+typedef struct {
+  const char *field;
+  size_t field_len;
+  size_t ncases;
+  const ScrJsonCase *cases;
+} ScrJsonDiscriminant;
 typedef struct {
   size_t repr;
   size_t tags[SCR_JARM_COUNT];               /* canonical arm tag, or SCR_JSCHEMA_NO_ARM */
@@ -66,6 +85,9 @@ typedef struct {
   /* boxed: a +1 box of the value arm `tag`; bits hold its double, its
    * bool, or its +1 payload pointer (moved in). */
   void *(*box)(uint32_t tag, uint64_t bits);
+  /* discriminated unions: the object arms; NULL for other unions, whose
+   * object arm is arms[SCR_JARM_OBJ] */
+  const ScrJsonDiscriminant *disc;
 } ScrJsonUnion;
 struct ScrJsonSchema {
   size_t kind;
@@ -158,6 +180,9 @@ void scr_dyn_from_enter(const void *v);
 void scr_dyn_from_leave(void);
 void scr_jb_putc(ScrJsonBuf *b, char c);
 void scr_jb_puts(ScrJsonBuf *b, const char *s);
+/* Array.prototype.join's conversion of one element, appended to `b`:
+ * nothing for undefined and null, ToString of anything else. */
+void scr_jb_join_dyn(ScrJsonBuf *b, const ScrDyn *d);
 /* JS JSON.stringify number rules: NaN/±Infinity → null, -0 → 0, else
  * shortest-roundtrip via scr_f64_to_str. */
 void scr_jb_put_f64(ScrJsonBuf *b, double v);
@@ -177,6 +202,10 @@ void scr_jb_put_date(ScrJsonBuf *b, const ScrDate *date);
  * slot's rule); containers follow JSON.stringify (toJSON, accessors,
  * circular structures). May leave an exception pending. */
 void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d);
+/* scr_jb_put_dyn for array element `index` (a foreign element of a typed
+ * array): its toJSON runs first, with the index as its key. May leave an
+ * exception pending. */
+void scr_jb_put_dyn_element(ScrJsonBuf *b, const ScrDyn *d, double index);
 /* The entries of record `rec`'s `unknown` index signature (its overflow
  * map) after the record's earlier members: separators, keys and values in
  * JS own-key order with JSON.stringify's member rules (toJSON called with

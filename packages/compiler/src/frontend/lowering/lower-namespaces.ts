@@ -41,6 +41,7 @@ import * as ts from "../ts7/adapter.js";
 import { isPackageShimFile, isShimIntrinsicName, packageShimFor } from "../package-shims.js";
 import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
+import { isIslandImportBinding } from "./lower-node-island.js";
 import type { FileParts } from "./lower-modules.js";
 import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
@@ -674,6 +675,33 @@ export function ambientUndefReadType(lowerer: Lowerer, node: ts.Node): IrType | 
   const p = node.parent;
   if (p !== undefined && ts.isExpressionStatement(p)) return F64;
   return null;
+}
+
+/** The symbol of a variable a program file declares ambiently without
+ * an initializer (`declare const Bun: ...`), which nothing defines: Node
+ * erases the declaration, so a read throws the catchable ReferenceError
+ * "<name> is not defined" and typeof answers "undefined". Null for other
+ * identifiers, including the standard library's declarations, which
+ * describe real runtime values. */
+export function ambientUndefinedVarSymbolOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): ts.Symbol | null {
+  // An island package's `declare const` is defined by its JavaScript, which
+  // runs in the island.
+  if (isIslandImportBinding(lowerer, ident)) return null;
+  const sym = lowerer.resolveValueSymbol(ident);
+  const decl = sym ? sym.declarations[0] : undefined;
+  if (
+    sym === null ||
+    decl === undefined ||
+    lowerer.isStdlibSymbol(sym) ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer !== undefined ||
+    !(ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Ambient)
+  )
+    return null;
+  return sym;
 }
 
 /** The symbol behind `ident` when it names an ambient `declare function`

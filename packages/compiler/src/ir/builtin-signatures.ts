@@ -1630,6 +1630,40 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING],
       result: SPAWNRES_T,
     },
+    /** spawnSync with the `cwd`, `input`, and `shell` options (the
+     * SCR_CHILD_CP_OPTIONS build of scr_child.c): the cp.spawnSyncOpts
+     * contract plus the child's working directory ("" = inherit), stdin
+     * input (has_input false leaves fd 0 to the stdio mode — an absent
+     * `input` option; "" pipes an empty stdin), and the shell form
+     * (the complete command line through /bin/sh -c — the compiler emits
+     * it with an empty args list only, since Node warns DEP0190 for
+     * separate shell arguments), exactly Node's reading of the members.
+     * Args (cmd, argv, timeout, killSignal, inMode, outMode, errMode,
+     * cwd, input, hasInput, shell). Never throws, like every spawnSync
+     * form. */
+    "cp.spawnSyncExt": {
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
+      result: SPAWNRES_T,
+    },
+    /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
+     * replace the child's environment. */
+    "cp.spawnSyncExtEnv": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        STRING,
+        F64,
+        F64,
+        F64,
+        STRING,
+        STRING,
+        BOOL,
+        BOOL,
+        arrayOf(STRING),
+      ],
+      result: SPAWNRES_T,
+    },
     // node:net (scr_net.c). Listener slots are program-dependent closures —
     // null slots, checked in the libCall case (the child.onExit precedent);
     // the zero-param callbacks pin the exact func type here. The trailing
@@ -2878,10 +2912,11 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), BOOL, STRING, BOOL, arrayOf(STRING), F64],
       result: SPAWNRES_T,
     },
-    /** child_process.spawn (scr_child.c + the scr_async.c loop): posix_spawnp
-     * with per-slot ignore/inherit/pipe modes (and number output fds), the
-     * all-piped Node default, and the child registered with the event loop,
-     * which polls waitpid(WNOHANG) at quiescence like timers.
+    /** child_process.spawn (scr_child.c + the scr_async.c loop): posix_spawn
+     * after the PATH search in the parent, with per-slot ignore/inherit/pipe
+     * modes (and number output fds), the all-piped Node default, and the
+     * child registered with the event loop, which polls waitpid(WNOHANG) at
+     * quiescence like timers.
      * NEVER throws: spawn failure defers to the "error" event, Node-exact
      * (the error message is Node's "spawn <cmd> <ERRNO-NAME>"; an "error"
      * event with no listener prints it and exits 1 like an EventEmitter).
@@ -2942,6 +2977,13 @@ function buildLibFnSignatures() {
      * by the validator/backends. The last argument is exec's shell flag:
      * the argv is ["-c", command] and failure messages show the command. */
     "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null, BOOL], result: CHILD_T },
+    /** The same callback slice with the `cwd` option (the
+     * SCR_CHILD_CP_OPTIONS build): the child starts in cwd.
+     * (cmd, argv, callback, shell, cwd). */
+    "cp.execFileCwd": {
+      argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING],
+      result: CHILD_T,
+    },
     // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
     // 2 fd) with the out/err fds for mode 2, detached, env replacement
     // pairs, cwd ("" = inherit).

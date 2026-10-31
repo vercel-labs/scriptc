@@ -2836,6 +2836,7 @@ export class LlEmitter {
    * displayName, else its sourceName. Function boxes without a static name
    * look the closure's entry up in this table. */
   private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  private closureNameByEntry: Map<string, string> | undefined;
   /** The declared functions `closureNames` lists by their wrapper. A scan
    * sees closures in statements the emitter never reaches (a statement
    * after a runtimeFence: the fence always jumps), so some of these names
@@ -2845,6 +2846,7 @@ export class LlEmitter {
   closureNames(): readonly { entry: string; name: string }[] {
     if (this.closureNameEntries !== undefined) return this.closureNameEntries;
     const entries = new Map<string, string>();
+    this.closureNameByEntry = entries;
     const scan = this.nodeIndex.scan(CLOSURE_KINDS);
     for (const fn of this.mod.functions) {
       eachNodeOfKinds(fn, scan, (node) => {
@@ -2854,14 +2856,29 @@ export class LlEmitter {
           target?.displayName ??
           (target?.sourceName !== "<anonymous>" ? target?.sourceName : undefined);
         if (target === undefined || name === undefined || name === "") return true;
-        const entry =
-          target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        const entry = this.closureEntry(node.fnName, target);
         if (target.captures === undefined) this.closureWrapperNames.add(node.fnName);
         if (!entries.has(entry)) entries.set(entry, name);
         return true;
       });
     }
     return (this.closureNameEntries = [...entries].map(([entry, name]) => ({ entry, name })));
+  }
+
+  /** The entry point of a closure of `fnName` (closureNames). */
+  private closureEntry(fnName: string, target: IrFunction): string {
+    return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
+  }
+
+  /** The name the closure-name table gives a closure made of `fnName`
+   * (null when it has none), which lets a box of a closure made at the site
+   * skip the table lookup; undefined for a function the module does not
+   * define. */
+  closureNameOf(fnName: string): string | null | undefined {
+    const target = this.fnByName.get(fnName);
+    if (target === undefined) return undefined;
+    this.closureNames();
+    return this.closureNameByEntry!.get(this.closureEntry(fnName, target)) ?? null;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test

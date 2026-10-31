@@ -85,6 +85,10 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
+   * Absent (false) otherwise. */
+  childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent

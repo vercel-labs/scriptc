@@ -119,12 +119,21 @@ export function emitDynamicExpr(
       if (v.type.kind === "func") {
         // A closure boxes as the checked-dynamic tree's function kind: retained closure +
         // the per-signature call thunk + the interned signature key. The
-        // best-effort name rides along (null when the lowering had none).
+        // best-effort name rides along (null when the lowering had none). A
+        // closure made here takes its name from the closure-name table at
+        // compile time.
         const t = B.tmp();
-        if (e.fnName !== undefined && e.fnName !== "") {
-          const name = host.cstr(e.fnName);
+        const name =
+          e.fnName !== undefined && e.fnName !== ""
+            ? e.fnName
+            : e.value.kind === "closure" && e.value.adapts !== true
+              ? host.closureNameOf(e.value.fnName)
+              : undefined;
+        if (name !== undefined) {
           const box = host.dyn.dynFuncBoxHelper(v.type);
-          B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${name})`);
+          B.line(
+            `${t} = call ptr @${box}(ptr ${v.name}, ptr ${name === null ? "null" : host.cstr(name)})`,
+          );
         } else B.line(`${t} = ${host.dyn.unnamedFuncBoxCall(v.type, v.name)}`);
         if (e.fnLength !== undefined) {
           host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);

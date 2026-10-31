@@ -68,6 +68,17 @@ async function main(): Promise<void> {
   keyed.add(back);
   named.set(back, "again");
   console.log("one key", keyed.size, named.size, named.get(stored), await back);
+
+  // Inside a union key a promise is still the identity cell its adapter
+  // boxes share: the round trip finds the stored member and entry, and the
+  // other arms keep their own equality.
+  const unionSet = new Set<Promise<number> | undefined>([stored]);
+  const unionMap = new Map<Promise<number> | string, string>([[stored, "stored"]]);
+  console.log("union find", unionSet.has(back), unionSet.has(undefined));
+  console.log("union get", unionMap.get(back), unionMap.get("stored"));
+  unionSet.add(back);
+  unionMap.set(back, "again");
+  console.log("union one key", unionSet.size, unionMap.size, unionMap.get(stored));
 }
 
 main();

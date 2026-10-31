@@ -120,6 +120,8 @@ static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
     const ScrUnion *u = (const ScrUnion *)scr_map_slot_to_ptr(key);
     return scr_map_slot_from_ptr(scr_union_peek(u));
   }
+  if (m->key_kind == SCR_MAP_KEY_CLOSURE)
+    return scr_map_slot_from_ptr(scr_closure_identity(scr_map_slot_to_ptr(key)));
   return key;
 }
 
@@ -173,6 +175,8 @@ static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
   case SCR_MAP_KEY_F64: return scr_map_hash_word(scr_map_f64_bits(scr_map_slot_to_f64(key->slot)));
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return scr_map_hash_word((uint64_t)kind);
+  case SCR_MAP_KEY_CLOSURE: return scr_map_hash_word(scr_map_slot_from_ptr(scr_closure_identity(scr_union_peek(key))));
+  case SCR_MAP_KEY_PROMISE: return scr_map_hash_word(scr_map_slot_from_ptr(scr_promise_map_identity(scr_union_peek(key))));
   default: return scr_map_hash_word(key->slot);
   }
 }
@@ -187,6 +191,9 @@ static bool scr_map_union_eq(const ScrMap *m, const ScrUnion *a, const ScrUnion 
     return scr_map_f64_bits(scr_map_slot_to_f64(a->slot)) == scr_map_f64_bits(scr_map_slot_to_f64(b->slot));
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return true;
+  case SCR_MAP_KEY_CLOSURE: return scr_closure_identity_equal(scr_union_peek(a), scr_union_peek(b));
+  case SCR_MAP_KEY_PROMISE:
+    return scr_promise_map_identity(scr_union_peek(a)) == scr_promise_map_identity(scr_union_peek(b));
   default: return a->slot == b->slot;
   }
 }
@@ -852,7 +859,7 @@ static void scr_map_reserve_append(ScrMap *m) {
 static bool scr_map_ref_key(ScrMapKeyKind kind) {
   return kind == SCR_MAP_KEY_REF || kind == SCR_MAP_KEY_UNION_REF || kind == SCR_MAP_KEY_DYN ||
          kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE ||
-         kind == SCR_MAP_KEY_PROMISE;
+         kind == SCR_MAP_KEY_CLOSURE || kind == SCR_MAP_KEY_PROMISE;
 }
 
 static void scr_map_release_key(ScrMap *m, uint64_t key) {

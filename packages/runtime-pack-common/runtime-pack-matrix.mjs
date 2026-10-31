@@ -370,6 +370,17 @@ export function variantsFor(source) {
       defines: ["SCR_FS_FLAGS"],
     });
   }
+  // spawnSync's and the exec/execFile callback form's cwd/input/shell
+  // entries (SCR_CHILD_CP_OPTIONS) live in a build of scr_child.c of their
+  // own, so a program that never passes those options keeps the default
+  // object, byte for byte.
+  if (source === "scr_child.c") {
+    variants.push({
+      id: "cp-options",
+      when: { childOptionExt: true },
+      defines: ["SCR_CHILD_CP_OPTIONS"],
+    });
+  }
   // server.off / removeListener: the listener-removal entry, in a build of
   // its own so a program that never removes a listener keeps the default.
   if (source === "scr_net.c") {

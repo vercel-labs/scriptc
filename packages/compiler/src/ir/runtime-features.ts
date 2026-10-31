@@ -1034,6 +1034,13 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
+   * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
+   * own, so a program that never passes those options keeps the default
+   * object, byte for byte. */
+  childOptionExt: rule({
+    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+  }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -1581,6 +1588,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    childOptionExt: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,

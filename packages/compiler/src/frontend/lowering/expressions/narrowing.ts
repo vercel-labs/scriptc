@@ -949,7 +949,7 @@ export function v8CalleeText(node: ts.Node): string {
 
 /** Node's TypeError for the operation consuming `node` when it holds a
  * value of type `found`, or null where Node would not throw. */
-function staleReadMessage(node: ts.Node, found: IrType): string | null {
+export function staleReadMessage(node: ts.Node, found: IrType): string | null {
   let child: ts.Node = node;
   let parent = node.parent;
   while (ts.isParenthesizedExpression(parent)) {

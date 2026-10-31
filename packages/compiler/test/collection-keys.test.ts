@@ -85,7 +85,7 @@ test("a promise is a reference key: Set<Promise<T>> compares by identity", () =>
   expect(isSupportedSetElem(promise)).toBe(true);
   expect(mapKeyAccess(promise)).toBe("ref");
   // SCR_MAP_KEY_PROMISE: identity through the cell its adapter boxes share.
-  expect(mapKeyKindNum(promise)).toBe(10);
+  expect(mapKeyKindNum(promise)).toBe(11);
 
   const dir = mkdtempSync(join(tmpdir(), "scriptc-promise-set-"));
   try {
@@ -112,10 +112,33 @@ test("a promise is a reference key: Set<Promise<T>> compares by identity", () =>
   }
 });
 
+test("a promise arm keys a union through the cell its adapter boxes share", () => {
+  const promise: IrType = { kind: "promise", inner: F64 };
+  expect(isIdentityCollectionKey(promise)).toBe(true);
+  // SCR_MAP_KEY_UNION_VALUE: the promise arm is compared through its identity
+  // cell, which the payload pointer does not carry, so the union cannot use
+  // payload identity.
+  expect(mapKeyKindNum(union, [promise, UNDEFINED_T])).toBe(7);
+  expect(mapKeyKindNum(union, [promise, STRING])).toBe(7);
+  expect(mapKeyKindNum(union, [reference, promise])).toBe(7);
+  expect(isSupportedMapKey(union, [promise, STRING])).toBe(true);
+  expect(isSupportedSetElem(union, [promise, UNDEFINED_T])).toBe(true);
+});
+
 test("boxed reference keys select payload identity, not wrapper identity", () => {
   expect(isSupportedMapKey(union, references)).toBe(true);
   expect(isSupportedSetElem(union, references)).toBe(true);
   expect(mapKeyAccess(union)).toBe("ref");
+  expect(mapKeyKindNum(union, references)).toBe(3);
+});
+
+test("function keys compare identity roots, beside the other arms of a union", () => {
+  const fn: IrType = { kind: "func", params: [F64], ret: F64 };
+  expect(isIdentityCollectionKey(fn)).toBe(true);
+  expect([mapKeyKindNum(fn), mapKeyAccess(fn)]).toEqual([10, "ref"]);
+  // SCR_MAP_KEY_UNION_VALUE: the function arm keys as a closure (10).
+  expect(mapKeyKindNum(union, [fn, UNDEFINED_T])).toBe(7);
+  expect(mapKeyKindNum(union, [reference, fn])).toBe(7);
   expect(mapKeyKindNum(union, references)).toBe(3);
 });
 

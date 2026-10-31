@@ -924,6 +924,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
   "cp.spawnSyncEnv": "scr_spawn_sync_env",
+  "cp.spawnSyncExt": "scr_spawn_sync_ext",
+  "cp.spawnSyncExtEnv": "scr_spawn_sync_ext_env",
   "cp.execSync": "scr_exec_sync",
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",

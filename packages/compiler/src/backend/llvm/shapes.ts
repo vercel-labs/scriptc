@@ -1479,10 +1479,22 @@ export function mapKeyKindNum(key: IrType, unionArms?: IrType[]): number {
   if (key.kind === "bool") return 6;
   if (key.kind === "nullT") return 8;
   if (key.kind === "undefinedT") return 9;
-  // SCR_MAP_KEY_PROMISE (10): a reference key compared by the identity cell
+  // SCR_MAP_KEY_CLOSURE: function values compare their identity roots, so a
+  // signature adapter is the key of the function it adapts. A union with a
+  // function arm keys each arm by its own kind (SCR_MAP_KEY_UNION_VALUE).
+  if (key.kind === "func") return 10;
+  // SCR_MAP_KEY_PROMISE (11): a reference key compared by the identity cell
   // its adapter boxes share (collectionOps adds scr_promise_map_identity).
-  if (key.kind === "promise") return 10;
-  if (key.kind === "union") return unionArms?.every(isIdentityCollectionKey) ? 3 : 7;
+  if (key.kind === "promise") return 11;
+  // A union with a function or promise arm keys each arm by its own kind
+  // (SCR_MAP_KEY_UNION_VALUE): both compare an identity their payload
+  // pointer does not carry.
+  if (key.kind === "union")
+    return unionArms?.every(
+      (arm) => isIdentityCollectionKey(arm) && arm.kind !== "func" && arm.kind !== "promise",
+    )
+      ? 3
+      : 7;
   const acc = mapKeyAccess(key);
   return acc === "f64" ? 0 : acc === "str" ? 1 : 2;
 }

@@ -1788,6 +1788,16 @@ extern SCR_TL size_t scr_uncloneable_count;
 ScrDyn *scr_dyn_from_error(const ScrError *e);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
+/* The `stack` member an error view reads as a non-empty string, for
+ * util.inspect's stack rendering (Node's getStackString). Borrows the view;
+ * +1, or NULL when it is absent, empty or not a string. A throwing getter
+ * leaves its exception pending. */
+ScrStr *scr_error_dyn_stack_text(const ScrDyn *view);
+/* Whether an error view's own `stack` is still the runtime's shared
+ * accessor, which cannot resolve an error for a field-built view or a
+ * materialized snapshot (util.inspect then falls back to the error's own
+ * formatted stack). Borrows the view. */
+bool scr_error_dyn_stack_shared(const ScrDyn *view);
 void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
 /* An Error subclass view of an instance whose class keeps a property bag:
  * `name` and `message` take their committed positions, and data values

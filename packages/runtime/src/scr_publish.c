@@ -249,7 +249,7 @@ void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val) {
       : m->key_kind == SCR_MAP_KEY_DYN ? scr_pub_dyn_fn
       : m->key_kind == SCR_MAP_KEY_REF || m->key_kind == SCR_MAP_KEY_UNION_REF ||
               m->key_kind == SCR_MAP_KEY_BIGINT || m->key_kind == SCR_MAP_KEY_UNION_VALUE ||
-              m->key_kind == SCR_MAP_KEY_PROMISE
+              m->key_kind == SCR_MAP_KEY_CLOSURE || m->key_kind == SCR_MAP_KEY_PROMISE
           ? key
           : NULL;
   ScrPubFn vfn = m->val_kind == SCR_MAP_VAL_REF || m->val_kind == SCR_MAP_VAL_CREF ? val : NULL;

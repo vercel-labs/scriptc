@@ -10817,6 +10817,35 @@ static ScrDyn *scr_error_stack_set_call(ScrClosure *closure, ScrDyn *const *args
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* The `stack` member an error view reads as a string, the value util.inspect
+ * prints (Node's getStackString). A getter runs here as it would for any
+ * other read, and a throwing one leaves its exception pending for the
+ * caller to discard. Borrows the view; +1, or NULL when the member is
+ * absent, empty (a falsy stack) or not a string (Node's non-string stack
+ * form, which this runtime does not model). */
+ScrStr *scr_error_dyn_stack_text(const ScrDyn *view) {
+  ScrDyn *read = scr_dyn_obj_read_receiver(view, "stack", 5, view);
+  if (!read) return NULL;
+  ScrStr *text = read->kind == SCR_DYN_STR && read->v.str->len != 0
+      ? scr_str_retain(read->v.str) : NULL;
+  scr_dyn_release(read);
+  return text;
+}
+
+/* Whether an error view's own `stack` member is still the runtime's shared
+ * accessor, whose getter resolves its error through the identity cache. A
+ * field-built view or a materialized snapshot is not in that cache, so the
+ * member answers nothing there and util.inspect falls back to the error's
+ * own formatted stack. A member the program replaced (a data property, a
+ * program getter, a deleted one) reads as the program sees it. */
+bool scr_error_dyn_stack_shared(const ScrDyn *view) {
+  if (view->kind != SCR_DYN_OBJ) return false;
+  ScrDynEntry *entry = scr_dyn_find_entry(view, "stack", 5);
+  return entry != NULL && entry->accessor && entry->getter != NULL &&
+         entry->getter->kind == SCR_DYN_FUNC &&
+         entry->getter->v.fn.thunk == scr_error_stack_get_call;
+}
+
 static void scr_error_dyn_add_stack(ScrDyn *d) {
   if (!scr_error_stack_accessors_registered) {
     scr_error_stack_accessors_registered = true;

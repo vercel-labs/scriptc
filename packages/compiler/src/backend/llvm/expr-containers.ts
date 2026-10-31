@@ -1341,8 +1341,12 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
     unionKeys,
   ];
   // A promise key's ops are a ScrMapIdentityOps: one more field, the
-  // identity its hash and equality use.
-  if (key.kind === "promise") {
+  // identity its hash and equality use. A union key with a promise arm reads
+  // the same field for that arm (SCR_MAP_KEY_PROMISE in the key-kind table).
+  if (
+    key.kind === "promise" ||
+    (unionKeys !== "null" && arms?.some((arm) => arm.kind === "promise"))
+  ) {
     host.declare("declare ptr @scr_promise_map_identity(ptr)");
     operands.push("@scr_promise_map_identity");
   }

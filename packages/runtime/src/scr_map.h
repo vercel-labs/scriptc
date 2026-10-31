@@ -115,8 +115,9 @@ typedef struct ScrMapOps {
   const uint8_t *union_keys;
 } ScrMapOps;
 
-/* The ops of a SCR_MAP_KEY_PROMISE map: key_identity maps a stored or
- * probing key to the address its hash and equality use. */
+/* The ops of a SCR_MAP_KEY_PROMISE map, or of a UNION_VALUE map with a
+ * promise arm: key_identity maps a stored or probing promise key to the
+ * address its hash and equality use. */
 typedef struct ScrMapIdentityOps {
   ScrMapOps ops;
   void *(*key_identity)(void *);

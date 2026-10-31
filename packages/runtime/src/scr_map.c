@@ -109,13 +109,19 @@ static uint64_t scr_map_slot_from_ptr(void *p) { return (uint64_t)(uintptr_t)p; 
 
 static void *scr_map_slot_to_ptr(uint64_t s) { return (void *)(uintptr_t)s; }
 
+/* A promise's key identity is the cell its adapter boxes share. The adapter
+ * comes from the map's ops, so this file links without the promise runtime:
+ * only a map that holds such a key carries it. */
+static uint64_t scr_map_promise_identity(const ScrMap *m, void *promise) {
+  const ScrMapIdentityOps *ops = (const ScrMapIdentityOps *)m->ops;
+  return scr_map_slot_from_ptr(ops->key_identity(promise));
+}
+
 /* Union boxes are a compiler representation, not JavaScript objects. Keep
  * the box as the owned key, but hash and compare its reference payload. */
 static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
-  if (m->key_kind == SCR_MAP_KEY_PROMISE) {
-    const ScrMapIdentityOps *ops = (const ScrMapIdentityOps *)m->ops;
-    return scr_map_slot_from_ptr(ops->key_identity(scr_map_slot_to_ptr(key)));
-  }
+  if (m->key_kind == SCR_MAP_KEY_PROMISE)
+    return scr_map_promise_identity(m, scr_map_slot_to_ptr(key));
   if (m->key_kind == SCR_MAP_KEY_UNION_REF) {
     const ScrUnion *u = (const ScrUnion *)scr_map_slot_to_ptr(key);
     return scr_map_slot_from_ptr(scr_union_peek(u));
@@ -176,7 +182,7 @@ static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return scr_map_hash_word((uint64_t)kind);
   case SCR_MAP_KEY_CLOSURE: return scr_map_hash_word(scr_map_slot_from_ptr(scr_closure_identity(scr_union_peek(key))));
-  case SCR_MAP_KEY_PROMISE: return scr_map_hash_word(scr_map_slot_from_ptr(scr_promise_map_identity(scr_union_peek(key))));
+  case SCR_MAP_KEY_PROMISE: return scr_map_hash_word(scr_map_promise_identity(m, scr_union_peek(key)));
   default: return scr_map_hash_word(key->slot);
   }
 }
@@ -193,7 +199,8 @@ static bool scr_map_union_eq(const ScrMap *m, const ScrUnion *a, const ScrUnion 
   case SCR_MAP_KEY_UNDEFINED: return true;
   case SCR_MAP_KEY_CLOSURE: return scr_closure_identity_equal(scr_union_peek(a), scr_union_peek(b));
   case SCR_MAP_KEY_PROMISE:
-    return scr_promise_map_identity(scr_union_peek(a)) == scr_promise_map_identity(scr_union_peek(b));
+    return scr_map_promise_identity(m, scr_union_peek(a)) ==
+           scr_map_promise_identity(m, scr_union_peek(b));
   default: return a->slot == b->slot;
   }
 }

@@ -2261,12 +2261,15 @@ export function jsFuncIdentityOfValue(
   )
     return null;
   if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
+  // The value can be any of several functions: which one it is at runtime
+  // decides both its `name` (a function is named where it is created, so
+  // the declaration the static type answered — one arm of a conditional, a
+  // call's declared answer — is only a guess) and its `length`
+  // (ExpectedArgumentCount). The box reads the function value's own for
+  // both, so neither a name nor a count is emitted statically.
+  if (value === null) return { fnLengthFromValue: true };
   const name = jsFuncNameOf(decl, lowerer);
   const identity = { ...(name !== null ? { fnName: name } : {}) };
-  // The value can be any of several functions: which one it is at runtime
-  // decides its `length` (ExpectedArgumentCount), so the box reads the
-  // function value's own instead of one declaration's.
-  if (value === null) return { ...identity, fnLengthFromValue: true };
   const length = jsFuncLengthOf(value);
   return { ...identity, ...(length !== null ? { fnLength: length } : {}) };
 }
@@ -2369,7 +2372,37 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     n = value;
   }
   if (ts.isIdentifier(n)) return n.text;
-  if (ts.isPropertyAccessExpression(n)) return n.name.text;
+  if (ts.isPropertyAccessExpression(n)) {
+    // A property read names its value only when the property DEFINITION
+    // creates the function: a method (`{ m() {} }`) or an anonymous
+    // definition it initializes (`{ m: function () {} }`, V8's
+    // SetFunctionName from the property key). A property that HOLDS a
+    // function made somewhere else — a class field, `{ fn: chosen }` — was
+    // named where it was created, so the held value answers instead.
+    if (!js || lowerer === undefined) return n.name.text;
+    const declared = lowerer.checker.getSymbolAtLocation(n)?.valueDeclaration;
+    // A member this program does not create (`Math.max`) keeps the member
+    // spelling its adapter answers.
+    if (declared === undefined) return n.name.text;
+    const file = ts.getSourceFileOfNode(declared);
+    if (file.isDeclarationFile || !isJsSourceFile(file)) return n.name.text;
+    if (ts.isMethodDeclaration(declared)) {
+      return ts.isIdentifier(declared.name) ? declared.name.text : null;
+    }
+    if (ts.isPropertyAssignment(declared) || ts.isPropertyDeclaration(declared)) {
+      const key = declared.name;
+      const initializer = declared.initializer;
+      if (initializer !== undefined && ts.isIdentifier(key)) {
+        let held: ts.Node = initializer;
+        while (ts.isParenthesizedExpression(held)) held = held.expression;
+        if (isAnonymousCallableDefinition(held)) return key.text;
+        return jsFuncNameOf(held, lowerer);
+      }
+    }
+    // Anything else a property can resolve to (a function declaration
+    // reached through a namespace, a getter) answers through its value.
+    return jsFuncNameOf(declared, lowerer);
+  }
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
   if (ts.isClassExpression(n) && n.name) return n.name.text;
   // A method's SetFunctionName is its property key (`class C { m() {} }`).
@@ -18026,7 +18059,10 @@ export class Lowerer {
     if (expr.type.kind !== "func") return identity;
     if (!isJsSourceFile(ts.getSourceFileOfNode(node))) return identity;
     if (jsFuncValueOf(this, node) !== null) return identity;
-    return { ...identity, fnLengthFromValue: true };
+    // The static type names one of several functions, so neither the name
+    // nor the count it answered belongs to the value the box holds.
+    const { fnName: _staticName, ...rest } = identity;
+    return { ...rest, fnLengthFromValue: true };
   }
 
   isBuiltinCallableValue(expr: IrExpr): boolean {

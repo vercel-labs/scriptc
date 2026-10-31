@@ -434,20 +434,28 @@ function allocLines(
 }
 
 /* ── dispose observers ────────────────────────────────────────────────
- * The runtime's dispose hook (scr_weak_dispose_hook) has two clients: weak
- * collections, whose keys can be any object, and the kept sources of
- * checked records (scr_record_source_note and the JSON schema parser),
- * keyed by closed records. A program without either can never install the
- * hook, so its frees need not test it. Whether the program has them is
+ * The runtime's dispose hook (scr_weak_dispose_hook) has three clients:
+ * weak collections, whose keys can be any object, the kept sources of
+ * checked records (scr_record_source_note and the JSON schema parser), and
+ * the links of narrowed record copies to their sources (scr_record_link),
+ * both keyed by closed records (RECORD_SOURCES_GATE covers both). A
+ * program without any can never install
+ * the hook, so its frees need not test it. Whether the program has them is
  * known only once every helper is emitted (dynCheck builders and JSON
  * schemas are requested lazily), so the emitted frees and record writers
- * test these two module constants, which the emitter defines last
+ * test these module constants, which the emitter defines last
  * (LlvmEmitter.emitParts) and LLVM folds away. */
 
 /** True when the program constructs a WeakMap or WeakSet. */
 export const WEAK_KEYS_GATE = "@sc_weak_keys";
-/** True when a checked conversion can keep a record's undeclared source. */
+/** True when a checked conversion can keep a record's undeclared source,
+ * or a narrowing conversion can link a record copy to its source: the
+ * record frees test it. */
 export const RECORD_SOURCES_GATE = "@sc_record_sources";
+/** In a module with record links, true when a checked conversion can keep
+ * a record's undeclared source: what the record-source lookups test there
+ * (recordSourcesGate). */
+export const RECORD_KEPT_GATE = "@sc_record_kept";
 
 /** Which dispose observers an object type can have: weak-collection keys
  * only, or (closed record layouts) kept record sources too. */

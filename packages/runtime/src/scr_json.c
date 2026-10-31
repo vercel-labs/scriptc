@@ -3834,9 +3834,13 @@ static void scr_record_source_disposed(void *rec) {
 
 /* The single native dispose hook serves weak collections and the table
  * above; each observer runs only while it has entries to forget. */
+static void scr_record_link_disposed(void *copy);
+static SCR_TL size_t scr_record_link_count;
+
 static void scr_dispose_observers(void *object) {
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
+  if (scr_record_link_count) scr_record_link_disposed(object);
 }
 
 /* Keeps live entries plus deleted markers at most half the table: grows
@@ -4026,6 +4030,113 @@ void scr_record_source_spread(void *dst, const void *src, const char *const *nam
   scr_record_source_put(&probe);
 }
 
+/* ── Links from narrowed copies to their sources ──────────────────────
+ * A conversion of a native record into a narrower record type builds a
+ * copy with the declared fields. When the source has other properties,
+ * the copy links to the source (a +1 reference, released with the copy):
+ * the copy's reflective surfaces answer from a record of the source's type
+ * built from both (the compiler's per-pair compose helpers), so the
+ * source's other properties stay visible, as on the one object Node has.
+ * `pair` names the (source type, copy type) pair; 0 is no link. Native
+ * records only: no checked-dynamic value is involved. */
+typedef struct {
+  void *copy;
+  void *source;
+  void (*release)(void *);
+  uint32_t pair;
+} ScrRecordLink;
+static SCR_TL ScrRecordLink *scr_record_links;
+static SCR_TL size_t scr_record_link_capacity, scr_record_link_deleted;
+#define SCR_RECORD_LINK_DELETED ((void *)1)
+
+static size_t scr_record_link_bucket(const void *copy) {
+  uint64_t key = ((uint64_t)(uintptr_t)copy >> 4) * UINT64_C(0x9E3779B97F4A7C15);
+  return (size_t)(key >> 32) & (scr_record_link_capacity - 1);
+}
+
+static ScrRecordLink *scr_record_link_find(const void *copy) {
+  if (!scr_record_link_count) return NULL;
+  size_t mask = scr_record_link_capacity - 1;
+  for (size_t slot = scr_record_link_bucket(copy); scr_record_links[slot].copy;
+       slot = (slot + 1) & mask) {
+    if (scr_record_links[slot].copy == copy) return &scr_record_links[slot];
+  }
+  return NULL;
+}
+
+/* Frees the table at thread exit; the remaining sources are released after
+ * the storage is detached. */
+static void scr_record_link_teardown(void) {
+  ScrRecordLink *table = scr_record_links;
+  size_t capacity = scr_record_link_capacity;
+  scr_record_links = NULL;
+  scr_record_link_capacity = scr_record_link_count = scr_record_link_deleted = 0;
+  for (size_t i = 0; i < capacity; i++) {
+    if (table[i].copy && table[i].copy != SCR_RECORD_LINK_DELETED) table[i].release(table[i].source);
+  }
+  free(table);
+}
+
+/* Keeps live entries plus deleted markers at most half the table. */
+static void scr_record_link_reserve(void) {
+  if (scr_record_link_capacity &&
+      scr_record_link_count + scr_record_link_deleted < scr_record_link_capacity / 2)
+    return;
+  size_t old_capacity = scr_record_link_capacity;
+  ScrRecordLink *old = scr_record_links;
+  scr_record_link_capacity = !old_capacity                                 ? 64
+                             : scr_record_link_count >= old_capacity / 4 ? old_capacity * 2
+                                                                         : old_capacity;
+  scr_record_links = calloc(scr_record_link_capacity, sizeof *scr_record_links);
+  if (!scr_record_links) scr_json_oom();
+  for (size_t i = 0; i < old_capacity; i++) {
+    if (!old[i].copy || old[i].copy == SCR_RECORD_LINK_DELETED) continue;
+    size_t slot = scr_record_link_bucket(old[i].copy);
+    while (scr_record_links[slot].copy) slot = (slot + 1) & (scr_record_link_capacity - 1);
+    scr_record_links[slot] = old[i];
+  }
+  scr_record_link_deleted = 0;
+  free(old);
+}
+
+void scr_record_link(void *copy, void *source, void (*release)(void *), uint32_t pair) {
+  if (!copy || !source) {
+    if (source) release(source);
+    return;
+  }
+  if (!scr_record_links) scr_atexit(scr_record_link_teardown);
+  scr_record_link_reserve();
+  size_t mask = scr_record_link_capacity - 1;
+  size_t slot = scr_record_link_bucket(copy);
+  while (scr_record_links[slot].copy && scr_record_links[slot].copy != SCR_RECORD_LINK_DELETED)
+    slot = (slot + 1) & mask;
+  if (scr_record_links[slot].copy == SCR_RECORD_LINK_DELETED) scr_record_link_deleted--;
+  scr_record_links[slot] = (ScrRecordLink){ copy, source, release, pair };
+  scr_record_link_count++;
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
+
+uint32_t scr_record_link_pair(const void *copy) {
+  ScrRecordLink *link = scr_record_link_find(copy);
+  return link ? link->pair : 0;
+}
+
+void *scr_record_link_source(const void *copy) {
+  ScrRecordLink *link = scr_record_link_find(copy);
+  return link ? link->source : NULL;
+}
+
+static void scr_record_link_disposed(void *copy) {
+  ScrRecordLink *link = scr_record_link_find(copy);
+  if (!link) return;
+  void *source = link->source;
+  void (*release)(void *) = link->release;
+  *link = (ScrRecordLink){ .copy = SCR_RECORD_LINK_DELETED };
+  scr_record_link_count--;
+  scr_record_link_deleted++;
+  release(source);
+}
+
 void scr_record_source_move(void *from, void *to) {
   if (!scr_record_source_count) return;
   ScrRecordSource *old = scr_record_source_slot(to);
@@ -4044,6 +4155,18 @@ void scr_record_source_move(void *from, void *to) {
   scr_record_source_deleted++;
   moved.rec = to;
   scr_record_source_put(&moved);
+}
+
+/* The record `dst`, of the same shape as `src`, keeps src's kept source
+ * too: the composed record of a linked copy (scr_record_link) whose
+ * source is a checked record. Borrows both. */
+void scr_record_source_share(void *dst, const void *src) {
+  ScrRecordSource *found = scr_record_source_find(src);
+  if (!dst || !found || !found->view) return;
+  ScrRecordSource shared = *found;
+  shared.rec = dst;
+  scr_dyn_retain(shared.view);
+  scr_record_source_put(&shared);
 }
 
 /* Refreshes a retained record view: the view's own-key order, declared
@@ -7477,6 +7600,102 @@ static bool scr_dyn_descriptor_fields_read(const ScrDyn *descriptor, ScrDyn **fi
   }
   return true;
 }
+
+/* [[Get]] of one descriptor field (+1, NULL with an exception pending).
+ * scr_dyn_obj_read walks objects, arrays and functions. A typed array,
+ * Buffer or DataView answers its own named-property table and then its
+ * prototype's members, and a handle its modeled members, each with the
+ * descriptor as a getter's `this`. A typed reference answers from its live
+ * fields or its view. A field that only the instance's compiled class
+ * members define (an accessor, or a method named `get`) has no runtime
+ * read, and throws an SC2020 Error. */
+static ScrDyn *scr_dyn_descriptor_field_get(const ScrDyn *descriptor, const ScrStr *key) {
+  if (descriptor->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *live = scr_dyn_typed_ref_key_get(descriptor, key);
+    if (live || scr_exc_pending()) return live;
+    ScrDyn *view = scr_dyn_typed_ref_materialize(descriptor);
+    if (!view || scr_exc_pending()) {
+      scr_dyn_release(view);
+      return NULL;
+    }
+    ScrDyn *result = NULL;
+    if (view->kind != SCR_DYN_OBJ || scr_dyn_property_owner(view, key->data, key->len)) {
+      result = scr_dyn_descriptor_field_get(view, key);
+    } else {
+      ScrJsonBuf message;
+      scr_jb_init(&message);
+      scr_jb_puts(&message, "reading ");
+      scr_jb_write(&message, key->data, key->len);
+      scr_jb_puts(&message, " from a class member of a property descriptor is not supported yet");
+      ScrStr *text = scr_jb_finish(&message);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, text->data, text->len, "SC2020");
+      scr_str_release(text);
+    }
+    scr_dyn_release(view);
+    return result;
+  }
+  if (descriptor->kind == SCR_DYN_BYTES) return scr_dyn_bytes_key_get(descriptor, key);
+  if (descriptor->kind == SCR_DYN_HANDLE) return scr_dyn_handle_key_get(descriptor, key);
+  return scr_dyn_obj_read(descriptor, key->data, key->len);
+}
+
+/* ToPropertyDescriptor of any object, for the entry points that a
+ * descriptor built by an expression reaches (scr_dyn_define_property_shapes
+ * and its siblings). The spec's Type(Desc) is Object, so an array, a
+ * function, a typed array, a DataView or a class instance answers the
+ * fields it carries: each field is present through [[HasProperty]] (an
+ * inherited `enumerable` or `value` counts) and then read through [[Get]],
+ * in the order of scr_dyn_descriptor_fields_read. Returns a plain object
+ * holding the present fields as own data properties (+1), which
+ * scr_dyn_descriptor_fields_read then checks, or NULL with an exception
+ * pending: Node's TypeError for a primitive, or a getter's exception. A
+ * handle without a method table, such as a native Map, answers `in` for
+ * none of its prototype's methods, so a `get` or `set` it inherits would be
+ * missed: it throws an SC2020 Error instead. */
+ScrDyn *scr_dyn_descriptor_snapshot(const ScrDyn *descriptor) {
+  if (!scr_iterator_object(descriptor)) {
+    /* Node names the primitive as String() renders it. */
+    ScrStr *rendered = scr_dyn_string_constructor(descriptor);
+    if (!rendered) return NULL;
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_puts(&message, "Property description must be an object: ");
+    scr_jb_write(&message, rendered->data, rendered->len);
+    scr_str_release(rendered);
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return NULL;
+  }
+  if (descriptor->kind == SCR_DYN_HANDLE) {
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops(descriptor->v.handle.tag);
+    if (!ops->methods || !ops->invoke) {
+      ScrJsonBuf message;
+      scr_jb_init(&message);
+      scr_jb_puts(&message, "a ");
+      scr_jb_puts(&message, ops->cls);
+      scr_jb_puts(&message, " as a property descriptor is not supported yet");
+      ScrStr *text = scr_jb_finish(&message);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, text->data, text->len, "SC2020");
+      scr_str_release(text);
+      return NULL;
+    }
+  }
+  static const char *const names[] = {"enumerable", "configurable", "value", "writable", "get", "set"};
+  static const size_t lengths[] = {10, 12, 5, 8, 3, 3};
+  ScrDyn *snapshot = scr_dyn_new_obj();
+  for (size_t i = 0; i < 6; i++) {
+    ScrStr *name = scr_str_new(names[i], lengths[i]);
+    bool present = scr_dyn_in(descriptor, name);
+    ScrDyn *field = present && !scr_exc_pending() ? scr_dyn_descriptor_field_get(descriptor, name) : NULL;
+    scr_str_release(name);
+    if (scr_exc_pending()) {
+      scr_dyn_release(field);
+      scr_dyn_release(snapshot);
+      return NULL;
+    }
+    if (field) scr_dyn_obj_set(snapshot, names[i], lengths[i], field);
+  }
+  return snapshot;
+}
 static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key);
 static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *key);
 
@@ -9785,6 +10004,21 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
   return scr_dyn_retain(target);
 }
 
+/* Object.defineProperty for a descriptor built by an expression: the
+ * descriptor may be any object (scr_dyn_descriptor_snapshot). As in the
+ * spec, a primitive target throws before the descriptor is read, and an
+ * object key is converted with ToPropertyKey before it. */
+ScrDyn *scr_dyn_define_property_shapes(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
+  if (!scr_iterator_object(target)) return scr_dyn_define_property(target, key, descriptor);
+  ScrDyn *property = scr_iterator_object(key) ? scr_dyn_property_key_value(key) : scr_dyn_retain(key);
+  if (!property) return NULL;
+  ScrDyn *snapshot = scr_dyn_descriptor_snapshot(descriptor);
+  ScrDyn *result = snapshot ? scr_dyn_define_property(target, property, snapshot) : NULL;
+  scr_dyn_release(snapshot);
+  scr_dyn_release(property);
+  return result;
+}
+
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
   if (key->kind == SCR_DYN_SYMBOL) {
     ScrDyn *receiver = scr_dyn_symbol_receiver(target);
@@ -12074,7 +12308,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
     const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);
     bool out;
-    if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
+    if (klass && scr_dyn_name_in_strs(key, klass->names, klass->count)) {
+      /* a compiled method or accessor of the class or a base class, also
+       * on a view whose snapshot has a prototype (an Error subclass's view
+       * carries Error.prototype) */
+      out = true;
+    } else if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
       /* An instance view keeps only own fields; its class prototype chain
        * contributes the compiled methods and accessors. */
       out = scr_dyn_property_owner(materialized, key->data, key->len) ||
@@ -15618,6 +15857,73 @@ typedef struct ScrScParent {
   const struct ScrScParent *up;
 } ScrScParent;
 
+static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region);
+
+static const char scr_sc_cycle_message[] =
+    "structuredClone of cyclic values (the checked-dynamic tree cannot represent cycles) is not supported yet";
+
+/* The clone a handle's clone hook runs inside: its parent chain and region,
+ * so a Map or Set clones its entries with the cycle check and region of the
+ * value that holds it. */
+static SCR_TL struct {
+  const ScrScParent *up;
+  ScrDynRegion *region;
+  /* scr_sc_clone, reached through the context so that the Map and Set
+   * handle ops do not link the structured-clone code into programs that
+   * never clone (volatile, so the call is not resolved at compile time). */
+  ScrDyn *(*volatile clone)(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region);
+} scr_sc_nested;
+
+/* A Map or Set clones entry by entry, cloning each key and value. The copy
+ * keeps the source's storage kinds and typed slot adapters, so a typed
+ * collection checks back into its own type; a typed slot converts the
+ * cloned value into a fresh element. The Map and Set handle ops install it
+ * as their clone hook. */
+static ScrMap *scr_sc_clone_collection(ScrMap *source, bool is_map) {
+  const ScrScParent *up = scr_sc_nested.up;
+  ScrDynRegion *region = scr_sc_nested.region;
+  ScrDyn *(*clone)(const ScrDyn *, const ScrScParent *, ScrDynRegion *) = scr_sc_nested.clone;
+  ScrMap *out = scr_map_new((ScrMapKeyKind)source->key_kind, (ScrMapValKind)source->val_kind, source->ops);
+  out->dyn_ops = source->dyn_ops;
+  scr_map_iter_enter(source);
+  for (double i = 0; i < scr_map_iter_count(source); i++) {
+    if (!scr_map_iter_live(source, i)) continue;
+    ScrDyn *key = scr_map_dyn_key(source, i);
+    ScrDyn *key_copy = clone(key, up, region);
+    scr_dyn_release(key);
+    ScrDyn *value_copy = NULL;
+    if (key_copy && is_map) {
+      ScrDyn *value = scr_map_dyn_value(source, i);
+      value_copy = clone(value, up, region);
+      scr_dyn_release(value);
+    }
+    if (key_copy && (value_copy || !is_map)) scr_map_dyn_set(out, key_copy, value_copy, !is_map);
+    scr_dyn_release(key_copy);
+    scr_dyn_release(value_copy);
+    if (scr_exc_pending()) break;
+  }
+  scr_map_iter_exit(source);
+  if (scr_exc_pending()) {
+    scr_map_release(out);
+    return NULL;
+  }
+  return out;
+}
+
+static ScrDyn *scr_native_map_clone(void *ptr) {
+  ScrMap *copy = scr_sc_clone_collection(ptr, true);
+  ScrDyn *result = copy ? scr_dyn_native_map(copy) : NULL;
+  scr_map_release(copy);
+  return result;
+}
+
+static ScrDyn *scr_native_set_clone(void *ptr) {
+  ScrMap *copy = scr_sc_clone_collection(ptr, false);
+  ScrDyn *result = copy ? scr_dyn_native_set(copy) : NULL;
+  scr_map_release(copy);
+  return result;
+}
+
 /* The clone is a fresh tree (shared inputs are copied per path, cycles
  * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
  * region may not hold clears it. */
@@ -15735,7 +16041,25 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
   case SCR_DYN_HANDLE:
     if (scr_dyn_handle_ops_of(v)->clone) {
       region->intact = false; /* a handle is not a leaf the region may hold */
-      return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+      /* A handle that holds values (a Map or Set) clones them with this
+       * value as their parent; one that holds its own storage is cut off
+       * by its parent's identity. */
+      for (const ScrScParent *p = up; p != NULL; p = p->up) {
+        if (p->node->kind == SCR_DYN_HANDLE && p->node->v.handle.ptr == v->v.handle.ptr) {
+          scr_throw_error_msg(SCR_ERR_ERROR, scr_sc_cycle_message, sizeof scr_sc_cycle_message - 1);
+          return NULL;
+        }
+      }
+      ScrScParent self = {v, up};
+      const ScrScParent *saved_up = scr_sc_nested.up;
+      ScrDynRegion *saved_region = scr_sc_nested.region;
+      scr_sc_nested.up = &self;
+      scr_sc_nested.region = region;
+      scr_sc_nested.clone = scr_sc_clone;
+      ScrDyn *out = scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+      scr_sc_nested.up = saved_up;
+      scr_sc_nested.region = saved_region;
+      return out;
     }
     /* fall through */
   case SCR_DYN_FUNC:
@@ -19139,6 +19463,7 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
       .iter_pack = &scr_native_set_pack,
       /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
       .json_empty_object = true,
+      .clone = &scr_native_set_clone,
   };
   scr_dyn_handle_install(SCR_DYNH_SET, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
@@ -19256,6 +19581,7 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
       .iter_pack = &scr_native_map_pack,
       /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
       .json_empty_object = true,
+      .clone = &scr_native_map_clone,
   };
   scr_dyn_handle_install(SCR_DYNH_MAP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_MAP);

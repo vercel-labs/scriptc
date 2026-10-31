@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  BOOL,
   DYN,
   F64,
   STRING,
@@ -9,6 +10,7 @@ import {
   type IrStmt,
   type IrType,
 } from "../ir/ir.js";
+import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
 import { computeConstructionFacts, computeImmutableFields, stableGlobals } from "./immutability.js";
 
 const loc = { file: "immutability.ts", start: 0, end: 1 };
@@ -169,4 +171,114 @@ test("module constants are stable once assigned exactly once", () => {
     assign("%g.twice"),
   );
   expect([...stableGlobals(mod)]).toEqual(["%g.k"]);
+});
+
+/** The fields of `className`'s constructor stores, in evaluation order,
+ * each marked fresh (`=`) or not (`~`). */
+function freshMarks(mod: IrModule, className: string): string[] {
+  const facts = computeConstructionFacts(mod);
+  const fn = mod.functions.find((f) => f.name === `%${className}.constructor`)!;
+  const out: string[] = [];
+  const expr = (e: IrExpr): boolean => everyExprChild(e, expr, stmt);
+  const stmt = (s: IrStmt): boolean => {
+    everyStmtChild(s, expr, stmt);
+    if (s.kind === "fieldSet") out.push(`${facts.freshStores.has(s) ? "=" : "~"}${s.field}`);
+    return true;
+  };
+  for (const s of fn.body) stmt(s);
+  return out;
+}
+
+test("a constructor's first store to its own field is fresh", () => {
+  const mod = module(
+    [{ name: "P", fields: fields("a", "b"), loc }],
+    [ctor("P", [setThis("P", "a"), setThis("P", "b"), setThis("P", "a")])],
+  );
+  expect(freshMarks(mod, "P")).toEqual(["=a", "=b", "~a"]);
+});
+
+test("a store evaluated inside another store's value comes first", () => {
+  const inner: IrExpr = {
+    kind: "seqExpr",
+    stmts: [setThis("P", "a")],
+    result: value(F64),
+    type: F64,
+    loc,
+  };
+  const outer: IrStmt = { ...setThis("P", "a"), value: inner } as IrStmt;
+  const mod = module([{ name: "P", fields: fields("a"), loc }], [ctor("P", [outer])]);
+  expect(freshMarks(mod, "P")).toEqual(["=a", "~a"]);
+});
+
+test("stores in a loop and stores after a branch's store are not fresh", () => {
+  const loop: IrStmt = {
+    kind: "while",
+    cond: value(BOOL),
+    body: [setThis("P", "a")],
+    loc,
+  };
+  const ifThen = (body: IrStmt[]): IrStmt => ({
+    kind: "if",
+    cond: value(BOOL),
+    then: body,
+    else_: null,
+    loc,
+  });
+  const branch = ifThen([setThis("P", "b")]);
+  const mod = module(
+    [{ name: "P", fields: fields("a", "b"), loc }],
+    [ctor("P", [loop, branch, setThis("P", "b")])],
+  );
+  expect(freshMarks(mod, "P")).toEqual(["~a", "=b", "~b"]);
+});
+
+test("a subclass store to an inherited field is not fresh", () => {
+  const superCall = call("%Base.constructor", [
+    { kind: "upcast", value: thisRef("Sub"), type: obj("Base"), loc },
+  ]);
+  const mod = module(
+    [
+      { name: "Base", fields: fields("a"), loc },
+      { name: "Sub", base: "Base", fields: fields("a", "b"), loc },
+    ],
+    [
+      ctor("Base", [setThis("Base", "a")]),
+      ctor("Sub", [superCall, setThis("Sub", "a"), setThis("Sub", "b")]),
+    ],
+  );
+  expect(freshMarks(mod, "Base")).toEqual(["=a"]);
+  expect(freshMarks(mod, "Sub")).toEqual(["~a", "=b"]);
+});
+
+test("stores after this escapes, or into a reused receiver, are not fresh", () => {
+  const mod = module(
+    [{ name: "P", fields: fields("a", "b"), loc }],
+    [ctor("P", [setThis("P", "a"), call("register", [thisRef("P")]), setThis("P", "b")])],
+  );
+  expect(freshMarks(mod, "P")).toEqual(["=a", "~b"]);
+  mod.functions[0]!.body.push(call("%P.constructor", [value(obj("P"))]));
+  expect(freshMarks(mod, "P")).toEqual(["~a", "~b"]);
+});
+
+test("a switch's later case tests run before its default body", () => {
+  // switch (v) { default: this.a = v; case (this.a = v, v): }
+  const test: IrExpr = {
+    kind: "seqExpr",
+    stmts: [setThis("P", "a")],
+    result: value(F64),
+    type: F64,
+    loc,
+  };
+  const choose: IrStmt = {
+    kind: "switch",
+    disc: value(F64),
+    cases: [
+      { test: null, body: [setThis("P", "a")] },
+      { test, body: [] },
+    ],
+    loc,
+  };
+  const mod = module([{ name: "P", fields: fields("a"), loc }], [ctor("P", [choose])]);
+  // freshMarks lists the default body's store first (source order).
+  expect(freshMarks(mod, "P")).toEqual(["~a", "=a"]);
 });

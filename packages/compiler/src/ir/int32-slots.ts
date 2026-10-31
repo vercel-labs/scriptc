@@ -642,6 +642,11 @@ const DYN_READ_ONLY = new Set<string>([
   "process.onUncaughtException",
   "process.onUnhandledRejection",
   "process.onWarning",
+  // A record link keeps and answers native records (record-links.ts).
+  "record.link",
+  "record.linkIs",
+  "record.linkSource",
+  "record.sourceShare",
   "sharedArrayBuffer.new",
   "text.decodeStream",
   "worker.new",

@@ -9,6 +9,8 @@ import {
 } from "../undefined-index.js";
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { recordStringCall } from "../record-links.js";
 import {
   BIGINT_T,
   BOOL,
@@ -39,7 +41,7 @@ import {
   lowerAbsenceProbe,
   lowerDynMemberAssignment,
   lowerDereferencedElementAssignment,
-  lowerOptionalNumber,
+  lowerOperatorNumber,
   lowerPresenceOperand,
   nullishBranches,
   operandPairs,
@@ -62,6 +64,7 @@ import { classToStringConversion, classUnionToString } from "../class-to-primiti
 import {
   genericDeclarationBehindValue,
   noteDynamicIdentityComparison,
+  notePinnedIdentityComparison,
 } from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
@@ -927,6 +930,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
       // valueOf: ToPrimitive throws Node's TypeError.
       const nullProtoT = nullProtoRecordShape(lowerer, e.type);
       if (nullProtoT) return nullProtoToString(lowerer, e, nullProtoT);
+      // A linked copy or a record with a kept source converts as its
+      // source does (record-links.ts).
+      if (recordMayKeepSource(lowerer, e.type))
+        return recordStringCall(lowerer, e, "string", e.loc, "toString");
       return { kind: "toString", operand: e, type: STRING, loc: e.loc };
     }
   }
@@ -1010,8 +1017,8 @@ export function lowerCompoundValueToTarget(
     loc: locOf(expr.left),
   };
   const rhs = lowerer.lowerExpr(expr.right);
-  const numericRead = lowerOptionalNumber(lowerer, read, loc);
-  const numericRhs = lowerOptionalNumber(lowerer, rhs, loc);
+  const numericRead = lowerOperatorNumber(lowerer, read, loc);
+  const numericRhs = lowerOperatorNumber(lowerer, rhs, loc);
 
   if (
     compound === "+" &&
@@ -2057,7 +2064,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     );
   };
   const arithmeticNumber = (operand: IrExpr, node: ts.Expression): IrExpr =>
-    lowerOptionalNumber(lowerer, operand, loc, node);
+    lowerOperatorNumber(lowerer, operand, loc, node);
   const arithmeticLeft = strictEquality ? left : arithmeticNumber(left, expr.left);
   const arithmeticRight = strictEquality ? right : arithmeticNumber(right, expr.right);
   const bothNum = arithmeticLeft.type.kind === "f64" && arithmeticRight.type.kind === "f64";
@@ -2678,6 +2685,17 @@ export function lowerStrictEquality(
         loc,
       };
     }
+    // Two pins of ONE generic declaration at different signatures are
+    // different compiled closures; the whole-program check refuses the
+    // compare (checkGenericIdentityPins).
+    notePinnedIdentityComparison(
+      lowerer,
+      node,
+      leftNode,
+      rightNode,
+      idLeft.kind === "closure" ? idLeft.fnName : undefined,
+      idRight.kind === "closure" ? idRight.fnName : undefined,
+    );
     return {
       kind: "bin",
       op: negated ? "!==" : "===",

@@ -42,6 +42,7 @@ import { InternalCompilerError } from "../../errors.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import {
   accessorSlotProp,
+  DYN,
   DYN_HANDLE_KINDS,
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -1153,6 +1154,25 @@ export class LlDyn {
     cleanup();
     B.terminate(`ret ${dummy}`);
     B.startBlock(lk);
+  }
+
+  private pendingResultBail(
+    B: BlockBuilder,
+    hint: string,
+    value: string,
+    type: IrType,
+    dummy: string,
+  ): void {
+    // A stop can become pending after a successful call. Its owned result
+    // must be released on unwind, just like a normal emitted call's temp.
+    this.pendingBail(
+      B,
+      hint,
+      () => {
+        if (isRefCounted(type)) B.line(`call void ${releaseSym(this.host, type)}(ptr ${value})`);
+      },
+      dummy,
+    );
   }
 
   /** A capsule boxed from this class by this program carries the class's
@@ -5480,6 +5500,7 @@ export class LlDyn {
           B,
           "dfk.rest",
           () => {
+            if (isRefCounted(p)) B.line(`call void ${releaseSym(host, p)}(ptr ${a})`);
             t.params.slice(0, i).forEach((q, j) => {
               if (isRefCounted(q)) B.line(`call void ${releaseSym(host, q)}(ptr ${argNames[j]})`);
             });
@@ -5534,6 +5555,7 @@ export class LlDyn {
           B,
           "dfk",
           () => {
+            if (isRefCounted(p)) B.line(`call void ${releaseSym(host, p)}(ptr ${a})`);
             t.params.slice(0, i).forEach((q, j) => {
               if (isRefCounted(q)) B.line(`call void ${releaseSym(host, q)}(ptr ${argNames[j]})`);
             });
@@ -5586,12 +5608,12 @@ export class LlDyn {
     } else if (t.ret.kind === "dyn") {
       const r = B.tmp();
       B.line(`${r} = call ptr ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null");
+      this.pendingResultBail(B, "dfkr", r, t.ret, "ptr null");
       B.terminate(`ret ptr ${r}`);
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null");
+      this.pendingResultBail(B, "dfkr", r, t.ret, "ptr null");
       const out =
         this.host.declBoundary?.() === true
           ? (this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r))
@@ -5664,7 +5686,7 @@ export class LlDyn {
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${this.valTy(ret)} @${target}(${callArgs})`);
-      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`);
+      this.pendingResultBail(B, "jtr", r, ret, `ptr ${undefinedWord}`);
       if (ret.kind === "jsval") {
         B.terminate(`ret ptr ${r}`);
       } else if (ret.kind === "f64") {
@@ -6236,7 +6258,7 @@ export class LlDyn {
       );
     B.line(`call void @scr_dyn_release(ptr ${fnv})`);
     for (const v of argVals) B.line(`call void @scr_dyn_release(ptr ${v})`);
-    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy);
+    this.pendingResultBail(B, "dfa", r, DYN, dummy);
     if (t.ret.kind === "void") {
       B.line(`call void @scr_dyn_release(ptr ${r})`);
       B.terminate(`ret void`);

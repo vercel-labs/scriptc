@@ -6643,16 +6643,15 @@ function validateFunction(
           break;
         }
         if (exec.params.length === 2) {
-          // The reject closure's one shape: (reason: %Error) => void.
+          // The reject closure's shapes: (reason: %Error) => void, and the
+          // checked-dynamic promise's (reason: dyn) => void.
           const rj = exec.params[1]!;
-          if (
-            rj.kind !== "func" ||
-            rj.ret.kind !== "void" ||
-            rj.params.length !== 1 ||
-            rj.params[0]!.kind !== "object" ||
-            rj.params[0]!.className !== "%Error"
-          ) {
-            err("newPromise reject param must be (%Error) => void", e.loc);
+          const param = rj.kind === "func" && rj.params.length === 1 ? rj.params[0]! : null;
+          const errorPin =
+            param !== null && param.kind === "object" && param.className === "%Error";
+          const dynPin = param !== null && param.kind === "dyn" && inner.kind === "dyn";
+          if (rj.kind !== "func" || rj.ret.kind !== "void" || (!errorPin && !dynPin)) {
+            err("newPromise reject param must be (%Error) => void or (dyn) => void", e.loc);
           }
         }
         if (exec.params.length >= 1) {
@@ -6676,7 +6675,8 @@ function validateFunction(
       }
       case "promiseWithResolvers": {
         // The record shape: promise: Promise<T>, resolve: (T) => void
-        // (() => void when T is void), reject: (%Error) => void.
+        // (() => void when T is void), reject: (%Error) => void — or, for a
+        // promise whose settled value is unknown, (dyn) => void.
         if (e.type.kind !== "record") {
           err("promiseWithResolvers must have record type", e.loc);
           break;
@@ -6704,14 +6704,19 @@ function validateFunction(
         ) {
           err(`promiseWithResolvers resolve param must match the promise's inner type`, e.loc);
         }
+        const rejectParam = reject.kind === "func" ? reject.params[0] : undefined;
+        const rejectErrorPin =
+          rejectParam !== undefined &&
+          rejectParam.kind === "object" &&
+          rejectParam.className === "%Error";
+        const rejectDynPin = rejectParam !== undefined && rejectParam.kind === "dyn";
         if (
           reject.kind !== "func" ||
           reject.ret.kind !== "void" ||
           reject.params.length !== 1 ||
-          reject.params[0]!.kind !== "object" ||
-          reject.params[0]!.className !== "%Error"
+          (!rejectErrorPin && !(rejectDynPin && inner.kind === "dyn"))
         ) {
-          err("promiseWithResolvers reject must be (%Error) => void", e.loc);
+          err("promiseWithResolvers reject must be (%Error) => void or (dyn) => void", e.loc);
         }
         break;
       }

@@ -11507,25 +11507,32 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       // real closure rejecting the promise with an Error reason (the
       // ambient override pins `reason: Error` — rejection payloads share
       // the thrown-value representation, and the OBJ kind keeps
-      // catch-side instanceof and the uncaught printer working). First
-      // settle wins, exactly JS: reject-after-resolve and double-reject
-      // are no-ops, and an executor throw after any settle is swallowed.
+      // catch-side instanceof and the uncaught printer working). A
+      // checked-dynamic promise has no typed payload to protect: its
+      // reason is whatever the program rejected with, so its reject
+      // closure carries the dyn value (the override types the reason
+      // `unknown` for exactly that tier). First settle wins, exactly JS:
+      // reject-after-resolve and double-reject are no-ops, and an
+      // executor throw after any settle is swallowed.
       let executor = lowerer.lowerExpr(args[0]!);
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       executor = adaptPromiseExecutor(lowerer, executor, type.inner, loc) ?? executor;
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       if (executor.type.params.length > 1) {
         const rj = executor.type.params[1]!;
+        const param = rj.kind === "func" && rj.params.length === 1 ? rj.params[0]! : null;
+        const errorPinned =
+          param !== null && param.kind === "object" && param.className === "%Error";
+        const dynPinned = param !== null && param.kind === "dyn" && type.inner.kind === "dyn";
         if (
           executor.type.params.length > 2 ||
           rj.kind !== "func" ||
           rj.ret.kind !== "void" ||
-          rj.params.length !== 1 ||
-          rj.params[0]!.kind !== "object" ||
-          rj.params[0]!.className !== "%Error"
+          (!errorPinned && !dynPinned)
         ) {
           // A non-contextually-typed executor VALUE whose second param
-          // isn't the pinned (reason: Error) => void shape.
+          // isn't the pinned (reason: Error) => void shape (or the dyn
+          // reason of a checked-dynamic promise).
           lowerer.unsupported(
             "SC1090",
             args[0]!,

@@ -35,6 +35,11 @@ export interface NativeLinkFeatures {
    * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
    * Absent for every program without one, so their objects stay identical. */
   recordViewPartial?: boolean;
+  /** The program creates a checked-dynamic promise whose executor takes a
+   * reject parameter: links the SCR_PROMISE_REJECT_DYN variant of
+   * scr_async.c. Absent for every other program, so their objects stay
+   * identical. */
+  promiseRejectDyn?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;

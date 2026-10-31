@@ -340,6 +340,48 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect(conflicting).toEqual([]);
   });
 
+  test("shared declarations publish before later initializers call an island", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-shared-declarators-"));
+    try {
+      const files = {
+        "package.json": JSON.stringify({
+          type: "module",
+          scriptc: { nodeIslands: { auto: false, modules: ["island.mjs"] } },
+        }),
+        "main.mjs": `import { first, second, third, fourth } from "./helper.mjs";
+console.log(first, second, third, fourth);
+`,
+        "helper.mjs": `import { readFirst, readThird } from "./island.mjs";
+export let first = 41, second = readFirst();
+export { first as renamed };
+export const third = 7, fourth = readThird();
+`,
+        "island.mjs": `import { first, renamed, third } from "./helper.mjs";
+export function readFirst() { return first + renamed; }
+export function readThird() { return third + 1; }
+`,
+      };
+      for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
+      const entry = join(dir, "main.mjs");
+      const expected = await run(process.execPath, [entry]);
+      expect(expected).toEqual({ stdout: "41 82 7 8\n", stderr: "", code: 0 });
+      const result = await compile(entry, {
+        outPath: join(dir, "program"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["island.mjs"]);
+      expect(
+        await run(result.binaryPath, [], { ...process.env, XDG_CACHE_HOME: join(dir, "cache") }),
+      ).toEqual(expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
+
   // A module that patches a builtin module's CommonJS object runs in a Node
   // island automatically (H3): the patch is meant for code that shares
   // Node's builtin, and only Node has that object.

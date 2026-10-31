@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- A failed CommonJS module is evaluated again on the next require, including programs that do not read module-graph metadata. Private numeric bindings that are overwritten before every read retain their local storage optimization across retries.
+
+- Shared Node-island exports declared in one statement become visible to island callbacks after each declaration, so later initializers can read earlier bindings.
+
 <!-- release:start -->
 
 ## 0.4.7

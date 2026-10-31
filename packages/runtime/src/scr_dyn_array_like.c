@@ -197,6 +197,24 @@ static void al_refuse_primitive(const ScrStr *method) {
   scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
 }
 
+/* IsConcatSpreadable(value) for concat's receiver: an array is spreadable;
+ * anything else reads @@isConcatSpreadable and converts it with ToBoolean
+ * (a getter that throws leaves the exception pending and answers false). */
+static bool al_concat_spreadable(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_ARR) return true;
+  ScrStr *name = scr_str_new("isConcatSpreadable", 18);
+  ScrSym *symbol = scr_sym_well_known(name);
+  scr_str_release(name);
+  ScrDyn *key = scr_dyn_new_symbol(symbol);
+  scr_sym_release(symbol);
+  ScrDyn *flag = scr_dyn_symbol_key_get(value, key, true);
+  scr_dyn_release(key);
+  if (!flag) return false;
+  bool spreadable = scr_dyn_truthy(flag);
+  scr_dyn_release(flag);
+  return spreadable;
+}
+
 /* A String wrapper's indexes below its UTF-16 length are read-only and
  * non-configurable, so Set throws on them and DeletePropertyOrThrow does
  * too; an index at or past the length is an ordinary property of the
@@ -361,14 +379,28 @@ ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args) {
   ScrDyn *const *argv = args->v.arr.items;
   size_t argc = args->v.arr.len;
   if (al_is(method, "concat")) {
-    /* A receiver that is not an array is not spreadable: it is the result's
-     * first element, and its length is never read. The arguments then
-     * spread as they do for an array receiver, so the array dispatch
-     * answers `[receiver].concat(...args)`. A primitive receiver's first
-     * element would be its wrapper object. */
+    /* IsConcatSpreadable(O): a receiver that is not an array spreads only
+     * when its @@isConcatSpreadable is true, and a spread receiver's length
+     * is then read through ToLength — a throwing length throws here, as in
+     * Node. The elements become the result's head, which the array dispatch
+     * then concatenates with the arguments. A receiver that does not spread
+     * is the result's first element (a primitive receiver's would be its
+     * wrapper object). */
     if (al_primitive(recv)) { al_refuse_primitive(method); return NULL; }
     ScrDyn *head = scr_dyn_new_arr();
-    scr_dyn_arr_push(head, scr_dyn_retain(recv));
+    if (al_concat_spreadable(recv)) {
+      size_t len;
+      if (!al_length(recv, &len)) { scr_dyn_release(head); return NULL; }
+      for (size_t i = 0; i < len; i++) {
+        if (len > 1000000 && !al_iteration(i)) { scr_dyn_release(head); return NULL; }
+        ScrDyn *item = al_item(recv, i);
+        if (!item) { scr_dyn_release(head); return NULL; }
+        scr_dyn_arr_push(head, item);
+      }
+    } else {
+      if (scr_exc_pending()) { scr_dyn_release(head); return NULL; }
+      scr_dyn_arr_push(head, scr_dyn_retain(recv));
+    }
     ScrDyn *out = scr_dyn_invoke(head, "concat", argv, argc, "concat");
     scr_dyn_release(head);
     return out;

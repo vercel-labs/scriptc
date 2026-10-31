@@ -408,6 +408,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.constructor",
   "buffer.staticValue",
   "buffer.prototypeMember",
+  // The array-like unit reads a receiver's @@isConcatSpreadable through
+  // scr_sym_well_known before it spreads that receiver's elements.
+  "dyn.arrayLikeProtoCall",
 ]);
 
 /** Entry points that link the querystring unit. */

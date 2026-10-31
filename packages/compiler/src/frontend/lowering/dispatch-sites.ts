@@ -18,7 +18,7 @@ const RUNTIME_STEP_LIB_FNS: ReadonlySet<string> = new Set([
   "dyn.destructureRest",
   "dyn.mathFold",
   "dyn.nativeSetNew",
-  "dyn.setConstruct",
+  "dyn.collectionConstruct",
   "dyn.mapSeedEntries",
   "dyn.fromEntries",
   "weakMap.new",

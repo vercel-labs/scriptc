@@ -357,7 +357,7 @@ function buildLibFnSignatures() {
     "collection.preventExtensions": { argTypes: [null], result: VOID },
     "collection.isExtensible": { argTypes: [null], result: BOOL },
     "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
-    "dyn.setConstruct": { argTypes: [DYN], result: DYN },
+    "dyn.collectionConstruct": { argTypes: [STRING, DYN], result: DYN },
     "dyn.setValues": { argTypes: [DYN], result: DYN },
     "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
@@ -4224,21 +4224,22 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
-    /** A Set.prototype method value (scr_dyn_set.c): one interned function
-     * per name, so `Set.prototype.union.call(receiver, other)` brand-checks
-     * and runs the ES2025 composition. */
-    "dyn.setMethod": { argTypes: [STRING], result: DYN },
-    /** %Set.prototype%, the object `Object.getPrototypeOf(new Set())`
+    /** A <Class>.prototype member value (scr_dyn_collections.c) for Set,
+     * Map, WeakMap or WeakSet: one interned function per (class, name), so
+     * `Map.prototype.get.call(receiver, key)` brand-checks and runs the
+     * member's implementation. */
+    "dyn.collectionMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** %<Class>.prototype%, the object `Object.getPrototypeOf(new Map())`
      * answers. */
-    "dyn.setPrototypeObject": { argTypes: [], result: DYN },
-    /** Object.getPrototypeOf for a value that may be a native Set. */
-    "dyn.setGetPrototype": { argTypes: [DYN], result: DYN },
+    "dyn.collectionPrototype": { argTypes: [STRING], result: DYN },
+    /** Object.getPrototypeOf for a value that may be a collection handle. */
+    "dyn.collectionGetPrototype": { argTypes: [DYN], result: DYN },
     /** The ES2025 Set compositions over a set-like argument. */
     "dyn.setCombine": { argTypes: [DYN, STRING, DYN], result: DYN },
-    /** Set.prototype.forEach with a callback that is not statically a
-     * function: Node's `<value> is not a function` for a non-callable,
-     * and (value, value, set) visits otherwise. */
-    "dyn.setForEach": { argTypes: [DYN, DYN, DYN], result: VOID },
+    /** <Class>.prototype.forEach with a callback that is not statically a
+     * function: Node's `<value> is not a function` for a non-callable, and
+     * (value, value, set) / (value, key, map) visits otherwise. */
+    "dyn.collectionForEach": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
     /** A standard library prototype object as a value (`Date.prototype` read
      * in a JavaScript source), named by its constructor: the unit in
      * scr_dyn_stdlib_prototype.c. */

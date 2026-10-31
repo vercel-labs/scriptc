@@ -188,7 +188,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_for_await.c", "dynForAwait"],
   // Set.prototype method values, the ES2025 Set compositions and
   // Object.getPrototypeOf of a Set.
-  ["scr_dyn_set.c", "dynSet"],
+  ["scr_dyn_collections.c", "dynCollections"],
   ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],

@@ -681,7 +681,9 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
   if (target === null) return null;
   const path = join(pkgDir, target);
   const answer = loadAsFile(path) ?? (isFile(path) ? path : null);
-  return normalizeResolvedAnswer(answer === null ? null : (projectDtsRuntimeSibling(answer) ?? answer));
+  return normalizeResolvedAnswer(
+    answer === null ? null : (projectDtsRuntimeSibling(answer) ?? answer),
+  );
 }
 
 /** The one resolver entry point for source modules that compile into the

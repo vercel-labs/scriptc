@@ -281,10 +281,13 @@ export class Ts7Host {
     const previousShadow = this.shadow;
     const previousFiles = new Map(this.virtualFiles);
     const previousChanges = new Map(this.virtualChanges);
-    this.shadow = shadow === undefined || shadow === null ? previousShadow : {
-      readFile: (path) => shadow.readFile(path) ?? previousShadow?.readFile(path),
-      hideFile: (path) => shadow.hideFile(path) || (previousShadow?.hideFile(path) ?? false),
-    };
+    this.shadow =
+      shadow === undefined || shadow === null
+        ? previousShadow
+        : {
+            readFile: (path) => shadow.readFile(path) ?? previousShadow?.readFile(path),
+            hideFile: (path) => shadow.hideFile(path) || (previousShadow?.hideFile(path) ?? false),
+          };
     this.invalidateAll = true;
     try {
       return run();

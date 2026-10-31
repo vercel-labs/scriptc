@@ -1350,8 +1350,7 @@ export function loadProgram(
   const fsShadow = {
     readFile: (path: string) =>
       npmShadow?.readFile(path) ?? programBuiltinAliasSource(services, path),
-    hideFile: (path: string) =>
-      (npmShadow?.hideFile(path) ?? false) || sidecars.hides(path),
+    hideFile: (path: string) => (npmShadow?.hideFile(path) ?? false) || sidecars.hides(path),
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
   let authoredHost: ts.Ts7Host | null = null;
@@ -5535,15 +5534,26 @@ export function checkPreflightTs7(
 ): { diags: ScrDiagnostic[]; moduleOrder: string[] } {
   setProjectRealm(entryPath);
   const sidecars = new ProjectSidecars(services);
-  return host.withFileSystemShadow({ readFile: () => undefined, hideFile: (path) => sidecars.hides(path) }, () => {
-    const load = loadProgram7(host, resolve(entryPath), undefined, false, undefined, undefined, sidecars);
-    try {
-      const { diags, moduleOrder } = preflight7(load);
-      return { diags, moduleOrder: moduleOrder.map((sf) => sf.fileName) };
-    } finally {
-      load.disposeAll();
-    }
-  });
+  return host.withFileSystemShadow(
+    { readFile: () => undefined, hideFile: (path) => sidecars.hides(path) },
+    () => {
+      const load = loadProgram7(
+        host,
+        resolve(entryPath),
+        undefined,
+        false,
+        undefined,
+        undefined,
+        sidecars,
+      );
+      try {
+        const { diags, moduleOrder } = preflight7(load);
+        return { diags, moduleOrder: moduleOrder.map((sf) => sf.fileName) };
+      } finally {
+        load.disposeAll();
+      }
+    },
+  );
 }
 
 /** Whether a declaration file has the runtime file TypeScript pairs it

@@ -33,8 +33,11 @@ function isNativeValueSpecifier(literal: ts.Node): boolean {
 
 function declarationOfRuntime(path: string): string | null {
   for (const extension of [".js", ".mjs", ".cjs"]) {
-    if (path.endsWith(extension))
-      return path.slice(0, -extension.length) + ".d" + extension.replace("js", "ts");
+    if (!path.endsWith(extension)) continue;
+    const declaration = path.slice(0, -extension.length) + ".d" + extension.replace("js", "ts");
+    // A runtime alone is not a pair. Keep the negative probe so creating a
+    // sidecar later invalidates the frontend input snapshot.
+    return trackedFileExists(declaration) ? declaration : null;
   }
   return null;
 }
@@ -91,7 +94,8 @@ export class ProjectSidecars {
           runtime === null ||
           !isProjectRealmFile(runtime) ||
           npmStaticPackageOfPath(runtime) !== null
-        ) continue;
+        )
+          continue;
         // Discover the finite static closure before rebuilding the checker.
         // A chain of declaration twins must not consume one root-discovery
         // round per module. The owned parser supplies the same import AST.
@@ -105,9 +109,13 @@ export class ProjectSidecars {
           if (next === undefined) {
             const text = host.sourceText(runtime);
             if (text !== null) {
-              const kind = runtime.endsWith("tsx") ? "tsx"
-                : runtime.endsWith("jsx") ? "jsx"
-                  : /\.[cm]?ts$/.test(runtime) ? "ts" : "js";
+              const kind = runtime.endsWith("tsx")
+                ? "tsx"
+                : runtime.endsWith("jsx")
+                  ? "jsx"
+                  : /\.[cm]?ts$/.test(runtime)
+                    ? "ts"
+                    : "js";
               next = this.services.parse(runtime, text, kind);
             }
           }
@@ -218,11 +226,17 @@ export class ProjectSidecars {
         if (!elements[at]!.isTypeOnly) continue;
         const first = at;
         while (at + 1 < elements.length && elements[at + 1]!.isTypeOnly) at++;
-        const start = first === 0 ? ts.tokenStartOfNode(elements[first]!) : elements[first - 1]!.end;
-        const clause = ts.isImportDeclaration(node) ? node.importClause!.namedBindings! : node.exportClause!;
-        const end = first === 0
-          ? at + 1 < elements.length ? ts.tokenStartOfNode(elements[at + 1]!) : clause.end - 1
-          : elements[at]!.end;
+        const start =
+          first === 0 ? ts.tokenStartOfNode(elements[first]!) : elements[first - 1]!.end;
+        const clause = ts.isImportDeclaration(node)
+          ? node.importClause!.namedBindings!
+          : node.exportClause!;
+        const end =
+          first === 0
+            ? at + 1 < elements.length
+              ? ts.tokenStartOfNode(elements[at + 1]!)
+              : clause.end - 1
+            : elements[at]!.end;
         // Whitespace preserves line numbers, including clause comments.
         edits.push({ start, end, text: source.text.slice(start, end).replace(/[^\r\n]/g, " ") });
       }
@@ -257,7 +271,11 @@ export class ProjectSidecars {
       this.rememberDeclaration(path);
       const target = this.aliases.get(path);
       if (target !== undefined)
-        edits.push({ start: reference.pos, end: reference.end, text: modulePath(source.fileName, target) });
+        edits.push({
+          start: reference.pos,
+          end: reference.end,
+          text: modulePath(source.fileName, target),
+        });
     }
     let text = source.text;
     for (const edit of edits.sort((a, b) => b.start - a.start))

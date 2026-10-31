@@ -72,6 +72,18 @@ SCR_MUSL_LIBC int bcmp(const void *a, const void *b, size_t n) { return scr_musl
 SCR_MUSL_LIBC size_t strlen(const char *s) { return scr_musl_strlen(s); }
 #endif
 
+/* String comparison and getenv of an executable (scr_musl_env.h): zig's
+ * strcmp and strncmp are weak symbols, which these definitions replace, and
+ * this getenv takes the place of musl's, which localtime_r calls for TZ on
+ * every conversion. A library artifact keeps the ones of the program it
+ * links into. */
+#include "scr_musl_env.h"
+#define SCR_MUSL_STR __attribute__((no_builtin))
+SCR_MUSL_STR int strcmp(const char *a, const char *b) { return scr_musl_strcmp(a, b); }
+SCR_MUSL_STR int strncmp(const char *a, const char *b, size_t n) { return scr_musl_strncmp(a, b, n); }
+extern char **__environ;
+SCR_MUSL_STR char *getenv(const char *name) { return scr_musl_getenv(__environ, name); }
+
 /* musl exposes the POSIX ucontext types but intentionally omits these legacy
  * functions. scriptc's async/generator fibers need only user-space register
  * swaps; they never use a context to mutate the process signal mask. These are

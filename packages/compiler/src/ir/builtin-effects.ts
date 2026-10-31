@@ -107,8 +107,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "text.decodeStream",
   "text.decodeLegacyOptions",
   "dyn.nativeSetNew",
-  // Set(iterable) runs the program's own add and steps the iterable
-  "dyn.setConstruct",
+  // new Set(iterable)/new Map(iterable) run the program's own add/set and
+  // step the iterable
+  "dyn.collectionConstruct",
   "dyn.setValues",
   "ffi.argument",
   "ffi.memoryModule",
@@ -734,9 +735,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.setCombine",
   // forEach with a callback that is not statically a function throws Node's
   // `<value> is not a function`.
-  "dyn.setForEach",
+  "dyn.collectionForEach",
   // a proxy in the prototype chain can throw
-  "dyn.setGetPrototype",
+  "dyn.collectionGetPrototype",
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",

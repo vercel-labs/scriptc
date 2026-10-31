@@ -11,3 +11,24 @@ generic-fn-value-copying-exit.ts:36:23 - error SC1090: passing this argument acr
   36 | console.log(erased(1, wide), wide.id);
      |                       ^~~~
   37 | 
+
+generic-fn-value-copying-exit.ts:52:25 - error SC1090: passing this argument across the erased generic boundary (a '{ id: number; tag: string }' result is re-materialized when the boxed function returns it; JavaScript hands the same object over) is not supported yet
+
+  51 | const map = store.map;
+  52 | console.log(map(shared, (input) => input));
+     |                         ^~~~~~~~~~~~~~~~
+  53 | 
+
+generic-fn-value-copying-exit.ts:58:32 - error SC1090: passing this argument across the erased generic boundary (a '{ id: number; tag: string }' result is re-materialized when the boxed function returns it; JavaScript hands the same object over) is not supported yet
+
+  57 | const holder = { map: store.map, load: store.load };
+  58 | console.log(holder.map(shared, (input) => input));
+     |                                ^~~~~~~~~~~~~~~~
+  59 | async function throughField(): Promise<void> {
+
+generic-fn-value-copying-exit.ts:60:41 - error SC1090: passing this argument across the erased generic boundary (a promise of '{ id: number; tag: string }' is re-materialized when it settles; JavaScript hands the same object over) is not supported yet
+
+  59 | async function throughField(): Promise<void> {
+  60 |   console.log(await holder.load(shared, async () => shared));
+     |                                         ^~~~~~~~~~~~~~~~~~
+  61 | }

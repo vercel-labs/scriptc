@@ -2264,10 +2264,18 @@ function erasureCopyReason(lowerer: Lowerer, src: IrType, dst: IrType): string |
 
 /** Why a value of type `t` crossing INTO `unknown` copies, or null. A
  * record or array boxes as a live capsule of itself; a function boxes as a
- * callable whose RESULT converts the same way, so the result decides; a
- * promise's payload is re-materialized when it settles. */
+ * callable whose RESULT converts the same way, so the result decides, and a
+ * record or array result comes back as a fresh value because the boxed
+ * callable converts it through the dynamic call; a promise's payload is
+ * re-materialized when it settles. */
 function dynCrossingCopyReason(lowerer: Lowerer, t: IrType): string | null {
-  if (t.kind === "func") return dynCrossingCopyReason(lowerer, t.ret);
+  if (t.kind === "func") {
+    const inner = dynCrossingCopyReason(lowerer, t.ret);
+    if (inner !== null) return inner;
+    if (structuredResultHoldsCopy(lowerer, t.ret))
+      return `a '${lowerer.fmt(t.ret)}' result is re-materialized when the boxed function returns it`;
+    return null;
+  }
   if (t.kind === "union") {
     const def = lowerer.unions.get(t.unionId);
     for (const arm of def?.arms ?? []) {
@@ -2280,6 +2288,17 @@ function dynCrossingCopyReason(lowerer: Lowerer, t: IrType): string | null {
   return promisePayloadHoldsStructure(lowerer, t.inner)
     ? `a promise of '${lowerer.fmt(t.inner)}' is re-materialized when it settles`
     : null;
+}
+
+/** True when a boxed function's RESULT is a record or array, or a union with
+ * such an arm. The boxed callable converts that result through the dynamic
+ * call, which answers a fresh value, so the caller does not get the object
+ * the function returned. */
+function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "record" || t.kind === "array") return true;
+  if (t.kind !== "union") return false;
+  const def = lowerer.unions.get(t.unionId);
+  return def !== undefined && def.arms.some((arm) => structuredResultHoldsCopy(lowerer, arm));
 }
 
 /** True when a promise payload holds a value the dynamic tier re-materializes
@@ -10516,6 +10535,11 @@ export function lowerRecordFieldCall(
       );
     }
   }
+  // A generic member's field holds its erased instance, and the call
+  // through the field crosses the same boundary as one through the
+  // instance value itself: the conversions that would copy are refused
+  // here too.
+  refuseCopyingErasureInstanceCall(lowerer, call, callee);
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {
     kind: "callValue",

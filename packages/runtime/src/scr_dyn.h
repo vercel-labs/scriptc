@@ -1051,32 +1051,35 @@ ScrDyn *scr_dyn_new_num(double n);
 ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed);
 ScrDyn *scr_dyn_native_set(ScrMap *value); /* borrowed backing, +1 box */
 bool scr_dyn_native_set_is(const ScrDyn *value);
-/* The ES2025 compositions over a set-like argument (scr_dyn_set.c): the
- * receiver is brand-checked, `other` runs GetSetRecord and the keys
+/* The ES2025 compositions over a set-like argument (scr_dyn_collections.c):
+ * the receiver is brand-checked, `other` runs GetSetRecord and the keys
  * iterator. +1, or NULL with the exception pending. */
 ScrDyn *scr_dyn_set_combine(ScrDyn *receiver, const ScrStr *name, ScrDyn *other);
-/* Set(iterable) for a JavaScript source: the spec's constructor, which
- * reads `add` off the new set (a program's own Set.prototype.add runs per
- * element) and closes the iterable when that call throws. A program that
- * never materialized %Set.prototype%, or left `add` as the builtin, keeps
+/* Set(iterable) and Map(iterable) for a JavaScript source: the spec's
+ * constructor, which reads the class's adder (`add`/`set`) off the new
+ * collection (a program's own <Class>.prototype member runs per element)
+ * and closes the iterable when that call throws. A program that never
+ * materialized %<Class>.prototype%, or left the adder as the builtin, keeps
  * the native constructor's bulk path. +1, or NULL with the exception
  * pending. */
-ScrDyn *scr_dyn_set_construct(ScrDyn *seed);
+ScrDyn *scr_dyn_collection_construct(const ScrStr *klass, ScrDyn *seed);
 /* The values of a Set handle as a checked-dynamic array in insertion order
- * (scr_dyn_set.c): the typed `new Set(seed)` path adds what a program's own
- * `add` inserted to the native set it keeps. +1, or NULL with the exception
- * pending. */
+ * (scr_dyn_collections.c): the typed `new Set(seed)` path adds what a
+ * program's own `add` inserted to the native set it keeps. +1, or NULL with
+ * the exception pending. */
 ScrDyn *scr_dyn_set_values(ScrDyn *set);
-/* Set.prototype.forEach with an unchecked callback: Node's
- * `<value> is not a function` for a non-callable one. +1 undefined or NULL. */
-ScrDyn *scr_dyn_set_for_each(ScrDyn *receiver, ScrDyn *callback, ScrDyn *this_arg);
-/* The interned method value of one Set.prototype member, and the interned
- * %Set.prototype% object itself (+1). */
-ScrDyn *scr_dyn_set_method(const ScrStr *name);
-ScrDyn *scr_dyn_set_prototype_object(void);
-/* Object.getPrototypeOf: %Set.prototype% for a native Set handle, else the
- * ordinary prototype read. +1, or NULL with the exception pending. */
-ScrDyn *scr_dyn_set_get_prototype(ScrDyn *value);
+/* <Class>.prototype.forEach with an unchecked callback: Node's
+ * `<value> is not a function` for a non-callable one, and (value, key,
+ * collection) visits for a Map. +1 undefined or NULL. */
+ScrDyn *scr_dyn_collection_for_each(ScrDyn *receiver, const ScrStr *klass, ScrDyn *callback,
+                                    ScrDyn *this_arg);
+/* The interned method value of one <Class>.prototype member, and the interned
+ * %<Class>.prototype% object itself (+1). */
+ScrDyn *scr_dyn_collection_method(const ScrStr *klass, const ScrStr *name);
+ScrDyn *scr_dyn_collection_prototype(const ScrStr *klass);
+/* Object.getPrototypeOf: %<Class>.prototype% for a collection handle, else
+ * the ordinary prototype read. +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_collection_get_prototype(ScrDyn *value);
 ScrDyn *scr_dyn_native_map(ScrMap *value); /* borrowed backing, +1 box */
 /* `new Map(entries)` over a checked-dynamic seed: +1, or NULL with the
  * exception pending. */

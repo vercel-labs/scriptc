@@ -1,13 +1,21 @@
-/* Set values in the checked-dynamic tier: the ES2025 compositions
+/* Keyed collections in the checked-dynamic tier: the %Set.prototype%,
+ * %Map.prototype%, %WeakMap.prototype% and %WeakSet.prototype% objects, the
+ * brand-checked method values that make `Map.prototype.get.call([], 1)`,
+ * `w.get.call(new Set(), 1)` and `m.forEach(1)` throw Node's TypeErrors, the
+ * constructors' adder lookup (`Map ( [ iterable ] )` calls a program's own
+ * `set`), Map's dynamic-callback forEach, and Set's ES2025 compositions
  * (union/intersection/difference/symmetricDifference/isSubsetOf/
- * isSupersetOf/isDisjointFrom) over an arbitrary set-like argument, the
- * %Set.prototype% object, and the brand-checked method values that make
- * `Set.prototype.has.call(Set.prototype, 1)` and `s.forEach(1)` throw
- * Node's TypeErrors.
+ * isSupersetOf/isDisjointFrom) over an arbitrary set-like argument.
+ *
+ * One table drives every class (ScrCollectionClass): the prototype's member
+ * list, the constructor's adder name and whether the class carries `size`
+ * and iteration. The storage itself stays in the handle ops of scr_json.c
+ * (Set, Map, WeakMap, WeakSet), so a member call delegates through
+ * scr_dyn_invoke to the one implementation that already exists.
  *
  * The compiler emits the entries only from JavaScript sources, and only on
  * paths whose statically typed lowering refuses (a set-like argument, a
- * non-callable callback, `Set.prototype` as a value). Typed programs keep
+ * non-callable callback, `<Class>.prototype` as a value). Typed programs keep
  * their own lowering and never link this unit. */
 #include "scr_runtime.h"
 
@@ -33,12 +41,80 @@ static bool scr_set_is_object(const ScrDyn *v) {
   }
 }
 
-/* %Set.prototype%, created on first use (the object section below). */
-static SCR_TL ScrDyn *scr_set_prototype_object;
+/* ── the collection classes ───────────────────────────────────────────── */
 
-static void scr_set_throw_type(const char *message) {
-  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+/* One row per keyed collection the dynamic tier can hold. `members` are the
+ * prototype's own function-valued data properties (the prototype builder adds
+ * the `size` accessor, Symbol.iterator, Symbol.toStringTag and constructor);
+ * `adder` is the member the constructor reads off the prototype and calls per
+ * iterated value. The storage of every class lives in its handle ops
+ * (scr_json.c), so a member call delegates through scr_dyn_invoke. */
+typedef struct {
+  const char *klass;
+  const char *adder;
+  bool is_map;   /* entries carry a value (Map, WeakMap) */
+  bool iterable; /* keys/values/entries and Symbol.iterator (Set, Map) */
+  const char *const *members;
+  size_t member_count;
+} ScrCollectionClass;
+
+/* The member lists are in Node's creation order, and name the `size`
+ * accessor in its position, so Object.getOwnPropertyNames of the built
+ * prototype enumerates the class's members in the order Node defines them. */
+static const char *const scr_set_members[] = {
+    "has",        "add",        "delete",     "clear",     "entries",
+    "forEach",    "size",       "values",     "keys",      "union",
+    "intersection", "difference", "symmetricDifference", "isSubsetOf",
+    "isSupersetOf", "isDisjointFrom",
+};
+
+static const char *const scr_map_members[] = {
+    "get", "set", "has", "delete", "clear", "entries", "forEach", "keys", "size", "values",
+};
+
+static const char *const scr_weak_map_members[] = {"delete", "get", "set", "has"};
+static const char *const scr_weak_set_members[] = {"delete", "has", "add"};
+
+#define SCR_COLLECTION_ROW_COUNT(a) (sizeof a / sizeof a[0])
+
+static const ScrCollectionClass scr_collection_classes[] = {
+    {"Set", "add", false, true, scr_set_members,
+     SCR_COLLECTION_ROW_COUNT(scr_set_members)},
+    {"Map", "set", true, true, scr_map_members,
+     SCR_COLLECTION_ROW_COUNT(scr_map_members)},
+    {"WeakMap", "set", true, false, scr_weak_map_members,
+     SCR_COLLECTION_ROW_COUNT(scr_weak_map_members)},
+    {"WeakSet", "add", false, false, scr_weak_set_members,
+     SCR_COLLECTION_ROW_COUNT(scr_weak_set_members)},
+};
+
+#define SCR_COLLECTION_CLASS_COUNT \
+  (sizeof scr_collection_classes / sizeof scr_collection_classes[0])
+
+static const ScrCollectionClass *scr_collection_class(const char *klass) {
+  for (size_t i = 0; i < SCR_COLLECTION_CLASS_COUNT; i++)
+    if (!strcmp(scr_collection_classes[i].klass, klass)) return &scr_collection_classes[i];
+  return NULL;
 }
+
+/* The class of the collection HANDLE `value` holds, or NULL for anything
+ * else (a plain object, a primitive, another handle kind). */
+static const ScrCollectionClass *scr_collection_class_of(const ScrDyn *value) {
+  if (!value || value->kind != SCR_DYN_HANDLE) return NULL;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(value);
+  if (!ops || !ops->cls) return NULL;
+  return scr_collection_class(ops->cls);
+}
+
+/* The brand check: a real collection of exactly this class. */
+static bool scr_collection_is(const ScrDyn *value, const ScrCollectionClass *cls) {
+  return value && value->kind == SCR_DYN_HANDLE && cls != NULL &&
+         scr_collection_class_of(value) == cls;
+}
+
+/* %Set.prototype%, %Map.prototype%, %WeakMap.prototype% and
+ * %WeakSet.prototype%, created on first use (the object section below). */
+static SCR_TL ScrDyn *scr_collection_prototypes[SCR_COLLECTION_CLASS_COUNT];
 
 /* A property read the set-like protocol makes on a value that may be a
  * native Set or Map HANDLE (`set.size`, `set.has`), a compiled generator
@@ -83,7 +159,10 @@ static ScrDyn *scr_set_prop(const ScrDyn *object, const char *key) {
 static void scr_set_put_receiver(ScrJsonBuf *message, const ScrDyn *receiver) {
   const char *cls = NULL;
   if (receiver->kind == SCR_DYN_OBJ) {
-    cls = scr_set_prototype_object && receiver == scr_set_prototype_object ? "Set" : "Object";
+    cls = "Object";
+    for (size_t i = 0; i < SCR_COLLECTION_CLASS_COUNT; i++)
+      if (scr_collection_prototypes[i] && receiver == scr_collection_prototypes[i])
+        cls = scr_collection_classes[i].klass;
   } else if (receiver->kind == SCR_DYN_HANDLE) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(receiver);
     cls = ops && ops->cls ? ops->cls : "Object";
@@ -101,11 +180,14 @@ static void scr_set_put_receiver(ScrJsonBuf *message, const ScrDyn *receiver) {
   }
 }
 
-/* `Method Set.prototype.<name> called on incompatible receiver <value>`. */
-static ScrDyn *scr_set_incompatible(const char *name, const ScrDyn *receiver) {
+/* `Method <Class>.prototype.<name> called on incompatible receiver <value>`. */
+static ScrDyn *scr_set_incompatible(const ScrCollectionClass *cls, const char *name,
+                                    const ScrDyn *receiver) {
   ScrJsonBuf message;
   scr_jb_init(&message);
-  scr_jb_puts(&message, "Method Set.prototype.");
+  scr_jb_puts(&message, "Method ");
+  scr_jb_puts(&message, cls->klass);
+  scr_jb_puts(&message, ".prototype.");
   scr_jb_puts(&message, name);
   scr_jb_puts(&message, " called on incompatible receiver ");
   scr_set_put_receiver(&message, receiver);
@@ -403,11 +485,6 @@ static bool scr_set_is_combine(const char *name) {
   return false;
 }
 
-static bool scr_set_is_predicate(const char *name) {
-  return !strcmp(name, "isSubsetOf") || !strcmp(name, "isSupersetOf") ||
-         !strcmp(name, "isDisjointFrom");
-}
-
 /* Walks a set's entries in insertion order, re-reading the entry count every
  * step: entries appended during the walk are visited and removals leave
  * tombstones the walk skips. intersection, isSubsetOf and isDisjointFrom walk
@@ -457,12 +534,6 @@ typedef struct {
 } ScrSetAddContext;
 
 static int scr_set_union_visit(void *context, ScrDyn *value) {
-  ScrSetAddContext *add = context;
-  if (!scr_set_has(add->data, value)) scr_set_add(add->data, value);
-  return 1;
-}
-
-static int scr_set_intersection_visit(void *context, ScrDyn *value) {
   ScrSetAddContext *add = context;
   if (!scr_set_has(add->data, value)) scr_set_add(add->data, value);
   return 1;
@@ -672,10 +743,12 @@ static ScrDyn *scr_set_is_disjoint_from(ScrSetRecord *record, ScrMap *set) {
 
 /* ── the entries the compiler and the method values call ──────────────── */
 
-/* The receiver's data, or NULL with Node's brand-check TypeError. */
+/* The receiver's data, or NULL with Node's brand-check TypeError. The ES2025
+ * Set compositions take only a Set; the classic members brand-check their own
+ * class inside the invoke unit. */
 static ScrMap *scr_set_receiver(ScrDyn *receiver, const char *name) {
   if (scr_dyn_native_set_is(receiver)) return (ScrMap *)receiver->v.handle.ptr;
-  scr_set_incompatible(name, receiver);
+  scr_set_incompatible(scr_collection_class("Set"), name, receiver);
   return NULL;
 }
 
@@ -694,7 +767,7 @@ static ScrDyn *scr_set_combine(ScrDyn *receiver, const char *name, ScrDyn *other
   else if (!strcmp(name, "isDisjointFrom")) result = scr_set_is_disjoint_from(&record, set);
   else {
     scr_set_record_release(&record);
-    return scr_set_incompatible(name, receiver);
+    return scr_set_incompatible(scr_collection_class("Set"), name, receiver);
   }
   scr_set_record_release(&record);
   return result;
@@ -702,14 +775,6 @@ static ScrDyn *scr_set_combine(ScrDyn *receiver, const char *name, ScrDyn *other
 
 ScrDyn *scr_dyn_set_combine(ScrDyn *receiver, const ScrStr *name, ScrDyn *other) {
   return scr_set_combine(receiver, name->data, other);
-}
-
-/* The classic instance methods run the runtime's native-set dispatch
- * (scr_native_set_invoke, whose own brand check and Node error texts the
- * method values already use). */
-static ScrDyn *scr_set_delegate(ScrDyn *receiver, const char *name, ScrDyn *const *args,
-                                size_t argc) {
-  return scr_dyn_invoke(receiver, name, args, argc, name);
 }
 
 /* Node's `<value> is not a function` for a non-callable callback. */
@@ -748,34 +813,57 @@ static void scr_set_throw_not_callable(ScrDyn *value) {
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
 }
 
-ScrDyn *scr_dyn_set_for_each(ScrDyn *receiver, ScrDyn *callback, ScrDyn *this_arg) {
-  ScrMap *set = scr_set_receiver(receiver, "forEach");
-  if (!set) return NULL;
+/* `<Class>.prototype.forEach` with a callback the static lowering cannot
+ * take: Node's `<value> is not a function` for a non-callable one, and
+ * (value, key, collection) visits for a Map, (value, value, collection) for a
+ * Set. */
+ScrDyn *scr_dyn_collection_for_each(ScrDyn *receiver, const ScrStr *klass, ScrDyn *callback,
+                                    ScrDyn *this_arg) {
+  const ScrCollectionClass *cls = scr_collection_class(klass->data);
+  if (!cls || !cls->iterable) {
+    static const char message[] = "collection forEach expected";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  if (!scr_collection_is(receiver, cls)) {
+    scr_set_incompatible(cls, "forEach", receiver);
+    return NULL;
+  }
   if (!scr_dyn_is_callable(callback)) {
     scr_set_throw_not_callable(callback);
     return NULL;
   }
-  scr_map_iter_enter(set);
-  for (double i = 0; i < scr_map_iter_count(set); i++) {
-    if (!scr_map_iter_live(set, i)) continue;
-    ScrDyn *entry = scr_map_dyn_key(set, i);
-    ScrDyn *args[] = {entry, entry, receiver};
+  ScrMap *data = (ScrMap *)receiver->v.handle.ptr;
+  scr_map_iter_enter(data);
+  for (double i = 0; i < scr_map_iter_count(data); i++) {
+    if (!scr_map_iter_live(data, i)) continue;
+    ScrDyn *key = scr_map_dyn_key(data, i);
+    ScrDyn *value = cls->is_map ? scr_map_dyn_value(data, i) : scr_dyn_retain(key);
+    ScrDyn *args[] = {value, key, receiver};
     scr_dyn_this_push_dyn(this_arg);
     ScrDyn *result = scr_dyn_call(callback, args, 3, "callback");
     scr_dyn_this_pop();
-    scr_dyn_release(entry);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
     scr_dyn_release(result);
     if (scr_exc_pending()) break;
   }
-  scr_map_iter_exit(set);
+  scr_map_iter_exit(data);
   return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
 }
 
-/* ── Set(iterable) ────────────────────────────────────────────────────── */
+/* ── Set(iterable) and Map(iterable) ──────────────────────────────────── */
 
-/* Node's TypeError for an `add` the constructor read that is not callable:
- * `'null' returned for property 'add' of object '#<Set>' is not a function`. */
-static void scr_set_throw_adder_not_callable(ScrDyn *value) {
+/* A fresh collection of `cls` built from `seed` by the runtime's own bulk
+ * insert, or NULL with an exception pending. */
+static ScrDyn *scr_collection_new(const ScrCollectionClass *cls, const ScrDyn *seed) {
+  return cls->is_map ? scr_dyn_native_map_new(seed) : scr_dyn_native_set_new(seed);
+}
+
+/* Node's TypeError for an adder the constructor read that is not callable:
+ * `'null' returned for property 'add' of object '#<Set>' is not a function`,
+ * with the class's own member name and brand. */
+static void scr_set_throw_adder_not_callable(const ScrCollectionClass *cls, ScrDyn *value) {
   ScrStr *shown = scr_dyn_string_coerce_js(value);
   ScrJsonBuf message;
   scr_jb_init(&message);
@@ -784,15 +872,56 @@ static void scr_set_throw_adder_not_callable(ScrDyn *value) {
     scr_jb_put_str(&message, shown);
     scr_str_release(shown);
   }
-  scr_jb_puts(&message, "' returned for property 'add' of object '#<Set>' is not a function");
+  scr_jb_puts(&message, "' returned for property '");
+  scr_jb_puts(&message, cls->adder);
+  scr_jb_puts(&message, "' of object '#<");
+  scr_jb_puts(&message, cls->klass);
+  scr_jb_puts(&message, ">' is not a function");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
 }
 
-/* Call(adder, set, «value»): false with the exception pending. */
-static bool scr_set_construct_add(ScrDyn *set, ScrDyn *adder, ScrDyn *value) {
-  scr_dyn_this_push_dyn(set);
-  ScrDyn *result = scr_dyn_call(adder, &value, 1, "add");
+/* entry[0] / entry[1] of a Map constructor entry, through the same property
+ * read the rest of this unit uses: an array element directly (0 and 1 are
+ * data properties of the array the walk hands over), everything else by the
+ * key. +1, or NULL with the exception pending. */
+static ScrDyn *scr_collection_entry_member(const ScrDyn *entry, unsigned index) {
+  if (entry->kind == SCR_DYN_ARR)
+    return scr_dyn_retain(index < entry->v.arr.len ? entry->v.arr.items[index]
+                                                   : scr_dyn_undefined());
+  char name[2] = {(char)(index ? '1' : '0'), '\0'};
+  return scr_set_prop(entry, name);
+}
+
+/* Call(adder, collection, the iterated value's arguments): `add` takes the
+ * value, `set` takes a Map entry's 0 and 1 members (AddEntriesFromIterable
+ * validates the entry object before the call). False with the exception
+ * pending. */
+static bool scr_set_construct_add(const ScrCollectionClass *cls, ScrDyn *collection,
+                                  ScrDyn *adder, ScrDyn *value) {
+  ScrDyn *call_args[2];
+  size_t argc;
+  if (cls->is_map) {
+    ScrDyn *entry = scr_dyn_map_seed_entry(value);
+    if (!entry) return false;
+    call_args[0] = scr_collection_entry_member(entry, 0);
+    call_args[1] = call_args[0] && !scr_exc_pending() ? scr_collection_entry_member(entry, 1) : NULL;
+    scr_dyn_release(entry);
+    if (!call_args[1]) {
+      scr_dyn_release(call_args[0]);
+      return false;
+    }
+    argc = 2;
+  } else {
+    call_args[0] = value;
+    argc = 1;
+  }
+  scr_dyn_this_push_dyn(collection);
+  ScrDyn *result = scr_dyn_call(adder, call_args, argc, cls->adder);
   scr_dyn_this_pop();
+  if (cls->is_map) {
+    scr_dyn_release(call_args[0]);
+    scr_dyn_release(call_args[1]);
+  }
   if (!result) return false;
   scr_dyn_release(result);
   return true;
@@ -857,15 +986,27 @@ static void scr_set_iterator_close_abrupt(ScrDyn *iterator) {
   }
 }
 
-ScrDyn *scr_dyn_set_construct(ScrDyn *seed) {
-  /* A nullish iterable returns the empty set without reading `add`. */
+ScrDyn *scr_dyn_collection_construct(const ScrStr *klass, ScrDyn *seed) {
+  const ScrCollectionClass *cls = scr_collection_class(klass->data);
+  if (!cls || !cls->iterable) {
+    static const char message[] = "keyed collection constructor expected";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  /* A nullish iterable returns the empty collection without reading the
+   * adder. */
   if (seed->kind == SCR_DYN_NULL || seed->kind == SCR_DYN_UNDEF)
-    return scr_dyn_native_set_new(scr_dyn_undefined());
+    return scr_collection_new(cls, scr_dyn_undefined());
   ScrDyn *adder = NULL;
-  if (scr_set_prototype_object) {
-    adder = scr_set_prop(scr_set_prototype_object, "add");
+  ScrDyn *prototype = scr_collection_prototypes[cls - scr_collection_classes];
+  if (prototype) {
+    adder = scr_set_prop(prototype, cls->adder);
     if (!adder) return NULL;
-    ScrDyn *builtin = scr_set_builtin_method("Set", "add");
+    ScrStr *klass_name = scr_str_new(cls->klass, strlen(cls->klass));
+    ScrStr *adder_name = scr_str_new(cls->adder, strlen(cls->adder));
+    ScrDyn *builtin = scr_dyn_builtin_method(klass_name, adder_name);
+    scr_str_release(klass_name);
+    scr_str_release(adder_name);
     if (!builtin) {
       scr_dyn_release(adder);
       return NULL;
@@ -877,22 +1018,22 @@ ScrDyn *scr_dyn_set_construct(ScrDyn *seed) {
       adder = NULL;
     }
   }
-  /* Without an overridden `add`, the native constructor's bulk insert runs;
-   * a program that never materialized %Set.prototype% cannot have replaced
-   * it. */
-  if (!adder) return scr_dyn_native_set_new(seed);
-  ScrDyn *set = scr_dyn_native_set_new(scr_dyn_undefined());
-  if (!set) {
+  /* Without an overridden adder, the native constructor's bulk insert runs;
+   * a program that never materialized %<Class>.prototype% cannot have
+   * replaced it. */
+  if (!adder) return scr_collection_new(cls, seed);
+  ScrDyn *collection = scr_collection_new(cls, scr_dyn_undefined());
+  if (!collection) {
     scr_dyn_release(adder);
     return NULL;
   }
   bool ok = true;
   if (!scr_dyn_is_callable(adder)) {
-    scr_set_throw_adder_not_callable(adder);
+    scr_set_throw_adder_not_callable(cls, adder);
     ok = false;
   } else {
     /* Every seed iterates as it stands at each step: the walk runs the
-     * program's `add`, which may add to or delete from the seed, and the
+     * program's adder, which may add to or delete from the seed, and the
      * pack a spread or a rest pattern takes would freeze the entries before
      * the first adder call. Only the adder's throw closes the iterator;
      * a throw from `next`, from a result accessor or a primitive result
@@ -913,7 +1054,7 @@ ScrDyn *scr_dyn_set_construct(ScrDyn *seed) {
           scr_dyn_release(value);
           break;
         }
-        ok = scr_set_construct_add(set, adder, value);
+        ok = scr_set_construct_add(cls, collection, adder, value);
         scr_dyn_release(value);
         if (!ok) scr_set_iterator_close_abrupt(iterator);
       }
@@ -923,10 +1064,10 @@ ScrDyn *scr_dyn_set_construct(ScrDyn *seed) {
   }
   scr_dyn_release(adder);
   if (!ok) {
-    scr_dyn_release(set);
+    scr_dyn_release(collection);
     return NULL;
   }
-  return set;
+  return collection;
 }
 
 /* The values of a Set handle as a checked-dynamic array, in insertion
@@ -941,104 +1082,137 @@ ScrDyn *scr_dyn_set_values(ScrDyn *set) {
   return scr_dyn_destructure_rest(set, NULL);
 }
 
-/* The method value of one Set.prototype member. */
-static ScrDyn *scr_dyn_set_proto_method(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+/* The method value of one ES2025 Set composition: it applies the set-like
+ * protocol to the receiver it is called on, so `Set.prototype.union` and
+ * `s.union` answer the same function. A classic member is the invoke unit's
+ * interned function for the same (class, name) pair instead, which is what
+ * `s.has` answers. */
+static ScrDyn *scr_dyn_collection_combine_method(ScrClosure *closure, ScrDyn *const *args,
+                                                 size_t argc) {
   ScrStr *name = scr_box_get_ref(closure->caps[0]);
   ScrDyn *receiver = scr_dyn_this_get();
-  ScrDyn *result;
-  if (scr_set_is_combine(name->data)) {
-    ScrDyn *other = argc ? args[0] : scr_dyn_undefined();
-    result = scr_set_combine(receiver, name->data, other);
-  } else if (!strcmp(name->data, "forEach")) {
-    if (argc < 1 || !scr_dyn_is_callable(args[0])) {
-      if (scr_set_receiver(receiver, name->data))
-        scr_set_throw_not_callable(argc ? args[0] : scr_dyn_undefined());
-      result = NULL;
-    } else {
-      result = scr_set_delegate(receiver, name->data, args, argc);
-    }
-  } else {
-    if (!scr_set_receiver(receiver, name->data)) result = NULL;
-    else result = scr_set_delegate(receiver, name->data, args, argc);
-  }
+  ScrDyn *other = argc ? args[0] : scr_dyn_undefined();
+  ScrDyn *result = scr_set_combine(receiver, name->data, other);
   scr_dyn_release(receiver);
   scr_str_release(name);
   return result;
 }
 
-/* ── %Set.prototype% ──────────────────────────────────────────────────── */
+/* ── %Set.prototype%, %Map.prototype%, %WeakMap.prototype%,
+ *    %WeakSet.prototype% ─────────────────────────────────────────────── */
 
-static SCR_TL ScrDyn *scr_set_methods; /* interned method values, own props */
+/* Interned method values keyed by "<Class>.<name>", so every spelling of one
+ * prototype member — the property the prototype object holds, a member read
+ * off a collection value — answers the same function object. */
+static SCR_TL ScrDyn *scr_collection_methods;
 
-static void scr_set_prototype_cleanup(void) {
-  scr_dyn_release(scr_set_prototype_object);
-  scr_set_prototype_object = NULL;
-  scr_dyn_release(scr_set_methods);
-  scr_set_methods = NULL;
+static void scr_collection_cleanup(void) {
+  for (size_t i = 0; i < SCR_COLLECTION_CLASS_COUNT; i++) {
+    scr_dyn_release(scr_collection_prototypes[i]);
+    scr_collection_prototypes[i] = NULL;
+  }
+  scr_dyn_release(scr_collection_methods);
+  scr_collection_methods = NULL;
 }
 
-/* The interned method value for one Set.prototype member: the ES2025
- * entries are this unit's thunks, the classic ones the runtime's own
- * per-name function (the same value `s.add` reads). */
-static ScrDyn *scr_dyn_set_method_value(const char *name) {
-  if (!scr_set_methods) {
-    scr_set_methods = scr_dyn_new_obj_null_proto();
-    scr_atexit(scr_set_prototype_cleanup);
+static ScrDyn *scr_dyn_collection_method_value(const ScrCollectionClass *cls, const char *name) {
+  if (!scr_collection_methods) {
+    scr_collection_methods = scr_dyn_new_obj_null_proto();
+    scr_atexit(scr_collection_cleanup);
   }
-  ScrDyn *existing = scr_dyn_obj_get(scr_set_methods, name, strlen(name));
-  if (existing) return scr_dyn_retain(existing);
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  scr_jb_puts(&buffer, cls->klass);
+  scr_jb_putc(&buffer, '.');
+  scr_jb_puts(&buffer, name);
+  ScrStr *key = scr_jb_finish(&buffer);
+  ScrDyn *existing = scr_dyn_obj_get(scr_collection_methods, key->data, key->len);
+  if (existing) {
+    scr_str_release(key);
+    return scr_dyn_retain(existing);
+  }
   ScrDyn *value;
-  if (scr_set_is_combine(name)) {
+  if (cls == scr_collection_class("Set") && scr_set_is_combine(name)) {
     ScrClosure *closure = scr_closure_new(NULL, 1);
     closure->caps[0] = scr_box_new(SCR_BOX_STR);
     scr_box_set_ref(closure->caps[0], scr_str_new(name, strlen(name)));
-    value = scr_dyn_new_func(closure, scr_dyn_set_proto_method, 1, "native:Set.prototype", name);
+    value = scr_dyn_new_func(closure, scr_dyn_collection_combine_method, 1, "native:Set.prototype",
+                             name);
   } else {
-    ScrStr *prototype = scr_str_new("Set", 3);
+    ScrStr *prototype = scr_str_new(cls->klass, strlen(cls->klass));
     ScrStr *method = scr_str_new(name, strlen(name));
     value = scr_dyn_builtin_method(prototype, method);
     scr_str_release(prototype);
     scr_str_release(method);
   }
-  if (!value) return NULL;
-  scr_dyn_obj_set(scr_set_methods, name, strlen(name), scr_dyn_retain(value));
+  if (!value) {
+    scr_str_release(key);
+    return NULL;
+  }
+  scr_dyn_obj_set(scr_collection_methods, key->data, key->len, scr_dyn_retain(value));
+  scr_str_release(key);
   return value;
 }
 
-ScrDyn *scr_dyn_set_method(const ScrStr *name) {
-  return scr_dyn_set_method_value(name->data);
+/* The method value of one <Class>.prototype member; dyn.collectionMethod's
+ * implementation. `klass` and `name` are literals the frontend emitted, so
+ * an unknown pair is a compiler/runtime mismatch. */
+ScrDyn *scr_dyn_collection_method(const ScrStr *klass, const ScrStr *name) {
+  const ScrCollectionClass *cls = scr_collection_class(klass->data);
+  if (!cls) {
+    static const char message[] = "scriptc: unknown collection class\n";
+    scr_trap(message);
+  }
+  return scr_dyn_collection_method_value(cls, name->data);
 }
 
-/* `Set.prototype.size`'s getter: the receiver's size, or Node's brand-check
- * TypeError (reading it off %Set.prototype% itself throws). */
-static ScrDyn *scr_dyn_set_size_getter(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)closure;
+/* Defines `value` on `target` as a non-enumerable, writable, configurable
+ * data property named `name` — the shape every built-in prototype method
+ * has (and `constructor`). */
+static void scr_collection_define(ScrDyn *target, const char *name, ScrDyn *value) {
+  ScrStr *str = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(str); /* retains */
+  scr_str_release(str);
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, value);
+  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
+  scr_dyn_release(defined);
+  scr_dyn_release(key);
+  scr_dyn_release(descriptor);
+}
+
+/* `get <Class>.prototype.size`: the receiver's entry count, or Node's
+ * brand-check TypeError (reading it off the prototype object itself
+ * throws). */
+static ScrDyn *scr_dyn_collection_size_getter(ScrClosure *closure, ScrDyn *const *args,
+                                              size_t argc) {
   (void)args;
   (void)argc;
+  ScrStr *klass = scr_box_get_ref(closure->caps[0]);
+  const ScrCollectionClass *cls = scr_collection_class(klass->data);
   ScrDyn *receiver = scr_dyn_this_get();
-  if (!scr_dyn_native_set_is(receiver)) {
+  bool compatible = cls && ((cls->is_map && scr_dyn_native_map_is(receiver)) ||
+                            (!cls->is_map && scr_dyn_native_set_is(receiver)));
+  if (!compatible) {
     ScrJsonBuf message;
     scr_jb_init(&message);
-    scr_jb_puts(&message, "Method get Set.prototype.size called on incompatible receiver ");
+    scr_jb_puts(&message, "Method get ");
+    scr_jb_puts(&message, cls->klass);
+    scr_jb_puts(&message, ".prototype.size called on incompatible receiver ");
     scr_set_put_receiver(&message, receiver);
     scr_dyn_release(receiver);
+    scr_str_release(klass);
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
     return NULL;
   }
-  ScrMap *set = (ScrMap *)receiver->v.handle.ptr;
-  double size = scr_map_size(set);
+  ScrMap *storage = (ScrMap *)receiver->v.handle.ptr;
+  double size = scr_map_size(storage);
   scr_dyn_release(receiver);
+  scr_str_release(klass);
   return scr_dyn_new_num(size);
 }
-
-static const struct {
-  const char *name;
-} scr_set_prototype_members[] = {
-    {"add"},      {"has"},        {"delete"},       {"clear"},
-    {"values"},   {"keys"},       {"entries"},      {"forEach"},
-    {"union"},    {"intersection"}, {"difference"}, {"symmetricDifference"},
-    {"isSubsetOf"}, {"isSupersetOf"}, {"isDisjointFrom"},
-};
 
 /* Symbol.toStringTag, created when the program has not evaluated it yet:
  * the well-known registry interns one symbol per description, so the
@@ -1056,48 +1230,65 @@ static const ScrDyn *scr_set_to_string_tag(void) {
   return scr_dyn_to_string_tag_symbol();
 }
 
-ScrDyn *scr_dyn_set_prototype_object(void) {
-  if (scr_set_prototype_object) return scr_dyn_retain(scr_set_prototype_object);
+/* Defines the `size` accessor on a prototype: Node's descriptor for
+ * `get <Class>.prototype.size`, non-enumerable and configurable. */
+static void scr_collection_define_size(ScrDyn *prototype, const ScrCollectionClass *cls) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(closure->caps[0], scr_str_new(cls->klass, strlen(cls->klass)));
+  ScrDyn *getter = scr_dyn_new_func(closure, scr_dyn_collection_size_getter, 0,
+                                    "native:prototype", "get size");
+  ScrStr *name = scr_str_new("size", 4);
+  ScrDyn *key = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "get", 3, getter);
+  /* Node's descriptor carries the absent setter too (`"set" in d` is true). */
+  scr_dyn_obj_set(descriptor, "set", 3, scr_dyn_undefined());
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrDyn *defined = scr_dyn_define_property(prototype, key, descriptor);
+  scr_dyn_release(defined);
+  scr_dyn_release(key);
+  scr_dyn_release(descriptor);
+}
+
+/* The class's prototype object, created on first use: `constructor` and the
+ * members as non-enumerable functions (`size` as its accessor), then
+ * Symbol.toStringTag and Symbol.iterator. The order is Node's creation
+ * order, so own-property enumeration agrees, and Symbol.iterator is the same
+ * function object as values (Set) or entries (Map). */
+static ScrDyn *scr_collection_prototype_build(const ScrCollectionClass *cls) {
   ScrDyn *prototype = scr_dyn_new_obj();
-  for (size_t i = 0; i < sizeof scr_set_prototype_members / sizeof scr_set_prototype_members[0];
-       i++) {
-    ScrDyn *method = scr_dyn_set_method_value(scr_set_prototype_members[i].name);
-    if (!method) {
-      scr_dyn_release(prototype);
-      return NULL;
+  /* <Class>.prototype.constructor, and the constructor's own `prototype`,
+   * are this same object, so both directions of the link agree. */
+  {
+    ScrStr *name = scr_str_new(cls->klass, strlen(cls->klass));
+    ScrDyn *ctor = scr_dyn_global_constructor(name); /* the lookup's +1 */
+    if (ctor) {
+      /* scr_collection_define owns the value it is given; the interned
+       * constructor keeps its own reference until the release below. */
+      scr_collection_define(prototype, "constructor", scr_dyn_retain(ctor));
+      scr_dyn_fn_seed_prototype(ctor, scr_dyn_retain(prototype));
+      scr_dyn_release(ctor);
     }
-    ScrDyn *descriptor = scr_dyn_new_obj();
-    scr_dyn_obj_set(descriptor, "value", 5, method);
-    scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
-    scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
-    ScrStr *name = scr_str_new(scr_set_prototype_members[i].name,
-                               strlen(scr_set_prototype_members[i].name));
-    ScrDyn *key = scr_dyn_new_str(name);
-    ScrDyn *defined = scr_dyn_define_property(prototype, key, descriptor);
-    scr_dyn_release(defined);
-    scr_dyn_release(key);
-    scr_dyn_release(descriptor);
     scr_str_release(name);
     if (scr_exc_pending()) {
       scr_dyn_release(prototype);
       return NULL;
     }
   }
-  {
-    ScrClosure *closure = scr_closure_new(NULL, 0);
-    ScrDyn *getter = scr_dyn_new_func(closure, scr_dyn_set_size_getter, 0, "native:Set.prototype",
-                                      "get size");
-    ScrDyn *descriptor = scr_dyn_new_obj();
-    scr_dyn_obj_set(descriptor, "get", 3, getter);
-    scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
-    scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
-    ScrStr *name = scr_str_new("size", 4);
-    ScrDyn *key = scr_dyn_new_str(name);
-    ScrDyn *defined = scr_dyn_define_property(prototype, key, descriptor);
-    scr_dyn_release(defined);
-    scr_dyn_release(key);
-    scr_dyn_release(descriptor);
-    scr_str_release(name);
+  for (size_t i = 0; i < cls->member_count; i++) {
+    if (!strcmp(cls->members[i], "size")) {
+      scr_collection_define_size(prototype, cls);
+    } else {
+      ScrDyn *method = scr_dyn_collection_method_value(cls, cls->members[i]);
+      if (!method) {
+        scr_dyn_release(prototype);
+        return NULL;
+      }
+      scr_collection_define(prototype, cls->members[i], method);
+    }
     if (scr_exc_pending()) {
       scr_dyn_release(prototype);
       return NULL;
@@ -1105,7 +1296,7 @@ ScrDyn *scr_dyn_set_prototype_object(void) {
   }
   const ScrDyn *tag = scr_set_to_string_tag();
   if (tag) {
-    ScrStr *tag_value = scr_str_new("Set", 3);
+    ScrStr *tag_value = scr_str_new(cls->klass, strlen(cls->klass));
     ScrDyn *value = scr_dyn_new_str(tag_value);
     scr_str_release(tag_value);
     ScrDyn *descriptor = scr_dyn_new_obj();
@@ -1121,12 +1312,63 @@ ScrDyn *scr_dyn_set_prototype_object(void) {
       return NULL;
     }
   }
-  /* scr_dyn_set_method_value registered the cleanup with its table. */
-  scr_set_prototype_object = prototype;
+  if (cls->iterable) {
+    /* @@iterator is the same function object as values (Set) or entries
+     * (Map). */
+    const char *alias = cls->is_map ? "entries" : "values";
+    ScrDyn *method = scr_dyn_collection_method_value(cls, alias);
+    if (method) {
+      /* The well-known registry interns one symbol per description, so the
+       * program's later `Symbol.iterator` is this key. */
+      ScrStr *name = scr_str_new("iterator", sizeof "iterator" - 1);
+      ScrSym *symbol = scr_sym_well_known(name);
+      scr_str_release(name);
+      if (symbol) {
+        ScrDyn *key = scr_dyn_new_symbol(symbol);
+        scr_sym_release(symbol);
+        ScrDyn *descriptor = scr_dyn_new_obj();
+        scr_dyn_obj_set(descriptor, "value", 5, method);
+        scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
+        scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
+        scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+        ScrDyn *defined = scr_dyn_define_property(prototype, key, descriptor);
+        scr_dyn_release(defined);
+        scr_dyn_release(key);
+        scr_dyn_release(descriptor);
+      } else {
+        scr_dyn_release(method);
+      }
+    }
+    if (scr_exc_pending()) {
+      scr_dyn_release(prototype);
+      return NULL;
+    }
+  }
+  /* scr_dyn_collection_method_value registered the cleanup with its table. */
+  scr_collection_prototypes[cls - scr_collection_classes] = prototype;
   return scr_dyn_retain(prototype);
 }
 
-ScrDyn *scr_dyn_set_get_prototype(ScrDyn *value) {
-  if (scr_dyn_native_set_is(value)) return scr_dyn_set_prototype_object();
+/* %<Class>.prototype% as a value; dyn.collectionPrototype's implementation. */
+ScrDyn *scr_dyn_collection_prototype(const ScrStr *klass) {
+  const ScrCollectionClass *cls = scr_collection_class(klass->data);
+  if (!cls) {
+    static const char message[] = "scriptc: unknown collection class\n";
+    scr_trap(message);
+  }
+  ScrDyn *prototype = scr_collection_prototypes[cls - scr_collection_classes];
+  if (prototype) return scr_dyn_retain(prototype);
+  return scr_collection_prototype_build(cls);
+}
+
+/* Object.getPrototypeOf on a collection value: its class prototype. */
+ScrDyn *scr_dyn_collection_get_prototype(ScrDyn *value) {
+  const ScrCollectionClass *cls = scr_collection_class_of(value);
+  if (cls) {
+    ScrStr *name = scr_str_new(cls->klass, strlen(cls->klass));
+    ScrDyn *prototype = scr_dyn_collection_prototype(name);
+    scr_str_release(name);
+    return prototype;
+  }
   return scr_dyn_get_prototype(value);
 }

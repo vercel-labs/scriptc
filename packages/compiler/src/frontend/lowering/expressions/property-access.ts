@@ -1,4 +1,5 @@
 import { widensReducedRecords } from "../function-returns.js";
+import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
@@ -1692,6 +1693,15 @@ export function lowerPropertyAccessExpr(
       },
       expr,
     );
+  }
+  // A NULLISH receiver: JavaScript's RequireObjectCoercible throws Node's
+  // TypeError at the read (only an optional chain, lowered elsewhere,
+  // answers undefined). A primitive receiver that is not nullish never
+  // reaches this fence — its members lower above.
+  if (isUnitType(recvLowered.type)) {
+    const unit = recvLowered.type.kind === "nullT" ? "null" : "undefined";
+    const t = ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+    return throwAfterEach([recvLowered], nullishReadTypeError(unit, expr.name.text, t, loc), loc);
   }
   lowerer.unsupported(
     "SC1090",
@@ -3861,6 +3871,21 @@ export function lowerUnionProperty(
       type: F64,
       loc: locOf(expr),
     };
+  }
+  if (isUnitType(value.type)) {
+    // A nullish receiver: Node's RequireObjectCoercible TypeError, after
+    // the receiver's own evaluation.
+    const unit = value.type.kind === "nullT" ? "null" : "undefined";
+    return throwAfterEach(
+      [value],
+      nullishReadTypeError(
+        unit,
+        expr.name.text,
+        lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN,
+        locOf(expr),
+      ),
+      locOf(expr),
+    );
   }
   if (value.type.kind !== "union") {
     lowerer.unsupported(

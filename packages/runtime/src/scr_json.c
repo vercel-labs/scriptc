@@ -1410,6 +1410,9 @@ static inline ScrDyn *scr_dyn_leaf_alloc(ScrDynKind kind) {
 
 static void scr_dyn_handle_release(void *h, ScrDynHandleTag tag);
 static bool scr_dyn_to_primitive_result_is_object(const ScrDyn *d);
+static bool scr_dyn_primitive_kind(const ScrDyn *v);
+static ScrStr *scr_dyn_no_side_effects_to_string(const ScrDyn *d);
+static bool scr_dyn_in_on_primitive(const ScrDyn *v, const ScrStr *key);
 
 /* Pooled dyn nodes report their disposal to weak collections only: they
  * are never the native records the kept-source table is keyed by. */
@@ -9624,6 +9627,15 @@ static ScrDyn *scr_dyn_define_symbol(ScrDyn *target, ScrDyn *key, ScrDyn *descri
 }
 
 static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_key, int mode) {
+  // `in` checks its receiver before converting the key: a primitive receiver
+  // throws Node's TypeError, and the key's own toString must not run.
+  if (mode == 0 && scr_dyn_primitive_kind(value)) {
+    ScrStr *text = scr_dyn_no_side_effects_to_string(raw_key);
+    if (!text) return false;
+    scr_dyn_in_on_primitive(value, text);
+    scr_str_release(text);
+    return false;
+  }
   ScrDyn *key = scr_dyn_property_key_value(raw_key);
   if (!key) return false;
   if (key->kind != SCR_DYN_SYMBOL) {
@@ -9671,21 +9683,9 @@ bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key) { return s
 
 /* Reflect.has's target check: Node's TypeError for a primitive target. */
 void scr_dyn_reflect_has_target(const ScrDyn *target) {
-  switch (target->kind) {
-  case SCR_DYN_NULL:
-  case SCR_DYN_UNDEF:
-  case SCR_DYN_BOOL:
-  case SCR_DYN_NUM:
-  case SCR_DYN_STR:
-  case SCR_DYN_BIGINT:
-  case SCR_DYN_SYMBOL: {
-    static const char message[] = "Reflect.has called on non-object";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    return;
-  }
-  default:
-    return;
-  }
+  if (!scr_dyn_primitive_kind(target)) return;
+  static const char message[] = "Reflect.has called on non-object";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
 }
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 2); }
 
@@ -12336,11 +12336,66 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   return false;
 }
 
+/* True for the dyn kinds whose JS value is a primitive: the `in` operator
+ * and Reflect reject them with Node's TypeError instead of taking a
+ * property key. */
+static bool scr_dyn_primitive_kind(const ScrDyn *v) {
+  switch (v->kind) {
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NULL:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* V8's Object::NoSideEffectsToString: the spelling Node's TypeError gives an
+ * operand, computed WITHOUT running user code (a key's own toString never
+ * runs — `["x"] in null` reports "[object Array]", not "x"). Primitives and
+ * arrays are exact; every other object renders "#<Object>", which is V8's
+ * spelling for a plain object, a Map or a Promise, while an object that
+ * shadows toString, a Date, or a function spells differently there (only a
+ * computed KEY can reach this: an `in` RECEIVER is a primitive here).
+ * Borrows d; returns +1. */
+static ScrStr *scr_dyn_no_side_effects_to_string(const ScrDyn *d) {
+  if (scr_dyn_primitive_kind(d)) return scr_dyn_string_constructor(d);
+  if (d->kind == SCR_DYN_ARR) return scr_str_new("[object Array]", 14);
+  return scr_str_new("#<Object>", 9);
+}
+
+/* The `in` operator's ToObject step: every primitive receiver throws Node's
+ * TypeError ("Cannot use 'in' operator to search for 'k' in 5"), and the
+ * throw precedes the key's ToPropertyKey, so an object key's toString must
+ * NOT run (V8 spells it with NoSideEffectsToString). Throws and returns true
+ * for a primitive v; returns false — no exception — otherwise. */
+static bool scr_dyn_in_on_primitive(const ScrDyn *v, const ScrStr *key) {
+  if (!scr_dyn_primitive_kind(v)) return false;
+  ScrStr *receiver = scr_dyn_string_constructor(v);
+  if (!receiver) return true;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Cannot use 'in' operator to search for '");
+  scr_jb_write(&b, key->data, key->len);
+  scr_jb_puts(&b, "' in ");
+  scr_jb_write(&b, receiver->data, receiver->len);
+  scr_str_release(receiver);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return true;
+}
+
 /* The `in` operator: scr_dyn_has_key's own-chain answer, plus the members
  * every chain inherits from its builtin prototype (Object.prototype, and
  * Array.prototype before it for arrays) and, for a class instance seen as
- * `unknown`, its class's compiled methods and accessors. */
+ * `unknown`, its class's compiled methods and accessors. A primitive
+ * receiver throws Node's TypeError instead of answering (a string's index
+ * presence included: `'0' in 'ab'` throws in Node). */
 bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
+  if (scr_dyn_in_on_primitive(v, key)) return false;
 #ifdef SCR_NODE_ISLANDS
   if (scr_ni_is_handle(v)) {
     ScrDyn *k = scr_dyn_new_str((ScrStr *)key);

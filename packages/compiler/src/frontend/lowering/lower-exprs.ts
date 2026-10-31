@@ -162,6 +162,7 @@ export {
   lowerIncDecTarget,
   lowerPrefixUnary,
 } from "./expressions/updates.js";
+import { lowerDeleteExpression } from "./primitive-throws.js";
 import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
 import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
@@ -867,6 +868,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
 
+  // `delete` in expression position: a primitive base answers the way the
+  // statement form does (true, or Node's ToObject TypeError); other bases
+  // keep the fence.
+  if (ts.isDeleteExpression(expr)) return lowerDeleteExpression(lowerer, expr);
   const entry = UNSUPPORTED_EXPR[expr.kind];
   if (entry)
     lowerer.unsupported(

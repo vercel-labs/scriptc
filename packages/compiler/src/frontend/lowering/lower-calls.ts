@@ -220,6 +220,7 @@ import {
   primitiveCtorClosure,
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
+import { nullishLiteral, nullishReadTypeError, throwAfterEach } from "./primitive-throws.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
 import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
@@ -402,6 +403,27 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
+  // `(null).foo()` / `(undefined)["foo"]()`: the MEMBER READ throws Node's
+  // TypeError before the arguments evaluate, exactly as a plain read does.
+  // Only a nullish LITERAL qualifies — every other receiver, a binding or a
+  // property included, has a value the runtime reads and refuses itself,
+  // with the same message and the same order.
+  {
+    const callee = expr.expression;
+    const member =
+      ts.isPropertyAccessExpression(callee) && !callee.questionDotToken
+        ? { base: callee.expression, name: callee.name.text }
+        : ts.isElementAccessExpression(callee) && !callee.questionDotToken
+          ? { base: callee.expression, name: lowerer.foldedStringKeyOf(callee.argumentExpression) }
+          : null;
+    const unit =
+      !expr.questionDotToken && member !== null ? nullishLiteral(lowerer, member.base) : null;
+    if (member !== null && member.name !== null && unit !== null) {
+      const recv = lowerer.lowerExpr(member.base);
+      const t = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? F64;
+      return throwAfterEach([recv], nullishReadTypeError(unit, member.name, t, loc), loc);
+    }
+  }
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.

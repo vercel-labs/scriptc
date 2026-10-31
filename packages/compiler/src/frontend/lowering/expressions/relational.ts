@@ -47,6 +47,7 @@ import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
+import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
 import { partialFieldPresence } from "../partial-assertions.js";
 import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
@@ -1699,6 +1700,13 @@ export function lowerInExpression(
   // below, so the assertion's checked extraction must not run first (it
   // would trap on the very arm the probe exists to detect).
   let recv = assertedInOperand(lowerer, expr.right) ?? lowerer.lowerExpr(expr.right);
+  // A PRIMITIVE receiver: JavaScript's ToObject step throws Node's TypeError
+  // for every primitive (`'x' in 5` included), and the throw precedes the
+  // key's ToPropertyKey — the key is a compile-time literal on every path
+  // that reaches here, so only the receiver's own evaluation remains.
+  if (isPrimitiveValueType(recv.type)) {
+    return throwAfterEach([recv], inOperatorTypeError(lowerer, key, recv, BOOL, loc), loc);
+  }
   const classInfo =
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (

@@ -103,6 +103,7 @@ import {
   lowerIndexedUnionWrite,
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 
 /** The per-arm answer for a presence probe of an element read through an
  * erased assertion (`typeof (u as R)["member"]`), or null when the read is
@@ -850,6 +851,31 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         "SC1090",
         expr,
         "string indexing with this index/result shape (expected a number index and a string or string | undefined result)",
+      );
+    }
+    // A NULLISH receiver (`(null)["k"]`): Node's RequireObjectCoercible
+    // TypeError at the read, after the key's own expression. The message
+    // needs only the key's spelling, which a runtime key cannot supply
+    // without V8's no-side-effect renderer, so that form keeps a written
+    // refusal instead of a runtime fence.
+    if (receiver && isUnitType(receiver.type)) {
+      const key = lowerer.foldedStringKeyOf(expr.argumentExpression);
+      if (key === null)
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "reading a member of a nullish value with a runtime key (Node throws before it converts the key)",
+        );
+      const unit = receiver.type.kind === "nullT" ? "null" : "undefined";
+      return throwAfterEach(
+        [receiver],
+        nullishReadTypeError(
+          unit,
+          key,
+          lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? F64,
+          locOf(expr),
+        ),
+        locOf(expr),
       );
     }
     lowerer.unsupported("SC1090", expr, "element access on non-array values");

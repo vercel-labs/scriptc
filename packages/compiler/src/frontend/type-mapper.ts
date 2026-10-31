@@ -8129,8 +8129,17 @@ export function erasedOverloadMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType
 /** Why an overloaded member's set has no erased type
  * (erasedOverloadMemberType): the first overload, and within it the first
  * parameter or result, that does not map; otherwise the join itself. A
- * message tail after "its member 'name'". */
-function describeOverloadSetBlocker(t: ts.Type, ctx: TypeMapperCtx): string {
+ * message tail after "its member 'name'". `depth` and `seen` continue the
+ * enclosing description's walk: an overload whose parameter or result
+ * names the record being described (`interface Chain { attach(next:
+ * Chain): Chain }`) must answer from that walk, not restart it, or each
+ * overload tail would describe the same set again without end. */
+function describeOverloadSetBlocker(
+  t: ts.Type,
+  ctx: TypeMapperCtx,
+  depth: number,
+  seen: Set<ts.Type>,
+): string {
   const { checker } = ctx;
   for (const sig of checker.getCallSignatures(t)) {
     const own = new Set<ts.Type>(sig.getTypeParameters());
@@ -8153,10 +8162,10 @@ function describeOverloadSetBlocker(t: ts.Type, ctx: TypeMapperCtx): string {
     for (const param of sig.getParameters()) {
       const paramTs = checker.getTypeOfSymbol(param);
       if (!mapType(paramTs, sigCtx))
-        return `is an overload set, and its ${which} has parameter '${ts.symbolName(param)}' of type '${checker.typeToString(paramTs)}', which does not compile${slotReason(paramTs, ctx, 1, new Set([t]))}`;
+        return `is an overload set, and its ${which} has parameter '${ts.symbolName(param)}' of type '${checker.typeToString(paramTs)}', which does not compile${slotReason(paramTs, ctx, depth + 1, seen)}`;
     }
     const retTs = checker.getReturnTypeOfSignature(sig);
-    return `is an overload set, and its ${which} returns '${checker.typeToString(retTs)}', which does not compile${slotReason(retTs, ctx, 1, new Set([t]))}`;
+    return `is an overload set, and its ${which} returns '${checker.typeToString(retTs)}', which does not compile${slotReason(retTs, ctx, depth + 1, seen)}`;
   }
   return "is an overload set whose signatures do not join into one stored function (a void result beside a value result, or positions whose differing types do not cross the checked-dynamic boundary)";
 }
@@ -9451,7 +9460,7 @@ export function describeRecordMemberBlocker(
     const fieldTs = checker.getTypeOfSymbol(p);
     if (isOverloadedCallableMemberType(fieldTs, checker)) {
       if (erasedOverloadMemberType(fieldTs, ctx) !== undefined) continue;
-      return `the record shape is supported, but its member '${ts.symbolName(p)}' ${describeOverloadSetBlocker(fieldTs, ctx)}`;
+      return `the record shape is supported, but its member '${ts.symbolName(p)}' ${describeOverloadSetBlocker(fieldTs, ctx, depth, seen)}`;
     }
     if (memberMaps(fieldTs, ctx, p)) continue;
     // Name the deepest member the failure comes from (`order.deployment.

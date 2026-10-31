@@ -7,6 +7,7 @@ static int test_spki_sha256(const unsigned char *, size_t, unsigned char *, int)
 #undef mbedtls_sha256
 
 #include <assert.h>
+#include "mbedtls/oid.h"
 #include <signal.h>
 #include <unistd.h>
 
@@ -271,6 +272,25 @@ static void handshake(const char *dir) {
   hash_error = selected == HASH_ERROR ? LEAF : NULL;
 
   ScrTlsSrv *srv = scr_tls_srv_new(served, strlen(served), served_key, strlen(served_key), false);
+  if (selected == CLIENT_SECONDARY) {
+    mbedtls_x509_crt wire;
+    mbedtls_x509_crt_init(&wire);
+    check(mbedtls_x509_crt_parse_der(&wire, srv->cert.raw.p, srv->cert.raw.len) == 0,
+          "independently parse signed client-only certificate");
+    check(mbedtls_x509_crt_check_extended_key_usage(&wire, MBEDTLS_OID_SERVER_AUTH,
+          MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) != 0 &&
+          mbedtls_x509_crt_check_extended_key_usage(&wire, MBEDTLS_OID_CLIENT_AUTH,
+          MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) == 0, "wire certificate is clientAuth-only");
+    /* mbedTLS otherwise refuses this fixture before sending Certificate.
+     * Relax only the sender's selection cache; the client reparses signed
+     * DER and must still reject its real EKU after the policy callback. */
+    srv->cert.MBEDTLS_PRIVATE(ext_types) &= ~MBEDTLS_X509_EXT_EXTENDED_KEY_USAGE;
+    check(mbedtls_x509_crt_check_extended_key_usage(&srv->cert, MBEDTLS_OID_SERVER_AUTH,
+          MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) == 0, "sender can select fixture certificate");
+    check(srv->cert.raw.len == wire.raw.len &&
+          memcmp(srv->cert.raw.p, wire.raw.p, wire.raw.len) == 0, "signed wire DER is unchanged");
+    mbedtls_x509_crt_free(&wire);
+  }
   ScrBytes *server_ca = bytes(ca);
   ScrTlsClientAuth auth = {
     .request = request,

@@ -57,6 +57,7 @@ import { assertsGlobalObject, extractionCopiesReference } from "../assertion-ide
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
 import { isMessageListenerCall } from "./message-listeners.js";
+import { holdsReference } from "../coercions/dyn-adoption.js";
 import { assertedProbeAccessOf, deferredMemberReadTarget } from "./asserted-receiver.js";
 
 /** `c ? a : b`. An explicit destination constructs each branch at that
@@ -1866,17 +1867,6 @@ function isMessageListener(fn: ts.Node): boolean {
       return false;
   }
   return true;
-}
-
-/** True when a type holds a record or an array somewhere (values whose
- * identity can be observed). */
-function holdsReference(lowerer: Lowerer, t: IrType, seen = new Set<string>()): boolean {
-  if (t.kind === "record" || t.kind === "array") return true;
-  if (t.kind !== "union" || seen.has(t.unionId)) return false;
-  seen.add(t.unionId);
-  return (
-    lowerer.unions.get(t.unionId)?.arms.some((arm) => holdsReference(lowerer, arm, seen)) ?? false
-  );
 }
 
 /** `(<package expr> as __scriptc_decl_N)`: check the dynamic value against

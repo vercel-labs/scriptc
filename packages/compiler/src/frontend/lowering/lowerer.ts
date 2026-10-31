@@ -185,6 +185,7 @@ import {
   widthNarrowHelper,
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
+import { adoptingDynCheck } from "./coercions/dyn-adoption.js";
 import {
   boxBuiltinValuesChecked,
   lowerUtilTypeValue,
@@ -13028,7 +13029,8 @@ export class Lowerer {
         funcOk ||
         handleOk
       ) {
-        return { kind: "dynCheck", value: expr, type: expected, loc: expr.loc };
+        // A record or array target keeps one identity with its source.
+        return adoptingDynCheck(this, expr, expected, expr.loc);
       }
       return expr;
     }

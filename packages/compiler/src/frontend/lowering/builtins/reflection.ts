@@ -1,6 +1,6 @@
 import { varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
-import { type Lowerer } from "../lowerer.js";
+import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
@@ -12,6 +12,7 @@ import {
   type SrcLoc,
   VOID,
   arrayOf,
+  canConvertToDyn,
   isUnitType,
 } from "../../../ir/ir.js";
 
@@ -30,6 +31,62 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
     loc,
   )!;
   return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc };
+}
+
+/** Object.getPrototypeOf / Reflect.getPrototypeOf (and their setPrototypeOf
+ * twins) over a dyn-convertible value: the checked-dynamic prototype edge,
+ * so a class instance, plain object, function or array all answer Node's
+ * prototype of their boxed view. The identity-only flag marks a producer
+ * the runtime can answer without materializing the prototype (a `===`).
+ * Null when the value has no checked-dynamic form (the caller's fence). */
+export function lowerPrototypeReflectionCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "getPrototypeOf" | "setPrototypeOf",
+  loc: SrcLoc,
+): IrExpr | null {
+  let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
+  if (object.type.kind === "func") {
+    const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
+    object = {
+      kind: "dynFrom",
+      value: object,
+      type: DYN,
+      loc,
+      ...(fnName !== null ? { fnName } : {}),
+    };
+  }
+  if (
+    object.type.kind !== "dyn" &&
+    canConvertToDyn(
+      object.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
+  if (object.type.kind !== "dyn") return null;
+  if (member === "getPrototypeOf") {
+    let parent: ts.Node | undefined = call.parent;
+    while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+    const identityOnly =
+      !!parent &&
+      ts.isBinaryExpression(parent) &&
+      [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(
+        parent.operatorToken.kind,
+      );
+    return {
+      kind: "libCall",
+      fn: "dyn.getPrototype",
+      args: [object],
+      type: DYN,
+      loc,
+      ...(identityOnly ? { prototypeIdentityOnly: true as const } : {}),
+    };
+  }
+  const prototype = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+  if (prototype.type.kind !== "dyn") return null;
+  return { kind: "libCall", fn: "dyn.setPrototype", args: [object, prototype], type: DYN, loc };
 }
 
 /** Reflect.ownKeys uses native computed-key reflection. Reflect.apply(target,
@@ -63,6 +120,15 @@ export function lowerReflectCall(
   }
   if (call.questionDotToken) return null;
   const reflectMember = lowerer.stdlibGlobalMember(access, "Reflect");
+  // Reflect.getPrototypeOf(target) — the prototype object of the target's
+  // checked-dynamic view, exactly Object.getPrototypeOf's answer.
+  if (
+    reflectMember === "getPrototypeOf" &&
+    call.arguments.nodes.length === 1 &&
+    !ts.isSpreadElement(call.arguments.nodes[0]!)
+  ) {
+    return lowerPrototypeReflectionCall(lowerer, call, "getPrototypeOf", locOf(call));
+  }
   // Reflect.has(target, key) — the `in` operator's presence query over
   // the target's checked-dynamic view (own and inherited names, proxy
   // `has` traps included). A primitive target is Node's TypeError

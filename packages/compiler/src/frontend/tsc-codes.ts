@@ -210,22 +210,22 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   //
   // 2695, an unused comma-operand left side (`(0, fn)`, `(0, [[x]] = [])`):
   // the operator evaluates the left operand for its effects and yields the
-  // right one; the lowerer emits a sequence expression for it. The pinned
-  // Test262 survey (2026-10-28 journals) records 459 refusal variants whose
-  // diagnostics include this message, 412 of them with no other code, across
-  // 266 files; corpus 8700 pins the lowered list against Node.
+  // right one; the lowerer emits a sequence expression for it. The 2026-10-29
+  // campaign baseline records 555 refusal variants whose diagnostics include
+  // this message, 508 of them with no other diagnostic, across 281 files;
+  // corpus 8700 pins the lowered list against Node.
   2695,
   // 18050, `null`/`undefined` in an arithmetic or bitwise position
   // (`null + undefined`, `null * 3`): ToNumber gives them 0 and NaN, which
   // the numeric coercion implements for a unit literal; the demand comes
-  // from strictNullChecks, not from JavaScript. Survey: 363 refusal variants
-  // (338 sole, 203 files); corpus 8702 pins the numeric result against Node.
+  // from strictNullChecks, not from JavaScript. Baseline: 416 refusal variants
+  // (390 sole, 208 files); corpus 8702 pins the numeric result against Node.
   18050,
   // 7057, a `yield` in a generator with no return-type annotation: the
   // generator protocol is untyped in JavaScript and the sent value is
   // whatever the caller passes. The generator lowering owns the channels.
-  // Survey: 263 refusal variants (230 sole, 160 files); corpus 8703 pins the
-  // sent values and the completion against Node.
+  // Baseline: 312 refusal variants (275 sole, 165 files); corpus 8703 pins
+  // the sent values and the completion against Node.
   7057,
   // 7032, a set accessor whose parameter has no type annotation ("property
   // implicitly has type 'any'"): a JavaScript setter's parameter is whatever
@@ -262,7 +262,7 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
  *  - TS2508 ("No base constructor has the specified number of type
  *    arguments", `class X extends Iterator {}`) needs extending a class
  *    declared outside the program; heritage lowering answers SC1090. The
- *    survey records 260 refusal variants (232 sole, 139 files), every one a
+ *    baseline records 296 refusal variants (268 sole, 148 files), every one a
  *    stdlib heritage (`extends Iterator`, `Iterator.from`,
  *    `Iterator.prototype.<method>` non-constructible tests).
  *  - TS1166 (a non-literal class-field key) needs a field the lowering can
@@ -278,8 +278,8 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
  *    that differ from Node (on the relaxed experiment tree, Test262
  *    Object/prototype/toLocaleString/S15.2.4.3_A9,
  *    String/prototype/charAt/S15.5.4.4_A9 and indexOf/S15.5.4.7_A9 fail).
- *    The lowering needs a builtin-receiver fence first. The survey records
- *    250 refusal variants (236 sole, 136 files) for this code.
+ *    The lowering needs a builtin-receiver fence first. The baseline records
+ *    255 refusal variants (191 sole, 162 files) for this code.
  *  - TS2464 (a computed property name whose type is not a literal) is exact
  *    for an OBJECT literal (the lowering converts a dynamic key with
  *    ToPropertyKey; the relaxed experiment tree passed every object-literal

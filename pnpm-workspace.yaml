@@ -2,6 +2,7 @@ packages:
   - "packages/*"
   - "internal/*"
   - "tests/fixtures/effect4"
+  - "tests/fixtures/hono"
 minimumReleaseAgeExclude:
   - "vercel@58.1.0"
   - "effect@4.0.0"

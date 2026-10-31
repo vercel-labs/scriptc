@@ -1,8 +1,10 @@
 // spawnSync WITHOUT an { encoding } option captures Buffers (Node's
 // SpawnSyncReturns<Buffer>): the result fields carry the bytes, the brand
 // is observable (Buffer.isBuffer), and the Buffer read methods (utf8/hex/
-// base64 toString, indexing, length) answer exactly as under Node. The
-// `formatSpawnFailure` shape real code uses — result.stderr?.toString()
+// base64 toString, indexing, length) answer exactly as under Node. Two
+// reads of a capture are the same object and writes through one read are
+// visible through the next, as Node's one-Buffer-per-capture result has.
+// The `formatSpawnFailure` shape real code uses — result.stderr?.toString()
 // .trim() — is the trimmed stderr. With { encoding: "utf8" } the same
 // fields stay strings.
 import { spawnSync } from "node:child_process";
@@ -32,6 +34,18 @@ console.log("bin-bytes", binary.stdout[0], binary.stdout[1], binary.stdout[2], b
 // The options FORM without an encoding is still Buffer.
 const opts = spawnSync("sh", ["-c", "echo piped"], { timeout: 10_000 });
 console.log("opts", Buffer.isBuffer(opts.stdout), JSON.stringify(opts.stdout.toString()));
+
+// Node builds one Buffer per capture together with the result: two reads
+// of the property are the same object, a write through one read is visible
+// through the next, and two captures (or two calls) are different objects.
+const identity = spawnSync("/bin/sh", ["-c", "printf 'abcd'"]);
+const captured = identity.stdout;
+console.log("identity", captured === identity.stdout, identity.stderr === identity.stderr);
+console.log("distinct", identity.stdout === identity.stderr, identity.stdout === ok.stdout);
+captured.fill(0x58); // "XXXX"
+console.log("mutated", JSON.stringify(identity.stdout.toString()), identity.stdout[0]);
+identity.stdout.fill(0x59, 3); // "XXXY"
+console.log("mutated2", JSON.stringify(captured.toString()));
 
 // An explicit encoding keeps the string representation.
 const text = spawnSync("sh", ["-c", "printf 'plain\\n'"], { encoding: "utf8" });

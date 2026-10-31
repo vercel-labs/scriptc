@@ -1089,6 +1089,13 @@ export class LlEmitter {
    * fields and arrays of compactRefType hold 32-bit references. */
   compactRegion = false;
 
+  /** A compact class has a field holding an array, a map, a set or a heap
+   * instance (windowRefType), so a reference to it is a 32-bit address of
+   * the allocator's window: main requires the window to serve every
+   * reference block (scr_sa_require_window), and ends the process when it
+   * cannot, rather than hand out an address a field would truncate. */
+  windowRefs = false;
+
   /** Native class fields with different property names cannot occupy the
    * same slot of one object. Inherited views of the same property share a
    * tag. Array storage has its own disjoint categories; untagged runtime
@@ -2649,7 +2656,10 @@ export class LlEmitter {
               const f = cls.fields[i]!;
               if (this.inlineUnions.classField(cls.name, f.name)) return false;
               if (this.compactRefType(f.type, isCompact)) return true;
-              if (this.windowRefType(f.type, isCompact)) return true;
+              if (this.windowRefType(f.type, isCompact)) {
+                this.windowRefs = true;
+                return true;
+              }
               const nullable =
                 f.type.kind === "union" && this.nullableUnions.single(f.type.unionId) === null
                   ? this.nullableFields.get(cls.name, f.name)

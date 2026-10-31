@@ -60,6 +60,7 @@ static void scr_sa_thread_large_note(void);
 #if SCR_SMALL_ALLOC
 #include <sched.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 /* Page policy. Chunk pages are committed by first touch, which on 4 KiB
  * pages is one fault (and page clear) per 4 KiB the bump pointers cross.
@@ -958,6 +959,14 @@ static inline unsigned scr_sa_owner(const void *p) {
 /* The start of the chunk holding p, a pointer into the window. */
 static inline char *scr_sa_chunk_of(const void *p) {
   return scr_sa_window + (((uintptr_t)p - (uintptr_t)scr_sa_window) & ~(uintptr_t)(SCR_SA_CHUNK - 1));
+}
+
+/* Whether p is a block of the window: small, large or run, of the calling
+ * thread's arena or another's. */
+static inline bool scr_sa_in_window(const void *p) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  uintptr_t off = (uintptr_t)p - (uintptr_t)w;
+  return w && off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT;
 }
 
 /* Per arena and class: the chunk the class carves now (NULL before its
@@ -2507,6 +2516,30 @@ void scr_sa_free_foreign(void *p) {
 }
 #endif /* SCR_WORKERS */
 
+/* A program that stores references in 32-bit fields: every block a reference
+ * names must lie in the window, since the field keeps address >> 3 in 32
+ * bits. The compiler emits scr_sa_require_window at startup for a program
+ * whose compact classes have a field holding an array, a map, a set or a
+ * heap instance, before any thread allocates; worker contexts set it again
+ * (atomically: one may start while another allocates). Plain programs keep
+ * the system allocator's blocks past the window. */
+static bool scr_sa_win_required;
+
+void scr_sa_require_window(void) { __atomic_store_n(&scr_sa_win_required, true, __ATOMIC_RELAXED); }
+
+static inline bool scr_sa_window_required(void) {
+  return __atomic_load_n(&scr_sa_win_required, __ATOMIC_RELAXED);
+}
+
+/* The window has no room left (for a reference block, or for the region of
+ * program-lifetime objects): ended as Node ends at its heap limit, with this
+ * message and an abort. */
+static _Noreturn void scr_sa_window_limit(void) {
+  static const char message[] =
+      "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n";
+  scr_trap(message);
+}
+
 /* Runs once per class (to reserve the window and open a chunk) and then only for
  * blocks the fast path does not serve. */
 __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
@@ -2637,11 +2670,23 @@ static void *scr_sa_large_take(size_t n, bool zero) {
  * window blocks, as it records its system blocks, so that they go back when
  * it parks without having shared. */
 __attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
-  if (n - 1 < SCR_SA_MAX) return scr_sa_slow(n, zero);
-  if (n > SIZE_MAX - SCR_SA_CHUNK || !(scr_sa.span || (!scr_sa_refused && scr_sa_reserve())))
+  if (n - 1 < SCR_SA_MAX) {
+    void *p = scr_sa_slow(n, zero);
+    /* The window could not serve it (full, refused, or the thread has no
+     * arena): a program that stores references in 32-bit fields cannot keep
+     * the system address the field would truncate. */
+    if (scr_sa_window_required() && !scr_sa_in_window(p)) scr_sa_window_limit();
+    return p;
+  }
+  if (n > SIZE_MAX - SCR_SA_CHUNK || !(scr_sa.span || (!scr_sa_refused && scr_sa_reserve()))) {
+    if (scr_sa_window_required()) scr_sa_window_limit();
     return scr_sa_slow(n, zero);
+  }
   void *p = scr_sa_large_take(n, zero);
-  if (!p) return scr_sa_slow(n, zero);
+  if (!p) {
+    if (scr_sa_window_required()) scr_sa_window_limit();
+    return scr_sa_slow(n, zero);
+  }
 #ifdef SCR_SA_TRIM
   if (scr_sa_keep) scr_sa_keep_add(scr_sa_keep, p);
 #endif
@@ -2709,6 +2754,21 @@ void *scr_mem_realloc_ref(void *p, size_t n) {
     }
   }
 #endif
+  /* A block of the system allocator on a platform whose usable size this
+   * runtime cannot ask for (scr_mem_block_size: no malloc_usable_size): the
+   * system allocator holds the size, so it grows the block and keeps its
+   * contents, where a copy would take the zero bytes read. */
+  if (have == 0 && n) {
+#ifdef SCR_SA_TRIM
+    bool kept = scr_sa_keep && scr_sa_keep_remove(scr_sa_keep, p);
+#endif
+    void *q = realloc(p, n);
+    if (n > SCR_SA_MAX) SCR_SA_LARGE_NOTE(q, n);
+#ifdef SCR_SA_TRIM
+    if (kept) scr_sa_keep_note_system(q ? q : p); /* a failed realloc leaves p */
+#endif
+    return q;
+  }
   void *q = scr_mem_alloc_ref(n ? n : 1);
   if (!q) return NULL;
   memcpy(q, p, have < n ? have : n);
@@ -3163,13 +3223,8 @@ _Thread_local ScrPlrChunk scr_plr_chunk = {NULL, NULL};
 ScrPlrChunk scr_plr_chunk = {NULL, NULL};
 #endif
 
-/* The heap limit: the window has no room left. As Node's does, it ends the
- * process with this message and an abort. */
-static _Noreturn void scr_plr_out_of_memory(void) {
-  static const char message[] =
-      "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n";
-  scr_trap(message);
-}
+/* The heap limit: the window has no room left for the region. */
+static _Noreturn void scr_plr_out_of_memory(void) { scr_sa_window_limit(); }
 
 static __attribute__((noinline)) void scr_plr_reserve(void) {
   /* scr_trap is the runtime's failure path (scr_exception.c); the

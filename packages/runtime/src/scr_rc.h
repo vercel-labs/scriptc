@@ -373,6 +373,12 @@ void *scr_rt_calloc(size_t n); /* emitted-code entry points */
  * zeroed memory. */
 void scr_plr_init(void);
 void *scr_plr_alloc(size_t n);
+/* Set by a program whose compact classes have a field holding an array, a
+ * map, a set or a heap instance (llvm/emit-module.ts calls it at startup,
+ * before any thread allocates): every reference block must then lie in the
+ * window, and one the window cannot serve ends the process instead of
+ * yielding an address a 32-bit field would truncate. */
+void scr_sa_require_window(void);
 /* The calling script thread's part of the region: emitted allocation fast
  * paths take [next, limit) in 8-byte multiples and call scr_plr_alloc when
  * it is exhausted (llvm/classes.ts addresses both fields). */
@@ -582,8 +588,15 @@ void scr_sa_free_foreign(void *p);
 /* Refill miss: reserves on first use, falls back to the system allocator
  * for large blocks, n == 0, an exhausted window, or a refused reservation. */
 void *scr_sa_slow(size_t n, bool zero);
+/* As scr_sa_slow, for a block a 32-bit reference may name (a reference
+ * block): large blocks come from the window's large classes and runs, and
+ * when the program stores references in 32-bit fields (scr_sa_require_window)
+ * a block the window cannot serve ends the process. */
+void *scr_sa_slow_ref(size_t n, bool zero);
 
-static inline void *scr_sa_take(size_t n, bool zero) {
+/* A block of the size class in the calling thread's free list or bump room;
+ * ref selects the miss path of a reference block (scr_mem_alloc_ref). */
+static inline void *scr_sa_take(size_t n, bool zero, bool ref) {
   if (n - 1 < SCR_SA_MAX) { /* n == 0 wraps to the slow path */
     unsigned c = scr_sa_class(n);
     ScrSaBlock *b = scr_sa.free[c];
@@ -599,22 +612,17 @@ static inline void *scr_sa_take(size_t n, bool zero) {
       return p;
     }
   }
-  return scr_sa_slow(n, zero);
+  return ref ? scr_sa_slow_ref(n, zero) : scr_sa_slow(n, zero);
 }
 
-static inline void *scr_mem_alloc(size_t n) { return scr_sa_take(n, false); }
-static inline void *scr_mem_calloc(size_t n) { return scr_sa_take(n, true); }
+static inline void *scr_mem_alloc(size_t n) { return scr_sa_take(n, false, false); }
+static inline void *scr_mem_calloc(size_t n) { return scr_sa_take(n, true, false); }
 /* Blocks a 32-bit reference may name: strings with their characters, class
  * instances, records and closures. Up to SCR_SA_MAX bytes they are small
  * blocks; above, they come from the window's large classes (scr_alloc.c), so
  * that they lie in the window as small blocks do. Freed with scr_mem_free. */
-void *scr_sa_slow_ref(size_t n, bool zero);
-static inline void *scr_mem_alloc_ref(size_t n) {
-  return n - 1 < SCR_SA_MAX ? scr_sa_take(n, false) : scr_sa_slow_ref(n, false);
-}
-static inline void *scr_mem_calloc_ref(size_t n) {
-  return n - 1 < SCR_SA_MAX ? scr_sa_take(n, true) : scr_sa_slow_ref(n, true);
-}
+static inline void *scr_mem_alloc_ref(size_t n) { return scr_sa_take(n, false, true); }
+static inline void *scr_mem_calloc_ref(size_t n) { return scr_sa_take(n, true, true); }
 void *scr_mem_realloc_ref(void *p, size_t n);
 /* The usable bytes of a block of scr_mem_alloc, scr_mem_alloc_ref or the
  * system allocator. */

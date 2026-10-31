@@ -1337,18 +1337,40 @@ static void check_window_exhaustion(void) {
   scr_mem_free(again);
 }
 
+/* Reference blocks the window cannot serve fall back to the system
+ * allocator, as plain blocks do, and growing one keeps its contents: on a
+ * platform whose usable size the runtime cannot ask for (scr_mem_block_size
+ * without malloc_usable_size) only the system allocator knows the block's
+ * size, and a copy would read no bytes. check_window_exhaustion runs first:
+ * every chunk of the window is another class's. */
+static void check_window_ref_fallback(void) {
+  enum { SZ = 1024, N = 8 };
+  static unsigned char *block[N];
+  for (size_t i = 0; i < N; i++) {
+    block[i] = scr_mem_alloc_ref(SZ);
+    assert(block[i] && aligned(block[i], 16) && !owned(block[i]));
+    fill(block[i], SZ, (unsigned char)i);
+  }
+  unsigned char *grown = scr_mem_realloc_ref(block[3], 2 * SZ);
+  assert(grown && !owned(grown));
+  verify(grown, SZ, 3);
+  block[3] = grown;
+  for (size_t i = 0; i < N; i++) scr_mem_free(block[i]);
+}
+
 #ifdef __linux__
-/* Program-lifetime objects past the window end the process as Node does
- * when its heap is full: its message and an abort. */
-static void check_window_heap_limit(void) {
+/* Runs fn in a child and expects the heap-limit message and an abort: an
+ * allocation that needs the window could not have it. */
+static void expect_heap_limit(void (*fn)(void)) {
   int fds[2];
   assert(pipe(fds) == 0);
   pid_t child = fork();
   assert(child >= 0);
   if (child == 0) {
     (void)dup2(fds[1], 2);
-    scr_plr_init();
-    for (;;) (void)scr_plr_alloc((size_t)1 << 20);
+    close(fds[0]);
+    fn();
+    _exit(0); /* the allocation returned: it did not need the window */
   }
   close(fds[1]);
   char out[256] = {0};
@@ -1360,6 +1382,34 @@ static void check_window_heap_limit(void) {
   assert(waitpid(child, &status, 0) == child);
   assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
   assert(strcmp(out, "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n") == 0);
+}
+
+/* Program-lifetime objects past the window end the process as Node does
+ * when its heap is full: its message and an abort. */
+static void fill_program_lifetime(void) {
+  scr_plr_init();
+  for (;;) (void)scr_plr_alloc((size_t)1 << 20);
+}
+
+/* So does a reference block, small or large, in a program that stores
+ * references in 32-bit fields (scr_sa_require_window): a field would keep
+ * the low bits of a system address, so the allocation ends the process
+ * instead of falling back. A thread that cannot claim an arena takes the
+ * same path. */
+static void fill_window_small_refs(void) {
+  scr_sa_require_window();
+  for (;;) (void)scr_mem_alloc_ref(64);
+}
+
+static void fill_window_large_refs(void) {
+  scr_sa_require_window();
+  for (;;) (void)scr_mem_alloc_ref((size_t)256 << 10);
+}
+
+static void check_window_heap_limit(void) {
+  expect_heap_limit(fill_program_lifetime);
+  expect_heap_limit(fill_window_small_refs);
+  expect_heap_limit(fill_window_large_refs);
 }
 #endif
 #endif
@@ -1601,6 +1651,7 @@ static void check_chunk_map(void) {
 int main(void) {
 #if defined(SCR_SA_WINDOW_TEST_CHUNKS) && SCR_SMALL_ALLOC
   check_window_exhaustion();
+  check_window_ref_fallback();
 #ifdef __linux__
   check_window_heap_limit();
 #endif

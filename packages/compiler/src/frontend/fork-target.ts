@@ -256,6 +256,57 @@ function staticString(
   return null;
 }
 
+/** Whether an entry expression names its file relative to the module that
+ * starts it: `import.meta.url`, `__filename`, or a URL whose base is one of
+ * those (`new URL("./entry.ts", import.meta.url)`, through consts,
+ * templates and fileURLToPath). That relation is the one a shipped Node
+ * island tree keeps, because every collected file keeps its layout
+ * relative to one root; an absolute path or a `file:` URL built from
+ * anything else names the build machine, which the tree does not hold. */
+export function fromModuleUrl(
+  program: ts.Program,
+  expr: ts.Expression,
+  seen: Set<ts.Symbol> = new Set(),
+): boolean {
+  const current = strip(expr);
+  if (importMetaUrl(current)) return true;
+  if (ts.isIdentifier(current) && current.text === "__filename")
+    return isNodeGlobal(program, current);
+  const init = constInitializer(program, current);
+  if (init !== null && ts.isIdentifier(current)) {
+    const symbol = program.getTypeChecker().getSymbolAtLocation(current);
+    if (symbol === undefined || seen.has(symbol)) return false;
+    seen.add(symbol);
+    const value = fromModuleUrl(program, init, seen);
+    seen.delete(symbol);
+    return value;
+  }
+  if (
+    ts.isCallExpression(current) &&
+    !current.questionDotToken &&
+    current.arguments.nodes.length === 1 &&
+    ts.isIdentifier(current.expression) &&
+    isBuiltinMemberImport(program, current.expression, "url", "fileURLToPath")
+  )
+    return fromModuleUrl(program, current.arguments.nodes[0]!, seen);
+  if (
+    ts.isNewExpression(current) &&
+    !current.questionDotToken &&
+    ts.isIdentifier(current.expression) &&
+    (isBuiltinMemberImport(program, current.expression, "url", "URL") ||
+      (current.expression.text === "URL" && isNodeGlobal(program, current.expression)))
+  ) {
+    const args = current.arguments?.nodes ?? [];
+    if (args.length !== 2) return false;
+    const input = staticString(program, args[0]!, seen);
+    // A reference relative to the base: an absolute one would not move
+    // with the module.
+    if (input === null || input.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(input)) return false;
+    return fromModuleUrl(program, args[1]!, seen);
+  }
+  return false;
+}
+
 /** Resolves the supported fork modulePath expression to an absolute source
  * path. Plain runtime strings are intentionally excluded: worker selection
  * is part of the compiled graph, not a runtime filesystem lookup. */

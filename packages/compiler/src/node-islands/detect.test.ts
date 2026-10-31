@@ -307,6 +307,8 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
   expect(reads("const fs = require('fs'); fs['readFileSync'](p);")).toEqual(["fs.readFileSync"]);
   expect(reads("const fs = require('fs'); fs[name](p);")).toEqual(["fs.*"]);
   expect(reads("const fs = require('fs'); fs['readFileSync'] = f;")).toEqual([]);
+  // A require() read directly is a read through the object too.
+  expect(reads("require('fs').readFileSync(p);")).toEqual(["fs.readFileSync"]);
   // Destructuring reads each property it takes when it runs.
   expect(reads("const { readFileSync } = require('node:fs');")).toEqual(["fs.readFileSync"]);
   expect(reads("const fs = require('fs'); const { readFileSync: read, ...rest } = fs;")).toEqual([

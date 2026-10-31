@@ -633,6 +633,37 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
   markRequireEarlyBindings(lowerer);
 }
 
+/** collectIslandImport inside the collection pass. A module the island's
+ * shipped tree cannot carry (a computed load, an unshippable resolution)
+ * has its SC8006 pushed and then throws PoisonError, which a statement
+ * fence around a body would catch. Collection runs outside those fences, so
+ * the throw is caught here: the diagnostic the loader pushed is the build's
+ * answer, and the import stays an island load of the module. */
+function collectIslandImportAtCollection(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  stmt: ts.Statement,
+  spec: string,
+): boolean {
+  try {
+    return collectIslandImport(lowerer, sf, stmt, spec);
+  } catch (error) {
+    if (!(error instanceof PoisonError)) throw error;
+    return true;
+  }
+}
+
+/** collectIslandRequires inside the collection pass, for the same reason as
+ * collectIslandImportAtCollection: a module the shipped tree cannot carry
+ * reports its SC8006 and throws, and the diagnostic is the build's answer. */
+function collectIslandRequiresAtCollection(lowerer: Lowerer, sf: ts.SourceFile): void {
+  try {
+    collectIslandRequires(lowerer, sf);
+  } catch (error) {
+    if (!(error instanceof PoisonError)) throw error;
+  }
+}
+
 export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
   const entryPackageFile = entryPackageFilePredicate(lowerer.entry.fileName);
   for (const fp of parts) {
@@ -696,14 +727,19 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // A relative import of a program module the pre-scan put in a Node
       // island (DESIGN.md note 1 §3.2): the island loads at this module's
       // position and its bindings are island values.
-      if (lowerer.nodeIslands !== null && collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
+      if (
+        lowerer.nodeIslands !== null &&
+        collectIslandImportAtCollection(lowerer, fp.sf, stmt, spec)
+      )
+        continue;
       const projectDep = isRelativeSpecifier(spec)
         ? null
         : resolveImport(lowerer.program, fp.sf, spec);
       if (projectDep !== null) {
         // A Node island package that tsconfig `paths` maps to its installed
         // directory resolves to its declarations: it loads in Node.
-        if (projectDep.isDeclarationFile) collectIslandImport(lowerer, fp.sf, stmt, spec);
+        if (projectDep.isDeclarationFile)
+          collectIslandImportAtCollection(lowerer, fp.sf, stmt, spec);
         continue;
       }
       const npm = resolveNpmImport(fp.sf.fileName, spec);
@@ -757,7 +793,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       if (npm !== null && probeNodeImportRefusal(fp.sf.fileName, spec) !== null) continue;
       // A Node island package (scope-B NI-4): loaded in Node at this
       // module's position, its bindings are island values.
-      if (collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
+      if (collectIslandImportAtCollection(lowerer, fp.sf, stmt, spec)) continue;
       {
         lowerer.pushDiag(unsupportedPackageImportDiag(npm?.packageName ?? relPkg!, locOf(stmt)));
         continue;
@@ -766,7 +802,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
   }
   for (const fp of parts) {
     collectDynamicImports(lowerer, fp.sf);
-    collectIslandRequires(lowerer, fp.sf);
+    collectIslandRequiresAtCollection(lowerer, fp.sf);
   }
 }
 

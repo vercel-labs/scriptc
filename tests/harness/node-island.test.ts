@@ -93,6 +93,26 @@ async function build(name: string, libnode?: string, entry = fixture): Promise<s
   return result.binaryPath;
 }
 
+/** A build with a cache of its own: a hit reports the islands but not the
+ * SC8001 notes, and these tests read the notes. */
+async function withFreshBuildCache<T>(build: () => Promise<T>): Promise<T> {
+  const cache = mkdtempSync(join(tmpdir(), "scriptc-builtin-patch-cache-"));
+  const previous = process.env["SCRIPTC_CACHE_DIR"];
+  process.env["SCRIPTC_CACHE_DIR"] = cache;
+  try {
+    return await build();
+  } finally {
+    if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = previous;
+    rmSync(cache, { recursive: true, force: true });
+  }
+}
+
+/** A build's diagnostics as "SC0000: message" lines. */
+function messages(result: { diagnostics?: { code: string; message: string }[] }): string[] {
+  return (result.diagnostics ?? []).map((d) => `${d.code}: ${d.message}`);
+}
+
 /** A bridge library that answers the ABI handshake and nothing else. */
 async function fakePack(name: string, abi: string, version: string): Promise<string> {
   const dir = join(outDir, name);
@@ -370,23 +390,6 @@ describe.skipIf(skip)("Node islands in-process", () => {
       );
     }
 
-    async function withFreshBuildCache<T>(build: () => Promise<T>): Promise<T> {
-      const cache = mkdtempSync(join(tmpdir(), "scriptc-builtin-patch-cache-"));
-      const previous = process.env["SCRIPTC_CACHE_DIR"];
-      process.env["SCRIPTC_CACHE_DIR"] = cache;
-      try {
-        return await build();
-      } finally {
-        if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
-        else process.env["SCRIPTC_CACHE_DIR"] = previous;
-        rmSync(cache, { recursive: true, force: true });
-      }
-    }
-
-    function messages(result: { diagnostics?: { code: string; message: string }[] }): string[] {
-      return (result.diagnostics ?? []).map((d) => `${d.code}: ${d.message}`);
-    }
-
     test("islands only the patching module, with the builtin-patch reason", async () => {
       const dir = copyCorpus("auto");
       const result = await buildDir(dir, "main");
@@ -416,6 +419,25 @@ console.log(result.text, fs.readFileSync("payload.txt", "utf8"));
       expect(result.ok).toBe(false);
       const list = messages(result);
       const read = list.find((m) => m.startsWith("SC8020:"));
+      expect(read).toBeDefined();
+      expect(read).toContain("fs.readFileSync");
+      expect(read).toContain("loader.ts");
+    }, 300_000);
+
+    test("a native read of the patched member through destructuring is SC8020", async () => {
+      const dir = copyCorpus(
+        "read-destructured",
+        `import { createRequire } from "node:module";
+import { loadPayload } from "./loader.ts";
+const require = createRequire(import.meta.url);
+const { readFileSync } = require("fs") as typeof import("fs");
+const result = await loadPayload();
+console.log(result.text, readFileSync("payload.txt", "utf8"));
+`,
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const read = messages(result).find((m) => m.startsWith("SC8020:"));
       expect(read).toBeDefined();
       expect(read).toContain("fs.readFileSync");
       expect(read).toContain("loader.ts");
@@ -560,6 +582,320 @@ export function patchAndBump(): number {
         rmSync(islandCache, { recursive: true, force: true });
       }
     }, 300_000);
+
+    // The module tree refuses a program module whose loads it cannot trace
+    // (they run in Node from the shipped tree, where nothing else provides
+    // them). Collection runs before any statement fence, so the refusal has
+    // to be a diagnostic — never a thrown PoisonError reaching the CLI.
+    test("a load the island tree cannot trace is SC8006", async () => {
+      const dir = copyCorpus(
+        "computed",
+        `import { loadPayload } from "./loader.ts";
+console.log(await loadPayload("payload-reader"));
+`,
+        {
+          "loader.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+fs.readFileSync = (() => "") as typeof fs.readFileSync;
+export async function loadPayload(name: string): Promise<unknown> {
+  return import(name);
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const untraced = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("string-literal specifiers only"),
+      );
+      expect(untraced).toBeDefined();
+      expect(untraced).toContain("loader.ts");
+      expect(untraced).toContain("import() with a computed specifier");
+    });
+  });
+
+  // A module that needs the JavaScript runtime itself — it extends a host
+  // class the program only declares — runs in a Node island automatically
+  // (R1.6). The entry stays native.
+  describe("a module that needs a host class", () => {
+    const globals = `interface HostSocket {
+  readonly readyState: number;
+  close(code?: number, reason?: string): void;
+}
+
+declare var WebSocket: {
+  new (url: string): HostSocket;
+  readonly prototype: HostSocket;
+};
+`;
+    const socket = `/// <reference path="./globals.d.ts" />
+export class Socket extends WebSocket {
+  static tag = "socket";
+}
+
+export function describeSocket(): string {
+  return \`\${Socket.tag}:\${Object.getPrototypeOf(Socket) === WebSocket}\`;
+}
+`;
+    const main = `import { describeSocket } from "./socket.ts";
+
+console.log("socket:", describeSocket());
+`;
+
+    async function buildProgram(): Promise<string> {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-host-class-"));
+      writeFileSync(
+        join(dir, "package.json"),
+        '{ "name": "host-class", "private": true, "type": "module" }\n',
+      );
+      writeFileSync(join(dir, "globals.d.ts"), globals);
+      writeFileSync(join(dir, "socket.ts"), socket);
+      writeFileSync(join(dir, "main.ts"), main);
+      return dir;
+    }
+
+    test("islands the module and runs it in Node", async () => {
+      const dir = await buildProgram();
+      const result = await withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), {
+          outPath: join(dir, "main"),
+          outDir: dir,
+          sanitize,
+          libnode: pack!,
+        }),
+      );
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["socket.ts"]);
+      const note = (result.warnings ?? []).find(
+        (d) => d.code === "SC8001" && d.message.includes("socket.ts"),
+      );
+      expect(note?.message).toContain("Node island");
+      // The island's module cache holds the TypeScript module, and Node
+      // refuses to strip types under node_modules, where this suite keeps
+      // its shared cache: this run gets a cache of its own.
+      const executed = await run(join(dir, "main"), [], {
+        ...process.env,
+        XDG_CACHE_HOME: join(dir, "cache"),
+      });
+      expect(executed).toEqual({ stdout: "socket: socket:true\n", stderr: "", code: 0 });
+    }, 600_000);
+
+    // Node runs TypeScript by erasing types in place: a module that needs a
+    // transform cannot run in an island, so its refusal stays the build's
+    // answer.
+    test("a host class in a file Node cannot strip stays refused", async () => {
+      const dir = await buildProgram();
+      writeFileSync(
+        join(dir, "socket.ts"),
+        `/// <reference path="./globals.d.ts" />
+enum Mode {
+  Socket,
+}
+export class Socket extends WebSocket {
+  static tag = Mode.Socket === 0 ? "socket" : "other";
+}
+
+export function describeSocket(): string {
+  return \`\${Socket.tag}:\${Object.getPrototypeOf(Socket) === WebSocket}\`;
+}
+`,
+      );
+      const result = await withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), { outPath: join(dir, "main"), outDir: dir, sanitize }),
+      );
+      expect(result.ok).toBe(false);
+      expect(messages(result).some((m) => m.startsWith("SC1090: extending classes"))).toBe(true);
+    }, 600_000);
+  });
+
+  // A Worker a module of the program starts from inside a Node island: its
+  // entry is a module of the program too, so the module tree ships the entry
+  // and what it imports as real sources, and the worker thread evaluates its
+  // own copies (Node gives every thread its own module instances). The corpus
+  // program 6901 pins the behavior against Node; these cases read what the
+  // build ships and what the island refuses.
+  describe("a worker entry a Node island starts", () => {
+    const corpus = join(repoRoot, "tests/corpus/6901-island-worker-entry");
+
+    /** A scratch copy of the corpus outside node_modules: the worker entry
+     * ships as TypeScript and Node refuses to strip types below one. */
+    function copyCorpus(name: string, extra: Record<string, string> = {}): string {
+      const dir = mkdtempSync(join(tmpdir(), `scriptc-island-worker-${name}-`));
+      cpSync(corpus, dir, { recursive: true });
+      for (const [file, text] of Object.entries(extra)) writeFileSync(join(dir, file), text);
+      return dir;
+    }
+
+    async function buildDir(dir: string, libnode: string = pack!) {
+      return withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), {
+          outPath: join(dir, "main"),
+          outDir: dir,
+          sanitize,
+          libnode,
+        }),
+      );
+    }
+
+    test("ships the entry and what it imports as real sources", async () => {
+      const dir = copyCorpus("tree");
+      const result = await buildDir(dir, "beside");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const modules = join(dir, "main.libnode/modules");
+      const shipped = (file: string) => readFileSync(join(modules, file), "utf8");
+      expect(shipped("worker.ts")).toContain("parentPort?.postMessage");
+      // state.ts is the program's own module: the program compiles its copy
+      // for its own thread, and the worker thread reads this source.
+      expect(shipped("state.ts")).toContain("export let count = 0;");
+      expect(shipped("launcher.ts")).toContain("new Worker(new URL");
+    }, 600_000);
+
+    // state.ts is compiled for the program's thread and also runs in the
+    // worker's thread from the tree: a Worker it starts is the worker
+    // thread's own, so its entry ships too.
+    test("ships the worker entries of a compiled module a worker imports", async () => {
+      const dir = copyCorpus("nested", {
+        "state.ts": `import { Worker } from "node:worker_threads";
+
+export let count = 0;
+
+export function bump(): number {
+  count++;
+  return count;
+}
+
+export function startNested(): Worker {
+  return new Worker(new URL("./nested.ts", import.meta.url));
+}
+`,
+        "nested.ts": `import { parentPort } from "node:worker_threads";
+
+parentPort?.postMessage("nested");
+`,
+      });
+      const result = await buildDir(dir, "beside");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const modules = join(dir, "main.libnode/modules");
+      expect(readFileSync(join(modules, "nested.ts"), "utf8")).toContain('postMessage("nested")');
+    }, 600_000);
+
+    test("runs the worker on its own module instances", async () => {
+      const dir = copyCorpus("run");
+      const result = await buildDir(dir);
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // The island's module cache cannot live under node_modules, where this
+      // suite keeps its shared one.
+      const executed = await run(join(dir, "main"), [], {
+        ...process.env,
+        XDG_CACHE_HOME: join(dir, "cache"),
+      });
+      expect(executed).toEqual({
+        stdout:
+          "socket: socket:true\nmain: 1 2 2\nworker: echo=21 worker=1,2,3 count=3 echo=22 worker=4,5,6 count=6\nmain after: 2\n",
+        stderr: "",
+        code: 0,
+      });
+    }, 600_000);
+
+    // A .mts module is an ES module whatever its package.json says, so the
+    // island loads it as one: a default import is its default export.
+    test("an islanded .mts module in a CommonJS package keeps its default export", async () => {
+      const dir = copyCorpus("mts", {
+        "package.json": '{ "name": "island-mts", "private": true }\n',
+        "launcher.mts": `/// <reference path="./globals.d.ts" />
+export class Socket extends WebSocket {
+  static tag = "socket";
+}
+
+export default function greet(name: string): string {
+  return \`hello \${name} from \${Socket.tag}:\${Object.getPrototypeOf(Socket) === WebSocket}\`;
+}
+`,
+        "main.ts": `import greet from "./launcher.mts";
+
+console.log(greet("island"));
+`,
+      });
+      const result = await buildDir(dir);
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const executed = await run(join(dir, "main"), [], {
+        ...process.env,
+        XDG_CACHE_HOME: join(dir, "cache"),
+      });
+      expect(executed).toEqual({
+        stdout: "hello island from socket:true\n",
+        stderr: "",
+        code: 0,
+      });
+    }, 600_000);
+
+    // The tree keeps the program's relative layout and no other: an entry the
+    // build cannot name is refused instead of shipped.
+    test("a computed entry is SC8006", async () => {
+      const dir = copyCorpus("computed", {
+        "launcher.ts": `/// <reference path="./globals.d.ts" />
+import { Worker } from "node:worker_threads";
+
+export class Socket extends WebSocket {
+  static tag = "socket";
+}
+
+export function socketTag(): string {
+  return \`\${Socket.tag}:\${Object.getPrototypeOf(Socket) === WebSocket}\`;
+}
+
+export function start(name: string): number {
+  return new Worker(new URL(name, import.meta.url)).threadId;
+}
+`,
+        "main.ts": `import { socketTag, start } from "./launcher.ts";
+
+console.log(socketTag(), "started", start("worker.ts"));
+`,
+      });
+      const result = await buildDir(dir);
+      expect(result.ok).toBe(false);
+      const refused = messages(result).find(
+        (m) =>
+          m.startsWith("SC8006:") &&
+          m.includes("starts a Worker whose entry the build cannot resolve"),
+      );
+      expect(refused).toBeDefined();
+      expect(refused).toContain("launcher.ts");
+      expect(refused).toContain('new URL("./entry.ts", import.meta.url)');
+    }, 600_000);
+
+    test("a worker entry Node cannot strip stays refused", async () => {
+      const dir = copyCorpus("enum", {
+        "worker.ts": `import { parentPort } from "node:worker_threads";
+
+enum Kind {
+  A,
+}
+
+parentPort?.postMessage(Kind.A);
+`,
+      });
+      const result = await buildDir(dir);
+      expect(result.ok).toBe(false);
+      const stripped = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("Node cannot strip its types"),
+      );
+      expect(stripped).toBeDefined();
+      expect(stripped).toContain("worker.ts");
+      expect(stripped).toContain("enum");
+    }, 600_000);
   });
 
   // The build-time probe evaluates modules to decide their deferral. A

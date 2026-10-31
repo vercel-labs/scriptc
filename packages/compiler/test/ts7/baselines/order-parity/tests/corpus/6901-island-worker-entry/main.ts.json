@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6901-island-worker-entry/state.ts",
+  "<repo>/tests/corpus/6901-island-worker-entry/launcher.ts",
+  "<repo>/tests/corpus/6901-island-worker-entry/main.ts"
+ ],
+ "diags": []
+}

@@ -140,11 +140,18 @@ function sloppyParsable(program: ts.Program, sf: ts.SourceFile): boolean {
 
 /** Scans `files`: markers for npm JavaScript (and for user JavaScript when
  * `userJs`), and package edges for every file when `edges` (a program with
- * no npm package has none to find). */
+ * no npm package has none to find). `stripFor` names user TypeScript modules
+ * a build is considering for an island: their `stripProblem` is computed so
+ * the build can refuse a file Node cannot run as written. */
 export function scanFiles(
   program: ts.Program,
   files: readonly ts.SourceFile[],
-  opts: { userJs: boolean; dropped: boolean; edges: boolean },
+  opts: {
+    userJs: boolean;
+    dropped: boolean;
+    edges: boolean;
+    stripFor?: ReadonlySet<string> | undefined;
+  },
 ): { modules: ScannedModule[]; edges: PackageEdge[] } {
   const modules: ScannedModule[] = [];
   const edges: PackageEdge[] = [];
@@ -160,6 +167,10 @@ export function scanFiles(
     // (H3.2): its other markers are JavaScript semantics, and sloppy
     // parsing is never required of TypeScript.
     const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
+    // A module a build asks about for an island (H3.5's check, before it
+    // decides): the cost stays with the modules under consideration.
+    const forRun =
+      !js && origin === "user" && !sf.isDeclarationFile && opts.stripFor?.has(sf.fileName) === true;
     let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [] };
     if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
     let markers = userTs
@@ -173,7 +184,7 @@ export function scanFiles(
       packageName: at === null ? null : at.name,
       markers,
       cjsReads: facts.cjsReads,
-      stripProblem: userTs && markers.length > 0 ? stripProblem(program, sf) : null,
+      stripProblem: forRun || (userTs && markers.length > 0) ? stripProblem(program, sf) : null,
       dropped: opts.dropped,
     });
     if (!opts.edges) continue;

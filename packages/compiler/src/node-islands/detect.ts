@@ -668,10 +668,24 @@ class ModuleScanner {
    * so it is recorded as the whole module ("fs.*"). */
   private recordCjsRead(node: ts.PropertyAccessExpression | ts.ElementAccessExpression): void {
     const root = chainRoot(node);
-    if (root === null || !this.cjsBuiltinObjects.has(root.text)) return;
-    const module = this.builtinBindings.get(root.text);
-    if (module === undefined) return;
     const text = chainText(node);
+    let member: string;
+    if (root === null) {
+      // A require() of the builtin read directly
+      // (`require("fs").readFileSync`): the chain starts at the call.
+      let base = stripWrappers(node.expression);
+      while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base))
+        base = stripWrappers(base.expression);
+      if (!this.isCjsObjectValue(base)) return;
+      const module = this.builtinOf(base);
+      if (module === null) return;
+      member = this.builtinOf(node) ?? `${module.split(".")[0]}.*`;
+    } else {
+      if (!this.cjsBuiltinObjects.has(root.text)) return;
+      const module = this.builtinBindings.get(root.text);
+      if (module === undefined) return;
+      member = text === null ? `${module}.*` : module + text.slice(root.text.length);
+    }
     const parent = node.parent;
     if (parent !== undefined) {
       if (
@@ -687,7 +701,7 @@ class ModuleScanner {
       )
         return;
     }
-    this.pushCjsRead(text === null ? `${module}.*` : module + text.slice(root.text.length), node);
+    this.pushCjsRead(member, node);
   }
 
   private pushCjsRead(member: string, node: ts.Node): void {

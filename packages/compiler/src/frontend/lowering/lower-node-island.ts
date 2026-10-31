@@ -276,10 +276,12 @@ function boundaryFail(lowerer: Lowerer, what: string, node: ts.Node): never {
   throw new PoisonError();
 }
 
-/** Whether the JavaScript file is an ES module by Node's rules. */
+/** Whether the file is an ES module by Node's rules: `.mjs` and `.mts`
+ * always are, `.cjs` and `.cts` never are, and any other file follows the
+ * nearest package.json's `type`. */
 export function isEsmFile(file: string): boolean {
-  if (file.endsWith(".mjs")) return true;
-  if (file.endsWith(".cjs")) return false;
+  if (file.endsWith(".mjs") || file.endsWith(".mts")) return true;
+  if (file.endsWith(".cjs") || file.endsWith(".cts")) return false;
   for (let dir = dirname(file); ;) {
     try {
       const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {

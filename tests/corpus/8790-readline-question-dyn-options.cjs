@@ -38,6 +38,28 @@ async function main() {
   } catch (e) {
     console.log('invalid:', e.code);
   }
+  // Node reads .signal inside the promise executor: a throwing getter
+  // rejects the returned promise, and question() itself returns.
+  const getter = {
+    get signal() {
+      throw new Error('signal getter');
+    },
+  };
+  const rl = createInterface({ input: new Readable({ read() {} }), output: process.stderr });
+  let pending;
+  try {
+    pending = rl.question('g? ', getter);
+    console.log('getter returned a promise:', pending instanceof Promise);
+  } catch (e) {
+    console.log('getter threw synchronously:', e.message);
+  }
+  try {
+    await pending;
+  } catch (e) {
+    console.log('getter rejected:', e.message);
+  } finally {
+    rl.close();
+  }
 }
 
 main();

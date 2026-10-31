@@ -336,15 +336,19 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
+  "dyn.stdlibPrototype",
   "dyn.defineProperty",
+  "dyn.definePropertyShapes",
   "child.propsDefine",
   "dyn.defineProps",
+  "dyn.definePropsShapes",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
   "dyn.globalConstructor",
   "dyn.namespaceDefine",
   "dyn.namespaceNew",
   "dyn.objCreateWithProperties",
+  "dyn.objCreateWithPropertiesShapes",
   "dyn.objectTag",
   "stream.dynNative",
   "stream.dynNativePipe",
@@ -407,7 +411,15 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 ]);
 
 /** Entry points that link the querystring unit. */
-const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set(["qs.parse", "qs.stringify", "qs.unescape"]);
+const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "qs.parse",
+  "qs.parseCustom",
+  "qs.stringify",
+  "qs.stringifyCustom",
+  "qs.separator",
+  "qs.unescape",
+  "qs.unescapeBuffer",
+]);
 
 /** Entry points that link the parseArgs unit. */
 const PARSE_ARGS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -741,7 +753,7 @@ interface RuleScan {
  * type that needs several units appears in each unit's rule. */
 interface RuntimeFeatureRule {
   initial?: (mod: IrModule) => boolean;
-  scan?: () => RuleScan;
+  scan?: (mod: IrModule) => RuleScan;
   fns?: readonly IrLibFn[];
   prefixes?: readonly string[];
   libCall?: (node: LibCallNode) => boolean;
@@ -865,79 +877,119 @@ const FS_BUFFER_SEARCH_METHODS: ReadonlySet<string> = new Set([
   "includesElem",
 ]);
 
-/** Whether `node` lets the program observe a bytes value's Buffer-ness.
- * Bytes reach a dyn value only through dynFrom, so a dynTest of the buffer
- * tag adds nothing: every such test is preceded by the box it inspects. */
-function fsBufferBrandObserved(node: IrExpr, carriesBytes: (t: IrType) => boolean): boolean {
-  if (node.kind === "dynFrom") return carriesBytes(node.value.type);
-  // A checked-dynamic function called from typed code: its thunk boxes the
-  // arguments it is given.
-  if (node.kind === "dynCheck" && node.type.kind === "func") return carriesBytes(node.type);
-  if (node.kind === "bytesIntrinsic") return FS_BUFFER_SEARCH_METHODS.has(node.method);
-  // buffer.isBranded is Buffer.isBuffer on a typed bytes value; insp.bytes
-  // renders a Buffer as <Buffer ..> and a Uint8Array by its elements.
-  return node.kind === "libCall" && (node.fn === "buffer.isBranded" || node.fn === "insp.bytes");
+/** Whether a type holds bytes without passing another declaration, collecting
+ * the record and union declarations it references. A boxed function's call
+ * thunk boxes its result, and a checked function's thunk boxes its
+ * arguments, with no dynFrom in the IR. */
+function reachesBytesDirect(t: IrType, deps: string[]): boolean {
+  switch (t.kind) {
+    case "bytes":
+      return true;
+    case "array":
+    case "set":
+      return reachesBytesDirect(t.elem, deps);
+    case "map":
+      return reachesBytesDirect(t.key, deps) || reachesBytesDirect(t.value, deps);
+    case "promise":
+      return reachesBytesDirect(t.inner, deps);
+    case "func":
+      return reachesBytesDirect(t.ret, deps) || t.params.some((p) => reachesBytesDirect(p, deps));
+    case "record":
+      deps.push(`r:${t.shapeId}`);
+      return false;
+    case "union":
+      deps.push(`u:${t.unionId}`);
+      return false;
+    default:
+      return false;
+  }
 }
 
-/** Whether the module reads file bytes through a typed read and can observe
- * their Buffer-ness. scr_lib.c's read entries set is_buffer only under
- * SCR_FS_BUFFER_BRAND, so this conjunction selects that variant; a program
- * that reads bytes without observing them keeps the default object. */
-export function moduleUsesFsBufferBrand(mod: IrModule): boolean {
-  const records = new Map((mod.records ?? []).map((r) => [r.id, r]));
-  const unions = new Map((mod.unions ?? []).map((u) => [u.id, u]));
-  const seen = new Set<string>();
-  const carriesBytes = (t: IrType): boolean => {
-    switch (t.kind) {
-      case "bytes":
-        return true;
-      case "array":
-        return carriesBytes(t.elem);
-      case "map":
-        return carriesBytes(t.key) || carriesBytes(t.value);
-      case "set":
-        return carriesBytes(t.elem);
-      case "promise":
-        return carriesBytes(t.inner);
-      case "func":
-        // A boxed function's call thunk boxes its result, and a checked
-        // function's thunk boxes its arguments, with no dynFrom in the IR.
-        return carriesBytes(t.ret) || t.params.some((p) => carriesBytes(p));
-      case "record": {
-        if (seen.has(t.shapeId)) return false;
-        seen.add(t.shapeId);
-        const shape = records.get(t.shapeId);
-        const hit =
-          (shape?.fields.some((f) => carriesBytes(f.type)) ?? false) ||
-          (shape?.indexValue !== undefined && carriesBytes(shape.indexValue));
-        seen.delete(t.shapeId);
-        return hit;
+/** The module's declarations that can hold bytes, resolved to a fixpoint: a
+ * record or union that references another declaration holding bytes holds
+ * bytes, and a recursive declaration resolves like a non-recursive one. The
+ * closure answers each reference from one pass over the declarations instead
+ * of walking the shape tree at every reference. */
+function bytesCarryingDecls(mod: IrModule): (t: IrType) => boolean {
+  const referrers = new Map<string, string[]>();
+  const carrying = new Set<string>();
+  const queue: string[] = [];
+  const direct = (id: string, t: IrType): void => {
+    const deps: string[] = [];
+    if (reachesBytesDirect(t, deps)) {
+      if (!carrying.has(id)) {
+        carrying.add(id);
+        queue.push(id);
       }
-      case "union": {
-        if (seen.has(t.unionId)) return false;
-        seen.add(t.unionId);
-        const def = unions.get(t.unionId);
-        const hit = def?.arms.some((a) => carriesBytes(a)) ?? false;
-        seen.delete(t.unionId);
-        return hit;
-      }
-      default:
-        return false;
+    }
+    for (const dep of deps) {
+      const list = referrers.get(dep);
+      if (list === undefined) referrers.set(dep, [id]);
+      else list.push(id);
     }
   };
+  for (const record of mod.records ?? []) {
+    for (const field of record.fields) direct(`r:${record.id}`, field.type);
+    if (record.indexValue !== undefined) direct(`r:${record.id}`, record.indexValue);
+  }
+  for (const union of mod.unions ?? []) {
+    for (const arm of union.arms) direct(`u:${union.id}`, arm);
+  }
+  for (let i = 0; i < queue.length; i++) {
+    for (const from of referrers.get(queue[i]!) ?? []) {
+      if (carrying.has(from)) continue;
+      carrying.add(from);
+      queue.push(from);
+    }
+  }
+  const deps: string[] = [];
+  const holdsBytes = (t: IrType): boolean => {
+    deps.length = 0;
+    if (reachesBytesDirect(t, deps)) return true;
+    for (const dep of deps) if (carrying.has(dep)) return true;
+    return false;
+  };
+  return holdsBytes;
+}
+
+/** fsBufferBrand's condition as a scan over the module: it reads file bytes
+ * through a typed read and can observe their Buffer-ness. scr_lib.c's read
+ * entries set is_buffer only under SCR_FS_BUFFER_BRAND, so this conjunction
+ * selects that variant; a program that reads bytes without observing them
+ * keeps the default object. */
+function fsBufferBrandScan(mod: IrModule): RuleScan {
   let reads = false;
   let observes = false;
-  const done = (): boolean => reads && observes;
-  everyModuleNode(mod, {
+  let holdsBytes: ((t: IrType) => boolean) | undefined;
+  return {
     expr: (node) => {
-      if (!reads && node.kind === "libCall" && FS_READ_BYTES_FNS.has(node.fn)) reads = true;
-      else if (!observes) observes = fsBufferBrandObserved(node, carriesBytes);
-      return !done();
+      if (reads && observes) return;
+      if (node.kind === "libCall" && FS_READ_BYTES_FNS.has(node.fn)) {
+        reads = true;
+        return;
+      }
+      if (observes) return;
+      switch (node.kind) {
+        case "dynFrom":
+          observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.value.type);
+          return;
+        case "dynCheck":
+          if (node.type.kind === "func") {
+            observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.type);
+          }
+          return;
+        case "bytesIntrinsic":
+          observes = FS_BUFFER_SEARCH_METHODS.has(node.method);
+          return;
+        case "libCall":
+          observes = node.fn === "buffer.isBranded" || node.fn === "insp.bytes";
+          return;
+        default:
+          return;
+      }
     },
-    stmt: () => !done(),
-    type: () => true,
-  });
-  return done();
+    result: () => reads && observes,
+  };
 }
 
 /** One rule per runtime feature, sorted by name. A new feature is an
@@ -981,6 +1033,13 @@ const RUNTIME_FEATURE_RULES = {
       "child.offError",
       "child.signalCode",
     ],
+  }),
+  /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
+   * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
+   * own, so a program that never passes those options keeps the default
+   * object, byte for byte. */
+  childOptionExt: rule({
+    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
   }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
@@ -1066,6 +1125,9 @@ const RUNTIME_FEATURE_RULES = {
    * half (scr_dyn_builtin_stream.c): native stream state for constructor
    * functions, over the stream unit. */
   dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass"] }),
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
+  stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -1090,6 +1152,9 @@ const RUNTIME_FEATURE_RULES = {
       "wrapper.objectTag",
       "wrapper.new",
       "wrapper.toObject",
+      // The Boolean prototype's methods run scr_js_wrapper_apply in the
+      // same unit, which calls scr_dyn_invoke.
+      "wrapper.booleanPrototype",
     ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
@@ -1121,6 +1186,9 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically
+   * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
+  dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -1147,6 +1215,7 @@ const RUNTIME_FEATURE_RULES = {
       "path.parseValue",
       "path.formatValue",
       "path.toNamespacedValue",
+      "dyn.installBuiltinStatics",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
@@ -1199,10 +1268,10 @@ const RUNTIME_FEATURE_RULES = {
    * iterates a Headers keeps scr_fetch.c's layout. */
   headersWalk: rule({ fns: ["fetch.headersCount", "fetch.headersEntry"] }),
   fileHandle: rule({ types: ["fileHandle"] }),
-  /** A typed fs read whose bytes value the program can observe as a Buffer
-   * (moduleUsesFsBufferBrand): scr_lib.c's SCR_FS_BUFFER_BRAND build, so
-   * programs that never see the brand keep the default object. */
-  fsBufferBrand: rule({ initial: (mod) => moduleUsesFsBufferBrand(mod) }),
+  /** A typed fs read whose bytes value the program can observe as a Buffer:
+   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
+   * brand keep the default object. */
+  fsBufferBrand: rule({ scan: fsBufferBrandScan }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
@@ -1242,6 +1311,8 @@ const RUNTIME_FEATURE_RULES = {
       "global.native",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
+      "strdec.encodingValue",
       "webstream.install",
       "util.styleText",
       // ERR_UNHANDLED_ERROR quotes util.inspect of a non-Error payload.
@@ -1479,6 +1550,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynAsync: false,
     dynBuiltinClass: false,
     dynBuiltinStream: false,
+    stdlibPrototypeValue: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
@@ -1532,9 +1604,11 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    childOptionExt: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
+    dynIntegrityQueries: false,
     dynBuffer: false,
     builtinValues: false,
     computedRequire: false,
@@ -1587,7 +1661,7 @@ function scanRuntimeFeatures(
   for (const name of RUNTIME_FEATURE_NAMES) {
     const { initial, scan } = ruleOf(name);
     if (initial && initial(mod)) features[name] = true;
-    if (scan) scans.push({ name, scan: scan() });
+    if (scan) scans.push({ name, scan: scan(mod) });
   }
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
@@ -1630,7 +1704,7 @@ function scanRuntimeFeatures(
   } else if (keepGoing()) everyModuleNode(mod, { expr, stmt: keepGoing, type });
   for (const { name, scan } of scans) if (scan.result()) features[name] = true;
   // Inline-cache sites of dynamic-tier functions use the tier's caches
-  // (scr_js_object.c, with the SCR_JS_TIER build of scr_json.c).
+  // (scr_js_object.c).
   if (!features.dynTier && mod.functions.some((fn) => fn.tier === "dynamic")) {
     const sites = new JsIcSites(mod);
     features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));

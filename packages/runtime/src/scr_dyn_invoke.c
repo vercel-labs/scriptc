@@ -2478,8 +2478,12 @@ ScrDyn *scr_dyn_array_prototype(void) {
   return prototype;
 }
 
-/* Object.defineProperties over dyn values (see scr_runtime.h). */
-static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
+/* Object.defineProperties over dyn values (see scr_runtime.h). With a
+ * `read_any` (scr_dyn_descriptor_snapshot), each descriptor may be any
+ * object; otherwise it must be a plain object. Only the entry point that
+ * passes it references the reader, so other programs do not link it. */
+static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys,
+                                             ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
   /* Island-held operands ARE objects to Node — the non-object TypeError
    * below would be a wrong claim. They are fenced with a "not supported
    * yet" error instead (lane dyn-routing-ops). */
@@ -2506,6 +2510,12 @@ static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrD
     if (!scr_dyn_obj_enumerable(descs, name->data, name->len)) continue;
     ScrDyn *descriptor = scr_dyn_obj_read(descs, name->data, name->len);
     if (!descriptor) goto fail;
+    if (read_any) {
+      ScrDyn *snapshot = read_any(descriptor);
+      scr_dyn_release(descriptor);
+      if (!snapshot) goto fail;
+      descriptor = snapshot;
+    }
     if (descriptor->kind != SCR_DYN_OBJ) {
       ScrJsonBuf b;
       scr_jb_init(&b);
@@ -2578,11 +2588,15 @@ fail:
 }
 
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs) {
-  return scr_dyn_define_props_internal(target, descs, NULL);
+  return scr_dyn_define_props_internal(target, descs, NULL, NULL);
+}
+
+ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs) {
+  return scr_dyn_define_props_internal(target, descs, NULL, scr_dyn_descriptor_snapshot);
 }
 
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
-  return scr_dyn_define_props_internal(target, descs, protected_keys);
+  return scr_dyn_define_props_internal(target, descs, protected_keys, NULL);
 }
 
 ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptors) {
@@ -2590,6 +2604,16 @@ ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptor
   if (!object) return NULL;
   if (descriptors->kind == SCR_DYN_UNDEF) return object;
   ScrDyn *defined = scr_dyn_define_props(object, descriptors);
+  if (!defined) { scr_dyn_release(object); return NULL; }
+  scr_dyn_release(defined);
+  return object;
+}
+
+ScrDyn *scr_dyn_obj_create_with_properties_shapes(ScrDyn *prototype, ScrDyn *descriptors) {
+  ScrDyn *object = scr_dyn_obj_create(prototype);
+  if (!object) return NULL;
+  if (descriptors->kind == SCR_DYN_UNDEF) return object;
+  ScrDyn *defined = scr_dyn_define_props_shapes(object, descriptors);
   if (!defined) { scr_dyn_release(object); return NULL; }
   scr_dyn_release(defined);
   return object;

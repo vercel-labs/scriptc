@@ -439,6 +439,43 @@ const char *scr_error_message_code(const ScrStr *msg) {
   return NULL;
 }
 
+/* The code of an event-error message: scr_error_message_code's table, or
+ * the errno name an errnoException-style message embeds as its second
+ * token ("connect ECONNREFUSED 127.0.0.1:80", "listen EADDRINUSE: address
+ * already in use :::4000"). Every message fired to an event listener is
+ * this runtime's own construction, and the ones carrying a code embed it
+ * in this shape, as Node builds them from the code. NULL for a code-less
+ * message; otherwise a static string or a thread-local buffer valid until
+ * the next call. */
+const char *scr_error_event_code(const ScrStr *msg) {
+  static SCR_TL char buf[32];
+  const char *known = scr_error_message_code(msg);
+  if (known != NULL) return known;
+  const char *sp = strchr((const char *)msg->data, ' ');
+  if (sp == NULL || sp[1] != 'E') return NULL;
+  const char *tok = sp + 1;
+  size_t n = 1;
+  while (tok[n] != '\0' && tok[n] != ' ' && tok[n] != ':') {
+    char ch = tok[n];
+    if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) return NULL;
+    if (n + 1 >= sizeof buf) return NULL;
+    n++;
+  }
+  if (n < 3) return NULL; /* "EIO" is the shortest real name */
+  memcpy(buf, tok, n);
+  buf[n] = '\0';
+  return buf;
+}
+
+/* The Error an event listener receives for an event-error message, with
+ * its code. +1. */
+ScrError *scr_error_from_event_message(ScrStr *msg /*borrowed*/) {
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  const char *code = scr_error_event_code(msg);
+  if (code != NULL) scr_error_set_code(e, code);
+  return e;
+}
+
 ScrStr *scr_error_code(ScrError *e) {
   return e->code ? scr_str_retain(e->code) : NULL;
 }

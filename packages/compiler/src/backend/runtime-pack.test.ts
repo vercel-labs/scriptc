@@ -321,17 +321,6 @@ describe("runtime pack manifests", () => {
     expect(fileHandle.archives.map((path) => path.split("/").at(-1))).toEqual(["zlib.a"]);
   });
 
-  test("runtime unit bitcode must stay inside the pack", async () => {
-    const { manifest } = await fixture();
-    const malformed = structuredClone(manifest);
-    malformed.flavors.release!.runtime_units[0]!.variants[0]!.bitcode = {
-      path: "../escape.bc",
-      sha256: "0".repeat(64),
-      size: 1,
-    };
-    expect(() => parseRuntimePackManifest(malformed)).toThrow("malformed");
-  });
-
   test("a stale manifest reports its identity independently from the package", async () => {
     const { packagePath, manifest, root } = await fixture();
     await writeFile(

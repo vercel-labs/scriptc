@@ -11059,8 +11059,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // starting at 0 (nothing buffered). A literal Buffer encoding folds
     // its alias at compile time; any other encoding argument is
     // normalized at run time (Node's normalizeEncoding, which throws
-    // ERR_UNKNOWN_ENCODING for an unknown name). Omitted means utf8,
-    // Node's default.
+    // ERR_UNKNOWN_ENCODING for an unknown name). An encoding that may not
+    // be a string takes strdec.encodingValue, which formats the error
+    // with %s. Omitted means utf8, Node's default.
     if (symbol && ts.symbolName(symbol) === "StringDecoder" && lowerer.isStdlibSymbol(symbol)) {
       const args = expr.arguments?.nodes ?? [];
       if (args.length > 1) {
@@ -11073,12 +11074,18 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         : encT!.isStringLiteralType()
           ? knownBufEncoding(encT!.value)
           : undefined;
+      const textual = (type: ts.Type): boolean =>
+        type.isUnionType()
+          ? ts.constituentTypes(type).every(textual)
+          : (type.flags &
+              (ts.TypeFlags.StringLike | ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
+            0;
       const encoding: IrExpr =
         encName !== undefined
           ? { kind: "strLit", value: encName, type: STRING, loc }
           : {
               kind: "libCall",
-              fn: "strdec.encoding",
+              fn: textual(encT!) ? "strdec.encoding" : "strdec.encodingValue",
               args: [lowerer.lowerExprExpecting(encNode!, DYN)],
               type: STRING,
               loc,

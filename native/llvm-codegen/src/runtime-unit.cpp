@@ -1,6 +1,7 @@
-// `runtime-unit`: turn one optimized runtime translation unit into the pair
-// of artifacts a runtime pack ships for it: the native object and the
-// bitcode the program build imports from (see runtime-import.cpp).
+// `runtime-unit`: turn one optimized runtime translation unit into the
+// native object a runtime pack ships for it and, with --bitcode, the pruned
+// bitcode a build could import from (see runtime-import.cpp). Runtime packs
+// ship no bitcode since program builds stopped importing it.
 //
 // Both come from one module. Every translation-unit-local symbol that an
 // imported body could need (functions, mutable state, address-significant
@@ -106,7 +107,7 @@ std::optional<UnitOptions> parse(int Argc, char **Argv) {
       return std::nullopt;
   }
   if (Options.Input.empty() || Options.Object.empty() ||
-      Options.Bitcode.empty() || Options.Target.empty() || Options.Tag.empty())
+      Options.Target.empty() || Options.Tag.empty())
     return std::nullopt;
   // A profile only guides an optimization the helper runs, and a unit is
   // either instrumented or annotated.
@@ -196,8 +197,8 @@ int runtimeUnit(int Argc, char **Argv) {
   std::optional<UnitOptions> Options = parse(Argc, Argv);
   if (!Options)
     return fail("usage",
-                "runtime-unit requires --input <bc> --object <o> --bitcode <bc> "
-                "--target <triple> --tag <unit> and accepts "
+                "runtime-unit requires --input <bc> --object <o> "
+                "--target <triple> --tag <unit> and accepts --bitcode <bc>, "
                 "--function-sections --data-sections, and --opt-level <level> "
                 "with either --profile-generate <pattern> or --profile-use "
                 "<profdata>");
@@ -306,14 +307,16 @@ int runtimeUnit(int Argc, char **Argv) {
 
   // The bitcode exists only to be imported from, so it carries only what
   // an import can take; program builds then read a fraction of the unit.
-  std::unique_ptr<Module> Import = CloneModule(*M);
-  pruneRuntimeImport(*Import);
-  if (verifyModule(*Import, &VerifyStream))
-    return fail("verification_failed", VerifyStream.str());
-  if (std::optional<std::string> Failure = writeFileAtomically(
-          Options->Bitcode,
-          [&](raw_fd_ostream &Out) { WriteBitcodeToFile(*Import, Out); }))
-    return fail("output_write_failed", *Failure);
+  if (!Options->Bitcode.empty()) {
+    std::unique_ptr<Module> Import = CloneModule(*M);
+    pruneRuntimeImport(*Import);
+    if (verifyModule(*Import, &VerifyStream))
+      return fail("verification_failed", VerifyStream.str());
+    if (std::optional<std::string> Failure = writeFileAtomically(
+            Options->Bitcode,
+            [&](raw_fd_ostream &Out) { WriteBitcodeToFile(*Import, Out); }))
+      return fail("output_write_failed", *Failure);
+  }
 
   bool Unsupported = false;
   std::optional<std::string> Failure =

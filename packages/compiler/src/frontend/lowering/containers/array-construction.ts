@@ -871,12 +871,30 @@ export function lowerArrayFromValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
         loc,
       });
       const value = lowerCheckedArrayFrom(lowerer, source!, loc, argument("0"), argument("1"));
+      // A function receiver other than Array itself (`Array.from` called
+      // through the Array value builds an ordinary array) is a subclass or
+      // a custom constructor.
+      const receiver = (): IrExpr => ({
+        kind: "libCall",
+        fn: "dyn.this",
+        args: [],
+        type: DYN,
+        loc,
+      });
       const constructorCheck: IrStmt = {
         kind: "if",
         cond: {
-          kind: "dynTest",
-          test: "function",
-          value: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+          kind: "logical",
+          op: "&&",
+          left: { kind: "dynTest", test: "function", value: receiver(), type: BOOL, loc },
+          right: {
+            kind: "dynScalarEq",
+            negated: true,
+            left: receiver(),
+            right: { kind: "libCall", fn: "dyn.arrayConstructor", args: [], type: DYN, loc },
+            type: BOOL,
+            loc,
+          },
           type: BOOL,
           loc,
         },

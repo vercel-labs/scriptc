@@ -229,9 +229,11 @@ export function lowerForOfSearchParams(
  * (`for (const [name, value] of headers.entries())`): Fetch's
  * sort-and-combine list, re-read on every pass exactly as Node's live
  * iterator re-reads it — a body that appends, sets or deletes headers
- * visits what Node visits. The pair never materializes for a `[k, v]` head
- * of plain identifiers; every other pattern binds the checker's own
- * [string, string] tuple. */
+ * visits what Node visits. `fetch.headersCount` and `fetch.headersEntry`
+ * are O(1) reads of the list the runtime caches until the next mutation,
+ * so the walk costs one read per entry. The pair never materializes for a
+ * `[k, v]` head of plain identifiers; every other pattern binds the
+ * checker's own [string, string] tuple. */
 export function lowerForOfHeaders(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,

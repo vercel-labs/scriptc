@@ -67,7 +67,12 @@ import {
   lowerPathFormatCall,
   lowerPathParseCall,
 } from "./operating-system.js";
-import { lowerQuerystringParseCall, lowerQuerystringStringifyCall } from "./querystring.js";
+import {
+  lowerQuerystringEscapeValueCall,
+  lowerQuerystringParseCall,
+  lowerQuerystringStringifyCall,
+  lowerQuerystringUnescapeBufferCall,
+} from "./querystring.js";
 import { lowerFsGlobCallbackCall, lowerFsGlobSyncCall, lowerFspGlobCall } from "./fs-glob.js";
 import { lowerV8HeapStatisticsCall } from "./v8.js";
 
@@ -231,6 +236,12 @@ export function lowerBuiltinModuleCall(
     }
     if (bi.member === "stringify" || bi.member === "encode") {
       return lowerQuerystringStringifyCall(lowerer, expr, loc);
+    }
+    if (bi.member === "unescapeBuffer")
+      return lowerQuerystringUnescapeBufferCall(lowerer, expr, loc);
+    if (bi.member === "escape") {
+      const escaped = lowerQuerystringEscapeValueCall(lowerer, expr, loc);
+      if (escaped) return escaped;
     }
   }
   if (

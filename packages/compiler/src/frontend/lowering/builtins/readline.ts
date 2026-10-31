@@ -1,8 +1,9 @@
 import * as ts from "../../ts7/adapter.js";
-import { type Lowerer } from "../lowerer.js";
+import { newFnCtx, type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
   BOOL,
+  CAUGHT,
   DYN,
   F64,
   type IrExpr,
@@ -17,7 +18,7 @@ import {
   funcOf,
   PROCSTREAM_T,
 } from "../../../ir/ir.js";
-import { boolLit, dynUndefinedExpr, numLit } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { READLINE_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "../surfaces.js";
 import { streamSidesOf } from "../lower-stream.js";
 import { stdioIntoGeneralStream } from "../general-streams.js";
@@ -97,25 +98,20 @@ function returnsPromise(lowerer: Lowerer, call: ts.CallExpression): boolean {
   return (ts.symbolNameOf(t.getSymbol()) ?? "") === "Promise";
 }
 
-/** The `{ signal }` options argument of the promise question: the signal
- * value, or null when absent. Other members of an object literal fence by
- * name. Any other options value (a variable, a call, a conditional) is
- * read the way Node reads it — one optional `signal` member, undefined
- * for a nullish receiver and for a primitive — and the runtime's
- * `scr_rl_ask` then applies Node's truthy check and validateAbortSignal. */
-function questionSignal(lowerer: Lowerer, node: ts.Expression | undefined): IrExpr | null {
+/** The `{ signal }` options argument of the promise question. An object
+ * literal is evaluated with the call's arguments, as in Node: its signal
+ * value, or null when absent; other members fence by name. Any other
+ * options value (a variable, a call, a conditional) is returned as a
+ * checked-dynamic value whose `signal` member Node reads inside the promise
+ * executor (questionWithOptions). Null when there is no options argument. */
+function questionSignal(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+): { signal: IrExpr } | { options: IrExpr } | null {
   if (node === undefined) return null;
   if (!ts.isObjectLiteralExpression(node)) {
-    const loc = locOf(node);
     const value = lowerer.lowerExpr(node);
-    return {
-      kind: "dynKeyGet",
-      key: { kind: "strLit", value: "signal", type: STRING, loc },
-      optional: true,
-      value: value.type.kind === "dyn" ? value : lowerer.coerceInto(node, value, DYN),
-      type: DYN,
-      loc,
-    };
+    return { options: value.type.kind === "dyn" ? value : lowerer.coerceInto(node, value, DYN) };
   }
   let signalNode: ts.Expression | null = null;
   for (const p of node.properties.nodes) {
@@ -135,7 +131,100 @@ function questionSignal(lowerer: Lowerer, node: ts.Expression | undefined): IrEx
       "signal is the supported question option",
     );
   }
-  return signalNode === null ? null : lowerer.lowerExprExpecting(signalNode, DYN);
+  return signalNode === null ? null : { signal: lowerer.lowerExprExpecting(signalNode, DYN) };
+}
+
+/** The promise question with a non-literal options value: Node reads its
+ * optional `signal` member inside the promise executor, so a throwing
+ * getter rejects the returned promise instead of throwing from the call.
+ * The read runs in a lifted helper's try; its catch answers the rejected
+ * promise. The runtime's `scr_rl_ask` then applies Node's truthy check and
+ * validateAbortSignal to the signal. */
+function questionWithOptions(
+  lowerer: Lowerer,
+  recv: IrExpr,
+  query: { value: IrExpr; dyn: boolean },
+  options: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const type: IrType = { kind: "promise", inner: STRING };
+  const queryType = query.dyn ? DYN : STRING;
+  const name = `%rl.questionOptions${query.dyn ? "Dyn" : ""}`;
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const context = newFnCtx(false, null, null, type);
+    lowerer.fnStack.push(context);
+    try {
+      const signal: IrExpr = {
+        kind: "dynKeyGet",
+        key: { kind: "strLit", value: "signal", type: STRING, loc },
+        optional: true,
+        value: varRef("options", DYN, loc),
+        type: DYN,
+        loc,
+      };
+      lowerer.liftedFns.push({
+        name,
+        params: [
+          { localId: "rl", name: "rl", type: F64 },
+          { localId: "query", name: "query", type: queryType },
+          { localId: "options", name: "options", type: DYN },
+        ],
+        returnType: type,
+        locals: [
+          { id: "rl", name: "rl", type: F64, mutable: false },
+          { id: "query", name: "query", type: queryType, mutable: false },
+          { id: "options", name: "options", type: DYN, mutable: false },
+          { id: "signal", name: "signal", type: DYN, mutable: true },
+          { id: "error", name: "error", type: CAUGHT, mutable: false },
+          ...context.locals,
+        ],
+        body: [
+          { kind: "varDecl", localId: "signal", init: dynUndefinedExpr(loc), loc },
+          {
+            kind: "tryCatch",
+            tryBody: [{ kind: "assign", localId: "signal", value: signal, loc }],
+            catchLocalId: "error",
+            catchBody: [
+              {
+                kind: "return",
+                value: {
+                  kind: "intrinsic",
+                  name: "promise.reject",
+                  args: [
+                    { kind: "caughtToDyn", value: varRef("error", CAUGHT, loc), type: DYN, loc },
+                  ],
+                  type,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            finallyBody: null,
+            loc,
+          },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: query.dyn ? "rl.questionAsyncSignalDyn" : "rl.questionAsyncSignal",
+              args: [
+                varRef("rl", F64, loc),
+                varRef("query", queryType, loc),
+                varRef("signal", DYN, loc),
+              ],
+              type,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      });
+    } finally {
+      lowerer.fnStack.pop();
+    }
+  }
+  return { kind: "call", callee: name, args: [recv, query.value, options], type, loc };
 }
 
 /** True when `node`'s checker type is readline/promises' Readline. */
@@ -430,8 +519,9 @@ export function lowerReadlineMethodCall(
       const fn = query.dyn ? "rl.questionAsyncDyn" : "rl.questionAsync";
       return { kind: "libCall", fn, args: [recv, query.value], type, loc };
     }
+    if ("options" in sig) return questionWithOptions(lowerer, recv, query, sig.options, loc);
     const fn = query.dyn ? "rl.questionAsyncSignalDyn" : "rl.questionAsyncSignal";
-    return { kind: "libCall", fn, args: [recv, query.value, sig], type, loc };
+    return { kind: "libCall", fn, args: [recv, query.value, sig.signal], type, loc };
   }
   if (name === "question" && args.length === 2) {
     const recv = receiver();

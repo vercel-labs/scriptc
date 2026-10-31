@@ -7190,18 +7190,6 @@ export function lowerPromiseMethodCall(
   if (param && (!ts.isIdentifier(param.name) || param.dotDotDotToken || param.initializer)) {
     lowerer.unsupported("SC1062", param);
   }
-  if (
-    param?.type &&
-    param.type.kind !== ts.SyntaxKind.AnyKeyword &&
-    param.type.kind !== ts.SyntaxKind.UnknownKeyword
-  ) {
-    lowerer.unsupported(
-      "SC1090",
-      param,
-      "catch handlers with a typed parameter (the reject payload can be any thrown " +
-        "value — take `(e)` or `(e: unknown)` and narrow with instanceof)",
-    );
-  }
   const resultT = callResultType();
   if (resultT?.kind !== "promise") {
     lowerer.noLowering(
@@ -7234,13 +7222,69 @@ export function lowerPromiseMethodCall(
           ]
         : [{ kind: "return", value: lowerer.coerceInto(call, awaitE, R), loc }];
     // The handler body lowers as the catch clause, its parameter bound
-    // as the CAUGHT local — exactly `catch (e) { ... }`.
+    // as the CAUGHT local — exactly `catch (e) { ... }`. An ANNOTATED
+    // parameter (`.catch((error: Error) => ...)`) is a claim the checker
+    // cannot verify — the reject payload is whatever was thrown — so it
+    // is never trusted: the snapshot binds as a hidden CAUGHT local and
+    // the parameter as an ordinary local of the claimed class, converted
+    // by the checked extraction (`caughtCheck`: an instanceof match
+    // extracts the payload, anything else raises the catchable TypeError
+    // at handler entry). Reads inside the handler are then plain typed
+    // reads of a verified value.
     let catchLocalId: string | null = null;
+    let claimInit: IrStmt | null = null;
     let catchBody: IrStmt[];
     lowerer.scopes.push(new Map());
     try {
       if (param && ts.isIdentifier(param.name)) {
-        catchLocalId = lowerer.declareLocal(param.name, param.name.text, CAUGHT, false).id;
+        const claim = param.type;
+        const annotated =
+          claim !== undefined &&
+          claim.kind !== ts.SyntaxKind.AnyKeyword &&
+          claim.kind !== ts.SyntaxKind.UnknownKeyword;
+        if (annotated) {
+          const target = lowerer.mapTypeOf(lowerer.checker.getTypeFromTypeNode(claim));
+          const info =
+            target?.kind === "object" ? lowerer.classes.get(target.className) : undefined;
+          if (target === null || target.kind !== "object" || info === undefined) {
+            lowerer.unsupported(
+              "SC1090",
+              claim,
+              "catch parameters annotated with a type other than a class (the reject payload " +
+                "is whatever was thrown, so an annotation is a claim the checker cannot " +
+                "verify — it is accepted only as a checked conversion against a class) — take " +
+                "`(e)` and narrow with instanceof, or assert `e as C` inside the handler",
+            );
+          }
+          const snapshot = lowerer.declareHiddenLocal("%catch", CAUGHT);
+          catchLocalId = snapshot.id;
+          const local = lowerer.declareLocal(param.name, param.name.text, target, false);
+          const caught: IrExpr = { kind: "varRef", localId: snapshot.id, type: CAUGHT, loc };
+          // caughtCheck tests the class's preorder interval, which only
+          // classes in an inheritance relation have; a standalone class
+          // converts the payload as an untyped value, whose checked
+          // conversion recovers a thrown instance and raises a catchable
+          // TypeError for anything else.
+          claimInit = {
+            kind: "varDecl",
+            localId: local.id,
+            init: lowerer.inHierarchy(info)
+              ? {
+                  kind: "caughtCheck",
+                  value: caught,
+                  className: target.className,
+                  type: target,
+                  loc,
+                }
+              : lowerer.coerceToExpected(
+                  { kind: "caughtToDyn", value: caught, type: DYN, loc },
+                  target,
+                ),
+            loc,
+          };
+        } else {
+          catchLocalId = lowerer.declareLocal(param.name, param.name.text, CAUGHT, false).id;
+        }
       }
       const hb = handlerNode.body;
       if (ts.isBlock(hb)) {
@@ -7258,6 +7302,7 @@ export function lowerPromiseMethodCall(
     } finally {
       lowerer.scopes.pop();
     }
+    if (claimInit !== null) catchBody.unshift(claimInit);
     // A handler falling off its end resolves with undefined — the
     // checker already typed R with the undefined arm; the appended wrap
     // also satisfies the validator's always-returns analysis.
@@ -10395,8 +10440,10 @@ export function lowerRecordFieldCall(
       );
     }
   }
-  const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-  let result: IrExpr = {
+  const dynamic = dynRestValueCall(lowerer, call, callee, receiver, loc);
+  const args =
+    dynamic === null ? completeFuncValueArgs(lowerer, call, callee.type, locOf(call)) : [];
+  let result: IrExpr = dynamic ?? {
     kind: "callValue",
     callee,
     ...(receiver ? { receiver } : {}),
@@ -10408,11 +10455,49 @@ export function lowerRecordFieldCall(
   // member's field its erased function (the overloads joined): the result
   // converts to this call's instantiated or resolved return type.
   const memberType = lowerer.typeOf(access);
-  if (isGenericCallableMemberType(memberType, lowerer.checker))
-    result = lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
-  else if (isOverloadedMemberAccess(lowerer, access))
-    result = lowerer.coerceInto(call, result, resolvedOverloadResultType(lowerer, call));
+  const declared = lowerer.irTypeOf(call);
+  // A call that rode the checked-dynamic boundary already produced a dyn
+  // value; a `void` member's result is discarded as it stands (and needs no
+  // conversion).
+  if (dynamic === null || declared.kind !== "void") {
+    if (isGenericCallableMemberType(memberType, lowerer.checker))
+      result = lowerer.coerceInto(call, result, declared);
+    else if (isOverloadedMemberAccess(lowerer, access))
+      result = lowerer.coerceInto(call, result, resolvedOverloadResultType(lowerer, call));
+  }
   return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
+}
+
+/** A call through a checked-dynamic VARIADIC function value — the erased
+ * instance of a generic member, or a JS `(...args: unknown[])` rest: its
+ * native ABI carries one hidden trailing dyn array that only the boxed
+ * call thunk fills, so the fixed `callValue` form cannot carry it at any
+ * arity (the closure receives the array as its last argument). Ride the
+ * checked-dynamic boundary instead — box the callee and `dynCall` with the
+ * source arity, exactly as a call through an `unknown`-typed value does —
+ * and let the caller convert the dyn result to the call's own type. Null
+ * when the call fits the fixed form (a typed rest, which spells its array
+ * as a real parameter) or carries spread arguments (the runtime-arity lane
+ * serves those). */
+function dynRestValueCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  callee: IrExpr,
+  receiver: IrExpr | undefined,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (callee.type.kind !== "func" || callee.type.rest !== true) return null;
+  if (callee.type.restAbi !== undefined) return null;
+  if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) return null;
+  return {
+    kind: "dynCall",
+    callee: { kind: "dynFrom", value: callee, type: DYN, loc },
+    ...(receiver ? { receiver } : {}),
+    calleeName: ts.getTextOfNode(call.expression),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
 }
 
 /** `o.m(args)` where `m` is an object-literal GENERIC method (own type

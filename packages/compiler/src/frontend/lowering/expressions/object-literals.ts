@@ -1770,15 +1770,22 @@ export function lowerObjectLiteral(
       };
     }
   }
-  // Unfoldable computed keys outside the index-signature merge path:
-  // no record shape can hold a runtime-decided name.
+  // Unfoldable computed keys outside the index-signature merge path.
   for (const prop of expr.properties.nodes) {
     if (isRuntimeComputedKey(prop)) {
-      lowerer.unsupported(
-        "SC1090",
-        (prop as ts.PropertyAssignment).name,
-        "computed property keys (compile-time-known keys fold — a pure expression whose checker type is one string or number literal: consts, enum members, quoted keys, templates of those — `{ [MARKER]: v }`; runtime string keys write through an index-signature target; symbol keys stay out)",
-      );
+      // A runtime-decided name has no static home once declared fields are
+      // involved: a record shape stores its fields sorted and its overflow
+      // entries apart, while Node writes the key where it stands
+      // (`{ [k]: 2, n: 1 }` enumerates `k` first), and TypeScript itself
+      // drops the property from the literal's inferred type when a spread
+      // joins the literal (`{ server, [key]: items, ...(c ? {} : { next }) }`
+      // types as `{ server: string; next?: string }`) while the evaluated
+      // object keeps the key. Build the checked-dynamic object the
+      // literal's own keys describe — source order, runtime keys where
+      // they stand, exactly the JavaScript rule above — and let the
+      // destination's coercion check the values. A record build here would
+      // silently reorder or drop a key Node writes.
+      return lowerDynObjectLiteral(lowerer, expr);
     }
   }
 

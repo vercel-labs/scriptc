@@ -85,3 +85,24 @@ test("a constraint member the instantiation stores still reads its slot", async 
   expect(body).toContain('"sessionId"');
   expect(body).not.toContain('"dynFrom"');
 });
+
+test("the optional-chain spelling of an omitted constraint member reads dynamically", async () => {
+  const compiled = await compileToIr([
+    "function keyOf<TModel, TOptions extends RequestOptions<TModel> & Transforms>(",
+    "  options: TOptions | undefined,",
+    "): string | undefined {",
+    "  return options?.apiKey;",
+    "}",
+    "const withoutKey = { apiKey: 'k' };",
+    "console.log(String(keyOf<{ id: string }, typeof withoutKey>(withoutKey)));",
+    "console.log(String(keyOf<{ id: string }, Transforms>(undefined)));",
+  ]);
+  expect(compiled.ok, compiled.diagnostics).toBe(true);
+  const body = bodies(compiled.module!, "keyOf");
+  // The guarded read is the same checked-dynamic keyed read of the stored
+  // record the `.` spelling gets, inside the chain's guard.
+  expect(body).toContain('"optChain"');
+  expect(body).toContain('"dynFrom"');
+  expect(body).toContain('"dynCheck"');
+  expect(body).not.toContain('"unsupported"');
+});

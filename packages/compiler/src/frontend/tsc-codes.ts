@@ -205,8 +205,8 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // ---- The checker's OPINIONS about legal JavaScript ----
   // Each diagnostic below reports that a construct is unusual for TypeScript,
   // never that it is illegal JavaScript: Node gives it a defined runtime
-  // meaning and the lowerer already builds it. TypeScript input keeps all
-  // three.
+  // meaning and the lowerer already builds it. TypeScript input keeps every
+  // one of them.
   //
   // 2695, an unused comma-operand left side (`(0, fn)`, `(0, [[x]] = [])`):
   // the operator evaluates the left operand for its effects and yields the
@@ -221,7 +221,67 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // generator protocol is untyped in JavaScript and the sent value is
   // whatever the caller passes. The generator lowering owns the channels.
   7057,
+  // 7032, a set accessor whose parameter has no type annotation ("property
+  // implicitly has type 'any'"): a JavaScript setter's parameter is whatever
+  // the caller passes. The lowering gives the parameter checked-dynamic
+  // storage (`paramShape`), and a read of it stays dynamic rather than
+  // checking the caller's value back into the type the checker inferred from
+  // a twin getter (jsWidenedBindings), so the stored value keeps its runtime
+  // identity. A JSDoc `@param` type is an annotation like any other and keeps
+  // its declared storage. Corpus 8701 stores a number, a string, an object,
+  // null and undefined through object-literal and class setters and reads
+  // each one back unchanged, plus a class setter that converts, a setter that
+  // appends to an array, and a setter with no twin getter. A *private* setter
+  // stays reported (`suppressedJsStrictness7`): the private-element lowering
+  // does not yet implement the shadowing and brand-check semantics.
+  7032,
 ]);
+
+/* NOT relaxed, though each is legal JavaScript the checker merely dislikes:
+ * the construct needs a lowering that does not exist yet, so admitting the
+ * code would compile a program the lowerer cannot build correctly.
+ *
+ *  - TS2365 (an operator on operands the lowerer cannot convert, `true + 1`)
+ *    needs ToPrimitive on a static operand; the arithmetic lowering answers
+ *    SC1043. Its TS2362/2363 siblings (an arithmetic operand of the wrong
+ *    type) never fire on a JS source — TypeScript only demands an operand
+ *    type it knows, and an unannotated JavaScript value is `any` — so the pair
+ *    has nothing to relax here. The invalid-assignment-target forms the
+ *    checker does report stay refused too: `f() += g()` (TS2364) and `f()++`
+ *    (TS2357) are legal JavaScript, but Node CALLS `f` and then throws a
+ *    ReferenceError ("Invalid left-hand side in assignment", "Invalid
+ *    left-hand side expression in postfix operation"), and the lowering has
+ *    no invalid-target path that calls and then throws. TS2362/2363 keep
+ *    their `any`-only admission below.
+ *  - TS2508 ("No base constructor has the specified number of type
+ *    arguments", `class X extends Iterator {}`) needs extending a class
+ *    declared outside the program; heritage lowering answers SC1090.
+ *  - TS1166 (a non-literal class-field key) needs a field the lowering can
+ *    declare from a runtime key; the class lowering answers SC1090.
+ *  - TS2704 ("The operand of a 'delete' operator cannot be a read-only
+ *    property") is the `Object.defineProperty(obj, "p", ...)` idiom. The
+ *    delete lowering is exact for an object literal and for a dynamic
+ *    receiver, but a delete of a BUILTIN's own property
+ *    (`delete String.prototype.charAt.length`,
+ *    `delete Promise[Symbol.toStringTag]`) compiles and leaves the property
+ *    in place, because the runtime delete has no view of the builtin's
+ *    synthesized properties. Admitting the code therefore compiles programs
+ *    that differ from Node (on the relaxed experiment tree, Test262
+ *    Object/prototype/toLocaleString/S15.2.4.3_A9,
+ *    String/prototype/charAt/S15.5.4.4_A9 and indexOf/S15.5.4.7_A9 fail).
+ *    The lowering needs a builtin-receiver fence first.
+ *  - TS2464 (a computed property name whose type is not a literal) is exact
+ *    for an OBJECT literal (the lowering converts a dynamic key with
+ *    ToPropertyKey; the relaxed experiment tree passed every object-literal
+ *    computed-name test), but a CLASS element name
+ *    takes the class lowering's stable-key path, which neither coerces the
+ *    key nor keeps Node's evaluation order: admitting the code makes
+ *    `class C { [key]() {} }` with a ToPrimitive key compile and disagree
+ *    with Node (Test262 computed-property-names/to-name-side-effects/class.js
+ *    and expressions/class/elements/evaluation-error/computed-name-toprimitive-*
+ *    fail). Class element names need the same ToPropertyKey lowering, or a
+ *    refusal, before the code can be admitted.
+ */
 
 /* Arithmetic on an `any` operand (TS2362/2363/2365 fire when the other
  * side is bigint-ish): plain JS — relaxed only when 'any' participates. */

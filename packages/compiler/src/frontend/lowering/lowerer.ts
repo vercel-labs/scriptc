@@ -6822,11 +6822,32 @@ export class Lowerer {
    * TypeScript types the binding from its initializer and reports the
    * assignment (TS2322), which JavaScript files relax, so the binding takes
    * checked-dynamic storage and holds whatever the program stores. JSDoc
-   * type annotations keep their declared storage. */
+   * type annotations keep their declared storage.
+   *
+   * A set accessor's unannotated parameter joins them: a JavaScript setter's
+   * parameter is whatever the caller passes, and `paramShape` gives the slot
+   * checked-dynamic storage. The checker types it from the twin getter's
+   * return when one exists (`set value(next) { this.stored = next; }` beside
+   * `get value() { return this.stored; }` types `next` as the getter's type),
+   * and otherwise reports TS7032; reading the parameter at the inferred type
+   * would check the caller's value back into it and throw where Node stores
+   * it as is. A JSDoc `@param` type keeps its declared storage, exactly like
+   * a variable's `@type`. */
   analyzeJsWidenedBindings(parts: FileParts[]): void {
     for (const { sf } of parts) {
       if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
       ts.walkPreorder(sf, (node) => {
+        if (
+          ts.isParameter(node) &&
+          ts.isSetAccessorDeclaration(node.parent) &&
+          !node.type &&
+          ts.isIdentifier(node.name) &&
+          !hasJsSetterParamAnnotation(node)
+        ) {
+          const setterParam = this.resolveValueSymbol(node.name);
+          if (setterParam) this.jsWidenedBindings.add(setterParam);
+          return undefined;
+        }
         if (
           !ts.isBinaryExpression(node) ||
           node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
@@ -18366,6 +18387,18 @@ function droppedMembers(lowerer: Lowerer, from: IrType, to: IrType, seen: Set<st
     else out.push(...droppedMembers(lowerer, f.type, t.type, seen).map((n) => `${f.name}.${n}`));
   }
   return out;
+}
+
+/** A JSDoc `@param` type on a set accessor's parameter is an annotation like
+ * a variable's `@type` (hasJsTypeAnnotation, lower-stmts.ts): the setter
+ * keeps its declared storage. Setters take exactly one parameter, so any
+ * `@param` before it belongs to it. */
+function hasJsSetterParamAnnotation(param: ts.ParameterDeclaration): boolean {
+  const accessor = param.parent;
+  if (!accessor) return false;
+  return /@param\b/.test(
+    ts.getSourceFileOfNode(accessor).text.slice(accessor.pos, ts.tokenStartOfNode(param)),
+  );
 }
 
 /** fs.realpathSync and its .native as function values (fs.realpath stores

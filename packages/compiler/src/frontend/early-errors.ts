@@ -64,6 +64,8 @@ export function earlyErrorDiagnostics7(
 ): ScrDiagnostic[] {
   const diags: ScrDiagnostic[] = [];
   const isStrict: IsStrictCode = (sf, node) => isStrictCode(sf, node, isModuleCode);
+  // PrivateBoundNames per class, for this run only.
+  const privateNames = new Map<ts.ClassLikeDeclaration, Set<string>>();
   for (const sf of files) {
     if (!isJsSourceFileName(sf.fileName)) continue;
     // Iterative walk: a deeply nested program must not overflow the stack
@@ -74,7 +76,7 @@ export function earlyErrorDiagnostics7(
       checkStatementListScope(sf, node, diags, isStrict);
       checkStatementSlot(node, diags, isStrict);
       checkImportCallForm(node, diags);
-      checkPrivateNameUse(node, diags);
+      checkPrivateNameUse(node, diags, privateNames);
       checkAssignmentTarget(node, diags);
       ts.forEachChild(node, (child) => {
         stack.push(child);
@@ -422,7 +424,11 @@ function checkImportCallForm(node: ts.Node, diags: ScrDiagnostic[]): void {
  * TS2339 ("Property '#x' does not exist on type 'C'"), which is a relaxed
  * JavaScript code because an ordinary member read of it is legal — but a
  * private name never is, so the pass owns the rule. */
-function checkPrivateNameUse(node: ts.Node, diags: ScrDiagnostic[]): void {
+function checkPrivateNameUse(
+  node: ts.Node,
+  diags: ScrDiagnostic[],
+  privateNames: Map<ts.ClassLikeDeclaration, Set<string>>,
+): void {
   if (ts.isPropertyAccessExpression(node) && ts.isPrivateIdentifier(node.name)) {
     if (node.expression.kind === ts.SyntaxKind.SuperKeyword) {
       report(
@@ -433,7 +439,7 @@ function checkPrivateNameUse(node: ts.Node, diags: ScrDiagnostic[]): void {
       );
       return;
     }
-    if (!privateNameVisible(node, node.name.text))
+    if (!privateNameVisible(node, node.name.text, privateNames))
       report(
         diags,
         UNBOUND_PRIVATE_NAME,
@@ -446,7 +452,7 @@ function checkPrivateNameUse(node: ts.Node, diags: ScrDiagnostic[]): void {
     ts.isBinaryExpression(node) &&
     node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
     ts.isPrivateIdentifier(node.left) &&
-    !privateNameVisible(node, node.left.text)
+    !privateNameVisible(node, node.left.text, privateNames)
   )
     report(
       diags,
@@ -459,32 +465,38 @@ function checkPrivateNameUse(node: ts.Node, diags: ScrDiagnostic[]): void {
 /** Whether the private name `text` is in the environment of `node`: the
  * PrivateBoundNames of every enclosing class body, save a heritage clause,
  * which sees only the classes outside the one it belongs to. */
-function privateNameVisible(node: ts.Node, text: string): boolean {
+function privateNameVisible(
+  node: ts.Node,
+  text: string,
+  privateNames: Map<ts.ClassLikeDeclaration, Set<string>>,
+): boolean {
   let child: ts.Node = node;
   for (let n: ts.Node | undefined = node.parent; n !== undefined; child = n, n = n.parent) {
     if (!ts.isClassDeclaration(n) && !ts.isClassExpression(n)) continue;
     if (ts.isHeritageClause(child)) continue;
-    if (privateBoundNamesOf(n).has(text)) return true;
+    if (privateBoundNamesOf(n, privateNames).has(text)) return true;
   }
   return false;
 }
 
 /** PrivateBoundNames of a ClassBody: every PrivateIdentifier that names an
  * element. A class's own names are visible throughout its body, including
- * the computed names of its elements, so the set is order-independent. */
-function privateBoundNamesOf(classNode: ts.ClassLikeDeclaration): Set<string> {
-  let names = privateNamesCache.get(classNode);
+ * the computed names of its elements, so the set is order-independent.
+ * `cache` is the pass run's own table, so nothing outlives the walk. */
+function privateBoundNamesOf(
+  classNode: ts.ClassLikeDeclaration,
+  cache: Map<ts.ClassLikeDeclaration, Set<string>>,
+): Set<string> {
+  let names = cache.get(classNode);
   if (names !== undefined) return names;
   names = new Set<string>();
   for (const member of classNode.members.nodes) {
     const name = member.name;
     if (name !== undefined && ts.isPrivateIdentifier(name)) names.add(name.text);
   }
-  privateNamesCache.set(classNode, names);
+  cache.set(classNode, names);
   return names;
 }
-
-const privateNamesCache = new WeakMap<ts.ClassLikeDeclaration, Set<string>>();
 
 /* ── SC0010: AssignmentTargetType ───────────────────────────────────────
  *
@@ -561,7 +573,14 @@ function checkTargetForm(
   at: ts.Node,
   diags: ScrDiagnostic[],
 ): void {
-  const node = skipParentheses(target);
+  // Parentheses are transparent around a simple target only: a pattern is
+  // not a LeftHandSideExpression, so `([a]) = rows` is a Syntax Error and
+  // `((a)) = 1` is not.
+  if (ts.isParenthesizedExpression(target)) {
+    checkTargetForm(target.expression, false, at, diags);
+    return;
+  }
+  const node = target;
   if (ts.isIdentifier(node)) return;
   if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) return;
   // `new.target = 1` is caught by the checker; a meta property is never a
@@ -569,15 +588,17 @@ function checkTargetForm(
   if (pattern && ts.isArrayLiteralExpression(node)) {
     for (const element of node.elements.nodes) {
       if (ts.isOmittedExpression(element)) continue;
+      // A rest target and the target of a default admit a nested pattern
+      // (`[...[a]] = rows`, `[[a] = [1]] = rows`).
       if (ts.isSpreadElement(element)) {
-        checkTargetForm(element.expression, false, at, diags);
+        checkTargetForm(element.expression, true, at, diags);
         continue;
       }
       if (
         ts.isBinaryExpression(element) &&
         element.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        checkTargetForm(element.left, false, at, diags);
+        checkTargetForm(element.left, true, at, diags);
         continue;
       }
       checkTargetForm(element, true, at, diags);
@@ -597,7 +618,7 @@ function checkTargetForm(
       if (!ts.isPropertyAssignment(property)) continue;
       const value = property.initializer;
       if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-        checkTargetForm(value.left, false, at, diags);
+        checkTargetForm(value.left, true, at, diags);
         continue;
       }
       checkTargetForm(value, true, at, diags);
@@ -610,13 +631,6 @@ function checkTargetForm(
     at,
     "the left-hand side of an assignment must be a variable reference or a property access",
   );
-}
-
-/** The expression inside any number of parentheses. */
-function skipParentheses(node: ts.Node): ts.Node {
-  let cur = node;
-  while (ts.isParenthesizedExpression(cur)) cur = cur.expression;
-  return cur;
 }
 
 /* ── strictness of the code around a node ───────────────────────────────

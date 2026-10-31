@@ -49,8 +49,12 @@ test.for([
   "var o = {};\n({ x: o.y = 1, ...o.rest } = { x: 2 });\nconsole.log(o.y);",
   "var o = {};\n[o.a = 1, ...o.r] = [2];\nconsole.log(o.a);",
   "var a;\nfor ([a] of [[1]]) a;\nfor ({ a } of [{ a: 2 }]) a;\nconsole.log(a);",
+  // A rest element and the target of a default hold a pattern as well.
+  "var a, b;\n[ ...[a] ] = [[1]];\n[ [b] = [2] ] = [];\nconsole.log(a, b);",
+  "var a;\n({ x: [a] = [3] } = {});\nconsole.log(a);",
   // Parentheses are transparent around a target.
   "var a;\n((a)) = 1;\nconsole.log(a);",
+  "var a;\n[ ...(a) ] = [1];\nconsole.log(a);",
   // A private name is readable anywhere an enclosing class declares it.
   "class C { #x = 1; m() { return this.#x; } static s() { return new C().#x; } }\nnew C().m();",
   "class C { #x = 1; m() { class D { #x = 2; y = this.#x; } return new D().y; } }\nnew C().m();",
@@ -66,6 +70,10 @@ test.for([
   ["import('a') -= 1;", "SC0010"],
   ["var f = function () {};\nf() += 1;", "SC0010"],
   ["var a;\n++a.b();", "SC0010"],
+  // A pattern never sits inside parentheses, and an object's rest target
+  // takes a reference only.
+  ["var a;\n[ ([a]) ] = [[1]];", "SC0010"],
+  ["var a;\n({ ...[a] } = {});", "SC0010"],
   ["var C = class { m() { this.#x; } };\nnew C().m();", "SC0009"],
   ["class C { #x; }\nnew C().#y;", "SC0009"],
   // `#x in obj` is readable wherever `#x` is in scope (the accepts list

@@ -1197,13 +1197,27 @@ void scr_dyn_namespace_define(ScrDyn *object, const ScrStr *key, ScrDyn *value, 
 /* Marks the own property `key` of `object` as a fenced namespace member
  * (ScrDynEntry.fenced). */
 void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key);
-/* A constant-key read of an Object.prototype member name: takes the
- * ordinary read's +1 result and answers the inherited member in place of
- * an undefined one (scr_dyn_invoke.c). */
+/* A read of an Object.prototype member name, by a constant or computed
+ * key: takes the ordinary read's +1 result and answers the inherited member
+ * in place of an undefined one (scr_dyn_inherited.c). */
 ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
 /* The member `key` read on Object.prototype itself, or NULL for any other
- * receiver (scr_dyn_invoke.c). */
+ * receiver (scr_dyn_inherited.c). */
 ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
+/* Object.prototype's method `method` as an interned function value: +1
+ * (scr_dyn_inherited.c). */
+ScrDyn *scr_dyn_object_prototype_method(const ScrStr *method);
+/* The interned builtin constructor named `name` (Object, Date, RegExp, Map,
+ * Set, Promise, WeakMap, WeakSet, FinalizationRegistry, SharedArrayBuffer,
+ * DataView, BigInt64Array, BigUint64Array, Proxy): +1, or NULL for another
+ * name (scr_dyn_inherited.c). */
+ScrDyn *scr_dyn_global_ctor(const char *name);
+/* The call thunk of those constructors (scr_dyn_inherited.c). */
+ScrDyn *scr_dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc);
+/* `new` through those constructors, once installed (NULL before). */
+extern bool (*scr_dyn_global_ctor_construct)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result);
+/* Installs `new` through those constructors (scr_dyn_global_construct.c). */
+void scr_dyn_global_construct_install(void);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);

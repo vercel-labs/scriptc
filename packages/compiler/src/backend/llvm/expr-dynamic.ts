@@ -729,9 +729,20 @@ export function emitDynamicExpr(
         B.line(`${t} = ${generic}`);
       }
       let result = t;
+      if (e.key.kind !== "strLit" && e.key.type.kind !== "dyn") {
+        // A computed string key may name an Object.prototype member: an
+        // undefined read answers the inherited member, as a constant key's
+        // does (the frontend links scr_dyn_inherited.c for these reads; a
+        // dyn key's helper does the same).
+        host.declare(`declare ptr @scr_dyn_inherited_read(ptr, ptr, ptr)`);
+        result = B.tmp();
+        B.line(
+          `${result} = call ptr @scr_dyn_inherited_read(ptr ${d.name}, ptr ${k.name}, ptr ${t})`,
+        );
+      }
       if (prototypeJoin) {
         // An undefined read of an Object.prototype member name answers the
-        // member the receiver inherits (scr_dyn_invoke.c; the frontend
+        // member the receiver inherits (scr_dyn_inherited.c; the frontend
         // links that unit for these reads).
         host.declare(`declare ptr @scr_dyn_inherited_read(ptr, ptr, ptr)`);
         const read = B.tmp();

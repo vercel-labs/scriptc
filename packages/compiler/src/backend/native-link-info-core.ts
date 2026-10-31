@@ -71,6 +71,12 @@ export interface NativeLinkFeatures {
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
+  /** Dynamic reads whose key may name an inherited Object.prototype member:
+   * scr_dyn_inherited.c. Absent (not false) for programs without them. */
+  dynInherited?: boolean;
+  /** `new` through the builtin constructors inherited reads answer:
+   * scr_dyn_global_construct.c. Absent (not false) for programs without it. */
+  dynGlobalConstruct?: boolean;
   dc: boolean;
   dynAsync: boolean;
   /** Dynamic-tier jsval operations: the scr_js_* units. Absent (not false)

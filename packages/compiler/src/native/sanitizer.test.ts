@@ -17,6 +17,8 @@ const features = {
   dynTier: false,
   streamDyn: false,
   handleProps: false,
+  dynInherited: false,
+  dynGlobalConstruct: false,
   childLifecycle: false,
   childOptionExt: false,
   declAdopt: false,

@@ -356,7 +356,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unpipeDyn",
 ]);
 
-/** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
+/** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through scr_dyn_inherited.c. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
 const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "constructor",
   "hasOwnProperty",
@@ -1156,14 +1156,21 @@ const RUNTIME_FEATURE_RULES = {
       // same unit, which calls scr_dyn_invoke.
       "wrapper.booleanPrototype",
     ],
-    // Constant-key reads of Object.prototype member names answer the
-    // inherited member through scr_dyn_invoke.c.
-    expr: (node, _tables) =>
-      node.kind === "dynInvoke" ||
-      (node.kind === "dynKeyGet" &&
-        node.key.kind === "strLit" &&
-        INHERITED_MEMBER_NAMES.has(node.key.value)),
+    expr: (node, _tables) => node.kind === "dynInvoke",
   }),
+  /** Dynamic reads whose key may name an Object.prototype member: constant
+   * keys naming one, and every computed key (built at run time, so it may
+   * name one). An undefined read answers the inherited member through
+   * scr_dyn_inherited.c, which references only the base units. */
+  dynInherited: rule({
+    expr: (node, _tables) =>
+      node.kind === "dynKeyGet" &&
+      (node.key.kind !== "strLit" || INHERITED_MEMBER_NAMES.has(node.key.value)),
+  }),
+  /** `new` through the builtin constructors those reads answer
+   * (scr_dyn_global_construct.c), installed at start by programs that also
+   * construct dynamic values. */
+  dynGlobalConstruct: rule({ fns: ["dyn.globalConstructInstall"] }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
   dynTier: rule({ prefixes: ["js."] }),
@@ -1541,6 +1548,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
     dynInvoke: false,
+    dynInherited: false,
+    dynGlobalConstruct: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
     dynTier: false,

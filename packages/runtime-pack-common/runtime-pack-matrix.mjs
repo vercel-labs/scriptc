@@ -82,6 +82,14 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Island libCalls on native values typed by island declarations invoke
   // through the checked-dynamic path (scr_node_island_handle.c).
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
+  // Inherited Object.prototype members on dynamic values (base units only);
+  // the dyn-invoke unit reads them too.
+  ["scr_dyn_inherited.c", any("dynInherited", "dynInvoke", "nativeFetch", "nodeIsland")],
+  // `new` through those constructors builds dates and collections.
+  [
+    "scr_dyn_global_construct.c",
+    any("dynGlobalConstruct", "dynInvoke", "nativeFetch", "nodeIsland"),
+  ],
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],

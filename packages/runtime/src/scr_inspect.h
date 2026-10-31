@@ -129,6 +129,12 @@ void scr_insp_seen_push(const void *v);
 ScrStr *scr_insp_circular(double id);
 ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s);
 ScrStr *scr_insp_more_items(double remaining); /* "... N more items" */
+/* Traversal limits (Node's stack limit and ctx.budget): the compiler-emitted
+ * helpers ask scr_insp_gate before a composite's depth answer. 0 renders
+ * it, 1 answers its past-depth placeholder, 2 answers
+ * scr_insp_interrupted(constructor style). */
+double scr_insp_gate(double recurse, double depth);
+ScrStr *scr_insp_interrupted(ScrStr *name);
 ScrStr *scr_insp_key(ScrStr *k); /* bare-or-quoted property-name ladder; +1 */
 ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse,
                      bool array_extras, bool trailing_more);

@@ -380,13 +380,7 @@ function errorInspectHelper(
             },
           ] satisfies IrStmt[])
         : []),
-      {
-        kind: "if",
-        cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
-        then: [{ kind: "return", value: strLit(`[${display}]`, loc), loc }],
-        else_: null,
-        loc,
-      },
+      traversalGate(r(), d(), strLit(`[${display}]`, loc), strLit(display, loc), loc),
       {
         kind: "varDecl",
         localId: "base.0",
@@ -964,6 +958,42 @@ function isNumberFlag(lowerer: Lowerer, t: IrType, v: () => IrExpr, loc: SrcLoc)
 /** The rendering of one value of type `t` at runtime depth `recurse`
  * with the depth budget `depth` — a direct scalar libCall or a call of
  * the interned per-type helper. */
+/** A composite's traversal gate (scr_insp_gate): past the depth limit, or
+ * once Node's output budget is spent, it answers `placeholder`; past the
+ * nesting where Node's stack overflows, Node's interrupted-inspection
+ * marker for `style` (the constructor style getCtxStyle prints). */
+function traversalGate(
+  r: IrExpr,
+  d: IrExpr,
+  placeholder: IrExpr,
+  style: IrExpr,
+  loc: SrcLoc,
+): IrStmt {
+  const gate = (): IrExpr => ({ kind: "libCall", fn: "insp.gate", args: [r, d], type: F64, loc });
+  return {
+    kind: "if",
+    cond: { kind: "bin", op: ">", left: gate(), right: numLit(0, loc), type: BOOL, loc },
+    then: [
+      {
+        kind: "if",
+        cond: { kind: "bin", op: ">", left: gate(), right: numLit(1, loc), type: BOOL, loc },
+        then: [
+          {
+            kind: "return",
+            value: { kind: "libCall", fn: "insp.interrupted", args: [style], type: STRING, loc },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+      { kind: "return", value: placeholder, loc },
+    ],
+    else_: null,
+    loc,
+  };
+}
+
 export function inspectExpr(
   lowerer: Lowerer,
   t: IrType,
@@ -1253,6 +1283,23 @@ export function typeReachesItself(lowerer: Lowerer, t: IrType): boolean {
     }
     return false;
   };
+  return walk(t);
+}
+
+/** Whether an inspect helper over `t` runs Node's circular machinery: a
+ * value of `t` can contain itself through its type graph, or through a
+ * checked-dynamic slot it reaches, which can hold the value itself. */
+function inspectMayCycle(lowerer: Lowerer, t: IrType): boolean {
+  if (typeReachesItself(lowerer, t)) return true;
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean =>
+    typeConstituents(lowerer, u).some((c) => {
+      if (c.kind === "dyn") return true;
+      const k = typeKey(c);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return walk(c);
+    });
   return walk(t);
 }
 
@@ -1697,8 +1744,12 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   // adds the <ref *N> prefix on values the walk found circular). Acyclic types
   // keep the zero-cost path.
   const onCycle =
-    (t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
-    typeReachesItself(lowerer, t);
+    (t.kind === "record" ||
+      t.kind === "array" ||
+      t.kind === "map" ||
+      t.kind === "set" ||
+      t.kind === "object") &&
+    inspectMayCycle(lowerer, t);
   const begin = (): IrStmt[] => [
     exprStmt({ kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: { kind: "void" }, loc }),
     ...(onCycle
@@ -1732,14 +1783,9 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
     if (!onCycle) return reduced;
     return { kind: "libCall", fn: "insp.refWrap", args: [v(), reduced], type: STRING, loc };
   };
-  /** if (r > d) return "<placeholder>"; */
-  const depthGate = (placeholder: string): IrStmt => ({
-    kind: "if",
-    cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
-    then: [ret(strLit(placeholder, loc))],
-    else_: null,
-    loc,
-  });
+  /** The traversal gate with a "[Style]" placeholder. */
+  const depthGate = (placeholder: string): IrStmt =>
+    traversalGate(r(), d(), strLit(placeholder, loc), strLit(placeholder.slice(1, -1), loc), loc);
   const child = (elemT: IrType, value: IrExpr): IrExpr =>
     inspectExpr(lowerer, elemT, value, rPlus1(), d(), loc);
 
@@ -2000,13 +2046,13 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         };
         locals.push({ id: "in.0", name: "inner", type: STRING, mutable: false });
         body = [
-          {
-            kind: "if",
-            cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
-            then: [ret(concatAll([strLit("[", loc), className, strLit("]", loc)], loc))],
-            else_: null,
+          traversalGate(
+            r(),
+            d(),
+            concatAll([strLit("[", loc), className, strLit("]", loc)], loc),
+            className,
             loc,
-          },
+          ),
           exprStmt({
             kind: "libCall",
             fn: "insp.nestedBegin",
@@ -2173,13 +2219,13 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             else_: null,
             loc,
           },
-          {
-            kind: "if",
-            cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
-            then: [ret(byProto("[Object]", "[Object: null prototype]"))],
-            else_: null,
+          traversalGate(
+            r(),
+            d(),
+            byProto("[Object]", "[Object: null prototype]"),
+            byProto("Object", "[Object: null prototype]"),
             loc,
-          },
+          ),
           ...begin(),
           {
             kind: "for",
@@ -2579,19 +2625,15 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         loc,
       });
       body.push(
-        {
-          kind: "if",
-          cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
-          then: [
-            ret(
-              named(display === "" ? "[Object]" : `[${display}]`, (head) =>
-                concatAll([strLit("[", loc), head, strLit("]", loc)], loc),
-              ),
-            ),
-          ],
-          else_: null,
+        traversalGate(
+          r(),
+          d(),
+          named(display === "" ? "[Object]" : `[${display}]`, (head) =>
+            concatAll([strLit("[", loc), head, strLit("]", loc)], loc),
+          ),
+          named(display === "" ? "Object" : display, (head) => head),
           loc,
-        },
+        ),
         ...begin(),
       );
       // def.fields carries layout order: the base chain first, then own —
@@ -3256,6 +3298,16 @@ function withInspectLayout(
   return { kind: "call", callee: name, args: [value], type: STRING, loc };
 }
 
+/** The constructor a function literal or declaration creates, which Node's
+ * inspect prints before its name: AsyncFunction, GeneratorFunction,
+ * AsyncGeneratorFunction or Function. */
+function functionConstructorName(fn: ts.SignatureDeclaration): string {
+  const isAsync = ts.getModifiers(fn)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) ?? false;
+  const isGenerator =
+    (ts.isFunctionDeclaration(fn) || ts.isFunctionExpression(fn)) && fn.asteriskToken !== undefined;
+  return `${isAsync ? "Async" : ""}${isGenerator ? "Generator" : ""}Function`;
+}
+
 /** `util.inspect(fn)` / `util.inspect(Cls)` over a DIRECT identifier
  * naming a declared function or class: the name is compile-time truth,
  * so `[Function: name]` / `[class X extends Y]` bake as literals. Null
@@ -3285,7 +3337,7 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
     if (type?.kind === "func" && lowerer.dynConvertible(type)) return null;
   }
   if (ts.isFunctionDeclaration(decl) && decl.name) {
-    return strLit(`[Function: ${decl.name.text}]`, loc);
+    return strLit(`[${functionConstructorName(decl)}: ${decl.name.text}]`, loc);
   }
   if (
     ts.isVariableDeclaration(decl) &&
@@ -3296,7 +3348,7 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
     // JS name inference: the binding names the function value — unless
     // the function expression carries its OWN name, which wins.
     const own = ts.isFunctionExpression(decl.initializer) ? decl.initializer.name?.text : undefined;
-    return strLit(`[Function: ${own ?? decl.name.text}]`, loc);
+    return strLit(`[${functionConstructorName(decl.initializer)}: ${own ?? decl.name.text}]`, loc);
   }
   return null;
 }
@@ -3406,11 +3458,11 @@ export function lowerInspectValue(
   }
   if (ts.isArrowFunction(valueNode) || ts.isFunctionExpression(valueNode)) {
     parseInspectOptions(lowerer, optionsNode, false, dir);
+    const ctor = functionConstructorName(valueNode);
     return strLit(
-      valueNode.kind === ts.SyntaxKind.FunctionExpression &&
-        (valueNode as ts.FunctionExpression).name
-        ? `[Function: ${(valueNode as ts.FunctionExpression).name!.text}]`
-        : "[Function (anonymous)]",
+      ts.isFunctionExpression(valueNode) && valueNode.name
+        ? `[${ctor}: ${valueNode.name.text}]`
+        : `[${ctor} (anonymous)]`,
       loc,
     );
   }

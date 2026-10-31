@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/inspect-dynamic-cycles.cjs"
+ ],
+ "diags": []
+}

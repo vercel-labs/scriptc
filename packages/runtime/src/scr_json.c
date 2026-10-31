@@ -16666,7 +16666,7 @@ static ScrDyn *scr_dyn_objwalk_key(const char *key, size_t key_len) {
 /* A plain object's entry positions in JS own-key order: integer-like keys
  * ascending, then the rest in insertion order. NULL when that order is
  * insertion order (no integer-like key); the caller frees the array. */
-static size_t *scr_dyn_obj_key_order(const ScrDyn *v) {
+size_t *scr_dyn_obj_key_order(const ScrDyn *v) {
   size_t n = v->v.obj.len;
   ScrKeyIndex *indices = NULL;
   size_t count = 0;

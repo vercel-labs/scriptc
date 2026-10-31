@@ -482,30 +482,69 @@ static SCR_TL size_t g_nseen;
  * properties, like util.inspect's showHidden. */
 static SCR_TL bool g_show_hidden;
 static SCR_TL size_t g_seen_cap;
-/* Detection-numbered circular targets (persist across the call). */
-static SCR_TL const void *g_circ[64];
-static SCR_TL int g_ncirc;
+/* Detection-numbered circular targets (persist across the call): an
+ * open-addressing table from value to id, like Node's ctx.circular Map. */
+typedef struct {
+  const void **keys; /* NULL marks an empty slot */
+  int *ids;
+  size_t cap; /* a power of two, or 0 */
+  int n;
+} InspCircTable;
+
+static SCR_TL InspCircTable g_circ;
+
+static void insp_budget_reset(void);
 
 static void insp_circ_reset(void) {
   g_nseen = 0;
-  g_ncirc = 0;
+  if (g_circ.n) memset(g_circ.keys, 0, g_circ.cap * sizeof *g_circ.keys);
+  g_circ.n = 0;
+  insp_budget_reset();
+}
+
+static size_t insp_circ_slot(const InspCircTable *t, const void *v) {
+  uint64_t h = (uint64_t)(uintptr_t)v * UINT64_C(0x9E3779B97F4A7C15);
+  size_t i = (size_t)(h >> 32) & (t->cap - 1);
+  while (t->keys[i] && t->keys[i] != v) i = (i + 1) & (t->cap - 1);
+  return i;
 }
 
 static int insp_circ_id(const void *v) {
-  for (int i = 0; i < g_ncirc; i++) {
-    if (g_circ[i] == v) return i + 1;
+  if (g_circ.n == 0) return 0;
+  size_t i = insp_circ_slot(&g_circ, v);
+  return g_circ.keys[i] ? g_circ.ids[i] : 0;
+}
+
+/* Numbers a newly detected circular target (ids in discovery order). */
+static int insp_circ_add(const void *v) {
+  if ((size_t)(g_circ.n + 1) * 2 > g_circ.cap) {
+    InspCircTable grown = {0};
+    grown.cap = g_circ.cap ? g_circ.cap * 2 : 16;
+    grown.keys = calloc(grown.cap, sizeof *grown.keys);
+    grown.ids = malloc(grown.cap * sizeof *grown.ids);
+    if (!grown.keys || !grown.ids) insp_oom();
+    for (size_t i = 0; i < g_circ.cap; i++) {
+      if (!g_circ.keys[i]) continue;
+      size_t j = insp_circ_slot(&grown, g_circ.keys[i]);
+      grown.keys[j] = g_circ.keys[i];
+      grown.ids[j] = g_circ.ids[i];
+    }
+    grown.n = g_circ.n;
+    free(g_circ.keys);
+    free(g_circ.ids);
+    g_circ = grown;
   }
-  return 0;
+  size_t i = insp_circ_slot(&g_circ, v);
+  g_circ.keys[i] = v;
+  g_circ.ids[i] = ++g_circ.n;
+  return g_circ.n;
 }
 
 double scr_insp_circ_check(const void *v) {
   for (size_t i = 0; i < g_nseen; i++) {
     if (g_seen[i].ptr != v) continue;
     int id = insp_circ_id(v);
-    if (id == 0 && g_ncirc < (int)(sizeof g_circ / sizeof *g_circ)) {
-      g_circ[g_ncirc++] = v;
-      id = g_ncirc;
-    }
+    if (id == 0) id = insp_circ_add(v);
     return (double)id;
   }
   return 0;
@@ -535,6 +574,67 @@ ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s) {
   (void)v;
   if (g_nseen > 0) g_nseen--;
   return scr_str_retain(s);
+}
+
+/* ── traversal limits ────────────────────────────────────────────────
+ * Node's recursive formatValue ends in V8's stack limit: the composite
+ * whose properties overflowed renders as `[<constructor>: Inspection
+ * interrupted prematurely. Maximum call stack size exceeded.]` and the
+ * levels above it render as usual. A native stack holds far more frames,
+ * so the traversal stops at a fixed nesting, about where Node 24's default
+ * stack overflows for plain objects (930 levels of a linked list).
+ *
+ * Node also adds each composite's text length to ctx.budget at its
+ * indentation level; once a level passes 2 ** 27, ctx.depth becomes -1 and
+ * every composite after that renders as its past-depth placeholder
+ * ([Object], [Array]). The budget counts bytes, where Node counts UTF-16
+ * units; the two agree for ASCII text. */
+#define INSP_MAX_NESTING 1000
+#define INSP_BUDGET_LIMIT 134217728.0 /* 2 ** 27 */
+
+static SCR_TL double *g_budget; /* indexed by indentation level / 2 */
+static SCR_TL size_t g_budget_cap;
+static SCR_TL bool g_budget_spent;
+
+static void insp_budget_reset(void) {
+  if (g_budget_cap) memset(g_budget, 0, g_budget_cap * sizeof *g_budget);
+  g_budget_spent = false;
+}
+
+static void insp_budget_add(size_t indent, size_t len) {
+  size_t level = indent / 2;
+  if (level >= g_budget_cap) {
+    size_t cap = g_budget_cap ? g_budget_cap : 16;
+    while (cap <= level) cap *= 2;
+    g_budget = realloc(g_budget, cap * sizeof *g_budget);
+    if (!g_budget) insp_oom();
+    memset(g_budget + g_budget_cap, 0, (cap - g_budget_cap) * sizeof *g_budget);
+    g_budget_cap = cap;
+  }
+  g_budget[level] += (double)len;
+  if (g_budget[level] > INSP_BUDGET_LIMIT) g_budget_spent = true;
+}
+
+/* Whether a composite at `recurse` renders: 0 renders it, 1 answers its
+ * past-depth placeholder (beyond `depth`, or after the budget is spent),
+ * 2 answers the interrupted-inspection marker (scr_insp_interrupted). A
+ * gate with no frame open starts a top-level value, which gets a fresh
+ * budget (Node's per-inspect ctx). */
+double scr_insp_gate(double recurse, double depth) {
+  if (g_nframes == 0) insp_budget_reset();
+  if (recurse > depth || g_budget_spent) return 1;
+  if (recurse >= INSP_MAX_NESTING) return 2;
+  return 0;
+}
+
+/* The interrupted-inspection marker for a composite whose constructor
+ * style (getCtxStyle without its trailing space) is `name`. */
+ScrStr *scr_insp_interrupted(ScrStr *name) {
+  InspBuf out = {0};
+  ib_char(&out, '[');
+  ib_str(&out, name);
+  ib_cstr(&out, ": Inspection interrupted prematurely. Maximum call stack size exceeded.]");
+  return insp_styled(ib_take(&out), INSP_SPECIAL);
 }
 
 /* formatRaw's Date base: toISOString(), or toString()'s "Invalid Date"
@@ -746,7 +846,9 @@ done:;
   free(f->items);
   g_nframes--;
   if (ref_base) scr_str_release(ref_base);
-  return ib_take(&out);
+  ScrStr *text = ib_take(&out);
+  insp_budget_add(g_indent, text->len);
+  return text;
 }
 
 /* ── nested inspections ──────────────────────────────────────────────
@@ -764,8 +866,10 @@ typedef struct {
   InspSeenEnt *seen;
   size_t nseen;
   size_t seen_cap;
-  const void *circ[64];
-  int ncirc;
+  InspCircTable circ;
+  double *budget;
+  size_t budget_cap;
+  bool budget_spent;
 } InspSaved;
 
 static SCR_TL InspSaved *g_saved;
@@ -784,13 +888,18 @@ void scr_insp_nested_begin(void) {
   sv->seen = g_seen;
   sv->nseen = g_nseen;
   sv->seen_cap = g_seen_cap;
-  memcpy(sv->circ, g_circ, sizeof g_circ);
-  sv->ncirc = g_ncirc;
+  sv->circ = g_circ;
+  sv->budget = g_budget;
+  sv->budget_cap = g_budget_cap;
+  sv->budget_spent = g_budget_spent;
   g_indent = 0;
   g_cur_depth = 0;
   g_seen = NULL;
   g_nseen = g_seen_cap = 0;
-  g_ncirc = 0;
+  g_circ = (InspCircTable){0};
+  g_budget = NULL;
+  g_budget_cap = 0;
+  g_budget_spent = false;
 }
 
 /* nested_end's restore alone: the caller's context returns. */
@@ -802,8 +911,13 @@ void scr_insp_nested_restore(void) {
   g_seen = sv->seen;
   g_nseen = sv->nseen;
   g_seen_cap = sv->seen_cap;
-  memcpy(g_circ, sv->circ, sizeof g_circ);
-  g_ncirc = sv->ncirc;
+  free(g_circ.keys);
+  free(g_circ.ids);
+  g_circ = sv->circ;
+  free(g_budget);
+  g_budget = sv->budget;
+  g_budget_cap = sv->budget_cap;
+  g_budget_spent = sv->budget_spent;
 }
 
 ScrStr *scr_insp_nested_end(ScrStr *prefix, ScrStr *inner) {
@@ -814,8 +928,13 @@ ScrStr *scr_insp_nested_end(ScrStr *prefix, ScrStr *inner) {
   g_seen = sv->seen;
   g_nseen = sv->nseen;
   g_seen_cap = sv->seen_cap;
-  memcpy(g_circ, sv->circ, sizeof g_circ);
-  g_ncirc = sv->ncirc;
+  free(g_circ.keys);
+  free(g_circ.ids);
+  g_circ = sv->circ;
+  free(g_budget);
+  g_budget = sv->budget;
+  g_budget_cap = sv->budget_cap;
+  g_budget_spent = sv->budget_spent;
   InspBuf out = {0};
   ib_str(&out, prefix);
   ib_char(&out, ' ');
@@ -871,8 +990,13 @@ void scr_insp_unwind(void) {
     free(g_seen);
     g_seen = sv->seen;
     g_seen_cap = sv->seen_cap;
-    memcpy(g_circ, sv->circ, sizeof g_circ);
-    g_ncirc = sv->ncirc;
+    free(g_circ.keys);
+    free(g_circ.ids);
+    g_circ = sv->circ;
+    free(g_budget);
+    g_budget = sv->budget;
+    g_budget_cap = sv->budget_cap;
+    g_budget_spent = sv->budget_spent;
   }
   if (g_nseen > m.nseen) g_nseen = m.nseen;
   g_indent = m.indent;
@@ -2050,8 +2174,17 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
                          : insp_styled_lit("[Object]", 8, INSP_SPECIAL);
   }
   scr_insp_begin(recurse + 1);
-  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
-    ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+  /* Own string keys in [[OwnPropertyKeys]] order: integer-like keys
+   * ascending, then the rest in insertion order. Like Node's getKeys, the
+   * keys are the ones the object has when its rendering starts: a property
+   * a custom inspect function adds meanwhile does not print, and one it
+   * deletes is skipped. */
+  size_t *order = scr_dyn_obj_key_order(d);
+  size_t nkeys = scr_dyn_obj_count(d);
+  for (size_t k = 0; k < nkeys; k++) {
+    size_t at = order ? order[k] : k;
+    if (at >= scr_dyn_obj_count(d)) continue;
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, at);
     if (!insp_obj_shows(&ent)) continue;
     ScrStr *val = ent.accessor ? insp_accessor_tag(&ent) : scr_insp_dyn(ent.value, recurse + 1, depth);
     InspBuf eb = {0};
@@ -2071,6 +2204,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     scr_str_release(entry);
     if (scr_exc_pending()) break;
   }
+  free(order);
   for (size_t i = 0; i < nsymbols; i++) {
     ScrDynProp found;
     if (!scr_insp_symbol_entry(d, i, &found)) continue;
@@ -2795,6 +2929,42 @@ static ScrStr *scr_insp_search_params(ScrSearchParams *sp, double recurse, doubl
   return ib_take(&indented);
 }
 
+static ScrStr *insp_dyn_kind(ScrDyn *d, double recurse, double depth);
+
+/* The dynamic kinds that render as composites, and so can sit on the
+ * traversal stack: objects, arrays, and Maps and Sets. Functions keep
+ * their own circular protocol (scr_insp_dyn_func). */
+static bool insp_dyn_composite(const ScrDyn *d) {
+  return d->kind == SCR_DYN_OBJ || d->kind == SCR_DYN_ARR ||
+         (d->kind == SCR_DYN_HANDLE && (d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP));
+}
+
+/* A composite's identity on the traversal stack: the node itself, or the
+ * native collection a Map or Set box wraps (each read of a key or value
+ * boxes it anew). */
+static const void *insp_dyn_identity(const ScrDyn *d) {
+  return d->kind == SCR_DYN_HANDLE ? d->v.handle.ptr : (const void *)d;
+}
+
+/* scr_insp_interrupted for a dynamic composite, named as getCtxStyle names
+ * it: the inherited class, or the builtin constructor. */
+static ScrStr *insp_interrupted(const ScrDyn *d) {
+  const char *name;
+  if (d->kind == SCR_DYN_ARR)
+    name = d->v.arr.properties && d->v.arr.properties->v.obj.class_name ? d->v.arr.properties->v.obj.class_name
+                                                                         : "Array";
+  else if (d->kind == SCR_DYN_HANDLE)
+    name = d->v.handle.tag == SCR_DYNH_MAP ? "Map" : "Set";
+  else if (d->null_proto)
+    name = "[Object: null prototype]";
+  else
+    name = scr_dyn_class_name(d) ? scr_dyn_class_name(d) : "Object";
+  ScrStr *text = scr_str_new(name, strlen(name));
+  ScrStr *out = scr_insp_interrupted(text);
+  scr_str_release(text);
+  return out;
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   if ((d->kind == SCR_DYN_TYPED_REF ? g_ncustom_classes > 0 : scr_dyn_inspect_custom_symbol() != NULL) &&
@@ -2814,6 +2984,29 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
     return scr_str_new("", 0);
   }
+  if (!insp_dyn_composite(d)) return insp_dyn_kind(d, recurse, depth);
+  /* formatValue's seen check: a composite already on the traversal stack
+   * renders as [Circular *N], and its own rendering gets the <ref *N>
+   * prefix (the frame insp_dyn_kind opens pushes it). */
+  const void *identity = insp_dyn_identity(d);
+  double circular = scr_insp_circ_check(identity);
+  if (circular > 0) return scr_insp_circular(circular);
+  double gate = scr_insp_gate(recurse, depth);
+  if (gate == 2) return insp_interrupted(d);
+  /* A spent budget is Node's ctx.depth = -1: every composite below renders
+   * as its past-depth placeholder. */
+  if (g_budget_spent) depth = -1;
+  size_t nseen = g_nseen;
+  g_pending_seen = identity;
+  ScrStr *out = insp_dyn_kind(d, recurse, depth);
+  g_pending_seen = NULL;
+  if (g_nseen > nseen) g_nseen = nseen;
+  return out;
+}
+
+/* One dynamic value's rendering by kind; scr_insp_dyn has handled custom
+ * inspection, the circular check and the traversal limits. */
+static ScrStr *insp_dyn_kind(ScrDyn *d, double recurse, double depth) {
   switch (d->kind) {
     case SCR_DYN_NULL:
       return insp_styled_lit("null", 4, INSP_NULL);

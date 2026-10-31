@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/inspect-function-kinds.ts"
+ ],
+ "diags": []
+}

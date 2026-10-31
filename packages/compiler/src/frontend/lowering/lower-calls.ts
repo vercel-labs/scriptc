@@ -3200,6 +3200,42 @@ function lowerObjectOwnCall(
       type: BOOL,
       loc,
     };
+  } else if (
+    type.kind === "func" &&
+    !enumerable &&
+    isJsSourceFile(ts.getSourceFileOfNode(receiverNode ?? call)) &&
+    canBoxFuncIntoDyn(
+      type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    // A FUNCTION-typed JavaScript value answers hasOwnProperty from its
+    // dynamic view: the closure's own-property table first, then `name` and
+    // `length`, and nothing else. Compiled functions are strict-mode
+    // function objects, whose `caller` and `arguments` own properties the
+    // spec forbids, so those two answer false rather than the sloppy-mode
+    // reflection V8 extends to non-strict functions. The function value is
+    // boxed exactly like the `f.name`/`f.length` read in property-access.
+    // propertyIsEnumerable keeps its refusal: the dynamic read does not
+    // carry a function's own-property enumerable bits yet.
+    const fnName = jsFuncNameOf(receiverNode ?? call, lowerer);
+    const fnLength = lowerer.builtinFunctionIdentity(receiver).fnLength;
+    const boxed: IrExpr = {
+      kind: "dynFrom",
+      value: receiverRef,
+      type: DYN,
+      ...(fnName !== null ? { fnName } : {}),
+      ...(fnLength !== undefined ? { fnLength } : {}),
+      loc,
+    };
+    result = {
+      kind: "libCall",
+      fn: "dyn.hasOwn",
+      args: [boxed, key],
+      type: BOOL,
+      loc,
+    };
   } else if (type.kind === "string" || type.kind === "array") {
     const needleLocal = lowerer.declareHiddenLocal("%ownIndex", F64);
     stmts.push({

@@ -1038,6 +1038,14 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** A spawnSync capture read as a Buffer (spawnSync without an encoding
+   * option): scr_child_capture.c, a unit of its own so a program that never
+   * reads a capture keeps scr_child.c's layout — the memo's thread-local
+   * state and its functions would otherwise move every symbol the linker
+   * lays out after them. */
+  spawnCaptureBytes: rule({
+    fns: ["spawnRes.stdoutBytes", "spawnRes.stderrBytes"],
+  }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -1584,6 +1592,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    spawnCaptureBytes: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,

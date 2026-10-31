@@ -80,6 +80,11 @@ ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1 */
  * (the accessor is linked only by programs that read it). +1. */
 ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r);
 ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r);
+/* The Buffer behind one capture (NULL = the stream was not piped). The
+ * accessors above name the capture; this entry owns the one-Buffer-per-
+ * capture memo and lives in scr_child_capture.c, a unit linked only by
+ * programs that read a capture, so scr_child.c keeps its layout. +1. */
+ScrBytes *scr_spawn_res_capture_bytes(ScrStr *capture);
 /* result.signal — the termination signal's name when a signal killed the
  * child (a timeout's killSignal included), the null arm otherwise; the
  * emitter wraps type-directedly over the has/get pair like status. */

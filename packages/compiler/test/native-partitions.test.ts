@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 import { nativeCodegenTarget, nativeHelperForTarget } from "../src/backend/targets.js";
+import { expectDarwinDebugMap } from "../src/backend/darwin-debug-map.test-support.js";
 
 const execFileAsync = promisify(execFile);
 // Mach-O objects define a local label (ltmp0, ltmp1, ...) at the start of
@@ -94,6 +95,7 @@ async function emit(
     cache?: string;
     split?: boolean;
     profileGenerate?: string;
+    sourcePath?: string;
     name: string;
   },
 ): Promise<string[]> {
@@ -118,7 +120,7 @@ async function emit(
     "--diagnostic-format",
     "json",
     "--source-path",
-    "/src/program.ts",
+    options.sourcePath ?? "/src/program.ts",
     ...(options.cache === undefined ? [] : ["--cache-dir", options.cache]),
     ...(options.split === true ? ["--split", "codegen"] : []),
     ...(options.profileGenerate === undefined
@@ -1245,58 +1247,126 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     }
   });
 
-  test("debug metadata follows the functions that reference it", async () => {
+  test.each([
+    { name: "unoptimized", optLevel: "0" as const },
+    { name: "optimized", optLevel: "2" as const },
+    { name: "parsed fallback", optLevel: "0" as const, fallback: true },
+    { name: "split codegen", optLevel: "2" as const, split: true },
+    { name: "without source path", optLevel: "0" as const, sourcePath: "" },
+  ])("$name debug metadata follows each physical partition", async (options) => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-debug-"));
     dirs.push(dir);
+    let location: number | null = null;
     const debug = program()
       .split("\n")
       .map((line) => {
+        if (line === "define internal void @bump(i64 %value) {") {
+          location = 64;
+          return line.replace(" {", " !dbg !9 {");
+        }
         const definition =
           /^define internal void @step(\d+)(?:\.i32)?\(i64 %value\) noinline \{$/.exec(line);
-        if (definition !== null)
+        if (definition !== null) {
+          location = 40 + Number(definition[1]);
           return line.replace(" {", ` !dbg !${10 + Number(definition[1])} {`);
-        const call = /^ {2}call void @step(\d+)\(i64 %value\)$/.exec(line);
-        return call === null ? line : `${line}, !dbg !${40 + Number(call[1]) - 1}`;
+        }
+        if (line === "}") location = null;
+        return location !== null && line.startsWith("  ")
+          ? `${line}, !dbg !${location}`
+          : line;
       });
     const source = [
+      ...("fallback" in options ? ['@"quoted global" = global i64 0'] : []),
       ...debug,
-      "!llvm.dbg.cu = !{!0}",
+      "!llvm.dbg.cu = !{!0, !5, !7}",
       "!llvm.module.flags = !{!2, !3}",
       '!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "test", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)',
       '!1 = !DIFile(filename: "program.ts", directory: "/src")',
       '!2 = !{i32 2, !"Debug Info Version", i32 3}',
       '!3 = !{i32 7, !"Dwarf Version", i32 5}',
       "!4 = !DISubroutineType(types: !{})",
+      '!5 = distinct !DICompileUnit(language: DW_LANG_C, file: !6, producer: "test", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)',
+      '!6 = !DIFile(filename: "helper.ts", directory: "/src")',
+      '!7 = distinct !DICompileUnit(language: DW_LANG_C, file: !8, producer: "test", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)',
+      '!8 = !DIFile(filename: "increment.ts", directory: "/src")',
+      '!9 = distinct !DISubprogram(name: "bump", scope: !8, file: !8, line: 1, type: !4, spFlags: DISPFlagDefinition, unit: !7)',
       ...Array.from(
         { length: 24 },
         (_, index) =>
-          `!${10 + index} = distinct !DISubprogram(name: "step${index}", scope: !1, file: !1, line: ${index + 1}, type: !4, spFlags: DISPFlagDefinition, unit: !0)`,
+          `!${10 + index} = distinct !DISubprogram(name: "step${index}", scope: !${index < 12 ? 1 : 6}, file: !${index < 12 ? 1 : 6}, line: ${index + 1}, type: !4, spFlags: DISPFlagDefinition, unit: !${index < 12 ? 0 : 5})`,
       ),
       ...Array.from(
-        { length: 23 },
+        { length: 24 },
         (_, index) =>
           `!${40 + index} = !DILocation(line: ${index + 1}, column: 3, scope: !${10 + index})`,
       ),
+      "!64 = !DILocation(line: 1, column: 3, scope: !9)",
       "",
     ].join("\n");
-    const cache = join(dir, "cache");
-    const objects = await emit(dir, source, { outputs: 4, optLevel: "0", cache, name: "debug" });
+    const cache = "split" in options ? undefined : join(dir, "cache");
+    const objects = await emit(dir, source, {
+      outputs: 4,
+      ...options,
+      ...(cache === undefined ? {} : { cache }),
+      name: "debug",
+    });
     const bytes = await Promise.all(objects.map((path) => readFile(path)));
     // ELF and COFF name the section .debug_info; Mach-O names it __debug_info.
     expect(bytes.filter((object) => object.includes("debug_info")).length).toBeGreaterThan(1);
     expect(await exitCode(dir, objects, "debug")).toBe(expectedExit());
 
+    if (process.platform === "darwin") {
+      const identities = new Map<string, number>();
+      const names: string[] = [];
+      let inlinedObjects = 0;
+      for (const [index, object] of objects.entries()) {
+        const info = (await execFileAsync("dwarfdump", ["--debug-info", object])).stdout;
+        // bump is the only inlineable function with debug info. Its presence
+        // in multiple objects proves debug-bearing cross-partition imports.
+        if (info.includes("DW_TAG_inlined_subroutine") && info.includes("increment.ts"))
+          inlinedObjects++;
+        const units = [
+          ...info.matchAll(/DW_TAG_compile_unit[\s\S]*?DW_AT_name\s+\("([^"\n]+)"\)/g),
+        ];
+        for (const unit of units) {
+          expect(unit[1]).toContain(`-partition-${index}.ll`);
+          const owner = identities.get(unit[1]!);
+          if (owner !== undefined) expect(owner).toBe(index);
+          identities.set(unit[1]!, index);
+        }
+        const listing = (await execFileAsync("nm", ["--defined-only", object])).stdout;
+        for (const match of listing.matchAll(
+          /^[0-9a-fA-F]+ [Tt] _(step\d+(?:\.llvm\.\d+)?|bump|main)$/gm,
+        ))
+          names.push(match[1]!);
+      }
+      expect(identities.size).toBeGreaterThan(1);
+      if (options.name === "optimized") expect(inlinedObjects).toBeGreaterThan(1);
+      expect(names.length).toBeGreaterThanOrEqual(24);
+      const merged = join(dir, "merged.o");
+      await execFileAsync("ld", ["-r", ...objects, "-o", merged]);
+      await expectDarwinDebugMap(objects, merged, names);
+      expect(await exitCode(dir, [merged], "merged")).toBe(expectedExit());
+      const result = await execFileAsync("dsymutil", [join(dir, "merged")]);
+      expect(result.stderr).toBe("");
+      const lines = (
+        await execFileAsync("dwarfdump", ["--debug-line", `${join(dir, "merged")}.dSYM`])
+      ).stdout;
+      expect(lines).toContain("program.ts");
+      expect(lines).toContain("helper.ts");
+    }
+
     // Partitions number their metadata locally, so a module whose node
     // numbers all shift still reuses every partition.
-    const before = await cacheEntries(cache, ".o");
+    const before = cache === undefined ? null : await cacheEntries(cache, ".o");
     const shifted = source.replace(/!(\d+)/g, (_, number: string) => `!${Number(number) + 100}`);
     const renumbered = await emit(dir, shifted, {
       outputs: 4,
-      optLevel: "0",
-      cache,
+      ...options,
+      ...(cache === undefined ? {} : { cache }),
       name: "renumbered",
     });
-    expect(await cacheEntries(cache, ".o")).toEqual(before);
+    if (cache !== undefined) expect(await cacheEntries(cache, ".o")).toEqual(before);
     expect(await Promise.all(renumbered.map((path) => readFile(path)))).toEqual(bytes);
   });
 });

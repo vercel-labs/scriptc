@@ -20,6 +20,7 @@
  */
 
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 export interface LlvmProgramShard {
   /** Stable source identity used in object cache keys and diagnostics. */
@@ -411,6 +412,67 @@ function withRangeReader<T>(path: string | null, use: (read: RangeReader) => T):
   }
 }
 
+/** Darwin's relocatable linker can conflate objects with the same CU path.
+ * Give every CU a physical shard identity without changing the authored files
+ * used by functions, variables and line tables. LLVM can discard/reorder CUs. */
+function shardDebugTrailer(trailer: readonly string[]): ((name: string) => string) | null {
+  const units = trailer.find((line) => line.startsWith("!llvm.dbg.cu = "));
+  if (units === undefined) {
+    const original = trailer.length === 0 ? "" : `\n${trailer.join("\n")}`;
+    return () => original;
+  }
+  const unitIds = [...units.matchAll(/!(\d+)/g)].map((match) => match[1]!);
+  const nodes = new Map<string, string>();
+  let nextId = 0;
+  for (const line of trailer) {
+    const node = /^!(\d+) = /.exec(line);
+    if (node === null) continue;
+    nextId = Math.max(nextId, Number(node[1]) + 1);
+    const start = node[0].length;
+    if (line.startsWith("distinct !DICompileUnit(", start) || line.startsWith("!DIFile(", start))
+      nodes.set(node[1]!, line.slice(start));
+  }
+  const files = new Map<string, { id: number; node: string }>();
+  const replacements = new Map<string, string>();
+  for (const unit of unitIds) {
+    const node = nodes.get(unit);
+    if (node === undefined || !node.startsWith("distinct !DICompileUnit(")) return null;
+    const fileId = /\bfile: !(\d+)/.exec(node)?.[1];
+    if (fileId === undefined) return null;
+    const file = nodes.get(fileId);
+    if (file === undefined || !/^!DIFile\(filename: "[^"]*", directory: "[^"]*"\)$/.test(file))
+      return null;
+    let projected = files.get(fileId);
+    if (projected === undefined) {
+      projected = { id: nextId++, node: file };
+      files.set(fileId, projected);
+    }
+    replacements.set(unit, node.replace(/\bfile: !\d+/, `file: !${projected.id}`));
+  }
+  const entry = files.values().next().value;
+  if (entry === undefined) return null;
+  // The emitter lists its entry CU first. Its file identity separates programs
+  // sharing a dependency without invalidating unrelated buckets on body edits.
+  const identity = createHash("sha256").update(entry.node).digest("hex");
+  const projected = trailer
+    .map((line) => {
+      const id = /^!(\d+) = /.exec(line)?.[1];
+      const node = id === undefined ? undefined : replacements.get(id);
+      return node === undefined ? line : `!${id} = ${node}`;
+    })
+    .join("\n");
+  return (name) =>
+    `\n${projected}\n${[...files.values()]
+      .map(
+        (file) =>
+          `!${file.id} = ${file.node.replace(
+            /^(!DIFile\(filename: "[^"]*)(")/,
+            `$1.scriptc-${identity}-${name}$2`,
+          )}`,
+      )
+      .join("\n")}`;
+}
+
 function shardModule(
   parts: ModuleParts,
   sourceBytes: number,
@@ -423,34 +485,38 @@ function shardModule(
   const globalDecls = globals.flatMap((global) =>
     global.declaration === null ? [] : [global.declaration],
   );
+  const tail = shardDebugTrailer(trailer);
+  if (tail === null) return null;
   // Every shard repeats declarations and metadata. Bound that shared text
   // before materializing sources: function size alone can otherwise turn a
   // large debug module into many times its original size. Coarsen stable
   // power-of-two buckets, retaining the canonical path when even two would
   // exceed the budget. Small modules allow one target-sized shared budget.
   const sharedBytes =
-    [...preamble, ...globalDecls, ...trailer].reduce(
+    [...preamble, ...globalDecls].reduce(
       (bytes, line) => bytes + Buffer.byteLength(line) + 1,
       0,
-    ) + functions.reduce((bytes, fn) => bytes + Buffer.byteLength(fn.declaration) + 1, 0);
+    ) +
+    Buffer.byteLength(tail("program-globals.ll")) +
+    functions.reduce((bytes, fn) => bytes + Buffer.byteLength(fn.declaration) + 1, 0);
   const bucketLimit = Math.floor(Math.max(sourceBytes, DEFAULT_TARGET_BYTES) / sharedBytes) - 1;
   if (bucketLimit < 2) return null;
   const chunks = chunksOf(functions, targetBytes, 2 ** Math.floor(Math.log2(bucketLimit)));
   if (chunks.length < 2) return null;
-  const tail = trailer.length === 0 ? "" : `\n${trailer.join("\n")}`;
   // A shard's source is assembled when it is read; a module split from a
   // file reads its function bodies from there each time.
   const functionShards = chunks.map(({ bucket, functions: chunk }): LlvmProgramShard => {
     const owned = new Set(chunk);
+    const name = `program-f${bucket.toString().padStart(3, "0")}.ll`;
     return {
-      name: `program-f${bucket.toString().padStart(3, "0")}.ll`,
+      name,
       source: () => {
         const declarations = functions.filter((fn) => !owned.has(fn)).map((fn) => fn.declaration);
         return withRangeReader(path, (read) =>
           [
             [...preamble, ...globalDecls, ...declarations, ""].join("\n"),
             ...chunk.map((fn) => fn.text(read)),
-            tail,
+            tail(name),
           ].join("\n"),
         );
       },
@@ -465,7 +531,7 @@ function shardModule(
       [
         [...preamble, ...functions.map((fn) => fn.declaration), ""].join("\n"),
         ...globals.map((global) => global.line),
-        tail,
+        tail("program-globals.ll"),
       ].join("\n"),
   };
   return {

@@ -69,9 +69,6 @@ export interface CcOptions {
    * program links names the same SCR_JS_OBJECT_MODEL builds; a program
    * without it keeps the default objects byte for byte. */
   bigintBytes?: boolean;
-  /** The program needs the JavaScript object model build (t262-da §J) for
-   * a fact this module does not name yet. */
-  jsObjectModel?: boolean;
   /** The program uses fs/promises.open or a FileHandle value
    * (moduleUsesFileHandle on the IR): compiles scr_file_handle.c. Keeping
    * the descriptor object and promise adapters in their own unit preserves

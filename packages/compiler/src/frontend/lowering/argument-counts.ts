@@ -227,3 +227,54 @@ function fixedArity(fn: ts.FunctionLikeDeclaration): boolean {
 function declaredCount(fn: ts.FunctionLikeDeclaration): number {
   return fn.parameters.nodes.filter((p) => !isThisParameter(p)).length;
 }
+
+/** A `const f = function (…) { … arguments … }` binding. The fold answers
+ * the declared parameter count, which is exact for a direct call and for a
+ * reference whose expected function type passes that same count (the fold
+ * already takes the wider of the two). A reference with no function type
+ * (`const x: any = f`, an `any` record field) or with a different parameter
+ * count passes a count no constant answers, and the value can be called
+ * later with anything — the read fences instead of silently reporting the
+ * declared arity. Reading the value's `name` or `length` (or `typeof`) does
+ * not call it, so it is no escape. */
+export function boundExpressionCountEscape(
+  lowerer: Lowerer,
+  fn: ts.FunctionExpression,
+  count: number,
+): "no-type" | "varies" | "differs" | null {
+  const decl = fn.parent;
+  if (!ts.isVariableDeclaration(decl) || decl.initializer !== fn || !ts.isIdentifier(decl.name))
+    return null;
+  const symbol = lowerer.resolveValueSymbol(decl.name);
+  if (!symbol) return null;
+  let escape: "no-type" | "varies" | "differs" | null = null;
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    ts.walkPreorder(sf, (n) => {
+      if (escape !== null) return "stop";
+      if (ts.isTypeNode(n)) return "skip";
+      if (!ts.isIdentifier(n) || n.text !== decl.name.text) return undefined;
+      const parent = n.parent;
+      if (!parent || n === decl.name) return undefined;
+      if (ts.isCallExpression(parent) && parent.expression === n) return undefined;
+      if (ts.isExportSpecifier(parent) || ts.isExportAssignment(parent)) return undefined;
+      if (ts.isImportSpecifier(parent) || ts.isImportClause(parent)) return undefined;
+      // Reading the value's `name` or `length`, or its `typeof`, does not
+      // call it.
+      if (
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === n &&
+        (parent.name.text === "name" || parent.name.text === "length")
+      )
+        return undefined;
+      if (ts.isTypeOfExpression(parent)) return undefined;
+      if (lowerer.resolveValueSymbol(n) !== symbol) return undefined;
+      const contextual = contextualCallCount(lowerer, n);
+      if (contextual === null) escape = "no-type";
+      else if (contextual === "varies") escape = "varies";
+      else if (contextual !== count) escape = "differs";
+      return undefined;
+    });
+    if (escape !== null) break;
+  }
+  return escape;
+}

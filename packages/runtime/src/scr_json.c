@@ -5441,6 +5441,51 @@ static void scr_bytes_ctors_cleanup(void) {
     scr_bytes_ctors[i] = NULL;
   }
 }
+/* Only the dyn tier reads a boxed Buffer's `.constructor`: a Buffer the
+ * runtime produced (an fs stream chunk, a child process or dgram message)
+ * reaches JS as a checked-dynamic value, and that is the build whose getter
+ * answers below. The default build -- the object a fully typed program
+ * links -- keeps its builtin identity token and its bytes, so this code
+ * compiles only into the checked-dynamic variants (SCR_JS_TIER is defined
+ * for every one of them). */
+#if defined(SCR_JS_TIER)
+#define SCR_BUFFER_CTOR_STANDIN 1
+#else
+#define SCR_BUFFER_CTOR_STANDIN 0
+#endif
+#if SCR_BUFFER_CTOR_STANDIN
+/* Buffer's `.constructor` when the builtin-values unit is not linked (the
+ * program never read the Buffer function: the Buffer came from the runtime,
+ * as an fs stream or child process chunk does). A Buffer is not a typed
+ * array, so Node answers a function named "Buffer"; the stand-in keeps that
+ * identity — one value per process, so two Buffers answer the same
+ * constructor — instead of a string token whose `.name` is undefined. A
+ * program that reads the Buffer function installs the real one
+ * (scr_bytes_buffer_constructor_fn) and every read answers it instead. */
+static SCR_TL ScrDyn *scr_bytes_buffer_ctor_standin;
+static const char scr_buffer_ctor_standin_msg[] =
+    "Buffer's constructor is not supported yet through a stored value (read the Buffer function to construct one)";
+static void scr_bytes_buffer_ctor_standin_cleanup(void) {
+  scr_dyn_release(scr_bytes_buffer_ctor_standin);
+  scr_bytes_buffer_ctor_standin = NULL;
+}
+static ScrDyn *scr_bytes_buffer_ctor_standin_call(ScrClosure *closure, ScrDyn *const *args,
+                                                  size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  scr_throw_error_msg(SCR_ERR_TYPE, scr_buffer_ctor_standin_msg,
+                      sizeof scr_buffer_ctor_standin_msg - 1);
+  return NULL;
+}
+static ScrDyn *scr_bytes_buffer_constructor_standin(void) {
+  if (!scr_bytes_buffer_ctor_standin) {
+    scr_bytes_buffer_ctor_standin =
+        scr_dyn_new_func(scr_closure_new(NULL, 0), scr_bytes_buffer_ctor_standin_call, 3,
+                         "native:Buffer", "Buffer");
+    scr_atexit(scr_bytes_buffer_ctor_standin_cleanup);
+  }
+  return scr_dyn_retain(scr_bytes_buffer_ctor_standin);
+}
+#endif
 static ScrDyn *scr_bytes_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)args; (void)argc;
   for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) {
@@ -6631,6 +6676,13 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
     return scr_dyn_new_num((double)scr_bytes_elem_size(bytes->elem));
   if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
     if (!value->buffer) return scr_bytes_constructor_for(bytes->elem);
+#if SCR_BUFFER_CTOR_STANDIN
+    /* A program that reads the Buffer function's value answers it;
+     * otherwise the stand-in carries Buffer's identity (a function named
+     * "Buffer"), so `.constructor.name` is Node's answer either way. */
+    if (scr_bytes_buffer_constructor_fn) return scr_bytes_buffer_constructor_fn();
+    return scr_bytes_buffer_constructor_standin();
+#else
     /* A program that reads the Buffer function's value answers it;
      * otherwise Buffer keeps its separate builtin identity token. */
     if (scr_bytes_buffer_constructor_fn) return scr_bytes_buffer_constructor_fn();
@@ -6640,6 +6692,7 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
     ScrDyn *result = scr_dyn_new_str(name);
     scr_str_release(name);
     return result;
+#endif
   }
   if (key->len && !(key->len > 1 && key->data[0] == '0')) {
     size_t index = 0;

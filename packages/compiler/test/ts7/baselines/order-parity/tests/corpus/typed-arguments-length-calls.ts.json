@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typed-arguments-length-calls.ts"
+ ],
+ "diags": []
+}

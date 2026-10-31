@@ -3851,7 +3851,7 @@ export class Lowerer {
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
   readonly sharedModuleWarnings: ScrDiagnostic[] = [];
-  readonly sharedInitFlags = new Map<ts.Statement, string[]>();
+  readonly sharedInitFlags = new Map<ts.VariableDeclaration, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */

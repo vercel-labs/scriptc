@@ -355,10 +355,10 @@ function verify(reports: Report[]): void {
   expect(
     get("typed-local-js-sidecar").sources.find((source) => source.path.endsWith("/value.mjs"))
       ?.text,
-  ).toContain('import("./value.scriptc-types.d.mts")');
+  ).toContain('import("./value.scriptc-types.mjs")');
   expect(
     get("typed-local-js-sidecar").sources.find((source) => source.path.endsWith("/main.ts"))?.text,
-  ).toContain('import type { Options } from "./value.scriptc-types.d.mts"');
+  ).toContain('import type { Options } from "./value.scriptc-types.mjs"');
   expect(get("npm-static").order).toEqual([
     "npm-static/node_modules/native-fixture/value.js",
     "npm-static/node_modules/native-fixture/index.js",

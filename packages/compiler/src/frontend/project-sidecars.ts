@@ -18,14 +18,18 @@ import { erasedTypeOnlyImport } from "./type-only-imports.js";
 /** Whether the module literal selects a native implementation.
  * A mixed clause still has a runtime edge, even if every named binding
  * carries `type`: retaining its empty clause preserves module evaluation. */
-function isNativeValueSpecifier(literal: ts.Node): boolean {
+function isNativeValueSpecifier(
+  literal: ts.Node,
+  nativeCall: (call: ts.CallExpression) => boolean,
+): boolean {
   for (let node = literal.parent; node !== undefined; node = node.parent) {
     if (ts.isImportTypeNode(node) || ts.isJSDocImportTag(node)) return false;
     if (ts.isImportEqualsDeclaration(node) || ts.isExportDeclaration(node)) return !node.isTypeOnly;
     if (ts.isImportDeclaration(node)) return !erasedTypeOnlyImport(node);
     // Dynamic-only sidecars keep their existing admission path. A static
     // edge to the same file still selects its single runtime identity.
-    if (ts.isCallExpression(node)) return node.expression.kind !== ts.SyntaxKind.ImportKeyword;
+    if (ts.isCallExpression(node))
+      return node.expression.kind !== ts.SyntaxKind.ImportKeyword && nativeCall(node);
     if (ts.isSourceFile(node)) return false;
   }
   return false;
@@ -79,7 +83,11 @@ export class ProjectSidecars {
 
   /** Root discovery supplies the reachable implementations. Keep this plan
    * before JSX/shape overlays, so every rewrite starts from authored text. */
-  update(program: ts.Program, host: ts.Ts7Host): boolean {
+  update(
+    program: ts.Program,
+    host: ts.Ts7Host,
+    nativeCall: (call: ts.CallExpression) => boolean,
+  ): boolean {
     let changed = false;
     const sources = [...program.getImplementationSourceFiles()];
     const visited = new Set(sources.map((source) => tsgoPath(source.fileName)));
@@ -88,7 +96,17 @@ export class ProjectSidecars {
       if (!isProjectRealmFile(source.fileName) || npmStaticPackageOfPath(source.fileName) !== null)
         continue;
       for (const literal of source.imports) {
-        if (!ts.isStringLiteralLike(literal) || !isNativeValueSpecifier(literal)) continue;
+        if (
+          !ts.isStringLiteralLike(literal) ||
+          !isNativeValueSpecifier(
+            literal,
+            // Detached closure parses have no checker binding. Defer their
+            // calls until the implementation joins the program; a local
+            // function named require must never select a declaration twin.
+            (call) => program.getSourceFile(source.fileName) === source && nativeCall(call),
+          )
+        )
+          continue;
         const runtime = resolveProjectModule(source.fileName, literal.text);
         if (
           runtime === null ||
@@ -96,16 +114,16 @@ export class ProjectSidecars {
           npmStaticPackageOfPath(runtime) !== null
         )
           continue;
-        // Discover the finite static closure before rebuilding the checker.
-        // A chain of declaration twins must not consume one root-discovery
-        // round per module. The owned parser supplies the same import AST.
+        // Close static import/export edges before rebuilding the checker.
+        // Calls wait for its binding owner, but long ESM chains need not
+        // consume one root-discovery round per module.
         if (
           !visited.has(runtime) &&
           /\.[cm]?[jt]sx?$/.test(runtime) &&
           !/\.d\.[cm]?ts$/.test(runtime)
         ) {
           visited.add(runtime);
-          let next = this.originals.get(runtime) ?? program.getSourceFile(runtime);
+          let next = program.getSourceFile(runtime) ?? this.originals.get(runtime);
           if (next === undefined) {
             const text = host.sourceText(runtime);
             if (text !== null) {
@@ -132,11 +150,23 @@ export class ProjectSidecars {
         host.removeVirtualFile(key);
         const suffix = declaration.slice(declaration.lastIndexOf(".d."));
         const stem = declaration.slice(0, -suffix.length);
+        const extensions =
+          suffix === ".d.ts"
+            ? [".ts", ".tsx", ".d.ts", ".js", ".jsx"]
+            : suffix === ".d.mts"
+              ? [".mts", ".d.mts", ".mjs"]
+              : [".cts", ".d.cts", ".cjs"];
         let index = 0;
-        let alias = stem + ".scriptc-types" + suffix;
-        // Never shadow a real authored file, even one outside this graph.
-        while (trackedFileExists(alias) || [...this.aliases.values()].includes(alias))
-          alias = stem + ".scriptc-types-" + ++index + suffix;
+        let base = stem + ".scriptc-types";
+        // References use JavaScript extensions. Reserve their entire
+        // substitution family so an authored .ts/.mts/.cts cannot take
+        // precedence over the virtual declaration, even outside this graph.
+        while (
+          extensions.some((extension) => trackedFileExists(base + extension)) ||
+          [...this.aliases.values()].includes(base + suffix)
+        )
+          base = stem + ".scriptc-types-" + ++index;
+        const alias = base + suffix;
         this.aliases.set(key, alias);
         changed = true;
       }
@@ -179,7 +209,11 @@ export class ProjectSidecars {
     const declaration = declarationOfRuntime(resolved) ?? resolved;
     this.rememberDeclaration(declaration);
     const alias = this.aliases.get(tsgoPath(declaration));
-    return alias === undefined ? null : modulePath(from, alias);
+    // Declaration value imports/reexports must name a runtime extension;
+    // TypeScript then substitutes the virtual declaration file normally.
+    return alias === undefined
+      ? null
+      : modulePath(from, alias.replace(/\.d\.([cm]?)ts$/, ".$1js"));
   }
 
   /** A copy can name declarations the initial checker never reached. The
@@ -194,12 +228,19 @@ export class ProjectSidecars {
 
   private rewrite(source: ts.SourceFile): string {
     const edits: Edit[] = [];
+    const literals = new Set<string>();
     const literal = (node: ts.Node | undefined): void => {
       if (node === undefined || !ts.isStringLiteralLike(node)) return;
+      const start = ts.tokenStartOfNode(node);
+      const span = `${start}:${node.end}`;
+      // TS7 reparses JSDoc types into semantic nodes with the same source
+      // spans. The attached comment and its clone own one textual edit.
+      if (literals.has(span)) return;
+      literals.add(span);
       const target = this.typeTarget(source.fileName, node.text);
       if (target !== null)
         edits.push({
-          start: ts.tokenStartOfNode(node),
+          start,
           end: node.end,
           text: JSON.stringify(target),
         });

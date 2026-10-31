@@ -971,8 +971,16 @@ function loadProgram7(
   const programRoots = [...coreRoots];
   let program = host.createProgram([...programRoots, overridesDtsPath()], options);
   try {
-    for (let pass = 0; pass < 32; pass++) {
-      const sidecarsChanged = sidecars?.update(program, host) ?? false;
+    // Rebuilds add unseen resolved roots or advance the finite sidecar
+    // plan: retained sources, fixed aliases, and changed text. JSX/shape
+    // overlays run later; module graph depth is not a pass budget.
+    for (;;) {
+      const sidecarsChanged =
+        sidecars?.update(
+          program,
+          host,
+          (call) => requireCallBindingKind7(program, call) !== "source",
+        ) ?? false;
       const candidates = [
         ...(sidecars?.runtimeRoots() ?? []),
         ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
@@ -988,7 +996,6 @@ function loadProgram7(
       program.dispose();
       for (const root of extraRoots) programRoots.push(root);
       program = host.createProgram([...programRoots, overridesDtsPath()], options);
-      if (pass === 31) throw new Error("static program-root discovery did not converge");
     }
     // Node 24 ships no temporal global, but TS 7 types it in an ESNext
     // lib slice. Programs that name it (feature probes such as smol-toml's

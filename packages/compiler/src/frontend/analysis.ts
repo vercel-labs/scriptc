@@ -184,13 +184,13 @@ export function analyzeWithFrontend(
     // Coverage makes the same retry, so the refusals that package caused —
     // a property write on its config object, a call of its constructor, a
     // `for await` over its stream — are reported as what the build does
-    // with them. The discovery pass seeds that retry with every package it
-    // named, reached code and unreached remainder alike (a build islands a
-    // package for a refusal anywhere in it), so coverage pays one seeded
-    // lowering rather than one round per named package. The discovery pass's
-    // diagnostics stay the island report's reasons: they named the packages,
-    // the retry cleared them. Only a package the seeded lowering refuses in
-    // turn — one the discovery pass never reached — costs a further round.
+    // with them. The retry takes every package one pass named, reached code
+    // and unreached remainder alike (a build islands a package for a refusal
+    // anywhere in the program), so a program pays the discovery lowering and
+    // one seeded lowering, and a further round only when the seeded lowering
+    // refuses a package the discovery pass could not name. The discovery
+    // pass's diagnostics stay the island report's reasons: they named the
+    // packages, the retry cleared them.
     let lowerIslandsLocal = lowerIslands;
     let lowered = lowerWith(lowerIslandsLocal);
     for (

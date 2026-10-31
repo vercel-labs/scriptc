@@ -420,12 +420,33 @@ bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {
 
 /* The 'rejectionHandled' hook (scr_async_dyn.c installs it at listener
  * registration — the scr_urj_deliver_fn pattern, so listener-free
- * binaries keep their size class): called when a promise the checkpoint
- * report already delivered as unhandled gains a handler. */
+ * binaries keep their size class): called at the rejection checkpoint. */
 SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
 
+/* A late handler queues an event even without listeners: registration can
+ * change before delivery. The queue's +1 is an external cycle-collector
+ * root; the promise's existing trace keeps its rejection payload alive. */
+typedef struct ScrHandledRejection {
+  ScrPromise *promise;
+  struct ScrHandledRejection *next;
+} ScrHandledRejection;
+static SCR_TL ScrHandledRejection *scr_handled_head, *scr_handled_tail;
+
+static ScrPromise *scr_handled_pop(void) {
+  ScrHandledRejection *entry = scr_handled_head;
+  ScrPromise *p = entry->promise;
+  scr_handled_head = entry->next;
+  if (scr_handled_head == NULL) scr_handled_tail = NULL;
+  free(entry);
+  return p;
+}
+
+static void scr_handled_discard(void) {
+  while (scr_handled_head != NULL) scr_promise_release(scr_handled_pop());
+}
+
 /* Every handler attach funnels here: mark the rejection observed, and
- * fire Node's 'rejectionHandled' when the attach arrived AFTER the
+ * queue Node's 'rejectionHandled' when the attach arrived AFTER the
  * report delivered this promise to 'unhandledRejection' listeners (the
  * model's one late-handling window — earlier handling keeps the promise
  * out of the report entirely). The flag clears on the first attach, so
@@ -434,7 +455,17 @@ static void scr_prom_observe(ScrPromise *p) {
   p->rejection_observed = true;
   if (p->reported_unhandled) {
     p->reported_unhandled = false;
-    if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+    static SCR_TL bool cleanup_registered;
+    if (!cleanup_registered) {
+      cleanup_registered = true;
+      scr_atexit(scr_handled_discard);
+    }
+    ScrHandledRejection *entry = malloc(sizeof *entry);
+    if (entry == NULL) scr_oom();
+    *entry = (ScrHandledRejection){scr_promise_retain(p), NULL};
+    if (scr_handled_tail != NULL) scr_handled_tail->next = entry;
+    else scr_handled_head = entry;
+    scr_handled_tail = entry;
   }
 }
 
@@ -1788,6 +1819,14 @@ static void scr_immediates_teardown(void) {
 /* Unhandled rejections: rejected promises retained here until observed. */
 static SCR_TL ScrPromise **scr_maybe_unhandled = NULL;
 static SCR_TL size_t scr_nunhandled = 0, scr_unhandled_cap = 0;
+
+static bool scr_rejection_events_pending(void) {
+  return scr_nunhandled != 0 || scr_handled_head != NULL;
+}
+
+static bool scr_loop_checkpoint_pending(void) {
+  return scr_ready_len != 0 || scr_nt_head != NULL || scr_rejection_events_pending();
+}
 
 static void scr_track_rejection(ScrPromise *p) {
   if (scr_nunhandled == scr_unhandled_cap) {
@@ -4958,9 +4997,9 @@ static int scr_workers_pollfd(void) {
  * macrotask). */
 bool scr_loop_has_ready(void) {
 #ifdef SCR_NODE_ISLANDS
-  if (scr_loop_hosted != NULL) return scr_hosted_queued > 0;
+  if (scr_loop_hosted != NULL) return scr_hosted_queued > 0 || scr_rejection_events_pending();
 #endif
-  return scr_ready_len > 0 || scr_nt_head != NULL;
+  return scr_loop_checkpoint_pending();
 }
 
 /* The poll phase runs once per loop iteration, like libuv's: the net unit
@@ -5411,11 +5450,11 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
   scr_hosted_settle_exception();
 }
 
-/* V8 finished a microtask checkpoint: the runtime's unhandled rejections
- * are decided here, where Node decides its own. An unhandled one ends the
- * process like main's reported-rejection path. */
+/* The existing hosted boundary also drains deferred handled events.
+ * V8's callback can precede Node's nextTick drain; integrating the native
+ * report phase with Node's complete checkpoint remains separate work. */
 void scr_loop_hosted_microtasks_done(void) {
-  if (scr_nunhandled == 0) return;
+  if (!scr_rejection_events_pending()) return;
   if (!scr_report_unhandled_rejections()) {
     scr_hosted_settle_exception();
     return;
@@ -5740,7 +5779,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       rejection_failed = true;
       break;
     }
-    if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
+#ifdef SCR_NODE_ISLANDS
+    /* A rejection listener can start Node and move the ready queues. */
+    if (scr_loop_hosted != NULL) return rejection_failed;
+#endif
+    if (scr_loop_checkpoint_pending()) continue;
     /* Quiescent between turns (microtasks drained, nothing running):
      * collect any cycles the turn left behind. One SCHEDULED pass — almost
      * always a nursery one, sized to the turn's own garbage. A full sweep
@@ -5772,7 +5815,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * the microtask checkpoint before considering the next queued post. */
     if (scr_ffi_dispatch_fn != NULL && scr_ffi_dispatch_fn()) {
       if (scr_exc_pending()) return false;
-      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
+      if (scr_loop_checkpoint_pending()) continue;
     }
     /* Stream tick dispatch (scr_stream.c, when linked): the deferred
      * next-tick emissions ('data' flow kicks, 'readable'/'end'/'finish'/
@@ -5782,12 +5825,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_stream_dispatch_fn != NULL) {
       scr_stream_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+      if (scr_loop_checkpoint_pending()) continue;
       if (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) continue;
     }
     scr_workers_dispatch();
     if (scr_exc_pending()) return false;
-    if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+    if (scr_loop_checkpoint_pending()) continue;
 #ifdef SCR_WORKERS
     if (scr_workers_more_fn != NULL && scr_workers_more_fn()) continue;
 #endif
@@ -5799,7 +5842,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_events_dispatch_fn != NULL) {
       scr_events_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+      if (scr_loop_checkpoint_pending()) continue;
     }
     /* Net dispatch (scr_net.c, when linked): accepts, arrived data,
      * connect completions, and the deferred listening/error/close emits
@@ -5808,7 +5851,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_net_dispatch_fn != NULL) {
       scr_net_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+      if (scr_loop_checkpoint_pending()) continue;
     }
     /* Dgram dispatch (scr_dgram.c, when linked): arrived datagrams and
      * the deferred listening/connect/error/close emits (plus pending
@@ -5816,7 +5859,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_dgram_dispatch_fn != NULL) {
       scr_dgram_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+      if (scr_loop_checkpoint_pending()) continue;
     }
     /* Watch dispatch (scr_watch.c, when linked): file events queued on
      * the unit's event backend fire their FSWatcher listeners now — the
@@ -5824,7 +5867,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_watch_dispatch_fn != NULL) {
       scr_watch_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+      if (scr_loop_checkpoint_pending()) continue;
     }
     /* Reap spawned children and fire their listeners (before timers,
      * like Node's nextTick-ish spawn-failure "error"). A callback may
@@ -5855,7 +5898,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (held) {
         scr_loop_children->poll();
         if (scr_exc_pending()) return false; /* uncaught throw in a listener */
-        if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+        if (scr_loop_checkpoint_pending()) continue;
       }
     }
     /* Deferred stream ticks are always-ready work: never sleep or exit
@@ -5863,7 +5906,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * with ticks pending means a dispatch station enqueued more). User
      * nextTicks enqueued by a station listener are the same story. */
     if (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) continue;
-    if (scr_nt_head != NULL) continue;
+    if (scr_loop_checkpoint_pending()) continue;
 #ifdef SCR_NODE_ISLANDS
     /* Node loaded during this turn: its loop takes over (scr_loop_run). */
     if (scr_loop_hosted != NULL) return rejection_failed;
@@ -6143,7 +6186,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #endif
       /* Drain ticks and microtasks, and report the rejections the callback
        * left, before more timers (Node's runNextTicks between timers). */
-      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) break;
+      if (scr_loop_checkpoint_pending()) break;
     }
     /* The check phase: immediates queued BEFORE this phase started run
      * now, FIFO; ones a callback queues wait for the next turn (the end
@@ -6154,7 +6197,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * first (the timer loop's break above), so the phase only runs on a
      * drained checkpoint. */
     bool check_ran = false;
-    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && scr_pending_immediates > 0) {
+    if (!scr_loop_checkpoint_pending() && scr_pending_immediates > 0) {
       size_t end = scr_nimmediates;
 #ifdef SCR_NODE_ISLANDS
       scr_check_end = end; /* a switch inside this phase finishes it first */
@@ -6182,8 +6225,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         /* Node's runNextTicks between immediates also reports the
          * rejections the callback left before the next one runs; a
          * listener's jobs drain before the next report. */
-        while (scr_nunhandled > 0 && (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
+        while (scr_rejection_events_pending() && (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
           if (scr_report_unhandled_rejections()) return true;
+#ifdef SCR_NODE_ISLANDS
+          if (scr_loop_hosted != NULL) return rejection_failed;
+#endif
           if (!scr_loop_run_checkpoint()) return false;
         }
         if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
@@ -6306,6 +6352,20 @@ SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p) = NULL;
 bool scr_report_unhandled_rejections(void) {
   bool any = false;
   bool crashed = false;
+  /* Node drains handled events before snapshotting new unhandled reports.
+   * Pop before dispatch: listeners may append events or enter Node. A
+   * throw belongs to this checkpoint, never to the handler's attach site. */
+  while (scr_handled_head != NULL && !crashed) {
+    ScrPromise *p = scr_handled_pop();
+    if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+    scr_promise_release(p);
+    if (scr_exc_pending()) {
+      /* A handled uncaught exception resumes at a fresh checkpoint, so
+       * its queued jobs precede the remaining rejection notifications. */
+      if (scr_exc_handle_uncaught(false)) return false;
+      crashed = true;
+    }
+  }
   size_t report_count = scr_nunhandled;
   for (size_t i = 0; i < report_count; i++) {
     ScrPromise *p = scr_maybe_unhandled[i];
@@ -6315,8 +6375,8 @@ bool scr_report_unhandled_rejections(void) {
          * registration): the event handles it, like Node — per entry,
          * no report, exit 0. A listener throw is the uncaught crash.
          * reported_unhandled arms the 'rejectionHandled' window: a
-         * handler the listener itself attaches fires the sibling event
-         * (scr_prom_observe). */
+         * handler the listener itself attaches queues the sibling event
+         * for a later checkpoint (scr_prom_observe). */
         p->rejection_observed = true;
         p->reported_unhandled = true;
         if (!scr_urj_deliver_fn(p) && !scr_exc_handle_uncaught(false)) crashed = true;
@@ -6374,6 +6434,7 @@ bool scr_report_unhandled_rejections(void) {
   }
   scr_nunhandled = remaining;
   if (crashed) {
+    scr_handled_discard();
     scr_exc_print_uncaught();
     return true;
   }
@@ -6387,6 +6448,7 @@ bool scr_report_unhandled_rejections(void) {
  * created in the SAME checkpoint. Drop their retained ledger references
  * without delivering process events or a competing default report. */
 void scr_discard_unhandled_rejections(void) {
+  scr_handled_discard();
   for (size_t i = 0; i < scr_nunhandled; i++) {
     scr_promise_release(scr_maybe_unhandled[i]);
   }

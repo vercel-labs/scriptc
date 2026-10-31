@@ -402,8 +402,8 @@ declare var process: {
   /* 'unhandledRejection' — dispatched per never-observed rejection at
    * the completed nextTick/microtask checkpoint (reason, promise),
    * suppressing the default report. 'rejectionHandled' — the sibling
-   * event, fired once when a delivered promise later gains a handler
-   * (promise payload, Node's shape). */
+   * event, queued once when a reported promise later gains a handler and
+   * delivered in the checkpoint's handled-rejection phase. */
   on(
     event: "unhandledRejection",
     listener: (reason: unknown, promise: Promise<unknown>) => void,

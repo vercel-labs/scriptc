@@ -178,24 +178,28 @@ export function analyzeWithFrontend(
         ...(opts.wasm !== undefined && opts.wasm.length > 0 ? { wasmFiles: opts.wasm } : {}),
       });
     };
-    let lowerIslandsLocal = lowerIslands;
-    let lowered = lowerWith(lowerIslandsLocal);
     // A package the lowering refused (its implementation is not part of the
     // compiled module graph) runs in a Node island in a build, which lowers
     // again with it islanded (executable/prepare.ts's loweringIslands).
     // Coverage makes the same retry, so the refusals that package caused —
     // a property write on its config object, a call of its constructor, a
     // `for await` over its stream — are reported as what the build does
-    // with them. The first pass's diagnostics stay the island report's
-    // reasons: they named the packages, the retry cleared them.
-    const grewFrom = lowered.diagnostics;
+    // with them. The discovery pass seeds that retry with every package it
+    // named, reached code and unreached remainder alike (a build islands a
+    // package for a refusal anywhere in it), so coverage pays one seeded
+    // lowering rather than one round per named package. The discovery pass's
+    // diagnostics stay the island report's reasons: they named the packages,
+    // the retry cleared them. Only a package the seeded lowering refuses in
+    // turn — one the discovery pass never reached — costs a further round.
+    let lowerIslandsLocal = lowerIslands;
+    let lowered = lowerWith(lowerIslandsLocal);
     for (
-      let grown = grownIslands(entryPath, fe, policy, grewFrom, lowerIslandsLocal);
+      let grown = grownIslands(entryPath, fe, policy, loweringRefusals(lowered), lowerIslandsLocal);
       grown !== null;
     ) {
       lowerIslandsLocal = grown;
       lowered = lowerWith(lowerIslandsLocal);
-      grown = grownIslands(entryPath, fe, policy, lowered.diagnostics, lowerIslandsLocal);
+      grown = grownIslands(entryPath, fe, policy, loweringRefusals(lowered), lowerIslandsLocal);
     }
     const provenance = provenanceSources();
     const islandReport =
@@ -274,6 +278,16 @@ function islandPackageDir(
   }
   const at = js === null ? null : packageDirOf(js.typesFile);
   return at !== null && at.name === name ? at.dir : null;
+}
+
+/** Every diagnostic a coverage lowering reported, reached or unreached: the
+ * unreached remainder is lowered in the same pass, and a package it refuses
+ * is islanded in a build just the same, so both name packages for the island
+ * set the next lowering runs with. */
+function loweringRefusals(lowered: LowerResult): readonly ScrDiagnostic[] {
+  return lowered.unreached === undefined
+    ? lowered.diagnostics
+    : [...lowered.diagnostics, ...lowered.unreached.diagnostics];
 }
 
 /** The island set grown by the packages the lowering said are not part of

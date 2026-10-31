@@ -88,6 +88,8 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  fsWriteForms?: boolean;
+  headersWalk?: boolean;
   childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;

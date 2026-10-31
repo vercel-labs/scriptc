@@ -3123,6 +3123,30 @@ static bool sf_headers_sorted_entry(SfHeaders *h, size_t index,
   return true;
 }
 
+/* The live indexed view sf_headers_step walks, read directly for a
+ * statically lowered `for..of` (scr_fetch_headers_walk.c): the number of
+ * entries the current sorted list holds, and the `index`th entry's name
+ * (`selection` 1) or value (0), +1, NULL past the end. A mutation drops
+ * the list, so the next read answers what Node's live iterator would
+ * visit next. */
+static double sf_headers_iter_count(void *ptr) {
+  SfHeaders *h = ptr;
+  return (double)((size_t)scr_arr_len(sf_headers_sorted(h)) / 2);
+}
+
+static ScrStr *sf_headers_iter_at(void *ptr, size_t index, unsigned selection) {
+  SfHeaders *h = ptr;
+  ScrStr *name = NULL;
+  ScrStr *value = NULL;
+  if (!sf_headers_sorted_entry(h, index, &name, &value)) return NULL;
+  if (selection == 1) {
+    scr_str_release(value);
+    return name;
+  }
+  scr_str_release(name);
+  return value;
+}
+
 /* One step of a live Headers iterator (entries, keys or values): the
  * `*index`th entry of the current sorted list, as Node's iterator re-reads
  * the list on every step. The result is { value, done }. */
@@ -7476,7 +7500,8 @@ static const ScrDynHandleOps sf_response_ops = {
 static const ScrDynHandleOps sf_headers_ops = {
     "Headers", &sf_headers_retain_v, &sf_headers_release_v,
     &sf_headers_invoke, &sf_headers_get, &sf_no_set, NULL, NULL,
-    &sf_headers_step, .methods = sf_headers_methods};
+    &sf_headers_step, .methods = sf_headers_methods,
+    .iter_count = sf_headers_iter_count, .iter_at = sf_headers_iter_at};
 
 static const ScrDynHandleOps sf_transform_ops = {
     "TransformStream", &sf_transform_retain_v, &sf_transform_release_v,

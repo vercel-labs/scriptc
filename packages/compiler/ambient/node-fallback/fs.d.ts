@@ -49,6 +49,23 @@ declare module "node:fs" {
    * the write lands at the descriptor's current offset). */
   export function writeFileSync(fd: number, data: string): void;
   export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
+  /* The options occupy Node's "a" disposition: the creation mode is the
+   * only option that changes the write, so `flag` may only spell "a". */
+  export function appendFileSync(
+    path: string | URL,
+    data: string,
+    options?: {
+      mode?: number;
+      encoding?: "utf8" | "utf-8";
+      flag?: string;
+      [option: string]: unknown;
+    },
+  ): void;
+  export function appendFileSync(
+    path: string | URL,
+    data: string,
+    encoding: "utf8" | "utf-8",
+  ): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
   export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;

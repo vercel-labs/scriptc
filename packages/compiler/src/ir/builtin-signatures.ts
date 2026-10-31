@@ -156,6 +156,11 @@ function buildLibFnSignatures() {
     "fetch.function": { argTypes: [], result: DYN },
     "fetch.requestNew": { argTypes: [DYN, DYN], result: DYN },
     "fetch.headersNew": { argTypes: [DYN], result: DYN },
+    /** The head-consumed `for..of` walk over headers.entries()/keys()/
+     * values(): the current entry count, and the index-th entry's name
+     * (part 0) or value (part 1) — both re-read the live sorted list. */
+    "fetch.headersCount": { argTypes: [DYN], result: F64 },
+    "fetch.headersEntry": { argTypes: [DYN, F64, F64], result: STRING },
     "fetch.responseArrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "fetch.responseJson": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "fetch.responseText": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },
@@ -3527,6 +3532,9 @@ function buildLibFnSignatures() {
     "fs.readFileSyncBytes": { argTypes: [STRING], result: BYTES_U8 },
     "fs.writeFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
     "fs.appendFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
+    /** appendFileSync(path, string, { encoding?, mode? }): "a" opened with
+     * the mode as O_CREAT's argument. */
+    "fs.appendFileModeSync": { argTypes: [STRING, STRING, F64], result: VOID },
     "fsp.readFileBytes": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     /** node:zlib (scr_zlib.c — native-toolchain.ts compiles/links it ONLY when these
      * appear on the IR, the regex/libcurl gating precedent): one-shot zlib,
@@ -3619,6 +3627,16 @@ function buildLibFnSignatures() {
      * twin of fs.writeFileModeSync. */
     "fsp.writeFileMode": {
       argTypes: [STRING, STRING, F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    /** fs.promises.writeFile over string|bytes data: the runtime entry per
+     * data kind, opened with the option's mode and `flag: "w" | "wx"`. */
+    "fsp.writeFileTextFlags": {
+      argTypes: [STRING, STRING, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileBytesFlags": {
+      argTypes: [STRING, BYTES_U8, F64, F64],
       result: { kind: "promise", inner: VOID },
     },
     /** fs.promises.writeFile(path, data, { mode, flag }) and

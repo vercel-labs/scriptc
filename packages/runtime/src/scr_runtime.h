@@ -77,9 +77,11 @@
 #include "scr_assert.h"
 #include "scr_console.h"
 #include "scr_fs_cp.h"
+#include "scr_fs_write_forms.h"
 #include "scr_wasm_abi.h"
 #include "scr_wasm.h"
 #include "scr_node_island.h"
+#include "scr_fetch_headers_walk.h"
 #include "scr_intl.h"
 
 #endif /* SCR_RUNTIME_H */

@@ -592,6 +592,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.writeFileSyncBytes": "scr_fs_write_file_bytes",
   "fs.writeFileSyncFd": "scr_fs_write_file_fd",
   "fs.appendFileSyncBytes": "scr_fs_append_file_bytes",
+  "fs.appendFileModeSync": "scr_fs_append_file_mode",
   "fs.readFdSyncBytes": "scr_fs_read_fd_bytes",
   // Stats snapshots (scr_lib.c): statSync/lstatSync throw like the other
   // sync fs calls; the getters are pure reads.
@@ -960,6 +961,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.readFileBytes": "scr_fsp_read_file_bytes",
   "fsp.writeFile": "scr_fsp_write_file",
   "fsp.writeFileMode": "scr_fsp_write_file_mode",
+  "fsp.writeFileTextFlags": "scr_fsp_write_file_text_flags",
+  "fsp.writeFileBytesFlags": "scr_fsp_write_file_bytes_flags",
   "fsp.writeFileFlags": "scr_fsp_write_file_flags",
   "fsp.copyFileFlags": "scr_fsp_copyfile_flags",
   "fsp.mkdir": "scr_fsp_mkdir",
@@ -1119,6 +1122,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.function": "scr_fetch_function",
   "fetch.requestNew": "scr_fetch_request_new",
   "fetch.headersNew": "scr_fetch_headers_new",
+  "fetch.headersCount": "scr_fetch_headers_count",
+  "fetch.headersEntry": "scr_fetch_headers_entry",
   "fetch.responseArrayBuffer": "scr_fetch_response_array_buffer",
   "fetch.responseJson": "scr_fetch_response_json",
   "fetch.responseText": "scr_fetch_response_text",

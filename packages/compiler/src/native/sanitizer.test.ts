@@ -18,6 +18,8 @@ const features = {
   streamDyn: false,
   handleProps: false,
   childLifecycle: false,
+  fsWriteForms: false,
+  headersWalk: false,
   childOptionExt: false,
   declAdopt: false,
   typeOrigins: false,

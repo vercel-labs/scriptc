@@ -85,6 +85,12 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** An fs write passes an options record or Uint8Array data: links
+   * scr_fs_write_forms.c. Absent (false) otherwise. */
+  fsWriteForms?: boolean;
+  /** A typed `for..of` walks a static Headers: links
+   * scr_fetch_headers_walk.c. Absent (false) otherwise. */
+  headersWalk?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */

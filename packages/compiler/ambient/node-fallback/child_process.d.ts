@@ -44,6 +44,9 @@ declare module "child_process" {
       encoding?: "utf8" | "utf-8";
       timeout?: number;
       killSignal?: string;
+      /* Each slot may be a RUNTIME value the type pins to those literals
+       * (a conditional over them, or a read typed as a union of them):
+       * the mode resolves at the call. */
       stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
       env?: { [k: string]: string | undefined };
       cwd?: string;

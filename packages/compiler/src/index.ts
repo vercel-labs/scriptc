@@ -833,6 +833,8 @@ async function compileExecutableNative(
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
+    ...(features.fsWriteForms ? { fsWriteForms: true } : {}),
+    ...(features.headersWalk ? { headersWalk: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),

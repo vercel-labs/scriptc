@@ -2286,7 +2286,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
     ],
-    appendFileSync: ["fs.appendFileSyncBytes"],
+    // The bytes-data form and the { mode } options form.
+    appendFileSync: ["fs.appendFileSyncBytes", "fs.appendFileModeSync"],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
       "fs.fsStreamBytes",

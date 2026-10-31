@@ -1261,6 +1261,12 @@ interface Headers {
   get(name: string): string | null;
   getSetCookie(): string[];
   has(name: string): boolean;
+  /* The iteration projections have a lowering only in a direct for-of
+   * head (`for (const [name, value] of headers.entries())`); a stored
+   * iterator object is still fenced (SC2020). */
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
   set(name: string, value: string): void;
   forEach(
     callbackfn: (value: string, key: string, parent: Headers) => void,

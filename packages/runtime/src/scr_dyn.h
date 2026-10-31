@@ -2174,6 +2174,15 @@ typedef struct ScrDynHandleOps {
   /* A promise rejected with the pending exception (+1), for the rejects
    * methods; the owning unit supplies it, since promises are a gated unit. */
   ScrDyn *(*rejected)(void);
+  /* Allocation-free live indexed access to the entries an `iter_step`
+   * walk emits (Headers): how many entries a walk from 0 would answer
+   * right now, and the `index`th entry's name (`selection` 1) or value
+   * (0), +1, NULL past the end. Both read the unit's own view, which a
+   * mutation drops, so a statically lowered loop that reads them on every
+   * pass costs one read per entry instead of walking the list per entry.
+   * NULL hooks = the iterable has no indexed form. */
+  double (*iter_count)(void *h);
+  ScrStr *(*iter_at)(void *h, size_t index, unsigned selection);
 } ScrDynHandleOps;
 
 /* ToPrimitive hints (scr_ni_to_primitive, Node island objects). */

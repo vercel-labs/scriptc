@@ -225,6 +225,193 @@ export function lowerForOfSearchParams(
   }
 }
 
+/** for-of over a Headers projection consumed directly by the head
+ * (`for (const [name, value] of headers.entries())`): Fetch's
+ * sort-and-combine list, re-read on every pass exactly as Node's live
+ * iterator re-reads it — a body that appends, sets or deletes headers
+ * visits what Node visits. `fetch.headersCount` and `fetch.headersEntry`
+ * are O(1) reads of the list the runtime caches until the next mutation,
+ * so the walk costs one read per entry. The pair never materializes for a
+ * `[k, v]` head of plain identifiers; every other pattern binds the
+ * checker's own [string, string] tuple. */
+export function lowerForOfHeaders(
+  lowerer: Lowerer,
+  stmt: ts.ForOfStatement,
+  iterable: IrExpr,
+  proj: ForOfIterProjection,
+): IrStmt {
+  const loc = locOf(stmt);
+  const HANDLE: IrType = iterable.type;
+  const yieldsPair = proj === "entries";
+  if (!ts.isVariableDeclarationList(stmt.initializer)) {
+    lowerer.unsupported(
+      "SC1090",
+      stmt.initializer,
+      "for-of over a pre-declared variable (declare the loop variable in the loop: for (const x of ...))",
+    );
+  }
+  const list = stmt.initializer;
+  if ((list.flags & ts.NodeFlags.Using) !== 0) {
+    lowerer.unsupported("SC1090", list, "'using' declarations (dispose-at-scope-exit semantics)");
+  }
+  const isVar = (list.flags & ts.NodeFlags.BlockScoped) === 0;
+  const isLet = (list.flags & ts.NodeFlags.Let) !== 0 || isVar;
+  const decl = list.declarations.nodes[0]!; // the grammar allows exactly one
+  lowerer.scopes.push(new Map());
+  try {
+    const headers = lowerer.declareHiddenLocal("%hdrof", HANDLE);
+    const i = lowerer.declareHiddenLocal("%iterof", F64);
+    i.mutable = true;
+
+    // part 0 is the entry's name, part 1 its value.
+    const read = (part: 0 | 1): IrExpr => ({
+      kind: "libCall",
+      fn: "fetch.headersEntry",
+      args: [varRef(headers.id, HANDLE, loc), varRef(i.id, F64, loc), numLit(part, loc)],
+      type: STRING,
+      loc,
+    });
+    const keyRead = (): IrExpr => read(0);
+    const valRead = (): IrExpr => read(1);
+    const singleRead = (): IrExpr => (proj === "values" ? valRead() : keyRead());
+
+    const binds: IrStmt[] = [];
+    const isPlainIdent = (
+      el: ts.ArrayBindingElement,
+    ): el is ts.BindingElement & { name: ts.Identifier } =>
+      ts.isBindingElement(el) &&
+      el.name !== undefined &&
+      ts.isIdentifier(el.name) &&
+      !el.initializer &&
+      !el.dotDotDotToken;
+    if (
+      yieldsPair &&
+      !isVar && // var pattern names assign hoisted slots — the generic desugar below owns them
+      ts.isArrayBindingPattern(decl.name) &&
+      decl.name.elements.nodes.length >= 1 &&
+      decl.name.elements.nodes.length <= 2 &&
+      decl.name.elements.nodes.every(isPlainIdent)
+    ) {
+      // `for (const [name, value] of headers.entries())` — bind straight
+      // from the reads; the tuple never exists. `[name]` alone reads only
+      // the name.
+      const els = decl.name.elements.nodes as readonly (ts.BindingElement & {
+        name: ts.Identifier;
+      })[];
+      const kLocal = lowerer.declareLocal(els[0]!.name, els[0]!.name.text, STRING, isLet);
+      binds.push({ kind: "varDecl", localId: kLocal.id, init: keyRead(), loc });
+      if (els[1]) {
+        const vLocal = lowerer.declareLocal(els[1].name, els[1].name.text, STRING, isLet);
+        binds.push({ kind: "varDecl", localId: vLocal.id, init: valRead(), loc });
+      }
+    } else {
+      // Identifier heads and the remaining patterns bind through the
+      // checker's own element type — [string, string] for the pair
+      // projection, string otherwise — the URLSearchParams desugar's shape.
+      const elemT = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(decl.name));
+      if (yieldsPair) {
+        const shape = elemT?.kind === "record" ? lowerer.shapes.get(elemT.shapeId) : null;
+        if (
+          elemT?.kind !== "record" ||
+          !shape?.tuple ||
+          shape.fields.length !== 2 ||
+          shape.fields.some((f) => f.type.kind !== "string")
+        ) {
+          lowerer.badType(decl.name, lowerer.checker.getTypeAtLocation(decl.name)); // defensive: the lib declares [string, string]
+        }
+      } else if (elemT?.kind !== "string") {
+        lowerer.badType(decl.name, lowerer.checker.getTypeAtLocation(decl.name)); // defensive: the lib declares string
+      }
+      const elemInit: IrExpr = yieldsPair
+        ? {
+            kind: "recordLit",
+            fields: [
+              { name: "0", value: keyRead() },
+              { name: "1", value: valRead() },
+            ],
+            type: elemT!,
+            loc,
+          }
+        : singleRead();
+      if (ts.isIdentifier(decl.name)) {
+        const varTarget = forOfVarTarget(lowerer, decl, elemT!);
+        if (varTarget) {
+          // `for (var x of ...)`: one function-scoped binding, assigned
+          // per pass — closures made in the loop share it, and the value
+          // persists after the loop (both Node-exact for var).
+          const tmp = lowerer.declareHiddenLocal("%vof", elemT!);
+          binds.push({ kind: "varDecl", localId: tmp.id, init: elemInit, loc });
+          binds.push({
+            kind: "assign",
+            localId: varTarget.id,
+            value: lowerer.coerceInto(
+              decl.name,
+              { kind: "varRef", localId: tmp.id, type: elemT!, loc },
+              varTarget.type,
+            ),
+            loc,
+          });
+        } else {
+          const local = lowerer.declareLocal(decl.name, decl.name.text, elemT!, isLet);
+          binds.push({ kind: "varDecl", localId: local.id, init: elemInit, loc });
+        }
+      } else {
+        const tmp = lowerer.declareHiddenLocal("%destr", elemT!);
+        binds.push({ kind: "varDecl", localId: tmp.id, init: elemInit, loc });
+        lowerer.lowerBindingPattern(
+          decl.name,
+          () => ({ kind: "varRef", localId: tmp.id, type: elemT!, loc }),
+          elemT!,
+          isLet,
+          binds,
+        );
+      }
+    }
+
+    const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement));
+    const loop: IrStmt = {
+      kind: "for",
+      init: { kind: "varDecl", localId: i.id, init: numLit(0, loc), loc },
+      cond: {
+        kind: "bin",
+        op: "<",
+        left: varRef(i.id, F64, loc),
+        right: {
+          kind: "libCall",
+          fn: "fetch.headersCount",
+          args: [varRef(headers.id, HANDLE, loc)],
+          type: F64,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      update: {
+        kind: "assign",
+        localId: i.id,
+        value: {
+          kind: "bin",
+          op: "+",
+          left: varRef(i.id, F64, loc),
+          right: numLit(1, loc),
+          type: F64,
+          loc,
+        },
+        loc,
+      },
+      body: [...binds, ...body],
+      loc,
+    };
+    return {
+      kind: "block",
+      body: [{ kind: "varDecl", localId: headers.id, init: iterable, loc }, loop],
+      loc,
+    };
+  } finally {
+    lowerer.scopes.pop();
+  }
+}
+
 /** for-of over an ARRAY/typed-array keys()/entries() projection consumed directly
  * by the head (`for (const [index, line] of lines.entries())` — the
  * dominant formatter idiom): the LIVE index walk — the length re-reads

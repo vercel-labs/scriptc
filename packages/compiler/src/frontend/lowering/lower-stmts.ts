@@ -171,6 +171,7 @@ import { expandoWritableTarget, lowerExpandoAssignStmt } from "./lower-expando.j
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
+  lowerForOfHeaders,
   lowerForOfMap,
   lowerForOfSearchParams,
   lowerForOfSet,
@@ -295,6 +296,7 @@ import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { iterableUnionOf, lowerForOfIterable } from "./iterable-values.js";
+import { isStaticHeadersValue } from "./lower-stdlib.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -11417,7 +11419,6 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   if (awaitArray && !lowerer.ctx.isAsync) {
     lowerer.unsupported("SC1090", stmt, "top-level 'for await' (await outside async functions)");
   }
-  lowerer.fenceStaticHeadersIteration(stmt.expression);
   // A stored numeric value iterator declared in this function keeps its
   // built-in protocol state in hidden locals (lowerVarStatement). The
   // iterator's own [Symbol.iterator]() returns itself, so for-of resumes
@@ -11439,6 +11440,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     const fused = lowerForOfHelperChain(lowerer, stmt, labels);
     if (fused) return fused;
   }
+
   // `for (const k of m.keys())` / `.values()` / `.entries()`: the
   // iterator methods consumed DIRECTLY by a for-of head ride the
   // container's live walk — exactly `for..of m` with the projection
@@ -11499,8 +11501,16 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
           return lowerForOfArrayIter(lowerer, stmt, container, proj);
         }
       }
+      // Headers projections ride Fetch's sort-and-combine list: the
+      // runtime re-reads it every pass, exactly Node's live iterator.
+      if (isStaticHeadersValue(lowerer, src.expression.expression)) {
+        return lowerForOfHeaders(lowerer, stmt, lowerer.lowerExpr(src.expression.expression), proj);
+      }
     }
   }
+  // Every other for-of over a static Headers value has no iterator
+  // handle: the fence names the members that do lower.
+  lowerer.fenceStaticHeadersIteration(stmt.expression);
   // `for (const m of s.matchAll(re))` — direct call or a stored-const
   // drain (`const rows = s.matchAll(re); for (const m of rows)`) — with
   // a plain const identifier binding: the drain records each match's

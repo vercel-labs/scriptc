@@ -1189,6 +1189,12 @@ export function fenceFetchObjectAssignment(
   );
 }
 
+/** Whether this value is the standard library's Headers (the fetch
+ * runtime's handle), the receiver whose head-consumed projections lower. */
+export function isStaticHeadersValue(lowerer: Lowerer, node: ts.Node): boolean {
+  return isStdlibFetchInterface(lowerer, node, "Headers") !== null;
+}
+
 /** Iteration syntax invokes Headers[Symbol.iterator] without constructing
  * an element-access node, so the member chokepoint above never sees it.
  * Use the same SC2020 profile row for for-of, array spread, and array destructuring. */

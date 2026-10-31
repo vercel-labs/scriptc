@@ -2289,6 +2289,29 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** The `bigint | undefined` twin of lowerOptionalNumber: a binding tsc has
+ * narrowed to its bigint arm (`sequence === undefined ? … : sequence++`
+ * over a `bigint | undefined` local) reads through that arm, the same
+ * unchecked unionNarrow a `number | undefined` read uses — the undefined
+ * arm is what tsc's narrowing ruled out, and `++` on a possibly-undefined
+ * operand never type-checks. Any other operand comes back unchanged for
+ * the caller's own fence. */
+export function lowerOptionalBigint(lowerer: Lowerer, operand: IrExpr, loc: SrcLoc): IrExpr {
+  if (operand.type.kind !== "union") return operand;
+  if (lowerer.armTag(operand.type.unionId, UNDEFINED_T) < 0) return operand;
+  if (lowerer.stripUndefinedArm(operand.type).kind !== "bigint") return operand;
+  const tag = lowerer.armTag(operand.type.unionId, BIGINT_T);
+  if (tag < 0) return operand;
+  return {
+    kind: "unionNarrow",
+    unionId: operand.type.unionId,
+    tag,
+    value: operand,
+    type: BIGINT_T,
+    loc,
+  };
+}
+
 /** A numeric operand of an operator: the binary arithmetic and bitwise six
  * (and their ordering comparisons), unary `+`, `-` and `~`, and compound
  * assignment's read and right side. JavaScript applies ToNumber to a

@@ -1434,16 +1434,26 @@ export function lowerAsExpression(
     // Structural assertions use the ordinary checked dynamic bridge. It
     // retains primitive values and native class identity before validating
     // the requested shape; an assertion does not bypass runtime checks.
+    // The bridge accepts what caughtRead accepts, so an assertion over a
+    // binding the checker already narrowed to a structural type
+    // (`"code" in error` → `error as { code?: unknown }`) reads the same
+    // checked-dynamic value instead of fencing here.
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    const narrowedFlags = lowerer.typeOf(expr.expression).flags;
     const bridged =
       (narrowed &&
         (narrowed.kind === "f64" ||
           narrowed.kind === "bool" ||
           narrowed.kind === "string" ||
           narrowed.kind === "object" ||
-          narrowed.kind === "dyn")) ||
-      // `catch (e: any)`: the binding reads as its checked-dynamic value.
-      (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
+          narrowed.kind === "dyn" ||
+          narrowed.kind === "record" ||
+          narrowed.kind === "union")) ||
+      // `catch (e: any)`, and a binding narrowed to a bare object or
+      // intersection type: the read is its checked-dynamic value.
+      (narrowed === null &&
+        (narrowedFlags & (ts.TypeFlags.Any | ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !==
+          0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
   // `{ ...message, content } as T`: the program claimed the literal's shape,

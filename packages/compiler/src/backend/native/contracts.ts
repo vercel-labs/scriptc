@@ -134,6 +134,12 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** An fs write passes an options record (`mode`, `flag: "wx"`) or
+   * Uint8Array data to writeFile: compiles scr_fs_write_forms.c. */
+  fsWriteForms?: boolean;
+  /** A typed `for..of` walks a static Headers: compiles
+   * scr_fetch_headers_walk.c. */
+  headersWalk?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/optional-chain-hof-unmappable-guard.ts"
+ ],
+ "diags": []
+}

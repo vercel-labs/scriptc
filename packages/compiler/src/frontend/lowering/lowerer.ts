@@ -3162,7 +3162,17 @@ export class Lowerer {
       );
     }
     if (ts.isIdentifier(origin)) {
-      const local = this.resolveLocal(origin);
+      // The whole-program analyses ask this question before any body lowers
+      // (speculativeTypeQueries around analyzeRuntimeOptionalArrayReads), so
+      // there is no function context and no local binding to consult yet: a
+      // binding's storage class settles when its declaration (or its
+      // parameter ABI) lowers, and a query must never mint a capture. Until
+      // then the module global's storage is the only one readable. Every
+      // other caller lowers a body, where an empty stack stays a lowerer bug.
+      const local =
+        this.speculativeTypeQueryDepth > 0 && this.fnStack.length === 0
+          ? null
+          : this.resolveLocal(origin);
       const root = local ? this.runtimeOptionalRootOf(local) : null;
       const global = this.globalOf(origin);
       return (

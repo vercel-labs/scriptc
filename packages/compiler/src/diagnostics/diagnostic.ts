@@ -1336,6 +1336,35 @@ export function recordShapeMismatchDiag(
   };
 }
 
+/** A record-width conversion at a boundary where the program writes
+ * through the value afterwards (SC2021): the conversion builds a new
+ * object, so the write reaches only the copy, while Node keeps one object.
+ * The alternative — refusing — is what keeps a build from shipping a
+ * program whose writes go missing; the hint names the annotation that
+ * makes both names the same object. */
+export function widthCopyRefusalDiag(
+  site: "declaration" | "call" | "literal",
+  sourceType: string,
+  targetType: string,
+  detail: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const how =
+    site === "call"
+      ? `passing a '${sourceType}' to a parameter declared '${targetType}'`
+      : site === "literal"
+        ? `storing a '${sourceType}' in a '${targetType}' field`
+        : `declaring a '${sourceType}' value as '${targetType}'`;
+  return {
+    code: "SC2021",
+    message: `${how} copies the object, and the program writes through it: ${detail}`,
+    loc,
+    milestone: "later",
+    hint,
+  };
+}
+
 /** Union values carry a runtime tag assigned per-union: a value of one
  * union type flowing into a DIFFERENT union's slot re-tags at runtime when
  * every source arm has a home in the destination (`A | B` into `A | B | C`

@@ -4,7 +4,7 @@ import {
   arrayClassReceiver,
   lowerArrayClassStaticCall,
 } from "./builtins/array-classes.js";
-import { structuralCallInstance } from "./structural-instances.js";
+import { refuseWrittenParamCopy, structuralCallInstance } from "./structural-instances.js";
 import { classViewOf } from "./class-views.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { lowerStaticPrivateCall } from "./private-statics.js";
@@ -1431,9 +1431,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           });
         }
         lowerer.noteEdge(sig.name);
+        const calleeSymbol = lowerer.resolveValueSymbol(expr.expression);
+        const calleeDecl = calleeSymbol?.valueDeclaration;
+        if (calleeDecl && ts.isFunctionDeclaration(calleeDecl))
+          refuseWrittenParamCopy(lowerer, expr, calleeDecl, sig);
         const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
-        const symbol = lowerer.resolveValueSymbol(expr.expression);
-        const declaration = symbol ? symbol.valueDeclaration : undefined;
+        const declaration = calleeDecl;
         // A bare call supplies undefined as this, even inside a callback
         // currently carrying a receiver. The value-call ABI saves and
         // restores that ambient receiver around the function invocation.

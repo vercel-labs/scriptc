@@ -63,6 +63,7 @@ export const DIAGNOSTIC_CODES = {
   SC2013: "npm package import or value without native lowering",
   SC2014: "write through a value held from process.env",
   SC2020: "standard-library or @types/node surface with no lowering",
+  SC2021: "width copy of a value the program writes through",
   SC3001: "LLVM IR tier refusal",
   SC3002: "target or capability refusal",
   SC3003: "native helper installation or version failure",

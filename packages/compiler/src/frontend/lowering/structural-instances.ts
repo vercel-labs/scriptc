@@ -11,6 +11,10 @@ import {
 } from "./generic-functions.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import type { Lowerer } from "./lowerer.js";
+import { PoisonError } from "./lowerer.js";
+import { locOf } from "../program.js";
+import { widthCopyRefusalDiag } from "../../diagnostics/diagnostic.js";
+import { observesIdentity } from "./observable-write.js";
 
 /** Instances of a typed function for arguments that keep their own layout.
  *
@@ -27,7 +31,7 @@ import type { Lowerer } from "./lowerer.js";
 /** The argument expressions that can name a value another reference sees:
  * bindings, member reads and `this`. Fresh values (literals, calls) have no
  * other reference, so their copy is not observable. */
-function namesExistingValue(arg: ts.Expression): boolean {
+export function namesExistingValue(arg: ts.Expression): boolean {
   let e = arg;
   for (;;) {
     if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
@@ -86,6 +90,26 @@ function copies(lowerer: Lowerer, from: IrType, to: IrType): boolean {
   if (typeEquals(from, to) || !standsFor(lowerer, from, to)) return false;
   const plan = lowerer.widthLiftPlan(from, to);
   return plan !== null && (plan.how === "arr" || plan.how === "width");
+}
+
+/** Whether `from` and `to` are record layouts that differ only in field
+ * representation: every field of `to` names a field of `from`, and every
+ * field `from` has besides those is optional. No field is added or dropped,
+ * so the two layouts could be served by one storage; a conversion between
+ * them copies the value instead (recordWidthPlan). */
+export function sameFieldsForCopy(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (from.kind !== "record" || to.kind !== "record") return false;
+  const source = lowerer.shapes.get(from.shapeId);
+  const target = lowerer.shapes.get(to.shapeId);
+  if (!source || !target || source.tuple || target.tuple) return false;
+  if (source.indexValue || target.indexValue) return false;
+  if (target.fields.some((field) => !source.fields.some((kept) => kept.name === field.name)))
+    return false;
+  return source.fields.every(
+    (field) =>
+      target.fields.some((kept) => kept.name === field.name) ||
+      (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0),
+  );
 }
 
 /** The structural-instance info of a typed function declaration, created on
@@ -253,7 +277,7 @@ export function layoutReturnType(
  * declaration lowers once per function instance, and only some instances
  * keep a layout, so the recorded type applies only while it maps to the
  * layout of the binding the current lowering resolves. */
-function preservedLayoutOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | undefined {
+export function preservedLayoutOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | undefined {
   let e = arg;
   while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
   if (!ts.isIdentifier(e)) return undefined;
@@ -292,4 +316,57 @@ export function notePreservedLayout(lowerer: Lowerer, decl: ts.VariableDeclarati
     preservedLayoutOf(lowerer, decl.initializer) ?? lowerer.typeOf(decl.initializer);
   lowerer.preservedLayoutTypes.set(symbol, initializer);
   lowerer.layoutKeptNodes.add(decl.initializer);
+}
+
+/** Refuse a direct call that would copy an existing value into a parameter
+ * the callee writes through (SC2021): the callee's write would reach only
+ * the copy, while under Node the caller's object is the parameter.
+ * structuralCallInstance already binds such a call to the argument's
+ * layout whenever the callee's own layout can hold the parameter's; a
+ * pair it cannot bind (`dyn` field against a union field) falls back to
+ * the width copy, which this refuses. */
+export function refuseWrittenParamCopy(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  decl: ts.FunctionDeclaration,
+  sig: FnSig,
+): void {
+  if (decl.body === undefined) return;
+  const params = decl.parameters.nodes;
+  expr.arguments.nodes.forEach((arg, index) => {
+    const param = params[index];
+    const declared = sig.params[index];
+    if (!param || !declared || param.type === undefined) return;
+    if (!ts.isIdentifier(param.name)) return;
+    if (!namesExistingValue(arg) || lowerer.layoutKeptNodes.has(arg)) return;
+    // A signature whose own layout widens the declared type keeps its
+    // boundary conversion (structureCallInstance's rule).
+    const own = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(param.name));
+    if (!own || !typeEquals(own, declared.type)) return;
+    if (declared.type.kind !== "record") return;
+    const source = preservedLayoutOf(lowerer, arg) ?? lowerer.typeOf(arg);
+    const from = lowerer.mapTypeOf(source);
+    if (!from || from.kind !== "record" || typeEquals(from, declared.type)) return;
+    // A projection (the argument has fields the parameter's type lacks) is
+    // not the copy this refuses: the callee's layout is the only one that
+    // carries the extra fields.
+    if (!sameFieldsForCopy(lowerer, from, declared.type)) return;
+    if (lowerer.recordWidthPlan(from.shapeId, declared.type.shapeId) === null) return;
+    const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+    if (!symbol || decl.body === undefined) return;
+    if (!observesIdentity(lowerer, decl.body, symbol, param.name.text)) return;
+    const checker = lowerer.checker;
+    const target = checker.typeToString(checker.getTypeAtLocation(param.name));
+    lowerer.pushDiag(
+      widthCopyRefusalDiag(
+        "call",
+        checker.typeToString(source),
+        target,
+        `the callee writes through '${param.name.text}', so the write would reach only the copy`,
+        `declare the argument with the parameter's type ('${target}') so the callee receives the caller's object, or make the shape a class`,
+        locOf(arg),
+      ),
+    );
+    throw new PoisonError();
+  });
 }

@@ -272,6 +272,7 @@ import {
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { keepsLivePropertyTable, registryExpandoName } from "./live-property-table.js";
 import { lowerUnionFieldDelete, lowerUnionFieldWrite } from "./expressions/union-fields.js";
 import {
   UNSUPPORTED,
@@ -8749,6 +8750,51 @@ function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpressi
   };
 }
 
+/** A write to an own property the static type has no slot for — an expando
+ * (`match.index = 0`, `arr.extra = v`, `regex.count = 1`). Node adds it to
+ * the value, and the object model keeps exactly those properties in the
+ * value's live checked-dynamic capsule: the record source table for a
+ * record, the named-property table for an array, the dynamic view of an
+ * instance, the property table of a function. The write goes through that
+ * capsule so the reflection and the dynamic reads that follow see it.
+ *
+ * This arm only replaces the SC1090 fence. Every write a representation
+ * already lowers — a declared field, `length`, an element, a class field
+ * through its own arm — answers before it, and a kind without a live
+ * property table (a Date, RegExp, Map or Set handle: an expando would not
+ * survive the box) keeps its fence. So does a name some function registered
+ * as an expando member: reads through the function's name answer from that
+ * member's module global, which a write into the live table would not
+ * update. */
+function lowerExpandoWrite(
+  lowerer: Lowerer,
+  left: ts.PropertyAccessExpression,
+  right: ts.Expression,
+): IrStmt | null {
+  if (left.questionDotToken || registryExpandoName(lowerer, left.name.text)) return null;
+  const recv = tryLowerExpression(lowerer, left.expression);
+  if (!recv || !lowerer.dynConvertible(recv.type)) return null;
+  if (!keepsLivePropertyTable(lowerer, recv.type)) return null;
+  const loc = locOf(left);
+  const boxed = lowerer.coerceToExpected(recv, DYN);
+  if (boxed.type.kind !== "dyn") return null;
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "dyn.keySet",
+      args: [
+        boxed,
+        { kind: "strLit", value: left.name.text, type: STRING, loc },
+        lowerer.lowerExprExpecting(right, DYN),
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+}
+
 export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
@@ -9649,6 +9695,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             loc,
           };
         }
+      }
+      if (ts.isPropertyAccessExpression(expr.left)) {
+        const expando = lowerExpandoWrite(lowerer, expr.left, expr.right);
+        if (expando) return expando;
       }
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");

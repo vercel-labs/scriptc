@@ -1,0 +1,6 @@
+expando-function-alias-write.ts:11:1 - error SC1090: assignment to non-variables are not supported yet
+
+  10 | const alias = counter;
+  11 | alias.count = 2;
+     | ^~~~~~~~~~~
+  12 | console.log(counter.count);

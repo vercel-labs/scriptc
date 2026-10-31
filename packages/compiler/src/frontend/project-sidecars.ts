@@ -211,9 +211,7 @@ export class ProjectSidecars {
     const alias = this.aliases.get(tsgoPath(declaration));
     // Declaration value imports/reexports must name a runtime extension;
     // TypeScript then substitutes the virtual declaration file normally.
-    return alias === undefined
-      ? null
-      : modulePath(from, alias.replace(/\.d\.([cm]?)ts$/, ".$1js"));
+    return alias === undefined ? null : modulePath(from, alias.replace(/\.d\.([cm]?)ts$/, ".$1js"));
   }
 
   /** A copy can name declarations the initial checker never reached. The

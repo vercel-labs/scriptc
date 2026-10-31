@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typed-local-js-sidecars/measure.mjs",
+  "<repo>/tests/corpus/typed-local-js-sidecars/offset.js",
+  "<repo>/tests/corpus/typed-local-js-sidecars/adjust.cjs",
+  "<repo>/tests/corpus/typed-local-js-sidecars/type-effect.mjs",
+  "<repo>/tests/corpus/typed-local-js-sidecars/reexport.ts",
+  "<repo>/tests/corpus/typed-local-js-sidecars/main.ts"
+ ],
+ "diags": []
+}

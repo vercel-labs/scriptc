@@ -811,6 +811,7 @@ export function timingGroups(rows) {
   return {
     bench: rows.filter((r) => r.id.startsWith("bench/")),
     self: rows.filter((r) => r.id === "self/cli"),
+    fixtures: rows.filter((r) => r.id.startsWith("fixture/")),
   };
 }
 

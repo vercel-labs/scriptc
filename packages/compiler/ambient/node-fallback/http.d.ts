@@ -70,6 +70,7 @@ declare module "http" {
     readonly httpVersion: string;
     readonly complete: boolean;
     readonly aborted: boolean;
+    readonly destroyed: boolean;
     readonly statusCode: number | undefined;
     readonly statusMessage: string | undefined;
     readonly socket: Socket;
@@ -110,6 +111,7 @@ declare module "http" {
     readonly finished: boolean;
     readonly writableFinished: boolean;
     readonly writableCorked: number;
+    readonly destroyed: boolean;
     readonly req: IncomingMessage;
     readonly socket: Socket | null;
     readonly connection: Socket | null;

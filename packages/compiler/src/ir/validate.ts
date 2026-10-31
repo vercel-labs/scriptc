@@ -10,6 +10,7 @@ import type {
   IrFunction,
   IrGlobal,
   IrModule,
+  IrRecordLink,
   IrRecordShape,
   IrStmt,
   IrType,
@@ -1010,6 +1011,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       mod.lifetimeRegions === true,
       new Set(mod.threadSlotKeys ?? []),
       mod.declOrigins?.length ?? 0,
+      mod.recordLinks ?? [],
     );
   }
   return errors;
@@ -1030,6 +1032,7 @@ function validateFunction(
   lifetimeRegions: boolean,
   threadSlotKeys: ReadonlySet<string>,
   declOriginCount: number,
+  recordLinks: readonly IrRecordLink[],
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -4290,6 +4293,31 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    // A record link names a pair of the module's recordLinks: the copy has
+    // the pair's target type, the source (and linkSource's result) its
+    // source type.
+    if (e.fn === "record.link" || e.fn === "record.linkIs" || e.fn === "record.linkSource") {
+      const pairArg = e.args[e.fn === "record.link" ? 2 : 1];
+      const pair =
+        pairArg?.kind === "numLit"
+          ? recordLinks.find((link) => link.pair === pairArg.value)
+          : undefined;
+      if (!pair) {
+        err(`libCall ${e.fn} must name a pair of the module's recordLinks`, e.loc);
+        return true;
+      }
+      const copy = e.args[0];
+      if (copy?.type.kind !== "record" || copy.type.shapeId !== pair.to)
+        err(`libCall ${e.fn} copy must have the pair's target type`, e.loc);
+      const sourceType =
+        e.fn === "record.link" ? e.args[1]?.type : e.fn === "record.linkSource" ? e.type : null;
+      if (
+        sourceType !== null &&
+        (sourceType?.kind !== "record" || sourceType.shapeId !== pair.from)
+      )
+        err(`libCall ${e.fn} source must have the pair's source type`, e.loc);
+      return true;
+    }
     // ArraySpeciesCreate over an Array method's result, and Array.of /
     // Array.from on a class that extends Array: the result has the plain
     // result's array type.
@@ -5229,7 +5257,7 @@ function validateFunction(
   }
 
   function checkLibProcessCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "cp.execFile") {
+    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
       const cb = e.args[2]?.type;
       if (
         cb?.kind !== "func" ||
@@ -5238,7 +5266,7 @@ function validateFunction(
         cb.ret.kind !== "void"
       ) {
         err(
-          `libCall cp.execFile callback must be a non-rest void function with at most three parameters`,
+          `libCall ${e.fn} callback must be a non-rest void function with at most three parameters`,
           e.loc,
         );
       } else {
@@ -5251,16 +5279,16 @@ function validateFunction(
             !def.arms.some((arm) => arm.kind === "nullT") ||
             !def.arms.some((arm) => arm.kind === "object" && arm.className === "%Error")
           ) {
-            err(`libCall cp.execFile callback error parameter must be Error | null`, e.loc);
+            err(`libCall ${e.fn} callback error parameter must be Error | null`, e.loc);
           }
         }
         const stdout = cb.params[1];
         if (stdout !== undefined && stdout.kind !== "string") {
-          err(`libCall cp.execFile callback stdout parameter must be string`, e.loc);
+          err(`libCall ${e.fn} callback stdout parameter must be string`, e.loc);
         }
         const stderr = cb.params[2];
         if (stderr !== undefined && stderr.kind !== "string") {
-          err(`libCall cp.execFile callback stderr parameter must be string`, e.loc);
+          err(`libCall ${e.fn} callback stderr parameter must be string`, e.loc);
         }
       }
     }
@@ -6305,6 +6333,8 @@ function validateFunction(
           (!Number.isInteger(e.origin) || e.origin < 0 || e.origin >= declOriginCount)
         )
           err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
+        if (e.pathIndex !== undefined && (!Number.isInteger(e.pathIndex) || e.pathIndex < 0))
+          err(`dynCheck pathIndex ${e.pathIndex} is not an array position`, e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).
@@ -6451,11 +6481,9 @@ function validateFunction(
           if (delegatedYield !== e) err("delegated yield outside a delegate resume", e.loc);
           if (e.type.kind !== "void" || e.captureCompletion) err("invalid delegated yield", e.loc);
         } else if (e.captureCompletion) {
-          if (
-            fn.async ||
-            e.type.kind !== "dyn" ||
-            !typeEquals(e.captureCompletion.returnType, fn.returnType)
-          ) {
+          // Both kinds capture: an async generator's delegation forwards
+          // the received completion to its delegate the same way.
+          if (e.type.kind !== "dyn" || !typeEquals(e.captureCompletion.returnType, fn.returnType)) {
             err("invalid captured generator completion", e.loc);
           }
         } else if (fn.generator.nextT.kind === "undefinedT") {
@@ -6991,6 +7019,12 @@ function validateFunction(
       case "runtimeFence":
         // The deferred JS compile fence: carries only its message/code.
         if (s.message.length === 0) err(`runtimeFence with an empty message`, s.loc);
+        break;
+      case "genBindBarrier":
+        // The generator bind barrier: a marker in a bindAtCall body only.
+        if (fn.generator?.bindAtCall !== true) {
+          err(`genBindBarrier in a body without generator.bindAtCall`, s.loc);
+        }
         break;
       case "rethrow": {
         // `throw e` of a catch binding: re-raises the saved snapshot.

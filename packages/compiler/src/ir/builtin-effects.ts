@@ -737,6 +737,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.isExtensible",
   "dyn.seal",
   "dyn.isSealed",
+  // an unmodeled integrity kind (a native handle, a promise) refuses
+  "dyn.isExtensibleQuery",
+  "dyn.isSealedQuery",
   "dyn.objValues",
   "dyn.objValueList",
   "dyn.objEntries",
@@ -798,6 +801,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.bagGet",
   "dyn.bagSet",
   "dyn.defineProperty",
+  // The same operations for a descriptor built by an expression; they throw
+  // the same TypeErrors, and a getter on the descriptor can throw.
+  "dyn.definePropsShapes",
+  "dyn.definePropertyShapes",
+  "dyn.objCreateWithPropertiesShapes",
   "dyn.getOwnPropertyDescriptor",
   "child.propsDefine",
   "child.propsDescriptor",

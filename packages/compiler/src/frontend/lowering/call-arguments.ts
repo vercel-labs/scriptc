@@ -676,10 +676,12 @@ export function lowerSpreadArgsCall(
   callee: IrExpr,
   loc: SrcLoc,
 ): IrExpr | null {
-  // TypeScript reaches this lane only for checked-dynamic variadic callees
-  // (`(...args: unknown[]) => R`), whose ABI is the JS one.
+  // TypeScript reaches this lane for checked-dynamic variadic callees
+  // (`(...args: unknown[]) => R`) and for checked-dynamic method values
+  // (a dyn array's `push`/`concat`), each of whose ABI is the JS one.
   if (
     !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    callee.type.kind !== "dyn" &&
     !(callee.type.kind === "func" && callee.type.rest === true && callee.type.restAbi === undefined)
   )
     return null;

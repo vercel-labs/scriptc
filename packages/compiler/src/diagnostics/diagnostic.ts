@@ -396,23 +396,43 @@ export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc
   };
 }
 
-/** SC8020 — native code reads a builtin module member that an island
- * module patches: Node would show the read the patch, the native build
- * cannot. ES module bindings of builtins never see the patch (in Node
- * either), so the named import is the exact spelling. */
-export function nodeIslandPatchedReadDiag(
+/** SC8006 — the entry module reads a builtin module member that an island
+ * module patches. The entry always stays native, so it cannot join the
+ * island set: Node would show this read the patch, the native build cannot.
+ * ES module bindings of builtins never see the patch (in Node either), so
+ * the named import is the exact spelling. */
+export function nodeIslandEntryReadDiag(
+  file: string,
   member: string,
+  module: string,
   patchFile: string,
   loc: SrcLoc,
 ): ScrDiagnostic {
   const dot = member.indexOf(".");
-  const module = dot < 0 ? member : member.slice(0, dot);
   const property = dot < 0 ? member : member.slice(dot + 1);
   return {
-    code: "SC8020",
-    message: `'${member}' is patched by ${patchFile}, which runs in a Node island; Node would show this read through the CommonJS ${module} object the patch, the native build cannot. Use \`import { ${property} } from "node:${module}"\` (ES module bindings never see the patch, in Node either), or move this code into ${patchFile}.`,
+    code: "SC8006",
+    message: `the entry module reads '${member}' through the CommonJS ${module} object, which island module ${patchFile} patches; the entry stays native, so it cannot join the island set and would not see the patch`,
     loc,
-    hint: `node:${module} ES module bindings keep the original function, in Node too`,
+    hint: `use \`import { ${property} } from "node:${module}"\` (ES module bindings never see the patch, in Node either), or move this read into a module of its own, which then runs in a Node island (the entry module ${file} stays native)`,
+  };
+}
+
+/** SC8006 — a user TypeScript module reads a member that an island module
+ * patches, but uses syntax Node cannot run with type stripping only, so the
+ * module cannot join the island set. */
+export function nodeIslandReaderStripDiag(
+  file: string,
+  member: string,
+  patchFile: string,
+  construct: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `'${file}' reads '${member}', which island module ${patchFile} patches, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this read",
   };
 }
 
@@ -432,10 +452,12 @@ export function sharedModuleDuplicatedDiag(
   };
 }
 
-/** SC8020 — the program replaces a process output stream's write method
- * while a Node island exists: the island's `process.stdout` is its own
- * object, so the replacement and the island's writes cannot see each other.
- * H2 shares the native stream object with the islands and removes this. */
+/** SC8006 — the build refuses the program: it replaces a process output
+ * stream's write method while a Node island exists, and the island's
+ * `process.stdout` is its own object, so the replacement and the island's
+ * writes cannot see each other. The planner stops on this, so it is an
+ * error, not the SC8020 warning. H2 shares the native stream object with
+ * the islands and removes this refusal. */
 export function stdioPatchAcrossIslandsDiag(
   stream: "stdout" | "stderr" | null,
   loc: SrcLoc,
@@ -443,10 +465,10 @@ export function stdioPatchAcrossIslandsDiag(
   const what =
     stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
   return {
-    code: "SC8020",
-    message: `${what} is replaced while a Node island exists: the island's process output stream would not see this patch, and island writes would bypass it`,
+    code: "SC8006",
+    message: `${what} is replaced while a Node island exists: the island's process output stream is its own object, so it would not see this patch and its writes would bypass it`,
     loc,
-    hint: "the island's process.stdout would not see this patch",
+    hint: "remove the replacement, or keep this write in a module that stays native (--node-islands=off for the package)",
   };
 }
 

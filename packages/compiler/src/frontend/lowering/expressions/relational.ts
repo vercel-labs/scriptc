@@ -57,11 +57,14 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import { hasGlobalFunctionValue } from "../global-function-values.js";
 import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
-import { NARROW_FIRST, sideEffectFreeOptionValue } from "../surfaces.js";
+import { NARROW_FIRST, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "../surfaces.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { recordHasOwnHelper } from "../lower-calls.js";
 
 /** The class value an `instanceof` right-hand side holds. A JavaScript
  * object's property holding a program class (`holder.type`) reads as a
@@ -683,6 +686,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         "SC1090",
         expr,
         "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
+      );
+    }
+    // A builtin global function value read off the global (`parseInt`,
+    // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
+    // no prototype to test against, so the test keeps the refusal the
+    // global's identity token answered.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      hasGlobalFunctionValue(stdlibGlobalNameOf(lowerer, expr.right) ?? "")
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr.right,
+        "'instanceof' right-hand sides other than classes declared in the program",
       );
     }
     // A checked-dynamic right-hand side (a constructor read from a table, a
@@ -2080,10 +2097,19 @@ export function lowerInExpression(
       loc,
     };
   }
-  // A kept record source can hold a key the shape does not declare (a
-  // checked conversion's undeclared keys, a width spread's extras), so the
-  // static `false` answer is registered for the key-order pass to answer
-  // through the record's own source table when the program keeps one.
+  // A key the type does not declare is an own key of a linked copy's
+  // source or of a kept source (record-links.ts, and the hasOwn helper's
+  // kept width spread answer); the helper call evaluates the receiver once.
+  if (!inherited && recordMayKeepSource(lowerer, recv.type))
+    return {
+      kind: "call",
+      callee: recordHasOwnHelper(lowerer, recv.type.shapeId, loc),
+      args: [recv, { kind: "strLit", value: key, type: STRING, loc }],
+      type: BOOL,
+      loc,
+    };
+  // Otherwise the answer is static; the key-order pass still reads the
+  // site as a presence test of the receiver's keys.
   const answer = staticAnswerAfter(recv, inherited, loc);
   return inherited ? answer : lowerer.keyOrder.sourceProbe(answer, recv, key);
 }

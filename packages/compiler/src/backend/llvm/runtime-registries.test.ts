@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
+import { ARRAY_PROTOTYPE_MEMBER_NAMES } from "../../ir/runtime-features.js";
 import { BYTES_ELEM_NUM, CLOSURE_KIND, SCR_ARR_FROZEN, SCR_ARR_STATES } from "./common.js";
 import { DYN_KIND, MESSAGE_KIND } from "./dyn.js";
 
 // The backend writes the numbers of several runtime enums and flag sets
-// into the IR it emits. Each check here reads the C declaration and fails
-// when the backend's copy disagrees, or when two names share a value.
+// into the IR it emits, and the IR layer names the methods a runtime
+// prototype installs. Each check here reads the C declaration and fails
+// when the copy disagrees, or when two names share a value.
 const source = (file: string) =>
   readFileSync(new URL(`../../../../runtime/src/${file}`, import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -84,6 +86,17 @@ test("CLOSURE_KIND matches the SCR_CLOSURE_KIND_* bits", () => {
   flags.delete("MASK");
   expectSingleBits(flags, "SCR_CLOSURE_KIND");
   expect(Object.fromEntries(flags)).toEqual(CLOSURE_KIND);
+});
+
+test("ARRAY_PROTOTYPE_MEMBER_NAMES matches the Array.prototype method table", () => {
+  // The runtime installs these methods on Array.prototype, and the IR and
+  // backend read the set to decide which reads link the dyn-invoke unit.
+  const body = /dyn_array_prototype_methods\[\] = \{([\s\S]*?)\};/.exec(
+    source("scr_dyn_invoke.c"),
+  )?.[1];
+  expect(body, "dyn_array_prototype_methods in scr_dyn_invoke.c").toBeDefined();
+  const names = [...body!.matchAll(/\{"(\w+)", \d+\}/g)].map(([, name]) => name!);
+  expect(new Set(names)).toEqual(ARRAY_PROTOTYPE_MEMBER_NAMES);
 });
 
 test("the %ScrArr spare flags the backend tests match scr_array.h", () => {

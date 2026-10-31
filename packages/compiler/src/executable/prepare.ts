@@ -5,9 +5,10 @@ import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
   checkerPanicDiag,
   nodeIslandEntryPatchDiag,
+  nodeIslandEntryReadDiag,
   nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
-  nodeIslandPatchedReadDiag,
+  nodeIslandReaderStripDiag,
   nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
   npmStaticRefusalDiag,
@@ -491,10 +492,12 @@ function decideNodeIslands(
   }
   for (const problem of moduleDecision.stripProblems)
     errors.push(nodeIslandStripDiag(problem.file, problem.construct, problem.loc));
-  // Who else must see the patch (H3.4): every non-islanded module that
-  // reads a patched member through the builtin's CommonJS object. An npm
-  // package joins the island set (a patch meant for it must reach it); a
-  // user module is SC8020, because native code cannot see the patch.
+  // Who else must see the patch (H3.4): every module that reads a patched
+  // member through the builtin's CommonJS object joins the island set, npm
+  // package or user module alike — the patch lives in the islands' Node, and
+  // only sharing the builtin shows the read the patch, as in Node. The entry
+  // stays native, and a user TypeScript module Node cannot strip cannot run
+  // in Node at all: both are SC8006.
   const patchedMembers = new Map<string, string>();
   for (const m of scan.modules) {
     if (!modules.has(m.file)) continue;
@@ -507,6 +510,7 @@ function decideNodeIslands(
     string,
     { packageDir: string; member: string; patchFile: string }
   >();
+  const readerModules = new Map<string, { member: string; patchFile: string }>();
   if (policy.mode === "auto" && patchedMembers.size > 0) {
     for (const m of scan.modules) {
       if (modules.has(m.file)) continue;
@@ -521,12 +525,47 @@ function decideNodeIslands(
               patchFile,
             });
         } else if (m.origin === "user") {
-          errors.push(nodeIslandPatchedReadDiag(read.member, patchFile, read.loc));
+          if (sameFile(m.file, entryPath)) {
+            errors.push(
+              nodeIslandEntryReadDiag(
+                m.file,
+                read.member,
+                builtinModuleOf(read.member),
+                patchFile,
+                read.loc,
+              ),
+            );
+            continue;
+          }
+          if (m.stripProblem !== null) {
+            errors.push(
+              nodeIslandReaderStripDiag(
+                m.file,
+                read.member,
+                patchFile,
+                m.stripProblem.construct,
+                m.stripProblem.loc,
+              ),
+            );
+            continue;
+          }
+          if (!readerModules.has(m.file))
+            readerModules.set(m.file, { member: read.member, patchFile });
         }
       }
     }
   }
   if (errors.length > 0) return { packages: new Map(), modules: new Map(), notes: [], errors };
+  // A user module that reads a patched member runs in a Node island, so its
+  // read goes through the patched object exactly as in Node (H3.4).
+  for (const [file, reader] of readerModules) {
+    modules.set(file, {
+      file,
+      class: "object-model",
+      reason: `it reads '${reader.member}' through the CommonJS ${builtinModuleOf(reader.member)} object, which island module ${reader.patchFile} patches`,
+      decision: "auto",
+    });
+  }
   if (
     refused.size === 0 &&
     policy.forcedNode.size === 0 &&

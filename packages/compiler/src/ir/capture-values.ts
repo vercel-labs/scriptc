@@ -7,6 +7,7 @@ import {
   type IrStmt,
 } from "./ir.js";
 import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
+import type { IrNodeIndex } from "./node-index.js";
 import { AmbientReceiverReaders } from "./receiver-readers.js";
 import { reparseStmt } from "./serialize.js";
 import {
@@ -67,9 +68,10 @@ import {
  * closure. A closure can only run after its creation, so its entry copy
  * reads the final value. Every execution of a declaration (for example
  * per loop iteration) fills its own fresh box, so environments created in
- * different iterations keep seeing their own value. */
-export function copyStableCaptures(mod: IrModule): IrModule {
-  const flow = new CaptureFlow(mod.functions);
+ * different iterations keep seeing their own value. `nodes`, an index of
+ * `mod`, serves the receiver analysis (AmbientReceiverReaders). */
+export function copyStableCaptures(mod: IrModule, nodes?: IrNodeIndex): IrModule {
+  const flow = new CaptureFlow(mod.functions, true, nodes);
   let changed = false;
   const functions = mod.functions.map((fn) => {
     const next = flow.rewrite(fn);
@@ -284,10 +286,12 @@ export class CaptureFlow {
 
   /** With `scan` false, each body's facts are collected when a question
    * first needs them, and only unchanged() may be asked: the other
-   * questions read creation sites, which come from scanning every body. */
-  constructor(functions: readonly IrFunction[], scan = true) {
+   * questions read creation sites, which come from scanning every body.
+   * `nodes`, an index of the functions' module, serves the receiver
+   * analysis. */
+  constructor(functions: readonly IrFunction[], scan = true, nodes?: IrNodeIndex) {
     for (const fn of functions) this.functions.set(fn.name, fn);
-    this.receivers = new AmbientReceiverReaders(this.functions);
+    this.receivers = new AmbientReceiverReaders(this.functions, nodes);
     // Creation sites are collected while scanning each body.
     if (scan) for (const fn of functions) this.factsOf(fn);
   }

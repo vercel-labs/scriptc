@@ -57,6 +57,28 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
   });
 
+  test("gates the call-time parameter bind unit on a barriered generator", () => {
+    const mod = module();
+    const generator = (bindAtCall: boolean): IrModule["functions"][number] => ({
+      name: bindAtCall ? "pick" : "plain",
+      params: [],
+      locals: [],
+      returnType: VOID,
+      body: [],
+      loc,
+      generator: {
+        yieldT: STRING,
+        nextT: VOID,
+        resultType: { kind: "record", shapeId: "gen-result" },
+        ...(bindAtCall ? { bindAtCall: true as const } : {}),
+      },
+    });
+    mod.functions.push(generator(false));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(false);
+    mod.functions.push(generator(true));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(true);
+  });
+
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("http2.streamNoop"));
@@ -179,6 +201,40 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
   });
 
+  test("the any-object descriptor entry points link the dyn-invoke unit", () => {
+    for (const fn of [
+      "dyn.definePropertyShapes",
+      "dyn.definePropsShapes",
+      "dyn.objCreateWithPropertiesShapes",
+    ] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(true);
+    }
+  });
+
+  test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
+    const reads = (key: string): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "dynKeyGet",
+          value: { kind: "varRef", localId: "value", type: DYN, loc },
+          key: { kind: "strLit", value: key, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+      });
+      return mod;
+    };
+    for (const key of ["toString", "slice", "map", "findLastIndex"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(true);
+    for (const key of ["length", "name", "nope"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
+  });
+
   test("gates the fs read's Buffer brand on a typed read plus an observable brand", () => {
     const bytes = { kind: "bytes" as const, elem: "u8" as const };
     const data = { kind: "varRef" as const, localId: "data", type: bytes, loc };
@@ -287,5 +343,60 @@ describe("runtime feature snapshots", () => {
       expr: { kind: "libCall", fn: "buffer.isBranded", args: [], type: BOOL, loc },
     });
     expect(moduleRuntimeFeatures(observationOnly).fsBufferBrand).toBe(false);
+  });
+
+  test("reaches bytes through nested and recursive declarations", () => {
+    const bytes = { kind: "bytes" as const, elem: "u8" as const };
+    const boxedShape = (records: NonNullable<IrModule["records"]>, shapeId: string): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "libCall", fn: "fs.readFileSyncBytes", args: [], type: bytes, loc },
+      });
+      mod.records = records;
+      const shape = { kind: "record" as const, shapeId };
+      mod.functions[0]!.locals.push({ id: "shape", name: "shape", mutable: false, type: shape });
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "dynFrom",
+          type: DYN,
+          loc,
+          value: { kind: "varRef", localId: "shape", type: shape, loc },
+        },
+      });
+      return mod;
+    };
+    // A record holding a record that holds bytes.
+    const nested = boxedShape(
+      [
+        { id: "r0", fields: [{ name: "inner", type: { kind: "record", shapeId: "r1" } }] },
+        { id: "r1", fields: [{ name: "data", type: bytes }] },
+      ],
+      "r0",
+    );
+    expect(moduleRuntimeFeatures(nested).fsBufferBrand).toBe(true);
+    // A record that refers to itself and holds bytes.
+    const recursive = boxedShape(
+      [
+        {
+          id: "r0",
+          fields: [
+            { name: "next", type: { kind: "record", shapeId: "r0" } },
+            { name: "data", type: bytes },
+          ],
+        },
+      ],
+      "r0",
+    );
+    expect(moduleRuntimeFeatures(recursive).fsBufferBrand).toBe(true);
+    // A record cycle that never reaches bytes.
+    const empty = boxedShape(
+      [{ id: "r0", fields: [{ name: "next", type: { kind: "record", shapeId: "r0" } }] }],
+      "r0",
+    );
+    expect(moduleRuntimeFeatures(empty).fsBufferBrand).toBe(false);
   });
 });

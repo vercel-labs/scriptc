@@ -48,6 +48,7 @@
 #include "scr_runtime.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <math.h> /* INFINITY — the Agent's maxSockets default */
 #include <stdio.h>
 #include <stdlib.h>
@@ -238,9 +239,10 @@ struct ScrHttpReq {
   bool ended; /* body complete (or connection dead): data/end drop */
   bool end_consumed; /* 'end' fired on a body read through data listeners or a pipe */
   bool enc_utf8; /* setEncoding('utf8'): 'data' delivers strings */
-  bool http10;   /* the parsed request/status line's version (httpVersion) */
+  bool http10;   /* the parsed version is not 1.1: no default keep-alive or chunking */
+  char version[2]; /* the parsed version's digits ("09", "10", "11", "20") */
   bool http2;    /* an h2 compat request (httpVersion "2.0") */
-  bool aborted;  /* h2: the stream died with our writable side open */
+  bool aborted;  /* the connection or h2 stream died with the response unfinished */
   bool close_queued;
   bool close_emitted; /* settled: err/close listeners dropped */
   bool join_dup; /* joinDuplicateHeaders: repeated names read joined ", " */
@@ -769,8 +771,8 @@ void scr_http_req_on_close(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once) {
   scr_net_ls_add(&r->close_ls, cb, NULL, once);
 }
 
-/* req.on('aborted') — the h2 compat event (an http/1 request registers
- * too; the parser lane never fires it, matching its 'error'-only story). */
+/* req.on('aborted'): the connection (or the h2 stream) closed before the
+ * response finished. */
 void scr_http_req_on_aborted(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once) {
   if (r->close_emitted || r->aborted) {
     scr_closure_release(cb);
@@ -1041,6 +1043,7 @@ struct ScrHttpRes {
   size_t strict_bytes_written; /* Node counts UTF-8 bytes, not JS characters */
   bool keep_alive; /* the REQUEST's verdict; Connection: close overrides */
   bool destroyed; /* res.destroy()/teardown — res.destroyed (true in 'close') */
+  bool unflushed; /* the socket closed before the body went out: no 'finish' */
   bool socket_detached; /* finish/close removes the response's socket view */
   /* cork()/uncork(): corked counts the nesting (res.writableCorked);
    * writes while corked coalesce in cork_buf and flush as ONE write when
@@ -2435,14 +2438,28 @@ static void scr_http_queue_req_aborted(ScrHttpReq *req) {
  * body went out (the handler's synchronous tail runs first, Node's
  * deferred emit — the res 'close' precedent). */
 static void scr_http_queue_res_finish(ScrHttpRes *res) {
-  if (res->finish_queued) return;
+  if (res->finish_queued || res->unflushed) return;
   res->finish_queued = true;
   scr_http_emit_push(SCR_HTTP_EMIT_RES_FINISH, scr_http_res_retain(res));
+}
+
+/* The response's socket closed before its body went out: 'finish' and the
+ * end(cb) callbacks never fire, as in Node, so the ones registered so far
+ * are released now (a callback that captures the response would otherwise
+ * keep it alive) and later ones are not kept. */
+static void scr_http_res_mark_unflushed(ScrHttpRes *res) {
+  res->unflushed = true;
+  scr_net_ls_drop(&res->finish_ls);
+  scr_net_ls_drop(&res->endcb_ls);
 }
 
 /* res.on('finish', cb): fires deferred once the body went out, after the
  * end(cb) callbacks and after the response detached its socket. */
 void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
+  if (r->unflushed) {
+    scr_closure_release(cb);
+    return;
+  }
   scr_net_ls_add(&r->finish_ls, cb, NULL, true);
   if (r->finished) scr_http_queue_res_finish(r);
 }
@@ -2464,6 +2481,10 @@ void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
     scr_net_ls_add(&now, cb, NULL, true);
     scr_net_fire0_this(&now, r, SCR_DYNH_HTTP_RES);
     scr_net_ls_drop(&now);
+    return;
+  }
+  if (r->unflushed) {
+    scr_closure_release(cb);
     return;
   }
   scr_net_ls_add(&r->endcb_ls, cb, NULL, true);
@@ -2708,10 +2729,407 @@ static void scr_http_conn_uncount(ScrHttpConn *conn) {
   scr_http_sock_count_release(k);
 }
 
+/* ── HTTP/1 message checks ───────────────────────────────────────────────
+ *
+ * The checks Node's parser (llhttp, strict) applies to a message head:
+ * the request line's method, target and version, the status line, and each
+ * header line's name, value and line ending. scr_http_head_scan walks the
+ * bytes received so far; it finds the end of a valid head, reports that a
+ * valid prefix needs more bytes, or reports the first invalid byte with
+ * llhttp's error code and reason. A client error's message is
+ * "Parse Error: <reason>"; a server answers any of them with 400 Bad
+ * Request. */
+
+typedef struct {
+  const char *code;
+  const char *reason;
+} ScrHttpParseError;
+
+enum { SCR_HTTP_SCAN_MORE, SCR_HTTP_SCAN_DONE, SCR_HTTP_SCAN_ERROR };
+
+static int scr_http_scan_fail(ScrHttpParseError *err, const char *code, const char *reason) {
+  err->code = code;
+  err->reason = reason;
+  return SCR_HTTP_SCAN_ERROR;
+}
+
+/* Whether buf[0..n) names one of http.METHODS, the methods llhttp accepts
+ * in a request line (`whole`), or starts one. */
+static bool scr_http_method_match(const char *buf, size_t n, bool whole) {
+  for (size_t i = 0; i < sizeof scr_http_methods_table / sizeof scr_http_methods_table[0]; i++) {
+    size_t len = strlen(scr_http_methods_table[i]);
+    if (whole ? len == n : len >= n) {
+      if (memcmp(scr_http_methods_table[i], buf, n) == 0) return true;
+    }
+  }
+  return false;
+}
+
+/* "HTTP/x.y" at buf[i..]: llhttp accepts 0.9, 1.0, 1.1 and 2.0, and only
+ * 1.1 keeps a connection alive and frames bodies by default (*http10 is
+ * false only for 1.1). Answers MORE, DONE (i advanced past the version)
+ * or ERROR. */
+static int scr_http_scan_version(const char *buf, size_t len, size_t *i, bool *http10,
+                                 ScrHttpParseError *err) {
+  static const char prefix[] = "HTTP/";
+  for (size_t k = 0; k < 5; k++) {
+    if (*i + k >= len) return SCR_HTTP_SCAN_MORE;
+    if (buf[*i + k] != prefix[k]) return scr_http_scan_fail(err, "HPE_INVALID_CONSTANT", "Expected HTTP/, RTSP/ or ICE/");
+  }
+  if (*i + 8 > len) return SCR_HTTP_SCAN_MORE;
+  char major = buf[*i + 5], dot = buf[*i + 6], minor = buf[*i + 7];
+  if (major < '0' || major > '9') return scr_http_scan_fail(err, "HPE_INVALID_VERSION", "Invalid major version");
+  if (dot != '.') return scr_http_scan_fail(err, "HPE_INVALID_VERSION", "Expected dot");
+  if (minor < '0' || minor > '9') return scr_http_scan_fail(err, "HPE_INVALID_VERSION", "Invalid minor version");
+  bool known = (major == '0' && minor == '9') || (major == '1' && (minor == '0' || minor == '1')) ||
+               (major == '2' && minor == '0');
+  if (!known) return scr_http_scan_fail(err, "HPE_INVALID_VERSION", "Invalid HTTP version");
+  *http10 = !(major == '1' && minor == '1');
+  *i += 8;
+  return SCR_HTTP_SCAN_DONE;
+}
+
+/* A request target byte: visible ASCII (llhttp rejects CTLs, space, DEL
+ * and bytes above 0x7e in strict mode). */
+static bool scr_http_url_char(unsigned char ch) { return ch > 0x20 && ch < 0x7f; }
+
+/* A header value byte: HTAB, visible ASCII, space and obs-text. */
+static bool scr_http_value_char(unsigned char ch) {
+  return ch == '\t' || (ch >= 0x20 && ch != 0x7f);
+}
+
+/* Whether every byte of p[0..n) is a header value byte. */
+static bool scr_http_value_span(const char *p, size_t n) {
+  unsigned bad = 0;
+  for (size_t k = 0; k < n; k++) {
+    unsigned char ch = (unsigned char)p[k];
+    bad |= (unsigned)((ch < 0x20 && ch != '\t') | (ch == 0x7f));
+  }
+  return bad == 0;
+}
+
+/* The header lines at buf[i..] up to and including the blank line. On
+ * DONE *end is the offset after the head. */
+static int scr_http_scan_fields(const char *buf, size_t len, size_t i, bool first_line_of_head,
+                                size_t *end, ScrHttpParseError *err) {
+  bool first = first_line_of_head;
+  for (;;) {
+    if (i >= len) return SCR_HTTP_SCAN_MORE;
+    char ch = buf[i];
+    if (ch == '\r') {
+      if (i + 1 >= len) return SCR_HTTP_SCAN_MORE;
+      if (buf[i + 1] != '\n') return scr_http_scan_fail(err, "HPE_STRICT", "Expected LF after headers");
+      *end = i + 2;
+      return SCR_HTTP_SCAN_DONE;
+    }
+    if (ch == ' ' || ch == '\t') {
+      return first ? scr_http_scan_fail(err, "HPE_UNEXPECTED_SPACE", "Unexpected space after start line")
+                   : scr_http_scan_fail(err, "HPE_INVALID_HEADER_TOKEN", "Unexpected whitespace after header value");
+    }
+    first = false;
+    /* field-name ":" */
+    size_t name = i;
+    const char *colon = memchr(buf + i, ':', len - i);
+    if (colon != NULL && scr_http_token_span(buf + i, (size_t)(colon - (buf + i)))) i = (size_t)(colon - buf);
+    else
+      while (i < len && scr_http_token_char((unsigned char)buf[i])) i++;
+    if (i >= len) return SCR_HTTP_SCAN_MORE;
+    if (buf[i] != ':') {
+      bool field = (buf[i] == ' ' && i > name) || (buf[i] == '\n' && i == name);
+      return scr_http_scan_fail(err, "HPE_INVALID_HEADER_TOKEN",
+                                field ? "Invalid header field char" : "Invalid header token");
+    }
+    if (i == name) return scr_http_scan_fail(err, "HPE_INVALID_HEADER_TOKEN", "Invalid header token");
+    i++;
+    /* field-value CRLF: a complete line is checked as one span; the
+     * byte loop finds where a bad byte or the end of the input is */
+    const char *cr = memchr(buf + i, '\r', len - i);
+    if (cr != NULL && scr_http_value_span(buf + i, (size_t)(cr - (buf + i)))) i = (size_t)(cr - buf);
+    else
+      while (i < len && scr_http_value_char((unsigned char)buf[i])) i++;
+    if (i >= len) return SCR_HTTP_SCAN_MORE;
+    if (buf[i] == '\n') return scr_http_scan_fail(err, "HPE_CR_EXPECTED", "Missing expected CR after header value");
+    if (buf[i] != '\r') return scr_http_scan_fail(err, "HPE_INVALID_HEADER_TOKEN", "Invalid header value char");
+    if (i + 1 >= len) return SCR_HTTP_SCAN_MORE;
+    if (buf[i + 1] != '\n') return scr_http_scan_fail(err, "HPE_LF_EXPECTED", "Missing expected LF after header value");
+    i += 2;
+  }
+}
+
+/* The request line at buf[0..len): METHOD SP+ target SP HTTP/1.x CRLF. On
+ * DONE *line_end is the offset after the CRLF. */
+static int scr_http_scan_request_line(const char *buf, size_t len, size_t *line_end, bool *http10,
+                                      ScrHttpParseError *err) {
+  size_t i = 0;
+  while (i < len && ((buf[i] >= 'A' && buf[i] <= 'Z') || buf[i] == '-')) i++;
+  if (i >= len) {
+    return scr_http_method_match(buf, i, false) ? SCR_HTTP_SCAN_MORE
+                                                : scr_http_scan_fail(err, "HPE_INVALID_METHOD", "Invalid method encountered");
+  }
+  if (buf[i] != ' ' || !scr_http_method_match(buf, i, true))
+    return scr_http_scan_fail(err, "HPE_INVALID_METHOD", "Invalid method encountered");
+  bool connect = i == 7 && memcmp(buf, "CONNECT", 7) == 0;
+  while (i < len && buf[i] == ' ') i++;
+  if (i >= len) return SCR_HTTP_SCAN_MORE;
+  /* the target: origin form (/...), asterisk form, absolute form
+   * (scheme://...), or a CONNECT's authority form */
+  size_t target = i;
+  unsigned char first = (unsigned char)buf[i];
+  if (!connect && first != '/' && first != '*') {
+    size_t k = i;
+    while (k < len && ((buf[k] >= 'a' && buf[k] <= 'z') || (buf[k] >= 'A' && buf[k] <= 'Z'))) k++;
+    static const char sep[] = "://";
+    for (size_t s = 0; s < 3; s++) {
+      if (k + s >= len) return SCR_HTTP_SCAN_MORE;
+      if (k == i || buf[k + s] != sep[s])
+        return scr_http_scan_fail(err, "HPE_INVALID_URL", "Invalid characters in url");
+    }
+  }
+  while (i < len && scr_http_url_char((unsigned char)buf[i])) i++;
+  if (i >= len) return SCR_HTTP_SCAN_MORE;
+  if (i == target || buf[i] != ' ')
+    return scr_http_scan_fail(err, "HPE_INVALID_URL", "Invalid char in url path");
+  i++;
+  int r = scr_http_scan_version(buf, len, &i, http10, err);
+  if (r != SCR_HTTP_SCAN_DONE) return r;
+  if (i >= len) return SCR_HTTP_SCAN_MORE;
+  if (buf[i] != '\r') return scr_http_scan_fail(err, "HPE_INVALID_VERSION", "Expected CRLF after version");
+  if (i + 1 >= len) return SCR_HTTP_SCAN_MORE;
+  if (buf[i + 1] != '\n') return scr_http_scan_fail(err, "HPE_INVALID_VERSION", "Expected CRLF after version");
+  *line_end = i + 2;
+  return SCR_HTTP_SCAN_DONE;
+}
+
+/* The status line at buf[0..len): HTTP/1.x SP 3DIGIT [SP reason] CRLF. */
+static int scr_http_scan_status_line(const char *buf, size_t len, size_t *line_end, bool *http10,
+                                     ScrHttpParseError *err) {
+  size_t i = 0;
+  int r = scr_http_scan_version(buf, len, &i, http10, err);
+  if (r != SCR_HTTP_SCAN_DONE) return r;
+  if (i >= len) return SCR_HTTP_SCAN_MORE;
+  if (buf[i] != ' ') return scr_http_scan_fail(err, "HPE_INVALID_VERSION", "Expected space after version");
+  i++;
+  for (int d = 0; d < 3; d++, i++) {
+    if (i >= len) return SCR_HTTP_SCAN_MORE;
+    if (buf[i] < '0' || buf[i] > '9') return scr_http_scan_fail(err, "HPE_INVALID_STATUS", "Invalid status code");
+  }
+  if (i >= len) return SCR_HTTP_SCAN_MORE;
+  if (buf[i] >= '0' && buf[i] <= '9') return scr_http_scan_fail(err, "HPE_INVALID_STATUS", "Invalid response status");
+  if (buf[i] == ' ') {
+    /* the reason phrase: any bytes up to CR */
+    while (i < len && buf[i] != '\r' && buf[i] != '\n') i++;
+    if (i >= len) return SCR_HTTP_SCAN_MORE;
+  }
+  if (buf[i] == '\n') return scr_http_scan_fail(err, "HPE_CR_EXPECTED", "Missing expected CR after response line");
+  if (buf[i] != '\r') return scr_http_scan_fail(err, "HPE_INVALID_STATUS", "Invalid response status");
+  if (i + 1 >= len) return SCR_HTTP_SCAN_MORE;
+  if (buf[i + 1] != '\n') return scr_http_scan_fail(err, "HPE_STRICT", "Expected LF after response line");
+  *line_end = i + 2;
+  return SCR_HTTP_SCAN_DONE;
+}
+
+/* Content-Length and Transfer-Encoding, in header order, as llhttp checks
+ * them: Content-Length is digits (between the whitespace the header
+ * parser trimmed) and appears once; the two headers exclude each other;
+ * a request's Transfer-Encoding ends in chunked, and nothing follows a
+ * chunked coding. A response whose Transfer-Encoding does not end in
+ * chunked reads its body until the connection closes. Names are the
+ * lowercased header names. *content_length is -1 without the header. */
+static bool scr_http_framing_check(ScrStr *const *names, ScrStr *const *values, size_t n,
+                                   bool request, bool *chunked, long long *content_length,
+                                   ScrHttpParseError *err) {
+  bool have_te = false;
+  *chunked = false;
+  *content_length = -1;
+  for (size_t h = 0; h < n; h++) {
+    const ScrStr *name = names[h], *v = values[h];
+    if (name->len == 14 && memcmp(name->data, "content-length", 14) == 0) {
+      if (have_te) {
+        scr_http_scan_fail(err, "HPE_INVALID_CONTENT_LENGTH", "Content-Length can't be present with Transfer-Encoding");
+        return false;
+      }
+      if (*content_length >= 0) {
+        scr_http_scan_fail(err, "HPE_UNEXPECTED_CONTENT_LENGTH", "Duplicate Content-Length");
+        return false;
+      }
+      if (v->len == 0) {
+        scr_http_scan_fail(err, "HPE_INVALID_CONTENT_LENGTH", "Empty Content-Length");
+        return false;
+      }
+      unsigned long long value = 0;
+      for (size_t i = 0; i < v->len; i++) {
+        unsigned char ch = (unsigned char)v->data[i];
+        if (ch < '0' || ch > '9') {
+          scr_http_scan_fail(err, "HPE_INVALID_CONTENT_LENGTH", "Invalid character in Content-Length");
+          return false;
+        }
+        if (value > (ULLONG_MAX - (ch - '0')) / 10) {
+          scr_http_scan_fail(err, "HPE_INVALID_CONTENT_LENGTH", "Content-Length overflow");
+          return false;
+        }
+        value = value * 10 + (ch - '0');
+      }
+      *content_length = value > (unsigned long long)LLONG_MAX ? LLONG_MAX : (long long)value;
+    } else if (name->len == 17 && memcmp(name->data, "transfer-encoding", 17) == 0) {
+      if (*content_length >= 0) {
+        scr_http_scan_fail(err, "HPE_INVALID_TRANSFER_ENCODING", "Transfer-Encoding can't be present with Content-Length");
+        return false;
+      }
+      if (v->len == 0) {
+        scr_http_scan_fail(err, "HPE_INVALID_TRANSFER_ENCODING", "Empty Transfer-Encoding");
+        return false;
+      }
+      if (request && *chunked) {
+        scr_http_scan_fail(err, "HPE_INVALID_TRANSFER_ENCODING", "Invalid `Transfer-Encoding` header value");
+        return false;
+      }
+      have_te = true;
+      *chunked = false;
+      /* the codings: comma-separated tokens with optional whitespace */
+      for (size_t i = 0; i <= v->len;) {
+        size_t start = i;
+        while (i < v->len && v->data[i] != ',') i++;
+        size_t a = start, b = i;
+        while (a < b && (v->data[a] == ' ' || v->data[a] == '\t')) a++;
+        while (b > a && (v->data[b - 1] == ' ' || v->data[b - 1] == '\t')) b--;
+        if (*chunked) {
+          /* a coding after chunked */
+          if (request) {
+            scr_http_scan_fail(err, "HPE_INVALID_TRANSFER_ENCODING", "Invalid `Transfer-Encoding` header value");
+            return false;
+          }
+          *chunked = false;
+        }
+        bool is_chunked = b - a == 7;
+        for (size_t k = 0; k < 7 && is_chunked; k++)
+          is_chunked = tolower((unsigned char)v->data[a + k]) == "chunked"[k];
+        if (is_chunked) *chunked = true;
+        if (i == v->len) break;
+        i++; /* the comma */
+      }
+    }
+  }
+  if (request && have_te && !*chunked) {
+    scr_http_scan_fail(err, "HPE_INVALID_TRANSFER_ENCODING", "Request has invalid `Transfer-Encoding`");
+    return false;
+  }
+  return true;
+}
+
+/* Node's bound on one chunk's extension bytes (names and values). */
+#define SCR_HTTP_MAX_CHUNK_EXTENSIONS 16384
+
+static int scr_http_scan_chunk_line_end(const char *buf, size_t len, size_t i, const char *after,
+                                        size_t *line_end, ScrHttpParseError *err) {
+  if (i + 1 >= len) return SCR_HTTP_SCAN_MORE;
+  if (buf[i + 1] != '\n') return scr_http_scan_fail(err, "HPE_STRICT", after);
+  *line_end = i + 2;
+  return SCR_HTTP_SCAN_DONE;
+}
+
+/* The scan of a chunk line's extensions needs more input: MORE while the
+ * extension bytes so far are within the limit, the overflow error past it. */
+static int scr_http_scan_chunk_ext_more(size_t ext_bytes, ScrHttpParseError *err) {
+  if (ext_bytes > SCR_HTTP_MAX_CHUNK_EXTENSIONS)
+    return scr_http_scan_fail(err, "HPE_CHUNK_EXTENSIONS_OVERFLOW", "Chunk extensions overflow");
+  return SCR_HTTP_SCAN_MORE;
+}
+
+/* A chunk-size line at buf[0..len): 1*HEXDIG *( ";" name [ "=" value ] )
+ * CRLF, each value a token or a quoted string. On DONE *size is the chunk
+ * size and *line_end the offset after the CRLF. */
+static int scr_http_scan_chunk_size(const char *buf, size_t len, unsigned long long *size,
+                                    size_t *line_end, ScrHttpParseError *err) {
+  size_t i = 0;
+  unsigned long long value = 0;
+  for (; i < len; i++) {
+    unsigned char ch = (unsigned char)buf[i];
+    int digit = ch >= '0' && ch <= '9' ? ch - '0'
+              : ch >= 'a' && ch <= 'f' ? ch - 'a' + 10
+              : ch >= 'A' && ch <= 'F' ? ch - 'A' + 10
+                                       : -1;
+    if (digit < 0) break;
+    if (value >> 60) return scr_http_scan_fail(err, "HPE_INVALID_CHUNK_SIZE", "Chunk size overflow");
+    value = value * 16 + (unsigned)digit;
+  }
+  if (i >= len) return SCR_HTTP_SCAN_MORE;
+  if (i == 0) return scr_http_scan_fail(err, "HPE_INVALID_CHUNK_SIZE", "Invalid character in chunk size");
+  *size = value;
+  if (buf[i] == '\r') return scr_http_scan_chunk_line_end(buf, len, i, "Expected LF after chunk size", line_end, err);
+  if (buf[i] == '\n') return scr_http_scan_fail(err, "HPE_CR_EXPECTED", "Missing expected CR after chunk size");
+  if (buf[i] != ';') return scr_http_scan_fail(err, "HPE_INVALID_CHUNK_SIZE", "Invalid character in chunk size");
+  size_t ext_bytes = 0;
+  while (buf[i] == ';') {
+    i++;
+    size_t name = i;
+    while (i < len && scr_http_token_char((unsigned char)buf[i])) i++;
+    ext_bytes += i - name;
+    if (ext_bytes > SCR_HTTP_MAX_CHUNK_EXTENSIONS)
+      return scr_http_scan_fail(err, "HPE_CHUNK_EXTENSIONS_OVERFLOW", "Chunk extensions overflow");
+    if (i >= len) return SCR_HTTP_SCAN_MORE;
+    if (i == name) return scr_http_scan_fail(err, "HPE_STRICT", "Invalid character in chunk extensions");
+    if (buf[i] == '=') {
+      i++;
+      size_t start = i;
+      if (i < len && buf[i] == '"') {
+        /* an open quoted value counts toward the limit before the scan
+         * waits for more input */
+        for (i++;; i++) {
+          if (i >= len) return scr_http_scan_chunk_ext_more(ext_bytes + (i - start), err);
+          unsigned char ch = (unsigned char)buf[i];
+          if (ch == '"') {
+            i++;
+            break;
+          }
+          if (ch == '\\') {
+            i++;
+            if (i >= len) return scr_http_scan_chunk_ext_more(ext_bytes + (i - start), err);
+            ch = (unsigned char)buf[i];
+            if (ch != '\t' && (ch < 0x20 || ch == 0x7f))
+              return scr_http_scan_fail(err, "HPE_STRICT", "Invalid quoted-pair in chunk extensions quoted value");
+            continue;
+          }
+          if (ch != '\t' && (ch < 0x20 || ch == 0x7f))
+            return scr_http_scan_fail(err, "HPE_STRICT", "Invalid character in chunk extensions quoted value");
+        }
+      } else {
+        while (i < len && scr_http_token_char((unsigned char)buf[i])) i++;
+      }
+      ext_bytes += i - start;
+      if (ext_bytes > SCR_HTTP_MAX_CHUNK_EXTENSIONS)
+        return scr_http_scan_fail(err, "HPE_CHUNK_EXTENSIONS_OVERFLOW", "Chunk extensions overflow");
+      if (i >= len) return SCR_HTTP_SCAN_MORE;
+      if (i == start || (buf[i] != ';' && buf[i] != '\r'))
+        return scr_http_scan_fail(err, "HPE_STRICT", "Invalid character in chunk extensions value");
+    } else if (buf[i] != ';' && buf[i] != '\r') {
+      return scr_http_scan_fail(err, "HPE_STRICT", "Invalid character in chunk extensions name");
+    }
+  }
+  return scr_http_scan_chunk_line_end(buf, len, i, "Expected LF after chunk extensions", line_end, err);
+}
+
+/* A message head at buf[0..len): the request or status line, the header
+ * lines and the blank line, after the CR and LF bytes llhttp skips before
+ * a start line. On DONE the head is buf[*skip .. *skip + *head_len). */
+static int scr_http_head_scan(const char *buf, size_t len, bool response, size_t *skip,
+                              size_t *head_len, ScrHttpParseError *err) {
+  size_t s = 0;
+  while (s < len && (buf[s] == '\r' || buf[s] == '\n')) s++;
+  *skip = s;
+  if (s >= len) return SCR_HTTP_SCAN_MORE;
+  size_t line_end = 0;
+  bool http10 = false;
+  int r = response ? scr_http_scan_status_line(buf + s, len - s, &line_end, &http10, err)
+                   : scr_http_scan_request_line(buf + s, len - s, &line_end, &http10, err);
+  if (r != SCR_HTTP_SCAN_DONE) return r;
+  return scr_http_scan_fields(buf + s, len - s, line_end, true, head_len, err);
+}
+
 /* Client-mode forward declarations (implementations live with the client
  * below the server parser). */
-static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len);
+static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHttpParseError *err);
 static void scr_http_client_head_overflow(ScrHttpConn *conn);
+static void scr_http_client_parse_error(ScrHttpConn *conn, const ScrHttpParseError *err);
 
 /* The maxHeaderSize bound (target or status message plus header names and
  * values), and the raw-byte bound that backs it while a head is still
@@ -2848,6 +3266,7 @@ static void scr_http_conn_drop_request(ScrHttpConn *conn, bool fire_end) {
     conn->req = NULL;
   }
   if (conn->res) {
+    if (!conn->res->finished) scr_http_res_mark_unflushed(conn->res);
     conn->res->conn = NULL;
     scr_http_res_release(conn->res);
     conn->res = NULL;
@@ -2966,11 +3385,13 @@ static void scr_http_req_add_trailer(ScrHttpReq *r, const char *name, size_t nle
 }
 
 /* Parser errors answer Node's fixed responses and close: 400 for
- * malformed input, 431 when a head or trailer block exceeds the field or
- * byte bound. Node's lenient spots (bare LF line endings, obsolete
- * folding) are NOT accepted; SEMANTICS.md states the bound. */
+ * malformed input, 413 when a chunk's extensions exceed Node's bound, and
+ * 431 when a head or trailer block exceeds the field or byte bound. */
 static void scr_http_conn_reject(ScrHttpConn *conn, const char *response, size_t len) {
-  scr_net_sock_write_native(conn->sock, response, len);
+  /* Node writes the response only when nothing was written on the
+   * connection yet (socketOnError's bytesWritten check): after an earlier
+   * response on a kept-alive connection it only closes */
+  if (scr_net_sock_bytes_written(conn->sock) == 0) scr_net_sock_write_native(conn->sock, response, len);
   scr_net_sock_end(conn->sock);
   conn->len = 0;
   scr_http_conn_drop_request(conn, false);
@@ -2985,6 +3406,19 @@ static void scr_http_conn_header_overflow(ScrHttpConn *conn) {
   static const char overflow[] =
       "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n";
   scr_http_conn_reject(conn, overflow, sizeof overflow - 1);
+}
+
+/* A message that fails the parser's checks: the client's request errors
+ * with the parse error; the server answers it. */
+static void scr_http_conn_parse_failed(ScrHttpConn *conn, const ScrHttpParseError *err) {
+  if (conn->client_mode) {
+    scr_http_client_parse_error(conn, err);
+  } else if (strcmp(err->code, "HPE_CHUNK_EXTENSIONS_OVERFLOW") == 0) {
+    static const char large[] = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n";
+    scr_http_conn_reject(conn, large, sizeof large - 1);
+  } else {
+    scr_http_conn_bad_request(conn);
+  }
 }
 
 /* Node answers a missing HTTP/1.1 Host through ServerResponse rather than
@@ -3105,17 +3539,17 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   const char *buf = conn->buf;
   const char *line_end = memchr(buf, '\r', head_len);
   if (!line_end || line_end + 1 >= buf + head_len || line_end[1] != '\n') return false;
-  /* METHOD SP request-target SP HTTP/1.x */
+  /* METHOD SP+ request-target SP HTTP/1.x */
   const char *sp1 = memchr(buf, ' ', (size_t)(line_end - buf));
   if (!sp1) return false;
-  const char *sp2 = memchr(sp1 + 1, ' ', (size_t)(line_end - sp1 - 1));
+  const char *target = sp1 + 1;
+  while (target < line_end && *target == ' ') target++;
+  const char *sp2 = memchr(target, ' ', (size_t)(line_end - target));
   if (!sp2) return false;
   const char *ver = sp2 + 1;
   size_t verlen = (size_t)(line_end - ver);
-  bool http10;
-  if (verlen == 8 && memcmp(ver, "HTTP/1.1", 8) == 0) http10 = false;
-  else if (verlen == 8 && memcmp(ver, "HTTP/1.0", 8) == 0) http10 = true;
-  else return false;
+  if (verlen != 8 || memcmp(ver, "HTTP/", 5) != 0) return false;
+  bool http10 = !(ver[5] == '1' && ver[7] == '1');
 
   ScrHttpReq *req = calloc(1, sizeof *req);
   if (!req) scr_http_oom();
@@ -3129,8 +3563,10 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   scr_http_live++;
 #endif
   req->method = scr_str_new(buf, (size_t)(sp1 - buf));
-  req->url = scr_str_new(sp1 + 1, (size_t)(sp2 - sp1 - 1));
+  req->url = scr_str_new(target, (size_t)(sp2 - target));
   req->http10 = http10;
+  req->version[0] = ver[5];
+  req->version[1] = ver[7];
 
   /* header lines until the blank line */
   const char *p = line_end + 2;
@@ -3169,21 +3605,25 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   conn->trailer_bytes = 0;
   conn->trailer_fields = 0;
 
-  /* framing: chunked wins over Content-Length (RFC 9112) */
+  /* framing: Content-Length and Transfer-Encoding as the parser checks
+   * them (a failed check is the 400) */
   bool chunked = false;
   long long content_length = 0;
+  ScrHttpParseError framing = {NULL, NULL};
+  if (!scr_http_framing_check(req->hnames, req->hvalues, req->nheaders, true, &chunked,
+                              &content_length, &framing)) {
+    *overflow = false;
+    scr_http_req_release(req);
+    return false;
+  }
+  if (content_length < 0) content_length = 0;
   bool req_keep_alive = !http10;
   bool has_upgrade_hdr = false;
   bool conn_upgrade_token = false;
   for (size_t i = 0; i < req->nheaders; i++) {
     const ScrStr *n = req->hnames[i];
     const ScrStr *v = req->hvalues[i];
-    if (n->len == 17 && memcmp(n->data, "transfer-encoding", 17) == 0) {
-      if (v->len >= 7 && strstr(v->data, "chunked") != NULL) chunked = true;
-    } else if (n->len == 14 && memcmp(n->data, "content-length", 14) == 0) {
-      content_length = atoll(v->data);
-      if (content_length < 0) content_length = 0;
-    } else if (n->len == 7 && memcmp(n->data, "upgrade", 7) == 0) {
+    if (n->len == 7 && memcmp(n->data, "upgrade", 7) == 0) {
       has_upgrade_hdr = true;
     } else if (n->len == 10 && memcmp(n->data, "connection", 10) == 0) {
       /* token scan, case-insensitive enough for close/keep-alive */
@@ -3381,26 +3821,24 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       }
       /* between requests, or awaiting a head */
       if (conn->len == 0) return;
-      /* find CRLFCRLF */
-      char *hit = NULL;
-      if (conn->len >= 4) {
-        for (size_t i = 0; i + 3 < conn->len; i++) {
-          if (conn->buf[i] == '\r' && conn->buf[i + 1] == '\n' && conn->buf[i + 2] == '\r' &&
-              conn->buf[i + 3] == '\n') {
-            hit = conn->buf + i;
-            break;
-          }
-        }
+      ScrHttpParseError err = {NULL, NULL};
+      size_t skip = 0, head_len = 0;
+      int scan = scr_http_head_scan(conn->buf, conn->len, conn->client_mode, &skip, &head_len, &err);
+      if (skip > 0) {
+        /* the CR/LF bytes before a start line */
+        memmove(conn->buf, conn->buf + skip, conn->len - skip);
+        conn->len -= skip;
       }
-      if (!hit) {
+      if (scan != SCR_HTTP_SCAN_DONE) {
         if (conn->len > scr_http_conn_raw_limit(conn)) {
           conn->header_overflow = true;
           if (conn->client_mode) scr_http_client_head_overflow(conn);
           else scr_http_conn_header_overflow(conn);
+        } else if (scan == SCR_HTTP_SCAN_ERROR) {
+          scr_http_conn_parse_failed(conn, &err);
         }
         return;
       }
-      size_t head_len = (size_t)(hit - conn->buf) + 4;
       if (head_len > scr_http_conn_raw_limit(conn)) {
         conn->header_overflow = true;
         if (conn->client_mode) scr_http_client_head_overflow(conn);
@@ -3408,8 +3846,9 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
         return;
       }
       if (conn->client_mode) {
-        if (!scr_http_client_parse_head(conn, head_len)) {
-          scr_http_client_head_overflow(conn); /* malformed: hang up */
+        if (!scr_http_client_parse_head(conn, head_len, &err)) {
+          if (err.code != NULL) scr_http_client_parse_error(conn, &err);
+          else scr_http_client_head_overflow(conn);
         }
         if (scr_exc_pending()) return;
         continue;
@@ -3438,35 +3877,26 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       continue;
     }
     if (conn->state == SCR_HTTP_CHUNK_SIZE) {
-      char *eol = NULL;
-      for (size_t i = 0; i + 1 < conn->len; i++) {
-        if (conn->buf[i] == '\r' && conn->buf[i + 1] == '\n') {
-          eol = conn->buf + i;
-          break;
+      ScrHttpParseError err = {NULL, NULL};
+      unsigned long long size = 0;
+      size_t consumed = 0;
+      int scan = scr_http_scan_chunk_size(conn->buf, conn->len, &size, &consumed, &err);
+      if (scan == SCR_HTTP_SCAN_MORE) {
+        /* leading zeros do not change a chunk size and the parser accepts
+         * any number of them; dropping all but one of a long run keeps it
+         * from growing the buffer */
+        size_t zeros = 0;
+        while (zeros < conn->len && conn->buf[zeros] == '0') zeros++;
+        if (zeros > 64) {
+          memmove(conn->buf, conn->buf + zeros - 1, conn->len - (zeros - 1));
+          conn->len -= zeros - 1;
         }
-      }
-      if (!eol) return;
-      size_t size = 0;
-      bool any = false;
-      for (char *p = conn->buf; p < eol; p++) {
-        char c = *p;
-        if (c == ';') break; /* chunk extensions: ignored */
-        int digit;
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-        else {
-          scr_http_conn_bad_request(conn);
-          return;
-        }
-        size = size * 16 + (size_t)digit;
-        any = true;
-      }
-      if (!any) {
-        scr_http_conn_bad_request(conn);
         return;
       }
-      size_t consumed = (size_t)(eol - conn->buf) + 2;
+      if (scan == SCR_HTTP_SCAN_ERROR) {
+        scr_http_conn_parse_failed(conn, &err);
+        return;
+      }
       memmove(conn->buf, conn->buf + consumed, conn->len - consumed);
       conn->len -= consumed;
       if (size == 0) {
@@ -3489,9 +3919,10 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       continue;
     }
     if (conn->state == SCR_HTTP_CHUNK_CRLF) {
-      if (conn->len < 2) return;
+      if (conn->len < 1 || (conn->buf[0] == '\r' && conn->len < 2)) return;
       if (conn->buf[0] != '\r' || conn->buf[1] != '\n') {
-        scr_http_conn_bad_request(conn);
+        ScrHttpParseError err = {"HPE_STRICT", "Expected LF after chunk data"};
+        scr_http_conn_parse_failed(conn, &err);
         return;
       }
       memmove(conn->buf, conn->buf + 2, conn->len - 2);
@@ -3509,7 +3940,15 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
     }
     if (conn->state == SCR_HTTP_CHUNK_TRAILER) {
       /* One complete field per pass; preserve wire case/order and keep
-       * trailers separate from the head until 'end' fires. */
+       * trailers separate from the head until 'end' fires. The section
+       * received so far passes the header-line checks first. */
+      if (conn->len == 0) return;
+      ScrHttpParseError err = {NULL, NULL};
+      size_t section_end = 0;
+      if (scr_http_scan_fields(conn->buf, conn->len, 0, false, &section_end, &err) == SCR_HTTP_SCAN_ERROR) {
+        scr_http_conn_parse_failed(conn, &err);
+        return;
+      }
       if (conn->len < 2) return;
       if (conn->buf[0] == '\r' && conn->buf[1] == '\n') {
         if (!scr_http_conn_trailer_fits(conn, 2, false)) {
@@ -3622,6 +4061,8 @@ static void scr_http_client_eof(ScrHttpConn *conn);
 static void scr_http_client_closed(ScrHttpConn *conn);
 static void scr_http_client_conn_free(ScrHttpConn *conn);
 
+static void scr_http_conn_abort_incoming(ScrHttpConn *conn);
+
 static void scr_http_conn_eof(void *ctx) {
   ScrHttpConn *conn = (ScrHttpConn *)ctx;
   if (conn->client_mode) {
@@ -3629,9 +4070,37 @@ static void scr_http_conn_eof(void *ctx) {
     return;
   }
   /* client FIN between requests: our half closes too (keep-alive over);
-   * mid-request it is an aborted request — everything settles quietly */
+   * with a response unfinished the request is aborted, as Node's
+   * socketOnEnd aborts it (httpAllowHalfOpen is off) */
+  scr_http_conn_abort_incoming(conn);
   scr_http_conn_drop_request(conn, false);
   conn->len = 0;
+}
+
+/* Node's abortIncoming: a request whose response is unfinished when its
+ * connection closes is destroyed with ECONNRESET "aborted". 'aborted'
+ * fires now, then the response's 'close', the request's 'error' (with a
+ * listener) and its 'close'. A request whose body was read to 'end' is
+ * already destroyed and only closes. */
+static void scr_http_conn_abort_incoming(ScrHttpConn *conn) {
+  ScrHttpReq *req = conn->req;
+  if (req == NULL || conn->res == NULL || conn->res->finished || req->end_consumed ||
+      req->close_emitted || req->destroyed)
+    return;
+  req->destroyed = true;
+  req->aborted = true;
+  /* the later events queue first: an 'aborted' listener can end the
+   * response, which detaches it from the connection and queues the
+   * request's 'close'; that response never sends its body */
+  ScrHttpRes *res = scr_http_res_retain(conn->res);
+  scr_http_res_mark_unflushed(res);
+  scr_http_queue_res_close(res);
+  scr_http_queue_req_aborted(req);
+  scr_http_req_retain(req);
+  scr_net_fire0_this(&req->aborted_ls, req, SCR_DYNH_HTTP_REQ);
+  scr_net_ls_drop(&req->aborted_ls);
+  scr_http_res_release(res);
+  scr_http_req_release(req);
 }
 
 static void scr_http_conn_closed(void *ctx) {
@@ -3640,6 +4109,7 @@ static void scr_http_conn_closed(void *ctx) {
     scr_http_client_closed(conn);
     return;
   }
+  scr_http_conn_abort_incoming(conn);
   scr_http_conn_drop_request(conn, false);
 }
 
@@ -3654,7 +4124,9 @@ static bool scr_http_client_sock_err(ScrHttpConn *conn, ScrStr *msg);
 static bool scr_http_conn_err(void *ctx, ScrStr *msg) {
   ScrHttpConn *conn = (ScrHttpConn *)ctx;
   if (conn->client_mode) return scr_http_client_sock_err(conn, msg);
-  if (conn->req && conn->req->err_ls.n > 0) {
+  if (conn->req != NULL && conn->res != NULL && !conn->res->finished) {
+    scr_http_conn_abort_incoming(conn);
+  } else if (conn->req && conn->req->err_ls.n > 0) {
     ScrStr *aborted = scr_str_new("aborted", 7);
     scr_net_fire_err_this(&conn->req->err_ls, aborted, conn->req, SCR_DYNH_HTTP_REQ);
     scr_str_release(aborted);
@@ -3887,15 +4359,38 @@ void scr_http_h2_req_data(ScrHttpReq *r, const char *data, size_t n) {
 
 void scr_http_h2_req_end(ScrHttpReq *r) { scr_http_req_finish(r, true); }
 
+/* httpVersion as "x.y": the parsed line's digits, or the h2 compat
+ * request's "2.0". */
+static void scr_http_req_version_digits(const ScrHttpReq *r, char text[3]) {
+  text[0] = r->version[0] ? r->version[0] : r->http2 ? '2' : '1';
+  text[1] = '.';
+  text[2] = r->version[0] ? r->version[1] : r->http2 || r->http10 ? '0' : '1';
+}
+
 /* Typed member reads shared by both parser lanes: the version triple and
  * the compat pair's aborted/complete flags. */
 ScrStr *scr_http_req_http_version(ScrHttpReq *r) {
-  return scr_str_new(r->http2 ? "2.0" : r->http10 ? "1.0" : "1.1", 3);
+  char text[3];
+  scr_http_req_version_digits(r, text);
+  return scr_str_new(text, 3);
 }
-double scr_http_req_http_version_major(ScrHttpReq *r) { return r->http2 ? 2 : 1; }
-double scr_http_req_http_version_minor(ScrHttpReq *r) { return r->http2 || r->http10 ? 0 : 1; }
+double scr_http_req_http_version_major(ScrHttpReq *r) {
+  char text[3];
+  scr_http_req_version_digits(r, text);
+  return text[0] - '0';
+}
+double scr_http_req_http_version_minor(ScrHttpReq *r) {
+  char text[3];
+  scr_http_req_version_digits(r, text);
+  return text[2] - '0';
+}
 bool scr_http_req_aborted_flag(ScrHttpReq *r) { return r->aborted; }
-bool scr_http_req_complete(ScrHttpReq *r) { return (r->ended || r->received) && !r->aborted; }
+/* An HTTP/1 message is complete once all of it arrived, aborted or not, as
+ * Node's IncomingMessage.complete is. */
+bool scr_http_req_complete(ScrHttpReq *r) {
+  if (r->h2_stream != NULL) return (r->ended || r->received) && !r->aborted;
+  return r->received;
+}
 
 /* The stream died with the response side open: 'aborted' fires NOW (the
  * teardown macrotask, Node's position), then the close rides the sweep. */
@@ -4918,7 +5413,7 @@ void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, boo
 /* Parses one complete response HEAD sitting at buf[0..head_len):
  * "HTTP/1.x SP status SP reason CRLF" then headers. Returns false on
  * malformed input (the caller hangs up). */
-static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len) {
+static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHttpParseError *err) {
   ScrHttpClientReq *c = conn->client;
   if (!c) return false;
   const char *buf = conn->buf;
@@ -4927,9 +5422,7 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len) {
   const char *sp1 = memchr(buf, ' ', (size_t)(line_end - buf));
   if (!sp1) return false;
   size_t verlen = (size_t)(sp1 - buf);
-  if (!(verlen == 8 && (memcmp(buf, "HTTP/1.1", 8) == 0 || memcmp(buf, "HTTP/1.0", 8) == 0))) {
-    return false;
-  }
+  if (verlen != 8 || memcmp(buf, "HTTP/", 5) != 0) return false;
   const char *st = sp1 + 1;
   int status = 0;
   int digits = 0;
@@ -4951,7 +5444,9 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len) {
 #endif
   res->method = scr_str_new("", 0);
   res->url = scr_str_new("", 0); /* Node: res.url is "" on client responses */
-  res->http10 = memcmp(buf, "HTTP/1.0", 8) == 0;
+  res->http10 = !(buf[5] == '1' && buf[7] == '1');
+  res->version[0] = buf[5];
+  res->version[1] = buf[7];
   {
     /* the reason phrase — res.statusMessage ("" when absent, Node) */
     const char *reason = st;
@@ -5007,19 +5502,15 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len) {
     return true;
   }
 
-  /* framing: HEAD requests and 204/304 responses have NO body; chunked
-   * wins over Content-Length; neither means EOF-delimited */
+  /* framing: HEAD requests and 204/304 responses have NO body; a
+   * Transfer-Encoding ending in chunked is chunked, another one or no
+   * framing header means EOF-delimited */
   bool chunked = false;
   long long content_length = -1;
-  for (size_t i = 0; i < res->nheaders; i++) {
-    const ScrStr *n = res->hnames[i];
-    const ScrStr *v = res->hvalues[i];
-    if (n->len == 17 && memcmp(n->data, "transfer-encoding", 17) == 0) {
-      if (strstr(v->data, "chunked") != NULL) chunked = true;
-    } else if (n->len == 14 && memcmp(n->data, "content-length", 14) == 0) {
-      content_length = atoll(v->data);
-      if (content_length < 0) content_length = 0;
-    }
+  if (!scr_http_framing_check(res->hnames, res->hvalues, res->nheaders, false, &chunked,
+                              &content_length, err)) {
+    scr_http_req_release(res);
+    return false;
   }
   bool head_req = c->method->len == 4 && memcmp(c->method->data, "HEAD", 4) == 0;
   bool no_body = head_req || status == 204 || status == 304;
@@ -5122,6 +5613,7 @@ static void scr_http_client_response_done(ScrHttpConn *conn) {
    * hint, otherwise the hint in milliseconds */
   double keep_alive_hint = res != NULL ? scr_http_response_keep_alive(res, c) : -2;
   if (res) {
+    res->received = true;
     scr_http_req_retain(res);
     scr_http_req_finish(res, true); /* fires 'end' */
   }
@@ -5260,6 +5752,37 @@ static void scr_http_client_head_overflow(ScrHttpConn *conn) {
   if (conn->client && conn->client->sock) scr_net_sock_destroy(conn->client->sock);
 }
 
+/* A response that fails the parser's checks: the request errors with
+ * "Parse Error: <reason>" and the parser's code, and the socket is
+ * destroyed, as in Node. */
+static void scr_http_client_parse_error(ScrHttpConn *conn, const ScrHttpParseError *err) {
+  conn->len = 0;
+  /* held across the error emit and the settle, which can detach the
+   * request from the connection */
+  ScrNetSocket *sock = scr_net_sock_retain(conn->sock);
+  ScrHttpClientReq *c = conn->client;
+  if (c != NULL && !c->response_done && !c->close_emitted) {
+    c->response_done = true;
+    char text[160];
+    int n = snprintf(text, sizeof text, "Parse Error: %s", err->reason);
+    ScrStr *msg = scr_str_new(text, (size_t)n);
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+    scr_error_set_code(e, err->code);
+    ScrError *saved = scr_event_error_payload;
+    scr_event_error_payload = c->destroy_error != NULL ? saved : e;
+    scr_http_client_error(c, msg);
+    scr_event_error_payload = saved;
+    scr_error_release(e);
+    scr_str_release(msg);
+    scr_http_client_settle_response(conn);
+    if (!scr_exc_pending()) scr_http_client_queue_close(c);
+  } else {
+    scr_http_client_premature(conn);
+  }
+  scr_net_sock_destroy(sock);
+  scr_net_sock_release(sock);
+}
+
 /* The client socket's idle timeout: 'timeout' on the request handle
  * (never destroys anything — Node; the caller destroys). */
 static void scr_http_client_sock_timeout(void *ctx) {
@@ -5300,6 +5823,18 @@ static void scr_http_client_conn_free(ScrHttpConn *conn) {
 }
 
 /* ── http.request / http.get ─────────────────────────────────────────── */
+
+/* +1: the method with ASCII lower-case letters upper-cased, as Node's
+ * ClientRequest sends and reports it. */
+static ScrStr *scr_http_method_upper(ScrStr *method /*borrowed*/) {
+  size_t i = 0;
+  while (i < method->len && !(method->data[i] >= 'a' && method->data[i] <= 'z')) i++;
+  if (i == method->len) return scr_str_retain(method);
+  ScrStr *upper = scr_str_new(method->data, method->len);
+  for (; i < upper->len; i++)
+    if (upper->data[i] >= 'a' && upper->data[i] <= 'z') upper->data[i] = (char)(upper->data[i] - 'a' + 'A');
+  return upper;
+}
 
 /* ClientRequest's path check: characters outside U+0021..U+00FF throw
  * ERR_UNESCAPED_CHARACTERS. In UTF-8, U+0080..U+00FF are the C2/C3 lead
@@ -5369,7 +5904,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
 #endif
   c->host = scr_str_retain(host);
   c->path = scr_str_retain(path);
-  c->method = scr_str_retain(method);
+  c->method = scr_http_method_upper(method);
   c->port = (int)port;
   c->default_port = default_port;
   size_t npairs = (size_t)scr_arr_len(header_pairs);
@@ -6421,13 +6956,15 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "httpVersion") == 0) {
     /* The parsed request/status line's version — the 1.0 tests read it;
      * the h2 compat request answers Node's "2.0". */
-    ScrStr *v = scr_str_new(r->http2 ? "2.0" : r->http10 ? "1.0" : "1.1", 3);
+    char text[3];
+    scr_http_req_version_digits(r, text);
+    ScrStr *v = scr_str_new(text, 3);
     ScrDyn *d = scr_dyn_new_str(v);
     scr_str_release(v);
     return d;
   }
-  if (strcmp(key, "httpVersionMajor") == 0) return scr_dyn_new_num(r->http2 ? 2 : 1);
-  if (strcmp(key, "httpVersionMinor") == 0) return scr_dyn_new_num(r->http2 ? 0 : r->http10 ? 0 : 1);
+  if (strcmp(key, "httpVersionMajor") == 0) return scr_dyn_new_num(scr_http_req_http_version_major(r));
+  if (strcmp(key, "httpVersionMinor") == 0) return scr_dyn_new_num(scr_http_req_http_version_minor(r));
   if (strcmp(key, "method") == 0) {
     ScrStr *s = scr_http_req_method(r);
     ScrDyn *d = scr_dyn_new_str(s);

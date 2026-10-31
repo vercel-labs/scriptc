@@ -4010,11 +4010,16 @@ export function lowerServerProperty(
         name === "httpVersionMajor" ? "http.reqHttpVersionMajor" : "http.reqHttpVersionMinor";
       return { kind: "libCall", fn, args: [receiver], type: F64, loc };
     }
-    if (name === "aborted" || name === "complete") {
-      // The compat pair's flags (Http2ServerRequest); an http/1 request
-      // answers aborted: false and complete-once-ended the same way.
+    if (name === "aborted" || name === "complete" || name === "destroyed") {
+      // aborted: the connection (or the h2 stream) closed before the
+      // response finished; complete: the whole message arrived.
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
-      const fn: IrLibFn = name === "aborted" ? "http.reqAborted" : "http.reqComplete";
+      const fn: IrLibFn =
+        name === "aborted"
+          ? "http.reqAborted"
+          : name === "complete"
+            ? "http.reqComplete"
+            : "http.reqDestroyed";
       return { kind: "libCall", fn, args: [receiver], type: BOOL, loc };
     }
     if (name === "rawHeaders" || name === "rawTrailers") {
@@ -4402,6 +4407,10 @@ export function lowerServerProperty(
     if (name === "writableFinished") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
       return { kind: "libCall", fn: "http.resWritableFinished", args: [receiver], type: BOOL, loc };
+    }
+    if (name === "destroyed") {
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+      return { kind: "libCall", fn: "http.resDestroyed", args: [receiver], type: BOOL, loc };
     }
     if (name === "sendDate" || name === "strictContentLength") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);

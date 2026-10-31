@@ -248,13 +248,21 @@ export function lowerCheckedDelegation(
   return { kind: "seqExpr", stmts, result, generatorDelegate: true, type: result.type, loc };
 }
 
-/** `yield* e` in an async generator: the async iterator protocol (a compiled
- * async generator, Symbol.asyncIterator's result, or a synchronous iterator
- * whose values are awaited). Each step's result is awaited, its values are
- * yielded, and the expression completes with the final result's value. An
- * abrupt completion at the yield (a consumer's return() or throw()) closes
- * the delegate through its return(), as for-await does; next() arguments
- * are not forwarded to the delegate. */
+/** `yield* e` in an async generator: the spec's delegation loop over the
+ * async iterator protocol. A compiled async generator, a
+ * Symbol.asyncIterator result, or a synchronous iterator is walked one
+ * step at a time (a synchronous one's values, and its final value, are
+ * awaited the way the AsyncFromSyncIterator continuation awaits them).
+ * Every completion the generator receives at the delegated yield is
+ * forwarded to the delegate: next(v) calls the cached next method,
+ * throw(e) calls throw, return(v) calls return. The step's result is
+ * awaited for an async delegate, must be an object, and its done then
+ * value are read — so an abrupt accessor rejects from the step the spec
+ * reads it in. A done step completes the expression with its value,
+ * except after a return completion, which completes the generator. A
+ * delegate with no throw method is closed through return() and then
+ * throws Node's TypeError; a delegate with no return method makes the
+ * awaited received value the generator's completion. */
 export function lowerAsyncDelegation(
   lowerer: Lowerer,
   expr: ts.YieldExpression,
@@ -262,103 +270,224 @@ export function lowerAsyncDelegation(
 ): IrExpr {
   const loc = locOf(expr);
   const gen = lowerer.ctx.generator!;
-  const slot = (name: string, type: IrType, mutable = false) => {
+  const returnType = lowerer.ctx.returnType;
+  // The received completion crosses to the delegate as a checked value,
+  // so the channels it is read from and written to must cross as well
+  // (the same fence the checked sync delegation uses).
+  for (const type of [gen.nextT, returnType]) {
+    if (
+      type.kind !== "void" &&
+      type.kind !== "undefinedT" &&
+      !canConvertToDyn(
+        type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    ) {
+      lowerer.unsupported(
+        "SC1071",
+        expr,
+        "async delegation with a channel that cannot cross a checked iterator method",
+      );
+    }
+  }
+  // A `never` yield channel (the VOID sentinel: a generator that never
+  // yields) has no operand form — the delegate's values cannot be named in
+  // it — but the protocol still runs: the delegate's steps, their thrown
+  // errors (with the error's identity) and its completion are the whole of
+  // the delegation. Only a non-done step, impossible in a well-typed
+  // program, ends in the unreachable trap below. An `undefined` channel is
+  // a real suspension whose values would have to be undefined; it keeps
+  // the plain refusal.
+  if (gen.yieldT.kind === "undefinedT") {
+    lowerer.unsupported(
+      "SC1071",
+      expr,
+      "async delegation in a generator whose yield type is undefined (annotate the generator's yield type)",
+    );
+  }
+  const slot = (name: string, type: IrType, init: IrExpr) => {
     const local = lowerer.declareHiddenLocal(name, type);
-    local.mutable = mutable;
-    return { local, ref: varRef(local.id, type, loc) };
+    local.mutable = true;
+    return { local, ref: varRef(local.id, type, loc), init };
   };
-  const iterator = slot("%adelegate", DYN);
-  const sync = slot("%adelegateSync", BOOL);
-  const next = slot("%adelegateNext", DYN);
-  const step = slot("%adelegateStep", DYN, true);
-  const needsClose = slot("%adelegateClose", BOOL, true);
-  const returned = slot("%adelegateReturn", DYN);
-  const error = slot("%adelegateError", CAUGHT);
-  const get = (value: IrExpr, key: string): IrExpr => ({
+  const iterator = slot("%adelegate", DYN, dynUndefinedExpr(loc));
+  const sync = slot("%adelegateSync", BOOL, { kind: "boolLit", value: false, type: BOOL, loc });
+  const next = slot("%adelegateNext", DYN, dynUndefinedExpr(loc));
+  const kind = slot("%adelegateKind", F64, { kind: "numLit", value: 0, type: F64, loc });
+  const sent = slot("%adelegateSent", DYN, dynUndefinedExpr(loc));
+  const step = slot("%adelegateStep", DYN, dynUndefinedExpr(loc));
+  const value = slot("%adelegateValue", DYN, dynUndefinedExpr(loc));
+  const method = slot("%adelegateMethod", DYN, dynUndefinedExpr(loc));
+  const resume = slot("%adelegateResume", DYN, dynUndefinedExpr(loc));
+  const done = slot("%adelegateDone", BOOL, { kind: "boolLit", value: false, type: BOOL, loc });
+  const finished = slot("%adelegateFinished", BOOL, {
+    kind: "boolLit",
+    value: false,
+    type: BOOL,
+    loc,
+  });
+  const returning = slot("%adelegateReturning", BOOL, {
+    kind: "boolLit",
+    value: false,
+    type: BOOL,
+    loc,
+  });
+  const get = (target: IrExpr, key: string): IrExpr => ({
     kind: "dynKeyGet",
-    value,
+    value: target,
     key: { kind: "strLit", value: key, type: STRING, loc },
     type: DYN,
     loc,
   });
-  const awaitDyn = (value: IrExpr): IrExpr => ({
-    kind: "libCall",
-    fn: "async.awaitDyn",
-    args: [value],
-    type: DYN,
-    loc,
-  });
-  // Each step's awaited result, which must be an object (TypeError
-  // otherwise), for next() and return() alike.
-  const invoke = (callee: IrExpr): IrExpr => ({
+  const check = (target: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "dyn.iteratorResult",
-    args: [
-      awaitDyn({
-        kind: "dynCall",
-        callee,
-        receiver: iterator.ref,
-        calleeName: "iterator method",
-        args: [],
-        type: DYN,
-        loc,
-      }),
-    ],
+    args: [target],
     type: DYN,
     loc,
   });
-  const stepNext = invoke(next.ref);
-  const setClose = (value: boolean): IrStmt => ({
-    kind: "assign",
-    localId: needsClose.local.id,
-    value: { kind: "boolLit", value, type: BOOL, loc },
+  const awaitDyn = (target: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "async.awaitDyn",
+    args: [target],
+    type: DYN,
     loc,
   });
-  const close = (): IrStmt[] => [
-    { kind: "varDecl", localId: returned.local.id, init: get(iterator.ref, "return"), loc },
+  const call = (callee: IrExpr, args: IrExpr[]): IrExpr => ({
+    kind: "dynCall",
+    callee,
+    receiver: iterator.ref,
+    calleeName: "iterator method",
+    args,
+    type: DYN,
+    loc,
+  });
+  const assign = (target: { local: { id: string } }, v: IrExpr): IrStmt => ({
+    kind: "assign",
+    localId: target.local.id,
+    value: v,
+    loc,
+  });
+  const test = (target: IrExpr, which: "nullish" | "truthy" | "undefined"): IrExpr => ({
+    kind: "dynTest",
+    test: which,
+    value: target,
+    type: BOOL,
+    loc,
+  });
+  const not = (operand: IrExpr): IrExpr => ({ kind: "unary", op: "!", operand, type: BOOL, loc });
+  const num = (v: number): IrExpr => ({ kind: "numLit", value: v, type: F64, loc });
+  const modeIs = (n: number): IrExpr => ({
+    kind: "bin",
+    op: "===",
+    left: kind.ref,
+    right: num(n),
+    type: BOOL,
+    loc,
+  });
+  const setFinished = (): IrStmt =>
+    assign(finished, {
+      kind: "boolLit",
+      value: true,
+      type: BOOL,
+      loc,
+    });
+  /** One protocol call into the delegate's `callee`: the raw result, the
+   * await an async delegate takes on it, then the object requirement. A
+   * synchronous delegate answers a plain result, so the await is skipped. */
+  const invoke = (callee: IrExpr, args: IrExpr[]): IrStmt[] => [
+    assign(step, call(callee, args)),
+    { kind: "if", cond: not(sync.ref), then: [assign(step, awaitDyn(step.ref))], else_: null, loc },
+    assign(step, check(step.ref)),
+  ];
+  /** The delegate has no throw method: close it through return(), then
+   * throw Node's TypeError. */
+  const closeThenThrow: IrStmt[] = [
+    assign(method, get(iterator.ref, "return")),
     {
       kind: "if",
-      cond: {
-        kind: "unary",
-        op: "!",
-        operand: { kind: "dynTest", test: "nullish", value: returned.ref, type: BOOL, loc },
-        type: BOOL,
-        loc,
-      },
-      then: [{ kind: "exprStmt", expr: invoke(returned.ref), loc }],
+      cond: not(test(method.ref, "nullish")),
+      then: invoke(method.ref, []),
       else_: null,
       loc,
     },
+    {
+      kind: "throw",
+      value: {
+        kind: "libCall",
+        fn: "error.new",
+        args: [{ kind: "strLit", value: NO_THROW_METHOD, type: STRING, loc }],
+        type: { kind: "object", className: "%TypeError" },
+        loc,
+      },
+      loc,
+    },
   ];
-  // A synchronous delegate's values are awaited, its final value too.
-  const stepValue = (): IrExpr => ({
-    kind: "ternary",
-    cond: sync.ref,
-    then: awaitDyn(get(step.ref, "value")),
-    else_: get(step.ref, "value"),
-    type: DYN,
-    loc,
-  });
-  const yielded = stepValue();
+  /** IteratorClose with a throw completion: call the delegate's return()
+   * when it has one, and drop whatever it answers or throws, so the pending
+   * error is the one that propagates. */
+  const rejection = lowerer.declareHiddenLocal("%adelegateRejection", CAUGHT);
+  const closeQuietly: IrStmt[] = [
+    {
+      kind: "tryCatch",
+      tryBody: [
+        assign(method, get(iterator.ref, "return")),
+        {
+          kind: "if",
+          cond: not(test(method.ref, "nullish")),
+          then: [{ kind: "exprStmt", expr: call(method.ref, []), loc }],
+          else_: null,
+          loc,
+        },
+      ],
+      catchLocalId: null,
+      catchBody: [],
+      finallyBody: null,
+      loc,
+    },
+  ];
+  /** A return completion of the delegating generator: the value is already
+   * settled (awaited), so the request settles at completion. */
+  const finish: IrStmt[] =
+    returnType.kind === "void"
+      ? [
+          {
+            kind: "if",
+            cond: not(test(value.ref, "undefined")),
+            then: [
+              {
+                kind: "runtimeFence",
+                code: "SC1071",
+                message:
+                  "returning a value through a void native generator channel is not supported yet",
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          { kind: "return", value: null, awaited: true, loc },
+        ]
+      : [
+          {
+            kind: "return",
+            value: lowerer.coerceInto(expr, value.ref, returnType),
+            awaited: true,
+            loc,
+          },
+        ];
   const stmts: IrStmt[] = [
     {
       kind: "varDecl",
       localId: iterator.local.id,
-      init: {
+      init: check({
         kind: "libCall",
-        fn: "dyn.iteratorResult",
-        args: [
-          {
-            kind: "libCall",
-            fn: "dyn.asyncIteratorOpen",
-            args: [source, { kind: "strLit", value: "", type: STRING, loc }],
-            type: DYN,
-            loc,
-          },
-        ],
+        fn: "dyn.asyncIteratorOpen",
+        args: [source, { kind: "strLit", value: "", type: STRING, loc }],
         type: DYN,
         loc,
-      },
+      }),
       loc,
     },
     {
@@ -368,79 +497,152 @@ export function lowerAsyncDelegation(
       loc,
     },
     { kind: "varDecl", localId: next.local.id, init: get(iterator.ref, "next"), loc },
-    {
-      kind: "varDecl",
-      localId: needsClose.local.id,
-      init: { kind: "boolLit", value: false, type: BOOL, loc },
+    ...[kind, sent, step, value, method, resume, done, finished, returning].map((s) => ({
+      kind: "varDecl" as const,
+      localId: s.local.id,
+      init: s.init,
       loc,
-    },
-    { kind: "varDecl", localId: step.local.id, init: stepNext, loc },
+    })),
     {
-      kind: "tryCatch",
-      tryBody: [
+      kind: "while",
+      cond: not(finished.ref),
+      body: [
+        // A return completion makes this loop's done result the
+        // generator's own completion instead of the expression's value.
+        assign(returning, modeIs(1)),
         {
-          kind: "while",
-          cond: {
-            kind: "unary",
-            op: "!",
-            operand: {
-              kind: "dynTest",
-              test: "truthy",
-              value: get(step.ref, "done"),
-              type: BOOL,
-              loc,
-            },
-            type: BOOL,
-            loc,
-          },
-          body: [
-            setClose(true),
+          kind: "if",
+          cond: modeIs(0),
+          then: invoke(next.ref, [sent.ref]),
+          else_: [
             {
-              kind: "exprStmt",
-              expr: {
-                kind: "yieldExpr",
-                value: lowerer.coerceToExpected(yielded, gen.yieldT),
-                type: gen.nextT.kind === "undefinedT" ? VOID : gen.nextT,
-                loc,
-              },
+              kind: "if",
+              cond: modeIs(1),
+              then: [
+                assign(method, get(iterator.ref, "return")),
+                {
+                  kind: "if",
+                  cond: test(method.ref, "nullish"),
+                  // No return method: the awaited received value is the
+                  // generator's completion.
+                  then: [assign(value, awaitDyn(sent.ref)), setFinished()],
+                  else_: invoke(method.ref, [sent.ref]),
+                  loc,
+                },
+              ],
+              else_: [
+                assign(method, get(iterator.ref, "throw")),
+                {
+                  kind: "if",
+                  cond: test(method.ref, "nullish"),
+                  then: closeThenThrow,
+                  else_: invoke(method.ref, [sent.ref]),
+                  loc,
+                },
+              ],
               loc,
             },
-            setClose(false),
-            { kind: "assign", localId: step.local.id, value: stepNext, loc },
           ],
           loc,
         },
-      ],
-      catchBody: [
         {
           kind: "if",
-          cond: needsClose.ref,
+          cond: not(finished.ref),
           then: [
-            setClose(false),
+            // done, then value, in the spec's order: an abrupt accessor
+            // is observed at the step that reads it. A synchronous
+            // delegate's value is awaited in both positions.
+            assign(done, test(get(step.ref, "done"), "truthy")),
+            assign(value, get(step.ref, "value")),
             {
-              kind: "tryCatch",
-              tryBody: close(),
-              catchBody: [],
-              catchLocalId: null,
-              finallyBody: null,
+              kind: "if",
+              cond: sync.ref,
+              then: [
+                {
+                  kind: "if",
+                  // A rejected value of a step that is not done, answering
+                  // next() or throw(), closes the delegate before the
+                  // rejection propagates (AsyncFromSyncIteratorContinuation's
+                  // closeOnRejection); a return() step's is passed through.
+                  cond: {
+                    kind: "logical",
+                    op: "&&",
+                    left: not(done.ref),
+                    right: not(returning.ref),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [
+                    {
+                      kind: "tryCatch",
+                      tryBody: [assign(value, awaitDyn(value.ref))],
+                      catchLocalId: rejection.id,
+                      catchBody: [...closeQuietly, { kind: "rethrow", localId: rejection.id, loc }],
+                      finallyBody: null,
+                      loc,
+                    },
+                  ],
+                  else_: [assign(value, awaitDyn(value.ref))],
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            },
+            {
+              kind: "if",
+              cond: done.ref,
+              then: [setFinished()],
+              else_:
+                gen.yieldT.kind === "void"
+                  ? [
+                      // A value step on a `never` channel: the type says the
+                      // delegate never yields, so this is unreachable. Fail
+                      // loudly rather than store a void operand (rc:void).
+                      {
+                        kind: "runtimeFence",
+                        code: "SC9002",
+                        message:
+                          "unreachable: an async delegate yielded a value into a 'never' channel — please report this",
+                        loc,
+                      },
+                    ]
+                  : [
+                      // An assignment, not a declaration: the slot already owns
+                      // one scope entry (declared with the other leftovers), and
+                      // a second one would release it at the loop's own exit and
+                      // again at the function scope's.
+                      assign(resume, {
+                        kind: "yieldExpr",
+                        value: lowerer.coerceInto(expr, value.ref, gen.yieldT),
+                        captureCompletion: { returnType },
+                        type: DYN,
+                        loc,
+                      }),
+                      assign(kind, {
+                        kind: "dynCheck",
+                        value: get(resume.ref, "kind"),
+                        type: F64,
+                        loc,
+                      }),
+                      assign(sent, get(resume.ref, "value")),
+                    ],
               loc,
             },
           ],
           else_: null,
           loc,
         },
-        { kind: "rethrow", localId: error.local.id, loc },
       ],
-      catchLocalId: error.local.id,
-      finallyBody: [{ kind: "if", cond: needsClose.ref, then: close(), else_: null, loc }],
       loc,
     },
+    { kind: "if", cond: returning.ref, then: finish, else_: null, loc },
   ];
   const expected = lowerer.mapTypeOf(lowerer.typeOf(expr));
   const result =
     expected && expected.kind !== "void"
-      ? lowerer.coerceToExpected(stepValue(), expected)
-      : stepValue();
+      ? lowerer.coerceInto(expr, value.ref, expected)
+      : value.ref;
   return { kind: "seqExpr", stmts, result, generatorDelegate: true, type: result.type, loc };
 }
 

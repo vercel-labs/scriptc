@@ -198,6 +198,22 @@ test.each(["async", "generator", "async generator"])(
   },
 );
 
+test.each(["generator", "async generator"])(
+  "a %s binding parameters at the call throws through the call edge",
+  (kind) => {
+    const target = fn("target", [failure], []);
+    if (kind.includes("async")) target.async = true;
+    target.generator = {
+      yieldT: F64,
+      nextT: VOID,
+      resultType: { kind: "record", shapeId: "result" },
+      bindAtCall: true,
+    };
+    const mod = moduleWith(fn("caller", [call("target"), callClosure("target")], []), target);
+    expect(computeMayThrow(mod)).toEqual({ fns: new Set(["caller", "target"]), indirect: true });
+  },
+);
+
 test("dynamic function adapters activate indirect calls without an IR closure target", () => {
   const adapter: IrExpr = {
     kind: "dynCheck",

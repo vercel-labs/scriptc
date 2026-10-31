@@ -1114,6 +1114,14 @@ export interface IrModule {
    * hold elements outside their element type (SCR_ARR_FOREIGN), stored
    * through dynamic views; "*" for every array. Absent when none can. */
   foreignElementKeys?: string[];
+  /** The narrowing conversions that link a record copy to its source
+   * (record.link): a conversion from record type `from` into the narrower
+   * record type `to`, whose source has properties `to` does not declare.
+   * `compose(copy, source)` answers a record of type `from` with the
+   * copy's values for the fields both declare and the source's for the
+   * others: what the copy's reflective surfaces answer from. `pair` is
+   * the nonzero number the link stores. Absent when there are none. */
+  recordLinks?: IrRecordLink[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
@@ -1541,6 +1549,14 @@ export interface IrLibIdentity {
    * encoding; backends parse it back to emit the integer constant). */
   buildId: string;
   abiVersion: number;
+}
+
+/** One narrowing conversion that links copies to sources (IrModule.recordLinks). */
+export interface IrRecordLink {
+  pair: number;
+  from: string;
+  to: string;
+  compose: string;
 }
 
 export interface IrClassDef {
@@ -2008,10 +2024,10 @@ export interface IrFunction {
    * `index`: a computed read `(value, key)` whose callers pass a number
    * converted to a string as the key. */
   fastRead?: "index";
-  /** The body of a function whose parameter version takes its calls with
-   * int32 arguments (parameter-versions.ts). It runs for other arguments
-   * only, so the backend emits each of its loops once, as in the copy a
-   * failed version guard runs. */
+  /** The original body of a function versioned for int32 loop bounds, moved
+   * to `<fn>.int32Fallback` (parameter-versions.ts). It runs for arguments
+   * the version does not take, so the backend emits each of its loops once,
+   * as in the copy a failed version guard runs. */
   plainLoops?: true;
   /** Async: the body runs on a fiber; `returnType` is the INNER type T (a
    * `return v` fulfills with v) while ordinary call sites receive
@@ -2045,6 +2061,13 @@ export interface IrFunction {
     /** The first parameter is a generator this one adapts: it prints with
      * that generator's tag. */
     inheritsTag?: true;
+    /** The parameter prologue ends in a `genBindBarrier`: the body binds its
+     * parameters at the CALL (FunctionDeclarationInstantiation runs before
+     * GeneratorStart), so the spawn wrapper enters the suspended body once,
+     * runs to the barrier, and returns the generator with the bindings
+     * already made. Absent when the parameters bind nothing (identifiers
+     * only), in which case nothing runs before the first resume. */
+    bindAtCall?: true;
   };
   /** Async module initializers only: a module-global Promise<T> slot where
    * the spawn wrapper caches its first evaluation promise. Every later
@@ -2225,6 +2248,15 @@ export type IrStmt =
    * it has no operand (`return;`). The request settles as the body
    * completes instead of one microtask turn later. */
   | { kind: "return"; value: IrExpr | null; awaited?: true; loc: SrcLoc }
+  /** The end of a generator's parameter prologue (fn.generator.bindAtCall).
+   * Parameters bind at the CALL — before GeneratorStart — so the spawn
+   * wrapper enters the suspended body once and runs to this statement. The
+   * barrier itself suspends invisibly: no OUT value is produced and no IN
+   * value is taken, and it carries the ordinary resumption check so
+   * `.return()`/`.throw()` before the first `.next()` still skip the body.
+   * Only a generator body may contain it, at most once, before its first
+   * yield. */
+  | { kind: "genBindBarrier"; loc: SrcLoc }
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
    * of a refcounted new value MOVES into the object. `sloppy` marks a write
@@ -4163,6 +4195,11 @@ export type IrExpr =
        * compiler analysis bug and reports itself as one. */
       inferredSite?: string;
       origin?: number;
+      /** The element position of an array literal whose store checks this
+       * value: a failure inside the check reports that position in its
+       * path (`$[0]`), where a standalone check names only the root
+       * (`$`). */
+      pathIndex?: number;
       type: IrType;
       loc: SrcLoc;
     };

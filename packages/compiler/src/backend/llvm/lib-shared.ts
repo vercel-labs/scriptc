@@ -305,6 +305,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.dirDyn": "scr_console_dir_dyn",
   "global.native": "scr_global_native",
   "global.installValues": "scr_global_values_install",
+  "dyn.installBuiltinStatics": "scr_builtin_statics_install",
   "global.forInObject": "scr_global_for_in_object",
   "navigator.object": "scr_navigator_object",
   "navigator.language": "scr_navigator_language",
@@ -324,6 +325,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "wrapper.guardList": "scr_js_wrapper_guard_list",
   "wrapper.isStringMethod": "scr_js_wrapper_is_string_method",
   "wrapper.thisString": "scr_js_wrapper_this_string",
+  "wrapper.booleanPrototype": "scr_js_wrapper_boolean_prototype",
   "fs.callbackValue": "scr_fs_callback_value",
   "fs.callbackCall": "scr_fs_callback_call",
   "process.hrtimeValue": "scr_process_hrtime_value",
@@ -802,6 +804,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.errorCause": "scr_insp_error_cause",
   "insp.begin": "scr_insp_begin",
   "insp.layout": "scr_insp_layout",
+  "insp.maxArrayLength": "scr_insp_max_array_length",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
@@ -820,6 +823,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
   "record.sourceSpread": "scr_record_source_spread",
+  "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
@@ -922,6 +926,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
   "cp.spawnSyncEnv": "scr_spawn_sync_env",
+  "cp.spawnSyncExt": "scr_spawn_sync_ext",
+  "cp.spawnSyncExtEnv": "scr_spawn_sync_ext_env",
   "cp.execSync": "scr_exec_sync",
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",
@@ -1021,6 +1027,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sym.for": "scr_sym_for",
   "sym.wellKnown": "scr_sym_well_known",
   "sym.toString": "scr_sym_to_string",
+  "sym.keyForDyn": "scr_dyn_symbol_key_for",
   "bigint.parse": "scr_bigint_parse",
   "bigint.fromF64": "scr_bigint_from_f64",
   "bigint.neg": "scr_bigint_neg",
@@ -1193,6 +1200,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.in": "scr_dyn_in",
   "dyn.defineProps": "scr_dyn_define_props",
   "dyn.defineProperty": "scr_dyn_define_property",
+  // A descriptor built by an expression: entry points whose
+  // ToPropertyDescriptor accepts any object and reads inherited fields
+  // (scr_dyn_descriptor_snapshot). Only programs that call them link them.
+  "dyn.definePropsShapes": "scr_dyn_define_props_shapes",
+  "dyn.definePropertyShapes": "scr_dyn_define_property_shapes",
+  "dyn.objCreateWithPropertiesShapes": "scr_dyn_obj_create_with_properties_shapes",
   "dyn.getOwnPropertyDescriptor": "scr_dyn_get_own_property_descriptor",
   "dyn.arrayProtoCall": "scr_dyn_array_proto_call",
   "dyn.arrayLikeProtoCall": "scr_dyn_array_like_call",
@@ -1568,6 +1581,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqHttpVersionMajor": "scr_http_req_http_version_major",
   "http.reqHttpVersionMinor": "scr_http_req_http_version_minor",
   "http.reqAborted": "scr_http_req_aborted_flag",
+  "http.reqDestroyed": "scr_http_req_destroyed_flag",
+  "http.resDestroyed": "scr_http_res_destroyed_flag",
   "http.reqComplete": "scr_http_req_complete",
   "http.reqSocket": "scr_http_req_socket",
   "http.reqRawHeaders": "scr_http_req_raw_headers",
@@ -1839,8 +1854,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.getOwnPropertyDescriptors": "scr_dyn_get_own_property_descriptors",
   "dyn.preventExtensions": "scr_dyn_prevent_extensions",
   "dyn.isExtensible": "scr_dyn_is_extensible",
+  "dyn.isExtensibleQuery": "scr_dyn_is_extensible_query",
   "dyn.seal": "scr_dyn_seal",
   "dyn.isSealed": "scr_dyn_is_sealed",
+  "dyn.isSealedQuery": "scr_dyn_is_sealed_query",
   "dyn.objValues": "scr_dyn_obj_values",
   "dyn.objValueList": "scr_dyn_obj_value_list",
   "dyn.objEntries": "scr_dyn_obj_entries",
@@ -1870,6 +1887,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
   "timers.userDelay": "scr_timer_user_delay",
+  "timers.thisCallback": "scr_timer_this_callback",
 };
 
 /** The mock-aware entry points (scr_test.c) that the timer calls of a

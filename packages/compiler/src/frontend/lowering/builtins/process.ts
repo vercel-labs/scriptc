@@ -1635,8 +1635,8 @@ export function lowerProcessMethodCall(
     // (scr_async.c). `once` auto-removes after one delivery and
     // `off`/`removeListener` remove by closure identity — the warning
     // registry's story. 'rejectionHandled' is the sibling registry:
-    // a handler attached after delivery fires it once, synchronously
-    // with the promise.
+    // a handler attached after delivery queues it once; the checkpoint's
+    // handled-rejection phase dispatches it, never the attachment itself.
     if (event === "unhandledRejection" || event === "rejectionHandled") {
       if (isPrepend) {
         lowerer.noLowering(

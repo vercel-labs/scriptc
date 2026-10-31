@@ -5422,9 +5422,9 @@ function buildLibFnSignatures() {
     "process.onUnhandledRejection": { argTypes: [DYN, BOOL], result: VOID },
     "process.offUnhandledRejection": { argTypes: [DYN], result: VOID },
     /** process.on/once/off('rejectionHandled', fn): the sibling registry.
-     * A handler attached after unhandledRejection delivery fires the event
-     * once. Dispatch is synchronous at the attach, with the promise,
-     * Node's payload. */
+     * A handler attached after unhandledRejection delivery queues the event
+     * once, with the promise as its payload. The checkpoint's handled-rejection
+     * phase dispatches it, never the attachment itself. */
     "process.onRejectionHandled": { argTypes: [DYN, BOOL], result: VOID },
     "process.offRejectionHandled": { argTypes: [DYN], result: VOID },
     /** process warnings (scr_async_dyn.c): onWarning/offWarning register

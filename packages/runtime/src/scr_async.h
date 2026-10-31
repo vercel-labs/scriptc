@@ -249,8 +249,8 @@ ScrDyn *scr_als_snapshot(void);
 void scr_process_on_unhandled_rejection(ScrDyn *fn, bool once);
 void scr_process_off_unhandled_rejection(ScrDyn *fn);
 /* process.on/once/off('rejectionHandled', fn): the sibling registry. A
- * promise handled after its unhandledRejection delivery fires once, with
- * the promise as Node's payload. */
+ * promise handled after its unhandledRejection delivery fires once at a
+ * later rejection checkpoint, with the promise as Node's payload. */
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once);
 void scr_process_off_rejection_handled(ScrDyn *fn);
 /* The checkpoint delivery hook the registration above installs
@@ -258,14 +258,14 @@ void scr_process_off_rejection_handled(ScrDyn *fn);
  * report). Runtime-internal. */
 extern SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p);
 /* The late-handled hook (scr_async_dyn.c installs it when a
- * 'rejectionHandled' listener registers): scr_async.c calls it when a
- * promise the report already delivered as unhandled gains a handler.
+ * 'rejectionHandled' listener registers): scr_async.c calls it at a
+ * rejection checkpoint after a reported promise gains a handler.
  * Runtime-internal. */
 extern SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p);
 /* The attach-time handled mark (a dyn then/catch carrying a rejection
  * handler, or the module loader taking ownership of an evaluation
  * promise): marks pending and rejected sources observed at Node's attach
- * moment, firing the late-handled hook when the report already delivered
+ * moment, queuing a late-handled event when the report already delivered
  * it. Runtime-internal. */
 void scr_promise_mark_handled(ScrPromise *p);
 /* A rejected promise's reason as a dyn value (identity-preserving for

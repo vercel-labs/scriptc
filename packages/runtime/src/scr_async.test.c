@@ -80,8 +80,119 @@ static void deep_gen(ScrFiber *f, void *unused) {
   scr_gen_out_f64(scr_gen_of_fiber(f), 92);
 }
 
+static int handled_deliveries;
+static int throw_step;
+
+static void after_handled_throw(void) { throw_step = 2; }
+
+static int accept_handled_throw(bool from_promise) {
+  assert(!from_promise && throw_step == 1);
+  scr_exc_clear();
+  scr_next_tick_raw(after_handled_throw);
+  return 1;
+}
+
+static void throwing_handled_listener(ScrPromise *p) {
+  (void)p;
+  if (throw_step == 0) {
+    throw_step = 1;
+    scr_throw_f64(23);
+  } else {
+    assert(throw_step == 2);
+    throw_step = 3;
+  }
+}
+
+static bool accept_rejection(ScrPromise *p) {
+  assert(scr_promise_is_rejected(p));
+  return true;
+}
+
+static void handled_rejection(ScrPromise *p) {
+  assert(!p->reported_unhandled);
+  assert(p->rejection_observed);
+  handled_deliveries++;
+}
+
+static ScrPromise *reported_rejection(void) {
+  ScrPromise *p = scr_promise_new();
+  scr_throw_f64(17);
+  scr_promise_reject_pending(p);
+  assert(!scr_exc_pending());
+  assert(!scr_report_unhandled_rejections());
+  assert(p->reported_unhandled);
+  return p;
+}
+
+static void handled_queue_ownership(void) {
+#ifdef SCR_RC_AUDIT
+  long before = scr_promise_live_count();
+#endif
+  scr_urj_deliver_fn = accept_rejection;
+  ScrPromise *p = reported_rejection();
+  /* A listener added after attachment receives the event, once. */
+  scr_promise_mark_handled(p);
+  scr_promise_mark_handled(p);
+  assert(handled_deliveries == 0);
+  assert(p->rc == 2);
+  assert(scr_loop_has_ready());
+  scr_rjh_notify_fn = handled_rejection;
+  assert(!scr_loop_run(NULL));
+  assert(handled_deliveries == 1 && p->rc == 1);
+  assert(!scr_loop_has_ready());
+  scr_promise_release(p);
+
+  /* Removing the last listener after attachment suppresses delivery. */
+  p = reported_rejection();
+  scr_promise_mark_handled(p);
+  scr_rjh_notify_fn = NULL;
+  assert(!scr_loop_run(NULL));
+  assert(handled_deliveries == 1 && p->rc == 1);
+  scr_promise_release(p);
+
+  /* A rejected promise can itself be the reason. With the caller gone,
+   * only the event queue roots this cycle until discard or delivery. */
+  for (int discard = 0; discard < 2; discard++) {
+    p = scr_promise_new();
+    scr_throw_ref(scr_promise_retain(p), scr_promise_retain_v,
+                  scr_promise_release_v, scr_promise_trace_v);
+    scr_promise_reject_pending(p);
+    assert(!scr_report_unhandled_rejections());
+    scr_promise_mark_handled(p);
+    scr_promise_release(p);
+    scr_collect_cycles();
+    assert(p->rc == 2 && p->payload == p);
+    scr_rjh_notify_fn = handled_rejection;
+    if (discard) scr_discard_unhandled_rejections();
+    else assert(!scr_loop_run(NULL));
+    assert(!scr_rejection_events_pending());
+    scr_collect_cycles();
+  }
+  assert(handled_deliveries == 2);
+  /* An uncaught listener handles the throw, but its tick must run before
+   * the interrupted handled-event queue resumes. */
+  ScrPromise *first = reported_rejection();
+  ScrPromise *second = reported_rejection();
+  scr_rjh_notify_fn = throwing_handled_listener;
+  scr_uncaught_exception_hook = accept_handled_throw;
+  scr_promise_mark_handled(first);
+  scr_promise_mark_handled(second);
+  scr_promise_release(first);
+  scr_promise_release(second);
+  assert(throw_step == 0 && !scr_exc_pending());
+  assert(!scr_loop_run(NULL));
+  assert(throw_step == 3 && !scr_exc_pending());
+  scr_uncaught_exception_hook = NULL;
+  scr_rjh_notify_fn = NULL;
+  scr_urj_deliver_fn = NULL;
+#ifdef SCR_RC_AUDIT
+  assert(scr_promise_live_count() == before);
+#endif
+}
+
 int main(void) {
   scr_init();
+  handled_queue_ownership();
   enum { COUNT = 128 };
   ScrPromise *jobs[COUNT];
   ScrGen *gens[COUNT];
@@ -129,6 +240,13 @@ int main(void) {
    * the exhaustion bookkeeping now that every generator has completed. */
   assert(!scr_loop_run(NULL));
   assert(scr_fibers_live == 0);
+  /* Exit discards an undelivered event without invoking its listener;
+   * the queue must release this last reference before the RC audit. */
+  scr_urj_deliver_fn = accept_rejection;
+  ScrPromise *last = reported_rejection();
+  scr_promise_mark_handled(last);
+  scr_promise_release(last);
+  assert(scr_handled_head != NULL);
   puts("fiber stacks stay lazy and preserve large suspended frames");
   return 0;
 }

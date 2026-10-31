@@ -1,7 +1,7 @@
 // @requires-libnode
 // The program's uncaughtException listener handles a throw from a native
 // callback after Node loaded, and the loop goes on with the work of both
-// sides. JavaScript: the typed declarations have no uncaughtException.
+// sides.
 import { callSync } from "@scriptc/node";
 
 process.on("uncaughtException", (error) => {

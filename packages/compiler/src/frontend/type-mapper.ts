@@ -8153,10 +8153,10 @@ function describeOverloadSetBlocker(t: ts.Type, ctx: TypeMapperCtx): string {
     for (const param of sig.getParameters()) {
       const paramTs = checker.getTypeOfSymbol(param);
       if (!mapType(paramTs, sigCtx))
-        return `is an overload set, and its ${which} has parameter '${ts.symbolName(param)}' of type '${checker.typeToString(paramTs)}', which does not compile`;
+        return `is an overload set, and its ${which} has parameter '${ts.symbolName(param)}' of type '${checker.typeToString(paramTs)}', which does not compile${slotReason(paramTs, ctx, 1, new Set([t]))}`;
     }
     const retTs = checker.getReturnTypeOfSignature(sig);
-    return `is an overload set, and its ${which} returns '${checker.typeToString(retTs)}', which does not compile`;
+    return `is an overload set, and its ${which} returns '${checker.typeToString(retTs)}', which does not compile${slotReason(retTs, ctx, 1, new Set([t]))}`;
   }
   return "is an overload set whose signatures do not join into one stored function (a void result beside a value result, or positions whose differing types do not cross the checked-dynamic boundary)";
 }
@@ -9201,14 +9201,48 @@ function armHasUnionHome(arm: IrType): boolean {
   }
 }
 
+/** The deeper story of why an ABI slot (a container argument, union arm,
+ * array/tuple element, function parameter or return type) does not compile,
+ * as a tail for its "... does not compile" sentence: the record member or
+ * nested component actually at fault. Empty when the slot's own type is the
+ * blocker, which keeps the flat message. Naming the member matters for the
+ * shapes a real program passes around — a 33-member `ExtensionAPI` is not a
+ * useful answer. `depth` bounds the recursion over self-referential shapes
+ * (`type F = (f: F) => void`); `innerBlockedMember`'s own `seen` set cannot
+ * see across the describeComponentBlocker call. */
+function slotReason(
+  t: ts.Type,
+  ctx: TypeMapperCtx,
+  depth: number,
+  seen: Set<ts.Type> = new Set<ts.Type>(),
+): string {
+  // A self-referential shape (`type F = () => F`) reaches the same type
+  // again at every step: saying the same sentence twice adds nothing.
+  if (depth >= 3 || seen.has(t)) return "";
+  seen.add(t);
+  const why =
+    describeRecordMemberBlocker(t, ctx, depth, seen) ??
+    describeComponentBlocker(t, ctx, depth + 1, seen);
+  return why === null ? "" : `: ${why}`;
+}
+
 /** When an unmapped type is a SUPPORTED container/composite whose failure
  * lives in a component, answer a message tail naming the component (the
  * SC2009 story); null when the shape itself is the blocker (the caller
  * falls through to the other fences). Stdlib container heads (Map, Set,
  * Promise, generators) ALWAYS answer — their shapes have lowerings, so a
  * later "no lowering" claim about them would be false. */
-export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): string | null {
+export function describeComponentBlocker(
+  widened: ts.Type,
+  ctx: TypeMapperCtx,
+  depth = 0,
+  inherited?: Set<ts.Type>,
+): string | null {
   const { checker } = ctx;
+  // The type under description is already spoken for: a component that
+  // leads back to it (`type F = () => F`) has nothing to add.
+  const seen = inherited ?? new Set<ts.Type>();
+  seen.add(widened);
   const text = (t: ts.Type): string => checker.typeToString(t);
 
   // Stdlib container references (provenance, not the name — a user's own
@@ -9230,7 +9264,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
       const role = spec.role(i);
       const mapped = mapType(arg, ctx);
       if (!mapped) {
-        return `the ${container} shape is supported, but its ${role} type '${text(arg)}' does not compile`;
+        return `the ${container} shape is supported, but its ${role} type '${text(arg)}' does not compile${slotReason(arg, ctx, depth, seen)}`;
       }
       if (
         (container === "Map" || container === "ReadonlyMap") &&
@@ -9272,7 +9306,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     if (elemTs === undefined) return null;
     const elem = mapType(elemTs, ctx);
     if (!elem) {
-      return `the array shape is supported, but its element type '${text(elemTs)}' does not compile`;
+      return `the array shape is supported, but its element type '${text(elemTs)}' does not compile${slotReason(elemTs, ctx, depth, seen)}`;
     }
     return `the array shape is supported, but '${text(elemTs)}' elements have no array representation yet`;
   }
@@ -9285,7 +9319,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
       const et = mapType(arg, ctx);
       if (et?.kind === "void" && isUnitOnlyTsType(arg, ctx.resolveTypeParam)) continue;
       if (!et || et.kind === "void") {
-        return `the tuple shape is supported, but its element type '${text(arg)}' does not compile`;
+        return `the tuple shape is supported, but its element type '${text(arg)}' does not compile${slotReason(arg, ctx, depth, seen)}`;
       }
     }
     return null;
@@ -9318,7 +9352,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     for (const { p: part, mapped } of mappedArms) {
       if (!mapped) {
-        return `the union shape is supported, but its arm '${text(part)}' does not compile`;
+        return `the union shape is supported, but its arm '${text(part)}' does not compile${slotReason(part, ctx, depth, seen)}`;
       }
       if (!armHasUnionHome(mapped)) {
         return `the union shape is supported, but '${text(part)}' arms have no home in a compiled union yet (no runtime narrowing test exists against sibling arms)`;
@@ -9362,12 +9396,12 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     for (const p of sig.getParameters()) {
       const pTs = checker.getTypeOfSymbol(p);
       if (!mapType(pTs, ctx)) {
-        return `the function shape is supported, but its parameter '${ts.symbolName(p)}' has type '${text(pTs)}', which does not compile`;
+        return `the function shape is supported, but its parameter '${ts.symbolName(p)}' has type '${text(pTs)}', which does not compile${slotReason(pTs, ctx, depth, seen)}`;
       }
     }
     const retTs = checker.getReturnTypeOfSignature(sig);
     if ((retTs.flags & ts.TypeFlags.Never) === 0 && !mapType(retTs, ctx)) {
-      return `the function shape is supported, but its return type '${text(retTs)}' does not compile`;
+      return `the function shape is supported, but its return type '${text(retTs)}' does not compile${slotReason(retTs, ctx, depth, seen)}`;
     }
     return null;
   }
@@ -9380,8 +9414,15 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
  * signature routing, so what reaches it is a plain data shape; a null
  * answer (no member pinpointed — provenance fences, accessor rules, shape
  * knots) keeps the residual SC2001 story. */
-export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx): string | null {
+export function describeRecordMemberBlocker(
+  widened: ts.Type,
+  ctx: TypeMapperCtx,
+  depth = 0,
+  inherited?: Set<ts.Type>,
+): string | null {
   const { checker } = ctx;
+  const seen = inherited ?? new Set<ts.Type>();
+  seen.add(widened);
   if ((widened.flags & ts.TypeFlags.Object) === 0) return null;
   if (checker.getCallSignatures(widened).length > 0) return null;
   if (checker.getConstructSignatures(widened).length > 0) return null;
@@ -9418,7 +9459,7 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
     // its outermost member.
     const inner = innerBlockedMember(fieldTs, ctx, new Set());
     if (inner !== null && inner.path !== "") {
-      return `the record shape is supported, but its member '${ts.symbolName(p)}${inner.path}' has type '${checker.typeToString(inner.type)}', which does not compile`;
+      return `the record shape is supported, but its member '${ts.symbolName(p)}${inner.path}' has type '${checker.typeToString(inner.type)}', which does not compile${slotReason(inner.type, ctx, depth + 1, seen)}`;
     }
     return `the record shape is supported, but its member '${ts.symbolName(p)}' has type '${checker.typeToString(fieldTs)}', which does not compile`;
   }
@@ -9463,8 +9504,8 @@ function memberMaps(fieldTs: ts.Type, ctx: TypeMapperCtx, member?: ts.Symbol): b
 
 /** The member path inside the unmapped type `t` that its failure comes
  * from, and that member's type: `.name` steps into record members, `[]`
- * into array elements, `()` into a function's return; union arms and
- * promise payloads are transparent. The empty path means `t` itself is
+ * into array elements, `(param)` into a function parameter, `()` into a
+ * function's return; union arms and promise payloads are transparent. The empty path means `t` itself is
  * the blocker; null means `t` maps (or is `any`). */
 function innerBlockedMember(
   t: ts.Type,
@@ -9507,8 +9548,13 @@ function innerBlockedMember(
   if (calls.length === 1) {
     const sig = calls[0]!;
     if (sig.getTypeParameters().length > 0) return here;
-    if (sig.getParameters().some((p) => mapType(checker.getTypeOfSymbol(p), ctx) === null))
-      return here;
+    // A parameter carries the failure as often as the result does (an
+    // event handler's `ctx`, a factory's `theme`): name that parameter's
+    // slot instead of stopping at the function.
+    for (const param of sig.getParameters()) {
+      const paramTs = checker.getTypeOfSymbol(param);
+      if (mapType(paramTs, ctx) === null) return step(`(${ts.symbolName(param)})`, paramTs);
+    }
     return step("()", checker.getReturnTypeOfSignature(sig));
   }
   if (

@@ -44,3 +44,14 @@ interface Holder {
 const held = (0 as unknown) as Holder;
 const kept = held;
 console.log(kept.label);
+
+// A function's parameter carries the failure; the message steps past the
+// named parameter type into the member that does not compile, so a large
+// interface does not hide the one field at fault.
+interface Session {
+  started: boolean;
+  cache: WeakRef<object>;
+}
+type Handler = (session: Session) => void;
+const handled = (0 as unknown) as Handler;
+console.log(typeof handled);

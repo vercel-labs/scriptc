@@ -51,6 +51,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
+    ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
     ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),

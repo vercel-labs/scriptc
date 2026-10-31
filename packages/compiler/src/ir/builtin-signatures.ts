@@ -402,6 +402,13 @@ function buildLibFnSignatures() {
      * the may-throw seed set. */
     "dyn.defineProps": { argTypes: [DYN, DYN], result: DYN },
     "dyn.defineProperty": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** dyn.defineProps / dyn.defineProperty / dyn.objCreateWithProperties
+     * for a descriptor (or a property-descriptor map) built by an expression
+     * instead of a plain object literal: ToPropertyDescriptor accepts any
+     * object and reads each field through [[HasProperty]] and [[Get]]. */
+    "dyn.definePropsShapes": { argTypes: [DYN, DYN], result: DYN },
+    "dyn.definePropertyShapes": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "dyn.objCreateWithPropertiesShapes": { argTypes: [DYN, DYN], result: DYN },
     "dyn.getOwnPropertyDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "dyn.arrayProtoCall": { argTypes: [DYN, STRING, DYN], result: DYN },
     /** The same call through the array-like unit (JavaScript sources):
@@ -2222,6 +2229,8 @@ function buildLibFnSignatures() {
     "http.reqHttpVersionMajor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqHttpVersionMinor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqAborted": { argTypes: [HTTPREQ_T], result: BOOL },
+    "http.reqDestroyed": { argTypes: [HTTPREQ_T], result: BOOL },
+    "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
     "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
     "http.resDestroy": { argTypes: [HTTPRES_T], result: VOID },
     "http.resOnClose": {
@@ -4213,6 +4222,10 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A standard library prototype object as a value (`Date.prototype` read
+     * in a JavaScript source), named by its constructor: the unit in
+     * scr_dyn_stdlib_prototype.c. */
+    "dyn.stdlibPrototype": { argTypes: [STRING], result: DYN },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
@@ -5036,6 +5049,21 @@ function buildLibFnSignatures() {
      * (key-order-witness.ts ordered spreads). Both are record types. Never
      * throws. */
     "record.sourceSpread": { argTypes: [null, null], result: VOID },
+    /** `record.sourceShare(built, value)`: the record `built`, of value's
+     * record type, keeps value's kept source too (record-links.ts compose
+     * helpers). Never throws. */
+    "record.sourceShare": { argTypes: [null, null], result: VOID },
+    /** `record.link(copy, source, pair)`: the copy a narrowing conversion
+     * just built links to its source record (IrModule.recordLinks; `pair`
+     * a numLit). Borrows both. Never throws. */
+    "record.link": { argTypes: [null, null, F64], result: VOID },
+    /** `record.linkIs(copy, pair)`: whether the record links to a source
+     * through the pair (a numLit). Never throws. */
+    "record.linkIs": { argTypes: [null, F64], result: BOOL },
+    /** `record.linkSource(copy, pair)`: the source a record links to
+     * through the pair, which the caller has tested (record.linkIs); its
+     * type is the pair's source type. Never throws. */
+    "record.linkSource": { argTypes: [null, F64], result: VOID },
     /** `record.sourceNote(built, keys)`: the record a width spread just
      * built keeps `keys` (the copy's own keys, in order; declared ones are
      * placeholders) as its kept source when they hold an undeclared key or

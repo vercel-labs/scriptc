@@ -2718,25 +2718,7 @@ static SCR_TL const char *scr_child_err_code = NULL;
 
 /* The errno name embedded in an errnoException-style message — the
  * POSIX arm's parser, shared story (see its comment). */
-static const char *scr_err_msg_code(const ScrStr *msg) {
-  static SCR_TL char buf[32];
-  const char *known = scr_error_message_code(msg);
-  if (known != NULL) return known;
-  const char *sp = strchr((const char *)msg->data, ' ');
-  if (sp == NULL || sp[1] != 'E') return NULL;
-  const char *tok = sp + 1;
-  size_t n = 1;
-  while (tok[n] != '\0' && tok[n] != ' ' && tok[n] != ':') {
-    char ch = tok[n];
-    if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) return NULL;
-    if (n + 1 >= sizeof buf) return NULL;
-    n++;
-  }
-  if (n < 3) return NULL; /* "EIO" is the shortest real name */
-  memcpy(buf, tok, n);
-  buf[n] = '\0';
-  return buf;
-}
+static const char *scr_err_msg_code(const ScrStr *msg) { return scr_error_event_code(msg); }
 
 void scr_child_err_thunk_error(ScrClosure *cb, ScrStr *msg) {
   if (scr_event_error_payload != NULL) {
@@ -5654,37 +5636,10 @@ void scr_child_err_thunk0(ScrClosure *cb, ScrStr *msg) {
 static SCR_TL const char *scr_child_err_code = NULL;
 
 /* [.code on event errors — net/http/dgram parity with spawn failures]
- * The errno name embedded in an errnoException-style message ("connect
- * ECONNREFUSED 127.0.0.1:80", "listen EADDRINUSE: address already in use
- * :::4000", "bind EADDRINUSE 0.0.0.0:4000"): the SECOND space-separated
- * token when it spells an errno name (E + capitals/digits, a colon or
- * space terminating). Every message fired through this thunk is this
- * runtime's own construction, and exactly the ones carrying a code embed
- * it in this shape — Node builds the same messages FROM the code
- * (errnoException), so parsing it back is exact over the closed message
- * set. Fallback only (an explicit context wins); returns a static buffer
- * valid until the next call, or NULL for code-less messages. Messages
- * whose text carries no errno name take their code from
- * scr_error_message_code. */
-static const char *scr_err_msg_code(const ScrStr *msg) {
-  static SCR_TL char buf[32];
-  const char *known = scr_error_message_code(msg);
-  if (known != NULL) return known;
-  const char *sp = strchr((const char *)msg->data, ' ');
-  if (sp == NULL || sp[1] != 'E') return NULL;
-  const char *tok = sp + 1;
-  size_t n = 1;
-  while (tok[n] != '\0' && tok[n] != ' ' && tok[n] != ':') {
-    char c = tok[n];
-    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return NULL;
-    if (n + 1 >= sizeof buf) return NULL;
-    n++;
-  }
-  if (n < 3) return NULL; /* "EIO" is the shortest real name */
-  memcpy(buf, tok, n);
-  buf[n] = '\0';
-  return buf;
-}
+ * The message's code (scr_error_event_code: the errno name an
+ * errnoException-style message embeds, or scr_error_message_code's
+ * table). Fallback only: an explicit context wins. */
+static const char *scr_err_msg_code(const ScrStr *msg) { return scr_error_event_code(msg); }
 
 /* An (err: Error) listener: constructs the %Error instance from the
  * message (borrowed; scr_error_new retains its copy) — the listener owns

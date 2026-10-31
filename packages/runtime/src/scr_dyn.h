@@ -1300,6 +1300,8 @@ void *scr_dyn_obj_source_cast(const ScrDyn *d,
 ScrDyn *scr_dyn_new_obj_null_proto(void);
 ScrDyn *scr_dyn_obj_create(ScrDyn *prototype);
 ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptors);
+/* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
+ScrDyn *scr_dyn_obj_create_with_properties_shapes(ScrDyn *prototype, ScrDyn *descriptors);
 ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object);
 bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key);
 bool scr_dyn_is_class_capsule(const ScrDyn *d);
@@ -1406,6 +1408,18 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
+/* A conversion of a native record into a narrower record type links the
+ * copy to its source when the source has properties the copy's type does
+ * not declare (scr_json.c): `source` moves in and is released with the
+ * copy through `release`; `pair` (nonzero) names the conversion's
+ * (source type, copy type) pair. scr_record_link_pair answers a copy's
+ * pair, 0 when it has no link, and scr_record_link_source its source
+ * (borrowed). */
+void scr_record_link(void *copy, void *source, void (*release)(void *), uint32_t pair);
+/* `dst`, a record of `src`'s shape, keeps src's kept source too. */
+void scr_record_source_share(void *dst, const void *src);
+uint32_t scr_record_link_pair(const void *copy);
+void *scr_record_link_source(const void *copy);
 /* A literal that starts with `...src` creates src's keys first, in src's
  * order: when src kept a source, the fresh record `dst` (whose shape's
  * declared names are `names`) keeps one listing the keys it declares in
@@ -1560,6 +1574,11 @@ ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_l
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
+/* The same, where the descriptor may be any object (scr_dyn_descriptor_snapshot). */
+ScrDyn *scr_dyn_define_property_shapes(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
+/* ToPropertyDescriptor of any object: a plain object holding the present
+ * fields as own data properties (+1), or NULL with an exception pending. */
+ScrDyn *scr_dyn_descriptor_snapshot(const ScrDyn *descriptor);
 void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits);
 void scr_dyn_class_view_attributes(ScrDyn *view, double bits);
 /* The integrity state of a class instance's checked view as CLASS_* bits,
@@ -1663,6 +1682,11 @@ ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *argument
 ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what);
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
+/* A standard library prototype object as a value — `Date.prototype` read in
+ * a JavaScript source (+1, one object per thread; the constructor's
+ * `prototype` is the same object). Named by the constructor whose interface
+ * it carries; dyn.stdlibPrototype's implementation. */
+ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name);
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
 ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
 ScrStr *scr_dyn_error_string(const ScrDyn *d);
@@ -1838,6 +1862,8 @@ ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
  * Returns the target (+1, JS's return), or NULL with a pending catchable
  * TypeError (non-object target/descriptor — Node's messages). */
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
+/* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
+ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs);
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys);
 /* Boxes a closure as a callable dyn value. Ownership of `clo` MOVES in
  * (callers retain first when they keep their own reference); `sig`/`name`

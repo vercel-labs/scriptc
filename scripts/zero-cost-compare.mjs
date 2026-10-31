@@ -357,6 +357,7 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_call",
   "scr_dyn_apply",
   "scr_dyn_invoke",
+  "scr_dyn_stdlib_prototype",
   "scr_dyn_array_like",
   "scr_dyn_builtin_prototype",
   "scr_dyn_construct",
@@ -810,6 +811,7 @@ export function timingGroups(rows) {
   return {
     bench: rows.filter((r) => r.id.startsWith("bench/")),
     self: rows.filter((r) => r.id === "self/cli"),
+    fixtures: rows.filter((r) => r.id.startsWith("fixture/")),
   };
 }
 

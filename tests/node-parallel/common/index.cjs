@@ -110,6 +110,10 @@ function expectsError(validator, exact) {
   }, exact);
 }
 
+function printSkipMessage(msg) {
+  console.log(`1..0 # Skipped: ${msg}`);
+}
+
 function platformTimeout(ms) {
   if (isAIX || isIBMi) return (typeof ms === "bigint" ? 2n : 2) * ms;
   return ms;
@@ -192,6 +196,7 @@ module.exports = {
   expectsError,
   invalidArgTypeHelper,
   platformTimeout,
+  printSkipMessage,
   spawnPromisified,
   get hasIPv6() {
     const re = isWindows ? /Loopback Pseudo-Interface/ : isIBMi ? /\*LOOPBACK/ : /lo/;

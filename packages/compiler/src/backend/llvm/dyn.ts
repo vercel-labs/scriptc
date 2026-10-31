@@ -70,7 +70,7 @@ import {
 } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
-import type { WalkerHost } from "./walkers.js";
+import { emitLinkedRecordBranches, type WalkerHost } from "./walkers.js";
 import type { LlStreamTypedRefAdapter } from "./expr-context.js";
 
 /** typeKey with `?` after every `(T | undefined)[]` (optionalElements),
@@ -3618,6 +3618,12 @@ export class LlDyn {
           this.textCodecToDyn(B, t, shape, codec);
           break;
         }
+        // A copy linked to its source converts as its composed record.
+        emitLinkedRecordBranches(host, B, t.shapeId, "%v", (sourceT, composed) => {
+          const r = B.tmp();
+          B.line(`${r} = call ptr @${this.toDynHelper(sourceT)}(ptr ${composed})`);
+          return `ret ptr ${r}`;
+        });
         const struct = mangleRecordStruct(t.shapeId);
         const base = host.nullableUnions.fieldBase(t.shapeId);
         const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));

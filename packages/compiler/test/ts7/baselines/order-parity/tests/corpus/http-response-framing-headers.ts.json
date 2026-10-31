@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-response-framing-headers.ts"
+ ],
+ "diags": []
+}

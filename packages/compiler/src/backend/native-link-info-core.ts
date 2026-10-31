@@ -112,6 +112,10 @@ export interface NativeLinkFeatures {
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
+   * (false) otherwise, so other programs keep their exact link line. */
+  stdlibPrototypeValue?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

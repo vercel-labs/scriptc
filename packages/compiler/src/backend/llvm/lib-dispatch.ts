@@ -6,7 +6,7 @@ import { emitTlsLibCall } from "./lib-tls.js";
 import { emitHttp2LibCall } from "./lib-http2.js";
 import { emitDatagramLibCall } from "./lib-datagram.js";
 import { emitTestLibCall } from "./lib-test.js";
-import { FN_ATTRS, arrNewCall, traceArg, vAdapters } from "./shapes.js";
+import { FN_ATTRS, arrNewCall, releaseSym, traceArg, vAdapters } from "./shapes.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 
@@ -28,6 +28,7 @@ import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
 import { registerReplay } from "./emit-journal.js";
+import { RECORD_SOURCES_GATE } from "./alloc.js";
 
 /** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
 const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
@@ -274,6 +275,28 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${out} = call ptr @scr_promise_payload_ref(ptr ${promise.name}) ; +1`);
     return host.own({ name: out, type: e.type });
   }
+  if (e.fn === "record.sourceHas") {
+    // A module whose conversions keep no record sources has none to find:
+    // the gate constant folds the test, and the source-reading branches
+    // with it (alloc.ts RECORD_SOURCES_GATE).
+    const record = host.emitReadReceiver(e.args[0]!);
+    const gate = B.tmp(),
+      join = B.newLabel("rsrc.done"),
+      probe = B.newLabel("rsrc.probe"),
+      from = B.currentLabel();
+    B.line(`${gate} = load i1, ptr ${host.shapeHost.recordSourcesGate ?? RECORD_SOURCES_GATE}`);
+    B.condBr(gate, probe, join);
+    B.startBlock(probe);
+    host.declare(`declare zeroext i1 @scr_record_source_has(ptr)`);
+    const has = B.tmp();
+    B.line(`${has} = call zeroext i1 @scr_record_source_has(ptr ${record.name})`);
+    const probed = B.currentLabel();
+    B.br(join);
+    B.startBlock(join);
+    const t = B.tmp();
+    B.line(`${t} = phi i1 [ false, %${from} ], [ ${has}, %${probed} ]`);
+    return { name: t, type: e.type };
+  }
   if (e.fn === "record.sourceSpread") {
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);
@@ -282,6 +305,50 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
     return { name: "", type: e.type };
+  }
+  if (e.fn === "record.sourceShare") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const value = host.emitReadReceiver(e.args[1]!);
+    host.dyn.keepsRecordSources = true;
+    host.declare(`declare void @scr_record_source_share(ptr, ptr)`);
+    B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.link") {
+    // The link owns a reference to the source, released with the copy.
+    const copy = host.emitReadReceiver(e.args[0]!);
+    const source = host.emitReadReceiver(e.args[1]!);
+    const pair = e.args[2]!;
+    if (pair.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: record.link pair is not a literal");
+    const retained = host.retainFrame(source.name, e.args[1]!.type);
+    const release = releaseSym(host.shapeHost, e.args[1]!.type);
+    host.declare(`declare void @scr_record_link(ptr, ptr, ptr, i32)`);
+    B.line(
+      `call void @scr_record_link(ptr ${copy.name}, ptr ${retained}, ptr ${release}, i32 ${pair.value})`,
+    );
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.linkIs" || e.fn === "record.linkSource") {
+    const copy = host.emitReadReceiver(e.args[0]!);
+    const pair = e.args[1]!;
+    if (pair.kind !== "numLit")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} pair is not a literal`);
+    if (e.fn === "record.linkSource") {
+      host.declare(`declare ptr @scr_record_link_source(ptr)`);
+      const source = B.tmp();
+      B.line(`${source} = call ptr @scr_record_link_source(ptr ${copy.name})`);
+      return host.own({ name: host.retainFrame(source, e.type), type: e.type });
+    }
+    // A module links copies only of its recordLinks pairs, so the test
+    // reads the table only after the gate (alloc.ts RECORD_SOURCES_GATE,
+    // true whenever the module has links).
+    host.declare(`declare i32 @scr_record_link_pair(ptr)`);
+    const found = B.tmp(),
+      t = B.tmp();
+    B.line(`${found} = call i32 @scr_record_link_pair(ptr ${copy.name})`);
+    B.line(`${t} = icmp eq i32 ${found}, ${pair.value}`);
+    return { name: t, type: e.type };
   }
   if (e.fn === "record.sourceNote") {
     const built = host.emitReadReceiver(e.args[0]!);

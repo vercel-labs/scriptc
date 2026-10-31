@@ -1444,13 +1444,40 @@ export function lowerAsExpression(
       (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
-  const inner = lowerer.lowerExpr(expr.expression);
+  // `{ ...message, content } as T`: the program claimed the literal's shape,
+  // so a union-valued member converts in a checked context — an arm the
+  // asserted target excludes throws the catchable TypeError (a lying
+  // assertion) instead of refusing the member (coercions.assertedOperand).
+  // Parentheses and non-null assertions name the same literal
+  // (`({ ...message, content }) as T`). An inner assertion or `satisfies`
+  // carries its own operand context.
+  let assertedSource = expr.expression;
+  while (ts.isParenthesizedExpression(assertedSource) || ts.isNonNullExpression(assertedSource))
+    assertedSource = assertedSource.expression;
+  const assertedOperand = assertedSource.kind === ts.SyntaxKind.ObjectLiteralExpression;
+  if (assertedOperand) lowerer.coercions.assertedOperand++;
+  let inner: IrExpr;
+  try {
+    inner = lowerer.lowerExpr(expr.expression);
+  } finally {
+    if (assertedOperand) lowerer.coercions.assertedOperand--;
+  }
   const use = runtimeOptionalUseOf(expr);
   if (inner.type.kind === "union" && runtimeOptionalAssertionErases(lowerer, expr, inner, use))
     return inner;
   if (inner.type.kind !== "dyn") {
     const targetTs0 = lowerer.checker.getTypeFromTypeNode(expr.type);
     const target = lowerer.mapTypeOf(targetTs0);
+    // A static assertion ERASES in Node, but the claim it makes still
+    // answers to the program: a slot this value reaches that no ordinary
+    // conversion covers (SC2002/SC2003) converts it CHECKED instead of
+    // refusing (coercions/asserted.ts) — a value outside the claimed shape
+    // throws the catchable TypeError, never a silent reinterpretation.
+    // Recorded before the branches below so every path carries it, the
+    // erasure included.
+    const claimable = (type: IrType | null | undefined): type is IrType =>
+      type?.kind === "union" || type?.kind === "record" || type?.kind === "array";
+    if (claimable(target) && claimable(inner.type)) lowerer.assertedValues.set(inner, target);
     // A PRESENCE PROBE of a member read through the assertion (`typeof
     // (u as R).member`, `(u as R).member !== undefined`): the read answers
     // off the value actually stored, since Node erases the assertion and an
@@ -1545,14 +1572,23 @@ export function lowerAsExpression(
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
     // widths and index-signature captures share their established copy
-    // semantics (and unsupported pairs report SC2002 at this assertion).
+    // semantics.
     if (
       inner.type.kind === "record" &&
       target?.kind === "record" &&
       inner.type.shapeId !== target.shapeId
     ) {
-      lowerer.assertedValues.set(inner, target);
-      return lowerer.coerceInto(expr, inner, target);
+      // A pair outside the width family (an index-signature record asserted
+      // to a record of its own keys: a `Record<string, V>` filled key by
+      // key and cast to `{ k: V }`) converts checked (assertedConversion):
+      // every claimed field validated, the value's own keys kept. The claim
+      // follows the value the assertion PRODUCED, not the operand it read —
+      // a generic body's operand keeps the caller's layout while its
+      // asserted result carries the target's — so later slots check the
+      // shape the assertion actually made.
+      const converted = lowerer.coerceInto(expr, inner, target);
+      if (converted !== inner) lowerer.assertedValues.set(converted, target);
+      return converted;
     }
     // `u as Arm` on a UNION value is `u!`'s spelling with a named arm
     // (`req.headers[h] as string`): the CHECKED single-arm extraction —
@@ -1586,15 +1622,9 @@ export function lowerAsExpression(
       const asserted = checkedClassUnionAssertion(lowerer, inner, target, locOf(expr));
       if (asserted) return asserted;
     }
-    // The erased value still answers to the assertion: a slot it cannot
-    // reach by an ordinary conversion converts it as asserted
-    // (assertedConversion).
-    if (
-      target &&
-      (target.kind === "union" || target.kind === "record" || target.kind === "array") &&
-      (inner.type.kind === "union" || inner.type.kind === "array")
-    )
-      lowerer.assertedValues.set(inner, target);
+    // The erased value still answers to the assertion (the claim recorded
+    // above): a slot it cannot reach by an ordinary conversion converts it
+    // as asserted (assertedConversion).
     return inner; // erasure, unchanged
   }
 

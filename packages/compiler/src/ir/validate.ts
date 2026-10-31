@@ -10,6 +10,7 @@ import type {
   IrFunction,
   IrGlobal,
   IrModule,
+  IrRecordLink,
   IrRecordShape,
   IrStmt,
   IrType,
@@ -1010,6 +1011,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       mod.lifetimeRegions === true,
       new Set(mod.threadSlotKeys ?? []),
       mod.declOrigins?.length ?? 0,
+      mod.recordLinks ?? [],
     );
   }
   return errors;
@@ -1030,6 +1032,7 @@ function validateFunction(
   lifetimeRegions: boolean,
   threadSlotKeys: ReadonlySet<string>,
   declOriginCount: number,
+  recordLinks: readonly IrRecordLink[],
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -4290,6 +4293,31 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    // A record link names a pair of the module's recordLinks: the copy has
+    // the pair's target type, the source (and linkSource's result) its
+    // source type.
+    if (e.fn === "record.link" || e.fn === "record.linkIs" || e.fn === "record.linkSource") {
+      const pairArg = e.args[e.fn === "record.link" ? 2 : 1];
+      const pair =
+        pairArg?.kind === "numLit"
+          ? recordLinks.find((link) => link.pair === pairArg.value)
+          : undefined;
+      if (!pair) {
+        err(`libCall ${e.fn} must name a pair of the module's recordLinks`, e.loc);
+        return true;
+      }
+      const copy = e.args[0];
+      if (copy?.type.kind !== "record" || copy.type.shapeId !== pair.to)
+        err(`libCall ${e.fn} copy must have the pair's target type`, e.loc);
+      const sourceType =
+        e.fn === "record.link" ? e.args[1]?.type : e.fn === "record.linkSource" ? e.type : null;
+      if (
+        sourceType !== null &&
+        (sourceType?.kind !== "record" || sourceType.shapeId !== pair.from)
+      )
+        err(`libCall ${e.fn} source must have the pair's source type`, e.loc);
+      return true;
+    }
     // ArraySpeciesCreate over an Array method's result, and Array.of /
     // Array.from on a class that extends Array: the result has the plain
     // result's array type.
@@ -6451,11 +6479,9 @@ function validateFunction(
           if (delegatedYield !== e) err("delegated yield outside a delegate resume", e.loc);
           if (e.type.kind !== "void" || e.captureCompletion) err("invalid delegated yield", e.loc);
         } else if (e.captureCompletion) {
-          if (
-            fn.async ||
-            e.type.kind !== "dyn" ||
-            !typeEquals(e.captureCompletion.returnType, fn.returnType)
-          ) {
+          // Both kinds capture: an async generator's delegation forwards
+          // the received completion to its delegate the same way.
+          if (e.type.kind !== "dyn" || !typeEquals(e.captureCompletion.returnType, fn.returnType)) {
             err("invalid captured generator completion", e.loc);
           }
         } else if (fn.generator.nextT.kind === "undefinedT") {

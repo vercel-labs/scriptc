@@ -273,7 +273,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resSetHeader",
   "http.resSetHeaderDyn",
+  "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",
   "http.serverMaxHeaderSize",
@@ -796,6 +798,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.bagGet",
   "dyn.bagSet",
   "dyn.defineProperty",
+  // The same operations for a descriptor built by an expression; they throw
+  // the same TypeErrors, and a getter on the descriptor can throw.
+  "dyn.definePropsShapes",
+  "dyn.definePropertyShapes",
+  "dyn.objCreateWithPropertiesShapes",
   "dyn.getOwnPropertyDescriptor",
   "child.propsDefine",
   "child.propsDescriptor",

@@ -5500,6 +5500,7 @@ export class LlDyn {
           B,
           "dfk.rest",
           () => {
+            if (isRefCounted(p)) B.line(`call void ${releaseSym(host, p)}(ptr ${a})`);
             t.params.slice(0, i).forEach((q, j) => {
               if (isRefCounted(q)) B.line(`call void ${releaseSym(host, q)}(ptr ${argNames[j]})`);
             });
@@ -5554,6 +5555,7 @@ export class LlDyn {
           B,
           "dfk",
           () => {
+            if (isRefCounted(p)) B.line(`call void ${releaseSym(host, p)}(ptr ${a})`);
             t.params.slice(0, i).forEach((q, j) => {
               if (isRefCounted(q)) B.line(`call void ${releaseSym(host, q)}(ptr ${argNames[j]})`);
             });

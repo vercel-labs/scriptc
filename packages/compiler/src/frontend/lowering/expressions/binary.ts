@@ -28,6 +28,7 @@ import {
   canBoxFuncIntoDyn,
   isUnitType,
   typeEquals,
+  sortArms,
   typeKey,
 } from "../../../ir/ir.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
@@ -472,7 +473,7 @@ export function lowerNullishPair(
   ) {
     const arms = [...rest];
     if (!arms.some((arm) => typeEquals(arm, rightType))) arms.push(rightType);
-    arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    sortArms(arms);
     type = { kind: "union", unionId: lowerer.unions.intern(arms) };
     lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
   }
@@ -2623,7 +2624,7 @@ export function lowerStrictEquality(
           for (const arm of rightDef.arms) {
             if (!arms.some((candidate) => typeEquals(candidate, arm))) arms.push(arm);
           }
-          arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          sortArms(arms);
           const common: IrType & { kind: "union" } = {
             kind: "union",
             unionId: lowerer.unions.intern(arms),
@@ -2932,7 +2933,7 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
         for (const arm of [...rightArms, ...leftArms.filter(isUnitType)]) {
           byKey.set(typeKey(arm), arm);
         }
-        const arms = [...byKey.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+        const arms = sortArms([...byKey.values()]);
         if (arms.length > 1) {
           const source =
             right.type.kind === "union" ? lowerer.unions.get(right.type.unionId) : undefined;

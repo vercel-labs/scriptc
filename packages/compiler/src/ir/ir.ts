@@ -957,6 +957,35 @@ export function typeKey(t: IrType): string {
   }
 }
 
+/** Sorts arms into `typeKey` order, building each key once.
+ *
+ * The inline form this replaces, `arms.sort((a, b) => (typeKey(a) <
+ * typeKey(b) ? -1 : 1))`, builds two keys for every comparison — 2·n·log n
+ * key strings per sort, and a key walks its whole type. This form builds n
+ * keys and compares them from a map. The comparator answers the same way for
+ * every pair (a pure function of the two arms), so the sort visits the same
+ * comparisons and leaves the arms in the same order; a sort compacts the
+ * array in place, and so does this. */
+export function sortArms(arms: IrType[]): IrType[] {
+  if (arms.length < 2) return arms;
+  const keys = new Map<IrType, string>();
+  for (const arm of arms) if (!keys.has(arm)) keys.set(arm, typeKey(arm));
+  return arms.sort((a, b) => (keys.get(a)! < keys.get(b)! ? -1 : 1));
+}
+
+/** `sortArms` for the total-order form `< -1 : > 1 : 0`, which leaves arms
+ * with equal keys in their input order instead of reversing them. */
+export function sortArmsTotal(arms: IrType[]): IrType[] {
+  if (arms.length < 2) return arms;
+  const keys = new Map<IrType, string>();
+  for (const arm of arms) if (!keys.has(arm)) keys.set(arm, typeKey(arm));
+  return arms.sort((a, b) => {
+    const left = keys.get(a)!;
+    const right = keys.get(b)!;
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+}
+
 /** The type a CALL SITE (or function value) receives from a module
  * function: an async body's returnType is the promise's INNER type, so
  * calls and closures over it see Promise<T>; a generator body's is the

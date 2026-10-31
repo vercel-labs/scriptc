@@ -29,6 +29,7 @@ import {
   recordTextCodecClass,
   shapeHasAccessorSlots,
   typeEquals,
+  sortArms,
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
@@ -1780,7 +1781,7 @@ function joinedFieldType(lowerer: Lowerer, fields: readonly { type: IrType }[]):
   };
   for (const field of fields) if (!push(field.type)) return null;
   if (arms.length === 0) return null;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
@@ -1922,7 +1923,7 @@ function lowerTupleIndexRead(
       `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (an element type has no value representation)`,
     );
   }
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   if (arms.length > 1 && !unionContainerArmsOk(arms)) {
     lowerer.unsupported(
       "SC1090",

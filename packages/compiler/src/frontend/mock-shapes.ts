@@ -17,7 +17,7 @@
  * type or undefined (a checked-dynamic value for functions returning void
  * or undefined, since a record field cannot have a unit type), and error
  * and this as checked-dynamic values. */
-import { DYN, F64, NULL_T, UNDEFINED_T, VOID, typeKey, type IrType } from "../ir/ir.js";
+import { DYN, F64, NULL_T, UNDEFINED_T, VOID, sortArms, type IrType } from "../ir/ir.js";
 import type { TypeMapperCtx } from "./type-mapper.js";
 
 /** The mock records intern into the type mapper's registries. */
@@ -30,7 +30,7 @@ function orUndefined(t: IrType, reg: MockShapeRegistries): IrType {
   const arms = t.kind === "union" ? [...(reg.unions.get(t.unionId)?.arms ?? [])] : [t];
   if (arms.some((a) => a.kind === "undefinedT")) return t;
   arms.push(UNDEFINED_T);
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: reg.unions.intern(arms) };
 }
 
@@ -51,7 +51,7 @@ function mockArgumentsType(fn: IrType & { kind: "func" }, reg: MockShapeRegistri
     return fn.params[0]!;
   }
   if (fn.params.length === 0) {
-    const arms = [NULL_T, UNDEFINED_T].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const arms = sortArms([NULL_T, UNDEFINED_T]);
     return { kind: "array", elem: { kind: "union", unionId: reg.unions.intern(arms) } };
   }
   const fields = fn.params.map((type, i) => ({ name: String(i), type }));

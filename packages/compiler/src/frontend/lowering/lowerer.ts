@@ -235,7 +235,7 @@ import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
-import { recordTextCodecClass } from "../../ir/ir.js";
+import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
@@ -4656,6 +4656,10 @@ export class Lowerer {
     "stdioPatchSites",
     "requestInitPropMutatedSyms",
     "classProtocols",
+    // isStdlibFile's memo: an answer is a pure function of the file's name
+    // and the program's library metadata, so a reused unit computes a
+    // missing answer again when it asks.
+    "stdlibFiles",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
@@ -7454,7 +7458,7 @@ export class Lowerer {
         const primitive = (t: IrType | null): t is IrType =>
           t?.kind === "f64" || t?.kind === "string" || t?.kind === "bool";
         if (primitive(left) && primitive(right) && !typeEquals(left, right)) {
-          const arms = [left, right].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          const arms = sortArms([left, right]);
           return { kind: "union", unionId: this.unions.intern(arms) };
         }
         return null;
@@ -14685,7 +14689,7 @@ export class Lowerer {
    * miss (process.env reads). "undefined" sorts last among all arm typeKeys,
    * so the sorted pair is always [t, undefined]. */
   withUndefinedArm(t: IrType): IrType {
-    const arms = [t, UNDEFINED_T].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const arms = sortArms([t, UNDEFINED_T]);
     return { kind: "union", unionId: this.unions.intern(arms) };
   }
 
@@ -16505,13 +16509,27 @@ export class Lowerer {
    * fallback (see loadProgram — the lowering tables recognize the same
    * members by name + this provenance, and everything else those files
    * declare hits the SC2020-family fence). The file half of every
-   * supported-surface provenance check. */
-  readonly isStdlibFile = (sf: ts.SourceFile): boolean =>
-    sf.fileName === this.ambient ||
-    sf.fileName === this.overridesAmbient ||
-    isFallbackDtsPath(sf.fileName) ||
-    this.program.isSourceFileDefaultLibrary(sf) ||
-    (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+   * supported-surface provenance check.
+   *
+   * Type mapping asks this several times per mapped declaration, and the
+   * answer is a pure function of the file's name and of the program's
+   * library metadata, both fixed for a lowerer: one answer per file name,
+   * then a map lookup. Every question is about a declaration file, so the
+   * memo holds a few hundred entries however large the program. */
+  private readonly stdlibFiles = new Map<string, boolean>();
+  readonly isStdlibFile = (sf: ts.SourceFile): boolean => {
+    let answer = this.stdlibFiles.get(sf.fileName);
+    if (answer === undefined) {
+      answer =
+        sf.fileName === this.ambient ||
+        sf.fileName === this.overridesAmbient ||
+        isFallbackDtsPath(sf.fileName) ||
+        this.program.isSourceFileDefaultLibrary(sf) ||
+        (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+      this.stdlibFiles.set(sf.fileName, answer);
+    }
+    return answer;
+  };
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);

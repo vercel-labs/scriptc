@@ -59,7 +59,7 @@ import {
   funcOf,
   isUnitType,
   typeEquals,
-  typeKey,
+  sortArms,
 } from "../../ir/ir.js";
 import {
   cjsExportAssignmentOf,
@@ -720,7 +720,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           );
         } else {
           const arms = [inner, ...units];
-          arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          sortArms(arms);
           type = { kind: "union", unionId: lowerer.unions.intern(arms) };
         }
         return { kind: "awaitUnionExpr", value, promiseTag, type, loc };

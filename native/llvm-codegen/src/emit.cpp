@@ -857,6 +857,10 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
     ParseDiagnostic.print("scriptc-llvm-codegen", Stream);
     return EmitFailure{"invalid_ir", Stream.str()};
   }
+  // Normalize before serialization: these bytes key the partition cache.
+  // The input IR filename is temporary, unlike the caller's source path.
+  if (!Options.SourcePath.empty())
+    Mod->setSourceFileName(moduleSourceName(Options.SourcePath));
   if (std::optional<EmitFailure> Failure = verify(*Mod, "verification_failed"))
     return Failure;
   for (const GlobalValue &GV : Mod->global_values())

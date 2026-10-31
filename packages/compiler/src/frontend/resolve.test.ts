@@ -43,6 +43,55 @@ test("resolver reset clears the active project package realm", async () => {
   }
 });
 
+test.for(["js", "mjs", "cjs"])("an active package-less project resolves .%s twins without admitting foreign packages", async (extension) => {
+  const dir = realpathSync(await mkdtemp(join(tmpdir(), "scriptc-resolve-sidecars-")));
+  const declaration = join(dir, "value.d." + extension.replace("js", "ts"));
+  const runtime = join(dir, "value." + extension);
+  try {
+    const foreign = join(dir, "foreign");
+    await mkdir(foreign);
+    await Promise.all([
+      writeFile(declaration, "export declare const value: number;"),
+      writeFile(runtime, "export const value = 1;"),
+      writeFile(join(foreign, "package.json"), '{"type":"module"}'),
+      writeFile(join(foreign, "value.d.ts"), "export declare const value: number;"),
+      writeFile(join(foreign, "value.js"), "export const value = 2;"),
+    ]);
+    clearResolveCaches();
+    expect(projectDtsRuntimeSibling(declaration)).toBeNull();
+    setProjectRealm(join(dir, "main.ts"));
+    expect(projectDtsRuntimeSibling(declaration)).toBe(runtime);
+    expect(resolveProjectModule(join(dir, "main.ts"), "./value." + extension)).toBe(runtime.replaceAll("\\", "/"));
+    expect(projectDtsRuntimeSibling(join(foreign, "value.d.ts"))).toBeNull();
+    clearResolveCaches();
+    expect(projectDtsRuntimeSibling(declaration)).toBeNull();
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("project aliases and self references select the same runtime as relative imports", async () => {
+  const dir = realpathSync(await mkdtemp(join(tmpdir(), "scriptc-resolve-sidecar-alias-")));
+  const entry = join(dir, "main.ts");
+  const runtime = join(dir, "value.mjs");
+  try {
+    await Promise.all([
+      writeFile(join(dir, "package.json"), JSON.stringify({ name: "local-project", type: "module", imports: { "#value": "./value.mjs" }, exports: { "./value": "./value.mjs" } })),
+      writeFile(join(dir, "value.d.mts"), "export declare const value: number;"),
+      writeFile(runtime, "export const value = 1;"),
+    ]);
+    clearResolveCaches();
+    setProjectRealm(entry);
+    setProjectPathMappings({ "@value": [runtime] });
+    for (const specifier of ["./value.mjs", "#value", "local-project/value", "@value"])
+      expect(resolveProjectModule(entry, specifier)).toBe(runtime.replaceAll("\\", "/"));
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("source-only workspace packages are project modules while JavaScript packages stay external", () => {
   const sourceEntry = join(fixturesRoot, "workspace-source/main.ts");
   const sourceDir = realpathSync(join(fixturesRoot, "workspace-source/node_modules/wssource"));

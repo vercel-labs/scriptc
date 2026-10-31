@@ -280,17 +280,27 @@ function loadAsDirectory(base: string): string | null {
   return null;
 }
 
-let projectRealmPkgJson: string | null = null;
+// undefined means no active load; null is an active package-less project.
+let projectRealmPkgJson: string | null | undefined;
 
 export function setProjectRealm(entryPath: string): void {
   projectRealmPkgJson = nearestPkgJsonPath(entryPath);
 }
 
+export function isProjectRealmFile(path: string): boolean {
+  return (
+    projectRealmPkgJson !== undefined &&
+    !path.includes("/node_modules/") &&
+    !path.includes("\\node_modules\\") &&
+    nearestPkgJsonPath(path) === projectRealmPkgJson
+  );
+}
+
 export function projectDtsRuntimeSibling(path: string): string | null {
-  if (path.includes("/node_modules/") || path.includes("\\node_modules\\")) return null;
-  if (!path.endsWith(".d.ts")) return null;
-  if (projectRealmPkgJson === null || nearestPkgJsonPath(path) !== projectRealmPkgJson) return null;
-  const sibling = path.slice(0, -".d.ts".length) + ".js";
+  if (!isProjectRealmFile(path)) return null;
+  const extension = [".d.ts", ".d.mts", ".d.cts"].find((suffix) => path.endsWith(suffix));
+  if (extension === undefined) return null;
+  const sibling = path.slice(0, -extension.length) + extension.slice(2).replace("ts", "js");
   return isFile(sibling) ? sibling : null;
 }
 
@@ -670,7 +680,8 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
   }
   if (target === null) return null;
   const path = join(pkgDir, target);
-  return normalizeResolvedAnswer(loadAsFile(path) ?? (isFile(path) ? path : null));
+  const answer = loadAsFile(path) ?? (isFile(path) ? path : null);
+  return normalizeResolvedAnswer(answer === null ? null : (projectDtsRuntimeSibling(answer) ?? answer));
 }
 
 /** The one resolver entry point for source modules that compile into the
@@ -693,6 +704,17 @@ export function resolveProjectModule(fromFile: string, specifier: string): strin
     resolveWorkspaceSourceModule(fromFile, specifier)?.typesFile ??
     null
   );
+}
+
+/** Relative type edges use declaration candidates even inside an opted-in
+ * JavaScript package. Runtime-only resolution must not erase a type
+ * reexport back into the local project's declaration graph. */
+export function resolveProjectTypeModule(fromFile: string, specifier: string): string | null {
+  if (isRelativeSpecifier(specifier) || isAbsolute(specifier)) {
+    const base = resolve(dirname(resolve(fromFile)), specifier);
+    return normalizeResolvedAnswer(loadAsFile(base) ?? loadAsDirectory(base));
+  }
+  return resolveProjectModule(fromFile, specifier);
 }
 
 /* 5.9.3 with allowJs resolves node_modules in TWO FULL PASSES (probed): the
@@ -1080,7 +1102,7 @@ export function clearResolveCaches(): void {
   clearPackageShimCaches();
   pkgJsonCache.clear();
   workspaceMembersCache.clear();
-  projectRealmPkgJson = null;
+  projectRealmPkgJson = undefined;
   projectPathMappings = null;
 }
 

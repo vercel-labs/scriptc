@@ -256,6 +256,48 @@ export class Ts7Host {
     this.virtualFiles.set(key, content);
   }
 
+  /** A load changed its resolution shadow (for example, hiding a declaration
+   * twin). Cached failed lookups and file contents must agree on the next
+   * snapshot; reporting only the rewritten importers is insufficient. */
+  invalidateFileSystem(): void {
+    this.ensureOpen();
+    this.invalidateAll = true;
+  }
+
+  /** Let the current shadow own a previously projected path again. */
+  removeVirtualFile(path: string): void {
+    this.ensureOpen();
+    const key = tsgoPath(path);
+    if (!this.virtualFiles.delete(key)) return;
+    this.virtualChanges.delete(key);
+    this.invalidateAll = true;
+  }
+
+  /** Run an independent load on a caller-owned host. Its projections and
+   * resolution shadow cannot escape into the next canary entry or replace
+   * virtual files the caller registered before this load. */
+  withFileSystemShadow<T>(shadow: Ts7HostOptions["fsShadow"], run: () => T): T {
+    this.ensureOpen();
+    const previousShadow = this.shadow;
+    const previousFiles = new Map(this.virtualFiles);
+    const previousChanges = new Map(this.virtualChanges);
+    this.shadow = shadow === undefined || shadow === null ? previousShadow : {
+      readFile: (path) => shadow.readFile(path) ?? previousShadow?.readFile(path),
+      hideFile: (path) => shadow.hideFile(path) || (previousShadow?.hideFile(path) ?? false),
+    };
+    this.invalidateAll = true;
+    try {
+      return run();
+    } finally {
+      this.shadow = previousShadow;
+      this.virtualFiles.clear();
+      this.virtualChanges.clear();
+      for (const [path, text] of previousFiles) this.virtualFiles.set(path, text);
+      for (const [path, kind] of previousChanges) this.virtualChanges.set(path, kind);
+      this.invalidateAll = true;
+    }
+  }
+
   /** tsgo's own tsconfig parser (extends chains resolved server-side) — the
    * 7-world replacement for ts.readConfigFile + ts.parseJsonConfigFileContent.
    * Returns raw option values (strings for enum-ish knobs) and the resolved

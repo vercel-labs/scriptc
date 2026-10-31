@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Static local JavaScript imports compile their implementation when a `.d.ts`, `.d.mts`, or `.d.cts` file sits beside it, including in projects without a `package.json`. Explicit type imports and JSDoc keep the sidecar's types, including constructor and method signatures.
+
 <!-- release:start -->
 
 ## 0.4.7

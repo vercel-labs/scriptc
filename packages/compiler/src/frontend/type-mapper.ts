@@ -3793,12 +3793,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "bigintStats" };
   }
-  // Capacity snapshots and options keep their live object representation
-  // across numeric/BigInt overloads, runtime options, and callbacks.
+  // Capacity snapshots and fs stat option bags keep their live object
+  // representation across numeric/BigInt overloads and callbacks.
   if (
     ((psym !== undefined && ts.symbolName(psym) === "StatsFs") ||
       (psym !== undefined && ts.symbolName(psym) === "BigIntStatsFs") ||
-      (psym !== undefined && ts.symbolName(psym) === "StatFsOptions")) &&
+      (psym !== undefined && ts.symbolName(psym) === "StatFsOptions") ||
+      (psym !== undefined && ts.symbolName(psym) === "StatOptions")) &&
     psym.declarations.some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&

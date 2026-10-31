@@ -209,7 +209,7 @@ static double scr_js_number_arithmetic(double a, double b, const ScrStr *operati
   case '/': return a / b;
   case '%': return fmod(a, b);
   default:
-    if (operation->len == 2) return (fabs(a) == 1 && !isfinite(b)) ? NAN : pow(a, b);
+    if (operation->len == 2) return scr_math_pow(a, b);
     return a * b;
   }
 }

@@ -1,0 +1,13 @@
+  Node island ni-ctor@1.0.0   (would-be, report-only)
+    path        tests/coverage-fixtures/node-islands/node_modules/ni-ctor
+    class       object-model: needs a mutable object model
+    decision    automatic (npm code outside the native subset)
+    evaluation  eager at its module position (deferred evaluation is decided by a later milestone)
+    reasons     (first per module; decisive class first)
+      object-model  tests/coverage-fixtures/node-islands/node_modules/ni-ctor/index.js:9:1
+        R2.1 constructor functions: a write of 'Counter.prototype.add'
+    all reasons 2 (2 object-model)
+    boundary    1 native import site:
+      tests/coverage-fixtures/node-islands/main.ts:7:1
+      copy and handle decisions per boundary site come with compiler-managed islands
+    carries     ni-dep

@@ -586,6 +586,8 @@ export function fenceNodeModuleMutation(
       `${action} through require.cache`,
       target,
       "a compiled binary has a fixed module graph; cache lookup and Object.keys(require.cache) are read-only",
+      undefined,
+      "loader-hook",
     );
   }
   if (

@@ -17,8 +17,9 @@ import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 
 /** How a brand helper uses its receiver: `in` answers `#x in v`, `read` and
- * `write` return the receiver as the declaring class for a field access. */
-type BrandUse = "in" | "read" | "write";
+ * `write` return the receiver as the declaring class for a field access, and
+ * `call` for a private method call. */
+type BrandUse = "in" | "read" | "write" | "call";
 
 const PREFIX = "%private.";
 
@@ -214,6 +215,35 @@ export function checkedPrivateValue(
   return { kind: "call", callee: helper, args: [receiver], type: resultType, loc };
 }
 
+/** `value.#m(...)` on a checked-dynamic `value` in a declaration-level class
+ * `info` that declares the private method `#m`: the receiver as an instance
+ * of `info` when the value is one, else Node's TypeError ("Receiver must be
+ * an instance of class C"). */
+export function checkedPrivateMethodReceiver(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  name: string,
+  receiver: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const className = info.def.name;
+  const resultType: IrType = { kind: "object", className };
+  const helper = `${PREFIX}call:${className}:${name}`;
+  if (!lowerer.valueHelpers.has(helper)) {
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "value.0", name: "value", type: DYN }],
+      returnType: resultType,
+      locals: [{ id: "value.0", name: "value", type: DYN, mutable: false }],
+      // finalizePrivateBrands fills the body.
+      body: [],
+      loc: helperLoc(loc),
+    });
+    lowerer.valueHelpers.set(helper, helper);
+  }
+  return { kind: "call", callee: helper, args: [receiver], type: resultType, loc };
+}
+
 /** A plain assignment, a destructuring target, or a for-in/of target writes
  * the field. Compound assignments and updates read it first, and Node
  * reports the failed read. */
@@ -358,6 +388,22 @@ export function finalizePrivateBrands(lowerer: Lowerer, functions: IrFunction[])
         },
         { kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc },
       );
+    } else if (use === "call") {
+      // V8 names the class by its own identifier (not a name inferred from
+      // a binding), "anonymous" without one, also for a nullish receiver.
+      const owner = lowerer.classes.get(className);
+      const identifier = owner?.decl?.name;
+      const shown = identifier !== undefined ? identifier.text : "anonymous";
+      for (const unit of ["undefined", "null"] as const) {
+        body.push({
+          kind: "if",
+          cond: { kind: "dynTest", test: unit, value, type: BOOL, loc },
+          then: [typeError(strLit(`Cannot read properties of ${unit} (reading '${shown}')`, loc))],
+          else_: null,
+          loc,
+        });
+      }
+      body.push(typeError(strLit(`Receiver must be an instance of class ${shown}`, loc)));
     } else {
       const verb = use === "read" ? "reading" : "setting";
       const action = use === "read" ? "Cannot read properties" : "Cannot set properties";

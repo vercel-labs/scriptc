@@ -1,4 +1,15 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -26,6 +37,7 @@ async function fakePackage(
     emptyOutput?: boolean;
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
+    profileReport?: string;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-helper-test-"));
@@ -72,6 +84,7 @@ ${
         ? ":"
         : 'for each in $outputs; do cp "$input" "$each"; done'
 }
+${options.profileReport === undefined ? "" : `printf '%s\\n' '${options.profileReport}'`}
 `,
   );
   await chmod(bin, 0o755);
@@ -180,13 +193,17 @@ test("profiles reach the helper and key the native cache by their bytes", async 
   const used = {
     ...base,
     outputPath: join(pkg.root, "used.o"),
-    profile: { use: { path: "/profiles/a.profdata", digest: "a".repeat(64) } },
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false },
+    },
   };
   await emitNativeArtifact(used);
   await emitNativeArtifact({
     ...used,
     outputPath: join(pkg.root, "changed.o"),
-    profile: { use: { path: "/profiles/a.profdata", digest: "b".repeat(64) } },
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "b".repeat(64), contextSensitive: false },
+    },
   });
   await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
   const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
@@ -194,6 +211,75 @@ test("profiles reach the helper and key the native cache by their bytes", async 
   expect(calls[0]).not.toContain("--profile-");
   expect(calls[1]).toContain("--profile-generate /profiles/%p.profraw");
   expect(calls[2]).toContain("--profile-use /profiles/a.profdata");
+});
+
+test("block counts reach the helper, and a build that records them reuses no artifact", async () => {
+  const pkg = await fakePackage();
+  const use = { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false };
+  const base = request(pkg.root, pkg.packageJson, join(pkg.root, "used.o"));
+  await emitNativeArtifact({ ...base, profile: { use } });
+  const blocks = { path: "/profiles/a.blocks", digest: "c".repeat(64) };
+  const annotated = {
+    ...base,
+    outputPath: join(pkg.root, "blocks.o"),
+    profile: { use: { ...use, blocks } },
+  };
+  await emitNativeArtifact(annotated);
+  await emitNativeArtifact({ ...annotated, outputPath: join(pkg.root, "blocks-again.o") });
+  const recording = {
+    ...base,
+    outputPath: join(pkg.root, "recorded.o"),
+    profile: { use, recordBlocks: "/work/a.blocks" },
+  };
+  await emitNativeArtifact(recording);
+  await emitNativeArtifact(recording);
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  // The block counts key the cache; each recording build runs the helper.
+  expect(calls).toHaveLength(4);
+  expect(calls[1]).toContain(
+    "--profile-use /profiles/a.profdata --profile-blocks /profiles/a.blocks",
+  );
+  expect(calls[2]).toContain("--record-profile-blocks /work/a.blocks");
+  expect(calls[3]).toContain("--record-profile-blocks /work/a.blocks");
+});
+
+test("a cached artifact keeps the profile match of the build that produced it", async () => {
+  const pkg = await fakePackage({
+    profileReport:
+      '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"unknown_partitions":0}}',
+  });
+  const used = {
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "used.o")),
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false },
+    },
+  };
+  // A helper that predates block-count files reports no recovered count.
+  const match = { annotated: 120, mismatched: 7, missing: 40, recovered: 0, unknownPartitions: 0 };
+  expect((await emitNativeArtifact(used)).profileMatch).toEqual(match);
+  const again = await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
+  expect(again.profileMatch).toEqual(match);
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  // Without the cached match, the cached partition's counts are unknown.
+  const cache = join(pkg.root, "cache", "native-codegen-v1");
+  const [shard] = await readdir(cache);
+  for (const name of await readdir(join(cache, shard!)))
+    if (name.includes(".profile-match")) await rm(join(cache, shard!, name));
+  const unknown = await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "unknown.o") });
+  expect(unknown.profileMatch).toEqual({
+    annotated: 0,
+    mismatched: 0,
+    missing: 0,
+    recovered: 0,
+    unknownPartitions: 1,
+  });
+  // Builds without a profile carry no match, from the helper or the cache.
+  const plain = request(pkg.root, pkg.packageJson, join(pkg.root, "plain.o"));
+  expect((await emitNativeArtifact(plain)).profileMatch).toBeUndefined();
+  expect(
+    (await emitNativeArtifact({ ...plain, outputPath: join(pkg.root, "plain-again.o") }))
+      .profileMatch,
+  ).toBeUndefined();
 });
 
 test("chunked LLVM input preserves emitted bytes and the native cache identity", async () => {
@@ -351,16 +437,22 @@ test("sanitized native artifacts fail before helper resolution", async () => {
 });
 
 test("program partitions depend only on module size", () => {
-  const megabyte = 1024 * 1024;
-  expect(nativeProgramPartitions(megabyte)).toBe(1);
-  expect(nativeProgramPartitions(megabyte + 1)).toBe(4);
-  expect(nativeProgramPartitions(2 * megabyte)).toBe(4);
-  expect(nativeProgramPartitions(2 * megabyte + 1)).toBe(8);
+  const kilobyte = 1024;
+  const megabyte = 1024 * kilobyte;
+  expect(nativeProgramPartitions(128 * kilobyte)).toBe(1);
+  expect(nativeProgramPartitions(128 * kilobyte + 1)).toBe(8);
   expect(nativeProgramPartitions(32 * megabyte)).toBe(8);
   // Powers of two keep every function in its partition across small edits.
   expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
   expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
   expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
+  // Unoptimized (dev) programs are divided from 64 KiB.
+  expect(nativeProgramPartitions(64 * kilobyte, true)).toBe(1);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte, true)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, true)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, true)).toBe(8);
+  expect(nativeProgramPartitions(32 * megabyte + 1, true)).toBe(16);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
     "/build.d/program.o",
     "/build.d/program.part1.o",
@@ -429,3 +521,100 @@ test("LLVM text parts are written as one file and the helper reads a private cop
   expect(await readFile(output, "utf8")).toBe(parts.join(""));
   await expect(stat(input)).rejects.toThrow();
 });
+
+/** Every object the native cache family holds for this package. */
+async function cachedObjects(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.name.endsWith(".o")) files.push(path);
+    }
+  };
+  await walk(join(root, "cache", "native-codegen-v1"));
+  return files.sort();
+}
+
+function identityRecordPath(root: string): string {
+  return join(root, ".scriptc", "identity.json");
+}
+
+function digestOf(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+test("uses the recorded helper identity and keys the cache exactly as hashing does", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "recorded.o");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const recorded = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(recorded.digest).toBe(digestOf(await readFile(pkg.bin)));
+  const hashedKeys = await cachedObjects(pkg.root);
+  expect(hashedKeys).toHaveLength(1);
+
+  // The same build without a record hashes the binary and finds the same entry.
+  await rm(join(pkg.root, ".scriptc"), { recursive: true, force: true });
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  expect(await cachedObjects(pkg.root)).toEqual(hashedKeys);
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  expect(JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8")).digest).toBe(
+    recorded.digest,
+  );
+});
+
+test("a recorded digest keys the cache, and a stale digest is rehashed", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "recorded.o");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const record = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  const realKeys = await cachedObjects(pkg.root);
+
+  // A valid record whose digest is not the binary's own can only reach the
+  // cache key if the build took the digest from the record.
+  await writeFile(
+    identityRecordPath(pkg.root),
+    `${JSON.stringify({ ...record, digest: "0".repeat(64) })}\n`,
+  );
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const recordedKeys = await cachedObjects(pkg.root);
+  expect(recordedKeys).toHaveLength(realKeys.length + 1);
+  expect(await readFile(identityRecordPath(pkg.root), "utf8")).toContain("0".repeat(64));
+
+  // A record the installed files no longer match costs one hash and is replaced.
+  await utimes(pkg.bin, new Date(2020, 0, 1), new Date(2020, 0, 1));
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "touched.o")));
+  const rewritten = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(rewritten.digest).toBe(record.digest);
+  expect(rewritten.dependencies).not.toEqual(record.dependencies);
+});
+
+test("a replaced helper is rehashed and a corrupt record falls back to hashing", async () => {
+  const pkg = await fakePackage();
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "first.o")));
+  const first = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+
+  await writeFile(pkg.bin, `${await readFile(pkg.bin, "utf8")}# replaced\n`);
+  await chmod(pkg.bin, 0o755);
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "second.o")));
+  const replaced = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(replaced.digest).toBe(digestOf(await readFile(pkg.bin)));
+  expect(replaced.digest).not.toBe(first.digest);
+
+  await writeFile(identityRecordPath(pkg.root), "{ not a record\n");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "third.o")));
+  expect(JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8")).digest).toBe(
+    replaced.digest,
+  );
+});
+
+test.skipIf(process.platform === "win32")(
+  "an install that cannot hold the record still builds",
+  async () => {
+    const pkg = await fakePackage();
+    await writeFile(join(pkg.root, ".scriptc"), "not a directory\n");
+    const output = join(pkg.root, "read-only.o");
+    await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+    expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+  },
+);

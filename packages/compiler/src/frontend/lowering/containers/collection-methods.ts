@@ -1,4 +1,5 @@
 import { keyedHelperName } from "../stable-names.js";
+import { primitiveElement } from "../array-values.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -11,6 +12,7 @@ import {
   type IrFunction,
   type IrLocal,
   type IrMapIntrinsicMethod,
+  type IrParam,
   type IrSetIntrinsicMethod,
   type IrStmt,
   type IrType,
@@ -43,6 +45,7 @@ import {
 } from "../collection-ingestion.js";
 import { strCharsCall } from "./array-construction.js";
 import { arrayElementRead } from "./array-iteration.js";
+import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { generatorDrain, lowerCollectionIteratorValue } from "../iterator-adapters.js";
@@ -74,6 +77,17 @@ export function lowerMapMethodCall(
   if (!probedUntyped && !lowerer.isStdlibMember(access) && name !== "has") return null;
   const loc = locOf(call);
   const value = lowerer.lowerExpr(access.expression);
+  // A receiver the checker types `Map<any, any>` (inference residue of an
+  // untyped `new Map()`) whose value has a concrete layout: its keys and
+  // values convert into that layout.
+  if (
+    value.type.kind === "map" &&
+    receiverIr.key.kind === "dyn" &&
+    receiverIr.value.kind === "dyn" &&
+    value.type.key.kind !== "dyn" &&
+    value.type.value.kind !== "dyn"
+  )
+    receiverIr = value.type;
   const receiver =
     lowerer.runtimeOptionalPropertyReceiver(access.expression, value, receiverIr, name) ?? value;
   if (receiver.type.kind !== "map") {
@@ -83,12 +97,13 @@ export function lowerMapMethodCall(
       "the lowered set() produces no value — call each set(k, v) as its own statement",
     );
   }
-  // The lib declares a thisArg parameter on forEach; unlowered — fenced.
-  if (name === "forEach" && call.arguments.nodes.length !== 1) {
+  // The lib declares a thisArg parameter on forEach: the callback and an
+  // optional thisArg lower; a longer call stays a truthful refusal.
+  if (name === "forEach" && call.arguments.nodes.length > 2) {
     lowerer.noLowering(
       `.forEach with ${call.arguments.nodes.length} arguments`,
       call,
-      "the thisArg parameter has no lowering — use an arrow function",
+      "the supported form takes the callback and an optional thisArg",
     );
   }
 
@@ -518,14 +533,23 @@ export function lowerMapForEachCall(
   // JS's forEach does.
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}`;
+  const thisArg = collectionForEachThisArg(lowerer, call);
+  const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
     helper = keyedHelperName(lowerer, "%map.forEach", key);
     lowerer.mapHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildCollectionForEachFn(helper, mapT, arity, fnRet, loc));
+    lowerer.liftedFns.push(
+      buildCollectionForEachFn(helper, mapT, arity, fnRet, loc, thisArg !== null),
+    );
   }
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
+  return {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg, ...(thisArg ? [thisArg] : [])],
+    type: VOID,
+    loc,
+  };
 }
 
 /** True when an arrow's expression body is lowered as a statement: the
@@ -620,11 +644,11 @@ export function lowerSetMethodCall(
       "the lowered add() produces no value — call each add(v) as its own statement",
     );
   }
-  if (name === "forEach" && call.arguments.nodes.length !== 1) {
+  if (name === "forEach" && call.arguments.nodes.length > 2) {
     lowerer.noLowering(
       `.forEach with ${call.arguments.nodes.length} arguments`,
       call,
-      "the thisArg parameter has no lowering — use an arrow function",
+      "the supported form takes the callback and an optional thisArg",
     );
   }
   if (COLLECTION_ITERATOR_METHODS.has(name)) {
@@ -692,14 +716,23 @@ export function lowerSetForEachCall(
   }
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}`;
+  const thisArg = collectionForEachThisArg(lowerer, call);
+  const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
     helper = keyedHelperName(lowerer, "%set.forEach", key);
     lowerer.setHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildCollectionForEachFn(helper, setT, arity, fnRet, loc));
+    lowerer.liftedFns.push(
+      buildCollectionForEachFn(helper, setT, arity, fnRet, loc, thisArg !== null),
+    );
   }
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
+  return {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg, ...(thisArg ? [thisArg] : [])],
+    type: VOID,
+    loc,
+  };
 }
 
 /** The ES2025 Set composition methods (union/intersection/difference/
@@ -1134,9 +1167,20 @@ function setFromSeedValue(
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
   } else if (source.type.kind === "string" && setT.elem.kind === "string") {
-    seed = strCharsCall(lowerer, source, loc);
+    seed = strCharsCall(source, loc);
   } else if (source.type.kind === "array" && typeEquals(source.type.elem, setT.elem)) {
     seed = source;
+  } else if (
+    source.type.kind === "array" &&
+    primitiveElement(source.type.elem) &&
+    setT.elem.kind === "union" &&
+    lowerer.armTag(setT.elem.unionId, UNDEFINED_T) >= 0 &&
+    typeEquals(lowerer.stripUndefinedArm(setT.elem), source.type.elem)
+  ) {
+    // A `(T | undefined)[]` stores T elements: its present undefined
+    // elements copy as the Set's undefined.
+    seed = lowerer.coerceToExpected(source, arrayOf(setT.elem));
+    if (!typeEquals(seed.type, arrayOf(setT.elem))) return null;
   } else if (source.type.kind === "record") {
     const shape = lowerer.shapes.get(source.type.shapeId);
     if (!shape?.tuple || !shape.fields.every((field) => typeEquals(field.type, setT.elem)))
@@ -1259,8 +1303,8 @@ export function lowerMapSeedNew(
     );
   }
   // new Map(sp) / new Map(sp.entries()): the checked-dynamic view's live
-  // pairs seed the map in order.
-  if (isSearchParamsIterable(lowerer, argNode)) {
+  // pairs seed the map in order, and so do a MIMEParams's entries.
+  if (isSearchParamsIterable(lowerer, argNode) || isMimeParamsIterable(lowerer, argNode)) {
     return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
   }
   const input = collectionInput(lowerer, argNode);
@@ -1544,6 +1588,15 @@ function buildMapSeedFn(
   };
 }
 
+/** The optional thisArg of a `forEach(callback, thisArg)` call, lowered as
+ * the checked-dynamic value the helper passes as the callback's call-site
+ * receiver. Null when the call has none, which keeps the two-slot helper
+ * frame and the callback's ambient `this`, exactly as before. */
+function collectionForEachThisArg(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const node = call.arguments.nodes[1];
+  return node === undefined ? null : lowerer.lowerExprExpecting(node, DYN);
+}
+
 /** Map and Set forEach share live iteration and exception cleanup. Preserve
  * Map's (value, key) reads and Set's repeated value argument; neither reads
  * an entry that the callback's declared arity does not consume. iterCount is
@@ -1556,6 +1609,7 @@ function buildCollectionForEachFn(
   arity: number,
   fnRet: IrType,
   loc: SrcLoc,
+  withThis = false,
 ): IrFunction {
   const valueT = collectionT.kind === "map" ? collectionT.value : collectionT.elem;
   const fnT = funcOf(
@@ -1583,6 +1637,14 @@ function buildCollectionForEachFn(
     { id: "f.0", name: "f", type: fnT, mutable: true },
     { id: "i.0", name: "i", type: F64, mutable: true },
   ];
+  const params: IrParam[] = [
+    { localId: "m.0", name: "m", type: collectionT },
+    { localId: "f.0", name: "f", type: fnT },
+  ];
+  if (withThis) {
+    locals.push({ id: "t.0", name: "t", type: DYN, mutable: false });
+    params.push({ localId: "t.0", name: "t", type: DYN });
+  }
   const visitBody: IrStmt[] = [];
   const callArgs: IrExpr[] = [];
   if (arity >= 1) {
@@ -1618,7 +1680,14 @@ function buildCollectionForEachFn(
   }
   visitBody.push({
     kind: "exprStmt",
-    expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
+    expr: {
+      kind: "callValue",
+      callee: varRef("f.0", fnT, loc),
+      args: callArgs,
+      ...(withThis ? { receiver: varRef("t.0", DYN, loc) as IrExpr } : {}),
+      type: fnRet,
+      loc,
+    },
     loc,
   });
   const loop = countedFor(loc, iter("iterCount", [], F64), () => [
@@ -1626,10 +1695,7 @@ function buildCollectionForEachFn(
   ]);
   return {
     name,
-    params: [
-      { localId: "m.0", name: "m", type: collectionT },
-      { localId: "f.0", name: "f", type: fnT },
-    ],
+    params,
     returnType: VOID,
     locals,
     body: [

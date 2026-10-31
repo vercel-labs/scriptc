@@ -1,15 +1,17 @@
-/* WHATWG TextEncoder and TextDecoder instances as checked-dynamic values
- * (SCR_DYNH_TEXT_ENCODER, SCR_DYNH_TEXT_DECODER). A codec is a compiled
+/* WHATWG TextEncoder and TextDecoder instances, and node:string_decoder
+ * StringDecoder instances, as checked-dynamic values (SCR_DYNH_TEXT_ENCODER,
+ * SCR_DYNH_TEXT_DECODER, SCR_DYNH_STRING_DECODER). A codec is a compiled
  * record (type-mapper.ts): the handle holds that record by reference, so
  * a codec stored in an untyped slot and read back keeps its identity and
  * a decoder keeps its streaming state. The compiler passes the record's
- * reference-count entry points and, for decoders, the byte offsets of the
+ * reference-count entry points and, for a TextDecoder, the byte offsets of the
  * encoding, fatal, ignoreBOM and state fields when it boxes one. A unit
  * of its own so programs that never box a codec link none of it
  * (native-toolchain gating: the textCodecDyn runtime feature). */
 #include "scr_platform.h"
 #include "scr_runtime.h"
 
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -88,24 +90,6 @@ static ScrDyn *scr_tcd_encoder_get(void *rec, const char *key, size_t len) {
   return NULL;
 }
 
-/* decode(input, options): the options object's `stream` member, read
- * with JS truthiness; undefined and null mean no options. */
-static bool scr_tcd_decoder_stream_option(const ScrDyn *options, bool *stream) {
-  *stream = false;
-  if (options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL) return true;
-  if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_ARR &&
-      options->kind != SCR_DYN_FUNC && options->kind != SCR_DYN_TYPED_REF &&
-      options->kind != SCR_DYN_HANDLE) {
-    scr_dyn_arg_type_fail("options", "of type object", options);
-    return false;
-  }
-  ScrDyn *value = scr_dyn_obj_read(options, "stream", 6);
-  if (!value) return false;
-  *stream = scr_dyn_truthy(value);
-  scr_dyn_release(value);
-  return !scr_exc_pending();
-}
-
 static ScrDyn *scr_tcd_decoder_invoke(void *rec, ScrDyn *self, const char *method,
                                        ScrDyn *const *args, size_t argc, const char *what) {
   (void)self;
@@ -113,16 +97,15 @@ static ScrDyn *scr_tcd_decoder_invoke(void *rec, ScrDyn *self, const char *metho
     scr_tcd_codec_not_a_function(what);
     return NULL;
   }
-  ScrBytes *input = scr_bytes_buffer_source(scr_tcd_codec_arg(args, argc, 0));
-  if (!input) return NULL;
-  bool stream;
-  if (!scr_tcd_decoder_stream_option(scr_tcd_codec_arg(args, argc, 1), &stream)) {
-    scr_bytes_release(input);
-    return NULL;
-  }
+  /* Node checks the options before it reads the input. */
+  bool stream = scr_text_decode_stream_option(scr_tcd_codec_arg(args, argc, 1));
+  if (scr_exc_pending()) return NULL;
   const ScrTextCodecLayout *layout = &scr_tcd_decoder_layout;
   ScrDyn *state;
   memcpy(&state, (const char *)rec + layout->state, sizeof state);
+  ScrBytes *input = scr_text_decoder_input(scr_tcd_codec_arg(args, argc, 0),
+                                           scr_tcd_decoder_encoding(rec), state, stream);
+  if (!input) return NULL;
   ScrStr *text = scr_text_decode_stream(state, input, scr_tcd_decoder_encoding(rec),
                                         scr_tcd_decoder_flag(rec, layout->fatal),
                                         scr_tcd_decoder_flag(rec, layout->ignore_bom), stream);
@@ -138,6 +121,29 @@ static ScrDyn *scr_tcd_decoder_get(void *rec, const char *key, size_t len) {
   if (len == 9 && memcmp(key, "ignoreBOM", 9) == 0)
     return scr_dyn_new_bool(scr_tcd_decoder_flag(rec, scr_tcd_decoder_layout.ignore_bom));
   return NULL;
+}
+
+/* TextEncoder's inspector inspects `{ encoding: 'utf-8' }` with the
+ * caller's options. */
+static ScrDyn *scr_tcd_encoder_inspect_view(void *rec) {
+  (void)rec;
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_dyn_obj_set(view, "encoding", 8, scr_tcd_str(scr_str_new("utf-8", 5)));
+  return view;
+}
+
+/* TextDecoder's inspector formats its fields with util.inspect's default
+ * options, whatever the caller's are: `TextDecoder { encoding: 'utf-8',
+ * fatal: false, ignoreBOM: false }`, always one line. */
+static ScrStr *scr_tcd_decoder_inspect_text(void *rec) {
+  ScrStr *encoding = scr_text_decoder_name(scr_tcd_decoder_encoding(rec));
+  char text[128];
+  int n = snprintf(text, sizeof text, "TextDecoder { encoding: '%.*s', fatal: %s, ignoreBOM: %s }",
+                   (int)encoding->len, encoding->data,
+                   scr_tcd_decoder_flag(rec, scr_tcd_decoder_layout.fatal) ? "true" : "false",
+                   scr_tcd_decoder_flag(rec, scr_tcd_decoder_layout.ignore_bom) ? "true" : "false");
+  scr_str_release(encoding);
+  return scr_str_new(text, (size_t)n);
 }
 
 static bool scr_tcd_codec_set(void *rec, const char *key, size_t len, const ScrDyn *value) {
@@ -167,6 +173,10 @@ static const ScrDynHandleOps scr_tcd_encoder_ops = {
     .invoke = scr_tcd_encoder_invoke,
     .get = scr_tcd_encoder_get,
     .set = scr_tcd_codec_set,
+    .inspect_view = scr_tcd_encoder_inspect_view,
+    .inspect_view_bare = true,
+    .inspect_bracketed_past_depth = true,
+    .inspect_custom_only = true,
     .json_empty_object = true,
     .methods = scr_tcd_encoder_methods,
     .invalid_this = "Value of \"this\" must be of type TextEncoder",
@@ -180,6 +190,8 @@ static const ScrDynHandleOps scr_tcd_decoder_ops = {
     .invoke = scr_tcd_decoder_invoke,
     .get = scr_tcd_decoder_get,
     .set = scr_tcd_codec_set,
+    .inspect_text = scr_tcd_decoder_inspect_text,
+    .inspect_custom_only = true,
     .json_empty_object = true,
     .methods = scr_tcd_decoder_methods,
     .invalid_this = "Value of \"this\" must be of type TextDecoder",
@@ -212,4 +224,125 @@ void *scr_text_codec_from_dyn(const ScrDyn *d, bool decoder, const ScrDynPath *p
 bool scr_text_codec_is(const ScrDyn *d, bool decoder) {
   return d->kind == SCR_DYN_HANDLE &&
          d->v.handle.tag == (decoder ? SCR_DYNH_TEXT_DECODER : SCR_DYNH_TEXT_ENCODER);
+}
+
+/* node:string_decoder StringDecoder instances (SCR_DYNH_STRING_DECODER).
+ * The decoder is a compiled record of its canonical encoding (a string)
+ * and its pending partial sequence (an f64 packing, scr_bytes.c's
+ * scr_strdec_* helpers); the compiler passes both fields' byte offsets
+ * when it boxes one. */
+typedef struct {
+  void *(*retain)(void *);
+  void (*release)(void *);
+  size_t encoding, pending;
+} ScrStringDecoderLayout;
+
+static SCR_TL ScrStringDecoderLayout scr_sdd_layout;
+
+static void *scr_sdd_retain(void *rec) { return scr_sdd_layout.retain(rec); }
+static void scr_sdd_release(void *rec) { scr_sdd_layout.release(rec); }
+
+static ScrStr *scr_sdd_encoding(const void *rec) {
+  ScrStr *encoding;
+  memcpy(&encoding, (const char *)rec + scr_sdd_layout.encoding, sizeof encoding);
+  return encoding;
+}
+
+static double scr_sdd_pending(const void *rec) {
+  double pending;
+  memcpy(&pending, (const char *)rec + scr_sdd_layout.pending, sizeof pending);
+  return pending;
+}
+
+static void scr_sdd_set_pending(void *rec, double pending) {
+  memcpy((char *)rec + scr_sdd_layout.pending, &pending, sizeof pending);
+}
+
+/* write(buf): a string answers itself; an ArrayBuffer view decodes with
+ * the pending bytes before it; other values throw Node's
+ * ERR_INVALID_ARG_TYPE. +1 or NULL. */
+static ScrStr *scr_sdd_write(void *rec, const ScrDyn *buf) {
+  if (buf->kind == SCR_DYN_STR) return scr_str_retain(buf->v.str);
+  if (buf->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("buf", "an instance of Buffer, TypedArray, or DataView", buf);
+    return NULL;
+  }
+  ScrBytes *bytes = scr_bytes_raw_view(buf->v.bytes);
+  ScrStr *encoding = scr_sdd_encoding(rec);
+  double pending = scr_sdd_pending(rec);
+  ScrStr *text = scr_strdec_write(encoding, pending, bytes);
+  scr_sdd_set_pending(rec, scr_strdec_next(encoding, pending, bytes));
+  scr_bytes_release(bytes);
+  return text;
+}
+
+static ScrDyn *scr_sdd_invoke(void *rec, ScrDyn *self, const char *method, ScrDyn *const *args,
+                              size_t argc, const char *what) {
+  (void)self;
+  ScrDyn *buf = scr_tcd_codec_arg(args, argc, 0);
+  if (strcmp(method, "write") == 0) {
+    ScrStr *text = scr_sdd_write(rec, buf);
+    return text ? scr_tcd_str(text) : NULL;
+  }
+  if (strcmp(method, "end") == 0) {
+    /* end(buf): write(buf) when buf is not undefined, then the pending
+     * bytes' replacement text. */
+    ScrStr *head = buf->kind == SCR_DYN_UNDEF ? scr_str_new("", 0) : scr_sdd_write(rec, buf);
+    if (!head) return NULL;
+    ScrStr *tail = scr_strdec_end(scr_sdd_encoding(rec), scr_sdd_pending(rec));
+    scr_sdd_set_pending(rec, 0);
+    ScrStr *text = scr_str_concat(head, tail);
+    scr_str_release(head);
+    scr_str_release(tail);
+    return scr_tcd_str(text);
+  }
+  if (strcmp(method, "text") == 0) {
+    static const char message[] = "StringDecoder.prototype.text is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  scr_tcd_codec_not_a_function(what);
+  return NULL;
+}
+
+static ScrDyn *scr_sdd_get(void *rec, const char *key, size_t len) {
+  if (len == 8 && memcmp(key, "encoding", 8) == 0)
+    return scr_dyn_new_str(scr_sdd_encoding(rec));
+  if ((len == 8 && memcmp(key, "lastChar", 8) == 0) ||
+      (len == 8 && memcmp(key, "lastNeed", 8) == 0) ||
+      (len == 9 && memcmp(key, "lastTotal", 9) == 0)) {
+    static const char message[] = "StringDecoder lastChar, lastNeed and lastTotal are not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  }
+  return NULL;
+}
+
+static const ScrDynHandleMethod scr_sdd_methods[] = {
+    {.name = "write", .length = 1},
+    {.name = "end", .length = 1},
+    {.name = "text", .length = 2},
+    {.name = NULL},
+};
+
+static const ScrDynHandleOps scr_sdd_ops = {
+    .cls = "StringDecoder",
+    .retain = scr_sdd_retain,
+    .release = scr_sdd_release,
+    .invoke = scr_sdd_invoke,
+    .get = scr_sdd_get,
+    .set = scr_tcd_codec_set,
+    .methods = scr_sdd_methods,
+};
+
+ScrDyn *scr_string_decoder_to_dyn(void *rec, void *(*retain)(void *), void (*release)(void *),
+                                  size_t encoding, size_t pending) {
+  if (!scr_sdd_layout.retain) {
+    scr_sdd_layout = (ScrStringDecoderLayout){retain, release, encoding, pending};
+    scr_dyn_handle_install(SCR_DYNH_STRING_DECODER, &scr_sdd_ops);
+  }
+  return scr_dyn_new_handle(rec, SCR_DYNH_STRING_DECODER);
+}
+
+void *scr_string_decoder_from_dyn(const ScrDyn *d, const ScrDynPath *path, const char *want) {
+  return scr_dyn_handle_unbox(d, SCR_DYNH_STRING_DECODER, path, want);
 }

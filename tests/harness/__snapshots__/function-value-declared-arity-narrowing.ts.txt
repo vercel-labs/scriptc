@@ -1,0 +1,13 @@
+function-value-declared-arity-narrowing.ts:10:18 - error SC1090: '(string, number) => number' values where '(string) => number' is expected is not supported yet
+
+   9 | // (1) Narrowing at a binding, then calling through the narrow type.
+  10 | const narrowed = impl as unknown as (text: string) => number;
+     |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | console.log(narrowed("abc"));
+
+function-value-declared-arity-narrowing.ts:20:19 - error SC1090: '(string, number) => number' values where '(string) => number' is expected is not supported yet
+
+  19 | function makeWriter(): Sink {
+  20 |   return { write: impl as unknown as (text: string) => number };
+     |                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 | }

@@ -221,15 +221,6 @@ export function mangleGenDrop(fnName: string): string {
 export function mangleGenSourceClose(fnName: string): string {
   return `sc_gc_${sanitize(fnName)}`;
 }
-/** Emitted ref-kind resolve thunk, interned per inner-type key. */
-export function mangleResolveThunk(n: number): string {
-  return `sc_rslv_${n}`;
-}
-/** Emitted generator-resume result builder (the IteratorResult record),
- * interned per generator-type key. */
-export function mangleGenResThunk(n: number): string {
-  return `sc_gres_${n}`;
-}
 /** Emitted Promise.race fulfillment adapter (entry inner type → result
  * inner type), interned per type pair. */
 export function mangleRaceThunk(n: number): string {

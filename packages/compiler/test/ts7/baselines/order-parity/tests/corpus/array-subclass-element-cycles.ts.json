@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-subclass-element-cycles.ts"
+ ],
+ "diags": []
+}

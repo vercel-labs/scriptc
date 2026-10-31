@@ -1,13 +1,13 @@
-/* Node 24's `navigator` global (lib/internal/navigator.js), the part
- * libraries read to tell runtimes apart: `typeof navigator` is "object"
- * and `navigator.userAgent` is `Node.js/<major>`. jose reads exactly
- * that at module load (jwks/remote.js). Both fold to string literals, so
- * nothing links. The other members (hardwareConcurrency, language,
- * languages, platform, locks) and the object as a value keep a named
+/* Node 24's `navigator` global (lib/internal/navigator.js): `typeof
+ * navigator` is "object", `navigator.userAgent` is `Node.js/<major>` (both
+ * fold to string literals; jose reads them at module load), and
+ * hardwareConcurrency, language, languages and platform read the runtime's
+ * answers (scr_node_builtin.c). The object as a value is the runtime's
+ * Navigator handle, whose getters answer the same. `locks` keeps a named
  * refusal. */
 import * as ts from "../../ts7/adapter.js";
 import { strLit } from "../../../ir/build.js";
-import type { IrExpr } from "../../../ir/ir.js";
+import { DYN, F64, STRING, type IrExpr, type SrcLoc } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 
@@ -34,9 +34,18 @@ export function lowerNavigatorMember(
   nodeVersion: string,
 ): IrExpr | null {
   if (!isNavigatorGlobal(lowerer, access.expression)) return null;
+  const loc = locOf(access);
   if (access.name.text === "userAgent") {
-    return strLit(`Node.js/${nodeVersion.split(".")[0]}`, locOf(access));
+    return strLit(`Node.js/${nodeVersion.split(".")[0]}`, loc);
   }
+  if (access.name.text === "hardwareConcurrency")
+    return { kind: "libCall", fn: "os.availableParallelism", args: [], type: F64, loc };
+  if (access.name.text === "language" || access.name.text === "platform") {
+    const fn = access.name.text === "language" ? "navigator.language" : "navigator.platform";
+    return { kind: "libCall", fn, args: [], type: STRING, loc };
+  }
+  if (access.name.text === "languages")
+    return { kind: "libCall", fn: "navigator.languages", args: [], type: DYN, loc };
   return refuseNavigator(
     lowerer,
     access,
@@ -55,7 +64,12 @@ export function refuseNavigator(
   return lowerer.noLowering(
     what,
     node,
-    "of Node's navigator global only typeof navigator and navigator.userAgent compile",
+    "navigator.locks (the Web Locks API) has no lowering",
     symbol ?? null,
   );
+}
+
+/** The navigator object as a value: the runtime's Navigator handle. */
+export function navigatorValue(loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "navigator.object", args: [], type: DYN, loc };
 }

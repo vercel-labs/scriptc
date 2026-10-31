@@ -11,6 +11,6 @@ Runtime traps cannot be caught.
 User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
 
 Deep recursion in Linux and macOS executables throws Node's catchable `RangeError: Maximum call stack size exceeded`, on the main thread, in worker threads, and inside async functions and generators.
-The depth at which it is thrown differs from Node: the main thread uses the process stack limit (usually 8 MiB), worker threads get an 8 MiB stack, and async functions and generators run on 512 KiB stacks, so native code usually recurses deeper than Node on threads and somewhat less deeply inside async bodies.
+The depth at which it is thrown differs from Node: the main thread uses the process stack limit (usually 8 MiB), worker threads get an 8 MiB stack, async functions and generators that keep a fiber run on 512 KiB stacks, and stackless ones run on the stack that resumes them, so native code usually recurses deeper than Node on threads and somewhat less deeply inside fiber bodies.
 Recursion inside runtime library operations, such as serializing deeply nested data, is not checked.
 Windows executables, WASI builds and library builds do not check the stack, and exhausting it there terminates the process.

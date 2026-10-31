@@ -104,7 +104,7 @@ function facts(mod: IrModule) {
 function body(mod: IrModule, pointerBits: 32 | 64): string {
   expect(validateModule(mod)).toEqual([]);
   return /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(
-    emitLlvmModule(keepUnionsBoxed(mod), { pointerBits }),
+    emitLlvmModule(mod, { pointerBits, ...keepUnionsBoxed(mod) }),
   )![0];
 }
 
@@ -113,7 +113,8 @@ test("conditional and reassigned locals own payload snapshots without heap wrapp
   expect(facts(mod).get("item")?.ownerType).toEqual(STRING);
   for (const bits of [32, 64] as const) {
     const ir = body(mod, bits);
-    expect(ir).toContain("call ptr @sc_map_entry_f64("); // inline number-key read
+    // The inline number-key read, on the integer view of the literal key.
+    expect(ir).toMatch(/call ptr @sc_map_entry_f64_int\(ptr %\S+, i64 \d+, double /);
     expect(ir).toContain("@scr_str_release");
     expect(ir).not.toMatch(/@scr_union_(?:new|retain|release)/);
     expect(ir).toContain("store i64 0");
@@ -422,4 +423,37 @@ test("number bindings of optional reads and `??` chains stay in stack storage", 
     ],
   };
   expect(body(mod, 64)).not.toMatch(/@scr_union_(?:new|retain|release)/);
+});
+
+test("a statement-position sequence reassigns a local without moving it to the heap", () => {
+  const mod = fixture();
+  const update = (value: IrExpr) => ({
+    kind: "seqExpr" as const,
+    stmts: [{ kind: "assign" as const, localId: "item", value, loc }],
+    result: { kind: "numLit" as const, value: 0, type: F64, loc },
+    type: F64,
+    loc,
+  });
+  // `item = …` inside a discarded sequence, the shape `j--` lowers to.
+  mod.functions[1]!.body.splice(1, 1, {
+    kind: "exprStmt",
+    expr: update(wrap(text("next"), 0)),
+    loc,
+  });
+  expect(facts(mod).get("item")?.ownerType).toEqual(STRING);
+  expect(body(mod, 64)).not.toMatch(/@scr_union_(?:new|retain|release)/);
+  // The same assignment inside a call argument can rebind the local between
+  // another argument's read and its use, so the local stays on the heap.
+  mod.functions[1]!.body.splice(1, 1, {
+    kind: "exprStmt",
+    expr: {
+      kind: "intrinsic",
+      name: "console.log",
+      args: [ref("item"), update(wrap(text("next"), 0))],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  expect(facts(mod).has("item")).toBe(false);
 });

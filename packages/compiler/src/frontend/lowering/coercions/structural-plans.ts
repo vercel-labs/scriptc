@@ -1,6 +1,6 @@
-import { planRecordUnionLift, planRecordUnionWrap } from "../union-retag.js";
+import { planRecordUnionLift, planRecordUnionWrap, planUnionRetag } from "../union-retag.js";
 import type { WidthLift } from "../width-lift.js";
-import type { IrType } from "../../../ir/ir.js";
+import type { IrRecordShape, IrType } from "../../../ir/ir.js";
 import { canDynCheckTo, isUnitType, typeEquals, UNDEFINED_T } from "../../../ir/ir.js";
 import { type ClassInfo, findMethodOn, findGenericMethodOn } from "../lower-classes.js";
 import type { Lowerer } from "../lowerer.js";
@@ -15,6 +15,12 @@ export type FieldLift =
  * and conversions that can only throw are not structural conversions. */
 export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
   if (typeEquals(src, dst)) return { how: "copy" };
+  // A promise whose payload widens (`Promise<void>` into `Promise<unknown>`,
+  // a settlement type gaining optional members): the checked payload
+  // widening coerceToExpected applies at a promise slot. The promise keeps
+  // its identity and settlement turn; the payload converts when it settles.
+  if (dst.kind === "promise" && src.kind === "promise" && lowerer.promisePayloadWidens(src, dst))
+    return { how: "promiseWiden" };
   // An 'unknown' (dyn) DESTINATION slot: the static→dyn conversion —
   // dynFrom, a DEEP COPY (`{ v: 5 }` into `{ v: unknown }`, `number[]`
   // into `unknown[]` — tsc's top type over the width family's copies).
@@ -51,6 +57,34 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         lowerer.armTag(dst.unionId, UNDEFINED_T) >= 0
       )
         return { how: "unitRetag" };
+      // Inside a checked method adapter (contravariant positions) and inside
+      // the operand of a type assertion: source arms with no destination
+      // home trap instead of refusing the pair.
+      if (lowerer.coercions.checkedRetags > 0 || lowerer.coercions.assertedOperand > 0) {
+        const from = lowerer.unions.get(src.unionId);
+        const to = lowerer.unions.get(dst.unionId);
+        if (from && to) {
+          const trappable: number[] = [];
+          from.arms.forEach((arm, tag) => {
+            if (isUnitType(arm) || lowerer.armTag(dst.unionId, arm) >= 0) return;
+            if (to.arms.some((d) => !isUnitType(d) && lowerer.widthLiftPlan(arm, d) !== null))
+              return;
+            trappable.push(tag);
+          });
+          if (
+            trappable.length > 0 &&
+            trappable.length < from.arms.length &&
+            planUnionRetag(
+              from,
+              to,
+              (id) => lowerer.shapes.get(id),
+              (s, d) => lowerer.widthLiftPlan(s, d),
+              new Set(trappable),
+            ) !== null
+          )
+            return { how: "checkedRetag", trappable };
+        }
+      }
       return null;
     }
     // A unit-typed source can't wrap here (unionWrap requires the
@@ -65,13 +99,14 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         return { how: "discriminantWrap" };
       return { how: "wrap", tag };
     }
-    const candidates: { tag: number; arm: IrType }[] = [];
+    const candidates: { tag: number; arm: IrType; checked: boolean }[] = [];
     def.arms.forEach((arm, i) => {
       if (isUnitType(arm)) return;
       const sameFamily =
         (src.kind === "record" && arm.kind === "record") ||
         (src.kind === "array" && arm.kind === "array") ||
         (src.kind === "func" && arm.kind === "func") ||
+        (src.kind === "promise" && arm.kind === "promise") ||
         (src.kind === "object" && arm.kind === "object") ||
         // Tuples already lift into ordinary array slots. Consider that
         // same conversion when the array is an arm of a union too.
@@ -80,9 +115,30 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
           arm.kind === "array") ||
         (src.kind === "object" && arm.kind === "record") ||
         (src.kind === "record" && arm.kind === "object");
-      if (sameFamily && lowerer.widthLiftPlan(src, arm) !== null) candidates.push({ tag: i, arm });
+      const armLift = sameFamily ? lowerer.widthLiftPlan(src, arm) : null;
+      if (armLift !== null) {
+        // A layout the source reaches only inside the assertion's checked
+        // context (a field retagging with trapping arms, or a record or
+        // array hiding one) is a CHECKED candidate: a layout the program's
+        // own types reach without the claim wins, so a conversion that
+        // already lowered keeps its code instead of taking the trapping
+        // route the claim admits.
+        const unclaimed =
+          lowerer.coercions.assertedOperand > 0
+            ? lowerer.coercions.withoutAssertedClaim(() => lowerer.widthLiftPlan(src, arm))
+            : armLift;
+        candidates.push({
+          tag: i,
+          arm,
+          checked: armLift.how === "funcAdaptChecked" || unclaimed === null,
+        });
+      }
     });
     let selected = candidates;
+    // A clean function candidate always wins over a checked one, so every
+    // selection that resolves today resolves the same way.
+    if (selected.some((c) => c.checked) && selected.some((c) => !c.checked))
+      selected = selected.filter((c) => !c.checked);
     if (selected.length > 1 && src.kind === "record") {
       const source = lowerer.shapes.get(src.shapeId);
       // An inferred JS union may widen its tag while retaining variants
@@ -104,7 +160,15 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
           })
         );
       });
-      if (absentOnly.length === 1) selected = absentOnly;
+      // That layout does not win when it holds the record only by dropping
+      // fields and another arm keeps every field (`{ kind; type }` beside
+      // `{ kind; name; adapts?: true; type }`): the value is not its variant.
+      const dropsFields = (arm: IrType): boolean => !keepsEveryField(lowerer, source, arm);
+      if (
+        absentOnly.length === 1 &&
+        !(dropsFields(absentOnly[0]!.arm) && selected.some(({ arm }) => !dropsFields(arm)))
+      )
+        selected = absentOnly;
     }
     // A record that fits several arms of a discriminated union selects one
     // by its discriminant at run time. Without this, an arm that a nested
@@ -128,8 +192,65 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
       const route = presenceRoute(lowerer, src.shapeId, selected[0]!, selected[1]!);
       if (route) return route;
     }
+    // A record whose fields some arm keeps EVERY one of, each lifting
+    // (`{ id; limit; opts?: A | B }` into `{ id; limit; opts?: A | B | C } |
+    // { id; opts?: C }`): that arm is the value's own layout, widened; the
+    // others hold it only by dropping fields. Prefer the unique lossless arm
+    // with the record's own fields, then the unique one that also declares
+    // optional fields the record lacks, which complete as absent.
+    if (selected.length > 1 && src.kind === "record") {
+      const source = lowerer.shapes.get(src.shapeId);
+      const lossless = selected.filter(({ arm }) => keepsEveryField(lowerer, source, arm));
+      const exact = lossless.filter(
+        ({ arm }) =>
+          arm.kind === "record" &&
+          lowerer.shapes.get(arm.shapeId)?.fields.length === source?.fields.length,
+      );
+      if (exact.length === 1) selected = exact;
+      else if (exact.length === 0 && lossless.length === 1) selected = lossless;
+    }
+    // An 'unknown' (dyn) source whose union destination has no dyn arm of
+    // its own (`details: any` into `Details | undefined`, a tool result's
+    // `structuredContent: unknown` into the JSON-value union): the checked
+    // extraction, the same dynCheck coerceToExpected performs for a dyn
+    // value in a union slot. A dyn source has no arm family, so every arm
+    // rule above has passed it by, and every plan that exists for a dyn
+    // source is the one above (its own arm) — this is exactly the case
+    // that returned null (SC2002) before, so no convertible value changes
+    // its lowering.
+    if (
+      selected.length !== 1 &&
+      src.kind === "dyn" &&
+      canDynCheckTo(
+        dst,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    ) {
+      return { how: "dynOut" };
+    }
     if (selected.length !== 1) return null;
     return { how: "liftWrap", tag: selected[0]!.tag, arm: selected[0]!.arm };
+  }
+  // A UNION of tuples/arrays into ONE array slot: each arm converts on its
+  // own tag (a tuple rebuilds through tupleArr, an array copies or lifts
+  // through arr), and a unit arm takes the stranded TypeError — the slot
+  // holds no unit. This includes a MIXED union that already holds the
+  // destination array arm beside a tuple arm (`["one"] | string[]` into
+  // `string[]`): Node has one array either way, so the tuple rebuilds
+  // instead of the checked extraction trapping on it. It sits BEFORE the
+  // checked-extraction rule below; a union whose only non-unit arm IS the
+  // destination (`T[] | undefined`) has nothing to convert and keeps the
+  // narrow it always took.
+  if (dst.kind === "array" && src.kind === "union") {
+    const from = lowerer.unions.get(src.unionId);
+    if (
+      from &&
+      from.arms.some((arm) => !isUnitType(arm)) &&
+      from.arms.some((arm) => !isUnitType(arm) && !typeEquals(arm, dst)) &&
+      from.arms.every((arm) => isUnitType(arm) || lowerer.widthLiftPlan(arm, dst) !== null)
+    )
+      return { how: "unionArr" };
   }
   // A UNION source into a slot that is ONE of its arms (a width copy
   // whose target field narrowed — the option-table choices shape:
@@ -164,7 +285,33 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   if (dst.kind === "func" && src.kind === "func" && lowerer.cleanFuncAdaptable(src, dst)) {
     return { how: "funcAdapt" };
   }
+  // A method FIELD of a record width copy whose parameters convert only
+  // through a checked narrowing (method bivariance across instantiations):
+  // a checked adapter. Top-level function conversions never see it.
+  if (
+    dst.kind === "func" &&
+    src.kind === "func" &&
+    lowerer.coercions.methodFieldDepth > 0 &&
+    lowerer.coercions.checkedRetags === 0
+  ) {
+    lowerer.coercions.checkedRetags++;
+    try {
+      if (lowerer.cleanFuncAdaptable(src, dst)) return { how: "funcAdaptChecked" };
+    } finally {
+      lowerer.coercions.checkedRetags--;
+    }
+  }
   if (dst.kind === "record" && src.kind === "record") {
+    // An INDEX-SIGNATURE destination takes the overflow CAPTURE reshape:
+    // declared fields copy off the source, every other source field keys
+    // into the destination's overflow (the same helper widthCoerce uses
+    // at top level). Without this the pair had no width plan at all, so a
+    // union arm, field or element of this shape refused.
+    if (lowerer.shapes.get(dst.shapeId)?.indexValue !== undefined) {
+      return lowerer.recordOvfCapturePlan(src.shapeId, dst.shapeId) !== null
+        ? { how: "ovf" }
+        : null;
+    }
     return lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null ? { how: "width" } : null;
   }
   if (dst.kind === "record" && src.kind === "union") {
@@ -220,6 +367,23 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     return null;
   }
   return null;
+}
+
+/** True when the record arm `arm` has a field of every name the record
+ * `source` has. Tuples keep their own positional layouts. */
+function keepsEveryField(
+  lowerer: Lowerer,
+  source: IrRecordShape | undefined,
+  arm: IrType,
+): boolean {
+  const target = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+  return (
+    source !== undefined &&
+    target !== undefined &&
+    !source.tuple &&
+    !target.tuple &&
+    source.fields.every((field) => target.fields.some((kept) => kept.name === field.name))
+  );
 }
 
 /** Two record arms a source record fits, where one arm declares a field
@@ -291,6 +455,7 @@ export function recordWidthPlan(
   // fields answers "assume coercible" — see CoercionState.planning.
   if (lowerer.coercions.planning.has(key)) return new Map();
   lowerer.coercions.planning.add(key);
+  lowerer.coercions.methodFieldDepth++;
   try {
     const plan = new Map<string, FieldLift>();
     for (const tf of to.fields) {
@@ -326,6 +491,7 @@ export function recordWidthPlan(
     }
     return plan;
   } finally {
+    lowerer.coercions.methodFieldDepth--;
     lowerer.coercions.planning.delete(key);
   }
 }

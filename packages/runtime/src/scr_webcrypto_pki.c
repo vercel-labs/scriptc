@@ -380,7 +380,8 @@ static ScrPromise *sw_generate_key(const ScrDyn *args) {
       scr_throw_domex("OperationError", "algorithm.publicExponent must be odd");
       goto done;
     }
-    if (bits > 16384 || value < 3) {
+    /* The pki unit's numbers hold moduli up to 8192 bits. */
+    if (bits > 8192 || value < 3) {
       scr_wc_unsupported("generateKey", "this RSA modulus length or public exponent");
       goto done;
     }

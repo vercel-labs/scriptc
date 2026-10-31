@@ -1,0 +1,1 @@
+{ "name": "island-objects", "private": true, "type": "module", "scriptc": { "packages": { "obj-pkg": "node" } } }

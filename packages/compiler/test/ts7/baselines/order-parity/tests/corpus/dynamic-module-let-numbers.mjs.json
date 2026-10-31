@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dynamic-module-let-numbers.mjs"
+ ],
+ "diags": []
+}

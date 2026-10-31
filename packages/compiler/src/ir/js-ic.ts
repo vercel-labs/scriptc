@@ -18,13 +18,13 @@
  * operation's semantics. This module recognizes the helpers by structure,
  * never by name alone: a helper whose body is not exactly capsule branches
  * plus the generic tail is not a site. `dynInvoke` is a site too: its
- * method read on an ordinary object is a [[Get]] (outside module
- * initializers, see jsIcMethodSites).
+ * method read on an ordinary object is a [[Get]] (in module initializers,
+ * only inside loops; see jsIcMethodSites).
  *
  * Static functions never contain sites (invariant I1): the backend only
  * consults this module for calls in dynamic-tier functions. */
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
-import { everyStmtList } from "./traverse.js";
+import { everyExprChild, everyStmtChild } from "./traverse.js";
 
 export type JsIcSite =
   | { kind: "get"; key: string }
@@ -296,27 +296,56 @@ function unwrapFromDyn(e: IrExpr | null | undefined): IrExpr | null {
   return e;
 }
 
-/** Whether a function holds a cache site: a call to a classified helper or
- * a method dispatch. */
+/** Whether a function holds a cache site: a call to a classified helper,
+ * a method dispatch, or an object literal member with a constant key. */
 export function hasJsIcSite(fn: IrFunction, sites: JsIcSites): boolean {
-  const methods = jsIcMethodSites(fn.name);
-  return !everyStmtList(fn.body, {
-    expr: (e) =>
-      !(
-        (methods && e.kind === "dynInvoke") ||
-        (e.kind === "call" && sites.site(e.callee) !== null)
-      ),
-    stmt: () => true,
-  });
+  const site = (e: IrExpr, inLoop: boolean): boolean =>
+    (jsIcMethodSites(fn.name, inLoop) &&
+      (e.kind === "dynInvoke" ||
+        (e.kind === "dynObjLit" &&
+          (e.fields ?? []).some((f) => jsIcLiteralKey(f.key) !== null)))) ||
+    (e.kind === "call" && sites.site(e.callee) !== null);
+  const expr = (e: IrExpr, inLoop: boolean): boolean =>
+    !site(e, inLoop) &&
+    everyExprChild(
+      e,
+      (child) => expr(child, inLoop),
+      (child) => stmt(child, inLoop),
+    );
+  const stmt = (s: IrStmt, inLoop: boolean): boolean => {
+    const inner =
+      inLoop ||
+      s.kind === "while" ||
+      s.kind === "doWhile" ||
+      s.kind === "for" ||
+      s.kind === "forOf";
+    return everyStmtChild(
+      s,
+      (child) => expr(child, inner),
+      (child) => stmt(child, inner),
+    );
+  };
+  return !fn.body.every((s) => stmt(s, false));
 }
 
-/** Whether method dispatch in a function goes through caches. Module
- * initializers (`%init.N`) run once, and the methods they call at top level
- * are overwhelmingly registrations on native handles (`worker.on(...)`,
- * `server.listen(...)`), which a cache never answers: they keep the plain
- * dispatch, so a typed program whose only dynamic code is such top-level
- * wiring links no dynamic-tier runtime. Property sites still cache there
- * (top-level loops over objects). */
-export function jsIcMethodSites(fnName: string): boolean {
-  return !fnName.startsWith("%init.");
+/** The key of an object literal member that its site adds through the
+ * store cache: a constant string other than `__proto__`, or null. The
+ * literal starts as an empty object with the default prototype, so each
+ * such member appends one data property, and the site caches the shape
+ * transition and shares the key bytes the shape holds. Module
+ * initializers have literal sites only in loops (jsIcMethodSites). */
+export function jsIcLiteralKey(key: IrExpr): string | null {
+  return key.kind === "strLit" && key.value !== "__proto__" ? key.value : null;
+}
+
+/** Whether method dispatch at a site of a function goes through caches.
+ * Module initializers (`%init.N`) run once, and the methods they call at
+ * top level are overwhelmingly registrations on native handles
+ * (`worker.on(...)`, `server.listen(...)`), which a cache never answers:
+ * they keep the plain dispatch, so a typed program whose only dynamic code
+ * is such top-level wiring links no dynamic-tier runtime. A site inside a
+ * loop of an initializer runs once per iteration, so it caches. Property
+ * sites cache everywhere. */
+export function jsIcMethodSites(fnName: string, inLoop: boolean): boolean {
+  return inLoop || !fnName.startsWith("%init.");
 }

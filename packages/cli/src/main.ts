@@ -10,6 +10,7 @@ import {
   mergeProfiles,
   resolveProvenanceSources,
   sourceTargetPlatform,
+  typePatches,
   warmNativeCaches,
 } from "@scriptc/compiler";
 import { runCli } from "./command.js";
@@ -39,6 +40,7 @@ process.exitCode = await runCli(process.argv.slice(2), {
   sourceTargetPlatform,
   warmNativeCaches,
   mergeProfiles,
+  typePatches,
   run: (binary) =>
     new Promise<number>((resolveExit) => {
       let child;

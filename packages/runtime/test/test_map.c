@@ -422,12 +422,14 @@ static void test_live_iteration_indices(void) {
 /* A small (linear) map that must grow its lookup index while an iteration
  * is active may not compact: entry indices, tombstones and the append
  * position stay put. Integer keys in a compact range move to the direct
- * index (dense) from the fifth entry, any other number keys to the bucket
+ * index (dense) from the second entry, any other number keys to the bucket
  * table from the ninth; both transitions are covered by running the same
- * script with `offset` 0 and 0.5. */
+ * script with `offset` 0 and 0.5. The walk deletes `victim`, an existing
+ * key, then appends the key that makes the index grow. */
 static void run_small_storage_transitions(double offset) {
   bool dense = offset == 0;
-  int n = dense ? 4 : 8; /* entries a linear map holds before its index grows */
+  int n = dense ? 1 : 8; /* entries a linear map holds before its index grows */
+  int victim = dense ? 0 : 1;
   ScrMap *m = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (int i = 0; i < n; i++) scr_map_set_f64_f64(m, i + offset, i + 10);
   check(m->nbuckets == 0 && m->buckets == NULL && m->ndense == 0,
@@ -441,22 +443,23 @@ static void run_small_storage_transitions(double offset) {
   ScrMap *copy = scr_map_clone(m, false, NULL);
   check(copy->nbuckets == 0 && copy->ndense == 0, "small clone preserves compact storage");
   scr_map_iter_enter(m);
-  scr_map_delete_f64(m, 1 + offset);
+  scr_map_delete_f64(m, victim + offset);
   scr_map_set_f64_f64(m, n + offset, 14);
   check(dense ? m->ndense > 0 && m->nbuckets == 0 : m->nbuckets > 0 && m->ndense == 0,
         "live iteration promotes without moving entry indices");
-  check(m->nentries == (uint32_t)n + 1 && !scr_map_iter_live(m, 1) &&
+  check(m->nentries == (uint32_t)n + 1 && !scr_map_iter_live(m, victim) &&
             scr_map_iter_key_f64(m, n) == n + offset,
         "promotion preserves tombstones and append position");
   for (int i = n + 1; i < 64; i++) scr_map_set_f64_f64(m, i + offset, i + 10);
-  check(m->nentries == 64 && !scr_map_iter_live(m, 1) && scr_map_iter_key_f64(m, 63) == 63 + offset,
+  check(m->nentries == 64 && !scr_map_iter_live(m, victim) && scr_map_iter_key_f64(m, 63) == 63 + offset,
         "growth during iteration keeps entry indices");
   double out = 0;
-  check(scr_map_get_f64_f64(m, offset, &out) && out == 10,
-        "original key survives promotion and growth");
-  check(!scr_map_has_f64(m, 1 + offset), "deleted small key stays absent after rehash");
+  check(dense ? scr_map_get_f64_f64(m, n + offset, &out) && out == 14
+              : scr_map_get_f64_f64(m, offset, &out) && out == 10,
+        "keys written before the promotion survive it and the growth");
+  check(!scr_map_has_f64(m, victim + offset), "deleted small key stays absent after rehash");
   scr_map_iter_exit(m);
-  check(scr_map_has_f64(copy, 1 + offset) && !scr_map_has_f64(copy, n + offset),
+  check(scr_map_has_f64(copy, victim + offset) && !scr_map_has_f64(copy, n + offset),
         "small clone remains independent");
   scr_map_clear(copy);
   scr_map_iter_enter(copy);
@@ -511,6 +514,34 @@ static void test_identity_key_ownership(void) {
   scr_arr_release(b);
   scr_arr_release(absent);
   scr_map_release(m);
+}
+
+static double closure_key_fn(void) { return 1; }
+
+/* Closure keys hash and compare identity roots: a signature adapter is the
+ * key of the function it adapts, and the map keeps the closure it stored. */
+static void test_closure_identity_keys(void) {
+  ScrClosure *fn = scr_closure_new((void *)closure_key_fn, 0);
+  ScrClosure *wide = scr_closure_new((void *)closure_key_fn, 0);
+  ScrClosure *other = scr_closure_new((void *)closure_key_fn, 0);
+  scr_closure_adopt_identity(wide, fn, 0);
+  ScrMap *m = scr_map_new(SCR_MAP_KEY_CLOSURE, SCR_MAP_VAL_F64,
+      ops_of(scr_closure_retain_v, scr_closure_release_v, NULL, NULL, NULL, NULL, NULL));
+  scr_map_set_ref_f64(m, wide, 1);
+  check(scr_map_has_ref(m, fn), "an adapter's key finds the function it adapts");
+  scr_map_set_ref_f64(m, fn, 2);
+  check(scr_map_size(m) == 1, "a function and its adapter are one key");
+  double value = 0;
+  check(scr_map_get_ref_f64(m, wide, &value) && value == 2, "the overwrite reaches the adapter's entry");
+  void *key = scr_map_iter_key_ref(m, 0);
+  check(key == wide, "the map keeps the closure it stored");
+  scr_closure_release(key);
+  check(!scr_map_has_ref(m, other), "another closure of the same code is another key");
+  check(scr_map_delete_ref(m, fn) && scr_map_size(m) == 0, "delete by the original removes the adapter's entry");
+  scr_map_release(m);
+  scr_closure_release(fn);
+  scr_closure_release(wide);
+  scr_closure_release(other);
 }
 
 static void test_identity_scalar_values(void) {
@@ -928,6 +959,7 @@ int main(void) {
   test_small_storage_transitions();
   test_identity_key_ownership();
   test_identity_scalar_values();
+  test_closure_identity_keys();
   test_reboxed_keys_and_rehash();
   test_value_keys_and_copies();
   test_absent_key_filter();

@@ -4,7 +4,8 @@
  * longer than FRAME_MAX_WIDTH (minified sources) shows a window of that
  * width around the diagnostic's column, with "…" where text is cut.
  */
-import type { ScrDiagnostic } from "./diagnostic.js";
+import { isNodeIslandNoteCode, isNodeIslandNoticeCode } from "./envelope.js";
+import { isTypePatchCode, type ScrDiagnostic } from "./diagnostic.js";
 
 export interface RenderOptions {
   color?: boolean;
@@ -102,16 +103,21 @@ export function renderDiagnostic(
     frame.push(
       c(DIM, `  ${" ".repeat(gutterWidth)} | `) +
         " ".repeat(caretCol) +
-        c(/^SC6\d{3}$/.test(diag.code) ? YELLOW : RED, "^" + "~".repeat(spanOnLine - 1)),
+        c(
+          isWarningCode(diag.code) || isNodeIslandNoticeCode(diag.code) ? YELLOW : RED,
+          "^" + "~".repeat(spanOnLine - 1),
+        ),
     );
     emitLine(lineNum + 1);
   }
 
-  // The divergence band (SC6xxx) is the one warning severity: the program
-  // compiles, and the site can behave differently from Node.
-  const warning = /^SC6\d{3}$/.test(diag.code);
+  // Node island notices of a successful build: SC8020 warns, SC8001 and
+  // SC8021 are notes.
+  const note = isNodeIslandNoteCode(diag.code);
+  const warning = isWarningCode(diag.code) || diag.code === "SC8020" || diag.code === "SC8023";
+  const severity = note ? c(CYAN, "note") : warning ? c(YELLOW, "warning") : c(RED, "error");
   out.push(
-    `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${warning ? c(YELLOW, "warning") : c(RED, "error")} ${c(BOLD, diag.code)}: ${diag.message}`,
+    `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${severity} ${c(BOLD, diag.code)}: ${diag.message}`,
   );
   if (frame.length) {
     out.push("", ...frame);
@@ -154,7 +160,16 @@ export function renderDiagnostics(
 
 /** Divergence warnings after a successful build: the rendered sites plus a
  * one-line count, on stderr. */
-export function renderWarnings(
+/** The warning severities: the divergence band (SC6xxx), where the program
+ * compiles and the site can behave differently from Node, and unknown
+ * settings in the project's scriptc configuration (SC8004), which builds do
+ * not use. */
+export function isWarningCode(code: string): boolean {
+  return /^SC6\d{3}$/.test(code) || code === "SC8004" || isTypePatchCode(code);
+}
+
+/** A build's type patch warnings (SC8030–SC8033). */
+export function renderTypePatchWarnings(
   diags: readonly ScrDiagnostic[],
   sourceTextByFile: Map<string, string>,
   opts: RenderOptions = {},
@@ -162,6 +177,33 @@ export function renderWarnings(
   const n = diags.length;
   return (
     renderDiagnostics([...diags], sourceTextByFile, opts) +
+    `\n\n${n} warning${n === 1 ? "" : "s"}: ${n === 1 ? "this type patch" : "these type patches"} did not apply as written; the build uses the package's own declarations there.`
+  );
+}
+
+/** A build's SC8004 warnings: the unknown scriptc settings it ignored. */
+export function renderConfigWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+  opts: RenderOptions = {},
+): string {
+  const n = diags.length;
+  return (
+    renderDiagnostics([...diags], sourceTextByFile, opts) +
+    `\n\n${n} warning${n === 1 ? "" : "s"}: the build does not use ${n === 1 ? "this setting" : "these settings"}; scriptc coverage reports Node islands once they are valid.`
+  );
+}
+
+export function renderWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+  opts: RenderOptions = {},
+): string {
+  const n = diags.filter((d) => !isNodeIslandNoteCode(d.code)).length;
+  const rendered = renderDiagnostics([...diags], sourceTextByFile, opts);
+  if (n === 0) return rendered;
+  return (
+    rendered +
     `\n\n${n} warning${n === 1 ? "" : "s"}: the program compiled, but ${n === 1 ? "this site" : "these sites"} can behave differently from Node.`
   );
 }

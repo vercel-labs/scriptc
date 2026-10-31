@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { driverFindsLld, lldLinkerArgs } from "./lld.js";
+import { driverFindsLld, inputsWithoutLld, lldLinkerArgs, resolvedLldFile } from "./lld.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -32,9 +32,11 @@ test.skipIf(process.platform === "win32")(
     const clang = tool(join(f.llvm, "clang"));
     // Without ld.lld anywhere.
     expect(driverFindsLld(clang, { PATH: f.other })).toBe(false);
+    expect(resolvedLldFile(clang, { PATH: f.other })).toBeNull();
     // Beside the driver.
     tool(join(f.llvm, "ld.lld"));
     expect(driverFindsLld(clang, { PATH: f.other })).toBe(true);
+    expect(resolvedLldFile(clang, { PATH: f.other })).toBe(join(f.llvm, "ld.lld"));
     // A PATH entry that links to the driver: clang looks beside its real executable.
     symlinkSync(clang, join(f.usr, "clang"));
     expect(driverFindsLld("clang", { PATH: f.usr })).toBe(true);
@@ -59,3 +61,16 @@ test.skipIf(process.platform === "win32")(
     expect(lldLinkerArgs("linux", clang, { ...env, SCRIPTC_LINKER: clang })).toEqual([]);
   },
 );
+
+test("glibc links without lld leave out the glibc math unit", () => {
+  const inputs = ["/pack/scr_lib.o", "/pack/scr_glibc_math.o", "/tmp/program.o"];
+  const target = (platform: string, name: string) => ({ platform, name });
+  expect(inputsWithoutLld(target("linux", "linux-x64-gnu"), inputs)).toEqual([
+    "/pack/scr_lib.o",
+    "/tmp/program.o",
+  ]);
+  expect(inputsWithoutLld(target("linux", "linux-x64-musl"), inputs)).toEqual(inputs);
+  expect(inputsWithoutLld(target("linux", "linux-arm64-musl"), inputs)).toEqual(inputs);
+  expect(inputsWithoutLld(target("darwin", "darwin-arm64"), inputs)).toEqual(inputs);
+  expect(inputsWithoutLld(target("windows", "win32-x64-msvc"), inputs)).toEqual(inputs);
+});

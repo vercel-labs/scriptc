@@ -24,11 +24,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as ts from "../frontend/ts7/adapter.js";
-import {
-  trackedAccessibleEntries,
-  trackedFileExists,
-  trackedReadFile,
-} from "../frontend/input-tracker.js";
+import { trackedAccessibleEntries, trackedReadFile } from "../frontend/input-tracker.js";
+import { readProjectConfig } from "../project-config.js";
 import { analyzeWasm, isWasmHeader, type WasmModuleSummary } from "./binary.js";
 import { decodeBase64 } from "./base64.js";
 
@@ -282,24 +279,10 @@ class Discovery {
   // ── source 4: configuration ─────────────────────────────────────────
 
   scanConfig(): void {
-    const manifest = nearestPackageJson(dirname(this.input.entry));
-    if (manifest !== null) {
-      const text = trackedReadFile(manifest);
-      if (text !== null) {
-        let listed: unknown;
-        try {
-          const parsed = JSON.parse(text) as { scriptc?: { wasm?: unknown } };
-          listed = parsed.scriptc?.wasm;
-        } catch {
-          listed = undefined;
-        }
-        if (Array.isArray(listed)) {
-          for (const entry of listed) {
-            if (typeof entry === "string") {
-              this.addFile(resolve(dirname(manifest), entry), { kind: "config", file: manifest });
-            }
-          }
-        }
+    const config = readProjectConfig(this.input.entry);
+    if (config.manifest !== null) {
+      for (const path of config.wasm) {
+        this.addFile(path, { kind: "config", file: config.manifest });
       }
     }
     for (const path of this.input.configured) {
@@ -393,16 +376,6 @@ function collectWasmFiles(dir: string, depth: number, out: string[]): void {
   for (const name of entries.directories) {
     if (name === "node_modules" || name.startsWith(".")) continue;
     collectWasmFiles(join(dir, name), depth + 1, out);
-  }
-}
-
-function nearestPackageJson(dir: string): string | null {
-  for (;;) {
-    const candidate = join(dir, "package.json");
-    if (trackedFileExists(candidate)) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
   }
 }
 

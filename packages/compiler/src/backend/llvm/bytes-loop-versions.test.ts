@@ -222,6 +222,55 @@ test("negative factors, rebinding, captures and outer loops are not versioned", 
   expect(match(fn([outer]), inner)).not.toBeNull();
 });
 
+test("loops with nested loops version only for accesses inside them", () => {
+  // for (let i = 0; i < 64; i++) {
+  //   let t = 0;
+  //   for (let j = 0; j < n; j++) t = t + src[j];
+  //   out[i] = t;
+  // }
+  const sum = (): IrStmt[] => [
+    { kind: "varDecl", localId: "t", init: num(0), loc },
+    counted(
+      [
+        {
+          kind: "assign",
+          localId: "t",
+          value: bin("+", ref("t"), get(ref("src", f64s), ref("j"))),
+          loc,
+        },
+      ],
+      ref("n"),
+      "j",
+    ),
+  ];
+  const extra = [local("t", F64, true)];
+  // The guard would prove only `out[i]`, which runs once per row.
+  const rows = counted([...sum(), set(ref("out", f64s), ref("i"), ref("t"))], num(64));
+  expect(match(fn([rows], extra), rows)).toBeNull();
+  expect(match(fn([rows], extra), rows.body[1] as IrStmt & { kind: "for" })).not.toBeNull();
+  // The guard proves `out[i]` inside a nested loop too.
+  const inside = counted(
+    [...sum(), counted([set(ref("out", f64s), ref("i"), ref("t"))], num(2), "j")],
+    num(64),
+  );
+  expect(match(fn([inside], extra), inside)?.bounds.size).toBe(1);
+  // A loop whose nested loops access no typed array versions for its own
+  // accesses.
+  const scalar = counted(
+    [
+      { kind: "varDecl", localId: "t", init: num(0), loc },
+      counted(
+        [{ kind: "assign", localId: "t", value: bin("+", ref("t"), ref("j")), loc }],
+        ref("n"),
+        "j",
+      ),
+      set(ref("out", f64s), ref("i"), ref("t")),
+    ],
+    num(64),
+  );
+  expect(match(fn([scalar], extra), scalar)?.bounds.size).toBe(1);
+});
+
 test("emitted loops version the body and tag typed-array memory", () => {
   const loop = counted([
     set(ref("out", f64s), ref("i"), bin("*", get(ref("src", f64s), ref("i")), num(2))),
@@ -317,13 +366,20 @@ test("worker programs test each receiver's shared storage once in the guard", ()
   const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
   const guard = body.slice(0, body.search(/^bytes\.version\.(fast|slow)\d+:$/m));
   expect(guard.match(/icmp eq ptr %\S+, null/g)).toHaveLength(2);
-  const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(body)![0];
+  const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.fast\.shared\d+:$/m.exec(body)![0];
   expect(fast).not.toContain("bytes.shared");
   expect(fast).not.toMatch(/(load|store) atomic double/);
-  // The checked copy keeps the shared-memory path for each access.
+  // The checked copy keeps the shared-memory path for each access. The copy
+  // for shared views whose bounds hold is a counted loop that polls between
+  // blocks, so its accesses at the counter are plain.
   const slow = body.slice(body.search(/^bytes\.version\.slow\d+:$/m), body.indexOf(fast));
   expect(slow).toContain("load atomic double");
   expect(slow).toContain("store atomic double");
+  const shared = /^bytes\.version\.fast\.shared\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(
+    body,
+  )![0];
+  expect(shared).toMatch(/^loop\.poll\d+:$/m);
+  expect(shared).not.toMatch(/(load|store) atomic double/);
 });
 
 test("index temps of a version's counter are integers in the fast copy", () => {
@@ -701,7 +757,8 @@ test("a two-counter loop versions the typed arrays it indexes at either counter"
   };
   const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
   const guard = body.slice(0, body.search(/^bytes\.version\.(fast|slow)\d+:$/m));
-  expect(guard).toMatch(/icmp sge i64 %\S+, 0/);
+  // `i` starts at the literal 0, so its test compares the integer itself.
+  expect(guard).toMatch(/icmp sge i64 0, 0/);
   expect(guard).toMatch(/icmp slt i64 %\S+, %\S+/);
   const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(body)![0];
   // The fast copy keeps only the `src[i + 1]` check, and no second guard.

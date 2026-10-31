@@ -17,14 +17,19 @@ export function isImportMeta(expr: ts.Expression): boolean {
   );
 }
 
+/** The module's file name as the compiled program reports it
+ * (import.meta.filename): the WASI guest path on wasi targets. */
+export function moduleFileName(lowerer: Lowerer, sf: ts.SourceFile): string {
+  return lowerer.targetPlatform === "wasi"
+    ? (wasiGuestPath(sf.fileName) ?? sf.fileName.replace(/\\/g, "/"))
+    : sf.fileName;
+}
+
 /** File-backed metadata is fixed by the compiled module graph. Reads share
  * one implementation across dot access, folded keys and selected bindings. */
 export function importMetaField(lowerer: Lowerer, node: ts.Node, name: string): IrExpr {
   const sf = ts.getSourceFileOfNode(node);
-  const fileName =
-    lowerer.targetPlatform === "wasi"
-      ? (wasiGuestPath(sf.fileName) ?? sf.fileName.replace(/\\/g, "/"))
-      : sf.fileName;
+  const fileName = moduleFileName(lowerer, sf);
   const loc = locOf(node);
   switch (name) {
     case "env":

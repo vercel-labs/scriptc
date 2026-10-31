@@ -1,9 +1,10 @@
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { declareTypedArguments } from "./typed-arguments.js";
+import { declareArgumentCount } from "./argument-counts.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
-import { declareContextLocal } from "./function-context.js";
+import { declareContextLocal, type FnCtx } from "./function-context.js";
 import { isErrorFirstErrorType } from "./builtins/arguments.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
@@ -36,7 +37,15 @@ import {
   appendImplicitUndefinedReturn,
   blockBodyOf,
 } from "./function-returns.js";
-import { generatorMeta, isThisParameter, type ParamShape } from "./call-signatures.js";
+import {
+  generatorMeta,
+  generatorParamsBindAtCall,
+  isThisParameter,
+  type ParamShape,
+} from "./call-signatures.js";
+import { isStrictCode } from "./strict-mode.js";
+import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
+import { noteObjectMethodName } from "./function-names.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -47,18 +56,43 @@ function declareCallReceiver(
 ): IrStmt {
   const receiver = lowerer.declareThis(DYN);
   const loc = locOf(node);
+  const bound: IrExpr = {
+    kind: "libCall",
+    fn: generator ? "dyn.generatorThis" : "dyn.this",
+    args: [],
+    type: DYN,
+    loc,
+  };
+  // A sloppy-mode function's `this` is the global object when it is called
+  // with undefined or null. The function's own body decides its mode.
+  const sloppy = !ts.isArrowFunction(node) && node.body !== undefined && !isStrictCode(node.body);
   return {
     kind: "varDecl",
     localId: receiver.id,
-    init: {
-      kind: "libCall",
-      fn: generator ? "dyn.generatorThis" : "dyn.this",
-      args: [],
-      type: DYN,
-      loc,
-    },
+    init: sloppy
+      ? {
+          kind: "nullish",
+          left: bound,
+          right: lowerSloppyGlobalReceiver(lowerer, node, loc),
+          type: DYN,
+          loc,
+        }
+      : bound,
     loc,
   };
+}
+
+/** Remove the receiver declaration when no lookup of `this` reached it:
+ * the parameters, the body and nested arrows never read it, so the entry
+ * does not read the call-site receiver. */
+function dropUnreadReceiver(ctx: FnCtx, prologue: IrStmt[], receiver: IrStmt | null): void {
+  if (receiver === null || receiver.kind !== "varDecl" || ctx.thisRead) return;
+  const at = prologue.indexOf(receiver);
+  if (at < 0) return;
+  prologue.splice(at, 1);
+  const local = ctx.locals.findIndex((l) => l.id === receiver.localId);
+  if (local >= 0) ctx.locals.splice(local, 1);
+  ctx.thisLocal = null;
 }
 
 /** True when the identifier resolves (through import aliases) to a
@@ -166,6 +200,23 @@ function declareFunctionArguments(
   }
 }
 
+/** The type parameters a lambda without its own takes from a generic
+ * contextual signature, unbound in the current scope. */
+function contextualTypeParameterSymbols(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): ts.Symbol[] {
+  const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(node));
+  if (signatures.length !== 1) return [];
+  const symbols: ts.Symbol[] = [];
+  for (const parameter of signatures[0]!.getTypeParameters()) {
+    const symbol = parameter.getSymbol();
+    if (!symbol || lowerer.typeParamBindings?.has(symbol)) return [];
+    symbols.push(symbol);
+  }
+  return symbols;
+}
+
 /** Lifts an arrow function / function expression / nested declaration /
  * object-literal shorthand method to a module-level function and yields
  * the `closure` expression creating it. */
@@ -199,6 +250,31 @@ export function lowerLambda(
       lowerer.erasingDepth--;
       lowerer.erasingLambdas.delete(node);
       lowerer.typeParamBindings = previous;
+    }
+  }
+  // A lambda contextually typed by a GENERIC signature (`send: (m) => …`
+  // for `send<T>(m: Msg<T>): string`) takes that signature's type
+  // parameters as its own; it lowers once, erased, like a generic lambda.
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    !node.typeParameters?.nodes.length &&
+    !lowerer.erasingLambdas.has(node)
+  ) {
+    const contextual = contextualTypeParameterSymbols(lowerer, node);
+    if (contextual.length > 0) {
+      const previous = lowerer.typeParamBindings;
+      const bindings = new Map(previous ?? []);
+      for (const symbol of contextual) bindings.set(symbol, DYN);
+      lowerer.typeParamBindings = bindings;
+      lowerer.erasingLambdas.add(node);
+      lowerer.erasingDepth++;
+      try {
+        return lowerLambda(lowerer, node, checkedReceiver);
+      } finally {
+        lowerer.erasingDepth--;
+        lowerer.erasingLambdas.delete(node);
+        lowerer.typeParamBindings = previous;
+      }
     }
   }
   const prepared =
@@ -242,9 +318,15 @@ export function lowerLambda(
   // A lambda IS a value: the completed-ABI rule applies at birth. The
   // contextual (target) type decides — `(x?: number) => void` may flow
   // into a slot annotated `(x: number | undefined) => void` (same ABI
-  // signature), anything else is fenced. Nested function declarations and
-  // object-literal shorthand methods aren't expressions — always fenced.
+  // signature), anything else is fenced. Object-literal shorthand methods
+  // aren't expressions: their slot is the literal's, judged inside.
+  // A nested function DECLARATION is not an expression either: lowering it
+  // builds the body, not a value, and every value use re-runs the same
+  // fence at the reference (identifiers.ts) with that use's own target
+  // (a call, or `const g = f` under an annotated slot). Fencing it here
+  // refused declarations that are only ever CALLED.
   if (
+    !ts.isFunctionDeclaration(node) &&
     !(
       ts.isMethodDeclaration(node) &&
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&
@@ -445,7 +527,18 @@ export function lowerLambda(
       funcType = { ...funcType, ret: bodyReturn };
       fnCtx.returnType = bodyReturn;
     }
-    body = [...prologue, ...body];
+    dropUnreadReceiver(fnCtx, prologue, receiver);
+    // Generator parameters bind at the CALL (FunctionDeclarationInstantiation
+    // runs before GeneratorStart) exactly when that is observable: a
+    // destructuring or rest pattern, a default that evaluates anything, or a
+    // body that reads `arguments`. An identifier-only list — even with
+    // literal defaults — binds nothing observable, so it keeps the lowering
+    // that binds on the first resume and compiles byte-identically.
+    const bindsAtCall =
+      isGenerator && prologue.some((stmt) => stmt !== receiver) && generatorParamsBindAtCall(node);
+    body = bindsAtCall
+      ? [...prologue, { kind: "genBindBarrier" as const, loc }, ...body]
+      : [...prologue, ...body];
     // Bare-expression bodies never pass through lowerStmts, so the
     // lib-boundary chokepoint runs here (idempotent for block bodies,
     // whose statements were already walked). A fence poisons the
@@ -471,8 +564,11 @@ export function lowerLambda(
       loc,
     };
     if (isAsync) lifted.async = true;
-    if (fnCtx.generator) lifted.generator = fnCtx.generator;
+    if (fnCtx.generator) {
+      lifted.generator = bindsAtCall ? { ...fnCtx.generator, bindAtCall: true } : fnCtx.generator;
+    }
     lowerer.liftedFns.push(lifted);
+    noteObjectMethodName(lowerer, node, fnName);
     return { kind: "closure", fnName, captures: ctx.captureSources, type: funcType, loc };
   } catch (e) {
     // JS sources defer LAMBDA poisons like function declarations
@@ -534,12 +630,18 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
   const diagsBefore = lowerer.diags.length;
   lowerer.fnStack.push(ctx);
   try {
+    // The count a call through a value stored is taken (and its slot
+    // cleared) before the parameters bind: a destructuring default that
+    // throws must not leave the slot set for the next direct call.
+    const argumentCount: IrStmt[] = [];
+    declareArgumentCount(lowerer, decl, argumentCount);
     const receiver =
       decl.parameters.nodes.some(isThisParameter) || isJsSourceFile(ts.getSourceFileOfNode(decl))
         ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
         : null;
     const { params, prologue } = lowerer.declareParams(decl.parameters.nodes, sig.params);
     if (receiver) prologue.unshift(receiver);
+    prologue.unshift(...argumentCount);
     declareFunctionArguments(
       lowerer,
       decl,
@@ -561,12 +663,21 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     }
     const undefinedResult = undefinedResultParam(lowerer, decl, sig.params, false);
     const lowerBody = (): IrStmt[] => lowerer.lowerStmts(bodyBlock.statements.nodes);
-    const body = [
-      ...prologue,
-      ...(undefinedResult
-        ? lowerUndefinedResultBody(lowerer, decl, undefinedResult, lowerBody)
-        : lowerBody()),
-    ];
+    const statements = undefinedResult
+      ? lowerUndefinedResultBody(lowerer, decl, undefinedResult, lowerBody)
+      : lowerBody();
+    dropUnreadReceiver(ctx, prologue, receiver);
+    // See lowerLambda: a generator binds its parameters at the CALL exactly
+    // when that is observable. The receiver read and the arity bookkeeping
+    // are the call machinery, not parameter binding, and keep the
+    // unbarriered shape.
+    const bindsAtCall =
+      sig.generator !== undefined &&
+      prologue.some((stmt) => stmt !== receiver && !argumentCount.includes(stmt)) &&
+      generatorParamsBindAtCall(decl);
+    const body = bindsAtCall
+      ? [...prologue, { kind: "genBindBarrier" as const, loc: locOf(decl) }, ...statements]
+      : [...prologue, ...statements];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(decl));
     const fn: IrFunction = {
       name: sig.name,
@@ -579,7 +690,8 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       loc: locOf(decl),
     };
     if (sig.isAsync) fn.async = true;
-    if (sig.generator !== undefined) fn.generator = sig.generator;
+    if (sig.generator !== undefined)
+      fn.generator = bindsAtCall ? { ...sig.generator, bindAtCall: true } : sig.generator;
     return fn;
   } catch (e) {
     // A poison OUTSIDE the per-statement catches (a parameter DEFAULT

@@ -123,6 +123,48 @@ function astWords(bytes: Uint8Array, offset: number, count: number): Uint32Array
   return words;
 }
 
+/** TypeScript 7.1's encoding, which this reader accepts beside
+ * PROTOCOL_VERSION (TypeScript 7.0's). Its header is 64 bytes: after the
+ * section offsets come the source file ID and lease ID (u64 each) and the
+ * binder data offset. Its node kinds count 7.1's SourceKeyword (167), so each
+ * kind above it is one more than 7.0's; the reader returns 7.0's kinds. A
+ * module declaration's children gain `attributes` in slot 2, which moves
+ * `body` to slot 3, and an import clause's phase gains `source` (3). */
+export const PROTOCOL_VERSION_7_1 = 9;
+const HEADER_SIZE_7_1 = 64;
+/** SourceKeyword in TypeScript 7.1's kinds. */
+const SOURCE_KEYWORD_7_1 = 167;
+
+/** A TypeScript 7.0 SyntaxKind as TypeScript 7.1 numbers it. */
+export function syntaxKind71(kind: number): number {
+  return kind >= SOURCE_KEYWORD_7_1 ? kind + 1 : kind;
+}
+
+/** The node table of a protocol 7.1 response in TypeScript 7.0's terms: each
+ * kind above SourceKeyword one lower, and each module declaration's child
+ * mask without the attributes slot. Throws for the nodes 7.0 has no form
+ * for: a SourceKeyword node and a module declaration with import attributes.
+ * An `import source` clause keeps its phase, which `phaseModifier` reports as
+ * SOURCE_PHASE_MODIFIER. */
+function wordsAs70(words: Uint32Array, count: number): Uint32Array {
+  const result = new Uint32Array(words);
+  for (let index = 1; index < count; index++) {
+    const word = index * NODE_WORDS;
+    let kind = result[word + WORD_KIND]!;
+    if (kind === KIND_NODE_LIST) continue;
+    if (kind === SOURCE_KEYWORD_7_1)
+      throw new AstDecodeError("TypeScript 7.1's SourceKeyword node is not supported");
+    if (kind > SOURCE_KEYWORD_7_1) result[word + WORD_KIND] = --kind;
+    const data = result[word + WORD_DATA]!;
+    if (kind === AstKind.ModuleDeclaration && data >>> 30 === 0) {
+      if ((data & 4) !== 0)
+        throw new AstDecodeError("import attributes on a module declaration are not supported");
+      result[word + WORD_DATA] = ((data & ~0xff) | (data & 3) | ((data & 8) >>> 1)) >>> 0;
+    }
+  }
+  return result;
+}
+
 function hexWord(value: number): string {
   const digits = "0123456789abcdef";
   let result = "";
@@ -139,6 +181,8 @@ export class AstWireFile {
   readonly stringCount: number;
   readonly contentHash: string;
   readonly parseOptionsKey: string;
+  /** The response's protocol: PROTOCOL_VERSION or PROTOCOL_VERSION_7_1. */
+  readonly protocol: number;
   private readonly strings: number;
   private readonly extended: number;
   private readonly structured: number;
@@ -155,15 +199,19 @@ export class AstWireFile {
   constructor(private readonly bytes: Uint8Array) {
     astBounds(bytes, 0, HEADER_SIZE);
     const metadata = astU32(bytes, HEADER_OFFSET_METADATA);
-    if (metadata >>> 24 !== PROTOCOL_VERSION)
-      throw new AstDecodeError(`unsupported protocol version ${metadata >>> 24}`);
+    const protocol = metadata >>> 24;
+    if (protocol !== PROTOCOL_VERSION && protocol !== PROTOCOL_VERSION_7_1)
+      throw new AstDecodeError(`unsupported protocol version ${protocol}`);
+    this.protocol = protocol;
+    const headerSize = protocol === PROTOCOL_VERSION_7_1 ? HEADER_SIZE_7_1 : HEADER_SIZE;
+    astBounds(bytes, 0, headerSize);
     const stringOffsets = astU32(bytes, HEADER_OFFSET_STRING_TABLE_OFFSETS);
     this.strings = astU32(bytes, HEADER_OFFSET_STRING_TABLE);
     this.extended = astU32(bytes, HEADER_OFFSET_EXTENDED_DATA);
     this.structured = astU32(bytes, HEADER_OFFSET_STRUCTURED_DATA);
     this.nodes = astU32(bytes, HEADER_OFFSET_NODES);
     if (
-      stringOffsets < HEADER_SIZE ||
+      stringOffsets < headerSize ||
       this.strings < stringOffsets ||
       this.extended < this.strings ||
       this.structured < this.extended ||
@@ -177,7 +225,8 @@ export class AstWireFile {
     }
     this.nodeCount = (bytes.length - this.nodes) / NODE_LEN;
     this.stringCount = (this.strings - stringOffsets) / 8;
-    this.words = astWords(bytes, this.nodes, this.nodeCount * NODE_WORDS);
+    const words = astWords(bytes, this.nodes, this.nodeCount * NODE_WORDS);
+    this.words = protocol === PROTOCOL_VERSION_7_1 ? wordsAs70(words, this.nodeCount) : words;
     this.stringWords = astWords(bytes, stringOffsets, this.stringCount * 2);
     this.stringCache = new Array<string | undefined>(this.stringCount).fill(undefined);
     if (this.nodeCount < 2) throw new AstDecodeError("missing root");
@@ -198,6 +247,19 @@ export class AstWireFile {
       if (end < start || end > this.extended - this.strings)
         throw new AstDecodeError("invalid string table offset");
     }
+  }
+
+  /** `kind` (TypeScript 7.0's) as this response's protocol numbers it, the
+   * kind a node handle names. */
+  kindOnWire(kind: number): number {
+    return this.protocol === PROTOCOL_VERSION_7_1 ? syntaxKind71(kind) : kind;
+  }
+
+  /** A kind as this response's protocol numbers it (a node handle's) in
+   * TypeScript 7.0's numbering; -1 for 7.1's SourceKeyword. */
+  kindFromWire(kind: number): number {
+    if (this.protocol !== PROTOCOL_VERSION_7_1 || kind < SOURCE_KEYWORD_7_1) return kind;
+    return kind === SOURCE_KEYWORD_7_1 ? -1 : kind - 1;
   }
 
   /** The first word of node `index`. `index >>> 0 === index` accepts exactly

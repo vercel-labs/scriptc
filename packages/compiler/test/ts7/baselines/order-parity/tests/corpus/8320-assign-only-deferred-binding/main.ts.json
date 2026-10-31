@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8320-assign-only-deferred-binding/scanner.ts",
+  "<repo>/tests/corpus/8320-assign-only-deferred-binding/main.ts"
+ ],
+ "diags": []
+}

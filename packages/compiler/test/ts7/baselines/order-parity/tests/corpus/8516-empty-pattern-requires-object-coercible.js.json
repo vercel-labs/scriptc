@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8516-empty-pattern-requires-object-coercible.js"
+ ],
+ "diags": []
+}

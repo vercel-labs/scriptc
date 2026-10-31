@@ -10,6 +10,7 @@
 #ifdef SCR_RC_AUDIT
 long scr_str_live_count(void);
 long scr_dyn_key_live_count(void);
+void scr_layout_reset_idle(void);
 #endif
 
 static void put(ScrDyn *map, ScrDyn *key, ScrDyn *value) {
@@ -167,7 +168,7 @@ static void checked_storage(void) {
       char key[16];
       int length = snprintf(key, sizeof key, "key-%d", i);
       scr_dyn_obj_set(object, key, (size_t)length, scr_dyn_new_num(i));
-      assert((object->v.obj.index != NULL) == (i >= 31));
+      assert((object->v.obj.index != NULL) == (i >= (int)SCR_LAYOUT_MAX_KEYS));
     }
     for (int i = 0; i < 129; i++) {
       char key[16];
@@ -229,6 +230,8 @@ static void checked_storage(void) {
 
 static void shared_property_keys(void) {
 #ifdef SCR_RC_AUDIT
+  /* Layouts hold key references until the thread's state is torn down. */
+  scr_layout_reset_idle();
   long before = scr_dyn_key_live_count();
 #endif
   /* Distinct objects share bytes, not values or property attributes. Key
@@ -238,7 +241,8 @@ static void shared_property_keys(void) {
   char key[] = "shared\0name";
   scr_dyn_obj_set(first, key, sizeof key - 1, scr_dyn_new_num(1));
   scr_dyn_obj_set(second, key, sizeof key - 1, scr_dyn_new_num(2));
-  assert(first->v.obj.entries[0].key == second->v.obj.entries[0].key);
+  size_t first_len, second_len;
+  assert(scr_dyn_obj_key_at(first, 0, &first_len) == scr_dyn_obj_key_at(second, 0, &second_len));
   key[0] = 'x';
   ScrStr *name = scr_str_new("shared\0name", sizeof key - 1);
   scr_dyn_key_delete(first, name, true);
@@ -269,6 +273,7 @@ static void shared_property_keys(void) {
     }
   }
 #ifdef SCR_RC_AUDIT
+  scr_layout_reset_idle();
   assert(scr_dyn_key_live_count() == before);
 #endif
 }
@@ -651,8 +656,10 @@ static void json_schema_parse(void) {
   static const char *const order[] = {"tags", "ok", "extra", "qty", "sku"};
   assert(view->kind == SCR_DYN_OBJ && view->v.obj.len == 5);
   for (size_t i = 0; i < 5; i++) {
-    assert(view->v.obj.entries[i].key_len == strlen(order[i]));
-    assert(memcmp(view->v.obj.entries[i].key, order[i], strlen(order[i])) == 0);
+    size_t key_len;
+    const char *key = scr_dyn_obj_key_at(view, i, &key_len);
+    assert(key_len == strlen(order[i]));
+    assert(memcmp(key, order[i], strlen(order[i])) == 0);
   }
   assert(scr_dyn_obj_get(view, "extra", 5)->kind == SCR_DYN_OBJ);
   test_item_release(second);

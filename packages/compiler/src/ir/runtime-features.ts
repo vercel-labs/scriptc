@@ -2,13 +2,14 @@ import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } 
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
+  recordHandleCodecClass,
   recordTextCodecClass,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_EVENT_CLASS,
   RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
-import { everyModuleNode } from "./traverse.js";
+import { everyModuleNode, everyStmtList } from "./traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 
@@ -79,6 +80,10 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.native",
   // The crypto global's object extends crypto.native's.
   "webcrypto.object",
+  // Web streams settle their promises with dyn values.
+  "webstream.class",
+  "webstream.instanceOf",
+  "webstream.install",
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
@@ -95,6 +100,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offWarning",
   "process.onRejectionHandled",
   "process.onUncaughtException",
+  "process.prependUncaughtException",
   "process.onUnhandledRejection",
   "process.onWarning",
   "process.setDeprecationFlag",
@@ -102,6 +108,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
+  // util.aborted answers a checked-dynamic promise, and so do the
+  // functions util.debounce and util.throttle return.
+  "util.aborted",
+  "util.debounce",
+  "util.throttle",
   "timers.immediatePromise",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
@@ -143,7 +154,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.promisifyDyn",
   "util.debuglog",
   "util.deprecate",
+  "util.diff",
+  "util.extend",
   "util.inherits",
+  "util.inheritsPrototype",
+  "util.isArrayDeprecated",
   "util.styleText",
 ]);
 
@@ -172,7 +187,11 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.callbackify",
   "util.debuglog",
   "util.deprecate",
+  "util.diff",
+  "util.extend",
   "util.inherits",
+  "util.inheritsPrototype",
+  "util.isArrayDeprecated",
 ]);
 
 /** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), and readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters. */
@@ -263,6 +282,10 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.prop",
   "stream.stdioWritable",
   "stream.unboxDyn",
+  "stream.dynIterableSource",
+  "stream.dynSourceValue",
+  "stream.dynTransformResult",
+  "stream.unboxDynStage",
   "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
@@ -299,6 +322,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromAsyncFn",
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
+  "stream.unboxDynStage",
 ]);
 
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
@@ -307,16 +331,24 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
+  "dyn.arrayLikeProtoCall",
+  "dyn.builtinPrototype",
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
+  "dyn.stdlibPrototype",
   "dyn.defineProperty",
+  "dyn.definePropertyShapes",
   "child.propsDefine",
   "dyn.defineProps",
+  "dyn.definePropsShapes",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
   "dyn.globalConstructor",
+  "dyn.namespaceDefine",
+  "dyn.namespaceNew",
   "dyn.objCreateWithProperties",
+  "dyn.objCreateWithPropertiesShapes",
   "dyn.objectTag",
   "stream.dynNative",
   "stream.dynNativePipe",
@@ -331,6 +363,48 @@ const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "propertyIsEnumerable",
   "toString",
   "valueOf",
+]);
+
+/** Array.prototype's method names. A constant-key dynamic read of one on an array answers the method the array's implicit prototype installs, so the read links the dyn-invoke unit. Mirrors the method table in scr_dyn_invoke.c (runtime-registries.test.ts checks the two agree). */
+export const ARRAY_PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "at",
+  "concat",
+  "copyWithin",
+  "fill",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "lastIndexOf",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "unshift",
+  "slice",
+  "sort",
+  "splice",
+  "includes",
+  "indexOf",
+  "join",
+  "keys",
+  "entries",
+  "values",
+  "forEach",
+  "filter",
+  "flat",
+  "flatMap",
+  "map",
+  "every",
+  "some",
+  "reduce",
+  "reduceRight",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "with",
+  "toLocaleString",
+  "toString",
 ]);
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
@@ -363,6 +437,10 @@ const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
 
 /** Entry points that link the symbol unit, besides the sym. and disposable. families. */
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // Web streams answer async iteration through Symbol.asyncIterator.
+  "webstream.class",
+  "webstream.instanceOf",
+  "webstream.install",
   // EventEmitter's kShapeMode and kCapture properties
   ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
@@ -375,7 +453,15 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 ]);
 
 /** Entry points that link the querystring unit. */
-const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set(["qs.parse", "qs.stringify", "qs.unescape"]);
+const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "qs.parse",
+  "qs.parseCustom",
+  "qs.stringify",
+  "qs.stringifyCustom",
+  "qs.separator",
+  "qs.unescape",
+  "qs.unescapeBuffer",
+]);
 
 /** Entry points that link the parseArgs unit. */
 const PARSE_ARGS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -586,7 +672,7 @@ function mentionsDgramSocket(t: IrType, tables: TypeTables): boolean {
 const textCodecLeaf: CarrierLeaf = (t, tables) => {
   if (t.kind !== "record") return false;
   const shape = tables.records.get(t.shapeId);
-  return shape !== undefined && recordTextCodecClass(shape) !== null;
+  return shape !== undefined && recordHandleCodecClass(shape) !== null;
 };
 
 const textDecoderLeaf: CarrierLeaf = (t, tables) => {
@@ -596,7 +682,7 @@ const textDecoderLeaf: CarrierLeaf = (t, tables) => {
 };
 
 /** Whether converting a value of type `t` to or from dyn converts a
- * TextEncoder or TextDecoder record, which boxes it as a handle of
+ * TextEncoder, TextDecoder or StringDecoder record, which boxes it as a handle of
  * scr_text_codec_dyn.c (the same carrier walk as dgram sockets). */
 function mentionsTextCodec(t: IrType, tables: TypeTables): boolean {
   tables.textCodecCarriers ??= leafCarriers(tables, textCodecLeaf);
@@ -617,7 +703,12 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offSignal",
   "process.onExit",
   "process.onSignal",
+  "process.prependExit",
+  "process.prependSignal",
   "process.stdio",
+  "process.stdinIsRaw",
+  "process.stdioSlot",
+  "process.stdioWriteDyn",
   "stdin.nextChunk",
   "stdin.onData",
   "stdin.onEnd",
@@ -704,7 +795,7 @@ interface RuleScan {
  * type that needs several units appears in each unit's rule. */
 interface RuntimeFeatureRule {
   initial?: (mod: IrModule) => boolean;
-  scan?: () => RuleScan;
+  scan?: (mod: IrModule) => RuleScan;
   fns?: readonly IrLibFn[];
   prefixes?: readonly string[];
   libCall?: (node: LibCallNode) => boolean;
@@ -742,6 +833,9 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.x509PublicKey",
+  "crypto.x509Verify",
+  "crypto.x509CheckPrivateKey",
   "crypto.diffieHellman",
 ]);
 
@@ -805,6 +899,141 @@ export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
   return webcrypto && named;
 }
 
+/** The typed file reads that answer a ScrBytes: Node answers a Buffer, but
+ * scr_lib.c brands it only in the SCR_FS_BUFFER_BRAND build, so a program
+ * that can observe the difference links that build. */
+const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "fs.readFileSyncBuf",
+  "fs.readFileSyncBytes",
+  "fs.readFdSyncBytes",
+  "fsp.readFileBytes",
+  "fileHandle.readFileBytes",
+]);
+
+/** The bytesIntrinsic searches whose runtime branch reads the brand: a
+ * Buffer viewed as a Uint8Array searches bytes, a plain Uint8Array compares
+ * element values (NaN and out-of-range needles differ). */
+const FS_BUFFER_SEARCH_METHODS: ReadonlySet<string> = new Set([
+  "indexOfElem",
+  "lastIndexOfElem",
+  "includesElem",
+]);
+
+/** Whether a type holds bytes without passing another declaration, collecting
+ * the record and union declarations it references. A boxed function's call
+ * thunk boxes its result, and a checked function's thunk boxes its
+ * arguments, with no dynFrom in the IR. */
+function reachesBytesDirect(t: IrType, deps: string[]): boolean {
+  switch (t.kind) {
+    case "bytes":
+      return true;
+    case "array":
+    case "set":
+      return reachesBytesDirect(t.elem, deps);
+    case "map":
+      return reachesBytesDirect(t.key, deps) || reachesBytesDirect(t.value, deps);
+    case "promise":
+      return reachesBytesDirect(t.inner, deps);
+    case "func":
+      return reachesBytesDirect(t.ret, deps) || t.params.some((p) => reachesBytesDirect(p, deps));
+    case "record":
+      deps.push(`r:${t.shapeId}`);
+      return false;
+    case "union":
+      deps.push(`u:${t.unionId}`);
+      return false;
+    default:
+      return false;
+  }
+}
+
+/** The module's declarations that can hold bytes, resolved to a fixpoint: a
+ * record or union that references another declaration holding bytes holds
+ * bytes, and a recursive declaration resolves like a non-recursive one. The
+ * closure answers each reference from one pass over the declarations instead
+ * of walking the shape tree at every reference. */
+function bytesCarryingDecls(mod: IrModule): (t: IrType) => boolean {
+  const referrers = new Map<string, string[]>();
+  const carrying = new Set<string>();
+  const queue: string[] = [];
+  const direct = (id: string, t: IrType): void => {
+    const deps: string[] = [];
+    if (reachesBytesDirect(t, deps)) {
+      if (!carrying.has(id)) {
+        carrying.add(id);
+        queue.push(id);
+      }
+    }
+    for (const dep of deps) {
+      const list = referrers.get(dep);
+      if (list === undefined) referrers.set(dep, [id]);
+      else list.push(id);
+    }
+  };
+  for (const record of mod.records ?? []) {
+    for (const field of record.fields) direct(`r:${record.id}`, field.type);
+    if (record.indexValue !== undefined) direct(`r:${record.id}`, record.indexValue);
+  }
+  for (const union of mod.unions ?? []) {
+    for (const arm of union.arms) direct(`u:${union.id}`, arm);
+  }
+  for (let i = 0; i < queue.length; i++) {
+    for (const from of referrers.get(queue[i]!) ?? []) {
+      if (carrying.has(from)) continue;
+      carrying.add(from);
+      queue.push(from);
+    }
+  }
+  const deps: string[] = [];
+  const holdsBytes = (t: IrType): boolean => {
+    deps.length = 0;
+    if (reachesBytesDirect(t, deps)) return true;
+    for (const dep of deps) if (carrying.has(dep)) return true;
+    return false;
+  };
+  return holdsBytes;
+}
+
+/** fsBufferBrand's condition as a scan over the module: it reads file bytes
+ * through a typed read and can observe their Buffer-ness. scr_lib.c's read
+ * entries set is_buffer only under SCR_FS_BUFFER_BRAND, so this conjunction
+ * selects that variant; a program that reads bytes without observing them
+ * keeps the default object. */
+function fsBufferBrandScan(mod: IrModule): RuleScan {
+  let reads = false;
+  let observes = false;
+  let holdsBytes: ((t: IrType) => boolean) | undefined;
+  return {
+    expr: (node) => {
+      if (reads && observes) return;
+      if (node.kind === "libCall" && FS_READ_BYTES_FNS.has(node.fn)) {
+        reads = true;
+        return;
+      }
+      if (observes) return;
+      switch (node.kind) {
+        case "dynFrom":
+          observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.value.type);
+          return;
+        case "dynCheck":
+          if (node.type.kind === "func") {
+            observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.type);
+          }
+          return;
+        case "bytesIntrinsic":
+          observes = FS_BUFFER_SEARCH_METHODS.has(node.method);
+          return;
+        case "libCall":
+          observes = node.fn === "buffer.isBranded" || node.fn === "insp.bytes";
+          return;
+        default:
+          return;
+      }
+    },
+    result: () => reads && observes,
+  };
+}
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -818,16 +1047,41 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
-  /** scr_wasm.c converts i64 values through BigInt. */
+  /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
+   * produce bigint values. */
   bigint: rule({
     fns: ["process.hrtimeValue"],
-    prefixes: ["bigint.", "wasm."],
+    prefixes: ["bigint.", "wasm.", "bigstats."],
     types: ["bigint"],
   }),
+  /** BigIntStats member reads (`statSync(p, { bigint: true })` members) link
+   * scr_stats_bigint.c. The bigint feature is broader than this unit: every
+   * bigint value and wasm conversion turns it on, so gating the unit on it
+   * would link the getters into programs that never name a stat member. */
+  bigstats: rule({ prefixes: ["bigstats."] }),
   childProcess: rule({
     fns: [...CHILD_PROCESS_LIB_FNS],
     prefixes: CHILD_PROCESS_LIB_PREFIXES,
     types: ["child", "childStream", "childWriter", "spawnRes"],
+  }),
+  /** ChildProcess listener removal (off/removeListener) and the recorded
+   * terminal signal (signalCode): scr_child_lifecycle.c, a unit of its
+   * own so a program that never calls them keeps scr_child.c's layout. */
+  childLifecycle: rule({
+    fns: [
+      "child.offSpawn",
+      "child.offExit",
+      "child.offClose",
+      "child.offError",
+      "child.signalCode",
+    ],
+  }),
+  /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
+   * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
+   * own, so a program that never passes those options keeps the default
+   * object, byte for byte. */
+  childOptionExt: rule({
+    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
   }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
@@ -858,7 +1112,7 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynFrom" && mentionsDgramSocket(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsDgramSocket(node.type, tables())),
   }),
-  /** A TextEncoder or TextDecoder record converts to or from an untyped
+  /** A TextEncoder, TextDecoder or StringDecoder record converts to or from an untyped
    * value (its handle box, or a boxed function, record or collection that
    * carries one): scr_text_codec_dyn.c. */
   textCodecDyn: rule({
@@ -875,10 +1129,11 @@ const RUNTIME_FEATURE_RULES = {
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
-    // The legacy url functions, crypto.createCipheriv and
-    // ecdh.setPublicKey emit their deprecation warnings through the
-    // dyn-async unit (WebCrypto's encrypt and decrypt link scr_cipher.c
-    // too); scr_wasm.c boxes its handles and promises through it.
+    // The legacy url functions, crypto.createCipheriv,
+    // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
+    // deprecation warnings through the dyn-async unit (WebCrypto's
+    // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
+    // handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
@@ -889,6 +1144,8 @@ const RUNTIME_FEATURE_RULES = {
       "webcrypto.wrapKey",
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
+      "crypto.generateKeyPairCb",
+      "crypto.generateKeyPairSync",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -910,6 +1167,16 @@ const RUNTIME_FEATURE_RULES = {
    * half (scr_dyn_builtin_stream.c): native stream state for constructor
    * functions, over the stream unit. */
   dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass"] }),
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
+  stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
+  /** Array.prototype's generic algorithms over array-like receivers
+   * (scr_dyn_array_like.c), which delegates every other name to the
+   * dyn-invoke unit's array dispatch. */
+  arrayLikeDispatch: rule({ fns: ["dyn.arrayLikeProtoCall"] }),
+  /** Number.prototype and Boolean.prototype as values
+   * (scr_dyn_builtin_prototype.c). */
+  builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     fns: [
@@ -918,14 +1185,28 @@ const RUNTIME_FEATURE_RULES = {
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
       "buffer.prototypeMember",
+      // scr_webstreams.c calls the iterators ReadableStream.from reads.
+      "webstream.class",
+      "webstream.instanceOf",
+      "webstream.install",
+      // scr_js_wrapper.c answers other values' tags through
+      // scr_dyn_object_tag_of, and its prototype methods call scr_dyn_invoke.
+      "wrapper.objectTag",
+      "wrapper.new",
+      "wrapper.toObject",
+      // The Boolean prototype's methods run scr_js_wrapper_apply in the
+      // same unit, which calls scr_dyn_invoke.
+      "wrapper.booleanPrototype",
     ],
-    // Constant-key reads of Object.prototype member names answer the
-    // inherited member through scr_dyn_invoke.c.
+    // Constant-key reads of Object.prototype member names, and of
+    // Array.prototype method names on arrays, answer the inherited member
+    // through scr_dyn_invoke.c.
     expr: (node, _tables) =>
       node.kind === "dynInvoke" ||
       (node.kind === "dynKeyGet" &&
         node.key.kind === "strLit" &&
-        INHERITED_MEMBER_NAMES.has(node.key.value)),
+        (INHERITED_MEMBER_NAMES.has(node.key.value) ||
+          ARRAY_PROTOTYPE_MEMBER_NAMES.has(node.key.value))),
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
@@ -940,9 +1221,24 @@ const RUNTIME_FEATURE_RULES = {
   /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */
-  declAdopt: rule({ fns: ["dyn.declAdopt"], initial: (mod) => mod.declBoundary === true }),
+  declAdopt: rule({
+    fns: ["dyn.declAdopt", "dyn.adoptShared"],
+    initial: (mod) => mod.declBoundary === true,
+  }),
+  // Checked conversions into package-declared types name the declaration
+  // in their TypeError (scr_type_origin.c).
+  typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically
+   * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
+  dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
+  /** A generator that binds its parameters at the call (scr_gen_bind.c):
+   * the spawn wrapper's eager step imports the bind helper, and every other
+   * program links the default runtime objects. */
+  genBind: rule({
+    initial: (mod) => mod.functions.some((fn) => fn.generator?.bindAtCall === true),
+  }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -950,6 +1246,9 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["buffer.prototypeMember"],
     expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_METHODS.has(node.method),
   }),
+  /** createRequire's require and require.resolve with specifiers computed
+   * at run time (scr_require.c). */
+  computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({
     fns: [
@@ -960,6 +1259,13 @@ const RUNTIME_FEATURE_RULES = {
       "buffer.installValue",
       "buffer.staticValue",
       "buffer.prototypeMember",
+      "dyn.validateString",
+      "dyn.validateStrings",
+      "path.resolveValue",
+      "path.parseValue",
+      "path.formatValue",
+      "path.toNamespacedValue",
+      "dyn.installBuiltinStatics",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
@@ -985,14 +1291,37 @@ const RUNTIME_FEATURE_RULES = {
       (mod.classes ?? []).some(
         (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
       ),
-    fns: ["events.addAbortListener", ...ABORT_SIGNAL_LIB_FNS],
+    // util.debounce and util.throttle register options.signal's listener.
+    fns: [
+      "events.addAbortListener",
+      "util.aborted",
+      "util.debounce",
+      "util.throttle",
+      ...ABORT_SIGNAL_LIB_FNS,
+    ],
     prefixes: ["event."],
   }),
+  /** util.MIMEType and util.MIMEParams (scr_mime.c). */
+  mime: rule({ prefixes: ["mime."] }),
+  /** Web streams in checked-dynamic code (scr_webstreams.c). */
+  webStreams: rule({ prefixes: ["webstream."] }),
+  /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
+   * A WritableStream controller's signal is one (scr_webstreams.c). */
+  abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
+  /** util.debounce and util.throttle (scr_util_timing.c). */
+  utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** A typed fs read whose bytes value the program can observe as a Buffer:
+   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
+   * brand keep the default object. */
+  fsBufferBrand: rule({ scan: fsBufferBrandScan }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
+   * half of the watching surface, gated on its own unit. */
+  fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -1006,6 +1335,12 @@ const RUNTIME_FEATURE_RULES = {
     libCall: (node) => node.fn.startsWith("http2.") && !HTTP2_LEGACY_FNS.has(node.fn),
     types: ["http2Session", "http2Stream"],
   }),
+  /** Intl over ICU: scr_intl.c plus the ICU archive and the data
+   * file that ships beside the executable. The prefix is `icu.` because the
+   * `intl.` libCalls are the engine-free fast paths — the embedded en-US
+   * number format and the table-driven grapheme segmenter — which must keep
+   * linking no ICU code. */
+  icu: rule({ prefixes: ["icu."] }),
   /** scr_test.c renders thrown strings with the inspect unit's string
    * formatting; scr_util_callable.c wraps the inspect unit; readline's
    * terminal unit prints completion errors through it when there is a
@@ -1013,7 +1348,14 @@ const RUNTIME_FEATURE_RULES = {
   inspect: rule({
     fns: [
       "global.native",
+      // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
+      "webstream.class",
+      // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
+      "strdec.encodingValue",
+      "webstream.install",
       "util.styleText",
+      // ERR_UNHANDLED_ERROR quotes util.inspect of a non-Error payload.
+      "emitter.emitErrorValue",
       "crypto.cipherNew",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
@@ -1050,6 +1392,9 @@ const RUNTIME_FEATURE_RULES = {
       "secureCtx",
     ],
   }),
+  /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
+   * SCR_NODE_ISLANDS build of the event loop unit. */
+  nodeIsland: rule({ prefixes: ["nodeIsland."] }),
   nodeTest: rule({ prefixes: ["test."], types: ["testCtx"] }),
   /** scr_util_callable.c reads options through the parseArgs unit's
    * descriptors. */
@@ -1078,6 +1423,9 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       "rl.terminal",
       "str.localeCase",
+      // win32.relative compares with String.prototype.toLowerCase's
+      // Unicode case mapping.
+      "path.win32Relative",
     ],
     prefixes: URL_PREFIXES,
     expr: (node, _tables) =>
@@ -1103,6 +1451,18 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynInvoke" && STDIO_EXTENDED_NAMES.has(node.method)) ||
       (node.kind === "strLit" && STDIO_EXTENDED_NAMES.has(node.value)),
   }),
+  /** A write completion callback that takes the error argument lowers
+   * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
+   * publishes the error the adapter delivers. */
+  streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  /** The program reaches the process output streams' write slot — the
+   * write method as a value (process.stdioSlot), its replacement, a patched
+   * program's typed writes, or a run-time-typed chunk
+   * (process.stdioWriteDyn): the SCR_STDIO_WRITE_SLOT build of the events
+   * unit carries the shared write body, the dynamic-chunk entry point and
+   * Node's anonymous write function. Every other program links the default
+   * object, byte for byte. */
+  stdioWriteSlot: rule({ fns: ["process.stdioSlot", "process.stdioWriteDyn"] }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1124,11 +1484,79 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** A record literal asserted to a wider record type answers a partial
+   * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
+   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c. */
+  recordViewPartial: rule({
+    expr: (node) => node.kind === "dynCheck" && node.partialView === true,
+  }),
+  /** Module namespace objects as checked-dynamic values
+   * (scr_module_namespace.c). */
+  moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
+  /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
+  moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
+  /** Primitive wrapper objects (scr_js_wrapper.c). */
+  primitiveWrapper: rule({ prefixes: ["wrapper."] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
    * scr_webcrypto.c. */
   webcrypto: rule({ prefixes: ["webcrypto."] }),
+  /** scr_x509.c: the X509Certificate fields beyond the validity window and
+   * fingerprint, which stay in scr_lib.c. */
+  x509: rule({
+    fns: [
+      "crypto.x509Ca",
+      "crypto.x509Fingerprint256",
+      "crypto.x509Fingerprint512",
+      "crypto.x509InfoAccess",
+      "crypto.x509Issuer",
+      "crypto.x509Raw",
+      "crypto.x509RawDer",
+      "crypto.x509RawStr",
+      "crypto.x509SerialNumber",
+      "crypto.x509SignatureAlgorithm",
+      "crypto.x509SignatureAlgorithmOid",
+      "crypto.x509Subject",
+      "crypto.x509SubjectAltName",
+      "crypto.x509CheckHost",
+      "crypto.x509CheckEmail",
+      "crypto.x509CheckIP",
+      "crypto.x509CheckIssued",
+      "crypto.x509LegacyObject",
+      "crypto.x509Pem",
+      // getPeerCertificate and getCertificate build with scr_x509.c too.
+      "tls.sockGetPeerCertificate",
+      "tls.sockGetCertificate",
+    ],
+  }),
+  /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode
+   * argument: scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c.
+   * Programs that never pass either keep both units' default objects. */
+  fsFlags: rule({
+    fns: [
+      "fs.copyFileFlagsSync",
+      "fs.writeFileFlagsSync",
+      "fsp.copyFileFlags",
+      "fsp.writeFileFlags",
+    ],
+  }),
+  /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
+   * scr_bytes_strdec_dyn.c. */
+  strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
+  /** The process and stream event registries' extras — prependListener for
+   * signals, 'exit' and uncaught exceptions, stdin.isRaw, and server.off:
+   * the SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and
+   * the SCR_NET_SERVER_OFF build of scr_net.c. */
+  processExtras: rule({
+    fns: [
+      "net.serverOff",
+      "process.prependExit",
+      "process.prependSignal",
+      "process.prependUncaughtException",
+      "process.stdinIsRaw",
+    ],
+  }),
   zlib: rule({ prefixes: ["zlib."] }),
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
@@ -1149,6 +1577,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     assert: false,
     asyncContext: false,
     bigint: false,
+    bigstats: false,
     childProcess: false,
     cipher: false,
     copying: false,
@@ -1160,46 +1589,73 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynAsync: false,
     dynBuiltinClass: false,
     dynBuiltinStream: false,
+    stdlibPrototypeValue: false,
     dynInvoke: false,
+    arrayLikeDispatch: false,
+    builtinPrototypeValue: false,
     dynTier: false,
     ecdh: false,
+    x509: false,
     dh: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsBufferBrand: false,
+    fsFlags: false,
     fsWatch: false,
+    fsWatchFile: false,
+    genBind: false,
     http2: false,
     http: false,
+    icu: false,
     inspect: false,
     legacyTextDecoder: false,
+    mime: false,
+    webStreams: false,
+    abortSignal: false,
+    utilTiming: false,
     mockTimers: false,
     net: false,
     netLookup: false,
+    nodeIsland: false,
     nodeTest: false,
     parseArgs: false,
     perfLoop: false,
     pki: false,
     ed25519: false,
     processEvents: false,
+    processExtras: false,
     qs: false,
     regex: false,
     searchParams: false,
     urlIdna: false,
     stdioExtended: false,
+    stdioWriteSlot: false,
+    streamWriteErrors: false,
+    moduleNamespace: false,
+    moduleNamespaceDyn: false,
+    primitiveWrapper: false,
     stream: false,
+    strdecDyn: false,
     streamDyn: false,
     handleProps: false,
+    childLifecycle: false,
+    childOptionExt: false,
     declAdopt: false,
+    typeOrigins: false,
     dynForAwait: false,
+    dynIntegrityQueries: false,
     dynBuffer: false,
     builtinValues: false,
+    computedRequire: false,
     symbol: false,
     tls: false,
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
+    recordViewPartial: false,
     wasm: false,
     webcrypto: false,
     zlib: false,
@@ -1243,7 +1699,7 @@ function scanRuntimeFeatures(
   for (const name of RUNTIME_FEATURE_NAMES) {
     const { initial, scan } = ruleOf(name);
     if (initial && initial(mod)) features[name] = true;
-    if (scan) scans.push({ name, scan: scan() });
+    if (scan) scans.push({ name, scan: scan(mod) });
   }
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
@@ -1285,12 +1741,19 @@ function scanRuntimeFeatures(
     for (const t of nodes.types) type(t);
   } else if (keepGoing()) everyModuleNode(mod, { expr, stmt: keepGoing, type });
   for (const { name, scan } of scans) if (scan.result()) features[name] = true;
-  // Inline-cache sites of dynamic-tier functions use the tier's shapes
-  // (scr_js_object.c, with the SCR_JS_TIER build of scr_json.c).
+  // Inline-cache sites of dynamic-tier functions use the tier's caches
+  // (scr_js_object.c).
   if (!features.dynTier && mod.functions.some((fn) => fn.tier === "dynamic")) {
     const sites = new JsIcSites(mod);
     features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));
   }
+  // A jsval parameter or result (ir/jsval.ts) is retained and released
+  // through the tier's word reference counting, with or without a js.*
+  // operation in the body.
+  if (!features.dynTier)
+    features.dynTier = mod.functions.some(
+      (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
+    );
   return features;
 }
 
@@ -1299,6 +1762,17 @@ function scanRuntimeFeatures(
  * switch that pulls scr_regex.c + the vendored libregexp into the binary
  * (native-toolchain.ts); regex-free programs keep the historical command line. The
  * typed traversal visits type slots as well as executable nodes. */
+/** True when the module enters AsyncLocalStorage stores (RuntimeFeatures
+ * asyncContext): a walk for those libCalls alone, without the other
+ * features' rules. */
+export function moduleUsesAsyncContext(mod: IrModule): boolean {
+  const visitor = {
+    expr: (e: IrExpr): boolean => e.kind !== "libCall" || !ASYNC_CONTEXT_LIB_FNS.has(e.fn),
+    stmt: (): boolean => true,
+  };
+  return !mod.functions.every((fn) => everyStmtList(fn.body, visitor));
+}
+
 export function moduleUsesRegex(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "regex").regex;
 }
@@ -1492,6 +1966,15 @@ export function moduleUsesParseArgs(mod: IrModule): boolean {
  * link line. Same generic-walk shape as moduleUsesZlib. */
 export function moduleUsesFsWatch(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "fsWatch").fsWatch;
+}
+
+/** True when the module contains an fs.watchFile/fs.unwatchFile libCall —
+ * the link switch that pulls scr_watch_file.c into the binary and has the
+ * emitted main call scr_watch_file_install (the moduleUsesFsWatch
+ * precedent, one unit of its own). Programs that never poll pay zero bytes
+ * and keep their exact link line. */
+export function moduleUsesFsWatchFile(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "fsWatchFile").fsWatchFile;
 }
 
 /** True when the module contains any test.* libCall or a testCtx handle

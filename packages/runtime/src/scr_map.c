@@ -116,6 +116,8 @@ static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
     const ScrUnion *u = (const ScrUnion *)scr_map_slot_to_ptr(key);
     return scr_map_slot_from_ptr(scr_union_peek(u));
   }
+  if (m->key_kind == SCR_MAP_KEY_CLOSURE)
+    return scr_map_slot_from_ptr(scr_closure_identity(scr_map_slot_to_ptr(key)));
   return key;
 }
 
@@ -169,6 +171,7 @@ static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
   case SCR_MAP_KEY_F64: return scr_map_hash_word(scr_map_f64_bits(scr_map_slot_to_f64(key->slot)));
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return scr_map_hash_word((uint64_t)kind);
+  case SCR_MAP_KEY_CLOSURE: return scr_map_hash_word(scr_map_slot_from_ptr(scr_closure_identity(scr_union_peek(key))));
   default: return scr_map_hash_word(key->slot);
   }
 }
@@ -183,6 +186,7 @@ static bool scr_map_union_eq(const ScrMap *m, const ScrUnion *a, const ScrUnion 
     return scr_map_f64_bits(scr_map_slot_to_f64(a->slot)) == scr_map_f64_bits(scr_map_slot_to_f64(b->slot));
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return true;
+  case SCR_MAP_KEY_CLOSURE: return scr_closure_identity_equal(scr_union_peek(a), scr_union_peek(b));
   default: return a->slot == b->slot;
   }
 }
@@ -847,7 +851,7 @@ static void scr_map_reserve_append(ScrMap *m) {
 
 static bool scr_map_ref_key(ScrMapKeyKind kind) {
   return kind == SCR_MAP_KEY_REF || kind == SCR_MAP_KEY_UNION_REF || kind == SCR_MAP_KEY_DYN ||
-         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE;
+         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE || kind == SCR_MAP_KEY_CLOSURE;
 }
 
 static void scr_map_release_key(ScrMap *m, uint64_t key) {
@@ -1205,9 +1209,11 @@ static __attribute__((noinline)) void scr_map_set_num(ScrMap *m, uint64_t hash, 
 }
 
 /* A number-key map with at least this many entries moves to the direct
- * index when its keys allow it, so small integer keys are indexed before
- * the linear scan ends. */
-#define SCR_MAP_DENSE_AFTER 4
+ * index when its keys allow it: from its second key, so a map of a few
+ * small integer keys (a histogram over 0..3) reads through the inline
+ * direct index rather than the out-of-line linear scan. A map with one
+ * key keeps its linear storage. */
+#define SCR_MAP_DENSE_AFTER 1
 
 /* Whether appending one more entry would grow the lookup index rather than
  * reuse tombstones: scr_map_reserve_append compacts a linear map with a

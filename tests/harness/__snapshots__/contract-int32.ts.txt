@@ -48,6 +48,15 @@ contract-int32.ts:31:20 - error SC7002: the value stored into 'len' (Int32) is n
   30 | const sizes = [1, 2, 3];
   31 | const len: Int32 = sizes.length;
      |                    ^~~~~~~~~~~~
-  32 | 
+  32 | const weights = [1.5, 2];
 
   hint: make the int32 conversion explicit, for example 'sizes.length | 0', so Node computes the same value
+
+contract-int32.ts:33:30 - error SC7002: the value stored into 'w' (Int32) is not provably an int32
+
+  32 | const weights = [1.5, 2];
+  33 | const shifted = weights.map((w: Int32) => w + 1);
+     |                              ^
+  34 | 
+
+  hint: make the int32 conversion explicit with '| 0', so Node computes the same value

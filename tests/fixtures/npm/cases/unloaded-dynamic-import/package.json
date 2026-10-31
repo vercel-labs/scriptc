@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "wsunloadedparser": "unloaded",
+      "gtunloadedheavy": "unloaded"
+    }
+  }
+}

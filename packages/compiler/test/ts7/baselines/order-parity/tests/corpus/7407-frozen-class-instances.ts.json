@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7407-frozen-class-instances.ts"
+ ],
+ "diags": []
+}

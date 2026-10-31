@@ -76,8 +76,8 @@ function malformedReply(): never {
 
 /** The index after the JSON value that starts at `start`: an object, an
  * array, a string or a bare literal. Strings are skipped with their escapes,
- * so brackets inside them do not count. */
-function jsonValueEnd(bytes: Uint8Array, start: number): number {
+ * so brackets inside them do not count. Throws when the value is unclosed. */
+export function jsonValueEnd(bytes: Uint8Array, start: number): number {
   let depth = 0;
   let index = start;
   while (index < bytes.length) {
@@ -101,6 +101,27 @@ function jsonValueEnd(bytes: Uint8Array, start: number): number {
   }
   if (depth !== 0) malformedReply();
   return index;
+}
+
+/** The scanner the decoders find value ends with: jsonValueEnd, or the
+ * native compiler's scanner (useNativeJsonValueEnd). It is a property of a
+ * constant object: a program that installs the scanner but decodes no
+ * reply must still initialize it, and an assigned module variable with no
+ * other reader would be left uninitialized by a native build. */
+const scanner: { valueEnd: (bytes: Uint8Array, start: number) => number } = {
+  valueEnd: jsonValueEnd,
+};
+
+/** Has the decoders find value ends with `scan`, which returns what
+ * jsonValueEnd returns, or -1 where jsonValueEnd throws. The native compiler
+ * installs its C scanner (native/ts7-process.c), which skips the strings that
+ * make up most reply bytes with memchr. */
+export function useNativeJsonValueEnd(scan: (bytes: Uint8Array, start: number) => number): void {
+  scanner.valueEnd = (bytes, start) => {
+    const end = scan(bytes, start);
+    if (end < 0) malformedReply();
+    return end;
+  };
 }
 
 /** The id an object reply starts with (`{"id":N`), or -1 when it starts
@@ -128,7 +149,7 @@ function parseJsonSlice<T>(bytes: Uint8Array, start: number, end: number): T {
 
 /** One element of a reply: null, or the object with leading id `id`. Objects
  * the caller already holds under that id are not decoded. */
-function replyElement<T extends { id: number }, R>(
+function replyElement<T extends object, R>(
   bytes: Uint8Array,
   start: number,
   end: number,
@@ -151,14 +172,14 @@ function replyElement<T extends { id: number }, R>(
  * reply is null. Objects the caller already holds under their id, which a
  * reply repeats whenever it names them, are returned from `cached` without
  * decoding their text; the rest are decoded and handed to `build`. */
-export function decodeSemanticObject<T extends { id: number }, R>(
+export function decodeSemanticObject<T extends object, R>(
   bytes: Uint8Array,
   cached: (id: number) => R | undefined,
   build: (data: T) => R,
 ): R | null {
   const start = skipJsonSpace(bytes, 0);
   if (start === bytes.length) return null;
-  const end = jsonValueEnd(bytes, start);
+  const end = scanner.valueEnd(bytes, start);
   if (skipJsonSpace(bytes, end) !== bytes.length) malformedReply();
   return replyElement(bytes, start, end, cached, build);
 }
@@ -166,7 +187,7 @@ export function decodeSemanticObject<T extends { id: number }, R>(
 /** A checker reply that is an array of objects (each with a numeric `id`) and
  * nulls, or null. An empty reply is null. Elements are resolved as in
  * decodeSemanticObject. */
-export function decodeSemanticObjects<T extends { id: number }, R>(
+export function decodeSemanticObjects<T extends object, R>(
   bytes: Uint8Array,
   cached: (id: number) => R | undefined,
   build: (data: T) => R,
@@ -174,7 +195,7 @@ export function decodeSemanticObjects<T extends { id: number }, R>(
   let index = skipJsonSpace(bytes, 0);
   if (index === bytes.length) return null;
   if (bytes[index] !== OPEN_BRACKET) {
-    const end = jsonValueEnd(bytes, index);
+    const end = scanner.valueEnd(bytes, index);
     if (
       skipJsonSpace(bytes, end) !== bytes.length ||
       parseJsonSlice<null>(bytes, index, end) !== null
@@ -189,7 +210,7 @@ export function decodeSemanticObjects<T extends { id: number }, R>(
     return result;
   }
   for (;;) {
-    const end = jsonValueEnd(bytes, index);
+    const end = scanner.valueEnd(bytes, index);
     if (end === index) malformedReply();
     result.push(replyElement(bytes, index, end, cached, build));
     index = skipJsonSpace(bytes, end);

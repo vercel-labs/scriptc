@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7160-json-parse-deep-unions.ts"
+ ],
+ "diags": []
+}

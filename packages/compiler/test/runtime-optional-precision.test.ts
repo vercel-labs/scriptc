@@ -102,6 +102,82 @@ console.log(copy.map((item) => weigh(item)).join(","));
   expect(signature(spread, "weigh")).toBe("weigh(Item|undefined): f64");
 });
 
+test("holes stored through a dynamic view widen callbacks over the arrays it views", async () => {
+  const viewed = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+const view: unknown[] = items;
+view[3] = new Item(2);
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(viewed, "weigh")).toBe("weigh(Item|undefined): f64");
+  // A dynamic store cannot reach an element type no dynamic value views.
+  const other = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+const values: unknown[] = [1];
+values[3] = 2;
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(other, "weigh")).toBe("weigh(Item): f64");
+  // A view without stores that leave holes keeps the parameters.
+  const read = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+const view: unknown[] = items;
+console.log(view.length, items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(read, "weigh")).toBe("weigh(Item): f64");
+  // Standard library functions that take arrays as `any` only read them.
+  const readers = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+console.log(items.length, JSON.stringify(items));
+const values: unknown[] = [1];
+values[3] = 2;
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(readers, "weigh")).toBe("weigh(Item): f64");
+  // A store through a Record type is not a store through a view.
+  const record = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+const view: unknown = items;
+const bag: Record<string, unknown> = {};
+bag["3"] = view;
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(record, "weigh")).toBe("weigh(Item): f64");
+  // An unknown[] that only holds the array its declaration creates is never
+  // a view, so stores past its end leave the viewed arrays alone.
+  const fresh = await lower(`${ITEM}
+class Slots {
+  readonly states: unknown[] = [];
+}
+const slots = new Slots();
+const items: Item[] = [new Item(1)];
+const view: unknown = items;
+const states = slots.states;
+states[3] = view;
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(fresh, "weigh")).toBe("weigh(Item): f64");
+  // A mutable property every assignment of which is a fresh array is fresh
+  // storage too.
+  const reassigned = await lower(`${ITEM}
+class Facts {
+  private facts: unknown[] = [];
+  begin(): void {
+    this.facts = [];
+  }
+  add(fact: unknown): void {
+    this.facts[3] = fact;
+  }
+}
+const items: Item[] = [new Item(1)];
+const facts = new Facts();
+facts.begin();
+facts.add(items);
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(reassigned, "weigh")).toBe("weigh(Item): f64");
+});
+
 test("holes that only their owning slot can observe stay out of callbacks", async () => {
   const module = await lower(`${ITEM}
 class Cache {
@@ -158,7 +234,9 @@ test("an unchanged captured parameter is borrowed and boxed only where a closure
   const module = await lower(`${ITEM}
 function heavier(item: Item, limits: number[]): boolean {
   if (limits.length === 0) return false;
-  return limits.some((limit) => weigh(item) > limit);
+  // A closure value: a closure literal at the call would run as a loop.
+  const over = (limit: number): boolean => weigh(item) > limit;
+  return limits.some(over);
 }
 function replaced(item: Item, other: Item): number {
   const read = () => item.weight;

@@ -1,12 +1,15 @@
 Some builtins can be stored and passed as functions:
 
 - Lowered `node:path` functions across the bare, POSIX, and win32 modules, including optional `basename` and variadic `join`/`resolve`.
+  Called through an untyped value, they validate their arguments with Node's `ERR_INVALID_ARG_TYPE`.
+  A path module held by untyped code is a plain object with Node's members in Node's order.
 - Supported zero-argument `node:os` functions and `querystring.escape`/`unescape`.
 - `util.isDeepStrictEqual`, `styleText`, `stripVTControlCharacters`, `toUSVString`, `inherits`, `deprecate`, `callbackify`, `debuglog`, and `debug`.
 - `fs.existsSync`, `unlinkSync`, `chmodSync`, `chownSync`, `renameSync`, and `closeSync`, and `fs/promises.unlink`, `chmod`, and `rename`.
 
 In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.
 Calls through these values bypass `node:test` mock timers.
+In JavaScript, `atob`, `btoa`, and `structuredClone` are function values the same way, and calls through them run what the direct calls run.
 Other builtin globals stored in JavaScript remain opaque identity values.
 In JavaScript, `require("events")` and the `EventEmitter` class assigned to an untyped binding or stored in an object (`ReleaseEmitter = EventEmitter`) are the untyped `EventEmitter` constructor that constructor functions inherit from (see below): `new` through it builds such an emitter object, and identity and `instanceof` agree with the class.
 A class can extend `require("events")` directly.
@@ -14,7 +17,7 @@ A class can extend `require("events")` directly.
 Other immutable aliases of table-backed Node builtins support direct calls, but cannot be passed elsewhere.
 `util.promisify` supports compile-time conversions of `child_process.execFile`, `child_process.exec`, `setTimeout` and `setImmediate` (to the `timers/promises` functions, as in Node), `stream.finished` and `stream.pipeline` (to the `stream/promises` functions, as in Node), the `zlib` callback one-shots `deflate`, `inflate`, `deflateRaw`, `inflateRaw`, `gzip`, `gunzip` and `unzip` (with or without options), the `crypto` callback functions `randomBytes`, `pbkdf2`, `scrypt`, `hkdf`, `randomFill`, `randomInt` and `generateKey`, `dns.lookup` (settling with `{ address, family }`, or the address array with `all: true`) and `dns.lookupService` (settling with `{ hostname, service }`), and the `fs` callback functions that have an `fs/promises` counterpart (`access`, `appendFile`, `chmod`, `chown`, `copyFile`, `lchown`, `link`, `lstat`, `lutimes`, `mkdir`, `mkdtemp`, `readFile`, `readdir`, `readlink`, `realpath`, `rename`, `rm`, `rmdir`, `stat`, `statfs`, `symlink`, `truncate`, `unlink`, `utimes`, and `writeFile`); calls through the converted function lower as the `fs/promises` call.
 
-`util.promisify` over an untyped (`any`) function returns a native wrapper that follows Node's callback rules and carries the original's `name` and `length`.
+`util.promisify` over an untyped function (a value typed `any`, a function whose parameters are untyped, or any other target in JavaScript) returns a native wrapper that follows Node's callback rules and carries the original's `name` and `length`, and throws Node's `ERR_INVALID_ARG_TYPE` for values that are not functions.
 Such a function with other own properties, `util.promisify.custom` among them, throws `SC2020` where `util.promisify` runs, and the wrapper does not report Node's DEP0174 warning when the original returns a promise.
 
 `util.styleText` supports standard formats and aliases, `#RGB` and `#RRGGBB` hex colors, arrays of formats, nested ANSI resets, and explicit color enabling with `{ validateStream: false }`.

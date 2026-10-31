@@ -86,7 +86,12 @@ export function copyStableCaptures(mod: IrModule): IrModule {
   // A closure body whose every use became a direct call is only reachable
   // through its copy now.
   const referenced = new Set(moduleFunctionReferences(mod));
-  for (const fn of functions)
+  functions.forEach((fn, index) => {
+    // A body the rewrite kept names what the flow recorded of it.
+    if (fn === mod.functions[index]) {
+      for (const name of flow.references(fn)) referenced.add(name);
+      return;
+    }
     everyStmtList(fn.body, {
       stmt: () => true,
       expr: (e) => {
@@ -95,6 +100,7 @@ export function copyStableCaptures(mod: IrModule): IrModule {
         return true;
       },
     });
+  });
   const clones = flow.directClones();
   return {
     ...mod,
@@ -251,6 +257,9 @@ interface FunctionFacts {
   captureIndex: Map<string, number>;
   classCaptures: Set<string>;
   params: Set<string>;
+  /** Functions the body names: direct call callees and function values
+   * (exprFunctionReference). */
+  references: Set<string>;
 }
 
 interface CreationSite {
@@ -273,15 +282,24 @@ export class CaptureFlow {
   /** Environment-free bodies called directly, and their copies' names. */
   private readonly clones = new Map<string, string>();
 
-  constructor(functions: readonly IrFunction[]) {
+  /** With `scan` false, each body's facts are collected when a question
+   * first needs them, and only unchanged() may be asked: the other
+   * questions read creation sites, which come from scanning every body. */
+  constructor(functions: readonly IrFunction[], scan = true) {
     for (const fn of functions) this.functions.set(fn.name, fn);
     this.receivers = new AmbientReceiverReaders(this.functions);
     // Creation sites are collected while scanning each body.
-    for (const fn of functions) this.factsOf(fn);
+    if (scan) for (const fn of functions) this.factsOf(fn);
   }
 
   directClones(): ReadonlyMap<string, string> {
     return this.clones;
+  }
+
+  /** The functions the body of `fn`, one of the functions this flow was
+   * made from, names (FunctionFacts.references). */
+  references(fn: IrFunction): ReadonlySet<string> {
+    return this.factsOf(fn).references;
   }
 
   /** A lifted body that captures nothing and can be entered like a declared
@@ -459,6 +477,7 @@ export class CaptureFlow {
       captureIndex: new Map(),
       classCaptures: new Set((fn.classCaptures ?? []).map((c) => c.localId)),
       params: new Set(fn.params.map((p) => p.localId)),
+      references: new Set(),
     };
     (fn.captures ?? []).forEach((c, index) => {
       if (!facts.captureIndex.has(c.localId)) facts.captureIndex.set(c.localId, index);
@@ -511,6 +530,8 @@ export class CaptureFlow {
       facts.writes.set(id, (facts.writes.get(id) ?? 0) + 1);
     };
     const expr = (e: IrExpr): boolean => {
+      const referenced = e.kind === "call" ? e.callee : exprFunctionReference(e);
+      if (referenced !== undefined) facts.references.add(referenced);
       switch (e.kind) {
         case "varRef":
           facts.reads.set(e.localId, (facts.reads.get(e.localId) ?? 0) + 1);
@@ -707,8 +728,11 @@ export class CaptureFlow {
     const splits = new Map<string, string>();
     const entry: IrStmt[] = [];
     const locals: IrLocal[] = [];
-    const used = new Set(fn.locals.map((l) => l.id));
+    // The local ids a copy must avoid, collected for the first copy: most
+    // functions make none.
+    let used: Set<string> | null = null;
     const fresh = (local: IrLocal): IrLocal => {
+      used ??= new Set(fn.locals.map((l) => l.id));
       let k = 0;
       while (used.has(`${local.name}.${k}`)) k++;
       const id = `${local.name}.${k}`;

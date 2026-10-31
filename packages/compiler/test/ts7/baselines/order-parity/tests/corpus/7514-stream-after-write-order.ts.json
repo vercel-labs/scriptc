@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7514-stream-after-write-order.ts"
+ ],
+ "diags": []
+}

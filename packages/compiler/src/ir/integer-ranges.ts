@@ -23,6 +23,12 @@ export interface IntegerRangeFacts {
   ranges: IntegerRanges;
   loopRanges: ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>>;
 }
+/** Ranges assumed for locals on entry to while and for loops
+ * (loop-entry-ranges.ts), after a for loop's initializer:
+ * the facts inside such a loop hold in a copy of it that runs only after a
+ * test proves every assumed local is an integer in its range. After the
+ * loop, its assumed locals and its writes carry no facts. */
+export type LoopEntryAssumptions = ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>>;
 const SIGNED: IntegerRange = { min: -2147483648, max: 2147483647 };
 const UNSIGNED: IntegerRange = { min: 0, max: 4294967295 };
 /** Int32 and uint32 at once: the bound under which `%` (modeled only for
@@ -309,6 +315,7 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
 export function analyzeIntegerRangeFacts(
   fn: IrFunction,
   slots: IntegerSlotFacts = {},
+  entries?: LoopEntryAssumptions,
 ): IntegerRangeFacts {
   const ranges = new Map<IrExpr, IntegerRange | null>();
   const loopRanges = new Map<IrStmt, Map<string, IntegerRange>>();
@@ -738,8 +745,11 @@ export function analyzeIntegerRangeFacts(
         set(facts, e.localId, range);
         break;
       case "incDec": {
-        const before = facts.get(e.localId) ?? null;
+        // A binding a for loop bounds holds a value in its loop range at
+        // every point of the loop, also where a statement around this
+        // increment has discarded its fact.
         const bound = counterRanges.get(e.localId);
+        const before = facts.get(e.localId) ?? bound ?? null;
         const sum = before ? integerArithmeticRange(e.op, before, { min: 1, max: 1 }) : null;
         const after =
           bound && sum
@@ -867,6 +877,8 @@ export function analyzeIntegerRangeFacts(
         );
         if (e.type.kind === "f64") {
           if (e.method === "length") range = { min: 0, max: STRING_MAX_UNITS };
+          // A string holds at most SCR_STR_MAX_CAP (0x7fffffff) bytes.
+          else if (e.method === "byteLength") range = { min: 0, max: STRING_MAX_UNITS };
           // An empty needle is found at the clamped position, up to the length.
           else if (e.method === "indexOf") range = { min: -1, max: STRING_MAX_UNITS };
         }
@@ -997,6 +1009,9 @@ export function analyzeIntegerRangeFacts(
         }
         case "for": {
           if (s.init) body([s.init], facts);
+          // The initializer writes none of the assumed locals.
+          const assumed = entries?.get(s);
+          if (assumed) assume(facts, assumed);
           const counter = induction(s, facts);
           const bounded = boundedIntegerLoopFacts(s, loopLocals, facts);
           const loop = new Map(facts);
@@ -1068,10 +1083,16 @@ export function analyzeIntegerRangeFacts(
             body([s.update], entry);
           }
           havoc(facts, [s], facts);
+          if (assumed) {
+            invalidate(facts, [s]);
+            for (const id of assumed.keys()) facts.delete(id);
+          }
           break;
         }
         case "while":
         case "doWhile": {
+          const assumed = entries?.get(s);
+          if (assumed) assume(facts, assumed);
           // Counters the condition bounds keep their range at every read
           // inside and after the loop.
           const guarded =
@@ -1100,6 +1121,10 @@ export function analyzeIntegerRangeFacts(
           } else body(s.body, new Map(loop));
           havocWith(facts, [s], facts, guarded);
           for (const [id, range] of guarded) set(facts, id, range);
+          if (assumed) {
+            invalidate(facts, [s]);
+            for (const id of assumed.keys()) facts.delete(id);
+          }
           break;
         }
         case "forOf": {
@@ -1146,6 +1171,19 @@ export function analyzeIntegerRangeFacts(
             },
           );
           break;
+      }
+    }
+  }
+  /** A loop's entry assumptions, which its entry test proves: each assumed
+   * local holds its range, within any fact it already has. */
+  function assume(facts: Facts, assumed: ReadonlyMap<string, IntegerRange>): void {
+    for (const [id, range] of assumed) {
+      const known = facts.get(id);
+      if (!known) set(facts, id, range);
+      else {
+        const min = Math.max(known.min, range.min),
+          max = Math.min(known.max, range.max);
+        if (min <= max) set(facts, id, { min, max });
       }
     }
   }

@@ -219,6 +219,41 @@ describe("module parsing", () => {
   });
 });
 
+describe("large modules", () => {
+  /** A module exporting `sum`, whose body adds one to its i32 parameter
+   * `additions` times and returns it. */
+  function summingModule(additions: number): Uint8Array {
+    const leb = (value: number): number[] => {
+      const out: number[] = [];
+      do {
+        let byte = value & 0x7f;
+        value >>>= 7;
+        if (value !== 0) byte |= 0x80;
+        out.push(byte);
+      } while (value !== 0);
+      return out;
+    };
+    const section = (id: number, body: number[]): number[] => [id, ...leb(body.length), ...body];
+    const instructions: number[] = [];
+    for (let i = 0; i < additions; i++) instructions.push(0x20, 0, 0x41, 1, 0x6a);
+    const body = [0x01, 0x01, 0x7f, ...instructions, 0x0b];
+    return new Uint8Array([
+      ...Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0),
+      ...section(1, [1, 0x60, 1, 0x7f, 1, 0x7f]),
+      ...section(3, [1, 0]),
+      ...section(7, [1, 3, ...Buffer.from("sum"), 0, 0]),
+      ...section(10, [1, ...leb(body.length), ...body]),
+    ]);
+  }
+
+  test("a function body larger than the host's argument limit translates", () => {
+    const out = translateWasmModule(summingModule(100_000), SHA, { boundsChecks: false });
+    const text = out.text.join("\n");
+    expect(text).toContain("define internal i32");
+    expect(text.split("\n").filter((line) => line.includes("add i32")).length).toBe(100_000);
+  });
+});
+
 describe("stack checks", () => {
   test("only functions through which the stack can grow without bound check it", () => {
     // f0 <-> f1 recurse mutually, f2 recurses on itself, f3 calls f0 once.

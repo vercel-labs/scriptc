@@ -141,7 +141,7 @@ test("live record capsules bind field hooks in snapshot order", () => {
   const llvm = emitLlvmModule(module, { pointerBits: 64 });
   const tables = [
     ...llvm.matchAll(
-      /^@(\S+)_rops = internal global \{ i64, ptr, ptr, ptr, i8, ptr, ptr \} \{ i64 (\d+), /gm,
+      /^@(\S+)_rops = internal global \{ i64, ptr, ptr, ptr, i8, ptr, ptr, ptr \} \{ i64 (\d+), /gm,
     ),
   ];
   // root and leaf get field hooks; the record with an index-like field name

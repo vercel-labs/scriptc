@@ -1,3 +1,4 @@
+import { appendElement, optionalElementValue, primitiveElement } from "./array-values.js";
 import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import {
@@ -742,7 +743,7 @@ export function lowerStringIteratorValue(
             left: index,
             right: {
               kind: "strIntrinsic",
-              method: "length",
+              method: "byteLength",
               receiver: text,
               args: [],
               type: F64,
@@ -757,7 +758,7 @@ export function lowerStringIteratorValue(
               localId: "point.0",
               init: {
                 kind: "strIntrinsic",
-                method: "cpAt",
+                method: "cpAtByte",
                 receiver: text,
                 args: [index],
                 type: STRING,
@@ -774,7 +775,7 @@ export function lowerStringIteratorValue(
                 left: index,
                 right: {
                   kind: "strIntrinsic",
-                  method: "length",
+                  method: "byteLength",
                   receiver: point,
                   args: [],
                   type: F64,
@@ -964,16 +965,27 @@ function generatorRetypeAdapter(
   return { kind: "call", callee: name, args: [expr], type: expected, loc };
 }
 
+/** A checked-dynamic yielded value for a `(T | undefined)[]` of a
+ * number, string or boolean T: converted to `T | undefined`, which the
+ * drain stores as a T element or a present undefined. */
+function optionalYield(lowerer: Lowerer, value: IrExpr, elem: IrType, optional: boolean): IrExpr {
+  if (!optional || value.type.kind !== "dyn" || !primitiveElement(elem)) return value;
+  return lowerer.coerceToExpected(value, lowerer.withUndefinedArm(elem));
+}
+
 /** Drain a synchronous generator into a fresh `elem[]` — the eager
  * consumers of an iterator (`[...it]`, `Array.from(it)`). Each step resumes
  * the generator once and appends its value; completion stops the drain
  * without appending the return value, as in JS. Null when the yielded
- * values cannot be extracted into the element type. */
+ * values cannot be extracted into the element type. `optional`: the
+ * result is a `(T | undefined)[]`, which stores T elements, so a
+ * checked-dynamic value may also be undefined. */
 export function generatorDrain(
   lowerer: Lowerer,
   source: IrExpr,
   elem: IrType,
   loc: SrcLoc,
+  optional = false,
 ): IrExpr | null {
   const gen = source.type;
   if (gen.kind !== "generator" || gen.async || gen.yieldT.kind === "void") return null;
@@ -982,14 +994,16 @@ export function generatorDrain(
   const valueT = shape?.fields.find((field) => field.name === "value")?.type;
   if (!resultType || !valueT) return null;
   const arrT: IrType = { kind: "array", elem };
-  const key = `genDrain:${typeKey(gen)}:${typeKey(elem)}`;
+  const key = `genDrain:${typeKey(gen)}:${typeKey(elem)}${optional ? "?" : ""}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name && stepDrivable(gen)) {
     // The record-free drive: test done, then take the yielded value.
     const genRef = varRef("gen.0", gen, loc) as IrExpr & { type: typeof gen };
     const outRef = varRef("out.0", arrT, loc);
-    const value = lowerer.coerceToExpected(genValue(genRef, loc), elem);
-    if (!typeEquals(value.type, elem)) return null;
+    const yielded = optionalYield(lowerer, genValue(genRef, loc), elem, optional);
+    const present = optionalElementValue(lowerer, yielded, elem);
+    const value = present ? yielded : lowerer.coerceToExpected(yielded, elem);
+    if (!present && !typeEquals(value.type, elem)) return null;
     name = keyedHelperName(lowerer, "%gen.drain", key);
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
@@ -999,6 +1013,7 @@ export function generatorDrain(
       locals: [
         { id: "gen.0", name: "gen", type: gen, mutable: false },
         { id: "out.0", name: "out", type: arrT, mutable: false },
+        ...(present ? [{ id: "v.0", name: "v", type: value.type, mutable: false }] : []),
       ],
       body: [
         {
@@ -1010,20 +1025,7 @@ export function generatorDrain(
         {
           kind: "while",
           cond: { kind: "unary", op: "!", operand: genStep(genRef, loc), type: BOOL, loc },
-          body: [
-            {
-              kind: "exprStmt",
-              expr: {
-                kind: "arrIntrinsic",
-                method: "push",
-                receiver: outRef,
-                args: [value],
-                type: F64,
-                loc,
-              },
-              loc,
-            },
-          ],
+          body: appendElement(lowerer, outRef, value, elem, "v.0", loc),
           loc,
         },
         { kind: "return", value: outRef, loc },
@@ -1050,8 +1052,10 @@ export function generatorDrain(
       loc,
     );
     if (!raw) return null;
-    const value = lowerer.coerceToExpected(raw, elem);
-    if (!typeEquals(value.type, elem)) return null;
+    const yielded = optionalYield(lowerer, raw, elem, optional);
+    const present = optionalElementValue(lowerer, yielded, elem);
+    const value = present ? yielded : lowerer.coerceToExpected(yielded, elem);
+    if (!present && !typeEquals(value.type, elem)) return null;
     name = keyedHelperName(lowerer, "%gen.drain", key);
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
@@ -1062,6 +1066,7 @@ export function generatorDrain(
         { id: "gen.0", name: "gen", type: gen, mutable: false },
         { id: "out.0", name: "out", type: arrT, mutable: false },
         { id: "step.0", name: "step", type: resultType, mutable: false },
+        ...(present ? [{ id: "v.0", name: "v", type: value.type, mutable: false }] : []),
       ],
       body: [
         {
@@ -1101,18 +1106,7 @@ export function generatorDrain(
               else_: null,
               loc,
             },
-            {
-              kind: "exprStmt",
-              expr: {
-                kind: "arrIntrinsic",
-                method: "push",
-                receiver: outRef,
-                args: [value],
-                type: F64,
-                loc,
-              },
-              loc,
-            },
+            ...appendElement(lowerer, outRef, value, elem, "v.0", loc),
           ],
           loc,
         },

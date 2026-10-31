@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "encoding": "unloded",
+      "debug": { "run": "island" }
+    },
+    "nodeIslands": {
+      "auto": "yes",
+      "mode": "auto"
+    }
+  }
+}

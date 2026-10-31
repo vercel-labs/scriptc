@@ -83,6 +83,39 @@ Without a profile, a dynamic-tier function counts as likely to run often when a 
 
 The warning names at most five functions, most likely to run often first, and gives the total. A function expression is named by its own name, else by the variable, property or class field it is assigned to, else as `anonymous function`. Dynamic-tier code in npm packages is summarized on one line with each package's function count. A build that comes from the cache repeats the warning. `--no-dynamic-tier-warning` leaves it out, and `--fail-on=dynamic` fails a coverage run on it.
 
+## Dynamic slots
+
+A declared type that has no native representation does not fail the build. The field, parameter, return value, variable or expression that holds it becomes a checked dynamic slot: the parts of the type that compile keep their native layout, and the failing parts hold checked-dynamic values. Coverage lists the slots under the statement counts, and `scriptc build` prints one `SC6104` warning per slot.
+
+```console
+$ cat plugins.ts
+type Hook = (() => void) | AbortSignal | Map<string, (x: number) => string>;
+
+interface Plugin {
+  name: string;
+  hook: Hook;
+}
+
+const plugins: Plugin[] = [{ name: "log", hook: () => console.log("hook ran") }];
+for (const p of plugins) {
+  const hook = p.hook;
+  if (typeof hook === "function") hook();
+  console.log(p.name);
+}
+
+$ scriptc coverage plugins.ts
+
+  statements analyzed   6
+  compile statically    6  (100%)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
+    dynamic slots       1  (declared types with no static lowering, held as checked-dynamic values; SC6104)
+      module global 'plugins' (declared 'Plugin[]') (dynamic pieces)  plugins.ts:8:7
+
+  fully static — all analyzed statements compile to native code.
+```
+
+Here `Plugin` keeps its native `name` field, and only `hook` is checked-dynamic. Reading a dynamic value into typed code checks it against the type that reads it, so data that contradicts the declaration still throws a `TypeError`. Slots with the most dynamic operations are listed first. `--fail-on=dynamic-slots` fails a coverage run when any slot exists, and `--tier=static-only` reports the original errors instead.
+
 ## Diagnostic codes
 
 Coverage and `scriptc build` report the same diagnostic codes. Common ones include:
@@ -109,7 +142,7 @@ By default, `scriptc coverage` exits with status 0 whenever the program type-che
 $ scriptc coverage src/main.ts --fail-on=blockers
 ```
 
-`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences, and `--fail-on=dynamic` also fails on the `SC6101` warning for [untyped code that likely runs often](#untyped-code-that-likely-runs-often). A program that doesn't type-check always exits with status 1.
+`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences, `--fail-on=dynamic` also fails on the `SC6101` warning for [untyped code that likely runs often](#untyped-code-that-likely-runs-often), and `--fail-on=dynamic-slots` also fails on [dynamic slots](#dynamic-slots). A program that doesn't type-check always exits with status 1.
 
 Coverage caches its result. Running it again on an unchanged program, or after edits that only touch comments, reuses the previous verdict. Set `SCRIPTC_NO_CACHE=1` to turn the cache off.
 

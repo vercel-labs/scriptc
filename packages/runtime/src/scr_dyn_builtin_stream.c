@@ -1752,3 +1752,11 @@ ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *messa
   }
   return scr_stream_unbox_dyn(value, message);
 }
+
+/* stream.unboxDynStage in programs that link this unit: a
+ * constructor-function stream as scr_dyn_builtin_stream_unbox takes it,
+ * any other value as scr_stream_unbox_dyn_stage does. */
+ScrStream *scr_dyn_builtin_stream_unbox_stage(const ScrDyn *value, const ScrStr *message) {
+  if (bcs_of(value) && value->kind == SCR_DYN_OBJ) return scr_dyn_builtin_stream_unbox(value, message);
+  return scr_stream_unbox_dyn_stage(value, message);
+}

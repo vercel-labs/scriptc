@@ -1,0 +1,1 @@
+{ "name": "island-native-arrays", "private": true, "type": "module", "scriptc": { "packages": { "list-pkg": "node" } } }

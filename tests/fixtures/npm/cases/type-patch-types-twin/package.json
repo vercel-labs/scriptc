@@ -1,0 +1,15 @@
+{
+  "name": "type-patch-types-twin-case",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "typePatches": {
+      "tallyjs@~0.4.0": {
+        "declarations": {
+          "Totals.max": "| undefined",
+          "Totals.mean": "number | null"
+        }
+      }
+    }
+  }
+}

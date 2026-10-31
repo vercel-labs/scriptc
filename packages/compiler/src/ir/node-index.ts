@@ -122,6 +122,36 @@ export class IrNodeIndex {
       if (statementKinds.has(kind)) this.statements[code] = 1;
   }
 
+  /** The positions of the expressions `wanted` in the index, which an
+   * index of the same module in another process resolves with
+   * expressionsAt. Null when an expression is not recorded, or is recorded
+   * more than once. */
+  expressionPositions(wanted: ReadonlySet<IrExpr>): number[] | null {
+    const positions: number[] = [];
+    if (wanted.size === 0) return positions;
+    const found = new Set<IrExpr>();
+    const { nodes, codes, statements } = this;
+    for (let i = 0; i < nodes.length; i++) {
+      if (statements[codes[i]!] !== 0) continue;
+      const node = nodes[i]! as IrExpr;
+      if (!wanted.has(node)) continue;
+      if (found.has(node)) return null;
+      found.add(node);
+      positions.push(i);
+    }
+    return found.size === wanted.size ? positions : null;
+  }
+
+  /** The expressions at `positions` (expressionPositions). */
+  expressionsAt(positions: readonly number[]): IrExpr[] {
+    return positions.map((position) => {
+      const code = this.codes[position];
+      if (code === undefined || this.statements[code] !== 0)
+        throw new InternalCompilerError(`no IR expression at index position ${position}`);
+      return this.nodes[position]! as IrExpr;
+    });
+  }
+
   /** A scan for the nodes of `kinds`, for eachNodeOfKinds. Pass a
    * constant list: scans are kept by the list's identity. */
   scan(kinds: readonly IrNodeKind[]): IrKindScan {
@@ -164,6 +194,13 @@ export class IrNodeIndex {
     const scan = { index: this, table, words };
     this.scans.set(key, scan);
     return scan;
+  }
+
+  /** The number of nodes recorded for `fn`, or undefined when `fn` is not
+   * recorded. */
+  nodeCount(fn: IrFunction): number | undefined {
+    const f = this.functionIndex.get(fn);
+    return f === undefined ? undefined : this.starts[f + 1]! - this.starts[f]!;
   }
 
   /** Calls `note` with each recorded node of `fn` whose kind `scan` names,

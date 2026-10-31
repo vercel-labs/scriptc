@@ -73,8 +73,7 @@ export function lowerDisposableStackUseCall(
   if (valueT?.kind !== "object") return null;
   const loc = locOf(call);
   const className = valueT.className;
-  const info = lowerer.classes.get(className);
-  if (!info) lowerer.flushDeferredClass(className);
+  const info = lowerer.classes.get(className) ?? lowerer.flushDeferredClass(className);
   const found = info ? lowerer.findMethodOn(info, "sym:dispose") : null;
   if (!found) return null;
   if (found.sig.params.length !== 0) {

@@ -1,6 +1,8 @@
 /* Both LLVM optimization modes must compile every corpus program and match
  * Node's stdout, successful stderr, and expected exit status. Any backend
- * refusal is a failure. SCRIPTC_SAN=1 instruments emitted code and runtime. */
+ * refusal is a failure. SCRIPTC_SAN=1 instruments emitted code and runtime.
+ * SCRIPTC_CPU_DISPATCH=1 builds with runtime CPU dispatch and runs each
+ * executable at SCRIPTC_CPU_LEVEL=0 and 3, the baseline and x86-64-v3 copies. */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { globSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -11,6 +13,7 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
@@ -30,6 +33,8 @@ const files = corpusSelect(
   process.env["SCRIPTC_SAN"] === "1",
 );
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+const cpuDispatch = process.env["SCRIPTC_CPU_DISPATCH"] === "1";
+const cpuLevels: readonly (string | undefined)[] = cpuDispatch ? ["0", "3"] : [undefined];
 const requestedMode = process.env["SCRIPTC_LLVM_TEST_MODE"];
 if (requestedMode !== undefined && requestedMode !== "release" && requestedMode !== "dev") {
   throw new Error("SCRIPTC_LLVM_TEST_MODE must be release or dev when set");
@@ -62,14 +67,52 @@ function expectedExitCode(file: string): number {
   return 0;
 }
 
-async function runBinary(cmd: string, args: string[]): Promise<RunResult> {
+/** `// @env: NAME=VALUE[,NAME=VALUE]` (differential.test.ts's twin): the
+ * variables are set for BOTH sides, so a program can pin the ambient state
+ * that decides Intl output (TZ, LC_ALL/LANG) and the oracle and the binary
+ * read the same one. */
+function programEnv(file: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of directiveHead(file)) {
+    const m = /^\/\/ @env:\s*(.+?)\s*$/.exec(line);
+    if (m === null) continue;
+    for (const pair of m[1]!.split(",")) {
+      const eq = pair.indexOf("=");
+      if (eq > 0) env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+    }
+  }
+  return env;
+}
+
+/** `// @requires-icu` (differential.test.ts's twin): the program's Intl
+ * forms are answered by ICU, which only the linux-x64 runtime pack carries
+ * in this slice; other lanes skip instead of hitting the refusal. */
+function requiresIcu(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @requires-icu\s*$/.test(l));
+}
+
+function icuAvailable(): boolean {
+  return process.platform === "linux" && process.arch === "x64";
+}
+
+async function runBinary(
+  cmd: string,
+  args: string[],
+  cpuLevel?: string,
+  extraEnv: Record<string, string> = {},
+): Promise<RunResult> {
   // Linux fork/exec race (observed on the sandbox lane): a sibling
   // worker's fork can inherit the freshly-linked binary's write fd across
   // its own spawn window, and exec answers ETXTBSY until that fd closes.
   // The condition is transient by construction — retry briefly, the
   // npm/cargo stance.
   for (let attempt = 0; ; attempt++) {
-    const pending = execFileAsync(cmd, args, { encoding: "buffer" });
+    const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
+    if (cpuLevel !== undefined) env["SCRIPTC_CPU_LEVEL"] = cpuLevel;
+    const pending = execFileAsync(cmd, args, {
+      encoding: "buffer",
+      ...(cpuLevel === undefined && Object.keys(extraEnv).length === 0 ? {} : { env }),
+    });
     pending.child.stdin?.end();
     try {
       const { stdout, stderr } = await pending;
@@ -145,6 +188,13 @@ function nodeOracleFile(file: string): string {
   return path;
 }
 
+/** `// @normalize-pid` (differential.test.ts): Node's process warnings
+ * compare with the pid replaced on both sides. */
+function pidFree(file: string, stderr: Buffer): Buffer {
+  if (!directiveHead(file).some((l) => /^\/\/ @normalize-pid\s*$/.test(l))) return stderr;
+  return Buffer.from(stderr.toString("utf8").replace(/^\(node:\d+\) /gm, "(node:PID) "), "utf8");
+}
+
 function wantsNoDeprecation(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l));
 }
@@ -179,6 +229,7 @@ async function build(file: string, optimization: "release" | "dev") {
   const key = hash
     .update(sanitize ? "san" : "plain")
     .update("llvm-" + optimization)
+    .update(cpuDispatch ? "cpu-dispatch" : "")
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, key);
@@ -188,14 +239,23 @@ async function build(file: string, optimization: "release" | "dev") {
     outDir,
     sanitize,
     optimization,
+    ...(cpuDispatch ? { cpuDispatch } : {}),
   });
 }
 
-describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
+describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${cpuDispatch ? ", CPU dispatch" : ""}${shardSuffix()})`, () => {
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
-    async ([rel, file]) => {
-      const oracle = await runBinary(process.execPath, nodeOracleArgs(file));
+    async ([rel, file], { skip }) => {
+      // Programs that call into Node need a libnode pack (libnode.ts).
+      if (requiresLibnode(file) && libnodePack() === null) skip();
+      if (requiresIcu(file) && !icuAvailable()) skip();
+      const oracle = await runBinary(
+        process.execPath,
+        nodeOracleArgs(file),
+        undefined,
+        programEnv(file),
+      );
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);
       for (const optimization of optimizationModes) {
@@ -207,11 +267,16 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
           );
         expect(result.backend).toBe("llvm");
         expect(result.llvmPath.endsWith(".ll")).toBe(true);
-        const actual = await runBinary(result.binaryPath, []);
-        expect(actual.stdout, `${optimization} stdout`).toEqual(oracle.stdout);
-        if (expectedExit === 0)
-          expect(comparableStderr(actual.stderr), `${optimization} stderr`).toEqual(oracle.stderr);
-        expect(actual.exitCode, `${optimization} exit status`).toBe(expectedExit);
+        for (const level of cpuLevels) {
+          const actual = await runBinary(result.binaryPath, [], level, programEnv(file));
+          const lane = level === undefined ? optimization : `${optimization} level ${level}`;
+          expect(actual.stdout, `${lane} stdout`).toEqual(oracle.stdout);
+          if (expectedExit === 0)
+            expect(pidFree(file, comparableStderr(actual.stderr)), `${lane} stderr`).toEqual(
+              pidFree(file, oracle.stderr),
+            );
+          expect(actual.exitCode, `${lane} exit status`).toBe(expectedExit);
+        }
       }
     },
   );

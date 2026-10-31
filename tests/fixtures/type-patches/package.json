@@ -1,0 +1,26 @@
+{
+  "name": "type-patches-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ms": "2.1.3",
+    "termctx": "1.2.0"
+  },
+  "scriptc": {
+    "typePatches": {
+      "termctx@^1.0.0": {
+        "declarations": {
+          "OutputContext.width": "| undefined",
+          "Terminal.columns()": "| undefined"
+        }
+      },
+      "ms@^2.1.0": {
+        "note": "parse() returns undefined for text it cannot parse",
+        "declarations": {
+          "index.js:parse()": "| undefined",
+          "export=()": "| undefined"
+        }
+      }
+    }
+  }
+}

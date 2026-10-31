@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8216-module-namespace-live-values/main.ts"
+ ],
+ "diags": []
+}

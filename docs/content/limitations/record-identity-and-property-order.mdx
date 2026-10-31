@@ -4,7 +4,7 @@ Empty record layouts are also snapshots because they have no property storage.
 `scriptc coverage` and `scriptc build` report `SC6001` where a copied value is then written or compared, whether the record was passed as an argument, stored in a typed binding, asserted with `as`, assigned to a typed binding later, or stored as an element of a typed array literal.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.
-A record or class instance converted to a string-keyed dictionary type such as `Record<string, string>`, directly or through a `{}`, `object` or `unknown` binding or parameter, keeps its identity when the program writes through, compares or inspects values of that dictionary type.
+A record or class instance converted to a string-keyed dictionary type such as `Record<string, string>`, directly, through a `{}`, `object` or `unknown` binding or parameter, or as an element of a constant `unknown[]` array that holds such records, keeps its identity when the program writes through, compares or inspects values of that dictionary type.
 Every dictionary type with the same value type then uses checked dynamic storage, which is slower than a native dictionary.
 Class instances retain identity at their exact type or a base class, and at any interface or object type that a class instance is passed, stored, returned, or asserted as when the program could tell a copy from the instance: values of such a type are checked views of the original object, so writes, identity comparisons, Set and Map keys, `util.inspect`, and `JSON.stringify` through them reach the instance, as in Node.js.
 These types use checked dynamic storage, which is slower than native record fields, for all of their values, including plain objects.
@@ -18,10 +18,21 @@ When the object literals of one record type create its keys in different orders,
 A type keeps the declaration order of its first type, and `SC6002` reports object literals whose order differs where the program observes it, when one of its values gets its keys from a spread whose source order is not known, from a spread that also sets an optional key the source lacks, or from a copy of a value scriptc cannot trace, or when the type's values can take more than 16 orders.
 
 A record converted from a checked value, such as `const rows: { score: number }[] = JSON.parse(text)`, keeps the properties its type does not declare.
-`JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `util.inspect`, and untyped views of the record see them, together with the declared fields, in the source object's key order.
+So does a record converted from an object with more properties, such as `const p: { a: number } = { a: 1, b: 2 }` or an argument passed to a parameter of a narrower type.
+`JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, `in`, `hasOwnProperty`, `propertyIsEnumerable`, `Object.hasOwn`, `util.inspect`, and untyped views of the record see them, together with the declared fields, in the source object's key order.
+String conversion, `+`, and calls of `toString` and `toLocaleString` run the source object's own `toString` or `valueOf` when it has one.
+Calling `valueOf` or `isPrototypeOf` by name on a record type that such an object converts into reports `SC1090` when the object has its own property of that name.
 `Object.values` and `Object.entries` check those values against their static result type and throw a `TypeError` if one does not fit.
-Copies of such a record made by object spread, `Object.assign`, rest destructuring, or conversion to another record type contain only the declared fields.
+For a record converted from an object with more properties, these surfaces read the object's other properties when they run, so later writes to those properties are visible; the declared fields are a copy taken at the conversion.
+Copies of such a record made by object spread, `Object.assign` or rest destructuring contain only the declared fields; a conversion to another record type keeps the properties too.
 Index-signature records list declared fields before the other keys.
 
 Optional fields and properties added through a record's `unknown` view can be deleted.
 A required field has no absent state, so deleting it through the view throws `TypeError: Cannot delete property 'x' of #<Object>` and leaves the record unchanged, where Node.js removes the property.
+
+Records inherit `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf` and `propertyIsEnumerable` from `Object.prototype`.
+A call of one of these methods by name runs the built-in with the record as its receiver, unless the record holds an own function under that name.
+A keyed read such as `handlers[name]` of a record whose values are functions answers the built-in when the record lacks the key, so truthiness, `typeof` and calls match Node.js.
+A keyed read of a record whose values are not functions, such as `counts["toString"]` on a `Record<string, number>`, answers `undefined` where Node.js answers the inherited function, so `counts[word] ?? 0` counts such a word as new.
+Calling a built-in read from a record of functions throws a `TypeError` when its answer does not fit the record's function type, for example `valueOf` read from a `Record<string, (x: number) => number>`.
+Other inherited names, such as `constructor`, read `undefined` from typed records.

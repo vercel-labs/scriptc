@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule, serializeModule, validateModule } from "../src/index.js";
 import { analyzeCallLifetimes } from "../src/backend/llvm/call-lifetimes.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
+import { keepSetElementsBoxed } from "../src/backend/llvm/test-boxed-unions.js";
 import { type IrModule } from "../src/ir/ir.js";
 
 /** A pending-exception check: the inline active-cell test or a runtime call. */
@@ -114,14 +115,14 @@ function value(item: Item): number { return item.value; }
 function work(items: Item[], index: number): number { return value(items[index]); }
 console.log(work([new Item(7)], 0));
 
-// Keeps the optional element union a tagged box (Set elements are boxes),
+// The Set's element union stays a tagged box under keepSetElementsBoxed,
 // so the stack-box paths stay exercised; nullable pointers bypass them.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
   const value = module.functions.find((fn) => fn.name === "value")!;
   expect(value.params[0]!.type.kind).toBe("union");
-  const llvm = emitLlvmModule(module);
+  const llvm = emitLlvmModule(module, keepSetElementsBoxed(module));
   const work = body(llvm, "sc_bf_work");
   expect(work).toContain("alloca %ScrUnion");
   expect(work).toContain("@sc_bf_value");
@@ -139,12 +140,12 @@ function clear(items: Item[]): number { items.length = 0; return 1; }
 function work(items: Item[]): number { return value(items[0], clear(items)); }
 console.log(work([new Item(7)]));
 
-// Keeps the optional element union a tagged box (Set elements are boxes),
+// The Set's element union stays a tagged box under keepSetElementsBoxed,
 // so the stack-box paths stay exercised; nullable pointers bypass them.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
-  const llvm = emitLlvmModule(module);
+  const llvm = emitLlvmModule(module, keepSetElementsBoxed(module));
   const work = body(llvm, "sc_bf_work");
   expect(work).toContain("alloca %ScrUnion");
   expect(work).toContain("@sc_retain_Item");
@@ -172,12 +173,12 @@ function label(item: Item): string { return item.label; }
 function work(items: Item[]): string { return label(items[0]); }
 console.log(work([new Item("kept")]));
 
-// Keeps the optional element union a tagged box (Set elements are boxes),
+// The Set's element union stays a tagged box under keepSetElementsBoxed,
 // so the stack-box paths stay exercised; nullable pointers bypass them.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
-  const llvm = emitLlvmModule(module);
+  const llvm = emitLlvmModule(module, keepSetElementsBoxed(module));
   expect(body(llvm, "sc_bf_work")).toContain("alloca %ScrUnion");
   expect(body(llvm, "sc_bf_label")).toContain("@scr_str_retain_v");
   expect(body(llvm, "sc_bf_label")).not.toContain("@scr_union_retain_v");
@@ -202,12 +203,12 @@ function pair(left: Item, right: Item): number { return left.value + right.value
 function work(items: Item[]): number { return pair(items[0], items[1]) + pair(items[1], items[0]); }
 console.log(work([new Item(), new Item()]));
 
-// Keeps the optional element union a tagged box (Set elements are boxes),
+// The Set's element union stays a tagged box under keepSetElementsBoxed,
 // so the stack-box paths stay exercised; nullable pointers bypass them.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
 `);
-  const work = body(emitLlvmModule(module), "sc_bf_work");
+  const work = body(emitLlvmModule(module, keepSetElementsBoxed(module)), "sc_bf_work");
   expect(work.match(/alloca %ScrUnion/g)).toHaveLength(4);
   expect(work.match(/@sc_bf_pair/g)).toHaveLength(2);
   expect(work).not.toContain("@scr_union_new_ref");
@@ -347,14 +348,13 @@ function count(parts: Part[], probe: Part): number {
 const parts = [new Part()];
 console.log(same(parts, 0, parts[0]), missing(parts, 3), weight(parts, 2), count(parts, parts[0]));
 `;
-  // Keeps the optional element union a tagged box (Set elements are boxes),
+  // The Set's element union stays a tagged box under keepSetElementsBoxed,
   // so the stack-tag paths stay exercised; nullable pointers bypass them.
-  const boxed = emitLlvmModule(
-    await lower(`${source}
+  const kept = await lower(`${source}
 const keepBoxed = new Set<Part | undefined>();
 void keepBoxed;
-`),
-  );
+`);
+  const boxed = emitLlvmModule(kept, keepSetElementsBoxed(kept));
   const nullable = emitLlvmModule(await lower(source));
   for (const name of ["same", "missing", "weight", "count"]) {
     const work = body(boxed, `sc_bf_${name}`);

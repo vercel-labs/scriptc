@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { workerTargetPaths } from "./worker-target.js";
-import { fallbackDtsPath } from "./dts-paths.js";
+import { fallbackDtsPath, fallbackModulePath } from "./dts-paths.js";
 import { Ts7Host } from "./ts7/program-host.js";
 import { Ts7Api } from "./ts7/rpc-api.js";
 import { ModuleKind, ModuleResolutionKind } from "./ts7/enums.js";
@@ -17,12 +17,15 @@ function discover(source: string): string[] {
     'export { Worker as Task } from "node:worker_threads";',
   );
   const host = new Ts7Host((options) => new Ts7Api(options), { cwd: directory });
-  const program = host.createProgram([entry, fallbackDtsPath()], {
-    noLib: true,
-    types: [],
-    module: ModuleKind.ESNext,
-    moduleResolution: ModuleResolutionKind.Bundler,
-  });
+  const program = host.createProgram(
+    [entry, fallbackDtsPath(), fallbackModulePath("node:worker_threads")!],
+    {
+      noLib: true,
+      types: [],
+      module: ModuleKind.ESNext,
+      moduleResolution: ModuleResolutionKind.Bundler,
+    },
+  );
   try {
     return workerTargetPaths(program, [program.getSourceFile(entry)!]).map((file) =>
       file.replace(directory + "/", ""),

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/async-return-contextual-records.ts"
+ ],
+ "diags": []
+}

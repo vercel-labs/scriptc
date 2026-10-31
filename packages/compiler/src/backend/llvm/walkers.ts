@@ -1,4 +1,5 @@
 import { emitPerKeyOrder } from "./key-orders.js";
+import { recordViewFieldPtr } from "./record-views.js";
 import { f64Lit } from "./common.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Structure-walking helper EMITTERS for the LLVM backend — the .ll mirror
@@ -19,13 +20,14 @@ import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import { isRefCounted, typeKey } from "../../ir/ir.js";
 import { jsonObjectKeyLabel } from "../json-literal.js";
 import { llvmBytes, wtf8Bytes } from "../literals.js";
-import { mangleRecordStruct } from "../mangle.js";
+import { mangleFunction, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llvmCommentText } from "./common.js";
 import {
   llFieldType,
   loadStructField,
   releaseSym,
+  retainSym,
   traceAdapter,
   type ShapeHost,
 } from "./shapes.js";
@@ -41,6 +43,8 @@ import { undefinedArmTag } from "../../ir/analysis.js";
  * scr_error-style label texts). */
 export interface WalkerHost extends ShapeHost {
   readonly unionsById: Map<string, IrUnionDef>;
+  /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
+  mayHoldForeign(elem: IrType): boolean;
   /** `@`-ref of an interned immortal ScrStr literal. */
   internLiteral(text: string): string;
   /** `@`-ref of an interned NUL-terminated byte-array constant. */
@@ -277,10 +281,27 @@ export class LlWalkers {
     index: number,
     t: IrType,
   ): string {
-    const p = B.tmp();
-    B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${recName}, i64 0, i32 ${index}`,
-    );
+    const base = this.host.nullableUnions.fieldBase(shapeId);
+    let p: string;
+    if (this.host.recordViews?.targets.has(shapeId) === true) {
+      p = recordViewFieldPtr(
+        B,
+        this.S,
+        mangleRecordStruct(shapeId),
+        recName,
+        index,
+        index - base,
+        (decl) => this.host.declare(decl),
+        this.host.rcMode === undefined,
+        (text) => this.host.cstr(text),
+        this.host.recordViews?.partialTargets.has(shapeId) === true,
+      );
+    } else {
+      p = B.tmp();
+      B.line(
+        `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${recName}, i64 0, i32 ${index}`,
+      );
+    }
     // An inline union field lends a private stack box (ABSENT kept).
     if (this.host.inlineUnions.record(t)) return loadStructField(B, this.S, p, t, true);
     const fieldTy = llFieldType(t, false);
@@ -309,6 +330,7 @@ export class LlWalkers {
       );
     const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
     const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
+    this.emitLinkedRecordWriter(B, shapeId);
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -325,9 +347,7 @@ export class LlWalkers {
         if (i > 0) this.putc(B, "%b", "44"); // ','
         if (edgeable(f.type)) this.jbEdgeIdx(B, String(i));
         const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-        B.line(
-          `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; [${llvmCommentText(f.name)}]`,
-        );
+        this.writeField(B, v, f.type, `[${llvmCommentText(f.name)}]`);
       });
       this.putc(B, "%b", "93"); // ']'
       if (cyclic) this.jbLeave(B);
@@ -359,9 +379,7 @@ export class LlWalkers {
           this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
           if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
           const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-          B.line(
-            `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(f.name)}`,
-          );
+          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
         });
       } else {
         const first = B.slot();
@@ -396,9 +414,7 @@ export class LlWalkers {
           comma();
           this.puts(B, "%b", jsonObjectKeyLabel(f.name));
           if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
-          B.line(
-            `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(f.name)}`,
-          );
+          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
           if (skip !== null) {
             B.br(skip);
             B.startBlock(skip);
@@ -409,6 +425,16 @@ export class LlWalkers {
     });
     this.putc(B, "%b", "125"); // '}'
     if (cyclic) this.jbLeave(B);
+  }
+
+  /** A record copy linked to its source (IrModule.recordLinks) serializes
+   * as its composed record, a record of the source's type with the copy's
+   * values for the fields both declare. */
+  private emitLinkedRecordWriter(B: BlockBuilder, shapeId: string): void {
+    emitLinkedRecordBranches(this.host, B, shapeId, "%v", (sourceT, composed) => {
+      B.line(`call void @${this.jsonWriteHelper(sourceT)}(ptr %b, ptr ${composed})`);
+      return "ret void";
+    });
   }
 
   /** A record that kept the undeclared properties of its checked source
@@ -427,7 +453,7 @@ export class LlWalkers {
     // installs the dispose hook, so a NULL hook means the table is empty.
     const lHooked = B.newLabel("jw.hooked");
     const kept = B.tmp();
-    B.line(`${kept} = load i1, ptr ${RECORD_SOURCES_GATE}`);
+    B.line(`${kept} = load i1, ptr ${this.host.recordSourcesGate ?? RECORD_SOURCES_GATE}`);
     B.condBr(kept, lHooked, lNative);
     B.startBlock(lHooked);
     const hook = B.tmp();
@@ -520,9 +546,7 @@ export class LlWalkers {
       B.startBlock(lKey);
       this.puts(B, "%b", jsonObjectKeyLabel(fieldName));
       if (cyclic && traceAdapter(this.host, f.type) !== null) this.jbEdgeProp(B, fieldName);
-      B.line(
-        `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(fieldName)}`,
-      );
+      this.writeField(B, v, f.type, `${llvmCommentText(fieldName)}`);
       B.terminate("ret i1 true");
     });
     B.startBlock(lSkip);
@@ -539,14 +563,15 @@ export class LlWalkers {
 
   /** Whether the walker for `t` can leave an exception pending: cyclic
    * values, records serialized through a kept checked source, and
-   * checked-dynamic values (toJSON methods, getters, BigInts). */
+   * checked-dynamic values (toJSON methods, getters, BigInts), including
+   * the foreign elements of arrays that can hold them. */
   jsonWriteMayThrow(t: IrType, seen = new Set<string>()): boolean {
     if (traceAdapter(this.host, t) !== null) return true;
     switch (t.kind) {
       case "dyn":
         return true;
       case "array":
-        return this.jsonWriteMayThrow(t.elem, seen);
+        return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);
       case "union":
         return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.jsonWriteMayThrow(arm, seen),
@@ -678,6 +703,47 @@ export class LlWalkers {
     B.line(`call void @scr_arr_release(ptr ${ks})`);
   }
 
+  /** Serializing a value of `t` can call user code that changes the
+   * arrays or records holding it: it reaches an array that can hold
+   * foreign elements (their toJSON and getters), or a value whose own
+   * serialization may (a class instance, a checked-dynamic value), in a
+   * program that has foreign elements at all. */
+  private serializationMayCallUserCode(t: IrType, seen = new Set<string>()): boolean {
+    const host = this.host;
+    if (!host.mayHoldForeign({ kind: "f64" }) && !host.mayHoldForeign({ kind: "string" }))
+      return false;
+    const key = typeKey(t);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    switch (t.kind) {
+      case "dyn":
+      case "object":
+        return true;
+      case "array":
+        return host.mayHoldForeign(t.elem) || this.serializationMayCallUserCode(t.elem, seen);
+      case "record":
+        return (host.recordsById.get(t.shapeId)?.fields ?? []).some((field) =>
+          this.serializationMayCallUserCode(field.type, seen),
+        );
+      case "union":
+        return (host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+          this.serializationMayCallUserCode(arm, seen),
+        );
+      default:
+        return false;
+    }
+  }
+
+  /** Write a field value loaded borrowed from its record. When its
+   * serialization can call user code that replaces the field, the value
+   * is held across the write. */
+  private writeField(B: BlockBuilder, v: string, t: IrType, comment: string): void {
+    const held = isRefCounted(t) && this.serializationMayCallUserCode(t);
+    if (held) B.line(`call ptr ${retainSym(this.host, t)}(ptr ${v})`);
+    B.line(`call void @${this.jsonWriteHelper(t)}(ptr %b, ${this.valTy(t)} ${v}) ; ${comment}`);
+    if (held) B.line(`call void ${releaseSym(this.host, t)}(ptr ${v})`);
+  }
+
   private emitArrayWriter(B: BlockBuilder, elem: IrType, cyclic: boolean): void {
     const host = this.host;
     const w = this.jsonWriteHelper(elem);
@@ -687,7 +753,12 @@ export class LlWalkers {
     if (cyclic) this.jbEnter(B, true);
     this.putc(B, "%b", "91"); // '['
     const finish = B.newLabel("jwa.end");
-    if (elem.kind !== "bool") this.emitDenseArrayElements(B, elem, w, cyclic, finish);
+    // The dense walk borrows the storage and each element. When an
+    // element's serialization can call user code, which can grow or
+    // shrink the array or replace the element, the general walk below
+    // reads each index afresh and holds its element instead.
+    if (elem.kind !== "bool" && !this.serializationMayCallUserCode(elem))
+      this.emitDenseArrayElements(B, elem, w, cyclic, finish);
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr %v)`);
     B.countedLoop(len, (i) => {
@@ -710,6 +781,25 @@ export class LlWalkers {
       B.line(`${present} = fcmp oeq double ${state}, ${f64Lit(1)}`);
       B.condBr(present, valueBlock, missingBlock);
       B.startBlock(missingBlock);
+      if (host.mayHoldForeign(elem)) {
+        // A foreign element (SCR_ARR_FOREIGN) serializes its own value,
+        // after its toJSON runs with the index as its key.
+        const foreign = B.tmp();
+        const foreignBlock = B.newLabel("jwa.foreign");
+        const nullBlock = B.newLabel("jwa.null");
+        B.line(`${foreign} = fcmp oeq double ${state}, ${f64Lit(3)}`);
+        B.condBr(foreign, foreignBlock, nullBlock);
+        B.startBlock(foreignBlock);
+        host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+        host.declare(`declare void @scr_dyn_release(ptr)`);
+        const payload = B.tmp();
+        B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %v, double ${i}) ; +1`);
+        host.declare(`declare void @scr_jb_put_dyn_element(ptr, ptr, double)`);
+        B.line(`call void @scr_jb_put_dyn_element(ptr %b, ptr ${payload}, double ${i})`);
+        B.line(`call void @scr_dyn_release(ptr ${payload})`);
+        B.br(doneBlock);
+        B.startBlock(nullBlock);
+      }
       host.declare(`declare void @scr_jb_puts(ptr, ptr)`);
       B.line(`call void @scr_jb_puts(ptr %b, ptr ${host.cstr("null")})`);
       B.br(doneBlock);
@@ -911,7 +1001,28 @@ export class LlWalkers {
       const lvalue = B.newLabel("uj.p");
       B.line(`${state} = call double @scr_arr_state(ptr %a, double ${i})`);
       B.line(`${isValue} = fcmp oeq double ${state}, ${f64Lit(1)}`);
-      B.condBr(isValue, lvalue, next);
+      if (host.mayHoldForeign({ kind: "union", unionId })) {
+        // A foreign element (SCR_ARR_FOREIGN) joins as its ToString, like
+        // every element but undefined and null.
+        const notValue = B.newLabel("uj.f");
+        const foreignLabel = B.newLabel("uj.foreign");
+        B.condBr(isValue, lvalue, notValue);
+        B.startBlock(notValue);
+        const foreign = B.tmp();
+        B.line(`${foreign} = fcmp oeq double ${state}, ${f64Lit(3)}`);
+        B.condBr(foreign, foreignLabel, next);
+        B.startBlock(foreignLabel);
+        host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+        host.declare(`declare void @scr_dyn_release(ptr)`);
+        const payload = B.tmp();
+        B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %a, double ${i}) ; +1`);
+        host.declare(`declare void @scr_jb_join_dyn(ptr, ptr)`);
+        B.line(`call void @scr_jb_join_dyn(ptr ${buf}, ptr ${payload})`);
+        B.line(`call void @scr_dyn_release(ptr ${payload})`);
+        B.br(next);
+      } else {
+        B.condBr(isValue, lvalue, next);
+      }
       B.startBlock(lvalue);
       const u = B.tmp();
       B.line(`${u} = call ptr @scr_arr_peek_ref(ptr %a, double ${i}) ; borrowed scalar union`);
@@ -986,5 +1097,48 @@ export class LlWalkers {
     );
     this.host.journalBuilt?.();
     return name;
+  }
+}
+
+/** Branches for a record copy linked to its source (IrModule.recordLinks):
+ * when the record `value` of shape `shapeId` links through one of the
+ * module's pairs into that shape, `answer` emits the code for its composed
+ * record (a +1 reference, released after `answer`) of the pair's source
+ * type and names the terminator. Unlinked records fall through. */
+export function emitLinkedRecordBranches(
+  host: ShapeHost,
+  B: BlockBuilder,
+  shapeId: string,
+  value: string,
+  answer: (sourceT: IrType & { kind: "record" }, composed: string) => string,
+): void {
+  const links = (host.recordLinks ?? []).filter((link) => link.to === shapeId);
+  if (links.length === 0) return;
+  host.declare(`declare i32 @scr_record_link_pair(ptr)`);
+  host.declare(`declare ptr @scr_record_link_source(ptr)`);
+  const pair = B.tmp();
+  B.line(`${pair} = call i32 @scr_record_link_pair(ptr ${value})`);
+  for (const link of links) {
+    const copyT: IrType = { kind: "record", shapeId };
+    const sourceT: IrType & { kind: "record" } = { kind: "record", shapeId: link.from };
+    const matches = B.tmp();
+    const lLinked = B.newLabel("link.linked");
+    const lNext = B.newLabel("link.unlinked");
+    B.line(`${matches} = icmp eq i32 ${pair}, ${link.pair}`);
+    B.condBr(matches, lLinked, lNext);
+    B.startBlock(lLinked);
+    const source = B.tmp(),
+      copy = B.tmp(),
+      owned = B.tmp(),
+      composed = B.tmp();
+    // The compose entry takes both references.
+    B.line(`${source} = call ptr @scr_record_link_source(ptr ${value})`);
+    B.line(`${owned} = call ptr ${retainSym(host, sourceT)}(ptr ${source})`);
+    B.line(`${copy} = call ptr ${retainSym(host, copyT)}(ptr ${value})`);
+    B.line(`${composed} = call ptr @${mangleFunction(link.compose)}(ptr ${copy}, ptr ${owned})`);
+    const terminator = answer(sourceT, composed);
+    B.line(`call void ${releaseSym(host, sourceT)}(ptr ${composed})`);
+    B.terminate(terminator);
+    B.startBlock(lNext);
   }
 }

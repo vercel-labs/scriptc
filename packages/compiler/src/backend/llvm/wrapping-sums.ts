@@ -2,7 +2,7 @@ import type { IrExpr, IrFunction, IrStmt } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { integerArithmeticRange, type IntegerRange } from "../../ir/integer-ranges.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
-import type { LlInteger } from "./integer-values.js";
+import { widenInteger, type LlInteger } from "./integer-values.js";
 
 /** Marks the `+`, `-` and `*` operands whose number only reaches
  * ToInt32/ToUint32 consumers (`| 0`, the other bitwise operators,
@@ -22,8 +22,9 @@ export function markWrappingOperands(host: LlvmEmitterContext, ...operands: IrEx
 /** The values an f64 expression can have when each one is an exact integer
  * (never -0) or NaN: proven ranges, safe integer literals, NaN-coded reads
  * of integer typed-array elements and of Int32[] elements, `charCodeAt`,
- * and sums and differences of those whose every integer result is still
- * exact in a double. */
+ * and sums, differences and products of those whose every integer result
+ * is a safe integer, which the double holds exactly. A product that can be
+ * -0 (a zero times a negative) has no range. */
 export function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerRange | null {
   if (e.type.kind !== "f64") return null;
   const range = host.integerRanges.get(e);
@@ -51,7 +52,7 @@ export function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerR
   // A UTF-16 code unit, or NaN past either end.
   if (e.kind === "strIntrinsic" && e.method === "charCodeAt") return { min: 0, max: 65535 };
   if (e.kind === "varRef") return host.integerOrNaNLocals.get(e.localId) ?? null;
-  if (e.kind === "bin" && (e.op === "+" || e.op === "-")) {
+  if (e.kind === "bin" && (e.op === "+" || e.op === "-" || e.op === "*")) {
     const left = integerOrNaNRange(host, e.left);
     const right = left && integerOrNaNRange(host, e.right);
     return right ? integerArithmeticRange(e.op, left!, right) : null;
@@ -71,10 +72,16 @@ export function integerOrNaNIndex(
 ): { wide: string; ordered: string } | null {
   const range = expr ? integerOrNaNRange(host, expr) : null;
   if (!range) return null;
+  // A value that carries its integer and ordered bit needs no conversion.
+  if (value.nanInteger !== undefined && value.ordered !== undefined)
+    return { wide: value.nanInteger, ordered: value.ordered };
   const B = host.B;
-  const ordered = B.tmp();
   const wide = B.tmp();
-  B.line(`${ordered} = fcmp ord double ${value.name}, 0.0`);
+  let ordered = value.ordered;
+  if (ordered === undefined) {
+    ordered = B.tmp();
+    B.line(`${ordered} = fcmp ord double ${value.name}, 0.0`);
+  }
   if (value.uint32 !== undefined && range.min >= 0 && range.max <= 4294967295) {
     B.line(`${wide} = zext i32 ${value.uint32} to i64`);
   } else if (value.uint32 !== undefined && range.min >= -2147483648 && range.max <= 2147483647) {
@@ -113,9 +120,14 @@ function wrappingOperand(
     return { low, valid: null };
   }
   // The number is an exact integer or NaN, and its ToUint32 view is the
-  // integer's low 32 bits or 0. An ordered compare tells the two apart.
-  const valid = B.tmp();
-  B.line(`${valid} = fcmp ord double ${value.name}, 0.0`);
+  // integer's low 32 bits or 0. Its ordered bit, or an ordered compare,
+  // tells the two apart.
+  let valid: string | null = value.ordered ?? null;
+  if (valid === "true") valid = null;
+  else if (valid === null) {
+    valid = B.tmp();
+    B.line(`${valid} = fcmp ord double ${value.name}, 0.0`);
+  }
   if (value.uint32 !== undefined) return { low: value.uint32, valid };
   // Without a view, convert once. The conversion of NaN is poison, but the
   // result only selects the sum when every operand is ordered.
@@ -137,8 +149,9 @@ function wrappingOperand(
  * low halves is the converted exact result; a NaN operand makes the result
  * NaN, which converts to 0. A product is exact when the operands' magnitude
  * bounds multiply to at most 2^53; it may be -0 (`0 * -1`), which converts
- * to 0 like the integer 0. Returns undefined, emitting nothing, for any
- * other expression. */
+ * to 0 like the integer 0. Returns the converted result with its ordered
+ * bit (`true` when no operand can be NaN), or undefined, emitting nothing,
+ * for any other expression. */
 export function emitWrappingSum(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "bin" },
@@ -146,7 +159,7 @@ export function emitWrappingSum(
   r: LlValue,
   li: LlInteger | null,
   ri: LlInteger | null,
-): string | undefined {
+): { uint32: string; ordered: string } | undefined {
   if ((e.op !== "+" && e.op !== "-" && e.op !== "*") || !host.wrappingSums.has(e)) return undefined;
   const leftRange = li ? li.range : integerOrNaNRange(host, e.left);
   const rightRange = leftRange && (ri ? ri.range : integerOrNaNRange(host, e.right));
@@ -165,14 +178,58 @@ export function emitWrappingSum(
     `${sum} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} i32 ${left.low}, ${right.low}`,
   );
   let valid = left.valid ?? right.valid;
-  if (valid === null) return sum;
+  if (valid === null) return { uint32: sum, ordered: "true" };
   if (left.valid && right.valid) {
     valid = B.tmp();
     B.line(`${valid} = and i1 ${left.valid}, ${right.valid}`);
   }
   const out = B.tmp();
   B.line(`${out} = select i1 ${valid}, i32 ${sum}, i32 0`);
-  return out;
+  return { uint32: out, ordered: valid };
+}
+
+/** The integer of `left op right` (`+`, `-` or `*`) and its ordered bit
+ * when the expression is an exact integer or NaN (`integerOrNaNRange`) and
+ * each operand carries an integer: its exact integer, or its `nanInteger`
+ * and ordered bit. The result is NaN exactly when an operand is, and the i64
+ * arithmetic of the operands' integers is the result's integer otherwise:
+ * the range keeps it within the safe integers. While an operand is NaN its
+ * integer is 0 or another integer of these forms, so the i64 arithmetic
+ * stays within range either way. Undefined, emitting nothing, for any other
+ * expression. */
+export function emitNanArithmetic(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "bin" },
+  l: LlValue,
+  r: LlValue,
+  li: LlInteger | null,
+  ri: LlInteger | null,
+): { nanInteger: string; ordered: string } | undefined {
+  if (e.op !== "+" && e.op !== "-" && e.op !== "*") return undefined;
+  const operand = (
+    value: LlValue,
+    integer: LlInteger | null,
+  ): { integer: string; ordered: string } | null => {
+    if (integer) return { integer: widenInteger(host, integer), ordered: "true" };
+    if (value.nanInteger === undefined || value.ordered === undefined) return null;
+    return { integer: value.nanInteger, ordered: value.ordered };
+  };
+  if ((!li && l.nanInteger === undefined) || (!ri && r.nanInteger === undefined)) return undefined;
+  if (!integerOrNaNRange(host, e)) return undefined;
+  const left = operand(l, li);
+  const right = left && operand(r, ri);
+  if (!right) return undefined;
+  const B = host.B;
+  const nanInteger = B.tmp();
+  B.line(
+    `${nanInteger} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} i64 ${left!.integer}, ${right.integer}`,
+  );
+  let ordered = left!.ordered === "true" ? right.ordered : left!.ordered;
+  if (left!.ordered !== "true" && right.ordered !== "true") {
+    ordered = B.tmp();
+    B.line(`${ordered} = and i1 ${left!.ordered}, ${right.ordered}`);
+  }
+  return { nanInteger, ordered };
 }
 
 /** Whether every product of a value in `left` and one in `right` is an

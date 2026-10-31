@@ -1,4 +1,4 @@
 - **Synchronous iteration:** Checked `for...of` follows live iterator methods, including compiled class methods and abrupt-completion cleanup.
   Mapper-less checked `Array.from` accepts those iterators and plain array-like objects.
   Sparse checked arrays and general borrowed iterator factories are unsupported.
-  Direct statically typed class loops also restrict iterator `return` and `throw` methods.
+  Direct statically typed class loops accept iterators that are class instances or object literals; a loop that exits early calls the iterator's zero-parameter `return()`, as Node's IteratorClose does.

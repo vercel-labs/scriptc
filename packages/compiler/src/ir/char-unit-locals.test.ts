@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../index.js";
 import { holdCharLocalsAsUnits } from "./char-unit-locals.js";
+import { validateModule } from "./validate.js";
 import type { IrFunction, IrModule } from "./ir.js";
 import { everyStmtList } from "./traverse.js";
 
@@ -95,6 +96,101 @@ console.log(escapes("a b", 1), rebound("  x", 0), wide("ab", 0), against("a", "b
     expect(fn(before, name)).toBeDefined();
     expect(fn(after, name)).toBe(fn(before, name));
   }
+});
+
+/** The union and dynamic comparisons left in the function. */
+function unionTests(f: IrFunction): string[] {
+  const out: string[] = [];
+  everyStmtList(f.body, {
+    stmt: () => true,
+    expr: (e) => {
+      if (e.kind === "unionEq" || e.kind === "unionIsTag") out.push(e.kind);
+      if (e.kind === "libCall" && e.fn === "js.compare") out.push(e.fn);
+      if (e.kind === "strIntrinsic") out.push(e.method);
+      return true;
+    },
+  });
+  return out;
+}
+
+test("optional character reads compare their code unit", async () => {
+  const mod = holdCharLocalsAsUnits(
+    await lower(`
+function scan(src: string, pos: number): number {
+  let n = 0;
+  if (src[pos] === " ") n += 1;
+  if (src[pos] !== "x") n += 2;
+  if (src[pos] < "a" || "z" <= src[pos]) n += 4;
+  if (src[pos + 1] === "=") n += 8;
+  const c = src[pos];
+  if (c === undefined) n += 16;
+  if (c !== undefined && c > "m") n += 32;
+  switch (c) {
+    case "q":
+      n += 64;
+      break;
+    case "r":
+      n += 128;
+  }
+  return n;
+}
+console.log(scan("a b", 1), scan("q", 0), scan("ab", 5), scan("r=", 0.5));
+`),
+  );
+  const scan = fn(mod, "scan");
+  // Only charCodeAt reads remain: no union tests, dynamic compares, charAt
+  // or length reads.
+  expect(new Set(unionTests(scan))).toEqual(new Set(["charCodeAt"]));
+  expect(scan.locals.find((l) => l.name === "c")!.type).toEqual({ kind: "f64" });
+});
+
+test("optional character reads with other uses stay reads", async () => {
+  const before = await lower(`
+function kept(src: string, pos: number): string {
+  const c = src[pos];
+  if (c === " ") return "space";
+  return c ?? "end";
+}
+function longer(src: string, pos: number): boolean {
+  return src[pos] === "ab";
+}
+function twice(src: string, pos: number): boolean {
+  return src[pos * 2] === undefined;
+}
+console.log(kept("a b", 1), kept("ab", 0), kept("", 3), longer("ab", 0), twice("ab", 1));
+`);
+  const after = holdCharLocalsAsUnits(before);
+  for (const name of ["kept", "longer", "twice"]) {
+    expect(fn(before, name)).toBeDefined();
+    expect(unionTests(fn(after, name))).toEqual(unionTests(fn(before, name)));
+  }
+  // The local's own test still reads it as a union.
+  expect(unionTests(fn(after, "kept"))).toContain("unionEq");
+});
+
+test("a held local tested inside another read's index or receiver becomes its unit", async () => {
+  const mod = holdCharLocalsAsUnits(
+    await lower(`
+function count(src: string, other: string): number {
+  let n = 0;
+  for (let pos = 0; pos <= src.length; pos += 1.5) {
+    const c = src[pos];
+    if (src[c === "a" ? pos + 1 : pos] === "b") n++;
+    if ((c === "x" ? other : src)[pos] === "y") n += 2;
+    const d = src[c === "c" ? pos - 1 : pos];
+    if (d === "c") n += 10;
+  }
+  return n;
+}
+console.log(count("abcab", "xyz"), count("cab", "yy"), count("", ""));
+`),
+  );
+  const count = fn(mod, "count");
+  expect(validateModule(mod)).toEqual([]);
+  expect(count.locals.find((l) => l.name === "c")!.type).toEqual({ kind: "f64" });
+  expect(count.locals.find((l) => l.name === "d")!.type).toEqual({ kind: "f64" });
+  // No test of either local reads it as a union.
+  expect(unionTests(count)).not.toContain("unionEq");
 });
 
 test("charAt tests in place compare charCodeAt", async () => {

@@ -1,0 +1,56 @@
+{
+  "comment": "Temporary libnode source for CI until the NI-13 packs (@scriptc/libnode-<platform>) are published. linux-x64: the community dockfries/libnode build of Node 24.22.1. darwin-arm64 and darwin-x64: libnode of the pinned Node 24.22.0 from the libnode-packs workflow (NI-13), mirrored. Each with Node's official headers of the same release for the bridge. The first URL is scriptc's CI-only mirror (prerelease libnode-dev-24.22.1), the others the original locations; fetch-dev-pack.mjs tries them in order and verifies the sha256.",
+  "nodeVersion": "24.22.1",
+  "linux-x64": {
+    "libnode": {
+      "urls": [
+        "https://github.com/vercel-labs/scriptc/releases/download/libnode-dev-24.22.1/libnode-linux-x64.tar.gz",
+        "https://github.com/dockfries/libnode/releases/download/v24.22.1/libnode-linux-x64.tar.gz"
+      ],
+      "sha256": "b02809c5d332516cc72890fec0cbbca404bac526bd0f841e00a8a6056ec1ff54",
+      "file": "libnode.so.137"
+    },
+    "headers": {
+      "urls": [
+        "https://github.com/vercel-labs/scriptc/releases/download/libnode-dev-24.22.1/node-v24.22.1-headers.tar.gz",
+        "https://nodejs.org/dist/v24.22.1/node-v24.22.1-headers.tar.gz"
+      ],
+      "sha256": "322e0a27db9088093ab8347bdc8c7e0aaa21dc9ed548390bf06b394494c09267",
+      "dir": "node-v24.22.1/include/node"
+    }
+  },
+  "darwin-arm64": {
+    "libnode": {
+      "urls": [
+        "https://github.com/vercel-labs/scriptc/releases/download/libnode-dev-24.22.1/libnode-darwin-arm64.tar.gz"
+      ],
+      "sha256": "3f06e5d0a0e1054f5fb4aab578a81908b3f94db4c2db64ceb9d3273c69d1ca3e",
+      "file": "libnode.137.dylib"
+    },
+    "headers": {
+      "urls": [
+        "https://github.com/vercel-labs/scriptc/releases/download/libnode-dev-24.22.1/node-v24.22.0-headers.tar.gz",
+        "https://nodejs.org/dist/v24.22.0/node-v24.22.0-headers.tar.gz"
+      ],
+      "sha256": "00e9f08b9057f9f5428387a5ffd496e53f274565b40b144b7ba876700755352a",
+      "dir": "node-v24.22.0/include/node"
+    }
+  },
+  "darwin-x64": {
+    "libnode": {
+      "urls": [
+        "https://github.com/vercel-labs/scriptc/releases/download/libnode-dev-24.22.1/libnode-darwin-x64.tar.gz"
+      ],
+      "sha256": "17b8ee5bc6610da3b839041a992a4c16dc740d6f256712214d65b696d4a48d39",
+      "file": "libnode.137.dylib"
+    },
+    "headers": {
+      "urls": [
+        "https://github.com/vercel-labs/scriptc/releases/download/libnode-dev-24.22.1/node-v24.22.0-headers.tar.gz",
+        "https://nodejs.org/dist/v24.22.0/node-v24.22.0-headers.tar.gz"
+      ],
+      "sha256": "00e9f08b9057f9f5428387a5ffd496e53f274565b40b144b7ba876700755352a",
+      "dir": "node-v24.22.0/include/node"
+    }
+  }
+}

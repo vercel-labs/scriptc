@@ -334,3 +334,73 @@ scriptc requires:
 Each instance of a key class, and of every class in its hierarchy, carries a 4-byte slot index, 0 until a value is set for it. The first `set` for a key assigns the index; indices are never reused. `get` and `has` read the index, a page of the thread's family and the entry, with no lock, hash or atomic update. A family stores values in pages of 1024 entries, allocated as the thread sets values in them.
 
 A family holds a reference to each of the thread's values. A value is released when it is replaced or deleted, when its key is freed, and when the thread exits. Keys that are freed with a [`LifetimeRegion`](#lifetimeregion) keep their values until the thread exits, a value that belongs to a region keeps the region allocated while the family holds it, and a value that refers to its own key keeps the key alive. Programs that never construct a `ThreadSlots` do not run any of its code, and their classes have no slot index.
+
+## InlineArray
+
+`InlineArray<T>` marks an array field of a [`ProgramLifetime`](/docs/contracts#programlifetime) class whose elements scriptc keeps in the instance itself, after its other fields, instead of in an array object of their own. It suits a program with millions of short arrays that never change once built, such as the children of each node of a syntax tree: an ordinary array costs a separate allocation with a header, and a reference to it in the instance.
+
+```ts:lists.ts
+import type { ProgramLifetime } from "@scriptc/types";
+import type { InlineArray } from "@scriptc/experimental";
+
+class Token implements ProgramLifetime {
+  readonly text: string;
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+
+class TokenList implements ProgramLifetime {
+  readonly pos: number;
+  readonly tokens: InlineArray<Token>;
+  constructor(pos: number, tokens: readonly Token[]) {
+    this.pos = pos;
+    this.tokens = tokens;
+  }
+}
+
+function width(list: TokenList): number {
+  let total = 0;
+  for (const token of list.tokens) total += token.text.length;
+  return total;
+}
+
+const list = new TokenList(0, ["let", "x", "=", "1"].map((text) => new Token(text)));
+console.log(list.tokens.length, width(list), list.tokens[0]!.text);
+console.log(list.tokens.map((token) => token.text).join(" "));
+```
+
+Both runtimes print the same:
+
+```console
+$ node lists.ts
+4 6 let
+let x = 1
+$ scriptc build lists.ts -o lists >/dev/null
+$ ./lists
+4 6 let
+let x = 1
+```
+
+### Field rules
+
+scriptc requires:
+
+- `T` to be a `ProgramLifetime` class, and the field to be an instance field of a `ProgramLifetime` class;
+- the constructor of the class that declares the field to write it once, from one of its parameters. A subclass constructor passes one of its own parameters there through `super(...)`. Nothing else writes the field;
+- the array passed to the constructor to be one that nothing else keeps: a new array (an array literal, a copy such as `slice()`, `[...items]` or `Array.from(items)`, or the result of a function that returns only such arrays or its own argument), a local array at its last use (calls that only read it or add to it may come first, and a loop may pass it and then assign a new array to the local), a parameter whose callers each pass such an array, an array that an InlineArray field already holds, or a `const` array that is never written, such as a shared empty array;
+- the arrays fields hold never to be written, through a read of the field (which the `readonly` type allows only through a cast) or through any other reference. scriptc follows these arrays through locals, parameters, return values, fields, the elements of arrays, Maps and Sets, and closures, and reports one that reaches a write, a dynamic value (also inside the fields of an object that becomes one), a call through a function value (also inside an array, Map or Set passed there), or a library call other than printing and `JSON.stringify` without a replacer. The report names the field read the array may come from;
+- the arrays fields hold, and their reads, not to be compared by identity: with `===` or `!==`, as an `indexOf` or `includes` argument, or as a Map key or Set element. Two reads of the field need not give the same array. Compare the elements instead, or keep a copy made with `slice()` where identity matters;
+- instances of the class not to be constructed through a class value. They may become dynamic values, for example through a conversion to `unknown` or an interface several classes implement, when the dynamic code that sees them uses the class's own members and does not read the field: scriptc follows such values through locals, parameters, return values, fields, the elements of arrays, Maps and Sets, the members of dynamic objects and arrays, calls through function values, and the callbacks of array methods such as `map` and `forEach`, and finds the first that reaches a read or write of the field's name or of a computed key, a checked cast to a record, array or collection type that has a record member of the field's name or holds a dynamic value, a call through a value no compiled function reaches (also as an array method's callback), or a library call other than printing, `JSON.stringify` without a replacer, `publish`, a worker's `workerData`, and class tests and casts. A dynamic view of an inline field would read it as a new array each time, so when such an operation exists the field keeps its elements in an ordinary array, which behaves as under Node.js, and scriptc reports a warning (SC6105). The report names the operation.
+
+scriptc reports a field that does not keep these rules (SC7009).
+
+### Reads
+
+Indexing the field, reading its `length` and iterating it with `for...of` read the elements from the instance, directly or through a `const` local used only in those ways. Any other use, such as passing the field to a function or calling one of its methods, gets an array of the elements, which is frozen in scriptc builds. Under Node.js the field holds the array the constructor stored. The two agree because the field rules keep that array from being written.
+
+### Inline array cost
+
+Each element takes 4 bytes in the instance, and the field's own slot holds the count. The constructor copies the elements from the array it is passed, so that array can be released. The elements start at the same offset in every class of the hierarchy, after the largest set of fixed fields. A read that gets an array allocates a small header that refers to the instance's elements, and frees it when the read's value is released.
+
+The elements stay in an ordinary array object, and the field behaves like any other array field, in builds with sanitizers, in programs that use [`LifetimeRegion`](#lifetimeregion), and on platforms other than 64-bit Linux.

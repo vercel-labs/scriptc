@@ -17,6 +17,11 @@ on:
         type: choice
         options: [full, darwin]
         default: full
+      scope:
+        description: Every lane, or only the shape overlay validation (shape_overlay)
+        type: choice
+        options: [all, shape_overlay]
+        default: all
 
 concurrency:
   # A new push to a pull request cancels its previous run. Every push to main runs to completion in a group of
@@ -52,10 +57,17 @@ jobs:
           const stackBase = pr?.stack?.base?.ref;
           const prBase = pr?.base?.ref;
           // Position 1 can already be merged; compare the current base branches.
+          // A PR into the default branch is the lowest unmerged layer of any
+          // stack, whatever the stack metadata names as its base.
+          const defaultBranch = event.repository?.default_branch;
           const upperLayer = process.env.GITHUB_EVENT_NAME === 'pull_request' &&
             sameRepository && trustedAuthor && typeof stackBase === 'string' && stackBase.length > 0 &&
-            typeof prBase === 'string' && prBase.length > 0 && stackBase !== prBase;
-          const full = !upperLayer;
+            typeof prBase === 'string' && prBase.length > 0 && stackBase !== prBase &&
+            prBase !== defaultBranch;
+          // A manual run of the shape overlay validation alone skips the other lanes.
+          const shapeOnly = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' &&
+            event.inputs?.scope === 'shape_overlay';
+          const full = !upperLayer && !shapeOnly;
           appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\n`);
           console.log(full ? 'Run full CI' : 'Defer full CI until this PR becomes the lowest unmerged layer');
           NODE
@@ -122,6 +134,10 @@ jobs:
           SCRIPTC_TEST_WORKERS: "1"
       - name: Verify mixed-source generated AST getters
         run: pnpm generate:ts7-ast --check
+      - name: Verify the generated IR field readers
+        run: pnpm generate:ir-fields --check
+      - name: Verify the generated IR codec
+        run: pnpm generate:ir-codec --check
 
   native_macos:
     needs: [validation_scope, lanes]
@@ -206,6 +222,10 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm build
+      # Node island tests (`// @requires-libnode` corpus programs and
+      # node-island.test.ts) load Node from a libnode pack, and fail rather
+      # than skip in this lane when none is configured.
+      - uses: ./.github/actions/libnode
       # Ubuntu pipes core dumps to apport, and RLIMIT_CORE does not limit a
       # piped dump. The kernel then streams every page of the runtime's
       # reserved allocator address space through the pipe, so each expected
@@ -274,6 +294,9 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode
       - name: Tests (${{ (github.event_name != 'schedule' && inputs.macos_suite != 'full') && 'darwin suite' || 'corpus and integration suites' }})
         run: node scripts/ci-test.mjs
 
@@ -345,6 +368,162 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm test tests/harness/effect.test.ts tests/harness/effect4.test.ts
+
+  # The sanitized three.js nodes build alone: beside the san corpus's other
+  # workers it took 860 to more than 1200 seconds of its shard
+  # (SCRIPTC_THREE_SANITIZED_NODES_JOB in scripts/ci-test-plan.mjs). It keeps
+  # the corpus's LeakSanitizer settings.
+  three_nodes_san:
+    needs: [validation_scope, lanes, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    name: test (Linux, san, three.js nodes)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      SCRIPTC_SAN: "1"
+      ASAN_OPTIONS: detect_leaks=1
+      LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/harness/lsan.supp:print_suppressions=0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - run: pnpm test tests/harness/three.test.ts -t "'nodes' runs statically through LLVM on 'native'"
+
+  # The sanitized self-hosting native-frontend builds alone. Each of these
+  # three files compiles the whole frontend under ASan in beforeAll, which
+  # takes 10.5 GB of clang beside a 3.8 GB compile in Node; beside a shard's
+  # corpus workers the kernel killed it intermittently at 670-740 s (SIGKILL,
+  # empty stderr, every test skipped). One file per job, one worker, no
+  # corpus. The plain suite and the macOS shards keep them in the shard side
+  # queue (scripts/ci-test-plan.mjs).
+  native_frontend_san:
+    needs: [validation_scope, lanes, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    name: test (Linux, san, native frontend ${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: programs
+            file: tests/harness/self-hosting-native-frontend-programs.test.ts
+          - suite: checks
+            file: tests/harness/self-hosting-native-frontend-checks.test.ts
+          - suite: frontend
+            file: tests/harness/self-hosting-native-frontend.test.ts
+    env:
+      SCRIPTC_SAN: "1"
+      SCRIPTC_TEST_WORKERS: "1"
+      ASAN_OPTIONS: detect_leaks=0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - name: Tests (${{ matrix.file }})
+        run: pnpm test ${{ matrix.file }}
+
+  # Shape inference's overlay (opt-in, SCRIPTC_SHAPE_OVERLAY=1) over the
+  # suites of real packages: nightly and on manual runs only (scope
+  # shape_overlay runs it alone), outside the `test` roll-up. Every case
+  # must build and run as in the default build. It builds its own native
+  # packages, so it does not depend on the other lanes.
+  shape_overlay_native:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    name: build (Linux x64 native packages, shape overlay)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - name: Preserve executable permissions in shared packages
+        run: >-
+          tar -czf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+          packages/llvm-linux-x64-gnu/bin
+          packages/runtime-linux-x64-gnu/artifacts
+          packages/runtime-linux-x64-gnu/runtime-pack.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-x64-gnu-shape-overlay
+          path: ${{ runner.temp }}/native-linux-x64-gnu.tar.gz
+          retention-days: 1
+
+  shape_overlay:
+    needs: [shape_overlay_native]
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    name: test (Linux, shape overlay, ${{ matrix.suite }} ${{ matrix.shard }}/8)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [npm, npm-static, three, effect]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      SCRIPTC_SHAPE_OVERLAY: "1"
+      SCRIPTC_TEST_WORKERS: "1"
+      SCRIPTC_EFFECT_TEST_CONCURRENCY: "1"
+      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu-shape-overlay
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      # The npm suites' Node island cases load Node from a libnode pack, and
+      # fail rather than skip in this lane when none is configured.
+      - uses: ./.github/actions/libnode
+        if: matrix.suite == 'npm' || matrix.suite == 'npm-static'
+      - name: Run the suite with the overlay on
+        run: |
+          case "${{ matrix.suite }}" in
+            npm) pnpm test tests/harness/npm-shape-overlay.test.ts ;;
+            npm-static) pnpm test tests/harness/npm-static.test.ts ;;
+            three) pnpm test tests/harness/three.test.ts ;;
+            effect) pnpm test tests/harness/effect.test.ts tests/harness/effect4.test.ts ;;
+          esac
 
   # Build each instrumented seed once. Downstream contracts retain the same
   # compiler and source artifacts without repeating seed construction.
@@ -539,6 +718,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (tsgo and tsc-ts give the same IR)
     runs-on: ubuntu-24.04
+    # The two corpus compiles run back to back and take close to 30 minutes on a
+    # slow hosted runner, so a 30-minute limit cancels otherwise healthy runs.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -557,11 +738,17 @@ jobs:
         run: pnpm test:checker-identity --optimization dev
 
   llvm_artifacts_linux_x64:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, native_linux]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (Linux x64 LLVM artifacts, no clang)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The glibc helper and runtime pack come from native_linux, as the macOS
+    # artifact jobs take theirs from native_macos. The musl packages and the
+    # WASI smoke run in llvm_artifacts_linux_x64_musl and
+    # llvm_artifacts_linux_x64_wasi: together with a rebuild of the glibc
+    # packages, which a runtime change forces, the one job took 25 to 32
+    # minutes.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -571,32 +758,13 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
-      - uses: ./.github/actions/llvm-linux
       - run: pnpm install --frozen-lockfile
       - uses: ./.github/actions/zig
-      - uses: ./.github/actions/native-packages
+      - uses: actions/download-artifact@v4
         with:
-          target: linux-x64-gnu
-      - name: Build and verify Linux x64 musl release packages
-        run: |
-          pnpm --filter @scriptc/llvm-linux-x64-musl build:native
-          CC=zig AR=zig pnpm --filter @scriptc/runtime-linux-x64-musl build:native
-          helper=packages/llvm-linux-x64-musl/bin/scriptc-llvm-codegen
-          readelf -l "$helper" > "$RUNNER_TEMP/musl-helper-program-headers"
-          if grep -q INTERP "$RUNNER_TEMP/musl-helper-program-headers"; then
-            echo "musl helper must be a static executable" >&2
-            exit 1
-          fi
-          docker run --rm --volume "$GITHUB_WORKSPACE:/work:ro" alpine:3.22 \
-            /work/$helper version --format=json | node -e '
-              const value = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-              if (value.default_target !== "x86_64-unknown-linux-musl" || !value.supported_targets?.includes("wasm32-unknown-wasi")) process.exit(1);
-            '
-          node packages/runtime-linux-x64-musl/scripts/verify.mjs
-      - uses: ./.github/actions/native-packages
-        with:
-          target: wasm32-wasi
-          helper: "false"
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm build
       - name: Linux helper object format and no-clang output contract
         run: |
@@ -622,6 +790,82 @@ jobs:
             SCRIPTC_NO_CACHE=1 SCRIPTC_LEGACY_C_PIPELINE=0 node packages/cli/dist/main.js build tests/corpus/001-hello.ts -o /tmp/hello
             test "$(/tmp/hello)" = "hello world"
           '
+
+  llvm_artifacts_linux_x64_musl:
+    needs: [validation_scope, lanes, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    name: test (Linux x64 LLVM artifacts, no clang, musl)
+    runs-on: ubuntu-24.04
+    # The static musl helper and runtime pack, restored from the
+    # native-packages cache when their inputs are unchanged: about 9 minutes
+    # when both are built. The runtime build emits its units through the
+    # host's glibc helper (runtime-unit.mjs), which comes from native_linux.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-musl
+      - name: Verify the Linux x64 musl release helper
+        run: |
+          helper=packages/llvm-linux-x64-musl/bin/scriptc-llvm-codegen
+          readelf -l "$helper" > "$RUNNER_TEMP/musl-helper-program-headers"
+          if grep -q INTERP "$RUNNER_TEMP/musl-helper-program-headers"; then
+            echo "musl helper must be a static executable" >&2
+            exit 1
+          fi
+          docker run --rm --volume "$GITHUB_WORKSPACE:/work:ro" alpine:3.22 \
+            /work/$helper version --format=json | node -e '
+              const value = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+              if (value.default_target !== "x86_64-unknown-linux-musl" || !value.supported_targets?.includes("wasm32-unknown-wasi")) process.exit(1);
+            '
+
+  llvm_artifacts_linux_x64_wasi:
+    needs: [validation_scope, lanes, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    name: test (Linux x64 LLVM artifacts, no clang, wasm32)
+    runs-on: ubuntu-24.04
+    # The wasm32-wasi runtime pack (restored from the native-packages cache
+    # when unchanged; its units go through native_linux's glibc helper) and
+    # the WASI smoke tests, which take 6 to 9 minutes.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - uses: ./.github/actions/native-packages
+        with:
+          target: wasm32-wasi
+          helper: "false"
+      - run: pnpm build
       - name: WASI helper object/runtime-pack smoke
         run: pnpm test packages/cli/test/wasi-runtime-pack.test.ts tests/harness/wasm-library.test.ts
 
@@ -630,11 +874,10 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/5)
     runs-on: macos-15
-    # Shard 1 additionally runs package/install and link-parity contracts
-    # before its LLVM differential slice. The slice itself can take ~10
-    # minutes on a cold hosted runner, so 20 minutes cancels an otherwise
-    # healthy job before the differential completes.
-    timeout-minutes: 35
+    # Each LLVM differential slice takes 30 to 35 minutes on a hosted runner.
+    # The package/install and link-parity contracts run in their own job
+    # (llvm_artifacts_macos_arm64_contracts), so no slice carries them.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -660,11 +903,45 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
-      - name: No-clang assembly/object contract
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode
+      - name: Node island harness
         if: matrix.shard == 1
+        run: pnpm test tests/harness/node-island packages/libnode-common
+      - name: LLVM release/dev differential (${{ matrix.shard }}/5)
+        env:
+          SCRIPTC_TEST_WORKERS: "4"
+        run: pnpm test tests/harness/llvm-differential.test.ts
+
+  llvm_artifacts_macos_arm64_contracts:
+    needs: [validation_scope, lanes, native_macos]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
+    name: test (macOS arm64 LLVM artifacts, no clang, contracts)
+    runs-on: macos-15
+    # The no-clang object, helper parity, packaged helper and packed npm
+    # installation contracts: about 12 minutes, which used to run in front
+    # of shard 1's differential slice and took that job to 45-50 minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-arm64
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
+      - run: pnpm build
+      - name: No-clang assembly/object contract
         run: pnpm test packages/cli/test/native-output.test.ts
       - name: Helper diagnostics and object/link parity
-        if: matrix.shard == 1
         run: >-
           pnpm test
           packages/compiler/test/native-codegen-integration.test.ts
@@ -672,17 +949,11 @@ jobs:
           packages/cli/test/native-link-info.test.ts
           packages/cli/test/runtime-pack.test.ts
           tests/harness/native-object-example.test.ts
-      - name: LLVM release/dev differential (${{ matrix.shard }}/5)
-        env:
-          SCRIPTC_TEST_WORKERS: "4"
-        run: pnpm test tests/harness/llvm-differential.test.ts
       - name: Packaged helper contract
-        if: matrix.shard == 1
         run: |
           TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
           node scripts/verify-llvm-package.mjs "$RUNNER_TEMP/$(basename "$TARBALL")"
       - name: Packed npm installation smoke
-        if: matrix.shard == 1
         env:
           # Release optimization is covered by the compiler bootstrap jobs.
           # This lane verifies packaging and installation with a faster seed.
@@ -717,7 +988,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS x64 LLVM artifacts, no clang)
     runs-on: macos-15-intel
-    timeout-minutes: 20
+    # The Node island tests take most of it.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -732,6 +1004,15 @@ jobs:
         with:
           target: darwin-x64
       - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode
+      - name: Node islands (Intel)
+        run: >-
+          pnpm test tests/harness/node-island packages/libnode-common
+          && pnpm test tests/harness/differential.test.ts -t ' (68[0-9][0-9]|7661|7662)-'
+        env:
+          SCRIPTC_TEST_WORKERS: "3"
       - name: Intel Mach-O no-clang object contract
         run: |
           mkdir -p "$RUNNER_TEMP/traps"
@@ -947,13 +1228,18 @@ jobs:
         tests_macos,
         native_linux,
         effects,
+        three_nodes_san,
+        native_frontend_san,
         bootstrap_seed,
         bootstrap,
         linux_host_clang,
         ts7_parity,
         checker_identity,
         llvm_artifacts_linux_x64,
+        llvm_artifacts_linux_x64_musl,
+        llvm_artifacts_linux_x64_wasi,
         llvm_artifacts_macos_arm64,
+        llvm_artifacts_macos_arm64_contracts,
         llvm_artifacts_macos_x64,
         windows_cli,
         llvm_artifacts_windows_x64,
@@ -979,13 +1265,18 @@ jobs:
               lane tests_macos "${{ needs.tests_macos.result }}" "${{ needs.lanes.outputs.macos }}"
               lane native_linux "${{ needs.native_linux.result }}" "${{ needs.lanes.outputs.linux }}"
               lane effects "${{ needs.effects.result }}" "${{ needs.lanes.outputs.effects }}"
+              lane three_nodes_san "${{ needs.three_nodes_san.result }}" "${{ needs.lanes.outputs.linux }}"
+              lane native_frontend_san "${{ needs.native_frontend_san.result }}" "${{ needs.lanes.outputs.linux }}"
               lane bootstrap_seed "${{ needs.bootstrap_seed.result }}" "${{ needs.lanes.outputs.bootstrap }}"
               lane bootstrap "${{ needs.bootstrap.result }}" "${{ needs.lanes.outputs.bootstrap }}"
               lane linux_host_clang "${{ needs.linux_host_clang.result }}" "${{ needs.lanes.outputs.linux }}"
               lane ts7_parity "${{ needs.ts7_parity.result }}" "${{ needs.lanes.outputs.linux }}"
               lane checker_identity "${{ needs.checker_identity.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_linux_x64 "${{ needs.llvm_artifacts_linux_x64.result }}" "${{ needs.lanes.outputs.linux }}"
+              lane llvm_artifacts_linux_x64_musl "${{ needs.llvm_artifacts_linux_x64_musl.result }}" "${{ needs.lanes.outputs.linux }}"
+              lane llvm_artifacts_linux_x64_wasi "${{ needs.llvm_artifacts_linux_x64_wasi.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_macos_arm64 "${{ needs.llvm_artifacts_macos_arm64.result }}" "${{ needs.lanes.outputs.macos }}"
+              lane llvm_artifacts_macos_arm64_contracts "${{ needs.llvm_artifacts_macos_arm64_contracts.result }}" "${{ needs.lanes.outputs.macos }}"
               lane llvm_artifacts_macos_x64 "${{ needs.llvm_artifacts_macos_x64.result }}" "${{ needs.lanes.outputs.macos }}"
               lane windows_cli "${{ needs.windows_cli.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_windows_x64 "${{ needs.llvm_artifacts_windows_x64.result }}" "${{ needs.lanes.outputs.linux }}"

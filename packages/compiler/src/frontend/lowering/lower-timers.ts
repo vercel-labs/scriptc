@@ -8,13 +8,16 @@ import {
   DYN,
   F64,
   isUnitType,
+  STRING,
   VOID,
   type IrExpr,
+  type IrStmt,
   type IrType,
   type SrcLoc,
   typeKey,
 } from "../../ir/ir.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
+import { lowerOptionalNumber } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** setTimeout invokes its callback with NO arguments, but @types/node's
@@ -338,14 +341,18 @@ function isRealTimerCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
 }
 
 /** Marks a lowered timer call `realTimer` when its callee is a binding
- * mock.timers does not replace. */
+ * mock.timers does not replace. A call whose delay is stored first returns a
+ * `seqExpr` around the call, so the mark goes on the call inside it. */
 function markRealTimerCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   lowered: IrExpr | null,
 ): IrExpr | null {
-  if (lowered?.kind !== "libCall" || !MOCKABLE_TIMER_FNS.has(lowered.fn)) return lowered;
-  return isRealTimerCallee(lowerer, expr.expression) ? { ...lowered, realTimer: true } : lowered;
+  const call = lowered?.kind === "seqExpr" ? lowered.result : lowered;
+  if (call?.kind !== "libCall" || !MOCKABLE_TIMER_FNS.has(call.fn)) return lowered;
+  if (!isRealTimerCallee(lowerer, expr.expression)) return lowered;
+  const marked: IrExpr = { ...call, realTimer: true };
+  return lowered?.kind === "seqExpr" ? { ...lowered, result: marked } : marked;
 }
 
 /** One timer call by MEMBER NAME — the shared lowering behind the ambient
@@ -394,24 +401,115 @@ function lowerTimerCall(
           );
     // An omitted delay is NaN, Node's undefined: the loop clamps it to
     // 1ms, and mock.timers queues it to run at the next tick.
+    let warned = false;
+    let throwingDelay = false;
+    // An element read past the end is undefined in Node, which warns
+    // nothing; here it reads as NaN, so the runtime skips the NaN warning.
+    let delayNode = expr.arguments.nodes[1];
+    while (delayNode !== undefined && ts.isParenthesizedExpression(delayNode))
+      delayNode = delayNode.expression;
+    const delayKind =
+      (isRealTimerCallee(lowerer, expr.expression) ? 2 : member === "setInterval" ? 1 : 0) +
+      (delayNode !== undefined && ts.isElementAccessExpression(delayNode) ? 4 : 0);
     let ms: IrExpr =
       expr.arguments.nodes.length >= 2
         ? lowerer.lowerExpr(expr.arguments.nodes[1]!)
         : { kind: "numLit", value: NaN, type: F64, loc };
-    // A delay that may be a boolean (execa's `forceKillAfterTimeout = true`
-    // default flowing on to setTimeout): Node converts it with ToNumber
-    // (`after *= 1`).
-    if (ms.type.kind === "bool" || hasBoolArm(lowerer, ms.type)) {
-      ms = {
-        kind: "libCall",
-        fn: "dyn.numberConstructor",
-        args: [lowerer.coerceToExpected(ms, DYN)],
+    if (ms.type.kind === "union" && !hasBoolArm(lowerer, ms.type)) {
+      // A delay that may be undefined: an optional `ms?: number` passed on,
+      // or an element read (`delays[0]`) whose storage keeps the
+      // out-of-range undefined. Node converts the delay with ToNumber
+      // (`after *= 1`), so undefined is NaN, the omitted delay.
+      ms = lowerOptionalNumber(lowerer, ms, loc, expr.arguments.nodes[1]);
+      // The defined arm is never the undefined, so an element read's NaN
+      // there warns.
+      if (ms.type.kind === "f64") warned = warnOnDefinedDelay(ms, delayKind & 3, loc);
+    }
+    // Any other delay that is not a number (a boolean such as execa's
+    // `forceKillAfterTimeout = true` default, a BigInt, a string, another
+    // union) converts through the checked-dynamic path below.
+    if (ms.type.kind !== "f64" && ms.type.kind !== "dyn" && lowerer.dynConvertible(ms.type)) {
+      ms = lowerer.coerceToExpected(ms, DYN);
+    }
+    if (ms.type.kind === "dyn") {
+      // An untyped delay converts as Node's `after *= 1` does: ToNumber,
+      // with the TypeError a BigInt throws there. Undefined stays the
+      // omitted delay (Node's `after === undefined` branch), tested before
+      // the conversion, so a NaN after it warns, element reads included.
+      const tmp = lowerer.declareHiddenLocal("%timerDelay", DYN);
+      const stable: IrExpr = { kind: "varRef", localId: tmp.id, type: DYN, loc };
+      const converted: IrExpr = {
+        kind: "dynCheck",
+        value: {
+          kind: "libCall",
+          fn: "dyn.arithmetic",
+          args: [
+            stable,
+            { kind: "dynFrom", value: numLit(1, loc), type: DYN, loc },
+            { kind: "strLit", value: "*", type: STRING, loc },
+          ],
+          type: DYN,
+          loc,
+        },
         type: F64,
         loc,
       };
+      ms = {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: tmp.id, init: ms, loc }],
+        result: {
+          kind: "ternary",
+          cond: { kind: "dynTest", test: "undefined", value: stable, type: BOOL, loc },
+          then: { kind: "numLit", value: NaN, type: F64, loc },
+          else_: userDelay(converted, delayKind & 3, loc),
+          type: F64,
+          loc,
+        },
+        type: F64,
+        loc,
+      };
+      warned = true;
+      throwingDelay = true;
     }
+    // A delay Node sets to 1 emits its Timeout warning; a literal delay in
+    // range needs no check, and an omitted delay is undefined, which warns
+    // nothing.
+    if (
+      !warned &&
+      expr.arguments.nodes.length >= 2 &&
+      ms.type.kind === "f64" &&
+      !(ms.kind === "numLit" && ms.value >= 1 && ms.value <= 2147483647)
+    ) {
+      ms = userDelay(ms, delayKind, loc);
+    }
+    // A delay conversion that can throw (a BigInt) runs after the callback
+    // is built: the callback and the converted delay wait in hidden locals,
+    // so a throw leaves only the callback's local, which the frame
+    // releases.
+    let callback = cb;
+    const callbackFirst: IrStmt[] = [];
+    if (throwingDelay) {
+      const held = lowerer.declareHiddenLocal("%timerCallback", cb.type);
+      const delay = lowerer.declareHiddenLocal("%timerDelayMs", F64);
+      callbackFirst.push(
+        { kind: "varDecl", localId: held.id, init: cb, loc },
+        { kind: "varDecl", localId: delay.id, init: ms, loc },
+      );
+      callback = varRef(held.id, cb.type, loc);
+      ms = varRef(delay.id, F64, loc);
+    }
+    const scheduled = (call: IrExpr): IrExpr =>
+      callbackFirst.length === 0
+        ? call
+        : { kind: "seqExpr", stmts: callbackFirst, result: call, type: call.type, loc };
     if (member === "setInterval") {
-      return { kind: "libCall", fn: "timers.setInterval", args: [cb, ms], type: F64, loc };
+      return scheduled({
+        kind: "libCall",
+        fn: "timers.setInterval",
+        args: [callback, ms],
+        type: F64,
+        loc,
+      });
     }
     // The use position decides the shape: a Timeout handle (mapped to
     // f64) when the call is USED (assigned, `.unref()`d, cleared) — the
@@ -420,9 +518,21 @@ function lowerTimerCall(
     // the same heap; only the handle form can be unref'd/cleared.
     const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
     if (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent)) {
-      return { kind: "libCall", fn: "timers.setTimeoutHandle", args: [cb, ms], type: F64, loc };
+      return scheduled({
+        kind: "libCall",
+        fn: "timers.setTimeoutHandle",
+        args: [callback, ms],
+        type: F64,
+        loc,
+      });
     }
-    return { kind: "libCall", fn: "timers.setTimeout", args: [cb, ms], type: VOID, loc };
+    return scheduled({
+      kind: "libCall",
+      fn: "timers.setTimeout",
+      args: [callback, ms],
+      type: VOID,
+      loc,
+    });
   }
   // clearTimeout(handle): shares the interval clear (the handle ids
   // share one space). An optional handle clears nothing when absent.
@@ -522,6 +632,25 @@ function lowerTimerCall(
     return { kind: "libCall", fn: "timers.clearImmediate", args: [handle], type: VOID, loc };
   }
   return null;
+}
+
+/** `timers.userDelay(ms, kind)`: the delay, after the warning Node's
+ * Timeout constructor emits when it sets the delay to 1. `kind` is 0 for
+ * the global setTimeout, 1 for the global setInterval (mock.timers mocks
+ * both) and 2 for a node:timers import (which it leaves alone), plus 4 for
+ * a delay read from an array element. */
+function userDelay(ms: IrExpr, kind: number, loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "timers.userDelay", args: [ms, numLit(kind, loc)], type: F64, loc };
+}
+
+/** An optional delay (lowerOptionalNumber's undefined-or-number ternary):
+ * only the defined arm warns, since Node sets an undefined delay to 1
+ * without a warning. Answers whether the check was placed. */
+function warnOnDefinedDelay(ms: IrExpr, kind: number, loc: SrcLoc): boolean {
+  const choice = ms.kind === "seqExpr" ? ms.result : ms;
+  if (choice.kind !== "ternary") return false;
+  choice.else_ = userDelay(choice.else_, kind, loc);
+  return true;
 }
 
 function hasBoolArm(lowerer: Lowerer, type: IrType): boolean {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7983-integer-compares.ts"
+ ],
+ "diags": []
+}

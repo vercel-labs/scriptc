@@ -3,7 +3,13 @@ import { createRequire } from "node:module";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BROTLI_VERSION, MBEDTLS_VERSION, QJS_COMMIT, ZLIB_VERSION } from "../vendor-inputs.js";
+import {
+  BROTLI_VERSION,
+  ICU_VERSION,
+  MBEDTLS_VERSION,
+  QJS_COMMIT,
+  ZLIB_VERSION,
+} from "../vendor-inputs.js";
 import { stableTestMemo } from "./session.js";
 
 const implementationPath = fileURLToPath(import.meta.url);
@@ -32,6 +38,7 @@ export const NATIVE_RECIPE_IMPLEMENTATION_PATHS = [
   "native/runtime-objects",
   "native/vendor",
   "native/artifact-stamps",
+  "native/helper-identity-record",
   "native/executable",
   "native/cache-warm",
 ].map((stem) => join(backendDir, `${stem}${extname(implementationPath)}`));
@@ -53,6 +60,7 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_object.c",
   "scr_union.c",
   "scr_exception.c",
+  "scr_unwind.c",
   "scr_error.c",
   "scr_console.c",
   "scr_lib.c",
@@ -69,10 +77,13 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_cycle.c",
   "scr_publish.c",
   "scr_region.c",
+  "scr_arena.c",
   "scr_itable.c",
   "scr_slots.c",
   "scr_alloc.c",
   "scr_cipher_info.c",
+  "scr_ieee754.c",
+  "scr_glibc_math.c",
 ] as const;
 
 export function runtimeSrcDir(): string {
@@ -135,6 +146,7 @@ async function runtimeFingerprintFresh(rtDir: string): Promise<string> {
     .update(MBEDTLS_VERSION)
     .update(ZLIB_VERSION)
     .update(BROTLI_VERSION)
+    .update(ICU_VERSION)
     .update("\0backend-recipe\0");
   for (const path of NATIVE_RECIPE_IMPLEMENTATION_PATHS) {
     h.update(basename(path))
@@ -155,19 +167,29 @@ async function runtimeFingerprintFresh(rtDir: string): Promise<string> {
   return h.digest("hex");
 }
 
+interface RuntimeFingerprintGroup {
+  label: string;
+  dir: string;
+}
+
 async function runtimeFingerprintInputGroups(
   rtDir: string,
 ): Promise<{ label: string; dir: string; names: string[] }[]> {
   return Promise.all(
-    [
-      { label: "runtime", dir: rtDir },
-      { label: "ryu", dir: join(rtDir, "..", "vendor", "ryu") },
-      { label: "quickjs-ng", dir: join(rtDir, "..", "vendor", "quickjs-ng") },
-      { label: "mbedtls", dir: join(rtDir, "..", "vendor", "mbedtls") },
-      { label: "zlib", dir: join(rtDir, "..", "vendor", "zlib") },
-      { label: "brotli", dir: join(rtDir, "..", "vendor", "brotli", "c") },
-      { label: "curl", dir: join(rtDir, "..", "vendor", "curl") },
-    ].map(async (group) => {
+    (
+      [
+        { label: "runtime", dir: rtDir },
+        { label: "ryu", dir: join(rtDir, "..", "vendor", "ryu") },
+        { label: "quickjs-ng", dir: join(rtDir, "..", "vendor", "quickjs-ng") },
+        { label: "mbedtls", dir: join(rtDir, "..", "vendor", "mbedtls") },
+        { label: "zlib", dir: join(rtDir, "..", "vendor", "zlib") },
+        { label: "brotli", dir: join(rtDir, "..", "vendor", "brotli", "c") },
+        // ICU is fetched, not vendored: its pinned version and sha256 key the
+        // archive's cache path (vendor-archives.ts icuArchivePath), so it is
+        // not part of the runtime tree's fingerprint.
+        { label: "curl", dir: join(rtDir, "..", "vendor", "curl") },
+      ] satisfies RuntimeFingerprintGroup[]
+    ).map(async (group) => {
       const names = (await nativeSourceFiles(group.dir, true))
         .map((path) => relative(group.dir, path))
         .sort();

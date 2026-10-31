@@ -1,4 +1,8 @@
 import type {
+  TypePatchCommandRequest,
+  TypePatchCommandResult,
+} from "../frontend/type-patches/command.js";
+import type {
   AnalyzeOptions,
   AnalyzeResult,
   CompileLibraryOptions,
@@ -30,5 +34,7 @@ export interface CliHost {
   /** Merges raw or indexed profiles into one indexed profile; a sparse one
    * leaves out functions that never ran. */
   mergeProfiles: (outputPath: string, inputPaths: string[], sparse: boolean) => Promise<void>;
+  /** `scriptc types patch|list` (frontend/type-patches/command.ts). */
+  typePatches: (request: TypePatchCommandRequest) => Promise<TypePatchCommandResult>;
   run: (binary: string) => Promise<number>;
 }

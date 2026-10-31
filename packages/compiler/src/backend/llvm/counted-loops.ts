@@ -5,12 +5,18 @@ import type {
 } from "../../ir/integer-loops.js";
 import { FOLLOWER_GUARD_LIMIT } from "../../ir/integer-loops.js";
 import type { IrExpr } from "../../ir/ir.js";
-import type { LlvmEmitterContext } from "./expr-context.js";
+import type { IntegerRange } from "../../ir/integer-ranges.js";
+import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import { exactInteger, widenInteger } from "./integer-values.js";
+import { integerOrNaNRange } from "./wrapping-sums.js";
 
 /** The caller has proved or guarded the direction's finite endpoint. Clamp
  * the opposite infinity before integer conversion. Fractional limits become
- * exclusive integer endpoints for signed comparisons in either direction. */
+ * exclusive integer endpoints for signed comparisons in either direction. A
+ * limit that is an exact integer (an int32 local, an integer view, or a
+ * proven range) is its own floor and ceiling and within ±2^53, so it is the
+ * endpoint without the double conversion and rounding. */
 export function emitCountedLoopLimit(
   host: LlvmEmitterContext,
   loop: IntegerCountedForLoop,
@@ -32,6 +38,24 @@ export function emitCountedLoopLimit(
   }
   const B = host.B;
   const value = host.emitExpr(loop.limit);
+  const exact = exactInteger(host, value, loop.limit);
+  if (exact) {
+    // An i32 literal may be the unsigned bit pattern of a negative int32
+    // (a ToUint32 view): read it back with the integer's signedness.
+    const integer = /^-?\d+$/.test(exact.name)
+      ? String(
+          exact.type === "i64"
+            ? Number(exact.name)
+            : exact.signed
+              ? Number(exact.name) | 0
+              : Number(exact.name) >>> 0,
+        )
+      : widenInteger(host, exact);
+    if (!loop.inclusive) return integer;
+    const limit = B.tmp();
+    B.line(`${limit} = add nsw i64 ${integer}, ${ascending ? 1 : -1}`);
+    return limit;
+  }
   const within = B.tmp(),
     bounded = B.tmp(),
     rounded = B.tmp(),
@@ -68,7 +92,7 @@ export function emitCountedLoopSafety(
   if (loop.startGuarded) {
     const start = host.emitExpr(loop.start);
     const bound = loop.startBound;
-    safe = andSafe(host, safe, emitExactIntegerTest(host, start.name, -bound, bound).ok);
+    safe = andSafe(host, safe, emitValueIntegerTest(host, start, loop.start, -bound, bound).ok);
   }
   for (const follower of loop.followers) {
     if (follower.startGuarded) safe = andSafe(host, safe, emitExactStart(host, follower.start));
@@ -121,6 +145,7 @@ export function emitPairedLoopSafety(host: LlvmEmitterContext, loop: IntegerPair
 }
 
 function andSafe(host: LlvmEmitterContext, safe: string, ok: string): string {
+  if (ok === "true") return safe;
   if (safe === "true") return ok;
   const both = host.B.tmp();
   host.B.line(`${both} = and i1 ${safe}, ${ok}`);
@@ -129,10 +154,30 @@ function andSafe(host: LlvmEmitterContext, safe: string, ok: string): string {
 
 /** An exact integer of at most 2^53 - 1 in magnitude, and not -0 (the bit
  * patterns of the value and its round trip agree). NaN and infinities fail
- * the ordered range tests. */
+ * the ordered range tests. A start with an integer form (an int32 local,
+ * `p0 - 1` of one) is an exact integer already: its range answers the test,
+ * or two integer compares do. */
 function emitExactStart(host: LlvmEmitterContext, expr: IrExpr): string {
   const B = host.B;
   const start = host.emitExpr(expr);
+  const integer = exactInteger(host, start, expr);
+  if (!integer) {
+    const limit = Number.MAX_SAFE_INTEGER;
+    const tested = emitNanIntegerTest(host, start, expr, -limit, limit);
+    if (tested) return tested.ok;
+  }
+  if (integer) {
+    const limit = Number.MAX_SAFE_INTEGER;
+    if (integer.range.min >= -limit && integer.range.max <= limit) return "true";
+    const wide = widenInteger(host, integer),
+      low = B.tmp(),
+      high = B.tmp(),
+      ok = B.tmp();
+    B.line(`${low} = icmp sge i64 ${wide}, ${-limit}`);
+    B.line(`${high} = icmp sle i64 ${wide}, ${limit}`);
+    B.line(`${ok} = and i1 ${low}, ${high}`);
+    return ok;
+  }
   const low = B.tmp(),
     high = B.tmp(),
     raw = B.tmp(),
@@ -187,4 +232,86 @@ export function emitExactIntegerTest(
   B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
   B.line(`${ok} = and i1 ${inRange}, ${exact}`);
   return { ok, integer };
+}
+
+/** The i64 start of an integer counter: the integer form the start value
+ * carries (an int32 local, `p0 - 1` of one), or the double's conversion,
+ * which the loop's guard or proof makes exact. */
+export function emitCountedStart(host: LlvmEmitterContext, expr: IrExpr): string {
+  const value = host.emitExpr(expr);
+  const integer = exactInteger(host, value, expr);
+  if (integer) return widenInteger(host, integer);
+  // The guard's test of an exact integer or NaN required the ordered bit.
+  if (value.nanInteger !== undefined && integerOrNaNRange(host, expr)) return value.nanInteger;
+  const start = host.B.tmp();
+  host.B.line(`${start} = fptosi double ${value.name} to i64`);
+  return start;
+}
+
+/** emitExactIntegerTest of a start expression: when the value carries an
+ * integer form (an exact integer, never -0), its range answers the test or
+ * two integer compares do, and the integer is the form's. */
+export function emitStartIntegerTest(
+  host: LlvmEmitterContext,
+  expr: IrExpr,
+  min: number,
+  max: number,
+): { ok: string; integer: string } {
+  return emitValueIntegerTest(host, host.emitExpr(expr), expr, min, max);
+}
+
+/** emitExactIntegerTest of a value with the integer form it carries: an
+ * exact integer, whose range answers the test or two integer compares do;
+ * or the integer of an exact integer or NaN (`nanInteger`), which the test
+ * takes when the ordered bit is set and the range or compares agree. Any
+ * other value takes the double's test. */
+export function emitValueIntegerTest(
+  host: LlvmEmitterContext,
+  value: LlValue,
+  expr: IrExpr | undefined,
+  min: number,
+  max: number,
+): { ok: string; integer: string } {
+  const integer = exactInteger(host, value, expr);
+  if (integer) return integerRangeTest(host, widenInteger(host, integer), integer.range, min, max);
+  return (
+    emitNanIntegerTest(host, value, expr, min, max) ??
+    emitExactIntegerTest(host, value.name, min, max)
+  );
+}
+
+/** The test of a value's `nanInteger`: its ordered bit, and the range or two
+ * integer compares. Null when the value carries none. */
+function emitNanIntegerTest(
+  host: LlvmEmitterContext,
+  value: LlValue,
+  expr: IrExpr | undefined,
+  min: number,
+  max: number,
+): { ok: string; integer: string } | null {
+  if (value.nanInteger === undefined || value.ordered === undefined || !expr) return null;
+  const range = integerOrNaNRange(host, expr);
+  if (!range) return null;
+  const tested = integerRangeTest(host, value.nanInteger, range, min, max);
+  return { ok: andSafe(host, value.ordered, tested.ok), integer: value.nanInteger };
+}
+
+/** An integer within [min, max]: true when its range is, two compares
+ * otherwise. */
+function integerRangeTest(
+  host: LlvmEmitterContext,
+  wide: string,
+  range: IntegerRange,
+  min: number,
+  max: number,
+): { ok: string; integer: string } {
+  if (range.min >= min && range.max <= max) return { ok: "true", integer: wide };
+  const B = host.B;
+  const low = B.tmp(),
+    high = B.tmp(),
+    ok = B.tmp();
+  B.line(`${low} = icmp sge i64 ${wide}, ${min}`);
+  B.line(`${high} = icmp sle i64 ${wide}, ${max}`);
+  B.line(`${ok} = and i1 ${low}, ${high}`);
+  return { ok, integer: wide };
 }

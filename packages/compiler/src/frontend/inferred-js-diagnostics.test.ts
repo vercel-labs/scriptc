@@ -94,3 +94,41 @@ test.for([
     invalid,
   );
 });
+
+test("JavaScript async generators may delegate over a runtime async-iterator shape", () => {
+  expect(
+    diagnostics(
+      `export async function* delegated() { yield* { [Symbol.asyncIterator]: 42 }; }
+export async function* looped() { for await (const value of { [Symbol.asyncIterator]() { return "text"; } }) console.dir(value); }`,
+      'import { delegated, looped } from "./library.js"; delegated(); looped();',
+    ),
+  ).toEqual([]);
+});
+
+test("TypeScript keeps the async-iterator demand", () => {
+  expect(
+    diagnostics(
+      "export async function* delegated() { yield* { [Symbol.asyncIterator]: 42 }; }",
+      'import { delegated } from "./library.js"; delegated();',
+      "ts",
+    ).some((diagnostic) => diagnostic.message.includes("Symbol.asyncIterator")),
+  ).toBe(true);
+});
+
+test("a JavaScript module keeps three checker opinions to itself", () => {
+  const library = `export const comma = (1, 2);
+export const arithmetic = null + 1;
+export function* generator() {
+  const sent = yield 1;
+  return sent;
+}
+`;
+  const main =
+    'import { arithmetic, comma, generator } from "./library.js"; console.log(comma, arithmetic, generator);';
+  expect(diagnostics(library, main)).toEqual([]);
+  expect(diagnostics(library, main, "ts").map((diagnostic) => diagnostic.message)).toEqual([
+    "Left side of comma operator is unused and has no side effects.",
+    "The value 'null' cannot be used here.",
+    "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.",
+  ]);
+});

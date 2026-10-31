@@ -1,0 +1,8 @@
+promise-all-generic-mixed-union.ts:4:36 - error SC2020: 'Promise.all over this argument shape' is part of the standard library types but has no scriptc lowering yet (instantiating 'f' with <Promise<number> | string>)
+
+  3 | async function f<V>(xs: V[]): Promise<void> {
+  4 |   const values = await Promise.all(xs);
+    |                                    ^~
+  5 |   values[0];
+
+  hint: an array of promises (Promise<T>[]) is the supported form

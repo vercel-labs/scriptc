@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
+import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   effectiveRuntimeFeatures,
@@ -14,6 +15,7 @@ import {
   RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
+import { HUGE_TEXT_MIN_CODE_BYTES } from "./huge-text.js";
 import { createNativeLinkPlan } from "./link-plan.js";
 import {
   executableLinkerEnvironmentFingerprint,
@@ -21,9 +23,18 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./linker.js";
-import { MACOS_ARM64_TARGET, WINDOWS_X64_MSVC_TARGET, type NativeTargetSpec } from "./targets.js";
+import {
+  LINUX_X64_GNU_TARGET,
+  MACOS_ARM64_TARGET,
+  WINDOWS_X64_MSVC_TARGET,
+  type NativeTargetSpec,
+} from "./targets.js";
 
 const VERSION = compilerReleaseVersion();
+
+/** The first bytes of a program image.  The cache gate only needs a file that
+ * is not a script interpreter line. */
+const PROGRAM_IMAGE = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00]);
 
 const BASE: NativeLinkFeatures = {
   regex: false,
@@ -56,6 +67,8 @@ const BASE: NativeLinkFeatures = {
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
+  watchFile: false,
+  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -65,6 +78,7 @@ const BASE: NativeLinkFeatures = {
   dh: false,
   pki: false,
   ed25519: false,
+  x509: false,
   webcrypto: false,
   perfLoop: false,
 };
@@ -128,7 +142,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 37, marker: "scr_runtime_abi_v37" },
+    runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -163,6 +177,55 @@ describe("runtime pack manifests", () => {
     expect(platformLinkerSupportsPersistentCache({ SDKROOT: "/mutable" })).toBe(false);
   });
 
+  test("a Linux driver in any prefix may publish, an unreachable one may not", async () => {
+    const toolDir = await mkdtemp(join(tmpdir(), "scriptc-linker-gate-"));
+    await writeFile(join(toolDir, "clang"), PROGRAM_IMAGE);
+    const env = { PATH: toolDir };
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(true);
+    // A Darwin entry is only trusted from the system shim.
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "darwin", defaultLinker: "clang" }),
+    ).toBe(false);
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "win32", defaultLinker: "clang" }),
+    ).toBe(false);
+    expect(
+      platformLinkerSupportsPersistentCache(
+        { PATH: join(toolDir, "empty") },
+        { platform: "linux", defaultLinker: "clang" },
+      ),
+    ).toBe(false);
+  });
+
+  test("a script driver or linker never publishes a complete executable", async () => {
+    // A script decides at run time what it runs, so its file identity does not
+    // describe the link line, and a warm build would restore an executable
+    // that an earlier configuration produced.
+    const toolDir = await mkdtemp(join(tmpdir(), "scriptc-linker-gate-script-"));
+    await writeFile(join(toolDir, "clang"), "#!/bin/sh\nexit 0\n");
+    await chmod(join(toolDir, "clang"), 0o755);
+    const env = { PATH: toolDir };
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(false);
+
+    // The linker program `-fuse-ld=lld` selects is held to the same rule.
+    await writeFile(join(toolDir, "clang"), PROGRAM_IMAGE);
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(true);
+    await writeFile(join(toolDir, "ld.lld"), "#!/bin/sh\nexit 0\n");
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(false);
+    await writeFile(join(toolDir, "ld.lld"), PROGRAM_IMAGE);
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(true);
+  });
+
   test("the linker environment follows the effective clang behind a stable driver", async () => {
     const root = await mkdtemp(join(tmpdir(), "scriptc-linker-environment-"));
     const linker = join(root, "linker.mjs");
@@ -193,6 +256,67 @@ describe("runtime pack manifests", () => {
     });
     expect(second).not.toBe(first);
   });
+
+  test("the linker environment follows the driver file itself", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scriptc-linker-driver-"));
+    const driver = join(root, "clang");
+    // An explicit driver keeps the probe results constant, so the driver's
+    // own file identity is the only thing that differs between the two calls.
+    const env = { SCRIPTC_LINKER: driver, PATH: root };
+    await writeFile(driver, "#!/bin/sh\nexit 2\n");
+    await chmod(driver, 0o755);
+    const before = await executableLinkerEnvironmentFingerprint(env);
+    // A different file at the same spelling, as a driver replacement leaves.
+    await writeFile(driver, "#!/bin/sh\nexit 33\n");
+    await chmod(driver, 0o755);
+    const after = await executableLinkerEnvironmentFingerprint(env);
+    expect(after).not.toBe(before);
+  });
+
+  test.skipIf(process.platform !== "linux")(
+    "the linker environment follows the ld.lld beside the driver",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "scriptc-linker-lld-"));
+      const driver = join(root, "clang");
+      await writeFile(driver, "#!/bin/sh\nexit 0\n");
+      await chmod(driver, 0o755);
+      // An explicit driver keeps the fingerprint free of its own identity
+      // probe, leaving the ld.lld lookup as the only difference.
+      const env = { SCRIPTC_LINKER: driver, PATH: root };
+      const before = await executableLinkerEnvironmentFingerprint(env);
+      await writeFile(join(root, "ld.lld"), "#!/bin/sh\nexit 0\n");
+      const after = await executableLinkerEnvironmentFingerprint(env);
+      expect(after).not.toBe(before);
+    },
+  );
+
+  test.skipIf(process.platform !== "linux")(
+    "the linker environment follows the default linker when no ld.lld is selected",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "scriptc-linker-default-"));
+      const driver = join(root, "clang");
+      await writeFile(
+        driver,
+        [
+          "#!/bin/sh",
+          'case "$1" in',
+          '  -print-prog-name=clang) printf "%s\\n" "$0" ;;',
+          '  -print-prog-name=ld) printf "%s\\n" "ld" ;;',
+          "  *) exit 2 ;;",
+          "esac",
+          "",
+        ].join("\n"),
+      );
+      await chmod(driver, 0o755);
+      // The driver runs the linker program it reports, so leaving PATH alone
+      // and installing that program is what changes the link line.
+      const env = { SCRIPTC_LINKER: driver, PATH: root };
+      const before = await executableLinkerEnvironmentFingerprint(env);
+      await writeFile(join(root, "ld"), PROGRAM_IMAGE);
+      const after = await executableLinkerEnvironmentFingerprint(env);
+      expect(after).not.toBe(before);
+    },
+  );
 
   test("feature implications and predicates are deterministic", () => {
     const features = effectiveRuntimeFeatures({ ...BASE, fileHandle: true, fetch: true });
@@ -239,6 +363,53 @@ describe("runtime pack manifests", () => {
     expect(defaultPlan.driverFlags).not.toContain("-Wl,--subsystem,windows");
     expect(consolePlan.driverFlags).toEqual(defaultPlan.driverFlags);
     expect(guiPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-Wl,--subsystem,windows"]);
+  });
+
+  test("Linux runtime-pack links are static PIE only when requested", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    const defaultPlan = await createNativeLinkPlan(options);
+    const staticPlan = await createNativeLinkPlan({ ...options, staticLink: true });
+    expect(defaultPlan.driverFlags).not.toContain("-static-pie");
+    expect(defaultPlan.staticLink).toBeUndefined();
+    expect(staticPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-static-pie"]);
+    expect(staticPlan.staticLink).toBe(true);
+  });
+
+  test("Linux links of large program code use huge text unless it is turned off", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    // An ELF64 relocatable object's headers with one executable section of
+    // HUGE_TEXT_MIN_CODE_BYTES; only the headers are read.
+    const object = Buffer.alloc(64 + 2 * 64);
+    object.writeUInt32BE(0x7f454c46, 0);
+    object[4] = 2;
+    object[5] = 1;
+    object.writeBigUInt64LE(64n, 40);
+    object.writeUInt16LE(64, 58);
+    object.writeUInt16LE(2, 60);
+    object.writeUInt32LE(1, 128 + 4); // SHT_PROGBITS
+    object.writeBigUInt64LE(0x6n, 128 + 8); // SHF_ALLOC | SHF_EXECINSTR
+    object.writeBigUInt64LE(BigInt(HUGE_TEXT_MIN_CODE_BYTES), 128 + 32);
+    await writeFile(join(root, "program.o"), object);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    expect((await createNativeLinkPlan(options)).hugeText).toBe(true);
+    expect((await createNativeLinkPlan({ ...options, hugeText: false })).hugeText).toBeUndefined();
   });
 
   test("selection chooses the most-specific variant and feature archive", async () => {
@@ -301,14 +472,14 @@ describe("runtime pack manifests", () => {
     }
   });
 
-  test("runtime unit bitcode must stay inside the pack", async () => {
+  test("runtime unit artifacts must stay inside the pack", async () => {
     const { manifest } = await fixture();
     const malformed = structuredClone(manifest);
-    malformed.flavors.release!.runtime_units[0]!.variants[0]!.bitcode = {
-      path: "../escape.bc",
+    Object.assign(malformed.flavors.release!.runtime_units[0]!.variants[0]!, {
+      path: "../escape.o",
       sha256: "0".repeat(64),
       size: 1,
-    };
+    });
     expect(() => parseRuntimePackManifest(malformed)).toThrow("malformed");
   });
 
@@ -581,6 +752,70 @@ describe("runtime pack manifests", () => {
     expect(dependencyPaths).toEqual(
       expect.arrayContaining([platformLinker, sdkSettings, systemStub, compilerRuntime]),
     );
+  });
+
+  test("a Linux link proof covers the driver, the linker it selects and the pack", async () => {
+    const { root, packagePath } = await fixture(LINUX_X64_GNU_TARGET);
+    const programObject = join(root, "program.o");
+    const output = join(root, "program");
+    const driver = join(root, "clang.mjs");
+    const platformLinker = join(root, "toolchain", "ld");
+    const runtimeArtifact = join(root, "artifacts", "base.o");
+    await Promise.all([
+      mkdir(dirname(platformLinker), { recursive: true }),
+      writeFile(programObject, "program object"),
+    ]);
+    await Promise.all([
+      writeFile(platformLinker, "selected platform linker"),
+      writeFile(
+        driver,
+        [
+          "#!/usr/bin/env node",
+          'import { writeFileSync } from "node:fs";',
+          "const args = process.argv.slice(2);",
+          'const outputIndex = args.indexOf("-o");',
+          'if (args.includes("-print-prog-name=ld")) {',
+          `  process.stdout.write(${JSON.stringify(`${platformLinker}\n`)});`,
+          "  process.exit(0);",
+          "}",
+          'if (args.includes("-###")) {',
+          "  process.exit(0);",
+          "}",
+          'if (args.includes("-Wl,-t")) {',
+          '  writeFileSync(args[outputIndex + 1], "link trace output");',
+          "  process.exit(0);",
+          "}",
+          'writeFileSync(args[outputIndex + 1], "linked executable");',
+          "",
+        ].join("\n"),
+      ),
+    ]);
+    await chmod(driver, 0o755);
+    const plan = await createNativeLinkPlan({
+      target: LINUX_X64_GNU_TARGET,
+      programObject,
+      outPath: output,
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+    let dependencies: Awaited<ReturnType<typeof snapshotNativeArtifactDependencies>> = [];
+
+    await linkNativeExecutable(plan, {
+      linker: driver,
+      onArtifactReady: async (artifact) => {
+        dependencies = artifact.dependencies;
+      },
+    });
+
+    expect(await readFile(output, "utf8")).toBe("linked executable");
+    const paths = dependencies.map((dependency) => dependency.path);
+    expect(paths).toEqual(expect.arrayContaining([driver, platformLinker, runtimeArtifact]));
+    expect(await nativeArtifactDependenciesStillMatch(dependencies)).toBe(true);
+    // A changed runtime pack invalidates the proof without touching the driver.
+    await writeFile(runtimeArtifact, "rebuilt runtime object");
+    expect(await nativeArtifactDependenciesStillMatch(dependencies)).toBe(false);
   });
 
   test("does not publish an executable cache proof when a dependency changes during linking", async () => {

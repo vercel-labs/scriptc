@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/unmappable-declaration-initializer.ts"
+ ],
+ "diags": []
+}

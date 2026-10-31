@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6893-node-island-gc-shared-module/sessions.mjs",
+  "<repo>/tests/corpus/6893-node-island-gc-shared-module/main.mjs"
+ ],
+ "diags": []
+}

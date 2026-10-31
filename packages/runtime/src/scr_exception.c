@@ -9,6 +9,9 @@
  * dummy returns); this file only stores, renders, and releases the value.
  */
 #include "scr_runtime.h"
+#ifdef SCR_NODE_ISLANDS
+#include "scr_node_island.h"
+#endif
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -196,19 +199,21 @@ void scr_stack_limit_set(double limit) {
   scr_stack_limit = limit;
 }
 
-ScrStr *scr_stack_capture(void) {
-  if (!SCR_EXC_CUR()->stack) return NULL;
+/* The frames from `first` down, at most Error.stackTraceLimit of them, one
+ * "\n    at ..." line each; NULL when there are none. */
+static ScrStr *scr_stack_capture_from(ScrStackFrame *first) {
+  if (!first) return NULL;
   const double limit = floor(scr_stack_limit);
   if (!(limit > 0)) return NULL;
   size_t length = 0;
   size_t count = 0;
-  for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame && (double)count++ < limit; frame = frame->previous)
+  for (ScrStackFrame *frame = first; frame && (double)count++ < limit; frame = frame->previous)
     length += 1 + strlen(frame->text);
   char *text = malloc(length);
   if (!text) scr_trap("scriptc: out of memory\n");
   size_t offset = 0;
   count = 0;
-  for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame && (double)count++ < limit; frame = frame->previous) {
+  for (ScrStackFrame *frame = first; frame && (double)count++ < limit; frame = frame->previous) {
     text[offset++] = '\n';
     size_t size = strlen(frame->text);
     memcpy(text + offset, frame->text, size);
@@ -217,6 +222,20 @@ ScrStr *scr_stack_capture(void) {
   ScrStr *out = scr_str_new(text, length);
   free(text);
   return out;
+}
+
+ScrStr *scr_stack_capture(void) {
+  return scr_stack_capture_from(SCR_EXC_CUR()->stack);
+}
+
+/* The frames below the topmost frame whose text is `through` (a function's
+ * "    at name (file)" line), as Error.captureStackTrace's constructorOpt
+ * leaves them; NULL when no such frame is on the stack. */
+ScrStr *scr_stack_capture_after(const char *through) {
+  for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame; frame = frame->previous)
+    if (frame->text == through || strcmp(frame->text, through) == 0)
+      return scr_stack_capture_from(frame->previous);
+  return NULL;
 }
 
 #define scr_exc_kind (SCR_EXC_CUR()->kind)
@@ -684,6 +703,16 @@ void scr_exc_print_uncaught(void) {
   /* Settle any runtime-internal stdout fragment before the stderr line when
    * both share an fd. JavaScript-visible writes already flush themselves. */
   fflush(stdout);
+#ifdef SCR_NODE_ISLANDS
+  /* An error thrown by Node island code: Node's own report (the throw
+   * site's source line, the stack, the Node.js version). */
+  if (scr_exc_kind == SCR_EXC_OBJ && scr_error_is(scr_exc_payload) &&
+      scr_ni_report_uncaught((ScrError *)scr_exc_payload)) {
+    scr_exc_reset(); /* the payload counts as live until released */
+    scr_exc_cell_changed();
+    return;
+  }
+#endif
   fputs("Uncaught ", stderr);
   switch (scr_exc_kind) {
   case SCR_EXC_F64: {

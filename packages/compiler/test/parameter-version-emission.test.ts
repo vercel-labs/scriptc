@@ -65,7 +65,50 @@ test("a loop-bounding parameter some caller passes unproven gets an int32 versio
   expect(body).toMatch(/fdiv double 0x3FF0000000000000, %\S+/);
 });
 
+test("the body a version leaves emits each loop once", async () => {
+  const llvm = await emitLlvm(`
+const fact: number[] = [];
+function fillFact(n: number): void {
+  fact[0] = 1;
+  for (let i = 1; i <= n; i++) fact[i] = fact[i - 1]! * i;
+}
+fillFact(Number(process.argv.length > 5 ? "7.5" : "6"));
+console.log(fact.join(" "));
+`);
+  expect(versions(llvm)).toEqual(["fillFact"]);
+  const loopBodies = (name: string): number => {
+    const body = new RegExp(`^define [^@]*@sc_\\w+?_${name}\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
+    return body.match(/^loop\.b\d+:/gm)?.length ?? 0;
+  };
+  // The fallback runs only for numbers the version does not take: its loop
+  // gets no speculative integer copy beside the ordinary one.
+  expect(loopBodies("fillFact")).toBe(0);
+  expect(loopBodies("fillFact_int32Fallback")).toBe(1);
+  expect(loopBodies("fillFact_int32Params\\.i32")).toBe(1);
+});
+
 test("a module that reads stacks keeps a single body", async () => {
   const llvm = await emitLlvm(`${loops}\nconsole.log(typeof new Error("x").stack);\n`);
   expect(versions(llvm)).toEqual([]);
+});
+
+test("the original body runs as an out-of-line fallback the helper places by name", async () => {
+  const llvm = await emitLlvm(loops);
+  // Only a bound that is not an int32 reaches it: it is cold, never
+  // inlined, and marked for the helper's partitioner.
+  expect(llvm).toMatch(
+    /^define [^@]*@sc_\w+?_sumTo_int32Fallback\([^)]*\) noinline cold "scriptc-fallback" /m,
+  );
+  // The function itself keeps only the int32 test and the two calls.
+  const body = /^define [^@]*@sc_\w+?_sumTo\([^]*?^}/m.exec(llvm)?.[0] ?? "";
+  expect(body).toMatch(/call [^@]*@sc_\w+_sumTo_int32Params/);
+  expect(body).toMatch(/call [^@]*@sc_\w+_sumTo_int32Fallback/);
+  expect(body).not.toMatch(/^loop\./m);
+});
+
+test("a versioned function stays out of line so its copy compiles in its frame", async () => {
+  const llvm = await emitLlvm(loops);
+  // Inlined into a caller the function takes its copy along, and the loops
+  // then compile in that caller's frame instead of this one.
+  expect(llvm).toMatch(/^define [^@]*@sc_\w+?_sumTo\([^)]*\) noinline /m);
 });

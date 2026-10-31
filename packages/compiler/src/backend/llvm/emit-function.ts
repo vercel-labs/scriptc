@@ -3,11 +3,12 @@ import {
   type LlArgPackAndTrampolinePrologue,
   type LlEmitter,
   type LlScopeEntry,
-  SUSPENDS,
   UNOPTIMIZED_BOX_SLOTS,
   boxSlotCount,
+  mentionsSuspension,
 } from "./emitter.js";
-import { type IrFunction, type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
+import { type IrFunction, type IrModule, type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
+import { INT32_FALLBACK_SUFFIX } from "../../ir/parameter-versions.js";
 import { BlockBuilder } from "./blocks.js";
 import { findPrivateSplitLocals } from "./split-loops.js";
 import {
@@ -20,12 +21,18 @@ import { constructorClass } from "../../ir/final-fields.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
-import { findMapReadLifetimes, findReadNumberMapWrites } from "./map-read-lifetimes.js";
+import {
+  findMapReadBorrows,
+  findMapReadLifetimes,
+  findReadNumberMapWrites,
+} from "./map-read-lifetimes.js";
+import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
 import { findLocalUnionStorage } from "./local-union-storage.js";
 import { INT32_RANGE, analyzeIntegerRangeFacts } from "../../ir/integer-ranges.js";
+import { beginLoopEntryVersions } from "./loop-entry-versions.js";
 import { findBytesBounds } from "./bytes-bounds.js";
 import { findInt32Locals } from "./int32-locals.js";
 import { findIntegerViews } from "./integer-views.js";
@@ -56,12 +63,45 @@ import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
 import { beginFunctionLoops, LOOPS } from "./loop-state.js";
 import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
+import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
+
+/** The function attribute of a fallback body that the LLVM helper's
+ * partitioner places by its own name (isPlacedByName, partition.cpp): it
+ * is called from the code it stands in for, usually the largest function
+ * of its partition, and following that caller would put both bodies on the
+ * same partition. */
+const FALLBACK_PLACEMENT_ATTR = '"scriptc-fallback"';
+
+/** The functions whose body `versionLoopBoundParameters` split into a copy
+ * and a fallback: each of them now holds the parameter test and two calls. */
+function versionedNames(mod: IrModule): Set<string> {
+  const names = new Set<string>();
+  for (const fn of mod.functions) {
+    const at = fn.name.indexOf(INT32_FALLBACK_SUFFIX);
+    if (at > 0) names.add(fn.name.slice(0, at));
+  }
+  return names;
+}
+
+/** The names the module's versions split, computed once. */
+function versionedFunctions(emitter: LlEmitter): Set<string> {
+  let names = emitter.int32Versioned;
+  if (names === null) {
+    names = versionedNames(emitter.mod);
+    emitter.int32Versioned = names;
+  }
+  return names;
+}
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
   emitter.B = B;
   emitter.currentFunctionName = fn.name;
+  emitter.currentUnwindAbi = emitter.unwindAbi.has(fn.name);
+  emitter.usesLandingPads = false;
+  emitter.aliasScopedVersions = 0;
   emitter.findInt32Allocations(fn);
+  emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
@@ -73,6 +113,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.unwindCleanups.clear();
   emitter.jumpTargets = [];
   emitter.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
+  emitter.currentParameters = new Set(fn.params.map((p) => p.localId));
   emitter.lazyCaptureBoxes.clear();
   emitter.lazyStackBoxes.clear();
   // An unchanged captured parameter keeps its value in a plain slot; the
@@ -136,7 +177,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   beginFunctionLoops(emitter, fn, numericFn);
   emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
-  emitter.loopCopiesEnabled = true;
+  emitter.loopCopiesEnabled = fn.plainLoops !== true;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
@@ -148,6 +189,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     constructorClass(fn.name) === null &&
     emitter.finalFields.size > 0;
   emitter.integerViews.clear();
+  emitter.orderedViews.clear();
   emitter.fieldPointerTags.clear();
   emitter.compressedFieldPtrs.clear();
   emitter.integerArrayBindings.clear();
@@ -188,15 +230,27 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           fn,
           emitter.callLifetimes,
           emitter.scalarStringSlices,
-          emitter.lentStringParameters,
+          emitter.lendingFacts,
         )
       : new Set();
   emitter.mapReadLifetimes = findMapReadLifetimes(
     fn,
     emitter.boxedUnionsById,
     emitter.callLifetimes,
+    emitter.referenceEffects,
+  );
+  const stable = emitter.callLifetimes.bindings.get(fn.name);
+  emitter.borrowedMapGets = findMapReadBorrows(
+    fn,
+    emitter.referenceEffects,
+    (decl) =>
+      decl.init !== null &&
+      stable?.has(decl.localId) === true &&
+      !emitter.mapReadLifetimes.locals.has(decl.localId) &&
+      borrowableMapGet(emitter, decl.init),
   );
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
+  emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,
@@ -222,6 +276,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const rangeFacts = analyzeIntegerRangeFacts(numericFn, slotFacts);
   emitter.integerRanges = rangeFacts.ranges;
   emitter.integerLoopRanges = rangeFacts.loopRanges;
+  beginLoopEntryVersions(emitter, numericFn, slotFacts, rangeFacts);
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
   emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
@@ -314,6 +369,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     }
     emitter.currentCoro = {
       kind: fn.generator !== undefined ? "generator" : "async",
+      awaits: fn.async === true,
       id,
       handle,
       self,
@@ -334,6 +390,15 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
         `${slot} = alloca i32 ; integer view ${emitter.numericLocals.get(id)!.name}`,
       );
       emitter.integerViews.set(id, slot);
+      // A local of exact integers or NaN also keeps whether it is NaN, so
+      // its integer is usable without converting the double.
+      if (emitter.integerOrNaNLocals.has(id)) {
+        const ordered = B.slot();
+        B.entryAllocas.push(
+          `${ordered} = alloca i1 ; ordered view ${emitter.numericLocals.get(id)!.name}`,
+        );
+        emitter.orderedViews.set(id, ordered);
+      }
     }
   }
   for (const global of initializerBindings) {
@@ -492,6 +557,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     }
   }
   emitter.scopes.push(fnScope);
+  emitter.beginArenaFunction(fn);
   // Stackful native fibers and native coroutine frames retain these frames
   // while suspended. The active exception context owns the chain, so
   // concurrent fibers isolate it.
@@ -597,6 +663,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     B.terminate(cleanup.terminator);
   }
 
+  if (emitter.usesLandingPads && emitter.currentUnwindAbi)
+    B.entryAllocas.push(`${UNWIND_SLOT} = alloca { ptr, i32 }`);
   if (emitter.logArgSlots > 0) {
     B.entryAllocas.push(`%logargs = alloca [${emitter.logArgSlots} x %ScrLogArg]`);
   }
@@ -631,13 +699,35 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // checked dynamic call. Keeping that fallback out of line leaves the
   // tests small enough to inline at each call site.
   if (fn.name.startsWith("%dyn.class.protocol.fallback.")) attrs = `noinline ${attrs}`;
+  // A keyed record read's inherited-method miss path (record-inherited.ts)
+  // stays out of line, so the hit path keeps its own small frame.
+  else if (fn.name.startsWith("%rec.inherited.")) attrs = `noinline cold ${attrs}`;
+  // The original body of a function versioned for int32 loop bounds runs
+  // only for a bound that is not an int32 (parameter-versions.ts). It stays
+  // out of line, and FALLBACK_PLACEMENT_ATTR lets the helper's partitioner
+  // place it by its own name instead of beside the code it stands in for.
+  else if (fn.name.includes(INT32_FALLBACK_SUFFIX))
+    attrs = `noinline ${unoptimized ? "optnone " : ""}cold ${FALLBACK_PLACEMENT_ATTR} ${attrs}`;
   else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
+  // A function versioned for its loop-bound parameters now holds only the
+  // int32 test and the two calls (parameter-versions.ts). Left inlineable it
+  // is inlined into its callers and takes its copy along, which compiles the
+  // loops in frames they were not compiled in before. Kept out of line, the
+  // copy inlines here instead, and the loops keep the frame and registers
+  // the function had before the version existed.
+  else if (versionedFunctions(emitter).has(fn.name)) attrs = `noinline ${attrs}`;
   if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
   if (unoptimized && attrs === FN_ATTRS) attrs = `noinline optnone ${attrs}`;
   const debug = emitter.debugScope === null ? "" : ` !dbg ${emitter.debugScope}`;
   const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
   emitter.privateGlobalSlots.clear();
-  let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
+  // Landing pads (emitDirectCall) need the personality.
+  const personality = emitter.usesLandingPads ? ` ${UNWIND_PERSONALITY}` : "";
+  if (emitter.usesLandingPads) {
+    emitter.declare(`declare i32 @__gcc_personality_v0(...)`);
+    emitter.declare(UNWIND_RESUME_DECLARATION);
+  }
+  let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {
     body += "\n" + emitIntegerClone(fn, emitter, emitter.stackChecks?.has(fn.name) === true);
@@ -822,12 +912,17 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       `entry:`,
       ...argPackLines,
     ];
+    if (fn.generator.bindAtCall === true) emitter.declare(`declare void @scr_gen_bind(ptr)`);
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
+    const asyncGenNew =
+      coroBody && !emitter.wasi ? "scr_async_gen_new_stackless" : "scr_async_gen_new";
+    if (settleAsync !== null && asyncGenNew !== "scr_async_gen_new")
+      emitter.declare(`declare ptr @${asyncGenNew}(ptr, ptr, ptr, ptr)`);
     sp.push(
       settleAsync === null
         ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
-        : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        : `  %gg = call ptr @${asyncGenNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
       ...(fn.generator.tag !== undefined
         ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${emitter.cstr(fn.generator.tag)})`]
         : []),
@@ -839,6 +934,12 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
             `  call void @scr_gen_set_unstarted_return(ptr %gg, ptr @${mangleGenSourceClose(fn.name)})`,
           ]
         : []),
+      // fn.generator.bindAtCall: run the parameter prologue (destructuring,
+      // defaults, their throws) inside the call, as
+      // FunctionDeclarationInstantiation does, and stop at the barrier. A
+      // bind failure stays pending, so the caller's check unwinds and
+      // releases the generator just allocated.
+      ...(fn.generator.bindAtCall === true ? [`  call void @scr_gen_bind(ptr %gg)`] : []),
       `  ret ptr %gg`,
       `}`,
       ``,
@@ -1318,7 +1419,7 @@ export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
   const parks = new Set<string>();
   const work: string[] = [];
   for (const [name, text] of emitter.fnDefText) {
-    if (SUSPENDS.test(text)) {
+    if (mentionsSuspension(text)) {
       parks.add(name);
       work.push(name);
     }

@@ -254,8 +254,8 @@ direct(new Base());
         "true TypeError: Value is not an instance of 'Sub'",
         "true TypeError: Value is not an instance of 'Sub'",
         "ok 0",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
         "",
       ].join("\n"),
     );
@@ -870,6 +870,38 @@ console.log(\`\${register(7)}\`);
   });
 });
 
+// An RSA-PSS key whose parameters restrict it to a digest the runtime does
+// not sign with (sha512-224 and sha512-256, which OpenSSL reads) throws a
+// coded SC2020 error naming the digest, instead of importing the key
+// without the restrictions it carries.
+describe("RSA-PSS keys restricted to unimplemented digests", () => {
+  test("importing one throws SC2020 naming the digest", async () => {
+    const r = await compileAndRun(
+      "pss-restricted-digest",
+      `import { createPublicKey } from "node:crypto";
+const keys = [
+  "-----BEGIN PUBLIC KEY-----\\nMIGQMEEGCSqGSIb3DQEBCjA0oA8wDQYJYIZIAWUDBAIFBQChHDAaBgkqhkiG9w0B\\nAQgwDQYJYIZIAWUDBAIFBQCiAwIBCANLADBIAkEArMDQESqjeWDLqFa1E5SzsMl4\\n6tyUsEqcDKSwRUvPilv1AUudf/w6qaXlPnAxBmFjZYihdQSZlk0czRLOX3o7gwID\\nAQAB\\n-----END PUBLIC KEY-----\\n",
+  "-----BEGIN PUBLIC KEY-----\\nMIGQMEEGCSqGSIb3DQEBCjA0oA8wDQYJYIZIAWUDBAIBBQChHDAaBgkqhkiG9w0B\\nAQgwDQYJYIZIAWUDBAIGBQCiAwIBCANLADBIAkEAuOa9NkzXzMDelHCIEkf0mnKe\\nnQdalNUm9vZtIMwpDJcn5U0Vbhhd6MTfRPhSo5nW71Oh5eU7v5M3PMYOHS7cMQID\\nAQAB\\n-----END PUBLIC KEY-----\\n",
+];
+for (const key of keys) {
+  try {
+    console.log(createPublicKey(key).asymmetricKeyType);
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 'RSA-PSS keys restricted to sha512-224' is part of the standard library types but has no scriptc lowering yet\n" +
+        "Error SC2020 'RSA-PSS keys restricted to sha512-256' is part of the standard library types but has no scriptc lowering yet\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
 // A cipher name Node lists in crypto.getCiphers() but the runtime does not
 // implement throws a coded SC2020 error naming the cipher when the name is
 // computed; literal names are refused at compile time (node-types-fenced).
@@ -983,8 +1015,8 @@ listener.listen(0, () => {
 });
 
 // With a secureContext, the TLSSocket's own options still apply: a truthy
-// requestCert, which asks for client certificates this runtime does not
-// verify, and SNICallback throw the fence instead of being dropped.
+// requestCert (which lowers with cert and key, whose ca the runtime reads)
+// and SNICallback throw the fence instead of being dropped.
 describe("tls.TLSSocket socket options beside a secureContext", () => {
   test("requestCert and SNICallback throw the fence", async () => {
     const r = await compileAndRun(
@@ -1019,10 +1051,97 @@ listener.listen(0, () => {
     );
     expect(r.stderr).toBe("");
     expect(r.stdout).toBe(
-      "requestCert new tls.TLSSocket option 'requestCert' has no static lowering — client-certificate handshakes are not modeled (SEMANTICS.md divergence 55) — requestCert stays at Node's false default\n" +
+      "requestCert new tls.TLSSocket option 'requestCert' has no static lowering — requestCert lowers with cert and key options, not beside a secureContext\n" +
         "SNICallback new tls.TLSSocket option 'SNICallback' has no static lowering — isServer, cert, key, secureContext, ALPNProtocols, minVersion and maxVersion are the implemented members\n" +
         "requestCert false no error\n" +
         "client closed\n",
+    );
+  });
+});
+
+// A client certificate lowers as a cert and key pair; one without the
+// other throws the fence before any connection is made.
+describe("client certificates without both cert and key", () => {
+  test("tls.connect and https.request throw the fence", async () => {
+    const r = await compileAndRun(
+      "tls-client-certificate-fences",
+      `import { readFileSync } from "node:fs";
+import * as https from "node:https";
+import * as tls from "node:tls";
+const certs = "tests/fixtures/server/certs";
+const cert = readFileSync(\`\${certs}/client.pem\`);
+const key = readFileSync(\`\${certs}/client-key.pem\`);
+function report(label: string, run: () => void): void {
+  try {
+    run();
+    console.log(label, "no error");
+  } catch (error) {
+    console.log(label, (error as Error).message);
+  }
+}
+report("connect cert only", () => tls.connect({ port: 1, host: "127.0.0.1", cert }));
+report("connect key only", () => tls.connect({ port: 1, host: "127.0.0.1", key }));
+report("request key only", () => https.request({ host: "127.0.0.1", port: 1, path: "/", key }));
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "connect cert only tls.connect option 'cert' has no static lowering — a client certificate lowers with both cert and key\n" +
+        "connect key only tls.connect option 'key' has no static lowering — a client certificate lowers with both cert and key\n" +
+        "request key only https.request option 'key' has no static lowering — a client certificate lowers with both cert and key\n",
+    );
+  });
+});
+
+// server.addContext and setSecureContext answer on tls and https servers;
+// a plain net server, a servername Node's RegExp would read as groups or
+// alternation, and one outside ASCII throw the fence. A handshake failure
+// whose OpenSSL reason the runtime does not know reaches 'tlsClientError'
+// as a coded SC2020 error.
+describe("tls.Server contexts and client errors without a lowering", () => {
+  test("addContext and setSecureContext fences, and an unknown handshake failure", async () => {
+    const r = await compileAndRun(
+      "tls-server-context-fences",
+      `import { readFileSync } from "node:fs";
+import * as net from "node:net";
+import type { AddressInfo } from "node:net";
+import * as tls from "node:tls";
+const certs = "tests/fixtures/server/certs";
+const cert = readFileSync(\`\${certs}/localhost.pem\`);
+const key = readFileSync(\`\${certs}/localhost-key.pem\`);
+function report(label: string, run: () => void): void {
+  try {
+    run();
+    console.log(label, "no error");
+  } catch (error) {
+    console.log(label, (error as Error).message);
+  }
+}
+const plain = net.createServer() as unknown as tls.Server;
+report("net addContext", () => plain.addContext("a.test", { cert, key }));
+report("net setSecureContext", () => plain.setSecureContext({ cert, key }));
+const server = tls.createServer({ cert, key });
+report("alternation", () => server.addContext("a.test|b.test", { cert, key }));
+report("group", () => server.addContext("(a).test", { cert, key }));
+report("non-ASCII", () => server.addContext("\u00e9.test", { cert, key }));
+server.on("tlsClientError", (err: Error) => console.log("tlsClientError", (err as NodeJS.ErrnoException).code, err.message));
+server.listen(0, "127.0.0.1", () => {
+  const raw = net.connect((server.address() as AddressInfo).port, "127.0.0.1", () => {
+    raw.write(Buffer.from([0x16, 0x03, 0x01, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00]));
+  });
+  raw.on("data", () => {});
+  raw.on("close", () => server.close());
+});
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "net addContext server.addContext on a server that is not a tls or https server is not supported yet\n" +
+        "net setSecureContext server.setSecureContext on a server that is not a tls or https server is not supported yet\n" +
+        "alternation server.addContext option 'servername' has no static lowering — a servername with regular-expression groups or alternation has no lowering\n" +
+        "group server.addContext option 'servername' has no static lowering — a servername with regular-expression groups or alternation has no lowering\n" +
+        "non-ASCII server.addContext option 'servername' has no static lowering — a servername outside ASCII has no lowering\n" +
+        "tlsClientError SC2020 a TLS handshake failure (mbedTLS error -0x7300) without the reason OpenSSL gives is not supported yet\n",
     );
   });
 });
@@ -1825,7 +1944,9 @@ describe("builtin constructor values (JS lane)", () => {
     // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // `key in Ctor` answers from the constructor's fixed keys.
+    // Date.prototype is the one value: it reads as the prototype object, so
+    // a direct read, a member read through it and reflection on it answer as
+    // Node does. `key in Ctor` answers from the constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -1852,6 +1973,12 @@ describe("builtin constructor values (JS lane)", () => {
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
+    // The reads that answer from Date.prototype's object rather than refusing.
+    const readsAsValue = new Map<string, string>([
+      ["Date.prototype", "read object"],
+      ["Date.prototype.getYear", "read function"],
+      ["isExtensible(Date.prototype)", "read boolean"],
+    ]);
     const source = `"use strict";
 const MapAlias = Map;
 const DateAlias = Date;
@@ -1872,13 +1999,16 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
     expect(r.exitCode).toBe(0);
     const lines = r.stdout.trimEnd().split("\n");
     expect(lines.slice(0, reads.length)).toEqual(
-      reads.map(([label], i) =>
-        expect.stringMatching(
-          new RegExp(
-            `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
-          ),
-        ),
-      ),
+      reads.map(([label], i) => {
+        const read = readsAsValue.get(label);
+        return read === undefined
+          ? expect.stringMatching(
+              new RegExp(
+                `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
+              ),
+            )
+          : `${label} ${read}`;
+      }),
     );
     // Promise.prototype reads as an object holding the runtime's methods,
     // and `in` on a builtin constructor answers from its fixed keys.
@@ -1888,6 +2018,40 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
       "object function true",
       "true true true false",
     ]);
+  });
+});
+
+// `Date.prototype` reads as the prototype object; a WRITE into it cannot be
+// observed by a typed Date, so every writer keeps the SC1090 fence it had
+// before the prototype had a value — including the plural defineProperties,
+// which the dynamic path would otherwise apply to the prototype object while
+// `new Date(0).getTime()` kept answering the builtin method.
+describe("standard library prototype writes (JS lane)", () => {
+  test("defineProperties keeps the fence, like defineProperty", async () => {
+    const r = await compileAndRun(
+      "date-prototype-write",
+      `"use strict";
+function refuse(label, run) {
+  try {
+    run();
+    console.log(label, "wrote");
+  } catch (e) {
+    console.log(label, /\\[(SC\\d{4}) at/.exec(e.message)[1]);
+  }
+}
+refuse("defineProperties", () =>
+  Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } }),
+);
+refuse("defineProperty", () => Object.defineProperty(Date.prototype, "getTime", { value: () => 42 }));
+refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
+console.log("getTime", new Date(0).getTime());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\ngetTime 0\n",
+    );
   });
 });
 
@@ -2018,6 +2182,70 @@ await attempt("subtle verify", () => crypto.subtle.verify(name, raw, new Uint8Ar
   });
 });
 
+// An X509Certificate's Ed25519 key needs the same unit: without it the
+// certificate's public key, issuer and names still read, while verify
+// rejects with the coded SC2020 Error. 7091 pins the linked path.
+describe("X509Certificate Ed25519 keys without the Ed25519 unit", () => {
+  test("verify refuses with SC2020 in a program that never names Ed25519", async () => {
+    const r = await compileAndRun(
+      "x509-ed25519-unit-not-linked",
+      `import { X509Certificate } from "node:crypto";
+const cert = new X509Certificate("-----BEGIN CERTIFICATE-----\\nMIIBljCCAUigAwIBAgIUNFuRt3zKS19UAUMdLWewqHrGBigwBQYDK2VwMC8xFDAS\\nBgNVBAoMC0V4YW1wbGUgT3JnMRcwFQYDVQQDDA5lZC5leGFtcGxlLm5ldDAgFw0y\\nNjEwMjIxMDEwMTJaGA8yMTI2MDkyODEwMTAxMlowLzEUMBIGA1UECgwLRXhhbXBs\\nZSBPcmcxFzAVBgNVBAMMDmVkLmV4YW1wbGUubmV0MCowBQYDK2VwAyEAOCSLKkel\\nkOH/5aqUwI3PNJVUUNyhgu2s19LFC254fNCjdDByMB0GA1UdDgQWBBR+50zUcqL8\\n739jh6/rEYojULDmlTAfBgNVHSMEGDAWgBR+50zUcqL8739jh6/rEYojULDmlTAP\\nBgNVHRMBAf8EBTADAQH/MB8GA1UdEQQYMBaCDmVkLmV4YW1wbGUubmV0hwTAAAIH\\nMAUGAytlcANBAC/c0Bi0SVUnHCg/1pn7MaCgVivSHuoISi2SCq/0EnLefRdgsIir\\n0QxjVnxeuKN2Y1yfEO/R1W8Nwovo1l2M1gQ=\\n-----END CERTIFICATE-----\\n");
+console.log(cert.publicKey.asymmetricKeyType?.length, cert.checkIssued(cert), cert.checkHost("ed.example.net"));
+try {
+  console.log(cert.verify(cert.publicKey));
+} catch (e) {
+  const err = e as NodeJS.ErrnoException;
+  console.log(err.name, err.code, err.message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "7 true ed.example.net\n" +
+        "Error SC2020 Ed25519 keys are supported when a string literal in the program names 'ed25519'\n",
+    );
+  });
+});
+
+// A TLS socket held in an untyped JavaScript value has no lowering for its
+// certificate accessors (they link the X.509 unit, which a dynamic call
+// cannot ask for), so the call throws the fence; a socket whose type is
+// known runs them (corpus 7095, 7096).
+describe("tlsSocket.getPeerCertificate on a dynamic value (JS lane)", () => {
+  test("throws the fence", async () => {
+    const r = await compileAndRun(
+      "tls-peer-certificate-dynamic",
+      `import * as tls from "node:tls";
+import { readFileSync } from "node:fs";
+const certs = "tests/fixtures/server/certs";
+const server = tls.createServer({ cert: readFileSync(\`\${certs}/localhost.pem\`), key: readFileSync(\`\${certs}/localhost-key.pem\`) }, (s) => s.end());
+function peer(socket) {
+  try {
+    return socket.getPeerCertificate().subject.CN;
+  } catch (e) {
+    return e.message;
+  }
+}
+server.listen(0, () => {
+  const c = tls.connect({ port: server.address().port, ca: readFileSync(\`\${certs}/ca.pem\`), servername: "localhost" }, () => {
+    console.log(peer(c));
+    c.destroy();
+    server.close();
+  });
+});
+`,
+      "mjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "'TLSSocket.prototype.getPeerCertificate' on a dynamic value is not supported yet\n",
+    );
+  });
+});
+
 describe("inspecting error subclasses with properties created at run time (JS lane)", () => {
   test("an instance whose constructor created a property is a named fence", async () => {
     // Node prints `[Conditional [Error]: m] { extra: 'x' }`. The property
@@ -2097,6 +2325,96 @@ console.log("unreachable");
     expect(push.stderr).toMatch(
       /^Uncaught Error: Elements on Array\.prototype are not supported yet \[SC2020[^\]]*\]\n$/,
     );
+  });
+});
+
+// The runtime formatter (format strings known only at run time, spread
+// arguments, options objects) throws a coded SC2020 error for renderings
+// it has no lowering for.
+describe("runtime format refusals", () => {
+  test("%s of a class instance with toString, %o of objects, colored errors and options", async () => {
+    const r = await compileAndRun(
+      "format-runtime-refusals",
+      `import * as util from "node:util";
+class Named {
+  name = "n";
+  toString(): string {
+    return this.name;
+  }
+}
+const s: string = process.argv.length > 99 ? "" : "%s";
+const o: string = process.argv.length > 99 ? "" : "%o";
+const attempts: Array<() => string> = [
+  () => util.format(s, new Named()),
+  () => util.format(o, { a: 1 }),
+  () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
+  () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
+  () => util.formatWithOptions({ maxArrayLength: 1.5 }, [1, 2]),
+  () => util.formatWithOptions({ compact: true }, [1, 2]),
+];
+for (const attempt of attempts) {
+  try {
+    console.log(attempt());
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 100 }, [1, 2]));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
+        "Error SC2020 util.format %o of objects renders hidden properties, which have no lowering; use %O\n" +
+        "Error SC2020 colored inspect output of Error values has no lowering\n" +
+        "[ 1, ... 1 more item ]\n" +
+        "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
+        "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
+        "{ a: 1 } [ 1, 2 ]\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
+// With customInspect: false (console.dir's default) Node prints a codec's
+// internal slots, which have no lowering; past the depth limit it prints
+// the class placeholder.
+describe("TextDecoder and TextEncoder with customInspect: false", () => {
+  test("refuse within the depth limit and print [cls] past it", async () => {
+    const r = await compileAndRun(
+      "codec-custom-inspect-false",
+      `import * as util from "node:util";
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+const attempts: Array<() => string> = [
+  () => util.inspect(decoder, { customInspect: false }),
+  () => util.inspect([encoder], { customInspect: false }),
+  () => {
+    console.dir(decoder);
+    return "printed";
+  },
+];
+for (const attempt of attempts) {
+  try {
+    console.log(attempt());
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+console.log(util.inspect({ a: { b: { c: decoder, d: encoder } } }, { customInspect: false }));
+console.log(util.inspect(decoder, { customInspect: true }));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "util.inspect of a TextDecoder with customInspect: false is not supported yet\n" +
+        "util.inspect of a TextEncoder with customInspect: false is not supported yet\n" +
+        "util.inspect of a TextDecoder with customInspect: false is not supported yet\n" +
+        "{ a: { b: { c: [TextDecoder], d: [TextEncoder] } } }\n" +
+        "TextDecoder { encoding: 'utf-8', fatal: false, ignoreBOM: false }\n",
+    );
+    expect(r.stderr).toBe("");
   });
 });
 
@@ -2188,5 +2506,90 @@ for (const run of runs) {
         "",
       ].join("\n"),
     );
+  });
+});
+
+describe("class prototype relinks (JS lane)", () => {
+  test("relinking a class prototype reached through an instance throws", async () => {
+    // Compiled code binds a class's inherited methods, so its prototype's
+    // [[Prototype]] cannot change at run time. Node would print "other";
+    // the native program refuses instead of answering A's method.
+    const r = await compileAndRun(
+      "class-prototype-relink",
+      `'use strict';
+class A {
+  a() {
+    return 'A.a';
+  }
+}
+class B extends A {}
+const prototype = Object.getPrototypeOf(new B());
+Object.setPrototypeOf(prototype, Object.getPrototypeOf(prototype));
+console.log('same prototype', new B().a());
+Object.setPrototypeOf(prototype, { a: () => 'other' });
+console.log(new B().a());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("same prototype A.a\n");
+    expect(r.stderr).toBe(
+      "Uncaught Error: Object.setPrototypeOf with this value is not supported yet\n",
+    );
+  });
+});
+
+// `{ ...maybe }` over a `T | undefined` source the checker PROVED present
+// (an indexed read under indexed-access strictness, a callback parameter
+// typed by the runtime-optional record ABI): the spread copies the record as
+// Node does. When the source is actually absent, Node copies nothing and
+// leaves the field off the object; a required destination field has no
+// absent representation, so the extraction throws the catchable TypeError
+// instead of returning a record with an unset field — the lying-assertion
+// stance this pin owns.
+describe("object spread of a proven-present runtime-optional source", () => {
+  test("a present source copies like Node; an absent one throws the TypeError", async () => {
+    const r = await compileAndRun(
+      "runtime-optional-spread",
+      `interface Rgb { r: number; g: number; b: number }
+const BASIC: Rgb[] = [
+  { r: 1, g: 2, b: 3 },
+  { r: 4, g: 5, b: 6 },
+];
+function basicColor(index: number): Rgb {
+  if (index < 16) return { ...BASIC[index] };
+  return { r: 0, g: 0, b: 0 };
+}
+console.log(JSON.stringify(basicColor(1)));
+try {
+  console.log(JSON.stringify(basicColor(5)));
+} catch (e) {
+  console.log("caught:", (e as Error).name, "-", (e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"r":4,"g":5,"b":6}\n' +
+        "caught: TypeError - undefined is not representable in the target union (a value narrowed or asserted past it still held it)\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("an optional destination keeps the no-copy arm", async () => {
+    // The absent arm HAS a representation here (an optional field), so the
+    // copy stays a no-op and Node's own output stands.
+    const r = await compileAndRun(
+      "runtime-optional-spread-optional",
+      `interface Entry { path: string; isDirectory: boolean }
+interface Row { path?: string; isDirectory?: boolean; index: number }
+const entries: Entry[] = [{ path: "src", isDirectory: true }];
+const rows = entries.map((entry, index): Row => ({ ...entry, index }));
+console.log(JSON.stringify(rows));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('[{"path":"src","isDirectory":true,"index":0}]\n');
+    expect(r.stderr).toBe("");
   });
 });

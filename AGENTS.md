@@ -6,6 +6,8 @@ This is the only agent guide for the repository. Its rules apply everywhere, inc
 
 Write prose paragraphs and list items as single source lines and let editors and renderers wrap them naturally. Do not hard-wrap Markdown at a fixed column; preserve separate lines only where Markdown syntax or intentional formatting requires them, such as headings, lists, tables, blockquotes, and code blocks. The Limitations page partials under `docs/content/limitations/` are the exception: they keep one sentence per line (see Limitations page partials).
 
+Use the `technical-writer` skill (`.agents/skills/technical-writer/SKILL.md`) when you write or edit prose for this repo, including docs pages, READMEs, changelog entries, commit messages, PR descriptions, and issues.
+
 ## Build and test
 
 Use `pnpm lint` and `pnpm format:check` for owned JS/TS; apply formatting with `pnpm format` and review any `pnpm lint:fix` changes. Preserve the exclusions in `.oxlintrc.jsonc` and `.oxfmtrc.jsonc`: program fixtures and deliberately invalid or formatting-sensitive inputs, generated outputs, vendor sources, and the standalone docs workspace are not part of the root tooling scope. Do not reformat embedded source strings or sort imports. Keep lint exceptions narrowly scoped and explain their semantic purpose. Compiler frontend/backend imports and the explicit TypeScript parser islands are enforced by oxlint.
@@ -24,6 +26,8 @@ Sandboxes, and retains the Darwin-native contracts on macOS. Linux hosts run
 their supported native-clang contracts locally; other hosts retain those
 checks in the Sandboxes. Both lanes green is the bar before shipping any
 change.
+
+`SCRIPTC_SANDBOX_NATIVE_REFERENCE` names a built checkout inside a prepared `SCRIPTC_SANDBOX_SNAPSHOT` or image: each lane copies that checkout's LLVM helper and runtime pack instead of rebuilding them when their source inputs are identical. Sandbox creation is rate limited per team in vCPUs per minute, so the runner retries a rate-limited creation with backoff. Larger Sandboxes (`SCRIPTC_SANDBOX_VCPUS` up to 32, with `SCRIPTC_TEST_WORKERS` at half the vCPUs) shorten the lanes most.
 
 `VERCEL_OIDC_TOKEN` is the preferred credential. `VERCEL_TOKEN` remains
 supported with explicit `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`. The custom
@@ -46,15 +50,19 @@ SCRIPTC_TEST_WORKERS=4 SCRIPTC_SAN=1 pnpm test  # sanitized lane
 
 Corpus programs are differential tests against Node: every program runs under Node and as a compiled native binary, and stdout, stderr, and exit codes must match byte-for-byte. A new feature lands with corpus programs that pin its behavior both ways.
 
+Name a new corpus program after what it tests, without a number: lowercase words joined by hyphens, such as `tests/corpus/intersection-restated-members.ts`, or a directory such as `tests/corpus/<name>/main.ts` for a multi-file program. Parallel changes kept taking the same next number; with names, two changes collide only when they add the same name, which git reports as a conflict. Leave existing numbered programs as they are: never rename or renumber them, and name a new program even when it extends a numbered family.
+
 Record a new or remeasured program's CI cost (used to balance the test shards) in `tests/harness/corpus-costs/<program>.json`, not in `tests/harness/corpus-costs.json`; see the README there.
 
 Before opening a PR that adds or changes corpus, diagnostic, or frontend fixtures, run `pnpm test:ts7 --baselines-only`. This fast completeness check uses the same fixture discovery as the parity suite; it does not type-check or replace behavioral parity. Generate missing preflight/order baselines, review their diagnostics and module order, and run the affected `order-parity.test.ts` batches before pushing. Keep existing baseline entries unchanged unless the corresponding behavior intentionally changes. The full `pnpm test:ts7` command also checks completeness before starting its sweep.
 
-A change that must not cost good code anything, such as a compatibility fix that replaces a refusal, proves it with the zero-cost gate. The gate compiles the benchmark workloads, the self-hosted compiler, and the TypeScript corpus with two built checkouts. It requires byte-identical IR, LLVM, and release executables, and compile time within tolerance. `--allow=<regex>` names the change's pattern signature: programs whose sources match may differ, and the PR lists them. Any other difference fails the gate, which names the first differing function. The gate also enforces the two-tier runtime separation: no executable may gain symbols from `DYNAMIC_TIER_PREFIXES` in `scripts/zero-cost-compare.mjs`, and fully typed benchmarks may link none; extend that list as dynamic-tier units land. `--quick` checks only the benchmarks; `--cachegrind` adds per-function instruction counts for executables that differ. Run it in a Sandbox with both checkouts prepared:
+A change that must not cost good code anything, such as a compatibility fix that replaces a refusal, proves it with the zero-cost gate. The gate compiles the benchmark workloads, the self-hosted compiler, the self-hosting emitter fixtures, and the TypeScript corpus with two built checkouts. It requires byte-identical IR, LLVM, and release executables, and compile time within tolerance. `--allow=<regex>` names the change's pattern signature: programs whose sources match may differ, and the PR lists them. The gate classifies every other difference. A program is `runtime-only` when its IR and LLVM are identical and its executable differs only through runtime objects that differ between the two checkouts' runtime packs; the gate lists the changed runtime functions each such program links and the size change, and passes with a note, so a runtime C change does not fail the gate when no program's code changes. A program is `nondeterministic` when the baseline, building it again, differs from its own first build in the same artifacts; it also passes with a note. Any other difference is `differs` and fails the gate, which names the first differing function. `--strict` fails runtime-only and nondeterministic programs too, for a change that must leave every executable byte-identical. The gate also enforces the two-tier runtime separation: no executable may gain symbols from `DYNAMIC_TIER_PREFIXES` in `scripts/zero-cost-compare.mjs`, and fully typed benchmarks may link none; extend that list as dynamic-tier units land. `--quick` checks only the benchmarks; `--cachegrind` adds per-function instruction counts for executables that differ. Run it in a Sandbox with both checkouts prepared:
 
 ```bash
 node scripts/zero-cost-gate.mjs --baseline=/vercel/sandbox/prev --candidate=. --allow='\barguments\b'
 ```
+
+The whole gate takes 30 to 75 minutes on one 8-vCPU Sandbox, so shard it across Sandboxes. `--shard=i/n` splits the bench and corpus programs; the self-hosted compiler and the emitter fixtures run in shard 1, or alone with `--set=self`, and the candidate-source build overlaps the comparison builds on hosts with 40 GB or more. Each shard writes `--json`, and `node scripts/zero-cost-merge.mjs <shard.json>...` merges them into one verdict, recomputing the compile-time intervals over every shard. `--record-baseline-cache=<file>` builds only the baseline and records each program's artifact hashes; `--baseline-cache=<file>` then skips the baseline build of every program whose candidate artifacts hash the same, which halves the work for a change that leaves most programs identical. A record applies only to the built baseline checkout, toolchain, and paths it was made with, and is ignored otherwise; a program whose entry, relative imports, or optimization level changed since the record builds its baseline.
 
 Test location follows scope:
 
@@ -65,6 +73,16 @@ Test location follows scope:
 
 Keep existing tests in place unless a change already touches their organization;
 new tests should follow this convention.
+
+## Numbered registries
+
+Parallel changes must never pick the same number by hand. Each registry has one source of truth and a fast check:
+
+- Diagnostic codes: claim a code by adding its row, in numeric order, to `DIAGNOSTIC_CODES` in `packages/compiler/src/diagnostics/codes.ts` before any site uses it. A shipped construct's code moves to `RETIRED_DIAGNOSTIC_CODES` and is never reused; codes that open work already uses are held in `RESERVED_DIAGNOSTIC_CODES`. `codes.test.ts` fails on a code without a row, a retired code in use, an unused row, or rows out of order, and two claims of one code are a merge conflict or a duplicate key.
+- Dyn handle tags: add a new tag by name only to `SCR_DYNH_NEW_TAGS` in `packages/runtime/src/scr_dyn.h`, in name order; the enum numbers it. Pin a tag to an explicit value in `SCR_DYNH_TAGS` only when the LLVM backend needs its number. The header does not compile when two tags share a value, and `dyn-handle-tags.test.ts` names the problem.
+- Runtime enums and flag bits the backend mirrors (`ScrDynKind`, `ScrMessageKind`, `ScrBytesElem`, `SCR_CLOSURE_KIND_*`, the `%ScrArr` spare flags) are checked against their C declarations by `packages/compiler/src/backend/llvm/runtime-registries.test.ts`. A new mirrored enum or flag set gets a check there, and C code names flag bits instead of writing their values.
+
+Before taking a number in a pinned registry, run `node scripts/registry-claims.mjs`: it lists the diagnostic codes and pinned handle tags that open pull requests claim and reports collisions; `--check` reports only collisions with the current branch and exits 1 when there is one.
 
 ## Where things live
 

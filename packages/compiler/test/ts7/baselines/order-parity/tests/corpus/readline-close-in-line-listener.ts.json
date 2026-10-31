@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/readline-close-in-line-listener.ts"
+ ],
+ "diags": []
+}

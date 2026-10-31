@@ -10,6 +10,7 @@ import {
 } from "./ir.js";
 import {
   everyExpr,
+  transformExpr,
   everyExprChild,
   everyStmtChild,
   everyStmtList,
@@ -357,6 +358,341 @@ export function scalarizeNumericRecords(mod: IrModule): IrModule {
     return {
       ...fn!,
       locals: [...fn.locals.filter((l) => !replacements.has(l.id)), ...added],
+      body,
+    };
+  });
+  return changed ? { ...mod, functions } : mod;
+}
+
+/** A producer whose whole body is `return <literal>`, with number, boolean
+ * or string fields, inlined where its result is destructured. */
+interface LiteralProducer {
+  fn: IrFunction;
+  shape: IrRecordShape;
+  literal: IrExpr & { kind: "recordLit" };
+  size: number;
+  /** The parameters the literal writes (`a++`, `a = b`). */
+  written: ReadonlySet<string>;
+}
+
+/** Whether `value` holds no counted temporary of its own: every counted
+ * node in it only views a binding, so evaluating it in its own statement
+ * shortens no lifetime. A message argument of a throw counts as nothing: it
+ * lives until the throw, which ends the evaluation anyway. */
+function viewsOnly(value: IrExpr): boolean {
+  if (!isRefCounted(value.type)) return everyExprChild(value, viewsOnly, () => false);
+  switch (value.kind) {
+    case "varRef":
+      return true;
+    case "unionNarrow":
+      return viewsOnly(value.value);
+    case "ternary":
+      return viewsOnly(value.cond) && viewsOnly(value.then) && viewsOnly(value.else_);
+    case "libCall":
+      return value.fn === "error.nodeThrow";
+    default:
+      return false;
+  }
+}
+
+/** The node's own value may be counted (it moves into the binding that
+ * takes it); everything under it must hold no temporary (viewsOnly), as
+ * scalarTemporaries requires for the numeric pass. */
+function ownedTemporaries(value: IrExpr): boolean {
+  return everyExprChild(value, viewsOnly, () => false);
+}
+
+const LITERAL_FIELD_KINDS: ReadonlySet<string> = new Set(["f64", "bool", "string"]);
+
+function literalProducer(
+  fn: IrFunction,
+  shapes: ReadonlyMap<string, IrRecordShape>,
+): LiteralProducer | null {
+  if (
+    fn.async ||
+    fn.generator ||
+    fn.captures?.length ||
+    fn.classCaptures?.length ||
+    fn.returnType.kind !== "record" ||
+    fn.body.length !== 1
+  )
+    return null;
+  const shape = shapes.get(fn.returnType.shapeId);
+  if (
+    !shape ||
+    shape.indexValue ||
+    shape.fields.length === 0 ||
+    shape.fields.length > MAX_FIELDS ||
+    shape.fields.some((f) => !LITERAL_FIELD_KINDS.has(f.type.kind))
+  )
+    return null;
+  // Every local is a parameter: the body declares nothing.
+  const params = new Set(fn.params.map((p) => p.localId));
+  if (fn.locals.some((l) => l.boxed || l.tdz || !params.has(l.id))) return null;
+  const ret = fn.body[0]!;
+  const literal = ret.kind === "return" ? ret.value : null;
+  if (
+    literal?.kind !== "recordLit" ||
+    literal.type.kind !== "record" ||
+    literal.type.shapeId !== shape.id ||
+    literal.fields.length !== shape.fields.length ||
+    !literal.fields.every(
+      (f) =>
+        !f.overflow &&
+        shape.fields.some((sf) => sf.name === f.name && sf.type.kind === f.value.type.kind) &&
+        ownedTemporaries(f.value),
+    )
+  )
+    return null;
+  let size = 0;
+  const written = new Set<string>();
+  const small = everyExpr(literal, {
+    expr: (node) => {
+      if (node.kind === "incDec" || node.kind === "assignExpr") written.add(node.localId);
+      return (
+        ++size <= MAX_CALLEE_NODES &&
+        node.kind !== "closure" &&
+        node.kind !== "selfRef" &&
+        node.kind !== "awaitExpr" &&
+        node.kind !== "awaitUnionExpr" &&
+        node.kind !== "yieldExpr"
+      );
+    },
+    stmt: () => false,
+  });
+  return small ? { fn, shape, literal, size, written } : null;
+}
+
+/** Rewrite every statement list under `body`, innermost first. */
+function mapStatementLists(body: IrStmt[], f: (list: IrStmt[]) => IrStmt[]): IrStmt[] {
+  const lists = (s: IrStmt): IrStmt => {
+    switch (s.kind) {
+      case "if":
+        return {
+          ...s,
+          then: mapStatementLists(s.then, f),
+          else_: s.else_ === null ? null : mapStatementLists(s.else_, f),
+        };
+      case "block":
+      case "while":
+      case "doWhile":
+      case "for":
+      case "forOf":
+        return { ...s, body: mapStatementLists(s.body, f) };
+      case "switch":
+        return {
+          ...s,
+          cases: s.cases.map((c) => ({
+            ...c,
+            body: mapStatementLists(c.body, f),
+          })),
+        };
+      case "tryCatch":
+        return {
+          ...s,
+          tryBody: mapStatementLists(s.tryBody, f),
+          catchBody: s.catchBody === null ? null : mapStatementLists(s.catchBody, f),
+          finallyBody: s.finallyBody === null ? null : mapStatementLists(s.finallyBody, f),
+        };
+      default:
+        return s;
+    }
+  };
+  return f(body.map(lists));
+}
+
+/** How often each local is read, anywhere in `fn`. */
+function localReads(fn: IrFunction): Map<string, number> {
+  const reads = new Map<string, number>();
+  const count = (id: string): void => {
+    reads.set(id, (reads.get(id) ?? 0) + 1);
+  };
+  everyStmtList(fn.body, {
+    expr: (node) => {
+      switch (node.kind) {
+        case "varRef":
+        case "incDec":
+        case "assignExpr":
+          count(node.localId);
+          break;
+        case "closure":
+        case "classRef":
+          for (const id of node.captures ?? []) count(id);
+          break;
+      }
+      return true;
+    },
+    stmt: (node) => {
+      if (node.kind === "assign" || node.kind === "forOf" || node.kind === "rethrow")
+        count(node.localId);
+      return true;
+    },
+  });
+  return reads;
+}
+
+/** Inline small literal producers where the result is only destructured.
+ *
+ * `const [head, tail] = split(text, at)`, where `split` is
+ * `return [text.slice(0, at), text.slice(at)]`, lowers to a result binding
+ * and one declaration per element read from it, right after the call. Each
+ * such declaration now takes its field's value directly: the parameters are
+ * declared from the arguments in order, then the fields in the literal's
+ * order (unread fields go to fresh bindings), then the destructured
+ * bindings, so evaluation order is unchanged and no record is built. A
+ * slice element read only through its length then needs no copy at all
+ * (findScalarStringSlices). The declarations stay in the caller's own
+ * statement list, so every binding keeps its scope; parameters live to the
+ * end of it, which only lengthens the arguments' lifetimes. Every other use
+ * of the result binding keeps the call. */
+export function scalarizeLiteralResults(mod: IrModule): IrModule {
+  const shapes = new Map((mod.records ?? []).map((s) => [s.id, s]));
+  const producers = new Map<string, LiteralProducer>();
+  for (const fn of mod.functions) {
+    const p = literalProducer(fn, shapes);
+    if (p) producers.set(fn.name, p);
+  }
+  if (producers.size === 0) return mod;
+  let changed = false;
+  const globalIds = new Set((mod.globals ?? []).map((g) => g.id));
+  const functions = mod.functions.map((fn): IrFunction => {
+    if (fn.async || fn.generator) return fn;
+    const locals = new Map(fn.locals.map((l) => [l.id, l]));
+    // The names a fresh binding must avoid, collected when the first one is
+    // made: most functions inline no producer.
+    let used: Set<string> | null = null;
+    let next = 0;
+    const fresh = (): string => {
+      if (used === null) {
+        used = new Set(locals.keys());
+        collectLabels(fn.body, used);
+      }
+      let id: string;
+      do {
+        id = `%literal.${next++}`;
+      } while (used.has(id) || globalIds.has(id));
+      used.add(id);
+      return id;
+    };
+    let reads: Map<string, number> | null = null;
+    const added: IrLocal[] = [];
+    const removed = new Set<string>();
+    let budget = MAX_INLINE_NODES;
+    const rewrite = (list: IrStmt[]): IrStmt[] => {
+      const out: IrStmt[] = [];
+      for (let i = 0; i < list.length; i++) {
+        const decl = list[i]!;
+        const call = decl.kind === "varDecl" ? decl.init : null;
+        const p = call?.kind === "call" ? producers.get(call.callee) : undefined;
+        const local = decl.kind === "varDecl" ? locals.get(decl.localId) : undefined;
+        if (
+          decl.kind !== "varDecl" ||
+          call?.kind !== "call" ||
+          !p ||
+          !local ||
+          p.fn.name === fn.name ||
+          p.size > budget ||
+          local.mutable ||
+          local.boxed ||
+          local.tdz ||
+          local.type.kind !== "record" ||
+          local.type.shapeId !== p.shape.id ||
+          call.args.length !== p.fn.params.length ||
+          !call.args.every(ownedTemporaries)
+        ) {
+          out.push(decl);
+          continue;
+        }
+        // The element declarations right after the call, one per field.
+        const elements = new Map<string, IrStmt & { kind: "varDecl" }>();
+        let j = i + 1;
+        for (; j < list.length; j++) {
+          const element = list[j]!;
+          const get = element.kind === "varDecl" ? element.init : null;
+          const target = element.kind === "varDecl" ? locals.get(element.localId) : undefined;
+          if (
+            element.kind !== "varDecl" ||
+            get?.kind !== "recordGet" ||
+            get.obj.kind !== "varRef" ||
+            get.obj.localId !== local.id ||
+            get.shapeId !== p.shape.id ||
+            elements.has(get.field) ||
+            !target ||
+            target.boxed ||
+            target.tdz ||
+            target.type.kind !== get.type.kind
+          )
+            break;
+          elements.set(get.field, element);
+        }
+        reads ??= localReads(fn);
+        if (elements.size === 0 || reads.get(local.id) !== elements.size) {
+          out.push(decl);
+          continue;
+        }
+        budget -= p.size;
+        changed = true;
+        removed.add(local.id);
+        const renamed = new Map(p.fn.params.map((param) => [param.localId, fresh()]));
+        for (const l of p.fn.locals) {
+          // Copied field by field: the native compiler does not spread a
+          // record whose type has a union.
+          const copy: IrLocal = {
+            id: renamed.get(l.id)!,
+            name: l.name,
+            type: l.type,
+            mutable: p.written.has(l.id),
+          };
+          if (l.source !== undefined) copy.source = l.source;
+          added.push(copy);
+        }
+        p.fn.params.forEach((param, index) => {
+          out.push({
+            kind: "varDecl",
+            localId: renamed.get(param.localId)!,
+            init: call.args[index]!,
+            loc: decl.loc,
+          });
+        });
+        // Reads and writes of a parameter (`a++`, `a = b`) both name it.
+        const rename = (value: IrExpr): IrExpr =>
+          transformExpr(value, {
+            expr: (node) =>
+              (node.kind === "varRef" || node.kind === "incDec" || node.kind === "assignExpr") &&
+              renamed.has(node.localId)
+                ? { ...node, localId: renamed.get(node.localId)! }
+                : node,
+            stmt: (node) => node,
+          });
+        for (const field of p.literal.fields) {
+          const element = elements.get(field.name);
+          let id = element?.localId;
+          if (id === undefined) {
+            id = fresh();
+            const type = p.shape.fields.find((f) => f.name === field.name)!.type;
+            added.push({
+              id,
+              name: `${local.name}.${field.name}`,
+              type,
+              mutable: false,
+            });
+          }
+          out.push({
+            kind: "varDecl",
+            localId: id,
+            init: rename(field.value),
+            loc: element?.loc ?? decl.loc,
+          });
+        }
+        i = j - 1;
+      }
+      return out;
+    };
+    const body = mapStatementLists(fn.body, rewrite);
+    if (!changed || removed.size === 0) return fn;
+    return {
+      ...fn,
+      locals: [...fn.locals.filter((l) => !removed.has(l.id)), ...added],
       body,
     };
   });

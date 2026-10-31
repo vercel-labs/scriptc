@@ -50,9 +50,11 @@ test.runIf(process.platform === "linux" && process.arch === "x64")(
       const expected = `${(await execFileAsync(process.execPath, [entry])).stdout}`;
       const baseline = await build([]);
       expect(baseline).not.toContain('"target-cpu"');
+      // Only --sanitize builds mark the functions for ASan instrumentation.
+      expect(baseline).not.toContain("sanitize_address");
       expect(await build(["--target-cpu=baseline"])).toBe(baseline);
       const v3 = await build(["--target-cpu=x86-64-v3"]);
-      expect(v3).toMatch(/^attributes #0 = \{ sanitize_address "target-cpu"="x86-64-v3" \}$/m);
+      expect(v3).toMatch(/^attributes #0 = \{ uwtable "target-cpu"="x86-64-v3" \}$/m);
       if (runsV3) expect((await execFileAsync(outPath)).stdout).toBe(expected);
       // The bootstrap's cached route builds without a level.
       expect(await build([], true)).toBe(baseline);

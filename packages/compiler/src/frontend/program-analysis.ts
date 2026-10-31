@@ -25,6 +25,8 @@ export class ProgramAnalysis {
   /** The modules of every import cycle the exact initialization rule admitted. */
   readonly exactCycleMembers = new Set<SourceFile>();
   cycleEarlyBindings: EarlyBindingsMemo | null = null;
+  /** Whether some program file can name node:child_process (namesChildProcess). */
+  namesChildProcess: boolean | null = null;
   moduleEarlyBindings: EarlyBindingsMemo | null = null;
   /** Top-level require declarations: the first reference to their bindings
    * that code running before the require can reach (requireEarlyReference). */
@@ -38,6 +40,12 @@ export class ProgramAnalysis {
     SourceFile,
     ReadonlyMap<VariableDeclaration, CallExpression>
   >();
+  /** Per file: its identifiers by text, each with its position in the
+   * file's preorder walk (fileIdentifiers). */
+  readonly fileIdentifiers = new Map<
+    SourceFile,
+    ReadonlyMap<string, readonly { order: number; node: Identifier }[]>
+  >();
 
   clear(): void {
     this.createRequireReasons.clear();
@@ -46,9 +54,11 @@ export class ProgramAnalysis {
     this.moduleSourceCandidates.clear();
     this.exactCycleMembers.clear();
     this.cycleEarlyBindings = null;
+    this.namesChildProcess = null;
     this.moduleEarlyBindings = null;
     this.requireEarlyReferences.clear();
     this.requireFirstRunnable.clear();
     this.splitRequireBindings.clear();
+    this.fileIdentifiers.clear();
   }
 }

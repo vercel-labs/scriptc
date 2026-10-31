@@ -31,6 +31,13 @@ export function builtinImportOf(
   return binding?.module === "stream/web" ? null : binding;
 }
 
+/** The member a node:stream/web import binding names (`import {
+ * WritableStream } from "node:stream/web"`, or its CommonJS twin), or null. */
+export function streamWebImportOf(lowerer: Lowerer, ident: ts.Identifier): string | null {
+  const binding = builtinModuleBindingOf(lowerer, ident);
+  return binding?.module === "stream/web" ? binding.member : null;
+}
+
 function builtinModuleBindingOf(
   lowerer: Lowerer,
   ident: ts.Identifier,
@@ -185,6 +192,32 @@ export function builtinMemberRequireDecl(
   return spec !== null && canonicalBuiltinModule(spec) !== null;
 }
 
+/** The member's own symbol for a variable bound to a builtin module's
+ * member (`const SD = require("string_decoder").StringDecoder`,
+ * builtinMemberRequireDecl) when the member is a class, so the variable
+ * resolves as a named import of the class does. The symbol itself
+ * otherwise. */
+export function builtinMemberBindingTarget(
+  lowerer: Lowerer,
+  symbol: ts.Symbol | null,
+): ts.Symbol | null {
+  const decl = symbol?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    !builtinMemberRequireDecl(decl.name, decl.initializer)
+  )
+    return symbol;
+  const init = decl.initializer as ts.PropertyAccessExpression;
+  let member = lowerer.checker.getSymbolAtLocation(init.name);
+  if (member && member.flags & ts.SymbolFlags.Alias)
+    member = lowerer.checker.getAliasedSymbol(member);
+  // Only a class member: `require("events").EventEmitter` is a static
+  // property of the exported class, which builtinEmitterInfoOf follows
+  // from the variable itself.
+  return member?.declarations.some(ts.isClassDeclaration) ? member : symbol;
+}
+
 /** The supported builtin module when `decl` destructures a builtin
  * NAMESPACE binding (`const crypto = require('crypto'); const {
  * createSign, sign: mySign } = crypto;` — test/common/crypto.js's
@@ -213,7 +246,9 @@ export function builtinNamespaceDestructureModuleOf(
   if (ts.isCallExpression(init)) {
     const cr = createRequireSpecOf(lowerer, init);
     module = cr !== null && cr.spec !== null ? canonicalBuiltinModule(cr.spec) : null;
-  } else if (ts.isIdentifier(init)) {
+  } else if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init)) {
+    // `const { open } = fs.promises` / `= require("fs").promises`: a member
+    // that is itself a supported module.
     module = lowerer.builtinNamespaceModuleOf(init);
   }
   if (module === null) return null;

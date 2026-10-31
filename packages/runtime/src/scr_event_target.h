@@ -106,6 +106,8 @@ typedef struct {
 extern SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops;
 void scr_et_broadcast_install(void);
 
+/* util.aborted(signal, resource): +1 dyn promise; argument errors reject it. */
+ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
 /* timers/promises setTimeout(delay, value, options) and setImmediate(value,

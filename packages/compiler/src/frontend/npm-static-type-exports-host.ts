@@ -2,7 +2,8 @@
  * package's declaration entry and runtime entry, copies the declaration
  * files the entry reaches, and builds the runtime entry's typedefs. */
 import { dirname, relative, resolve as resolvePath } from "node:path";
-import { trackedFileExists, trackedReadFile } from "./input-tracker.js";
+import { trackedFileExists } from "./input-tracker.js";
+import { packageSourceText } from "./type-patches/layer.js";
 import { resolveBareModule } from "./resolve.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
 import { NPM_STATIC_TYPES_SUFFIX } from "./npm-static.js";
@@ -78,7 +79,7 @@ export function npmStaticTypeExportPlan(
   const parse = (file: string): ts.SourceFile | null => {
     let sf = parsed.get(file);
     if (sf === undefined) {
-      const text = trackedReadFile(file);
+      const text = packageSourceText(file);
       sf = text === null ? null : services.parse(file, text, "ts");
       parsed.set(file, sf);
     }
@@ -212,7 +213,7 @@ export function npmStaticTypeExportPlan(
       continue;
     const runtime = resolveBareModule(entryPath, pkg, "js-only");
     if (runtime === null || !isJsSourceFileName(runtime.typesFile)) continue;
-    const runtimeText = trackedReadFile(runtime.typesFile);
+    const runtimeText = packageSourceText(runtime.typesFile);
     if (runtimeText === null) continue;
     const { types, values } = typesOf(declared.typesFile, new Set());
     const declaredByRuntime = runtimeTypeNames(services, runtime.typesFile, runtimeText);

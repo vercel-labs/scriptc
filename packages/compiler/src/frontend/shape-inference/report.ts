@@ -81,6 +81,18 @@ export function hotFunctions(analysis: ShapeAnalysis): Set<FunctionInfo> {
   return hot;
 }
 
+/** Operations that reach an escaped site through a ⊤ receiver. */
+const TOP_REACHING: ReadonlySet<string> = new Set([
+  "delete",
+  "defineProperty",
+  "setPrototypeOf",
+  "seal",
+  "proxy",
+  "assign",
+  "freeze",
+  "lengthWrite",
+]);
+
 export function buildShapeReport(analysis: ShapeAnalysis, filter: string): ShapeReport {
   const lines: string[] = [];
   const all = filter === "all" || filter === "verbose";
@@ -106,6 +118,23 @@ export function buildShapeReport(analysis: ShapeAnalysis, filter: string): Shape
     }
     if (atoms.has(analysis.top)) topOps.push(o);
   }
+  // Through ⊤, only reflective operations and length writes reach an
+  // escaped site (writes, reads and computed writes count only when the
+  // site is a direct receiver). One per syntax node and kind: contexts repeat ops.
+  const reflectiveTopOps: typeof analysis.ops = [];
+  {
+    const seen = new Set<string>();
+    const ids = new Map<ts.Node, number>();
+    for (const o of topOps) {
+      if (!TOP_REACHING.has(o.kind)) continue;
+      let id = ids.get(o.node);
+      if (id === undefined) ids.set(o.node, (id = ids.size));
+      const key = `${o.kind}:${id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      reflectiveTopOps.push(o);
+    }
+  }
 
   // Key-order groups: sites with the same key set and different orders need brands.
   const orders = new Map<string, Set<string>>();
@@ -129,7 +158,7 @@ export function buildShapeReport(analysis: ShapeAnalysis, filter: string): Shape
     for (const sp of s.spreads)
       if (atomsOf(analysis, sp).has(analysis.top)) reasons.push("spread of ⊤");
     const direct = byAtom.get(s.atom) ?? [];
-    const ops = escapes ? [...direct, ...topOps] : direct;
+    const ops = escapes ? [...direct, ...reflectiveTopOps] : direct;
     const keys = new Set(s.keys ?? []);
     const fieldsOf = analysis.fields.get(s.atom);
     const knownKeys =
@@ -144,31 +173,33 @@ export function buildShapeReport(analysis: ShapeAnalysis, filter: string): Shape
     };
     for (const o of ops) {
       const viaTop = !atomsOf(analysis, o.recv).has(s.atom);
-      const where = `${locLabel(o.node)}${viaTop ? " via ⊤" : ""}`;
+      if (viaTop && !TOP_REACHING.has(o.kind)) continue;
+      // Formatted only for a reason that is reported.
+      const at = (): string => `${locLabel(o.node)}${viaTop ? " via ⊤" : ""}`;
       switch (o.kind) {
         case "delete":
         case "defineProperty":
         case "setPrototypeOf":
         case "seal":
         case "proxy":
-          note(`${o.kind} at ${where}`);
+          note(`${o.kind} at ${at()}`);
           break;
         case "assign":
-          note(`Object.assign target at ${where}`);
+          note(`Object.assign target at ${at()}`);
           break;
         case "freeze":
           freezable = true;
           break;
         case "computedWrite":
           if (!viaTop)
-            note(s.kind === "array" ? `index write at ${where}` : `computed write at ${where}`);
+            note(s.kind === "array" ? `index write at ${at()}` : `computed write at ${at()}`);
           break;
         case "lengthWrite":
-          if (s.kind === "array") note(`length write at ${where}`);
+          if (s.kind === "array") note(`length write at ${at()}`);
           break;
         case "write":
           if (s.kind === "object" && !viaTop && o.name !== null && !knownKeys.has(o.name))
-            note(`adds key '${o.name}' at ${where}`);
+            note(`adds key '${o.name}' at ${at()}`);
           break;
         case "read":
           if (
@@ -180,7 +211,7 @@ export function buildShapeReport(analysis: ShapeAnalysis, filter: string): Shape
             !knownKeys.has(o.name) &&
             !OBJECT_PROTOTYPE_MEMBERS.has(o.name)
           )
-            note(`reads absent key '${o.name}' at ${where} (escapes)`);
+            note(`reads absent key '${o.name}' at ${at()} (escapes)`);
           break;
         default:
           break;

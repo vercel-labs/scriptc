@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/path-win32-relative-case.cjs"
+ ],
+ "diags": []
+}

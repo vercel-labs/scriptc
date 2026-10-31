@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, expect, test } from "vitest";
 import { compile, deserializeModule } from "../src/index.js";
-import type { IrExpr, IrModule, IrStmt, IrType } from "../src/ir/ir.js";
+import type { IrExpr, IrFunction, IrModule, IrStmt, IrType } from "../src/ir/ir.js";
+import { emitRangeStarts } from "../src/backend/llvm/emit-module.js";
 import { eachNodeOfKinds, IrNodeIndex, type IrNodeKind } from "../src/ir/node-index.js";
 import { everyModuleNode, everyStmtList } from "../src/ir/traverse.js";
 
@@ -123,6 +124,31 @@ test("a false answer stops the visit, with or without the index", () => {
       expect(calls).toBe(Math.min(3, walked(fn.body).length));
     }
   }
+});
+
+test("a function's node count is the number of nodes its visit notes", () => {
+  const all = index.scanExcept(NO_KINDS);
+  for (const fn of mod.functions) expect(index.nodeCount(fn)).toBe(noted(fn, all).length);
+  expect(index.nodeCount({ ...mod.functions[0]! })).toBeUndefined();
+});
+
+test("emission ranges cover the functions in order, none empty, of about equal cost", () => {
+  const count = (fn: IrFunction): number | undefined => index.nodeCount(fn);
+  for (const ranges of [1, 2, 3, mod.functions.length, mod.functions.length + 4]) {
+    const starts = emitRangeStarts(mod.functions, ranges, count);
+    expect(starts[0]).toBe(0);
+    expect(starts.at(-1)).toBe(mod.functions.length);
+    expect(starts.length - 1).toBeLessThanOrEqual(ranges);
+    for (let i = 1; i < starts.length; i++) expect(starts[i]!).toBeGreaterThan(starts[i - 1]!);
+  }
+  // Equal costs split into equal ranges. A range ends after the function
+  // that reaches its share of the cost, so a large function ends its range.
+  const functions = Array.from({ length: 12 }, () => mod.functions[0]!);
+  expect(emitRangeStarts(functions, 4, () => 0)).toEqual([0, 3, 6, 9, 12]);
+  const sizes = [0, 0, 1000, 0, 0, 0];
+  const uneven = sizes.map((_, i) => ({ ...mod.functions[0]!, name: `f${i}` }));
+  const bySize = new Map(uneven.map((fn, i) => [fn, sizes[i]!]));
+  expect(emitRangeStarts(uneven, 3, (fn) => bySize.get(fn))).toEqual([0, 3, 4, 6]);
 });
 
 test("a function the index did not record is walked", () => {

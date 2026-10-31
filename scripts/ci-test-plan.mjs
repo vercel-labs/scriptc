@@ -7,6 +7,7 @@ export const corpusFiles = [
   "tests/harness/differential.test.ts",
   "tests/harness/llvm-differential.test.ts",
   "tests/harness/npm.test.ts",
+  "tests/harness/npm-shape-overlay.test.ts",
   "tests/harness/server.test.ts",
   "tests/harness/test262.test.ts",
   "tests/harness/three.test.ts",
@@ -18,14 +19,17 @@ const cacheFile = "packages/compiler/src/backend/native-toolchain.test.ts";
 export const isolatedFiles = [
   ["self-hosting serialization", "tests/harness/self-hosting-serialization.test.ts"],
   ["self-hosting", "tests/harness/self-hosting.test.ts"],
-  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
   ["fetch", "tests/harness/fetch.test.ts"],
   ["surface manifest", "tests/harness/surface-manifest.test.ts"],
 ];
 // Suites that split their own tests across the shards (SCRIPTC_TEST_SHARD,
 // skipUnownedTest in tests/harness/shard.ts): every shard runs its share in
 // its own vitest process.
-export const caseShardedSideFiles = [["npm static", "tests/harness/npm-static.test.ts"]];
+export const caseShardedSideFiles = [
+  ["npm static", "tests/harness/npm-static.test.ts"],
+  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
+  ["three.js library", "tests/harness/three-library.test.ts"],
+];
 export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
@@ -50,6 +54,26 @@ export const memoryHeavyFiles = {
   "tests/harness/decl-boundary.test.ts": 1838,
 };
 
+// The sanitized self-hosting native-frontend build needs most of a 16 GB
+// runner by itself: its clang compile of the whole frontend under ASan takes
+// 10.5 GB beside a 3.8 GB compile in Node. Beside a shard's corpus workers an
+// OOM killed it intermittently (SIGKILL at 670-740 s, empty stderr, every test
+// skipped). The sanitized Linux suite runs these three files in the
+// native_frontend_san jobs (.github/workflows/ci.yml), one file per job with
+// one worker and no corpus. The plain suite and the macOS shards keep them in
+// the shard side queue, where the compiler's peak fits (macOS has no
+// LeakSanitizer and runs these files one at a time beside the corpus).
+export const nativeFrontendFiles = [
+  "tests/harness/self-hosting-native-frontend.test.ts",
+  "tests/harness/self-hosting-native-frontend-programs.test.ts",
+  "tests/harness/self-hosting-native-frontend-checks.test.ts",
+];
+
+/** The files a shard job leaves to a dedicated job. */
+export function dedicatedFiles(flavor, platform = process.platform) {
+  return flavor === "san" && platform === "linux" ? nativeFrontendFiles : [];
+}
+
 // The shard (1-based) of each measured side-queue file and isolated suite:
 // longest first to the shard with the least work so far, counting about a
 // second per file for vitest to import it. Ties go to the highest shard, so the
@@ -60,7 +84,7 @@ export const memoryHeavyFiles = {
 // each on the shard with the least memory-heavy work so far and, among those,
 // the least work. Files without a
 // measurement are left to vitest's --shard, which splits them by count.
-export function sideOwners(flavor, count) {
+export function sideOwners(flavor, count, platform = process.platform) {
   const costs = testCosts[flavor];
   const known = Object.values(costs).sort((a, b) => a - b);
   const median = known.length === 0 ? 0 : known[Math.floor(known.length / 2)];
@@ -68,9 +92,10 @@ export function sideOwners(flavor, count) {
   const heavy = Object.keys(memoryHeavyFiles).sort(
     (a, b) => memoryHeavyFiles[b] - memoryHeavyFiles[a] || (a < b ? -1 : a > b ? 1 : 0),
   );
+  const dedicated = new Set(dedicatedFiles(flavor, platform));
   const files = [
     ...new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]),
-  ].filter((file) => !(file in memoryHeavyFiles));
+  ].filter((file) => !dedicated.has(file) && !(file in memoryHeavyFiles));
   files.sort((a, b) => weight(b) - weight(a) || (a < b ? -1 : a > b ? 1 : 0));
   const loads = new Array(count).fill(0);
   const memory = new Array(count).fill(0);
@@ -134,6 +159,15 @@ export const leakSuppressions = fileURLToPath(
   new URL("../tests/harness/lsan.supp", import.meta.url),
 );
 
+// The sanitized three.js nodes build runs in its own Linux job
+// (three_nodes_san in .github/workflows/ci.yml). Beside the corpus's other
+// workers it took 860 to more than 1200 seconds, past its test timeout.
+export const sanitizedNodesJobEnv = { SCRIPTC_THREE_SANITIZED_NODES_JOB: "1" };
+
+function corpusThreeEnv(flavor, platform) {
+  return flavor === "san" && platform === "linux" ? sanitizedNodesJobEnv : {};
+}
+
 function corpusLeakEnv(flavor, platform) {
   if (flavor !== "san" || platform !== "linux") return {};
   return {
@@ -190,7 +224,8 @@ export function ciTestPlan({
       ],
     };
   }
-  const owners = sideOwners(flavor, count);
+  const owners = sideOwners(flavor, count, platform);
+  const dedicated = dedicatedFiles(flavor, platform);
   const isolated = new Set(isolatedFiles.map(([, file]) => file));
   const balanced = [...owners]
     .filter(([file, owner]) => owner === index && !isolated.has(file))
@@ -203,7 +238,9 @@ export function ciTestPlan({
         "test",
         "--passWithNoTests",
         "--shard=" + shard,
-        ...[...new Set([...fileExclusions, ...owners.keys()])].map((file) => "--exclude=" + file),
+        ...[...new Set([...fileExclusions, ...owners.keys(), ...dedicated])].map(
+          (file) => "--exclude=" + file,
+        ),
       ],
       env: { ...env, SCRIPTC_TEST_WORKERS: "1" },
     },
@@ -246,6 +283,7 @@ export function ciTestPlan({
       env: {
         ...env,
         ...corpusLeakEnv(flavor, platform),
+        ...corpusThreeEnv(flavor, platform),
         SCRIPTC_TEST_WORKERS: String(workers - sideWorkers),
         SCRIPTC_LLVM_TEST_MODE: "dev",
       },

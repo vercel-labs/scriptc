@@ -25,6 +25,7 @@ test("closure/box runtime: RC cascades clean under ASan + audit", async () => {
     join(srcDir, "scr_closure.c"),
     join(srcDir, "scr_string.c"),
     join(srcDir, "scr_array.c"),
+    join(srcDir, "scr_arena.c"),
     join(srcDir, "scr_json.c"),
     join(srcDir, "scr_bigint.c"),
     join(srcDir, "scr_map.c"),

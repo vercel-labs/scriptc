@@ -1,0 +1,10 @@
+{
+  "name": "type-patch-types-entry-case",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "typePatches": {
+      "pointjs@1.x": { "types": "./type-patches/pointjs.d.ts" }
+    }
+  }
+}

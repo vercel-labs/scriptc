@@ -9,13 +9,19 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-async function emit(source: string): Promise<string> {
+async function emit(source: string, optimization?: "dev"): Promise<string> {
   const outDir = await mkdtemp(join(tmpdir(), "scriptc-generator-"));
   directories.push(outDir);
   const entry = join(outDir, "main.ts");
   await writeFile(entry, source);
   const outPath = join(outDir, "program.ll");
-  const result = await compile(entry, { entry, outDir, outPath, outputKind: "llvm" });
+  const result = await compile(entry, {
+    entry,
+    outDir,
+    outPath,
+    outputKind: "llvm",
+    ...(optimization !== undefined ? { optimization } : {}),
+  });
   expect(result.ok, JSON.stringify(result)).toBe(true);
   return readFile(outPath, "utf8");
 }
@@ -50,7 +56,7 @@ console.log(sum);
   expect(definition(llvm, "sc_f_range")).not.toContain("@scr_coro_yield_f64(");
   expect(llvm).not.toContain("@scr_gen_take_out_f64(");
   expect(llvm).toContain("%ScrGenHead = type { i64, ptr, ptr, i32, %ScrGenSlot }");
-  expect(llvm).toContain("attributes #1 = { sanitize_address presplitcoroutine }");
+  expect(llvm).toContain("attributes #1 = { uwtable presplitcoroutine }");
   expect(definition(llvm, "sc_gs_range")).toContain("call ptr @scr_gen_new_stackless(");
   expect(llvm).not.toContain("@scr_gen_yield_f64(");
 });
@@ -117,7 +123,7 @@ console.log(sum, r.value);
   expect(llvm).toMatch(/define internal ptr @sc_gres_\d+\(ptr %g\)[^\n]*\(dyn channel\)/);
 });
 
-test("async generators keep their fibers", async () => {
+test("async generators that suspend only at their own awaits and yields compile to stackless coroutines", async () => {
   const llvm = await emit(`
 async function* ticks(n: number): AsyncGenerator<number, void, undefined> {
   for (let i = 0; i < n; i++) {
@@ -130,6 +136,36 @@ async function main(): Promise<void> {
 }
 void main();
 `);
+  const body = definition(llvm, "sc_f_ticks");
+  expect(body).toMatch(/^define internal void @sc_f_ticks(?:\.i32)?\(double [^)]*\) #1 /);
+  // The await suspends the coroutine (one turn for a non-promise operand),
+  // and the yield stores OUT before its own suspension.
+  expect(body).toContain("call zeroext i1 @scr_coro_hop_prepare(ptr");
+  expect(body).toContain("call void @scr_coro_yield_f64(ptr");
+  expect(body).toContain("call void @scr_gen_coro_finish(ptr");
+  expect(body).not.toContain("@scr_await_hop(");
+  expect(body).not.toContain("@scr_gen_yield_f64(");
+  expect(definition(llvm, "sc_gs_ticks")).toContain("call ptr @scr_async_gen_new_stackless(");
+  // Consuming the generator does not park its consumer.
+  expect(definition(llvm, "sc_as_main")).toContain("@scr_async_spawn_stackless(");
+});
+
+test("debug builds keep async generators on their fibers", async () => {
+  const llvm = await emit(
+    `
+async function* ticks(n: number): AsyncGenerator<number, void, undefined> {
+  for (let i = 0; i < n; i++) {
+    await null;
+    yield i;
+  }
+}
+async function main(): Promise<void> {
+  for await (const t of ticks(3)) console.log(t);
+}
+void main();
+`,
+    "dev",
+  );
   expect(definition(llvm, "sc_gs_ticks")).toContain("call ptr @scr_async_gen_new(");
   expect(llvm).not.toContain("presplitcoroutine");
 });
@@ -149,4 +185,68 @@ console.log(sum);
   expect(body).not.toContain("@scr_dyn_iterator");
   expect(body).not.toContain("@scr_dyn_call");
   expect(body).not.toContain("@sc_gres_");
+});
+
+test("a generator binds destructured parameters at the call", async () => {
+  // FunctionDeclarationInstantiation runs before GeneratorStart, so the spawn
+  // wrapper steps the suspended body once, to the bind barrier: a nullish
+  // argument throws from the call and defaults run before it returns.
+  const llvm = await emit(`
+function* pick({ a }: { a: number }): Generator<number, void, undefined> {
+  yield a;
+}
+function* plain(a: number): Generator<number, void, undefined> {
+  yield a;
+}
+const STEP = 2;
+function* constantDefault(a = STEP + 1): Generator<number, void, undefined> {
+  yield a;
+}
+function* evaluatedDefault(a = pick({ a: 3 }).next().value ?? 0): Generator<number, void, undefined> {
+  yield a;
+}
+console.log(
+  pick({ a: 1 }).next().value,
+  plain(2).next().value,
+  constantDefault().next().value,
+  evaluatedDefault().next().value,
+);
+`);
+  expect(definition(llvm, "sc_gs_pick")).toContain("call void @scr_gen_bind(ptr %gg)");
+  expect(definition(llvm, "sc_gs_pick")).toMatch(
+    /call void @scr_gen_bind\(ptr %gg\)\n\s*ret ptr %gg/,
+  );
+  // The barrier is an invisible suspension: no OUT store, and the body
+  // resumes after it.
+  expect(definition(llvm, "sc_f_pick")).toContain("@llvm.coro.suspend(");
+  // Identifier-only parameters run nothing before the first resume, so the
+  // wrapper stays the allocation it always was — and so does a default that
+  // is a constant expression, which only selects a value.
+  expect(definition(llvm, "sc_gs_plain")).not.toContain("@scr_gen_bind(");
+  expect(definition(llvm, "sc_gs_constantDefault")).not.toContain("@scr_gen_bind(");
+  // A default that evaluates anything binds at the call.
+  expect(definition(llvm, "sc_gs_evaluatedDefault")).toContain("call void @scr_gen_bind(ptr %gg)");
+  // The two bindAtCall wrappers are the only callers, and the module
+  // declares the runtime entry once.
+  expect(llvm.match(/call void @scr_gen_bind\(/g)?.length).toBe(2);
+  expect(llvm.match(/declare void @scr_gen_bind\(/g)?.length).toBe(1);
+});
+
+test("a fiber generator runs its bind barrier through the runtime hop", async () => {
+  // Dev builds (and worker executables) keep generators on fibers: the
+  // barrier is the runtime's valueless yield (no OUT store, no IN read)
+  // instead of a coroutine suspend.
+  const llvm = await emit(
+    `
+function* pick({ a }: { a: number }): Generator<number, void, undefined> {
+  yield a;
+}
+console.log(pick({ a: 1 }).next().value);
+`,
+    "dev",
+  );
+  expect(definition(llvm, "sc_f_pick")).toContain(
+    "call void @scr_gen_yield_ref(ptr null, ptr null)",
+  );
+  expect(definition(llvm, "sc_gs_pick")).toContain("call void @scr_gen_bind(ptr %gg)");
 });

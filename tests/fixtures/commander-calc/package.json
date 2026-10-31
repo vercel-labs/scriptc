@@ -4,5 +4,15 @@
   "type": "module",
   "dependencies": {
     "commander": "15.0.0"
+  },
+  "scriptc": {
+    "typePatches": {
+      "commander@^15.0.0": {
+        "note": "off a TTY, _getOutputContext() returns helpWidth undefined although the @typedef says number",
+        "declarations": {
+          "HelpContext.helpWidth": "| undefined"
+        }
+      }
+    }
   }
 }

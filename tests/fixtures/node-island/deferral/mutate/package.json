@@ -1,0 +1,1 @@
+{ "name": "deferral-mutate", "private": true, "type": "module", "scriptc": { "packages": { "pkg-a": "node", "pkg-b": { "run": "node", "evaluate": "lazy" } } } }

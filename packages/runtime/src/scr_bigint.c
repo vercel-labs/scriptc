@@ -269,11 +269,15 @@ static inline bi_limb bi_subc(bi_limb x, bi_limb y, bi_limb *borrow) {
 static bi_limb bi_add_n(bi_limb *r, const bi_limb *a, const bi_limb *b, size_t n) {
   bi_limb carry = 0;
   size_t i = 0;
-  for (; i + 4 <= n; i += 4) {
+  for (; i + 8 <= n; i += 8) {
     r[i] = bi_addc(a[i], b[i], &carry);
     r[i + 1] = bi_addc(a[i + 1], b[i + 1], &carry);
     r[i + 2] = bi_addc(a[i + 2], b[i + 2], &carry);
     r[i + 3] = bi_addc(a[i + 3], b[i + 3], &carry);
+    r[i + 4] = bi_addc(a[i + 4], b[i + 4], &carry);
+    r[i + 5] = bi_addc(a[i + 5], b[i + 5], &carry);
+    r[i + 6] = bi_addc(a[i + 6], b[i + 6], &carry);
+    r[i + 7] = bi_addc(a[i + 7], b[i + 7], &carry);
   }
   for (; i < n; i++) r[i] = bi_addc(a[i], b[i], &carry);
   return carry;
@@ -283,11 +287,15 @@ static bi_limb bi_add_n(bi_limb *r, const bi_limb *a, const bi_limb *b, size_t n
 static bi_limb bi_sub_n(bi_limb *r, const bi_limb *a, const bi_limb *b, size_t n) {
   bi_limb borrow = 0;
   size_t i = 0;
-  for (; i + 4 <= n; i += 4) {
+  for (; i + 8 <= n; i += 8) {
     r[i] = bi_subc(a[i], b[i], &borrow);
     r[i + 1] = bi_subc(a[i + 1], b[i + 1], &borrow);
     r[i + 2] = bi_subc(a[i + 2], b[i + 2], &borrow);
     r[i + 3] = bi_subc(a[i + 3], b[i + 3], &borrow);
+    r[i + 4] = bi_subc(a[i + 4], b[i + 4], &borrow);
+    r[i + 5] = bi_subc(a[i + 5], b[i + 5], &borrow);
+    r[i + 6] = bi_subc(a[i + 6], b[i + 6], &borrow);
+    r[i + 7] = bi_subc(a[i + 7], b[i + 7], &borrow);
   }
   for (; i < n; i++) r[i] = bi_subc(a[i], b[i], &borrow);
   return borrow;
@@ -409,6 +417,23 @@ static bi_limb bi_submul1(bi_limb *r, const bi_limb *a, size_t n, bi_limb m) {
   return carry;
 }
 
+/* y[0..n) = the low n limbs of x << shift, for 0 < shift < BI_LIMB_BITS
+ * and y disjoint from x. Each limb is formed from two source limbs with no
+ * dependency between limbs, so the loop vectorizes. */
+static void bi_lshift(bi_limb *restrict y, const bi_limb *restrict x, size_t n, unsigned shift) {
+  unsigned back = BI_LIMB_BITS - shift;
+  y[0] = x[0] << shift;
+  for (size_t i = 1; i < n; i++) y[i] = (x[i] << shift) | (x[i - 1] >> back);
+}
+
+/* y[0..n) = x[0..n) >> shift, for 0 < shift < BI_LIMB_BITS and y disjoint
+ * from x; like bi_lshift, each limb reads two source limbs. */
+static void bi_rshift(bi_limb *restrict y, const bi_limb *restrict x, size_t n, unsigned shift) {
+  unsigned back = BI_LIMB_BITS - shift;
+  for (size_t i = 0; i + 1 < n; i++) y[i] = (x[i] >> shift) | (x[i + 1] << back);
+  y[n - 1] = x[n - 1] >> shift;
+}
+
 /* Schoolbook product: r[0..an+bn) = a * b, r disjoint from a and b. */
 static void bi_mul_school(bi_limb *r, const bi_limb *a, size_t an, const bi_limb *b, size_t bn) {
   r[an] = bi_mul1(r, a, an, b[0], 0);
@@ -522,12 +547,41 @@ typedef struct {
   unsigned shift;
 } bi_divisor;
 
+#if BI_LIMB_BITS == 64
+/* The reciprocal of d (top bit set), (~d:B-1) / d. The quotient fits a
+ * limb, so it divides in 32-bit halves with one-limb operations (Hacker's
+ * Delight, divlu). A two-limb division calls the toolchain's __udivti3.
+ * zig provides it from compiler-rt, a single object that also defines
+ * memset, memcpy, memcmp and bcmp, and linking that object makes them
+ * replace glibc's in the whole executable. */
+static bi_limb bi_reciprocal(bi_limb d) {
+  const bi_limb half = (bi_limb)1 << 32;
+  bi_limb d1 = d >> 32, d0 = d & (half - 1);
+  bi_limb u1 = ~d, n1 = half - 1, n0 = half - 1;
+  bi_limb q1 = u1 / d1, rhat = u1 - q1 * d1;
+  while (q1 >= half || q1 * d0 > ((rhat << 32) | n1)) {
+    q1--;
+    rhat += d1;
+    if (rhat >= half) break;
+  }
+  bi_limb u21 = (u1 << 32) + n1 - q1 * d;
+  bi_limb q0 = u21 / d1;
+  rhat = u21 - q0 * d1;
+  while (q0 >= half || q0 * d0 > ((rhat << 32) | n0)) {
+    q0--;
+    rhat += d1;
+    if (rhat >= half) break;
+  }
+  return (q1 << 32) | q0;
+}
+#endif
+
 static bi_divisor bi_divisor_of(bi_limb d) {
   bi_divisor dv;
   dv.shift = bi_clz(d);
   dv.d = d << dv.shift;
 #if BI_LIMB_BITS == 64
-  dv.v = (bi_limb)((((bi_wide)~dv.d) << 64 | BI_LIMB_MAX) / dv.d);
+  dv.v = bi_reciprocal(dv.d);
 #else
   dv.v = 0;
 #endif
@@ -589,11 +643,9 @@ static void bi_divmod_knuth(bi_limb *q, bi_limb *r, const bi_limb *a, size_t an,
   bi_limb *un = bi_limbs(an + 1 + bn);
   bi_limb *vn = un + an + 1;
   if (s) {
-    for (size_t i = bn - 1; i > 0; i--) vn[i] = (b[i] << s) | (b[i - 1] >> (BI_LIMB_BITS - s));
-    vn[0] = b[0] << s;
+    bi_lshift(vn, b, bn, s);
+    bi_lshift(un, a, an, s);
     un[an] = a[an - 1] >> (BI_LIMB_BITS - s);
-    for (size_t i = an - 1; i > 0; i--) un[i] = (a[i] << s) | (a[i - 1] >> (BI_LIMB_BITS - s));
-    un[0] = a[0] << s;
   } else {
     memcpy(vn, b, bn * sizeof(bi_limb));
     memcpy(un, a, an * sizeof(bi_limb));
@@ -631,8 +683,7 @@ static void bi_divmod_knuth(bi_limb *q, bi_limb *r, const bi_limb *a, size_t an,
   }
   if (r) {
     if (s) {
-      for (size_t i = 0; i + 1 < bn; i++) r[i] = (un[i] >> s) | (un[i + 1] << (BI_LIMB_BITS - s));
-      r[bn - 1] = un[bn - 1] >> s;
+      bi_rshift(r, un, bn, s);
     } else {
       memcpy(r, un, bn * sizeof(bi_limb));
     }
@@ -673,6 +724,15 @@ static bi_limb bi_div_qlimb(bi_limb *r, const bi_limb *a, const bi_limb *b, size
     qhat--;
     rhat += d1;
     rhat_big = rhat < d1;
+  }
+  /* Without a remainder, the top limbs decide when they leave room:
+   * a - qhat * b >= (rhat * B + u0 - qhat * d0) * B^(n-2) - qhat * B^(n-2)
+   * as normalized, so a margin of at least qhat proves qhat. */
+  if (!r && !rhat_big) {
+    bi_wide top = ((bi_wide)rhat << BI_LIMB_BITS) | u0, sub = (bi_wide)qhat * d0;
+    if (top - sub >= qhat) return qhat;
+  } else if (!r) {
+    return qhat; /* rhat >= B: the remainder exceeds B^(n-1) >= qhat * b's low part */
   }
   /* a - qhat * b: negative when the product's high limb or the borrow
    * reaches past a's n limbs */
@@ -926,13 +986,8 @@ static ScrBigInt *bi_shl_abs(const ScrBigInt *a, size_t count, int sign) {
   if (!shift) {
     memcpy(r->limb + words, a->limb, a->len * sizeof(bi_limb));
   } else {
-    bi_limb carry = 0;
-    for (size_t i = 0; i < a->len; i++) {
-      bi_limb v = a->limb[i];
-      r->limb[i + words] = (v << shift) | carry;
-      carry = v >> (BI_LIMB_BITS - shift);
-    }
-    if (grow) r->limb[n] = carry;
+    bi_lshift(r->limb + words, a->limb, a->len, shift);
+    if (grow) r->limb[n] = a->limb[a->len - 1] >> (BI_LIMB_BITS - shift);
   }
   r->len = n + grow;
   r->sign = sign;
@@ -955,9 +1010,7 @@ static ScrBigInt *bi_shr_abs(const ScrBigInt *a, size_t count, int sign, bool *d
   if (!shift) {
     memcpy(r->limb, a->limb + words, n * sizeof(bi_limb));
   } else {
-    for (size_t i = 0; i + 1 < n; i++)
-      r->limb[i] = (a->limb[i + words] >> shift) | (a->limb[i + words + 1] << (BI_LIMB_BITS - shift));
-    r->limb[n - 1] = a->limb[a->len - 1] >> shift;
+    bi_rshift(r->limb, a->limb + words, n, shift);
   }
   return bi_finish(r, n, sign);
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8321-typed-array-constructor-kind.js"
+ ],
+ "diags": []
+}

@@ -463,6 +463,67 @@ export function readProbe(): string {
       });
     }, 300_000);
 
+    test("a type-only import in an island subgraph ships nothing", async () => {
+      // The pi shape (env-api-keys.ts): the island subgraph reaches a module
+      // whose computed load would be SC8006, but only through `import type`.
+      // Node's type stripper erases that edge, so the module never loads and
+      // the island tree must not trace, ship, or refuse it.
+      const dir = copyCorpus(
+        "user-reader-type-only",
+        `import { installPatch } from "./patch.ts";
+import { readProbe } from "./read.ts";
+installPatch();
+console.log(readProbe());
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched payload") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+          "read.ts": `import type { Loader } from "./helper.ts";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+export function readProbe(): string {
+  void (null as unknown as Loader);
+  const { readFileSync } = require("fs") as {
+    readFileSync(path: string, encoding: BufferEncoding): string;
+  };
+  return readFileSync("/scriptc/does/not/exist", "utf-8");
+}
+`,
+          "helper.ts": `export type Loader = (name: string) => Promise<unknown>;
+export function loadByName(name: string): Promise<unknown> {
+  return import(name);
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect((result.islands?.modules ?? []).map((file) => basename(file)).sort()).toEqual([
+        "patch.ts",
+        "read.ts",
+      ]);
+      // Node loads those two files, so the type-strip cache rule applies.
+      const islandCache = mkdtempSync(join(tmpdir(), "scriptc-user-reader-cache-"));
+      expect(
+        await run(join(dir, "main"), [], { ...process.env, XDG_CACHE_HOME: islandCache }),
+      ).toEqual({
+        stdout: "patched payload\n",
+        stderr: "",
+        code: 0,
+      });
+    }, 300_000);
+
     test("a reader whose island subgraph loads a module by a computed specifier is SC8006", async () => {
       // The pi shape past the reader rule (provider-env.ts): an islanded user
       // module statically imports a program module that loads by a computed

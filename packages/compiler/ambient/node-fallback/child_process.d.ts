@@ -1,47 +1,57 @@
 /* node:child_process — the synchronous slice: spawnSync(command, args?)
  * runs the child to completion (posix_spawn + waitpid) with stdout/stderr
- * captured as utf8 strings. `status` is the exit code, or null when the
- * child died to a signal OR could not be spawned at all (nonexistent
- * binary, permission denied) — Node reports spawn failure through the
- * result's `error` property, which this surface does not carry, and types
- * stdout/stderr null there where scriptc returns "" (SEMANTICS.md).
- * No shell, no options object: the command runs directly (PATH-searched,
- * like Node). */
+ * captured as UTF-8 bytes. The capture's TYPE is Node's: a string when the
+ * options carry a string encoding, a Buffer without one
+ * (`SpawnSyncReturns<Buffer>` in @types/node); reading the Buffer form is
+ * the bytes<u8> Buffer reads fs uses. `status` is the exit code, or null
+ * when the child died to a signal OR could not be spawned at all
+ * (nonexistent binary, permission denied) — Node reports spawn failure
+ * through the result's `error` property, which this surface does not
+ * carry, and types stdout/stderr null there where scriptc returns "" or an
+ * empty Buffer (SEMANTICS.md). No shell: the command runs directly
+ * (PATH-searched, like Node). */
 declare module "child_process" {
-  export interface SpawnSyncReturns {
+  /* T is the capture type the options select. The default keeps a bare
+   * `SpawnSyncReturns` annotation meaning the string form, as before. */
+  export interface SpawnSyncReturns<T = string> {
     readonly status: number | null;
-    readonly stdout: string;
-    readonly stderr: string;
+    readonly stdout: T;
+    readonly stderr: T;
     /* The termination signal's name ("SIGTERM", ...) when a signal
      * killed the child (a timeout's killSignal included), null otherwise
      * — Node's shape. */
     readonly signal: string | null;
     /* Node's spawn-failure carrier: a real Error ("spawnSync <file>
      * ENOENT", `code` stamped) when the spawn itself failed — status is
-     * null and both outputs "" then — or ETIMEDOUT after a timeout kill;
-     * undefined otherwise. */
+     * null and both outputs "" (or an empty Buffer) then — or ETIMEDOUT
+     * after a timeout kill; undefined otherwise. */
     readonly error?: Error;
   }
-  /* scriptc always captures utf8 strings; pass { encoding: "utf8" }
-   * whenever stdout/stderr is READ so plain Node agrees (without it Node
-   * hands Buffers). The other supported options: timeout (ms — sends
+  /* The supported options: encoding ("utf8"/"utf-8" — the only form that
+   * makes stdout/stderr strings, exactly Node), timeout (ms — sends
    * killSignal at the deadline and the result carries error: ETIMEDOUT +
    * the signal, never a throw), killSignal (a signal NAME literal),
    * stdio ("ignore"/"inherit"/"pipe" or a 3-tuple of those — captures
-   * read "" for non-piped streams), env (replaces the child's
-   * environment), and windowsHide (a POSIX no-op). */
+   * read "" / an empty Buffer for non-piped streams), env (replaces the
+   * child's environment), and windowsHide (a POSIX no-op). */
+  export interface SpawnSyncOptions {
+    encoding?: "utf8" | "utf-8";
+    timeout?: number;
+    killSignal?: string;
+    stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+    env?: { [k: string]: string | undefined };
+    windowsHide?: boolean;
+  }
+  export function spawnSync(
+    command: string,
+    args: string[] | undefined,
+    options: SpawnSyncOptions & { encoding: "utf8" | "utf-8" },
+  ): SpawnSyncReturns<string>;
   export function spawnSync(
     command: string,
     args?: string[],
-    options?: {
-      encoding?: "utf8" | "utf-8";
-      timeout?: number;
-      killSignal?: string;
-      stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
-      env?: { [k: string]: string | undefined };
-      windowsHide?: boolean;
-    },
-  ): SpawnSyncReturns;
+    options?: SpawnSyncOptions,
+  ): SpawnSyncReturns<Buffer>;
 
   /* The asynchronous slice: spawn with stdio "ignore"/"inherit"/fd/"pipe"
    * tuples (piped stdin is writable through child.stdin; piped stdout/stderr

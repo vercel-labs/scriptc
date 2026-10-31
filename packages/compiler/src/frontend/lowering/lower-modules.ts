@@ -3810,13 +3810,11 @@ export function buildMain(lowerer: Lowerer): IrFunction {
   // Each execution context needs the same hoisted bindings before any
   // root can enter a Node island, including worker and fork roots.
   body.unshift(
-    ...lowerer.sharedFunctionInitializers.map(
-      (name): IrStmt => ({
-        kind: "exprStmt",
-        expr: { kind: "call", callee: name, args: [], type: VOID, loc },
-        loc,
-      }),
-    ),
+    ...lowerer.sharedFunctionInitializers.map((name): IrStmt => ({
+      kind: "exprStmt",
+      expr: { kind: "call", callee: name, args: [], type: VOID, loc },
+      loc,
+    })),
   );
   // Classes with custom inspect methods register their compiled calls for
   // the runtime's inspect walk before any module runs, in every thread.

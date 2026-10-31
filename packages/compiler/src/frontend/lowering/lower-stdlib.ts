@@ -1,5 +1,6 @@
-import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
+import { resolve } from "node:path";
 
 import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
 import { staticString } from "./builtins/module-resolution.js";
@@ -22,6 +23,7 @@ import {
   VOID,
   canConvertToDyn,
   isUnitType,
+  typeEquals,
 } from "../../ir/ir.js";
 import {
   STDLIB_SURFACE,
@@ -48,6 +50,8 @@ import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
+import { boundSpecifier, type SpecifierBound } from "../specifier-bounds.js";
+import { tsgoPath } from "../dts-paths.js";
 
 export function refuseUnsupportedApi(
   lowerer: Lowerer,
@@ -2229,36 +2233,171 @@ export function lowerStaticReadableStreamReaderCall(
   );
 }
 
+/** The pre-bounding refusal for a computed specifier whose values the
+ * build cannot turn into literal edges. */
+const COMPUTED_SPECIFIER_REFUSAL =
+  "dynamic import() of computed specifiers (the module graph resolves at " +
+  "build time — the specifier must be a string literal)";
+
 export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
   const arg = call.arguments.nodes[0];
-  // The specifier text must be known at build time; a constant expression
-  // (`import("node:" + "fs")`, `import(FS)`) names its module just as a
-  // literal does. collectDynamicImports keys its table by the same text.
-  const specifier = arg === undefined ? null : staticString(lowerer, arg);
-  if (specifier === null) {
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      "dynamic import() of computed specifiers (the module graph resolves at " +
-        "build time — the specifier must be a string literal)",
-      undefined,
-      "dynamic-import",
-    );
+  if (arg === undefined) {
+    lowerer.unsupported("SC1090", call, COMPUTED_SPECIFIER_REFUSAL, undefined, "dynamic-import");
   }
   if (call.arguments.nodes.length !== 1) {
     lowerer.unsupported("SC1090", call, "dynamic import() with import attributes");
   }
+  // The specifier text must be known at build time. A written string literal
+  // asks the checker: collectDynamicImports recorded that answer under the same
+  // key, and it is the answer Node receives after compilation (`./a.js` maps to
+  // a.ts). A constant expression (`import("node:" + "fs")`, `import(FS)`) is a
+  // value the load names at run time, so it takes the same bounded path as any
+  // other computed specifier (SPEC §5.1): that path keys the table by each value
+  // exactly as collection did, and coerces each arm to this site's promise type.
+  if (!ts.isStringLiteralLike(arg)) return lowerBoundedDynamicImport(lowerer, call, arg);
+  const specifier = arg.text;
   const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
-  if (res.kind === "program-module") {
-    return lowerOwnStaticModuleImport(lowerer, call, specifier);
-  }
+  if (res.kind === "program-module") return lowerOwnStaticModuleImport(lowerer, call, specifier);
   return lowerStaticNamespaceImport(lowerer, call, {
     kind: "moduleNs",
     moduleId: `builtin:${res.module}`,
   });
+}
+
+/** A computed import() whose specifier the build can bound (SPEC §5.1): a
+ * selector over the bounded values, each arm the literal site's own lowering.
+ * Values answer the builtins, Node's own rejections, and (slice B2) the program
+ * modules they name; an entry with no resolved module keeps the pre-bounding
+ * refusal, and Top refuses with the first source that could not be bounded. The
+ * default arm is unreachable while the bound is sound; it throws
+ * ERR_MODULE_NOT_FOUND rather than falling through. */
+function lowerBoundedDynamicImport(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  arg: ts.Expression,
+): IrExpr {
+  const loc = locOf(call);
+  // A constant expression has exactly one value (main folds it before the bound
+  // is asked); only the remaining forms need the bounder. Mirror
+  // collectDynamicImports so the site reads back the entries it recorded.
+  const folded = staticString(lowerer, arg);
+  const bound: SpecifierBound =
+    folded === null ? boundSpecifier(lowerer, arg) : { kind: "set", values: [folded] };
+  if (bound.kind !== "set") {
+    const at = ts.getSourceFileOfNode(bound.at);
+    const line = ts.getLineAndCharacterOfPosition(at, ts.tokenStartOfNode(bound.at)).line + 1;
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `dynamic import() with a specifier that cannot be bounded at build time ` +
+        `(at ${at.fileName}:${line}: ${bound.why})`,
+      "pass a string literal, a const, or a parameter of a module-local function every " +
+        "call of which passes one",
+      "dynamic-import",
+    );
+  }
+  const sf = ts.getSourceFileOfNode(call);
+  const expected = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (expected === undefined || expected === null) lowerer.refuseUnsupportedApi("'import()'", call);
+  const arms: { value: string; expr: IrExpr }[] = [];
+  for (const value of bound.values) {
+    const res = lowerer.dynImports.get(`${sf.fileName}\u0000${value}`);
+    if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
+    let arm: IrExpr;
+    if (res.kind === "rejected") {
+      arm = lowerRejectedImport(lowerer, call, res.crash);
+    } else if (res.kind === "program-module") {
+      // A bounded value that named a program module lowers exactly as the
+      // literal site of the same specifier would (SPEC §5.1, §4.1 step 2).
+      if (res.dep === undefined) {
+        lowerer.unsupported(
+          "SC1090",
+          call,
+          COMPUTED_SPECIFIER_REFUSAL,
+          undefined,
+          "dynamic-import",
+        );
+      }
+      arm = lowerOwnStaticModuleImportResolved(lowerer, call, value, res.dep);
+    } else {
+      arm = lowerStaticNamespaceImport(lowerer, call, {
+        kind: "moduleNs",
+        moduleId: `builtin:${res.module}`,
+      });
+    }
+    const coerced = lowerer.coerceToExpected(arm, expected);
+    if (!typeEquals(coerced.type, expected)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `dynamic import() of '${value}' (its namespace does not convert to ` +
+          `'${lowerer.fmt(expected)}')`,
+        undefined,
+        "dynamic-import",
+      );
+    }
+    arms.push({ value, expr: coerced });
+  }
+  const specifier = lowerer.declareHiddenLocal("%specifier", STRING);
+  const specifierRef = (): IrExpr => varRef(specifier.id, STRING, loc);
+  let result: IrExpr = {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [
+      numLit(0, loc),
+      strLit("ERR_MODULE_NOT_FOUND", loc),
+      {
+        kind: "strConcat",
+        left: strLit("Cannot find module '", loc),
+        right: {
+          kind: "strConcat",
+          left: specifierRef(),
+          right: strLit("'", loc),
+          type: STRING,
+          loc,
+        },
+        type: STRING,
+        loc,
+      },
+    ],
+    type: expected,
+    loc,
+  };
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const arm = arms[i]!;
+    result = {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: specifierRef(),
+        right: strLit(arm.value, loc),
+        type: { kind: "bool" },
+        loc,
+      },
+      then: arm.expr,
+      else_: result,
+      type: expected,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: specifier.id,
+        init: lowerer.lowerExprExpecting(arg, STRING),
+        loc,
+      },
+    ],
+    result,
+    type: expected,
+    loc,
+  };
 }
 
 /** An import() Node rejects before any module of its graph evaluates
@@ -2354,12 +2493,29 @@ function lowerOwnStaticModuleImport(
   call: ts.CallExpression,
   specifier: string,
 ): IrExpr {
-  const dep = programImportTarget(lowerer, call, specifier);
+  return lowerOwnStaticModuleImportResolved(
+    lowerer,
+    call,
+    specifier,
+    programImportTarget(lowerer, call, specifier),
+  );
+}
+
+/** `lowerOwnStaticModuleImport` for a module the site names by value rather
+ * than by a literal node: a BOUNDED dynamic-import arm (SPEC §5.1) resolves
+ * its module at run time, so the caller passes the module and the specifier
+ * text it came from. The fences are the literal site's. */
+function lowerOwnStaticModuleImportResolved(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  spec: string,
+  dep: ts.SourceFile | null,
+): IrExpr {
   if (dep !== null && (dep.fileName.endsWith(".cts") || isCjsJsFile(dep, lowerer.program))) {
     lowerer.unsupported(
       "SC1090",
       call,
-      `dynamic import of the program's own CommonJS module '${specifier}' ` +
+      `dynamic import of the program's own CommonJS module '${spec}' ` +
         "(its namespace comes from module.exports through Node's CJS lexer, " +
         "which has no compiled story — require it, or import it statically)",
     );
@@ -2368,18 +2524,19 @@ function lowerOwnStaticModuleImport(
     lowerer.unsupported(
       "SC1090",
       call,
-      `dynamic import of the program's own module '${specifier}' ` +
+      `dynamic import of the program's own module '${spec}' ` +
         "(this module is not part of the compiled module graph)",
     );
   }
-  const ns: IrType & { kind: "moduleNs" } = {
-    kind: "moduleNs",
-    moduleId: `file:${dep === null ? "" : (lowerer.moduleNamespaceIdOfType(lowerer.typeOf(call))?.replace(/^file:/, "") ?? dep.fileName)}`,
-  };
-  // The call's type is Promise<typeof import(...)>; prefer the mapper's
-  // canonical normalized id when available.
+  // The call's type is Promise<typeof import(...)>, whose mapper carries the
+  // canonical module namespace id. A bounded arm's type is a widened promise
+  // with no moduleNs to read, so it falls back to the same spelling
+  // moduleNamespaceIdOfType produces — the module's one identity either way.
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
-  const inner = mapped?.kind === "promise" && mapped.inner.kind === "moduleNs" ? mapped.inner : ns;
+  const inner: IrType & { kind: "moduleNs" } =
+    mapped?.kind === "promise" && mapped.inner.kind === "moduleNs"
+      ? mapped.inner
+      : { kind: "moduleNs", moduleId: `file:${tsgoPath(resolve(dep.fileName))}` };
   return lowerStaticNamespaceImport(lowerer, call, inner, dep);
 }
 

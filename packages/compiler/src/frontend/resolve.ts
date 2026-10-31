@@ -368,6 +368,27 @@ export function resolveRelativeModule(fromFile: string, specifier: string): stri
   return normalizeResolvedAnswer(answer);
 }
 
+/** A relative or absolute specifier (a path, not a package name). */
+export function isPathSpecifier(specifier: string): boolean {
+  return isRelativeSpecifier(specifier) || isAbsolute(specifier);
+}
+
+/** Node's RUNTIME resolution of a relative or absolute specifier inside the
+ * project: the exact file, with no extension substitution, no extension
+ * appending and no directory index — `./a.js` names `a.js` or nothing,
+ * whatever `a.ts` is (results/designs/island-dynamic-subgraphs/SPEC.md
+ * §3.2). A bounded dynamic-load value follows this answer because the load
+ * happens at run time under Node's rules, unlike a literal site, which the
+ * checker resolved at build time. Null when there is no such file. */
+export function resolveNodeRuntimeModule(fromFile: string, specifier: string): string | null {
+  if (!isPathSpecifier(specifier)) return null;
+  const base = resolve(dirname(resolve(fromFile)), specifier);
+  // A directory import is ERR_UNSUPPORTED_DIR_IMPORT in Node's ESM loader:
+  // it names no module file.
+  if (isDirectory(base) || !isFile(base)) return null;
+  return normalizeResolvedPath(base);
+}
+
 /** The JS-only twin of loadAsFile for --npm-static package internals:
  * exact file first (JS/JSON only), then Node's extension candidates —
  * declaration files never answer. */

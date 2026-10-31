@@ -372,6 +372,7 @@ import {
   npmStaticDepSf7,
   requireSpecOf,
   isJsWriteTarget7,
+  isStrictCode,
   resolveImport,
   workspacePackageOfPath,
   type CycleEdge,
@@ -16304,6 +16305,8 @@ export class Lowerer {
         "SC1091",
         node,
         `writing the undeclared name '${name}' in a JavaScript source`,
+        undefined,
+        isStrictCode(node) ? undefined : "implicit-global-write",
       );
     }
     if (this.isBlockedBinding(symbol)) {

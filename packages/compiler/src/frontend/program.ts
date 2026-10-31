@@ -133,6 +133,7 @@ import {
 import {
   ADOPTED_OPTIONS,
   isJsSourceFileName,
+  jsTscCodeTriage,
   JS_ANY_OPERATOR_CODES,
   JS_RELAXED_TSC_CODES,
 } from "./tsc-codes.js";
@@ -1532,6 +1533,9 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   const file = d.fileName;
   if (!file || !isJsSourceFileName(file)) return false;
   if (JS_RELAXED_TSC_CODES.has(d.code) || TS7_JS_RELAXED_EXTRA.has(d.code)) return true;
+  // The triage table's `relax` rows: legal JavaScript whose construct the
+  // lowering already builds Node-exactly (tsc-codes.ts).
+  if (jsTscCodeTriage(d.code)?.action === "relax") return true;
   // The 8xxx range is TypeScript's JSDoc-specific diagnostic family
   // (malformed tags, signature/tag mismatches): comment semantics with no
   // runtime meaning in a JS file.
@@ -2859,14 +2863,21 @@ function jsUndeclaredWriteDiags(
         node.text !== "" &&
         isJsWriteTarget7(node) &&
         undeclaredJsName7(checker, node)
-      )
-        diags.push(
-          unsupportedDiag(
-            "SC1091",
-            { file: sf.fileName, start: node.getStart(sf), end: node.end },
-            `writing the undeclared name '${node.text}' in a JavaScript source`,
-          ),
+      ) {
+        const sloppyWrite = !isStrictCode(node);
+        const diag = unsupportedDiag(
+          "SC1091",
+          { file: sf.fileName, start: node.getStart(sf), end: node.end },
+          `writing the undeclared name '${node.text}' in a JavaScript source`,
         );
+        // A sloppy-mode write creates the global at run time, a sloppy-only
+        // semantic the native tier does not implement: the reason lets an
+        // automatic island policy put this module in a Node island instead
+        // of refusing the build. A strict-mode write throws ReferenceError,
+        // which is an ordinary lowering gap and stays a plain refusal.
+        if (sloppyWrite) diag.reason = "implicit-global-write";
+        diags.push(diag);
+      }
       ts.forEachChild(node, (child) => {
         stack.push(child);
         return undefined;
@@ -3188,6 +3199,40 @@ function isCjsJsFile7(sf: ts.SourceFile, program?: ts.Program): boolean {
  * tsgo marks CJS files with export assignments as external modules). */
 export function isCjsJsFile(sf: ts.SourceFile, program?: ts.Program): boolean {
   return isCjsJsFile7(sf, program);
+}
+
+function hasUseStrictDirective(statements: readonly ts.Statement[]): boolean {
+  for (const statement of statements) {
+    if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
+      return false;
+    if (statement.expression.text === "use strict") return true;
+  }
+  return false;
+}
+
+/** Whether `node` runs in strict mode code: inside a class body, a function
+ * with a "use strict" directive, a module, or a script that starts with
+ * "use strict". CommonJS JavaScript is sloppy otherwise; the sloppy-only
+ * semantics (implicit globals, `with`, direct eval, Annex B) need a Node
+ * island. */
+export function isStrictCode(node: ts.Node): boolean {
+  for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+    if (ts.isClassDeclaration(parent) || ts.isClassExpression(parent)) return true;
+    if (
+      ts.isFunctionLike(parent) &&
+      parent.body &&
+      ts.isBlock(parent.body) &&
+      hasUseStrictDirective(parent.body.statements.nodes)
+    )
+      return true;
+    if (ts.isSourceFile(parent)) {
+      return (
+        hasUseStrictDirective(parent.statements.nodes) ||
+        (!isCjsJsFile7(parent) && (isNodeEsmFile7(parent) || ts.isExternalModule(parent)))
+      );
+    }
+  }
+  return false;
 }
 
 /** The self-import TDZ fences: for `import { x } from "<self>"` (default
@@ -5629,6 +5674,20 @@ function preflight7(load: LoadResult): {
     const file = d.fileName ?? entry.fileName;
     const start = d.fileName !== undefined ? d.pos : 0;
     const end = d.fileName !== undefined ? d.end : 0;
+    // A JavaScript source's `refuse`/`rewrite` code names the construct
+    // scriptc does not lower (tsc-codes.ts): the user sees what is missing
+    // instead of TypeScript's opinion about legal JavaScript.
+    const triaged =
+      d.fileName !== undefined && isJsSourceFileName(d.fileName) ? jsTscCodeTriage(d.code) : null;
+    if (triaged?.action === "refuse" || triaged?.action === "rewrite") {
+      const diag = unsupportedDiag(
+        "SC1090",
+        { file, start, end },
+        triaged.feature,
+        `${triaged.hint} (TypeScript reports TS${d.code} here.)`,
+      );
+      return diag;
+    }
     const diag = tscPassthroughDiag(message, { file, start, end });
     const hint = typeWorldHint(d, message, load);
     if (hint !== null) {

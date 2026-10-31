@@ -355,8 +355,11 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
 
 /* ── allocation ─────────────────────────────────────────────────────── */
 
+static void scr_str_drop_large_spare(void);
+
 static ScrStr *scr_str_alloc(size_t len, size_t cap) {
   if (len > cap || cap > SCR_STR_MAX_CAP) scr_oom();
+  scr_str_drop_large_spare();
   ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + cap + 1);
   if (!s) scr_oom();
   s->rc = 1;
@@ -431,24 +434,93 @@ static ScrStr *scr_str_new_ascii(const char *bytes, size_t len) {
  * audit lane so ASan sees every logical free as a real free. */
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrStr *scr_str_spare;
+/* A released block larger than SCR_STR_SPARE_MAX, kept only until the
+ * thread's next string allocation: a string of about its size built next
+ * (the next step of a replace or concat chain over a large input) reuses
+ * it, and any other string allocation frees it first. */
+static SCR_TL ScrStr *scr_str_large_spare;
+static SCR_TL bool scr_str_spare_cleanup_registered;
 #endif
-/* The largest block the spare keeps. A larger one stays resident until a
- * string of about its size comes along, which may be never: a program that
- * replaces a 50 MB input with its edited copy would otherwise hold both. */
+/* The largest block the spare keeps. A larger one would stay resident until
+ * a string of about its size comes along, which may be never: a program
+ * that replaces a 50 MB input with its edited copy would otherwise hold
+ * both. Larger blocks wait in scr_str_large_spare instead. */
 #define SCR_STR_SPARE_MAX ((size_t)1 << 20)
 
+#ifndef SCR_RC_AUDIT
+static __attribute__((noinline, cold)) void scr_str_free_large_spare(void) {
+  ScrStr *s = scr_str_large_spare;
+  scr_str_large_spare = NULL;
+  scr_mem_free(s);
+}
+#endif
+
+static void scr_str_drop_large_spare(void) {
+#ifndef SCR_RC_AUDIT
+  if (__builtin_expect(scr_str_large_spare != NULL, 0)) scr_str_free_large_spare();
+#endif
+}
+
+#ifndef SCR_RC_AUDIT
+/* A thread that ends holding a spare would leak its block with its TLS: the
+ * large one can be most of an input. The runtime's exit hook runs this with
+ * the thread's allocator state alive (worker thread end, library reset,
+ * process exit), so both spares go back like any released string. */
+static void scr_str_free_spares(void) {
+  scr_str_drop_large_spare();
+  ScrStr *s = scr_str_spare;
+  scr_str_spare = NULL;
+  if (s) scr_mem_free(s);
+}
+
+static void scr_str_register_spare_cleanup(void) {
+  if (scr_str_spare_cleanup_registered) return;
+  scr_str_spare_cleanup_registered = true;
+  scr_atexit(scr_str_free_spares);
+}
+#endif
+
+#if defined(SCR_STR_TEST) && !defined(SCR_RC_AUDIT)
+/* This thread's spares in bytes, for the runtime tests. */
+size_t scr_str_test_large_spare_bytes(void) {
+  ScrStr *s = scr_str_large_spare;
+  return s ? sizeof(ScrStr) + s->cap + 1 : 0;
+}
+size_t scr_str_test_small_spare_bytes(void) {
+  ScrStr *s = scr_str_spare;
+  return s ? sizeof(ScrStr) + s->cap + 1 : 0;
+}
+#endif
+
 /* A spare-block reuse must not waste grossly (cap <= 4x the need) and only
- * sizable blocks are worth stashing (512 bytes to SCR_STR_SPARE_MAX). */
+ * sizable blocks are worth stashing (512 bytes and up; blocks over
+ * SCR_STR_SPARE_MAX only until the next string allocation). */
+#ifndef SCR_RC_AUDIT
+static __attribute__((noinline)) ScrStr *scr_str_take_large_spare(size_t len) {
+  ScrStr *s = scr_str_large_spare;
+  if (s->cap < len || s->cap / 4 > len) return NULL;
+  scr_str_large_spare = NULL;
+  s->rc = 1;
+  s->len = len; /* keeps its larger cap */
+  scr_str_hash_forget(s);
+  return s;
+}
+#endif
+
 static ScrStr *scr_str_take_spare(size_t len) {
 #ifndef SCR_RC_AUDIT
   ScrStr *s = scr_str_spare;
   if (s && s->cap >= len && s->cap / 4 <= len) {
     scr_str_spare = NULL;
+    /* The allocation has its block; the large spare is not the one it
+     * reuses, so its life ends here like any other allocation's. */
+    scr_str_drop_large_spare();
     s->rc = 1;
     s->len = len; /* keeps its larger cap */
     scr_str_hash_forget(s);
     return s;
   }
+  if (__builtin_expect(scr_str_large_spare != NULL, 0)) return scr_str_take_large_spare(len);
 #else
   (void)len;
 #endif
@@ -487,11 +559,13 @@ void scr_str_release(ScrStr *s) {
     scr_live_strings--;
 #endif
 #ifndef SCR_RC_AUDIT
-    if (s->cap >= 512 && s->cap <= SCR_STR_SPARE_MAX) {
-      ScrStr *old = scr_str_spare;
-      scr_str_spare = s;
+    if (s->cap >= 512) {
+      ScrStr **slot = s->cap > SCR_STR_SPARE_MAX ? &scr_str_large_spare : &scr_str_spare;
+      if (__builtin_expect(!scr_str_spare_cleanup_registered, 0)) scr_str_register_spare_cleanup();
+      ScrStr *old = *slot;
+      *slot = s;
       if (!old) return;
-      s = old; /* evict the previous spare */
+      s = old; /* evict the previous spare of that size class */
     }
 #endif
     scr_mem_free(s);

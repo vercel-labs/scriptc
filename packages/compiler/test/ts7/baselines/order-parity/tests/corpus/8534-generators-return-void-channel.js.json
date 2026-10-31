@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8534-generators-return-void-channel.js"
+ ],
+ "diags": []
+}

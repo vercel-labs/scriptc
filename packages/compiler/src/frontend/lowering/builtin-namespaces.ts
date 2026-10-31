@@ -5,7 +5,12 @@
  * non-configurable, and `Symbol.toStringTag` names the namespace. Function
  * members hold the same function values the spelled `Math.abs` read gives;
  * members without one hold a function that throws the named fence when
- * called. Direct member calls (`Math.abs(x)`) keep their static lowerings. */
+ * called. Direct member calls (`Math.abs(x)`) keep their static lowerings,
+ * and so does a spelled member read; a program that spells one keeps its
+ * members fenced against replacement and deletion. A program that only
+ * reaches the members through the object (`verifyProperty(Math, ...)`,
+ * `Math[key] = ...`) gets Node's live table, where a member is replaced or
+ * deleted like any other property. */
 import {
   BOOL,
   DYN,
@@ -146,8 +151,14 @@ export function builtinNamespaceValue(
   const members = namespaceMembers(canonical);
   if (members === null) return null;
   const name = `%builtin.namespace.${canonical}`;
+  // A program that never spells a member read or call reads every member
+  // through the object, so its table stays live: the members are writable
+  // and deletable as in Node, and a replacement is what the object answers.
+  // A spelled read (`Math.abs`) keeps its static lowering, so that program
+  // keeps the fence (namespace-member-writes.ts explains the trade).
+  const live = lowerer.namespaceMemberWrites.allowsMemberWrites(canonical);
   if (!lowerer.liftedFns.some((fn) => fn.name === name))
-    defineNamespaceBuilder(lowerer, canonical, members, name, helperLoc(loc));
+    defineNamespaceBuilder(lowerer, canonical, members, name, helperLoc(loc), live);
   if (reportFences) reportMemberFences(lowerer, canonical, members, helperLoc(loc));
   lowerer.noteEdge(name);
   return { kind: "call", callee: name, args: [], type: DYN, loc };
@@ -180,6 +191,7 @@ function defineNamespaceBuilder(
   members: readonly NamespaceMember[],
   name: string,
   loc: SrcLoc,
+  live: boolean,
 ): void {
   const storage = `%g.${name}`;
   const ready = `${storage}%ready`;
@@ -227,8 +239,13 @@ function defineNamespaceBuilder(
     const value =
       length < 0
         ? constantValue(lowerer, canonical, key, loc)
-        : functionValue(lowerer, canonical, key, loc);
+        : functionValue(lowerer, canonical, key, length, loc, live);
     const attributes = length < 0 ? 0 : WRITABLE | CONFIGURABLE;
+    // A live table defines the member without the named fence, which the
+    // definition only turns on together with the arity: the arity stays the
+    // one the value boxes under, and functionValue carries Node's length
+    // where it differs from that arity.
+    const arity = live ? -1 : length;
     body.push({
       kind: "exprStmt",
       expr: {
@@ -239,7 +256,7 @@ function defineNamespaceBuilder(
           { kind: "strLit", value: key, type: STRING, loc },
           value,
           { kind: "numLit", value: attributes, type: F64, loc },
-          { kind: "numLit", value: length, type: F64, loc },
+          { kind: "numLit", value: arity, type: F64, loc },
         ],
         type: VOID,
         loc,
@@ -279,7 +296,14 @@ function constantValue(lowerer: Lowerer, canonical: string, key: string, loc: Sr
 
 /** A function member: its function value under its own name, or a function
  * that throws the named fence when called. */
-function functionValue(lowerer: Lowerer, canonical: string, key: string, loc: SrcLoc): IrExpr {
+function functionValue(
+  lowerer: Lowerer,
+  canonical: string,
+  key: string,
+  length: number,
+  loc: SrcLoc,
+  live: boolean,
+): IrExpr {
   const value =
     canonical === "Math"
       ? mathMemberValue(lowerer, key, loc)
@@ -288,11 +312,23 @@ function functionValue(lowerer: Lowerer, canonical: string, key: string, loc: Sr
         : canonical === "Reflect"
           ? reflectMemberValue(lowerer, key, loc)
           : null;
-  if (value !== null)
-    return value.type.kind === "dyn"
-      ? value
-      : { kind: "dynFrom", value, fnName: key, type: DYN, loc };
-  return fencedMember(lowerer, `${canonical}.${key}`, key, loc);
+  if (value !== null) {
+    if (value.type.kind === "dyn") return value;
+    // A live table boxes Node's own function value: its name and, for the
+    // rest-parameter members (min, max, hypot), the Node length that differs
+    // from its arity travel with the value, since the definition no longer
+    // sets either.
+    const identity = live ? lowerer.builtinFunctionIdentity(value) : {};
+    return {
+      kind: "dynFrom",
+      value,
+      fnName: identity.fnName ?? key,
+      ...(identity.fnLength !== undefined ? { fnLength: identity.fnLength } : {}),
+      type: DYN,
+      loc,
+    };
+  }
+  return fencedMember(lowerer, `${canonical}.${key}`, key, loc, live ? length : undefined);
 }
 
 const fenceName = (display: string): string => `%builtin.fence.${display}`;
@@ -301,8 +337,16 @@ const fenceDiag = (display: string, loc: SrcLoc): ScrDiagnostic =>
 
 /** One function per member without a function value: calling it throws the
  * SC1090 fence, while `typeof`, identity and the property's presence stay
- * as in Node. builtinNamespaceValue reports the fence. */
-function fencedMember(lowerer: Lowerer, display: string, key: string, loc: SrcLoc): IrExpr {
+ * as in Node. builtinNamespaceValue reports the fence. `length` is the
+ * Node length the member boxes under in a live table, whose definition no
+ * longer carries it. */
+function fencedMember(
+  lowerer: Lowerer,
+  display: string,
+  key: string,
+  loc: SrcLoc,
+  length: number | undefined,
+): IrExpr {
   const name = fenceName(display);
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     const diag = fenceDiag(display, loc);
@@ -321,6 +365,7 @@ function fencedMember(lowerer: Lowerer, display: string, key: string, loc: SrcLo
     kind: "dynFrom",
     value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
     fnName: key,
+    ...(length !== undefined ? { fnLength: length } : {}),
     type: DYN,
     loc,
   };

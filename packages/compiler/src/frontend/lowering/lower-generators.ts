@@ -43,6 +43,55 @@ export function resultRecordOf(lowerer: Lowerer, genT: GenType): IrType & { kind
   return rec;
 }
 
+/** The result record of `.return(value)` on a generator whose return
+ * channel carries no value: ECMAScript completes the generator with the
+ * supplied value, so the call site's record carries it as a checked
+ * value. The runtime parks it in the type-erased RET slot and promotes it
+ * to OUT when the GENRET unwind completes, so only the record's value
+ * field and the result thunk change — never the generator's own type. */
+export function widenedReturnRecord(lowerer: Lowerer, genT: GenType): IrType & { kind: "record" } {
+  const rec = genResultRecord(genT.yieldT, DYN, lowerer.shapes, lowerer.unions);
+  if (!rec) throw new InternalCompilerError("lowerer bug: widened generator result record");
+  return rec;
+}
+
+/** Whether a generator of the program yields in a finally block, where a
+ * `.return(value)` suspends before it completes. Computed once per lowering
+ * over the program's source files; nested functions are their own. */
+export function programYieldsInFinally(lowerer: Lowerer): boolean {
+  if (lowerer.generatorYieldsInFinally !== null) return lowerer.generatorYieldsInFinally;
+  let found = false;
+  const yieldsIn = (block: ts.Node): boolean => {
+    let yields = false;
+    ts.walkPreorder(block, (node) => {
+      if (node !== block && ts.isFunctionLike(node)) return "skip";
+      if (ts.isYieldExpression(node)) {
+        yields = true;
+        return "stop";
+      }
+      return undefined;
+    });
+    return yields;
+  };
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (found) break;
+    if (file.isDeclarationFile) continue;
+    ts.walkPreorder(file, (node) => {
+      if (
+        ts.isTryStatement(node) &&
+        node.finallyBlock !== undefined &&
+        yieldsIn(node.finallyBlock)
+      ) {
+        found = true;
+        return "stop";
+      }
+      return undefined;
+    });
+  }
+  lowerer.generatorYieldsInFinally = found;
+  return found;
+}
+
 /** The undefined value coerced into a yield/return channel — `yield;`,
  * `.return()`'s absent argument evaluated as a value. Null when the
  * channel cannot hold undefined. */
@@ -134,7 +183,7 @@ export function lowerGenMethodCall(
   if (gen.type.kind !== "generator") return null;
   const genT = gen.type;
   const recT = resultRecordOf(lowerer, genT);
-  const resultT: IrType = genT.async ? { kind: "promise", inner: recT } : recT;
+  let resultT: IrType = genT.async ? { kind: "promise", inner: recT } : recT;
   const argNode = call.arguments.nodes[0];
   let arg: IrExpr | null = null;
   if (name === "next") {
@@ -165,11 +214,27 @@ export function lowerGenMethodCall(
   } else if (name === "return") {
     if (argNode === undefined) {
       arg = null; // undefined done-value
+    } else if (genT.retT.kind === "void" && !genT.async && !programYieldsInFinally(lowerer)) {
+      // A generator whose body never returns a value still completes with
+      // the value `.return(v)` supplies: ECMAScript has no valueless return
+      // channel, and the runtime parks this in the type-erased RET slot and
+      // promotes it to OUT when the unwind completes. The call site's
+      // record widens to a checked value; the generator's own type does not,
+      // so a program that never supplies one keeps its IR. An async
+      // generator settles through its declaration's record, which the call
+      // site cannot widen, so it keeps the refusal below. So does a program
+      // with a generator that yields in a finally block: there the return
+      // suspends, and the `.next()` that completes it reads the value
+      // through the generator's own record, which has no value field.
+      arg = lowerer.lowerExprExpecting(argNode, DYN);
+      resultT = widenedReturnRecord(lowerer, genT);
     } else if (genT.retT.kind === "void") {
       lowerer.unsupported(
         "SC1071",
         call,
-        ".return(value) on a generator whose return type carries no value (call .return() with no argument)",
+        genT.async
+          ? ".return(value) on an async generator whose return type carries no value (call .return() with no argument)"
+          : ".return(value) on a generator whose return type carries no value, in a program with a generator that yields in a finally block (call .return() with no argument)",
       );
     } else {
       arg = lowerer.lowerExprExpecting(argNode, genT.retT);

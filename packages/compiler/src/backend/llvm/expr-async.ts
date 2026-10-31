@@ -590,8 +590,19 @@ export function emitAsyncExpr(
       }
       if (host.currentCoro !== null) host.emitCoroSuspendPrepared();
       if (e.captureCompletion) {
-        const converter = (type: IrType): string =>
-          isRefCounted(type) ? `@${host.dyn.toDynHelper(type)}` : "null";
+        // The runtime boxes the completion it captured with these
+        // converters; a channel that cannot hold a reference passes none.
+        // A void return channel can hold one in a program whose call sites
+        // widened it with `.return(v)` (widenedReturnRecord); the parked
+        // value is then a dynamic, so the converter retains it.
+        const converter = (type: IrType): string => {
+          if (isRefCounted(type)) return `@${host.dyn.toDynHelper(type)}`;
+          if (type.kind === "void" && host.widenedVoidReturn) {
+            host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+            return "@scr_dyn_retain_v";
+          }
+          return "null";
+        };
         host.declare(`declare ptr @scr_gen_delegate_resume(ptr, ptr, ptr)`);
         const resumed = B.tmp();
         B.line(
@@ -906,7 +917,20 @@ export function emitAsyncExpr(
         host.declare(`declare void @scr_gen_resume_throw(ptr)`);
         B.line(`call void @scr_gen_resume_throw(ptr ${g.name})`);
       }
-      const helper = host.genResultThunkFor(genT, resultT);
+      // `.return(value)` on a void return channel (widenedReturnRecord) parks a
+      // checked value in the type-erased RET slot, which the runtime promotes
+      // to OUT when the unwind completes. The result thunk of the same
+      // generator with a dyn return channel takes it out verbatim, so the call
+      // site borrows that one instead of a key of its own — a generator that
+      // never receives such a value keeps its own record and thunk.
+      const thunkGenT =
+        e.mode === "return" &&
+        genT.retT.kind === "void" &&
+        e.arg !== null &&
+        e.arg.type.kind === "dyn"
+          ? { ...genT, retT: e.arg.type }
+          : genT;
+      const helper = host.genResultThunkFor(thunkGenT, resultT);
       // The record builds before the check so an unwind (a propagated
       // body exception) releases it as the frame's never-read dummy.
       const t = B.tmp();

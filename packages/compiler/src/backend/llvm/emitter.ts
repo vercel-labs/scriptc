@@ -106,7 +106,13 @@ import {
   type Int32ArrayProof,
   type Int32ArrayRevision,
 } from "../../ir/int32-arrays.js";
-import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
+import {
+  everyExpr,
+  everyExprChild,
+  everyModuleNode,
+  everyStmtChild,
+  everyStmtList,
+} from "../../ir/traverse.js";
 import {
   INT32_RANGE,
   withinInt32,
@@ -709,6 +715,30 @@ function revisedAnalysis(analysis: Int32SlotAnalysis, mod: IrModule): Int32SlotA
     dynamicStores,
     slots: analysis.slots,
   };
+}
+
+/** Whether some call site completes a generator whose declared return
+ * channel is void with a dynamic value: the widened `.return(v)` lowering
+ * parks a ref in the type-erased return slot, so a dynamic `yield*`
+ * capture must box such a ref where the declared channel alone needs no
+ * converter. */
+function hasWidenedVoidReturnResume(mod: IrModule): boolean {
+  return !everyModuleNode(mod, {
+    expr: (e) => {
+      if (
+        e.kind === "genResume" &&
+        e.mode === "return" &&
+        e.arg !== null &&
+        e.arg.type.kind === "dyn" &&
+        e.gen.type.kind === "generator" &&
+        e.gen.type.retT.kind === "void"
+      )
+        return false;
+      return true;
+    },
+    stmt: () => true,
+    type: () => true,
+  });
 }
 
 /** The functions whose calls the backend may emit as calls of their
@@ -1606,6 +1636,11 @@ export class LlEmitter {
   /** Functions that check the native stack guard on entry
    * (stackCheckedFunctions); null where the runtime has no guard. */
   readonly stackChecks: ReadonlySet<string> | null;
+  /** Whether some call site completes a generator whose declared return
+   * channel is void with a dynamic value (the widened `.return(v)` lowering
+   * in lower-generators.ts). Only such a program can park a dynamic value in
+   * a void return slot, so only it boxes one at a delegation capture. */
+  readonly widenedVoidReturn: boolean;
   /** Small leaf functions called only from loops, whose direct calls are
    * `alwaysinline` (loop-callees.ts). */
   readonly loopCallees: ReadonlySet<string>;
@@ -2241,6 +2276,7 @@ export class LlEmitter {
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
+    this.widenedVoidReturn = hasWidenedVoidReturnResume(mod);
     this.loopCallees = findLoopCallees(mod);
     // A stackless call's eager prefix borrows its caller's stack; the
     // runtime moves deep prefix nests to a fresh stack using the guard,

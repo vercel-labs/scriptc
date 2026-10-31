@@ -66,3 +66,11 @@ test("the exit cleanup frees the spares", async () => {
   expect(stderr).toContain("exit cleanup freed the spares");
   expect(stderr).not.toContain("string spare test failed");
 });
+
+// Cleanup is the thread's last drain. A string released after it runs is
+// freed outright rather than parked behind a drain that never comes.
+test("a release after the exit cleanup frees its block", async () => {
+  const { stderr } = await execFileAsync(bin, []);
+  expect(stderr).toContain("a release after the exit cleanup frees its block");
+  expect(stderr).not.toContain("string spare test failed");
+});

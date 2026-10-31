@@ -10,6 +10,11 @@
  * exit handler before any spare exists, so it runs after the runtime's and
  * can see what that one left behind.
  *
+ * A thread that releases a string after its cleanup has run must free the
+ * block outright: cleanup is the thread's last drain, so a parked block
+ * would never be handed back. The exit handler exercises that after it has
+ * checked the drain.
+ *
  * Built without SCR_RC_AUDIT, which compiles the spares out.
  *
  * Exit 0 = all pass; prints each failure and exits 1 otherwise.
@@ -46,6 +51,30 @@ static void at_exit_check(void) {
     _Exit(EXIT_FAILURE);
   }
   fputs("exit cleanup freed the spares\n", stderr);
+
+  /* A release during a cleanup that runs after the drain (another exit
+   * handler, the tail of a worker's teardown) must free its block instead
+   * of parking it: no later drain would reach it. Each size class is
+   * checked on its own, so neither release can hide the other's block. */
+  ScrStr *late_large = scr_str_alloc_raw(LARGE, LARGE);
+  scr_str_release(late_large);
+  large = scr_str_test_large_spare_bytes();
+  if (large != 0) {
+    fprintf(stderr, "string spare test failed: a release after the exit cleanup parked %zu "
+                    "large-spare bytes\n",
+            large);
+    _Exit(EXIT_FAILURE);
+  }
+  ScrStr *late_small = scr_str_alloc_raw(SMALL, SMALL);
+  scr_str_release(late_small);
+  small = scr_str_test_small_spare_bytes();
+  if (small != 0) {
+    fprintf(stderr, "string spare test failed: a release after the exit cleanup parked %zu "
+                    "small-spare bytes\n",
+            small);
+    _Exit(EXIT_FAILURE);
+  }
+  fputs("a release after the exit cleanup frees its block\n", stderr);
 }
 
 static char *filled(char fill, size_t len) {

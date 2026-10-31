@@ -440,6 +440,12 @@ static SCR_TL ScrStr *scr_str_spare;
  * it, and any other string allocation frees it first. */
 static SCR_TL ScrStr *scr_str_large_spare;
 static SCR_TL bool scr_str_spare_cleanup_registered;
+/* Set once the thread's cleanup has run (scr_str_free_spares). Nothing
+ * drains the spares after that: the cleanup follows the last of the
+ * thread's releases in the executable lanes, and a block parked by a later
+ * one — another exit handler, the tail of a worker's teardown — would stay
+ * in TLS for good instead of going back to the allocator. */
+static SCR_TL bool scr_str_spares_closed;
 #endif
 /* The largest block the spare keeps. A larger one would stay resident until
  * a string of about its size comes along, which may be never: a program
@@ -467,6 +473,13 @@ static void scr_str_drop_large_spare(void) {
  * the thread's allocator state alive (worker thread end, library reset,
  * process exit), so both spares go back like any released string. */
 static void scr_str_free_spares(void) {
+#ifndef SCR_LIB
+  /* Worker thread end and process exit: the thread has no allocations left
+   * to spare after this. A library reset is a drain too, but the thread
+   * keeps allocating across sessions there, and its reset registry holds
+   * the entry for the next one, so the spares stay open. */
+  scr_str_spares_closed = true;
+#endif
   scr_str_drop_large_spare();
   ScrStr *s = scr_str_spare;
   scr_str_spare = NULL;
@@ -559,7 +572,7 @@ void scr_str_release(ScrStr *s) {
     scr_live_strings--;
 #endif
 #ifndef SCR_RC_AUDIT
-    if (s->cap >= 512) {
+    if (s->cap >= 512 && !scr_str_spares_closed) {
       ScrStr **slot = s->cap > SCR_STR_SPARE_MAX ? &scr_str_large_spare : &scr_str_spare;
       if (__builtin_expect(!scr_str_spare_cleanup_registered, 0)) scr_str_register_spare_cleanup();
       ScrStr *old = *slot;

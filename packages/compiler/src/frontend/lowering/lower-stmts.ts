@@ -2772,6 +2772,60 @@ export function lowerDestructuringDecl(
     loc,
   );
   if (groupsSource !== null) init = groupsSource;
+  // A source whose static type is already null or undefined, or a primitive
+  // GetIterator always rejects (a number, boolean, bigint or symbol — a
+  // string is iterable): the pattern's whole effect is V8's TypeError,
+  // thrown before any element runs. The throw precedes the source temp
+  // because a bare unit type has no local representation.
+  const unitPattern =
+    ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name) ? decl.name : null;
+  if (unitPattern !== null) {
+    const message = bindingDestructureMessage(unitPattern, init.type);
+    if (message !== null) {
+      out.push({ kind: "exprStmt", expr: nodeThrowExpr(1, "", message, VOID, loc), loc });
+      return out;
+    }
+    // A source that is a union of unit arms only (`const v = null` keeps a
+    // union-typed slot inside a function) throws for whichever unit arm the
+    // value holds: the throw branches on the tag instead of the source temp.
+    const arms = unitOnlyArms(lowerer, init.type);
+    if (arms !== null && init.type.kind === "union") {
+      const unionType = init.type;
+      const messages =
+        arms === null
+          ? null
+          : allArmsMapped(arms, (arm) => bindingDestructureMessage(unitPattern, arm));
+      if (arms !== null && messages !== null) {
+        const tmp = lowerer.declareHiddenLocal("%destrU", unionType);
+        out.push({ kind: "varDecl", localId: tmp.id, init, loc });
+        const ref: IrExpr = { kind: "varRef", localId: tmp.id, type: unionType, loc };
+        for (let i = 0; i < arms.length; i++) {
+          out.push({
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId: unionType.unionId,
+              tag: i,
+              negated: false,
+              value: ref,
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "exprStmt",
+                expr: nodeThrowExpr(1, "", messages[i]!, VOID, loc),
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          });
+        }
+        return out;
+      }
+    }
+  }
   const tmp = lowerer.declareHiddenLocal("%destr", init.type);
   out.push({ kind: "varDecl", localId: tmp.id, init, loc });
   // A TypeScript `any` source destructured through its checked-dynamic
@@ -2904,6 +2958,7 @@ export function lowerBindingPattern(
       lowerer.mapTypeOf(patternType)?.kind === "dyn";
     allowDynObject ||= (patternType.flags & ts.TypeFlags.Any) !== 0;
   }
+  const baseLength = out.length;
   const present = patternSourceValue(
     lowerer,
     srcRef(),
@@ -2923,6 +2978,66 @@ export function lowerBindingPattern(
       allowDynObject,
     );
     return;
+  }
+  // A source whose static type already decides the outcome: GetIterator
+  // rejects every primitive but a string, and RequireObjectCoercible
+  // rejects null and undefined alone (a number or boolean source boxes).
+  // The pattern's whole effect is V8's TypeError, thrown where the pattern
+  // starts — an empty pattern included, which is why the fence sits before
+  // the element lowering rather than in it.
+  const nonDestructible =
+    isUnitType(srcType) ||
+    (ts.isArrayBindingPattern(pattern) && isStaticNonIterablePrimitive(srcType));
+  if (nonDestructible) {
+    const message = bindingDestructureMessage(pattern, srcType);
+    if (message !== null) {
+      const loc = locOf(pattern);
+      out.length = baseLength;
+      out.push({
+        kind: "exprStmt",
+        expr: nodeThrowExpr(1, "", message, VOID, loc),
+        loc,
+      });
+      return;
+    }
+  }
+  // A source that is a union of unit arms only (a for-of element whose
+  // receiver keeps a union-typed slot inside a function) throws V8's
+  // TypeError for whichever arm the value holds; the pattern's reads never
+  // run. Branch on the tag instead, in the arm's own message.
+  if (srcType.kind === "union") {
+    const arms = unitOnlyArms(lowerer, srcType);
+    const messages =
+      arms === null ? null : allArmsMapped(arms, (arm) => bindingDestructureMessage(pattern, arm));
+    if (arms !== null && messages !== null) {
+      const loc = locOf(pattern);
+      out.length = baseLength;
+      const value = srcRef();
+      for (let i = 0; i < arms.length; i++) {
+        out.push({
+          kind: "if",
+          cond: {
+            kind: "unionIsTag",
+            unionId: srcType.unionId,
+            tag: i,
+            negated: false,
+            value,
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: nodeThrowExpr(1, "", messages[i]!, VOID, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
+      return;
+    }
   }
   if (ts.isArrayBindingPattern(pattern)) {
     lowerer.fenceStaticHeadersIteration(pattern);
@@ -10083,7 +10198,241 @@ function destrSpellingOf(rhs: ts.Expression): string | null {
     const callee = destrSpellingOf(e.expression);
     return callee === null ? null : `${callee}(...)`;
   }
+  return literalSpellingOf(e);
+}
+
+/** V8's spelling of a literal that names a destructuring source: `null`,
+ * `true`, `false`, and a number in its canonical form (`0x10` reads `16`,
+ * `1.50` reads `1.5`). Null for every other expression. */
+function literalSpellingOf(e: ts.Expression): string | null {
+  if (e.kind === ts.SyntaxKind.NullKeyword) return "null";
+  if (e.kind === ts.SyntaxKind.TrueKeyword) return "true";
+  if (e.kind === ts.SyntaxKind.FalseKeyword) return "false";
+  if (ts.isNumericLiteral(e)) return String(Number(e.text));
   return null;
+}
+
+/** `fn` over every arm in tag order, or null as soon as one arm has no
+ * answer — the caller then keeps its refusal. */
+function allArmsMapped<T>(arms: IrType[], fn: (arm: IrType) => T | null): T[] | null {
+  const answers: T[] = [];
+  for (const arm of arms) {
+    const answer = fn(arm);
+    if (answer === null) return null;
+    answers.push(answer);
+  }
+  return answers;
+}
+
+/** The arms of a union whose every arm is null or undefined, in tag order;
+ * null for any other type. */
+function unitOnlyArms(lowerer: Lowerer, t: IrType): IrType[] | null {
+  if (t.kind !== "union") return null;
+  const arms = lowerer.unions.get(t.unionId)?.arms;
+  if (arms === undefined || arms.length === 0) return null;
+  return arms.every(isUnitType) ? arms : null;
+}
+
+/** The primitive kinds GetIterator always rejects: every primitive but a
+ * string, which is the one iterable primitive. */
+function isStaticNonIterablePrimitive(t: IrType): boolean {
+  return (
+    t.kind === "nullT" ||
+    t.kind === "undefinedT" ||
+    t.kind === "void" ||
+    t.kind === "bool" ||
+    t.kind === "f64" ||
+    t.kind === "bigint" ||
+    t.kind === "symbol"
+  );
+}
+
+/** "null" or "undefined" — the unit a type stands for. */
+function unitTextOf(t: IrType): "null" | "undefined" {
+  return t.kind === "nullT" ? "null" : "undefined";
+}
+
+/** V8's description of a value it cannot name from the program text: the
+ * value's kind followed by its value ("object null", "undefined"). */
+function valueKindText(t: IrType): string {
+  return t.kind === "nullT" ? "object null" : "undefined";
+}
+
+/** The name V8 gives a destructuring source it spells from the program
+ * text: an identifier or a literal (see literalSpellingOf, extended with a
+ * negated number). Null for every other expression — V8's own spelling
+ * there needs source text this lowering does not reproduce, so the caller
+ * keeps its refusal. */
+function sourceNameOf(e: ts.Expression): string | null {
+  const literal = literalSpellingOf(e);
+  if (literal !== null) return literal;
+  if (ts.isIdentifier(e)) return e.text;
+  if (
+    ts.isPrefixUnaryExpression(e) &&
+    e.operator === ts.SyntaxKind.MinusToken &&
+    ts.isNumericLiteral(e.operand)
+  )
+    return String(-Number(e.operand.text));
+  return null;
+}
+
+/** A binding pattern's source as V8 names it: the initializer's name, a
+ * call's own wording, ".for" for a for-of element (V8's name for the
+ * loop's hidden binding), or no source at all (a nested pattern or a
+ * parameter, whose value came from somewhere the pattern does not see). */
+function bindingSourceOf(pattern: ts.Node): {
+  kind: "name" | "call" | "unspelled" | "none";
+  text: string;
+  init: ts.Expression | null;
+} {
+  const decl = pattern.parent;
+  if (decl === undefined || !ts.isVariableDeclaration(decl))
+    return { kind: "none", text: "", init: null };
+  const init = decl.initializer;
+  if (init === undefined) {
+    const list = decl.parent;
+    if (
+      list !== undefined &&
+      ts.isVariableDeclarationList(list) &&
+      list.parent !== undefined &&
+      ts.isForOfStatement(list.parent)
+    )
+      return { kind: "name", text: ".for", init: null };
+    return { kind: "none", text: "", init: null };
+  }
+  const name = sourceNameOf(init);
+  if (name !== null) return { kind: "name", text: name, init };
+  if (ts.isCallExpression(init) && ts.isIdentifier(init.expression) && !init.questionDotToken)
+    return { kind: "call", text: init.expression.text, init };
+  return { kind: "unspelled", text: "", init };
+}
+
+/** The static key of a pattern property spelling: an identifier, a numeric
+ * literal in canonical form, or a string literal's value. Null for a
+ * computed key, which V8 never names (the folding that types the key is
+ * not what V8 prints). */
+function staticPatternKey(name: ts.PropertyName | undefined): string | null {
+  if (name === undefined) return null;
+  if (ts.isIdentifier(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return String(Number(name.text));
+  if (ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) return name.text;
+  return null;
+}
+
+/** The first element of an object pattern that V8 names in a
+ * RequireObjectCoercible message: its static key and whether a default
+ * reads it first. Null when V8 leaves the property unnamed — a rest
+ * declaration first, a computed key, or no element at all. */
+function firstObjectPatternKey(pattern: ts.Node): { key: string; defaulted: boolean } | null {
+  if (ts.isObjectBindingPattern(pattern)) {
+    const first = pattern.elements.nodes[0];
+    if (first === undefined || first.dotDotDotToken !== undefined) return null;
+    const key =
+      first.propertyName !== undefined
+        ? staticPatternKey(first.propertyName)
+        : ts.isIdentifier(first.name)
+          ? first.name.text
+          : null;
+    return key === null ? null : { key, defaulted: first.initializer !== undefined };
+  }
+  if (ts.isObjectLiteralExpression(pattern)) {
+    const first = pattern.properties.nodes[0];
+    if (first === undefined) return null;
+    if (ts.isShorthandPropertyAssignment(first)) {
+      if (!ts.isIdentifier(first.name)) return null;
+      return {
+        key: first.name.text,
+        defaulted: first.objectAssignmentInitializer !== undefined,
+      };
+    }
+    if (!ts.isPropertyAssignment(first)) return null;
+    const key = staticPatternKey(first.name);
+    if (key === null) return null;
+    const value = first.initializer;
+    return {
+      key,
+      defaulted:
+        ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.EqualsToken,
+    };
+  }
+  return null;
+}
+
+/** The message of the TypeError a BINDING pattern raises over a source its
+ * static type already makes non-destructible, in V8's wording. Null when
+ * V8 would spell a value this lowering cannot know the name of — the
+ * caller keeps its refusal then. */
+function bindingDestructureMessage(
+  pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
+  srcType: IrType,
+): string | null {
+  const source = bindingSourceOf(pattern);
+  if (ts.isArrayBindingPattern(pattern)) {
+    // GetIterator only rejects the primitives; any other source type — a
+    // string above all, which is iterable — is not this pattern's TypeError.
+    if (!isUnitType(srcType) && !isStaticNonIterablePrimitive(srcType)) return null;
+    if (source.kind === "name") return `${source.text} is not iterable`;
+    if (source.kind === "call")
+      return `${source.text} is not a function or its return value is not iterable`;
+    // A source V8 cannot name — a nested pattern's value, or a property
+    // read — is described by its runtime kind instead.
+    if (
+      source.kind === "unspelled" &&
+      source.init !== null &&
+      !(ts.isPropertyAccessExpression(source.init) || ts.isElementAccessExpression(source.init))
+    )
+      return null;
+    if (!isUnitType(srcType)) return null;
+    return `${valueKindText(srcType)} is not iterable (cannot read property Symbol(Symbol.iterator))`;
+  }
+  // An object pattern boxes every primitive but null and undefined, and
+  // those two are the only sources that throw.
+  if (!isUnitType(srcType)) return null;
+  const unit = unitTextOf(srcType);
+  const first = firstObjectPatternKey(pattern);
+  // The initializer's own spelling (a call speaks as `f(...)`, a member
+  // expression as V8 canonicalizes it); a source with no spelling of its
+  // own (a nested pattern's value) keeps the caller's refusal.
+  const named =
+    source.kind === "name"
+      ? source.text
+      : source.init !== null
+        ? destrSpellingOf(source.init)
+        : null;
+  if (source.kind === "unspelled" && named === null) return null;
+  if (named === null)
+    return first === null
+      ? `Cannot read properties of ${unit}`
+      : `Cannot read properties of ${unit} (reading '${first.key}')`;
+  if (first === null) return `Cannot destructure '${named}' as it is ${unit}.`;
+  if (first.defaulted) return `Cannot read properties of ${unit} (reading '${first.key}')`;
+  return `Cannot destructure property '${first.key}' of '${named}' as it is ${unit}.`;
+}
+
+/** The message of the TypeError a DESTRUCTURING ASSIGNMENT raises over a
+ * null or undefined source. An array pattern speaks of the runtime value
+ * ("object null is not iterable"); an object pattern names its source when
+ * it has one to name and reads the property otherwise — a for-of head has
+ * no source text at all. Null when V8's spelling is not reproducible here;
+ * the caller keeps its refusal. */
+function assignDestructureMessage(
+  target: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+  srcType: IrType,
+  rhs: ts.Expression | null,
+): string | null {
+  const unit = unitTextOf(srcType);
+  if (ts.isArrayLiteralExpression(target))
+    return `${valueKindText(srcType)} is not iterable (cannot read property Symbol(Symbol.iterator))`;
+  const first = firstObjectPatternKey(target);
+  if (rhs === null)
+    return first === null
+      ? `Cannot read properties of ${unit}`
+      : `Cannot read properties of ${unit} (reading '${first.key}')`;
+  const named = destrSpellingOf(rhs);
+  if (named === null) return null;
+  if (first === null) return `Cannot destructure '${named}' as it is ${unit}.`;
+  if (first.defaulted) return `Cannot read properties of ${unit} (reading '${first.key}')`;
+  return `Cannot destructure property '${first.key}' of '${named}' as it is ${unit}.`;
 }
 
 /** Destructuring ASSIGNMENT (existing bindings — the declaration twin is
@@ -10135,10 +10484,61 @@ function destructuringAssignInto(
   blame: ts.Node,
   loc: SrcLoc,
 ): { stmts: IrStmt[]; value: IrExpr } {
+  // A source whose static type is already null or undefined: the pattern
+  // throws V8's TypeError before assigning anything (GetIterator's "is not
+  // iterable" for an array pattern, RequireObjectCoercible's "Cannot
+  // destructure" for an object one). A for-of head has no source
+  // expression — V8 names the loop's hidden binding only in the pattern's
+  // spelling, which is why the element form reads the property instead.
+  if (isUnitType(init.type)) {
+    const message = assignDestructureMessage(target, init.type, rhs);
+    if (message !== null) {
+      const throwStmt: IrStmt = {
+        kind: "exprStmt",
+        expr: nodeThrowExpr(1, "", message, VOID, loc),
+        loc,
+      };
+      return { stmts: [throwStmt], value: init };
+    }
+  }
   if (init.type.kind === "union") {
     const source = lowerer.declareHiddenLocal("%destrSource", init.type);
     const out: IrStmt[] = [{ kind: "varDecl", localId: source.id, init, loc }];
     const value = varRef(source.id, init.type, loc);
+    // The RHS evaluates once, then the tag picks the arm's TypeError —
+    // the pattern's reads never run (a unit union only holds null or
+    // undefined, so RequireObjectCoercible/GetIterator always rejects).
+    const arms = unitOnlyArms(lowerer, init.type);
+    const messages =
+      arms === null
+        ? null
+        : allArmsMapped(arms, (arm) => assignDestructureMessage(target, arm, rhs));
+    if (arms !== null && messages !== null) {
+      for (let i = 0; i < arms.length; i++) {
+        out.push({
+          kind: "if",
+          cond: {
+            kind: "unionIsTag",
+            unionId: init.type.unionId,
+            tag: i,
+            negated: false,
+            value,
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: nodeThrowExpr(1, "", messages[i]!, VOID, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
+      return { stmts: out, value };
+    }
     const present = patternSourceValue(
       lowerer,
       value,

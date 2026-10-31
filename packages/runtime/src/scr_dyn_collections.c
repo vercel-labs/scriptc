@@ -1264,9 +1264,11 @@ static ScrDyn *scr_collection_prototype_build(const ScrCollectionClass *cls) {
    * are this same object, so both directions of the link agree. */
   {
     ScrStr *name = scr_str_new(cls->klass, strlen(cls->klass));
-    ScrDyn *ctor = scr_dyn_global_constructor(name);
+    ScrDyn *ctor = scr_dyn_global_constructor(name); /* the lookup's +1 */
     if (ctor) {
-      scr_collection_define(prototype, "constructor", ctor);
+      /* scr_collection_define owns the value it is given; the interned
+       * constructor keeps its own reference until the release below. */
+      scr_collection_define(prototype, "constructor", scr_dyn_retain(ctor));
       scr_dyn_fn_seed_prototype(ctor, scr_dyn_retain(prototype));
       scr_dyn_release(ctor);
     }

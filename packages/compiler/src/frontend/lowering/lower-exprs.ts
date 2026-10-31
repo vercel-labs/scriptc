@@ -2443,6 +2443,16 @@ function numberOperand(lowerer: Lowerer, node: ts.Expression): NumberOperand {
       return pure((v) => defaultAfterUndefined(v, num(NaN)));
     case "dyn":
       return { value, convert: dynToNumber, runsCode: true };
+    case "symbol":
+      // ToNumber(Symbol) throws Node's "Cannot convert a Symbol value to a
+      // number"; the checked-dynamic conversion carries that exact throw.
+      // `runsCode` keeps the argument order Node has: a following argument
+      // still evaluates into its temporary before the conversion throws.
+      return {
+        value: lowerer.coerceToExpected(value, DYN),
+        convert: dynToNumber,
+        runsCode: true,
+      };
     case "union":
       if (lowerer.dynConvertible(value.type))
         return {

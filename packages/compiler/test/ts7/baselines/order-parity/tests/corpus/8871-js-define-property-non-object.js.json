@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8871-js-define-property-non-object.js"
+ ],
+ "diags": []
+}

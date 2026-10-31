@@ -9053,11 +9053,20 @@ function lowerObjectStaticCall(
     if (target?.type.kind === "classval" && lowerer.dynConvertible(target.type)) {
       target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
     }
-    const descriptorPrimitive =
-      member === "getOwnPropertyDescriptor" &&
-      target &&
-      (target.type.kind === "bool" || target.type.kind === "f64" || target.type.kind === "string");
-    if (!target || (target.type.kind !== "dyn" && !isUnitType(target.type) && !descriptorPrimitive))
+    // A primitive target is not an object. Object.defineProperty raises
+    // Node's TypeError from the runtime's non-object branch, and
+    // Object.getOwnPropertyDescriptor boxes it with ToObject (a string's
+    // indices become own properties). A primitive target's key and
+    // descriptor still evaluate before the call, which is Node's order.
+    // A symbol target stays fenced for the descriptor read: there the
+    // runtime has no symbol-wrapper path, and the fence is the honest one.
+    const primitiveTarget =
+      target !== null &&
+      (target.type.kind === "bool" ||
+        target.type.kind === "f64" ||
+        target.type.kind === "string" ||
+        (member === "defineProperty" && target.type.kind === "symbol"));
+    if (!target || (target.type.kind !== "dyn" && !isUnitType(target.type) && !primitiveTarget))
       return null;
     if (target.type.kind !== "dyn")
       target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
@@ -9134,9 +9143,20 @@ function lowerObjectStaticCall(
     // boxes to that constructor function, as for Object.defineProperty above.
     const runtimeStaticClass =
       target?.type.kind === "classval" ? lowerer.classes.get(target.type.className) : undefined;
+    // A primitive target is not an object: the runtime throws Node's
+    // TypeError ("Object.defineProperties called on non-object"), and the
+    // descriptor map still evaluates first, as Node evaluates every
+    // argument before the member body's Type(O) check.
+    const primitiveTarget =
+      target !== null &&
+      (target.type.kind === "bool" ||
+        target.type.kind === "f64" ||
+        target.type.kind === "string" ||
+        target.type.kind === "symbol");
     if (
       target &&
       (isUnitType(target.type) ||
+        primitiveTarget ||
         (runtimeStaticClass !== undefined &&
           hasRuntimeStatics(runtimeStaticClass) &&
           lowerer.dynConvertible(target.type)))

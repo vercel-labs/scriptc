@@ -303,6 +303,25 @@ export function variantsFor(source) {
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
     });
+    // The BigInt element kinds and their element accessors are part of the
+    // JavaScript object model build (t262-da §J): a BigInt view's program
+    // has jsObjectModel, so it selects the object model build beside the
+    // TextDecoder legacy one when it has both. Every other program keeps the
+    // default object, byte for byte.
+    withJsObjectModel(variants);
+  }
+  // util.inspect prints a BigInt typed array by reading its elements as
+  // BigInts, whichever build of the unit the program selects. Its Node island
+  // build is not the one these variants name: island output keeps its own
+  // object.
+  if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
+    withJsObjectModel(variants);
+  }
+  // console.table reads the cells of a row's typed array, so a BigInt view
+  // needs the element accessor that answers BigInts. The default object keeps
+  // the numeric read, byte for byte.
+  if (source === "scr_console_native.c") {
+    withJsObjectModel(variants);
   }
   // fs.watchFile's poll needs a path stat that reports the errno (its failed
   // poll IS a reportable event). The Stats snapshot is private to scr_lib.c,

@@ -280,6 +280,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "regex",
     "copying",
     "textDecoderLegacy",
+    "bigintBytes",
     "fileHandle",
     "fetch",
     "zlib",

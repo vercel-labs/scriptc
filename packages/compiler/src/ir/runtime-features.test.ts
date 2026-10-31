@@ -417,4 +417,30 @@ describe("runtime feature snapshots", () => {
     expect(features.stdlibPrototypeValue).toBe(true);
     expect(features.jsObjectModel).toBe(false);
   });
+
+  test("gates the BigInt typed-array element kinds on the constructor name", () => {
+    // The two BigInt kinds have no double-backed element, so their code lives
+    // in the JavaScript object model build (t262-da §J); every other typed
+    // array keeps the default one.
+    const bytesCall = (name: string) => ({
+      kind: "exprStmt" as const,
+      loc,
+      expr: {
+        kind: "libCall" as const,
+        fn: "bytes.constructor" as IrLibFn,
+        args: [{ kind: "strLit" as const, value: name, type: STRING, loc }],
+        type: DYN,
+        loc,
+      },
+    });
+    for (const name of ["BigInt64Array", "BigUint64Array"]) {
+      const mod = module();
+      expect(moduleRuntimeFeatures(mod).bigintBytes).toBe(false);
+      mod.functions[0]!.body.push(bytesCall(name));
+      expect(moduleRuntimeFeatures(mod).bigintBytes).toBe(true);
+    }
+    const numeric = module();
+    numeric.functions[0]!.body.push(bytesCall("Uint8Array"));
+    expect(moduleRuntimeFeatures(numeric).bigintBytes).toBe(false);
+  });
 });

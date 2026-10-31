@@ -22,6 +22,10 @@ export interface NativeLinkFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** A BigInt typed-array constructor is read as a value: its element kinds
+   * live in the JavaScript object model build (t262-da §J), which
+   * jsObjectModelFact ORs this fact into. */
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;

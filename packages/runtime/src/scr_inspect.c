@@ -2103,6 +2103,17 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   return out;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* One element of a BigInt view as inspector text: the decimal value with its
+ * n suffix (no color; the caller styles it). */
+static ScrStr *insp_bytes_bigint(const ScrBytes *b, size_t i) {
+  ScrDyn *element = scr_bytes_get_bigint(b, (double)i);
+  ScrStr *text = scr_bigint_inspect(element->v.bigint);
+  scr_dyn_release(element);
+  return text;
+}
+#endif
+
 /* A numeric typed array (not a Buffer): `Uint8Array(n) [ ... ]` with
  * Node's maxArrayLength and array grid, `[Uint8Array]` past the depth
  * limit. Borrows b; +1. */
@@ -2126,7 +2137,14 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   scr_insp_begin(recurse + 1);
   size_t shown = (double)b->len < g_max_array_length ? b->len : (size_t)g_max_array_length;
   for (size_t i = 0; i < shown; i++) {
+    /* A BigInt element has no double form: read it as a BigInt. */
+#ifdef SCR_JS_OBJECT_MODEL
+    bool bigint = scr_bytes_elem_is_bigint(b->elem);
+    ScrStr *s = insp_styled(bigint ? insp_bytes_bigint(b, i) : scr_insp_f64(scr_bytes_get(b, (double)i)),
+                            bigint ? INSP_BIGINT : INSP_NUMBER);
+#else
     ScrStr *s = insp_styled(scr_insp_f64(scr_bytes_get(b, (double)i)), INSP_NUMBER);
+#endif
     scr_insp_entry(s, true);
     scr_str_release(s);
   }
@@ -3944,6 +3962,10 @@ static ScrStr *insp_table_cell(ScrDyn *v) {
       size_t shown = len < 3 ? len : 3;
       ScrStr *items[4];
       for (size_t i = 0; i < shown; i++) {
+#ifdef SCR_JS_OBJECT_MODEL
+        if (bytes && scr_bytes_elem_is_bigint(v->v.bytes->elem)) items[i] = insp_bytes_bigint(v->v.bytes, i);
+        else
+#endif
         items[i] = bytes ? scr_insp_f64(scr_bytes_get(v->v.bytes, (double)i))
                          : scr_insp_dyn(v->v.arr.items[i], 1, 0);
       }

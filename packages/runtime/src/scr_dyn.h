@@ -1338,6 +1338,14 @@ void scr_dyn_proxy_unsupported(const char *operation);
 /* Retains the native view, preserving identity and its shared backing
  * allocation across the checked-dynamic boundary. Borrows b. */
 ScrDyn *scr_dyn_new_bytes(const ScrBytes *b);
+#ifdef SCR_JS_OBJECT_MODEL
+/* The element at k of a typed array view as a checked-dynamic value (a BigInt
+ * for the BigInt kinds), or undefined past the view's current end. +1. The
+ * kind decides inside scr_json.c, so a caller that is not built twice
+ * (console.table cells) reads an element through it; a numeric read of a
+ * BigInt view would trap. */
+ScrDyn *scr_dyn_bytes_item(const ScrBytes *b, size_t k);
+#endif
 ScrDyn *scr_bytes_constructor(const ScrStr *name);
 bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee);
 bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal);

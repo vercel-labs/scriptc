@@ -168,7 +168,7 @@ import {
   updateSidecarIdentity,
 } from "./library/sidecar.js";
 import { type IrModule, type SrcLoc } from "./ir/ir.js";
-import { moduleRuntimeFeatures } from "./ir/runtime-features.js";
+import { jsObjectModelFact, moduleRuntimeFeatures } from "./ir/runtime-features.js";
 import { serializeModuleParts } from "./ir/serialize.js";
 import { readTextParts, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
@@ -804,13 +804,14 @@ async function compileExecutableNative(
     regex: features.regex,
     copying: features.copying,
     textDecoderLegacy: features.textDecoderLegacy,
+    bigintBytes: features.bigintBytes,
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
-    ...(features.jsObjectModel ? { jsObjectModel: true } : {}),
+    ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -2431,6 +2432,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
+    bigintBytes: features.bigintBytes,
     dynInvoke: features.dynInvoke,
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
@@ -2527,6 +2529,7 @@ async function compileLibraryNative(
     x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.textDecoderLegacy,
+    bigintBytes: features.bigintBytes,
     dynInvoke: features.dynInvoke,
     ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(features.dynTier === true ? { dynTier: true } : {}),

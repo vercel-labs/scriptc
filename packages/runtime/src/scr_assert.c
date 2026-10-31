@@ -1358,6 +1358,10 @@ static const char *scr_assert_cf_bytes_class(ScrBytesElem elem) {
     case SCR_BYTES_U16: return "Uint16Array";
     case SCR_BYTES_I16: return "Int16Array";
     case SCR_BYTES_U8C: return "Uint8ClampedArray";
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: return "BigInt64Array";
+    case SCR_BYTES_U64: return "BigUint64Array";
+#endif
   }
   return "Uint8Array";
 }
@@ -1573,6 +1577,15 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
       for (size_t i = 0; i < bs->len; i++) {
         ab_char(b, '\n');
         scr_assert_cf_pad(b, indent + 2);
+#ifdef SCR_JS_OBJECT_MODEL
+        if (scr_bytes_elem_is_bigint(bs->elem)) {
+          ScrDyn *element = scr_bytes_get_bigint(bs, (double)i);
+          scr_assert_cf_value(b, element, indent + 2, 0);
+          scr_dyn_release(element);
+          if (i + 1 < bs->len) ab_char(b, ',');
+          continue;
+        }
+#endif
         char tmp[40];
         size_t n = scr_assert_inspect_f64(scr_bytes_get(bs, (double)i), tmp);
         ab_bytes(b, tmp, n);

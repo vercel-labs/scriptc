@@ -62,6 +62,13 @@ export interface CcOptions {
    * generated mapping tables live behind SCR_TEXT_DECODER_LEGACY so the
    * always-compiled bytes TU stays in the historical size class otherwise. */
   textDecoderLegacy?: boolean;
+  /** The program reads a BigInt typed-array constructor as a value
+   * (BigInt64Array, BigUint64Array): its element kinds, which no double
+   * represents, live in the JavaScript object model build (t262-da §J).
+   * The fact ORs into jsObjectModel (jsObjectModelFact), so every unit the
+   * program links names the same SCR_JS_OBJECT_MODEL builds; a program
+   * without it keeps the default objects byte for byte. */
+  bigintBytes?: boolean;
   /** The program uses fs/promises.open or a FileHandle value
    * (moduleUsesFileHandle on the IR): compiles scr_file_handle.c. Keeping
    * the descriptor object and promise adapters in their own unit preserves
@@ -452,6 +459,12 @@ export interface LibArchiveOptions {
   x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
+  /** See CcOptions.bigintBytes: the SameValueZero/element-value methods of a
+   * BigInt typed array, in the archive's bytes and json units. */
+  bigintBytes?: boolean;
+  /** See CcOptions.jsObjectModel: the archive's bytes and json units carry
+   * the JavaScript object model build. */
+  jsObjectModel?: boolean;
 }
 
 export interface NativeArtifactDependency {

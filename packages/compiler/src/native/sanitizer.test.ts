@@ -47,6 +47,7 @@ const features = {
   regex: true,
   copying: false,
   textDecoderLegacy: false,
+  bigintBytes: false,
   fileHandle: false,
   fetch: false,
   zlib: false,

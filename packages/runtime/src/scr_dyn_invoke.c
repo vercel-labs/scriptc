@@ -120,6 +120,16 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     }
     for (size_t i = 0; i < d->v.bytes->len; i++) {
       if (i > 0) scr_jb_putc(b, ',');
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_bytes_elem_is_bigint(d->v.bytes->elem)) {
+        ScrDyn *element = scr_bytes_get_bigint(d->v.bytes, (double)i);
+        ScrStr *n = scr_bigint_to_string(element->v.bigint, 10);
+        scr_dyn_release(element);
+        scr_jb_write(b, n->data, n->len);
+        scr_str_release(n);
+        continue;
+      }
+#endif
       ScrStr *n = scr_f64_to_scrstr(scr_bytes_get(d->v.bytes, (double)i));
       scr_jb_write(b, n->data, n->len);
       scr_str_release(n);
@@ -289,6 +299,10 @@ static ScrDyn *dyn_borrow_get(ScrDyn *recv, const ScrStr *key) {
       return scr_dyn_arr_named_get(recv, key);
     if (recv->kind == SCR_DYN_ARR) return scr_dyn_arr_at(recv, (double)index);
     if (recv->kind == SCR_DYN_BYTES) {
+#ifdef SCR_JS_OBJECT_MODEL
+      if (index < recv->v.bytes->len && scr_bytes_elem_is_bigint(recv->v.bytes->elem))
+        return scr_bytes_get_bigint(recv->v.bytes, (double)index);
+#endif
       return index < recv->v.bytes->len
         ? scr_dyn_new_num(scr_bytes_get(recv->v.bytes, (double)index))
         : scr_dyn_retain(scr_dyn_undefined());

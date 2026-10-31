@@ -59,6 +59,7 @@ export interface EarlyExecutableNativeFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
@@ -314,6 +315,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "regex",
   "copying",
   "textDecoderLegacy",
+  "bigintBytes",
   "fileHandle",
   "fetch",
   "zlib",

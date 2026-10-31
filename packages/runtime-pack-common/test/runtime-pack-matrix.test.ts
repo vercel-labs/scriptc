@@ -145,3 +145,46 @@ test("the BigIntStats unit follows its own member-read gate, not bigint", () => 
   // name bigstats, so a bigint program keeps this unit out of its binary.
   expect(unit.predicate).toBe("bigstats");
 });
+
+test("the BigInt element kinds ride the JavaScript object model build", () => {
+  // effectiveRuntimeFeatures ORs bigintBytes into jsObjectModel, so a program
+  // that reads BigInt64Array or BigUint64Array selects the object model build
+  // of every unit that reads an element as a BigInt (t262-da §J): scr_bytes.c
+  // defines the element accessors, and json, inspect, assert, dyn-invoke and
+  // console call them, all from build-selected objects together. No feature
+  // gets a build column of its own.
+  const plain = {
+    jsObjectModel: false,
+    recordViewPartial: false,
+    textDecoderLegacy: false,
+    webStreams: false,
+    nodeIsland: false,
+    workers: false,
+  };
+  expect(selected("scr_bytes.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  expect(
+    selected("scr_bytes.c", { ...plain, jsObjectModel: true, textDecoderLegacy: true }).defines,
+  ).toEqual(["SCR_TEXT_DECODER_LEGACY", "SCR_JS_OBJECT_MODEL"]);
+  // The units with other builds keep each one's object model counterpart: a
+  // program with Node islands selects the build that carries both.
+  expect(
+    selected("scr_inspect.c", { ...plain, jsObjectModel: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  expect(selected("scr_console_native.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  // A program with none of the facts selects the default object of every
+  // unit, exactly as before.
+  for (const source of [
+    "scr_bytes.c",
+    "scr_json.c",
+    "scr_inspect.c",
+    "scr_assert.c",
+    "scr_dyn_invoke.c",
+    "scr_console_native.c",
+  ]) {
+    expect(selected(source, plain).defines).toEqual([]);
+  }
+});

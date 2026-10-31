@@ -9,8 +9,10 @@
  * declare it at all, and a builtin module object when the file binds it to
  * require("<builtin>") or imports it from one. Checker-dependent parts of
  * R2.3 (writes the declared type does not cover, freeze followed by writes)
- * and R2.4 (assignments to undeclared identifiers, `this` as the global
- * object) are left to the lowering. */
+ * and R2.4 (assignments to undeclared identifiers) are left to the lowering;
+ * `this` in a plain call is marked conservatively (decision S2): a file
+ * cannot see its call sites, so every `this` in a sloppy plain function
+ * marks the module. */
 import type { SrcLoc } from "../ir/ir.js";
 import * as ts from "../frontend/ts7/adapter.js";
 import { SUPPORTED_BUILTIN_MODULES } from "../frontend/builtin-modules.js";
@@ -22,6 +24,18 @@ export interface NodeIslandMarker {
   reason: string;
   /** The construct, as a short phrase for messages. */
   construct: string;
+  loc: SrcLoc;
+  /** For `builtin-patch`: the builtin module member the module patches
+   * ("fs.readFileSync"; "fs.*" when the source is not an object literal). */
+  member?: string;
+}
+
+/** A member read through a builtin module's CommonJS object (H3.4): the
+ * patch a Node island module installs is visible to such a read, which a
+ * native build cannot reproduce. */
+export interface CjsRead {
+  /** The member read ("fs.readFileSync"). */
+  member: string;
   loc: SrcLoc;
 }
 
@@ -125,10 +139,35 @@ function builtinModuleName(spec: string): string | null {
   return null;
 }
 
+/** Parentheses and the TypeScript wrappers Node erases (`as`,
+ * `satisfies`, `!` and the angle-bracket assertion). */
+function stripWrappers(node: ts.Node): ts.Node {
+  let value = node;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertion(value) ||
+      ts.isNonNullExpression(value) ||
+      ts.isSatisfiesExpression(value)
+    )
+      value = value.expression;
+    else return value;
+  }
+}
+
 function literalText(node: ts.Node | undefined): string | null {
   if (node === undefined) return null;
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
   return null;
+}
+
+/** A property name the scan can spell: an identifier, a string or number
+ * literal, or a computed literal key. */
+function staticKey(node: ts.Node): string | null {
+  if (ts.isIdentifier(node) || ts.isNumericLiteral(node)) return node.text;
+  if (ts.isComputedPropertyName(node)) return literalText(stripWrappers(node.expression));
+  return literalText(node);
 }
 
 /** A specifier that folds at build time: a literal, or a concatenation of
@@ -145,6 +184,15 @@ function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
   return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
 }
 
+/** The key of an object-literal property (`name`, `"name"` or a
+ * template without substitutions). */
+function literalKeyName(name: ts.Node | undefined): string | null {
+  if (name === undefined) return null;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name))
+    return name.text;
+  return null;
+}
+
 function propertyName(node: ts.Node): string | null {
   if (ts.isPropertyAccessExpression(node)) {
     const name = node.name;
@@ -157,12 +205,12 @@ function propertyName(node: ts.Node): string | null {
 /** `a.b.c` as "a.b.c" (element accesses with literal keys included), or
  * null when the chain has a computed key or does not start at a name. */
 function chainText(node: ts.Node): string | null {
-  if (ts.isIdentifier(node)) return node.text;
-  if (node.kind === ts.SyntaxKind.ThisKeyword) return "this";
-  if (ts.isParenthesizedExpression(node)) return chainText(node.expression);
-  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-    const base = chainText(node.expression);
-    const name = propertyName(node);
+  const value = stripWrappers(node);
+  if (ts.isIdentifier(value)) return value.text;
+  if (value.kind === ts.SyntaxKind.ThisKeyword) return "this";
+  if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value)) {
+    const base = chainText(value.expression);
+    const name = propertyName(value);
     if (base === null || name === null) return null;
     return `${base}.${name}`;
   }
@@ -171,15 +219,16 @@ function chainText(node: ts.Node): string | null {
 
 /** Like chainText, with computed keys spelled `[…]`: `process.env[…]`. */
 function memberText(node: ts.Node): string | null {
-  const text = chainText(node);
+  const value = stripWrappers(node);
+  const text = chainText(value);
   if (text !== null) return text;
-  if (ts.isElementAccessExpression(node)) {
-    const base = memberText(node.expression);
+  if (ts.isElementAccessExpression(value)) {
+    const base = memberText(value.expression);
     return base === null ? null : `${base}[…]`;
   }
-  if (ts.isPropertyAccessExpression(node)) {
-    const base = memberText(node.expression);
-    const name = propertyName(node);
+  if (ts.isPropertyAccessExpression(value)) {
+    const base = memberText(value.expression);
+    const name = propertyName(value);
     return base === null || name === null ? null : `${base}.${name}`;
   }
   return null;
@@ -187,15 +236,11 @@ function memberText(node: ts.Node): string | null {
 
 /** The identifier a member chain starts at (`a` of `a.b[c].d`). */
 function chainRoot(node: ts.Node): ts.Identifier | null {
-  let cur = node;
+  let cur = stripWrappers(node);
   for (;;) {
     if (ts.isIdentifier(cur)) return cur;
     if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
-      cur = cur.expression;
-      continue;
-    }
-    if (ts.isParenthesizedExpression(cur)) {
-      cur = cur.expression;
+      cur = stripWrappers(cur.expression);
       continue;
     }
     return null;
@@ -236,6 +281,29 @@ function isFunctionBoundary(node: ts.Node): boolean {
   );
 }
 
+/** The name a plain function value is bound to in the same file
+ * (`function f`, `var f = function`), for the constructor refinement. */
+function boundFunctionName(fn: ts.FunctionDeclaration | ts.FunctionExpression): string | null {
+  if (ts.isFunctionDeclaration(fn)) return fn.name?.text ?? null;
+  const parent = fn.parent;
+  if (parent === undefined) return null;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+  if (ts.isPropertyAssignment(parent)) return propertyName(parent.name);
+  return null;
+}
+
+/** `X.prototype.name = function () {}`: a method assignment, whose every
+ * call through the same spelling has a receiver. */
+function isPrototypeFunctionAssignment(left: ts.PropertyAccessExpression, right: ts.Node): boolean {
+  let value = right;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  return (
+    ts.isFunctionExpression(value) &&
+    ts.isPropertyAccessExpression(left.expression) &&
+    propertyName(left.expression) === "prototype"
+  );
+}
+
 /** One module's pre-scan. */
 class ModuleScanner {
   readonly markers: NodeIslandMarker[] = [];
@@ -250,6 +318,21 @@ class ModuleScanner {
   private readonly builtinBindings = new Map<string, string>();
   /** Local names bound to a createRequire(...) result. */
   private readonly createdRequires = new Set<string>();
+  /** Local names bound to a builtin module's CommonJS object: require(),
+   * a createRequire'd require's result, a default import, or an alias of
+   * one. Writes through these names are patches of the module object. */
+  private readonly cjsBuiltinObjects = new Set<string>();
+  /** Members read through a CommonJS builtin object (H3.4). */
+  readonly cjsReads: CjsRead[] = [];
+  /** Names the file constructs with `new`: a constructor's `this` is never
+   * the global object, so its `this` uses need no island (decision S5). */
+  private readonly constructed = new Set<string>();
+  /** Names the file calls as a bare identifier, `f(...)`: a name used both
+   * ways is a constructor and a plain function, so it still marks. */
+  private readonly bareCalled = new Set<string>();
+  /** Function expressions the file assigns to `X.prototype.name`: every
+   * same-file call of them is a receiver call (decision S5). */
+  private readonly prototypeFunctions = new Set<ts.Node>();
   private readonly strictness = new Map<ts.Node, boolean>();
   private readonly moduleStrict: boolean;
 
@@ -272,13 +355,20 @@ class ModuleScanner {
     return this.markers;
   }
 
-  private add(rule: NodeIslandRule, reason: string, construct: string, node: ts.Node): void {
+  private add(
+    rule: NodeIslandRule,
+    reason: string,
+    construct: string,
+    node: ts.Node,
+    member?: string,
+  ): void {
     if (this.markers.length >= MARKER_CAP) return;
     this.markers.push({
       rule,
       reason,
       construct,
       loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(node), end: node.end },
+      ...(member === undefined ? {} : { member }),
     });
   }
 
@@ -287,18 +377,22 @@ class ModuleScanner {
     if (ts.isIdentifier(name)) {
       this.declared.add(name.text);
       if (init === undefined) return;
-      let value = init;
-      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      const value = stripWrappers(init);
       if (ts.isFunctionExpression(value) || ts.isArrowFunction(value))
         this.functions.add(name.text);
       else if (ts.isClassExpression(value)) this.classes.add(name.text);
       const bound = this.builtinOf(value);
-      if (bound !== null) this.builtinBindings.set(name.text, bound);
+      if (bound !== null) {
+        this.builtinBindings.set(name.text, bound);
+        if (!bound.includes(".") && this.isCjsObjectValue(value))
+          this.cjsBuiltinObjects.add(name.text);
+      }
       if (ts.isCallExpression(value) && this.isCreateRequireCallee(value.expression))
         this.createdRequires.add(name.text);
       return;
     }
     if (ts.isObjectBindingPattern(name)) {
+      this.recordCjsPatternReads(name, init);
       const base = init === undefined ? null : this.builtinOf(init);
       for (const element of name.elements.nodes) {
         if (!ts.isBindingElement(element)) continue;
@@ -319,11 +413,25 @@ class ModuleScanner {
     }
   }
 
+  /** A value that is a builtin module's CommonJS object: a require() or a
+   * createRequire'd require's result of a builtin, or an alias of one. */
+  private isCjsObjectValue(value: ts.Node): boolean {
+    if (ts.isIdentifier(value)) return this.cjsBuiltinObjects.has(value.text);
+    if (!ts.isCallExpression(value)) return false;
+    return (
+      this.isRequireCallee(value.expression) ||
+      (ts.isIdentifier(value.expression) && this.createdRequires.has(value.expression.text))
+    );
+  }
+
   /** `require("fs")`, `require("node:util").inherits` → "fs", "util.inherits". */
   private builtinOf(node: ts.Node): string | null {
-    let value = node;
-    while (ts.isParenthesizedExpression(value)) value = value.expression;
-    if (ts.isCallExpression(value) && this.isRequireCallee(value.expression)) {
+    const value = stripWrappers(node);
+    if (
+      ts.isCallExpression(value) &&
+      (this.isRequireCallee(value.expression) ||
+        (ts.isIdentifier(value.expression) && this.createdRequires.has(value.expression.text)))
+    ) {
       const spec = literalText(value.arguments.nodes[0]);
       return spec === null ? null : builtinModuleName(spec);
     }
@@ -362,6 +470,17 @@ class ModuleScanner {
         this.bindName(node.name, node.initializer);
       } else if (ts.isParameter(node)) {
         this.bindName(node.name, undefined);
+      } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
+        this.constructed.add(node.expression.text);
+      } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        this.bareCalled.add(node.expression.text);
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(node.left) &&
+        isPrototypeFunctionAssignment(node.left, node.right)
+      ) {
+        this.prototypeFunctions.add(node.right);
       } else if (ts.isImportDeclaration(node)) {
         const spec = literalText(node.moduleSpecifier);
         const module = spec === null ? null : builtinModuleName(spec);
@@ -369,7 +488,12 @@ class ModuleScanner {
         if (clause !== undefined) {
           if (clause.name !== undefined) {
             this.declared.add(clause.name.text);
-            if (module !== null) this.builtinBindings.set(clause.name.text, module);
+            if (module !== null) {
+              this.builtinBindings.set(clause.name.text, module);
+              // A default import is the CommonJS object (unlike a namespace
+              // or named import, through which Node refuses writes).
+              this.cjsBuiltinObjects.add(clause.name.text);
+            }
           }
           const bindings = clause.namedBindings;
           if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
@@ -427,12 +551,75 @@ class ModuleScanner {
     return BUILTIN_GLOBALS.has(name) && !this.declared.has(name);
   }
 
+  /** A function declaration whose parent is a block that is not a function
+   * body: Annex B.3.2's block-level declaration, which in sloppy code also
+   * creates a `var`-like binding in the enclosing function (DESIGN.md note 1
+   * §3.1, construct 5). A declaration directly in a function body or at the
+   * top level of a script is ordinary. */
+  private isAnnexBBlockFunction(fn: ts.FunctionDeclaration): boolean {
+    const parent = fn.parent;
+    if (parent === undefined || !ts.isBlock(parent)) return false;
+    const owner = parent.parent;
+    if (owner === undefined) return false;
+    // A function-like body, a class static block or a class member
+    // initializer block is not a bare block statement.
+    return (owner as ts.FunctionLikeDeclaration).body !== parent;
+  }
+
+  /** Whether the file shows the function is only ever called with a
+   * receiver, so native's missing sloppy `this` cannot be observed: it is
+   * constructed with `new`, or it is a `X.prototype.name` method (decision
+   * S5 — the marker islands what native gets wrong, and native passes the
+   * receiver for both shapes). */
+  private receiverSafe(fn: ts.FunctionDeclaration | ts.FunctionExpression): boolean {
+    if (this.prototypeFunctions.has(fn)) return true;
+    const name = boundFunctionName(fn);
+    return name !== null && this.constructed.has(name) && !this.bareCalled.has(name);
+  }
+
+  /** `this` in a plain function call: a sloppy function that is not a
+   * method, constructor, accessor or class member, and is not an arrow
+   * function (whose `this` is its enclosing function's). Conservative
+   * (decision S2): a file-level scan cannot see cross-file call sites, so
+   * any `this` in such a function marks the module, except the shapes the
+   * file itself proves are receiver calls (decision S5). Top-level `this`
+   * is not this marker: it is the module's exports object, and the test262
+   * profile's script-environment exclusion covers the script form. */
+  private visitThis(node: ts.Node): void {
+    if (this.isStrict(node)) return;
+    for (let cur: ts.Node | undefined = node.parent; cur !== undefined; cur = cur.parent) {
+      // An arrow function has no `this` of its own: keep looking outward.
+      if (ts.isArrowFunction(cur)) continue;
+      if (ts.isFunctionDeclaration(cur) || ts.isFunctionExpression(cur)) {
+        if (this.receiverSafe(cur)) return;
+        this.add("R2.4", "sloppy-this", "'this' in a plain call in sloppy mode", node);
+        return;
+      }
+      // A method, constructor or accessor has a receiver; a class member
+      // initializer and a class static block have their own `this`; a
+      // property assignment's function is commonly a method too.
+      if (
+        isFunctionBoundary(cur) ||
+        ts.isClassDeclaration(cur) ||
+        ts.isClassExpression(cur) ||
+        ts.isClassStaticBlockDeclaration(cur) ||
+        ts.isPropertyDeclaration(cur) ||
+        ts.isPropertyAssignment(cur)
+      )
+        return;
+      // Top-level `this` is the module's exports object, not a call site.
+      if (ts.isSourceFile(cur)) return;
+    }
+  }
+
   private visit(node: ts.Node): void {
     if (ts.isCallExpression(node)) this.visitCall(node);
     else if (ts.isNewExpression(node)) this.visitNew(node);
-    else if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind))
+    else if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
       this.visitWrite(node.left, node, "write");
-    else if (ts.isDeleteExpression(node)) this.visitDelete(node);
+      if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+        this.recordCjsPatternReads(node.left, node.right);
+    } else if (ts.isDeleteExpression(node)) this.visitDelete(node);
     else if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
       if (
         node.operator === ts.SyntaxKind.PlusPlusToken ||
@@ -440,7 +627,9 @@ class ModuleScanner {
       )
         this.visitWrite(node.operand, node, "write");
     } else if (ts.isWithStatement(node)) {
-      this.add("R2.4", "with", "a 'with' statement", node);
+      // A `with` in strict code is an early error (Node refuses the file
+      // too), so only sloppy code carries the sloppy-semantics marker.
+      if (!this.isStrict(node)) this.add("R2.4", "with", "a 'with' statement", node);
     } else if (ts.isImportDeclaration(node)) {
       const spec = literalText(node.moduleSpecifier);
       if (spec !== null) this.visitSpecifier(spec, node);
@@ -454,6 +643,11 @@ class ModuleScanner {
       const text = chainText(node);
       if ((text === "arguments.callee" || text === "arguments.caller") && !this.isStrict(node))
         this.add("R2.4", "sloppy-arguments", `'${text}'`, node);
+      this.recordCjsRead(node);
+    } else if (ts.isElementAccessExpression(node)) {
+      this.recordCjsRead(node);
+    } else if (node.kind === ts.SyntaxKind.ThisKeyword) {
+      this.visitThis(node);
     } else if (ts.isObjectLiteralExpression(node)) {
       for (const prop of node.properties.nodes) {
         if (!ts.isPropertyAssignment(prop)) continue;
@@ -464,6 +658,104 @@ class ModuleScanner {
       }
     } else if (isFunctionBoundary(node)) {
       this.visitFunction(node as ts.FunctionLikeDeclaration);
+    }
+  }
+
+  /** Records a read of a member of a builtin module's CommonJS object, so
+   * a patch installed by an island module can be checked against it
+   * (H3.4). The left of an assignment (and a delete or ++/-- target) is a
+   * write, not a read. A computed key reads a member the scan cannot name,
+   * so it is recorded as the whole module ("fs.*"). */
+  private recordCjsRead(node: ts.PropertyAccessExpression | ts.ElementAccessExpression): void {
+    const root = chainRoot(node);
+    if (root === null || !this.cjsBuiltinObjects.has(root.text)) return;
+    const module = this.builtinBindings.get(root.text);
+    if (module === undefined) return;
+    const text = chainText(node);
+    const parent = node.parent;
+    if (parent !== undefined) {
+      if (
+        ts.isBinaryExpression(parent) &&
+        isAssignmentOperator(parent.operatorToken.kind) &&
+        parent.left === node
+      )
+        return;
+      if (
+        ts.isDeleteExpression(parent) ||
+        ts.isPrefixUnaryExpression(parent) ||
+        ts.isPostfixUnaryExpression(parent)
+      )
+        return;
+    }
+    this.pushCjsRead(text === null ? `${module}.*` : module + text.slice(root.text.length), node);
+  }
+
+  private pushCjsRead(member: string, node: ts.Node): void {
+    this.cjsReads.push({
+      member,
+      loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(node), end: node.end },
+    });
+  }
+
+  /** The reads of a destructuring whose source is a builtin module's
+   * CommonJS object (`const { readFileSync } = require("fs")`,
+   * `({ readFileSync } = fs)`): each property it takes is read when the
+   * destructuring runs, so it sees a patch installed before. A rest element
+   * or a computed key reads members the scan cannot name ("fs.*"). */
+  private recordCjsPatternReads(pattern: ts.Node, source: ts.Node | undefined): void {
+    if (source === undefined) return;
+    const value = stripWrappers(source);
+    if (!this.isCjsObjectValue(value)) return;
+    const module = this.builtinOf(value);
+    if (module === null || module.includes(".")) return;
+    this.recordPatternReads(pattern, module);
+  }
+
+  private recordPatternReads(pattern: ts.Node, base: string): void {
+    const target = stripWrappers(pattern);
+    const elements: {
+      key: ts.Node | undefined;
+      value: ts.Node | undefined;
+      rest: boolean;
+      node: ts.Node;
+    }[] = [];
+    if (ts.isObjectBindingPattern(target)) {
+      for (const element of target.elements.nodes) {
+        if (!ts.isBindingElement(element)) continue;
+        elements.push({
+          key: element.propertyName ?? element.name,
+          value: element.name,
+          rest: element.dotDotDotToken !== undefined,
+          node: element,
+        });
+      }
+    } else if (ts.isObjectLiteralExpression(target)) {
+      for (const prop of target.properties.nodes) {
+        if (ts.isPropertyAssignment(prop))
+          elements.push({ key: prop.name, value: prop.initializer, rest: false, node: prop });
+        else if (ts.isShorthandPropertyAssignment(prop))
+          elements.push({ key: prop.name, value: undefined, rest: false, node: prop });
+        else if (ts.isSpreadAssignment(prop))
+          elements.push({ key: undefined, value: undefined, rest: true, node: prop });
+      }
+    } else return;
+    for (const element of elements) {
+      const key = element.rest || element.key === undefined ? null : staticKey(element.key);
+      if (key === null) {
+        this.pushCjsRead(`${base.split(".")[0]}.*`, element.node);
+        continue;
+      }
+      const member = `${base}.${key}`;
+      this.pushCjsRead(member, element.node);
+      // A nested pattern reads the member's own properties too.
+      if (element.value !== undefined) {
+        let inner = stripWrappers(element.value);
+        // `{ readFileSync = fallback }` (a default) and `{ a: { b } = {} }`.
+        if (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+          inner = stripWrappers(inner.left);
+        if (ts.isObjectBindingPattern(inner) || ts.isObjectLiteralExpression(inner))
+          this.recordPatternReads(inner, member);
+      }
     }
   }
 
@@ -506,16 +798,23 @@ class ModuleScanner {
     // eval, Function
     let target = callee;
     while (ts.isParenthesizedExpression(target)) target = target.expression;
+    // A bare `eval(...)` is the intrinsic's DIRECT call: it reads and
+    // creates bindings in the caller's scope, and in sloppy mode creates
+    // globals (DESIGN.md note 1 §3.1). `globalThis.eval(...)`, the
+    // comma-operator idiom `(0, eval)(...)` and the other spellings are
+    // indirect: they observe no caller scope, so only R1.1.
+    const direct = ts.isIdentifier(target) && target.text === "eval" && !this.declared.has("eval");
     if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.CommaToken)
       target = target.right;
     const text = chainText(target);
     if (text === null) return;
-    if (
-      (text === "eval" && !this.declared.has("eval")) ||
-      text === "globalThis.eval" ||
-      text === "global.eval" ||
-      text === "window.eval"
-    ) {
+    if (text === "eval" && !this.declared.has("eval")) {
+      this.add("R1.1", "code-from-string", "eval()", call);
+      if (direct && !this.isStrict(call))
+        this.add("R2.4", "direct-eval", "a direct call of eval() in sloppy mode", call);
+      return;
+    }
+    if (text === "globalThis.eval" || text === "global.eval" || text === "window.eval") {
       this.add("R1.1", "code-from-string", "eval()", call);
       return;
     }
@@ -574,9 +873,66 @@ class ModuleScanner {
         this.isGlobal("Object")) ||
       (text === "Reflect.defineProperty" && this.isGlobal("Reflect"))
     ) {
+      // A definition on a builtin module's CommonJS object is a patch the
+      // code loading that object must see (R2.5, H3.1.4).
+      const target = first === undefined ? undefined : stripWrappers(first);
+      const builtin =
+        target !== undefined && ts.isIdentifier(target) && this.cjsBuiltinObjects.has(target.text)
+          ? (this.builtinBindings.get(target.text) ?? null)
+          : null;
+      if (builtin !== null) {
+        const key = literalText(args[1] === undefined ? undefined : stripWrappers(args[1]));
+        this.add(
+          "R2.5",
+          "builtin-patch",
+          `'${text}()' on the builtin module '${builtin}'`,
+          call,
+          key === null ? `${builtin}.*` : `${builtin}.${key}`,
+        );
+        return;
+      }
       if (first !== undefined && !this.isModuleObject(first) && !this.inInteropHelper(call))
         this.add("R2.3", "define-property", `'${text}()'`, call);
       return;
+    }
+    // Object.assign(fs, …) on a builtin module's CommonJS object: every
+    // literal key is a patch (R2.5, H3.1.4).
+    if (text === "Object.assign" && this.isGlobal("Object") && first !== undefined) {
+      const target = stripWrappers(first);
+      if (ts.isIdentifier(target) && this.cjsBuiltinObjects.has(target.text)) {
+        const builtin = this.builtinBindings.get(target.text) ?? null;
+        if (builtin !== null) {
+          const source = args.length === 2 ? stripWrappers(args[1]!) : undefined;
+          const keys =
+            source !== undefined && ts.isObjectLiteralExpression(source)
+              ? source.properties.nodes
+                  .map((property) =>
+                    ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)
+                      ? literalKeyName(property.name)
+                      : null,
+                  )
+                  .filter((key): key is string => key !== null)
+              : [];
+          if (keys.length === 0)
+            this.add(
+              "R2.5",
+              "builtin-patch",
+              `'Object.assign()' on the builtin module '${builtin}'`,
+              call,
+              `${builtin}.*`,
+            );
+          else
+            for (const key of keys)
+              this.add(
+                "R2.5",
+                "builtin-patch",
+                `'Object.assign()' on the builtin module '${builtin}'`,
+                call,
+                `${builtin}.${key}`,
+              );
+          return;
+        }
+      }
     }
     if (text.endsWith(".__defineGetter__") || text.endsWith(".__defineSetter__")) {
       this.add("R2.3", "define-property", `'${text.slice(text.lastIndexOf(".") + 1)}()'`, call);
@@ -733,11 +1089,15 @@ class ModuleScanner {
     if (binding !== undefined) {
       const member = binding + spelled.slice(root.text.length);
       if (!this.allowedWrite(member)) {
+        // A write through a builtin module's CommonJS object patches that
+        // object; only code sharing Node's builtin can see it (H3.1).
+        const patch = this.cjsBuiltinObjects.has(root.text);
         this.add(
           "R2.5",
-          "builtin-write",
+          patch ? "builtin-patch" : "builtin-write",
           `a ${what} of the builtin module member '${member}'`,
           node,
+          patch ? member : undefined,
         );
       }
       return;
@@ -789,6 +1149,13 @@ class ModuleScanner {
   /** Observable `arguments` aliasing in a sloppy function: writes to
    * arguments[i], or to a parameter while `arguments` is read. */
   private visitFunction(fn: ts.FunctionLikeDeclaration): void {
+    if (ts.isFunctionDeclaration(fn) && this.isAnnexBBlockFunction(fn) && !this.isStrict(fn))
+      this.add(
+        "R2.4",
+        "annexb-block-function",
+        "a function declaration in a block in sloppy mode",
+        fn,
+      );
     const body = fn.body;
     if (body === undefined || !ts.isBlock(body)) return;
     if (this.isStrict(body.statements.nodes[0] ?? body)) return;
@@ -842,8 +1209,21 @@ interface ArgumentsUse {
   paramWrite: ts.Node | null;
 }
 
-/** The R1/R2 markers of one JavaScript module, in source order. */
+/** The R1/R2 markers and CommonJS-object reads of one module, in source
+ * order. */
+export function scanModuleFacts(sf: ts.SourceFile): {
+  markers: NodeIslandMarker[];
+  cjsReads: CjsRead[];
+} {
+  const scanner = new ModuleScanner(sf);
+  const markers = scanner.scan();
+  return {
+    markers: markers.sort((a, b) => a.loc.start - b.loc.start),
+    cjsReads: scanner.cjsReads.sort((a, b) => a.loc.start - b.loc.start),
+  };
+}
+
+/** The R1/R2 markers of one module, in source order. */
 export function scanModule(sf: ts.SourceFile): NodeIslandMarker[] {
-  const markers = new ModuleScanner(sf).scan();
-  return markers.sort((a, b) => a.loc.start - b.loc.start);
+  return scanModuleFacts(sf).markers;
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/failed-non-null-assertions.ts"
+ ],
+ "diags": []
+}

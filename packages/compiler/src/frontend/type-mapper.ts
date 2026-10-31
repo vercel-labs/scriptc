@@ -2863,7 +2863,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   const classView = mapClassView(widened, ctx);
-  if (classView !== undefined) return classView;
+  if (classView !== undefined) {
+    // An intersection of ONE compiled class instance with data-only object
+    // types is a class instance carrying expando properties
+    // (`Box & { preview?: Preview }`): the class owns the instance's
+    // storage and the other members are properties the instance carries at
+    // run time, so the class view has no single layout to answer (null).
+    // The checked-dynamic representation IS that object model — one object,
+    // the instance's identity and prototype, class fields reading and
+    // writing through the live view, extra members in its property table.
+    if (classView === null && widened.isIntersectionType()) {
+      const expando = mapClassExpandoIntersection(widened, ctx);
+      if (expando) return expando;
+    }
+    return classView;
+  }
   // Class instances name a program class. The same symbol with construct
   // signatures names its static side, mapped to classval below.
   const widenedSym = widened.getSymbol();
@@ -4512,6 +4526,43 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         false,
         undefined,
         ["encoding", "cwd", "input", "timeout", "stdio", "maxBuffer", "windowsHide"],
+      ),
+    };
+  }
+  // child_process.SpawnSyncOptionsWithStringEncoding: the spawnSync twin of
+  // the exec-options record above, interned explicitly for the same
+  // reason — a typed const or a runner function's options parameter is a
+  // runtime record the spawnSync lowering reads member by member. The
+  // members are the ones it honestly implements: encoding (required — the
+  // "WithStringEncoding" refinement), cwd/input/timeout/shell/stdio (a
+  // runtime array is string[]; unsupported runtime modes throw at the
+  // call), and the accepted-but-inert windowsHide. env and killSignal
+  // stay literal-only, so their presence keeps the shape unmatched and
+  // their literals fence at the shape check instead of being dropped.
+  if (isStdlibInterface("SpawnSyncOptionsWithStringEncoding")) {
+    const optStr = withUndefinedArm(STRING, ctx.unions);
+    const optNum = withUndefinedArm(F64, ctx.unions);
+    const optBool = withUndefinedArm(BOOL, ctx.unions);
+    const stdioArms = [arrayOf(STRING), STRING, UNDEFINED_T].sort((a, b) =>
+      typeKey(a) < typeKey(b) ? -1 : 1,
+    );
+    const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
+    if (!optStr || !optNum || !optBool) return null;
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "cwd", type: optStr },
+          { name: "encoding", type: STRING },
+          { name: "input", type: optStr },
+          { name: "shell", type: optBool },
+          { name: "stdio", type: stdio },
+          { name: "timeout", type: optNum },
+          { name: "windowsHide", type: optBool },
+        ],
+        false,
+        undefined,
+        ["encoding", "cwd", "input", "timeout", "shell", "stdio", "windowsHide"],
       ),
     };
   }
@@ -7421,6 +7472,52 @@ function mapEqualConstituentsIntersection(widened: ts.Type, ctx: TypeMapperCtx):
     else if (!typeEquals(same, mapped)) return null;
   }
   return same;
+}
+
+/** A CLASS INSTANCE carrying expando properties
+ * (`Box & { preview?: Preview }`): one compiled class constituent and
+ * data-only object constituents that are not part of the class's own
+ * storage. It has no native layout — the class owns the struct and the
+ * other constituents are properties the instance carries at run time —
+ * and the checked-dynamic representation IS that object model: the value
+ * is the instance (identity, prototype, method dispatch), the class fields
+ * read and write through the live view in both directions, and the expando
+ * members live in its property table. Every other intersection keeps its
+ * existing treatment: reached only where the class view found extra
+ * members, and refusing everything that is not one class plus data. */
+function mapClassExpandoIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { checker } = ctx;
+  if (checker.getConstructSignatures(widened).length > 0) return null;
+  let classPart: ts.Type | null = null;
+  const expandoParts: ts.Type[] = [];
+  for (const part of ts.constituentTypes(widened)) {
+    const mapped = mapType(part, ctx);
+    if (mapped === null) return null;
+    if (mapped.kind === "object") {
+      if (classPart !== null) return null;
+      classPart = part;
+      continue;
+    }
+    // The expando members are DATA: a plain record, with no call or
+    // construct signature of its own.
+    if (mapped.kind !== "record") return null;
+    if (checker.getCallSignatures(part).length > 0) return null;
+    expandoParts.push(part);
+  }
+  if (classPart === null) return null;
+  // The expando members are properties the class does not declare. An
+  // index signature names every key, and a member the class declares
+  // restates the class's own storage: both refine the class's members
+  // rather than add to them, and keep their diagnostics.
+  const classMembers = new Set(
+    checker.getPropertiesOfType(classPart).map((member) => ts.symbolName(member)),
+  );
+  for (const part of expandoParts) {
+    if (checker.getIndexInfosOfType(part).length > 0) return null;
+    for (const member of checker.getPropertiesOfType(part))
+      if (classMembers.has(ts.symbolName(member))) return null;
+  }
+  return DYN;
 }
 
 function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {

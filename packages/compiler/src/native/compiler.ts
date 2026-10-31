@@ -516,7 +516,7 @@ export class NativeCompiler {
       const { llvm, features } = prepared;
       // The executable and object caches key the same LLVM text.
       let llvmDigest: string | undefined;
-      const digestLlvm = (): string => (llvmDigest ??= partsDigest(llvm));
+      const digestLlvm = (): string => (llvmDigest ??= prepared.llvmDigest ?? partsDigest(llvm));
       const inputDirectory = join(stage, "input");
       mkdirSync(inputDirectory);
       const llvmInput = outputKind === "llvm" ? stagedOutput : join(inputDirectory, "program.ll");
@@ -668,7 +668,7 @@ export class NativeCompiler {
           ...hugeTextLinkerArgs(hugeText, (withLld && lld.length !== 0) || zig),
           ...plan.driverFlags,
           ...mapArgs,
-          ...(withLld ? plan.inputs : inputsWithoutLld(target.platform, plan.inputs)),
+          ...(withLld ? plan.inputs : inputsWithoutLld(target, plan.inputs)),
           ...systemLibraryLinkerArgs(target, plan.systemLibraries),
           "-o",
           stagedOutput,

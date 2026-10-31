@@ -58,7 +58,7 @@ import {
   setActiveNodeIslands,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
-import type { IslandModuleBinding } from "./lower-node-island.js";
+import type { IslandBinding, IslandModuleBinding } from "./lower-node-island.js";
 import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
@@ -97,6 +97,7 @@ import {
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
+import { installBuiltinStatics } from "./builtin-statics.js";
 import { functionKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
@@ -248,7 +249,9 @@ import {
 } from "../tier-analysis.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
+import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./record-links.js";
 import { finalizePrivateBrands } from "./private-brands.js";
+import { finalizeFunctionNames } from "./function-names.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
@@ -314,6 +317,7 @@ import type {
   IrWasmModule,
   IrWasmUntranslated,
   IrParam,
+  IrRecordLink,
   IrRecordShape,
   IrStmt,
   IrType,
@@ -538,6 +542,7 @@ import {
   inferTypeParamBindings,
   lowerGenericInstance,
   genericLocalClassBinding,
+  checkGenericIdentityPins,
 } from "./generic-functions.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { isMessageListenerCall } from "./expressions/message-listeners.js";
@@ -2191,6 +2196,19 @@ function builtinMemberValueName(
   return builtinModuleFnOf(lowerer, module, member)?.valueName ?? null;
 }
 
+/** Whether `node` is a function, arrow or class DEFINITION that carries no
+ * name of its own, so the binding or property it initializes names it
+ * (V8's SetFunctionName). Every other expression evaluates to a value that
+ * already has whatever name it has. */
+function isAnonymousCallableDefinition(node: ts.Node): boolean {
+  if (ts.isArrowFunction(node)) return true;
+  return (ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name === undefined;
+}
+
+/** The name V8 gives a function value read from this expression: its own
+ * definition, through parenthesized, rebindable and const bindings and
+ * property reads (`process.cwd`), or the binding an anonymous definition
+ * initializes. Null when the source does not determine it. */
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
@@ -2204,20 +2222,31 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       n = declaration;
       break;
     }
-    if (
-      !declaration ||
-      !ts.isVariableDeclaration(declaration) ||
-      !declaration.initializer ||
-      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
-    )
+    if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
+    let value: ts.Node = declaration.initializer;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    // Name inference (V8's SetFunctionName) covers an ANONYMOUS function or
+    // class definition and nothing else: the binding names it, so a
+    // rebindable binding keeps the binding's spelling below. Any other
+    // initializer is a value that carries its own name — a named
+    // definition, a builtin function (`var a = String; a.name` is
+    // "String") or another binding (`var a = b` keeps b's name) — and
+    // resolution follows it.
+    if (isAnonymousCallableDefinition(value)) {
+      // The binding this definition initializes named it when it was
+      // created, so answer that binding and not the alias the reference
+      // reached it through: `import b from "./m"` keeps the "root" of
+      // `const root = (text) => text;` in `m`.
+      if (ts.isIdentifier(declaration.name)) return declaration.name.text;
       break;
-    n = declaration.initializer;
-    while (ts.isParenthesizedExpression(n)) n = n.expression;
+    }
+    n = value;
   }
   if (ts.isIdentifier(n)) return n.text;
   if (ts.isPropertyAccessExpression(n)) return n.name.text;
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
-  if (ts.isFunctionExpression(n) || ts.isArrowFunction(n)) {
+  if (ts.isClassExpression(n) && n.name) return n.name.text;
+  if (ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassExpression(n)) {
     // An anonymous function takes the name of the binding or property it
     // initializes, through parentheses (`const f = (function () {})`).
     let outer: ts.Node = n;
@@ -2597,6 +2626,32 @@ export class Lowerer {
    * type parameters are bound to `unknown`, so lambdaSignature admits
    * them. */
   readonly erasingLambdas = new Set<ts.Node>();
+  /** Identity comparisons of a generic declaration met while lowering
+   * (directly against the declaration, or through a dynamic value): exact
+   * only while the program holds that declaration as one function object
+   * (checkGenericIdentityPins). */
+  readonly genericIdentityPins: { info: GenericFnInfo; node: ts.Node }[] = [];
+  /** Identity comparisons whose operands are dynamic values, recorded while
+   * lowering and resolved by checkGenericIdentityPins only when some
+   * generic declaration is held at more than one signature. */
+  readonly dynIdentityComparisons: { node: ts.Node; left: ts.Node; right: ts.Node }[] = [];
+  /** The value instance each pinned binding holds (`const f: Fn = ident`),
+   * keyed by the binding's declaration: two pins of one generic
+   * declaration at different signatures are separate compiled closures, so
+   * checkGenericIdentityPins refuses to compare them. */
+  readonly pinnedValueInstances = new Map<ts.Node, { info: GenericFnInfo; instance: string }>();
+  /** Function-vs-function identity comparisons recorded while lowering,
+   * with the closure name each operand lowered to when it is a closure
+   * (an inline instantiation expression names its instance directly). */
+  readonly pinnedIdentityComparisons: {
+    node: ts.Node;
+    left: ts.Node;
+    right: ts.Node;
+    leftInstance: string | undefined;
+    rightInstance: string | undefined;
+  }[] = [];
+  /** The identity comparison check reports once, after all lowering. */
+  genericIdentityCheckDone = false;
   /** Function expressions lowered against a fixed target signature with a
    * tuple-typed `arguments` (typed-arguments.ts). */
   readonly typedArgumentsLambdas = new Set<ts.Node>();
@@ -2705,6 +2760,9 @@ export class Lowerer {
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
   emitterComputedPatterns: ComputedEventPattern[] = [];
+  /** Some site registers a listener under an unrestricted computed name
+   * (lower-event-emitter.ts emitterEvents). */
+  emitterAnyNameListener = false;
   /** The EventTarget engine's handleEvent reader was lifted
    * (lower-event-target.ts noteEventListeners). */
   handleEventReader = false;
@@ -3560,6 +3618,9 @@ export class Lowerer {
   readonly neverValued = new Set<IrExpr>();
   readonly chainNarrowedType = new Map<ts.Node, ts.Type>();
   readonly chainHandled = new Set<ts.Node>();
+  /** One arm's narrowed value for a spread source while a distributed
+   * union spread lowers that arm (lowerDistributedUnionSpread). */
+  readonly spreadArmOverrides = new Map<ts.Node, IrExpr>();
   /** for-of-over-matchAll bindings whose `.index` reads the companion-index
    * array: binding SYMBOL → the hidden number[] of match start indices plus
    * the hidden cursor holding THIS iteration's position (registered while
@@ -3679,6 +3740,12 @@ export class Lowerer {
   readonly globalsList: IrGlobal[] = [];
 
   readonly npmInitActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
+  /** Per-file %init statements of static island imports and re-exports,
+   * by the import or export statement that loads the island module: the
+   * importer's %init header runs them in that statement's place among its
+   * dependencies' %init calls, so the island module evaluates in source
+   * order with the native dependencies around it. */
+  readonly islandImportActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
   /** Per-file %init PRELUDE statements for JSON imports: bakeable DATA
    * assignments with no observable evaluation order of their own —
    * prepended by lowerFileInit so the bindings are live before any
@@ -3775,6 +3842,9 @@ export class Lowerer {
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
   /** Island handle bindings by symbol (lower-node-island.ts). */
   readonly islandHandleBindings = new Map<ts.Symbol, boolean>();
+  /** Names a native module re-exports from an island package, by the
+   * symbol an alias chain reaches (lower-node-island.ts). */
+  readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
@@ -3799,6 +3869,28 @@ export class Lowerer {
   >();
   /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
   readonly threadSlotKeys = new Set<string>();
+  /** The narrowing conversions that link copies to their sources, by
+   * `${from}:${to}` (record-links.ts). */
+  readonly recordLinks = new Map<string, IrRecordLink>();
+  /** Where each of recordLinks' pairs was first converted, by compose
+   * helper name. */
+  readonly recordLinkLocs = new Map<string, SrcLoc>();
+  /** The conversion each %rec.string and %rec.primitive helper's calls
+   * replace, by helper name (record-links.ts recordStringCall). */
+  readonly recordStringFallbacks = new Map<string, StringFallback>();
+  /** The conversion helpers that build copies of recordLinks' pairs. */
+  readonly recordLinkSites: { link: IrRecordLink; projection: IrFunction }[] = [];
+  /** Object.prototype methods other than toString called by name on
+   * record types (finalizeRecordLinks checks them against link sources). */
+  readonly recordMethodCalls: { shapeId: string; method: string; loc: SrcLoc }[] = [];
+  /** Completions of "custom" linked helpers (record-links.ts), which
+   * finalizeRecordLinks runs once the links are known. */
+  readonly linkedHelperFinalizers: (() => void)[] = [];
+  /** Helpers over record types that finalizeRecordLinks completes. */
+  readonly linkedHelpers: LinkedHelper[] = [];
+  /** The JavaScript names of object literals' methods, by lifted function
+   * (function-names.ts). */
+  readonly objectMethodNames = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -4308,6 +4400,13 @@ export class Lowerer {
       checkedTable("genericFunctionDemandOwner", () => this.genericFunctionDemandOwner.size),
       checkedTable("genericClassDemandOwner", () => this.genericClassDemandOwner.size),
       checkedTable("erasingLambdas", () => this.erasingLambdas.size),
+      checkedTable("genericIdentityPins", () => this.genericIdentityPins.length),
+      checkedTable("dynIdentityComparisons", () => this.dynIdentityComparisons.length),
+      // Pinned binding instances and function-vs-function identity
+      // comparisons feed the same end-of-lowering check; a unit that records
+      // one lowers again rather than replaying a record without it.
+      checkedTable("pinnedValueInstances", () => this.pinnedValueInstances.size),
+      checkedTable("pinnedIdentityComparisons", () => this.pinnedIdentityComparisons.length),
       checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
       checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
       checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
@@ -4398,6 +4497,7 @@ export class Lowerer {
       checkedTable("globalsByDeclNode", () => this.globalsByDeclNode.size),
       checkedTable("globalsList", () => this.globalsList.length),
       checkedTable("npmInitActions", () => this.npmInitActions.size),
+      checkedTable("islandImportActions", () => this.islandImportActions.size),
       checkedTable("jsonInitActions", () => this.jsonInitActions.size),
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
@@ -4417,6 +4517,14 @@ export class Lowerer {
       checkedTable("threadSlotNames", () => this.threadSlotNames.size),
       checkedTable("threadSlotFamilies", () => this.threadSlotFamilies.size),
       checkedTable("threadSlotKeys", () => this.threadSlotKeys.size),
+      checkedTable("recordLinks", () => this.recordLinks.size),
+      checkedTable("recordLinkLocs", () => this.recordLinkLocs.size),
+      checkedTable("recordLinkSites", () => this.recordLinkSites.length),
+      checkedTable("recordStringFallbacks", () => this.recordStringFallbacks.size),
+      checkedTable("linkedHelpers", () => this.linkedHelpers.length),
+      checkedTable("linkedHelperFinalizers", () => this.linkedHelperFinalizers.length),
+      checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
+      checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
       checkedTable("initNameOf", () => this.initNameOf.size),
@@ -4549,6 +4657,9 @@ export class Lowerer {
     "stdioPatchSites",
     "requestInitPropMutatedSyms",
     "classProtocols",
+    // A file's name and library status do not change while the program
+    // lowers, so the answer stays with the file that was asked about.
+    "stdlibFiles",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
@@ -4572,6 +4683,9 @@ export class Lowerer {
     // NI-5: whether a symbol names an island handle binding depends only on
     // its declaration, so the answer is a memo keyed by symbol.
     "islandHandleBindings",
+    // The island names native modules re-export: a pure function of the
+    // program's modules, collected before lowering begins.
+    "islandReexports",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.
@@ -4637,6 +4751,7 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
     "fnStack",
@@ -4736,10 +4851,14 @@ export class Lowerer {
       fixed("errorAccessorReflection", () => this.errorAccessorReflection),
       fixed("subclassLinks", () => this.subclassLinks),
       fixed("errorPathCopies", () => this.errorPathCopies),
+      // A latch of the end-of-lowering audit (checkGenericIdentityPins): a
+      // unit never touches it.
+      fixed("genericIdentityCheckDone", () => this.genericIdentityCheckDone),
       fixed("errorMethodDispatchRevision", () => this.errorMethodDispatchRevision),
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
+      fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),
@@ -5318,19 +5437,44 @@ export class Lowerer {
     );
   }
 
-  /** A stdlib WeakMap or WeakSet, alone or with `null`/`undefined`. */
+  /** A stdlib WeakMap or WeakSet, alone or in a union with `null`/`undefined`
+   * (including the `WeakMap | WeakSet` pair). */
   private weakCollectionType(type: ts.Type): boolean {
+    return this.weakCollectionNamesOf(type) !== null;
+  }
+
+  /** The stdlib collections a type denotes — `WeakMap`, `WeakSet`, or the
+   * two in a union — alone or with `null`/`undefined`, which `nullable`
+   * reports; null for everything else. The predicate behind
+   * weak-collection lowering and the JavaScript value read of one of
+   * their methods, whose receiver may hold either collection. */
+  weakCollectionNamesOf(
+    type: ts.Type,
+  ): { names: ("WeakMap" | "WeakSet")[]; nullable: boolean } | null {
+    const names: ("WeakMap" | "WeakSet")[] = [];
     const weak = (part: ts.Type): boolean => {
       const symbol = part.getSymbol();
-      return (
-        ((symbol !== undefined && ts.symbolName(symbol) === "WeakMap") ||
-          (symbol !== undefined && ts.symbolName(symbol) === "WeakSet")) &&
-        symbol.declarations.some(
+      if (symbol === undefined) return false;
+      const symbolName = ts.symbolName(symbol);
+      if (symbolName !== "WeakMap" && symbolName !== "WeakSet") return false;
+      if (
+        !symbol.declarations.some(
           (d) => ts.isInterfaceDeclaration(d) && this.isStdlibFile(ts.getSourceFileOfNode(d)),
         )
-      );
+      )
+        return false;
+      if (!names.includes(symbolName)) names.push(symbolName);
+      return true;
     };
-    return this.stdlibHandleType(type, weak);
+    if (!this.stdlibHandleType(type, weak)) return null;
+    return {
+      names,
+      nullable:
+        type.isUnionType() &&
+        ts
+          .constituentTypes(type)
+          .some((part) => (part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0),
+    };
   }
 
   /** A type `handle` accepts, alone or with `null`/`undefined`. */
@@ -9754,6 +9898,9 @@ export class Lowerer {
         if (this.alreadyFlushed.has(symbol)) continue;
         for (const d of [...diags]) this.pushDiag(d);
       }
+      // Coverage visits more bodies; more value instances can only add
+      // refusals to the identity comparison check.
+      checkGenericIdentityPins(this);
       return {
         module: null,
         diagnostics: this.diags,
@@ -9768,9 +9915,19 @@ export class Lowerer {
   }
 
   /** Final retention, pruning, and module assembly shared by ordinary emit
-   * and the retained reachability worklist. */
-  finishModule(functions: IrFunction[]): LowerResult {
+   * and the retained reachability worklist. `library` is true for a native
+   * library's emit, whose runtime has no builtin-statics unit. */
+  finishModule(functions: IrFunction[], library = false): LowerResult {
+    // Every instance of every generic value is known now (the
+    // monomorphization worklists drained): an identity comparison against
+    // one is exact only if the declaration is held at a single signature.
+    checkGenericIdentityPins(this);
+    finalizeRecordLinks(this, functions);
+    // The statics lookup installs before value boxing, so the function
+    // values it adds to the entry module are boxed with the rest.
+    if (!library) installBuiltinStatics(this, functions);
     boxBuiltinValuesChecked(this, functions);
+    finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
@@ -9906,6 +10063,7 @@ export class Lowerer {
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
+            ...(this.recordLinks.size > 0 ? { recordLinks: [...this.recordLinks.values()] } : {}),
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
@@ -10732,30 +10890,29 @@ export class Lowerer {
     this.settleGenericDemandPriorities();
     this.shapes.settleDeclaredOrderPriorities();
     for (const finalize of this.shapeOrderMetadataFinalizers) finalize();
-    applyKeyOrderWitnesses(this, [
-      ...orderedUnits,
-      ...initFunctions,
-      ...instanceFunctions,
-      ...this.liftedFns,
-      ...this.implicitFns,
-    ]);
-    observeRecordLiteralRebuilds(null);
-    // A program whose functions never convert a checked-dynamic value into a
-    // closed record cannot keep a source view anywhere, so the captures that
-    // consult one keep their static copy (record-sources.ts).
-    const allFunctions = [
+    const keyOrderFunctions = [
       ...orderedUnits,
       ...initFunctions,
       ...instanceFunctions,
       ...this.liftedFns,
       ...this.implicitFns,
     ];
+    // A program whose functions never convert a checked-dynamic value into a
+    // closed record cannot keep a source view anywhere, so the captures that
+    // consult one keep their static copy (record-sources.ts). Decided before
+    // the key-order pass, which reads the fact (a same-shape copy of a kept
+    // record keeps its keys; the `"k" in r` sites answer through the view).
     const sourceScan = { memo: new Map<string, boolean>(), visiting: new Set<string>() };
-    for (const fn of allFunctions) {
+    for (const fn of keyOrderFunctions) {
       if (!functionKeepsRecordSources(this, fn, sourceScan)) continue;
       this.recordSourcesPossible = true;
       break;
     }
+    applyKeyOrderWitnesses(this, keyOrderFunctions);
+    // A kept width spread builds a record that holds undeclared keys, so the
+    // captures that consult a kept source must be active for it too.
+    if (this.keyOrder.keptWidthSpreads > 0) this.recordSourcesPossible = true;
+    observeRecordLiteralRebuilds(null);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     this.settleSharedHelperLocations([
       ...orderedUnits,
@@ -10785,7 +10942,7 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    return { reachable, result: this.finishModule(functions) };
+    return { reachable, result: this.finishModule(functions, extraRoots !== undefined) };
   }
 
   /** What the steps before the worklist settled for a top-level
@@ -13125,6 +13282,14 @@ export class Lowerer {
       const helper = this.unionRetagHelper(expr.type.unionId, expected.unionId, expr.loc);
       if (helper) {
         return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
+      }
+      // Inside a type assertion's operand the program claimed the value's
+      // shape: an arm the asserted target excludes traps (divergence 38's
+      // lying-assertion stance) instead of refusing the whole conversion.
+      if (this.coercions.assertedOperand > 0) {
+        const checked = this.widthLiftPlan(expr.type, expected);
+        if (checked?.how === "checkedRetag")
+          return this.applyWidthLift(checked, expr, expected, expr.loc);
       }
       return assertedConversion(this, expr, expected) ?? expr;
     }
@@ -16349,12 +16514,22 @@ export class Lowerer {
    * members by name + this provenance, and everything else those files
    * declare hits the SC2020-family fence). The file half of every
    * supported-surface provenance check. */
-  readonly isStdlibFile = (sf: ts.SourceFile): boolean =>
-    sf.fileName === this.ambient ||
-    sf.fileName === this.overridesAmbient ||
-    isFallbackDtsPath(sf.fileName) ||
-    this.program.isSourceFileDefaultLibrary(sf) ||
-    (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+  readonly isStdlibFile = (sf: ts.SourceFile): boolean => {
+    let stdlib = this.stdlibFiles.get(sf);
+    if (stdlib === undefined) {
+      stdlib =
+        sf.fileName === this.ambient ||
+        sf.fileName === this.overridesAmbient ||
+        isFallbackDtsPath(sf.fileName) ||
+        this.program.isSourceFileDefaultLibrary(sf) ||
+        (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+      this.stdlibFiles.set(sf, stdlib);
+    }
+    return stdlib;
+  };
+  /** isStdlibFile's answer for each source file it was asked about: a file's
+   * name and library status do not change while the program lowers. */
+  private readonly stdlibFiles = new Map<ts.SourceFile, boolean>();
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);

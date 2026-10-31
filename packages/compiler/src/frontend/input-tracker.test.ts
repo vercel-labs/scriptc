@@ -8,6 +8,10 @@ import {
   FrontendInputTracker,
   frontendInputsSemanticallyMatch,
   frontendInputsStillMatch,
+  invalidateTrackedFilesystem,
+  invalidateTrackedPath,
+  setVirtualSource,
+  clearVirtualSources,
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
@@ -382,6 +386,96 @@ test("two reads of a file that saw different content prevent cache publication",
   const tracker = new FrontendInputTracker();
   tracker.run(() => trackedReadFile(source));
   await writeFile(source, "export const answer = 2;\n");
-  tracker.run(() => trackedReadFile(source));
+  // A write the compile did not declare is not observed: the second read is
+  // the answer this compile already used. Declaring it re-reads the file.
+  tracker.run(() => {
+    invalidateTrackedFilesystem();
+    trackedReadFile(source);
+  });
   expect(tracker.snapshot().stable).toBe(false);
+});
+
+test("a repeated probe is served from this compile's first answer", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const tracker = new FrontendInputTracker();
+  // Reads settle: the first one recorded an identity that stands for its
+  // content, which is what lets the answers below be reused.
+  let later = 5000;
+  const read = (): string | null => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + later);
+    later += 5000;
+    try {
+      return tracker.run(() => trackedReadFile(source));
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+  expect(read()).toBe("export const answer = 1;\n");
+
+  await writeFile(source, "export const answer = 2;\n");
+  expect(read()).toBe("export const answer = 1;\n");
+
+  tracker.run(() => invalidateTrackedPath(source));
+  expect(read()).toBe("export const answer = 2;\n");
+
+  // One probe per operation: the re-read replaced the answer this compile
+  // had served, and the difference keeps the result out of the cache.
+  expect(tracker.snapshot().probes.filter((probe) => probe.op === "file")).toHaveLength(1);
+  expect(tracker.snapshot().stable).toBe(false);
+});
+
+test("a cached directory listing still carries the shadow's sources", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const packages = join(dir, "node_modules");
+  await mkdir(packages);
+  await writeFile(join(packages, "real.js"), "module.exports = 1;\n");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => setVirtualSource(join(packages, "shadow.js"), "module.exports = 2;\n"));
+
+  // The shadow's source is not part of the disk listing, which is the
+  // answer this compile keeps, so it is added to every answer.
+  expect(tracker.run(() => trackedAccessibleEntries(packages))?.files).toEqual([
+    "real.js",
+    "shadow.js",
+  ]);
+  expect(tracker.run(() => trackedAccessibleEntries(packages))?.files).toEqual([
+    "real.js",
+    "shadow.js",
+  ]);
+  tracker.run(() => clearVirtualSources());
+});
+
+test("virtual sources drop the answers they replace", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const onDisk = 1;\n");
+  const tracker = new FrontendInputTracker();
+  const read = (): string | null => tracker.run(() => trackedReadFile(source));
+  let later = 5000;
+  const settledRead = (): string | null => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + later);
+    later += 5000;
+    try {
+      return read();
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+  expect(settledRead()).toBe("export const onDisk = 1;\n");
+
+  // The shadow answers while it is registered; registering it dropped the
+  // settled real answer it replaced, so clearing it asks the disk again
+  // rather than answering from what this compile read before the shadow.
+  await writeFile(source, "export const onDisk = 3;\n");
+  tracker.run(() => setVirtualSource(source, "export const fromShadow = 2;\n"));
+  expect(read()).toBe("export const fromShadow = 2;\n");
+  tracker.run(() => clearVirtualSources());
+  expect(settledRead()).toBe("export const onDisk = 3;\n");
 });

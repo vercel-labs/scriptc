@@ -69,7 +69,7 @@ import {
 } from "./array-iteration.js";
 import { dynamicReceiverThrows } from "./dynamic-receivers.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
-import { checkedFilterNarrowing } from "./filter-predicates.js";
+import { checkedFilterNarrowing, supersetGuardFields } from "./filter-predicates.js";
 import { omittableTrailingParam } from "../coercions/function-adapters.js";
 
 /** `a.map(fn)` / `a.filter(fn)` / `a.forEach(fn)` desugar to a direct
@@ -262,6 +262,19 @@ function filterKeptElem(
     "keep the receiver's element type instead — annotate the callback's return ': boolean' " +
     "(the checker then skips the predicate) or annotate the result with the receiver's own " +
     "element type — and narrow the elements after";
+  // A record target that declares fields the receiver's record element has no
+  // slot for: the elements were narrowed when they were stored, so those
+  // fields no longer exist at runtime and no per-field check can recover them.
+  const widened = supersetGuardFields(lowerer, elem, outElem);
+  const missingFields =
+    widened === null
+      ? ""
+      : ` (the receiver's element type has no slot for ${widened
+          .slice(0, 4)
+          .map((field) => `'${field}'`)
+          .join(", ")}${widened.length > 4 ? ` and ${widened.length - 4} more` : ""} — each ` +
+        `element was narrowed when it was stored, so those fields do not exist at runtime and ` +
+        `the predicate cannot make them real)`;
   const written =
     !booleanFilter &&
     ((!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) ||
@@ -278,14 +291,14 @@ function filterKeptElem(
         "SC1090",
         argNode,
         `narrowing '.filter' to '${lowerer.fmt(outElem)}' through a callback VALUE (no checked ` +
-          `conversion from '${lowerer.fmt(elem)}' — ${annotateEscape})`,
+          `conversion from '${lowerer.fmt(elem)}'${missingFields} — ${annotateEscape})`,
       );
     }
     lowerer.unsupported(
       "SC1090",
       argNode,
       `narrowing '.filter' to '${lowerer.fmt(outElem)}' with a hand-written type predicate (no ` +
-        `checked conversion from '${lowerer.fmt(elem)}' — ${annotateEscape})`,
+        `checked conversion from '${lowerer.fmt(elem)}'${missingFields} — ${annotateEscape})`,
     );
   }
   const classRefinement =

@@ -82,10 +82,18 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Island libCalls on native values typed by island declarations invoke
   // through the checked-dynamic path (scr_node_island_handle.c).
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
+  // Array.prototype generic algorithms over array-like receivers
+  // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
+  ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
+  // Number.prototype and Boolean.prototype read as values in JavaScript.
+  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
   ["scr_builtin_values.c", "builtinValues"],
+  // A standard library prototype object read as a value in JavaScript
+  // (`Date.prototype`); it calls the invoke unit's interned method table.
+  ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
@@ -173,6 +181,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  // Object.isExtensible and Object.isSealed of a value typed dynamically; a
+  // unit of its own so scr_json.c keeps its layout for every other program.
+  ["scr_dyn_integrity.c", "dynIntegrityQueries"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
@@ -231,61 +242,21 @@ export const OPTIONAL_RUNTIME_SOURCES = [
 
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
-  // Programs with dynamic-tier code link the build that exports the
-  // primitives the tier's inline caches use (two-tier design S4); every
-  // other program links the ordinary object, byte for byte.
+  // scr_json.c builds one object per flavor (and workers mode): its paths
+  // for Node island handles and handle classes call through tables that
+  // scr_node_island_handle.c and scr_dyn_handle_class.c install when a
+  // program links them, and its dynamic-tier primitives are always defined.
+  // A program with a partial record assertion (record-views.ts) links the
+  // build whose view slot answers NULL for a field the viewed record does
+  // not declare, so the emitted guard, clone helper and presence test can
+  // stop with the program's message instead of reading a bogus slot; every
+  // other program keeps the default object.
   if (source === "scr_json.c") {
-    variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
-    // Dynamic operations on Node island handles (typeof, calls, `in`,
-    // delete, Object.keys) route to scr_node_island_handle.c.
     variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
+      id: "record-view-partial",
+      when: { recordViewPartial: true },
+      defines: ["SCR_RECORD_VIEW_PARTIAL"],
     });
-    variants.push({
-      id: "dyn-tier-node-island",
-      when: { dynTier: true, nodeIsland: true },
-      defines: ["SCR_JS_TIER", "SCR_NODE_ISLANDS"],
-    });
-    // Programs with web streams: instanceof over their classes' handles.
-    variants.push({
-      id: "handle-classes",
-      when: { webStreams: true },
-      defines: ["SCR_HANDLE_CLASSES"],
-    });
-    variants.push({
-      id: "dyn-tier-handle-classes",
-      when: { dynTier: true, webStreams: true },
-      defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES"],
-    });
-    // Both: the variant with the most conditions is chosen, so programs
-    // with web streams and Node islands need the builds that define both.
-    variants.push({
-      id: "handle-classes-node-island",
-      when: { webStreams: true, nodeIsland: true },
-      defines: ["SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
-    });
-    variants.push({
-      id: "dyn-tier-handle-classes-node-island",
-      when: { dynTier: true, webStreams: true, nodeIsland: true },
-      defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
-    });
-    // A program with a partial record assertion (record-views.ts) links the
-    // build whose view slot answers NULL for a field the viewed record does
-    // not declare, so the emitted guard, clone helper and presence test can
-    // stop with the program's message instead of reading a bogus slot. The
-    // selector takes the variant with the most conditions, so each of the
-    // builds above needs its counterpart; every other program keeps the
-    // default object, byte for byte.
-    for (const { id, when, defines } of variants.slice()) {
-      const suffix = id === "default" ? "" : `-${id}`;
-      variants.push({
-        id: `record-view-partial${suffix}`,
-        when: { ...when, recordViewPartial: true },
-        defines: [...defines, "SCR_RECORD_VIEW_PARTIAL"],
-      });
-    }
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
@@ -317,6 +288,18 @@ export function variantsFor(source) {
       when: { watchFile: true },
       defines: ["SCR_FS_WATCH_FILE"],
     });
+    // Node answers a Buffer from a file read, and its brand is observable
+    // (Buffer.isBuffer, instanceof, inspect): a program that can observe it
+    // links the build that sets it. Combined with every variant above so a
+    // program that also polls keeps scr_watch_file's stat entry points
+    // (selectVariant takes the variant with the most conditions).
+    for (const { id, when, defines } of variants.slice()) {
+      variants.push({
+        id: `${id}-fs-buffer-brand`,
+        when: { ...when, fsBufferBrand: true },
+        defines: [...defines, "SCR_FS_BUFFER_BRAND"],
+      });
+    }
   }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
@@ -349,6 +332,17 @@ export function variantsFor(source) {
       defines: ["SCR_FS_FLAGS"],
     });
   }
+  // spawnSync's and the exec/execFile callback form's cwd/input/shell
+  // entries (SCR_CHILD_CP_OPTIONS) live in a build of scr_child.c of their
+  // own, so a program that never passes those options keeps the default
+  // object, byte for byte.
+  if (source === "scr_child.c") {
+    variants.push({
+      id: "cp-options",
+      when: { childOptionExt: true },
+      defines: ["SCR_CHILD_CP_OPTIONS"],
+    });
+  }
   // server.off / removeListener: the listener-removal entry, in a build of
   // its own so a program that never removes a listener keeps the default.
   if (source === "scr_net.c") {
@@ -359,9 +353,9 @@ export function variantsFor(source) {
     });
   }
   // Programs with web streams link the promise unit with native promise
-  // reactions, the builtin-class unit whose instanceof knows their classes
-  // (as scr_json.c's does above), and the fetch unit that takes their
-  // streams as bodies; every other program keeps the default objects.
+  // reactions, the builtin-class unit whose instanceof knows their classes,
+  // and the fetch unit that takes their streams as bodies; every other
+  // program keeps the default objects.
   if (source === "scr_async.c") {
     variants.push({
       id: "native-reactions",

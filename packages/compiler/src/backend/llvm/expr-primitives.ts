@@ -7,7 +7,13 @@ import {
 } from "./inline-arrays.js";
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
+import {
+  isRefCounted,
+  recordTextCodecClass,
+  type IrExpr,
+  type IrStrCmpOp,
+  type IrType,
+} from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { recordViewTestLines } from "./record-views.js";
@@ -958,8 +964,10 @@ export function emitStringExpr(
       }
       if (v.type.kind === "record") {
         // String(record) / `${record}`: Object.prototype.toString's
-        // constant — the interned literal, retained like a strLit.
-        const sym = host.internLiteral("[object Object]");
+        // constant — the interned literal, retained like a strLit. A
+        // TextEncoder or TextDecoder answers its Symbol.toStringTag.
+        const codec = recordTextCodecClass(host.recordShape(v.type.shapeId));
+        const sym = host.internLiteral(`[object ${codec ?? "Object"}]`);
         return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
       }
       if (v.type.kind === "caught") {

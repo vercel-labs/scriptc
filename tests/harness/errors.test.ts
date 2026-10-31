@@ -254,8 +254,8 @@ direct(new Base());
         "true TypeError: Value is not an instance of 'Sub'",
         "true TypeError: Value is not an instance of 'Sub'",
         "ok 0",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
         "",
       ].join("\n"),
     );
@@ -1944,7 +1944,9 @@ describe("builtin constructor values (JS lane)", () => {
     // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // `key in Ctor` answers from the constructor's fixed keys.
+    // Date.prototype is the one value: it reads as the prototype object, so
+    // a direct read, a member read through it and reflection on it answer as
+    // Node does. `key in Ctor` answers from the constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -1971,6 +1973,12 @@ describe("builtin constructor values (JS lane)", () => {
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
+    // The reads that answer from Date.prototype's object rather than refusing.
+    const readsAsValue = new Map<string, string>([
+      ["Date.prototype", "read object"],
+      ["Date.prototype.getYear", "read function"],
+      ["isExtensible(Date.prototype)", "read boolean"],
+    ]);
     const source = `"use strict";
 const MapAlias = Map;
 const DateAlias = Date;
@@ -1991,13 +1999,16 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
     expect(r.exitCode).toBe(0);
     const lines = r.stdout.trimEnd().split("\n");
     expect(lines.slice(0, reads.length)).toEqual(
-      reads.map(([label], i) =>
-        expect.stringMatching(
-          new RegExp(
-            `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
-          ),
-        ),
-      ),
+      reads.map(([label], i) => {
+        const read = readsAsValue.get(label);
+        return read === undefined
+          ? expect.stringMatching(
+              new RegExp(
+                `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
+              ),
+            )
+          : `${label} ${read}`;
+      }),
     );
     // Promise.prototype reads as an object holding the runtime's methods,
     // and `in` on a builtin constructor answers from its fixed keys.
@@ -2007,6 +2018,40 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
       "object function true",
       "true true true false",
     ]);
+  });
+});
+
+// `Date.prototype` reads as the prototype object; a WRITE into it cannot be
+// observed by a typed Date, so every writer keeps the SC1090 fence it had
+// before the prototype had a value — including the plural defineProperties,
+// which the dynamic path would otherwise apply to the prototype object while
+// `new Date(0).getTime()` kept answering the builtin method.
+describe("standard library prototype writes (JS lane)", () => {
+  test("defineProperties keeps the fence, like defineProperty", async () => {
+    const r = await compileAndRun(
+      "date-prototype-write",
+      `"use strict";
+function refuse(label, run) {
+  try {
+    run();
+    console.log(label, "wrote");
+  } catch (e) {
+    console.log(label, /\\[(SC\\d{4}) at/.exec(e.message)[1]);
+  }
+}
+refuse("defineProperties", () =>
+  Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } }),
+);
+refuse("defineProperty", () => Object.defineProperty(Date.prototype, "getTime", { value: () => 42 }));
+refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
+console.log("getTime", new Date(0).getTime());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\ngetTime 0\n",
+    );
   });
 });
 
@@ -2325,6 +2370,47 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
         "Error SC2020 util.formatWithOptions with the maxArrayLength option has no lowering\n" +
         "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
         "{ a: 1 } [ 1, 2 ]\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
+// With customInspect: false (console.dir's default) Node prints a codec's
+// internal slots, which have no lowering; past the depth limit it prints
+// the class placeholder.
+describe("TextDecoder and TextEncoder with customInspect: false", () => {
+  test("refuse within the depth limit and print [cls] past it", async () => {
+    const r = await compileAndRun(
+      "codec-custom-inspect-false",
+      `import * as util from "node:util";
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+const attempts: Array<() => string> = [
+  () => util.inspect(decoder, { customInspect: false }),
+  () => util.inspect([encoder], { customInspect: false }),
+  () => {
+    console.dir(decoder);
+    return "printed";
+  },
+];
+for (const attempt of attempts) {
+  try {
+    console.log(attempt());
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+console.log(util.inspect({ a: { b: { c: decoder, d: encoder } } }, { customInspect: false }));
+console.log(util.inspect(decoder, { customInspect: true }));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "util.inspect of a TextDecoder with customInspect: false is not supported yet\n" +
+        "util.inspect of a TextEncoder with customInspect: false is not supported yet\n" +
+        "util.inspect of a TextDecoder with customInspect: false is not supported yet\n" +
+        "{ a: { b: { c: [TextDecoder], d: [TextEncoder] } } }\n" +
+        "TextDecoder { encoding: 'utf-8', fatal: false, ignoreBOM: false }\n",
     );
     expect(r.stderr).toBe("");
   });

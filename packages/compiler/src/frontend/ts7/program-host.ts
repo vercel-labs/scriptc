@@ -166,16 +166,37 @@ export class Ts7Host {
   /** The text the server reads for a file (its readFile hook). */
   private readonly readSource: (fileName: string) => string | null;
   private closed = false;
+  /** The file system shadow of the load that holds this host (rebind). */
+  private shadow: NonNullable<Ts7HostOptions["fsShadow"]> | null;
+  /** Whether the next snapshot drops every file the server read: set when
+   * the host passes to another load, whose files may read differently. */
+  private invalidateAll = false;
+  /** The working directory of the server connection. */
+  readonly cwd: string;
+  /** The loads this host has served: 1, and one more for each rebind. */
+  loads = 1;
+  /** Called instead of closing the connection when the host is reusable. */
+  private release: ((host: Ts7Host) => void) | undefined;
+  /** Whether a load holds this reusable host: from its creation or rebind
+   * until that load closes it. */
+  private held = true;
 
-  constructor(createApi: Ts7ApiFactory, options?: Ts7HostOptions) {
+  constructor(
+    createApi: Ts7ApiFactory,
+    options?: Ts7HostOptions,
+    release?: (host: Ts7Host) => void,
+  ) {
     const virtualFiles = this.virtualFiles;
-    const shadow = options?.fsShadow ?? null;
+    this.shadow = options?.fsShadow ?? null;
+    this.cwd = options?.cwd ?? process.cwd();
+    this.release = release;
     // A virtual file, a shadow's replacement, a package shim's declaration
     // entry, a type-patched package file or the file on disk; null when shadowed out of existence or
     // missing.
     this.readSource = (fileName) => {
       const virtual = virtualFiles.get(tsgoPath(fileName));
       if (virtual !== undefined) return stripSourceBom(virtual);
+      const shadow = this.shadow;
       if (shadow !== null) {
         if (shadow.hideFile(fileName)) return null;
         const replacement = shadow.readFile(fileName);
@@ -199,7 +220,7 @@ export class Ts7Host {
         readFile: this.readSource,
         fileExists: (fileName) => {
           if (virtualFiles.has(tsgoPath(fileName))) return true;
-          if (shadow !== null && shadow.hideFile(fileName)) return false;
+          if (this.shadow !== null && this.shadow.hideFile(fileName)) return false;
           return trackedFileExists(fileName) || typePatchFileExists(fileName);
         },
         directoryExists: (path) => trackedDirectoryExists(path),
@@ -270,8 +291,9 @@ export class Ts7Host {
       const snapshot = this.api.updateSnapshot({
         openProjects: [configPath],
         closeProjects,
-        fileChanges: { created, changed },
+        fileChanges: this.invalidateAll ? { invalidateAll: true } : { created, changed },
       });
+      this.invalidateAll = false;
       this.closingProjects.clear();
       this.virtualChanges.clear();
       const project = snapshot.getProject(configPath);
@@ -303,8 +325,36 @@ export class Ts7Host {
     if (this.closed) throw new InternalCompilerError("Ts7Host is closed");
   }
 
+  /** Pass this pooled host to another load: its shadow replaces the last
+   * load's, the last load's in-memory files are gone, and the next snapshot
+   * reads every file again (the server reuses a file's syntax tree only for
+   * identical text). */
+  rebind(fsShadow: Ts7HostOptions["fsShadow"]): void {
+    this.ensureOpen();
+    this.held = true;
+    this.loads++;
+    this.shadow = fsShadow ?? null;
+    this.virtualFiles.clear();
+    this.virtualChanges.clear();
+    this.invalidateAll = true;
+  }
+
+  /** Close the server connection, even when the host is pooled. */
+  closeConnection(): void {
+    this.release = undefined;
+    this.close();
+  }
+
   close(): void {
     if (this.closed) return;
+    const release = this.release;
+    if (release !== undefined) {
+      // A second close by the same load returns nothing twice.
+      if (!this.held) return;
+      this.held = false;
+      release(this);
+      return;
+    }
     this.closed = true;
     try {
       this.api.close();

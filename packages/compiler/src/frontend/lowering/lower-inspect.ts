@@ -63,6 +63,7 @@ import { dateRootOf } from "./builtins/date-classes.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
 import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
+import { registerLinkedHelper } from "./record-links.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { dynArgumentPack } from "./call-arguments.js";
 
@@ -267,14 +268,15 @@ function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
 
 /** An error value whose runtime class may be a program-declared subclass,
  * which may declare fields (`class Bailable extends Error { bail = false }`)
- * or carry a `cause`: Node prints the error base (`[Bailable [Error]: m]`,
- * the stackless form compiled errors use) followed by the own properties,
- * `[Bailable [Error]: m] { bail: true }`, with the usual single-line/
- * multi-line choice counting the base. Each program class (most-derived
- * first) is an instanceof arm; other values keep the runtime's error
- * rendering. Beyond the depth budget an instance with own properties
- * prints `[Name]`, as Node does for any object with keys; one without
- * prints its header. */
+ * or carry a `cause`: Node prints the error base — its stack, headed
+ * `Bailable [Error]: m` by improveStack, or the bracketed
+ * `[Bailable [Error]: m]` when the stack has no frame line — followed by
+ * the own properties, `{ bail: true }` after the last frame, with the
+ * usual single-line/multi-line choice counting the base. Each program
+ * class (most-derived first) is an instanceof arm; other values keep the
+ * runtime's error rendering. Beyond the depth budget an instance with own
+ * properties prints `[Name]`, as Node does for any object with keys; one
+ * without prints its header. */
 function errorInspectHelper(
   lowerer: Lowerer,
   t: IrType & { kind: "object" },
@@ -621,10 +623,12 @@ function userErrorClasses(info: ClassInfo): ClassInfo[] {
   return out;
 }
 
-/** Node's improveStack over the stackless base (`[Error: m]`): when the
- * instance's constructor name differs from its `name` and the name ends in
- * "Error", the header names both — `[Bailable [Error]: m]`, or
- * `[FetchError: m]` when the constructor name already contains it. */
+/** Node's improveStack over the rendering's base: when the instance's
+ * constructor name differs from its `name` and the name ends in "Error",
+ * the header names both — `[Bailable [Error]: m]`, or `[FetchError: m]`
+ * when the constructor name already contains it. Two bases reach here: the
+ * bracket form (`[Error: m]`, an error whose stack is empty) and the stack
+ * itself (`Error: m\n    at ...`, whose first line carries the header). */
 function improvedErrorBase(
   lowerer: Lowerer,
   value: IrExpr,
@@ -695,6 +699,42 @@ function improvedErrorBase(
     type: STRING,
     loc,
   };
+  /** The name's length — where a stack base's header ends. */
+  const nameLength = (): IrExpr => str("length", nameRef(), [], F64);
+  /** The base's character at `name.length`: `:` or `\n` after the name, or
+   * the empty answer when the base is the name alone (Node's
+   * `stack.length === len` arm). */
+  const atNameEnd = (): IrExpr => str("charAt", baseRef(), [nameLength()], STRING);
+  const stackCond = and(
+    and(
+      eq(nameRef(), strLit(display, loc), true),
+      str("endsWith", nameRef(), [strLit("Error", loc)], BOOL),
+    ),
+    and(str("startsWith", baseRef(), [nameRef()], BOOL), {
+      kind: "logical",
+      op: "||",
+      left: {
+        kind: "logical",
+        op: "||",
+        left: eq(atNameEnd(), strLit(":", loc)),
+        right: eq(atNameEnd(), strLit("\n", loc)),
+        type: BOOL,
+        loc,
+      },
+      right: eq(atNameEnd(), strLit("", loc)),
+      type: BOOL,
+      loc,
+    }),
+  );
+  const stackRest = (): IrExpr => str("slice", baseRef(), [nameLength()], STRING);
+  const improvedStack: IrExpr = {
+    kind: "ternary",
+    cond: str("includes", strLit(display, loc), [nameRef()], BOOL),
+    then: concatAll([strLit(display, loc), stackRest()], loc),
+    else_: concatAll([strLit(`${display} [`, loc), nameRef(), strLit("]", loc), stackRest()], loc),
+    type: STRING,
+    loc,
+  };
   return {
     kind: "seqExpr",
     stmts: [
@@ -713,7 +753,21 @@ function improvedErrorBase(
       },
       { kind: "varDecl", localId: "raw.0", init: base, loc },
     ],
-    result: { kind: "ternary", cond, then: improved, else_: baseRef(), type: STRING, loc },
+    result: {
+      kind: "ternary",
+      cond,
+      then: improved,
+      else_: {
+        kind: "ternary",
+        cond: stackCond,
+        then: improvedStack,
+        else_: baseRef(),
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    },
     type: STRING,
     loc,
   };
@@ -757,8 +811,10 @@ function inspectSupport(
       visiting.add(t.shapeId);
       const shape = lowerer.shapes.get(t.shapeId);
       if (!shape) return "this record shape has no inspect lowering";
-      const codec = recordTextCodecClass(shape);
-      if (codec !== null) return `${codec} instances have no inspect lowering yet`;
+      if (recordTextCodecClass(shape) !== null) {
+        visiting.delete(t.shapeId);
+        return null;
+      }
       // Accessor-carrying shapes: Node prints the accessor names as
       // `x: [Getter]` / `[Setter]` / `[Getter/Setter]` in insertion order
       // — a position the static field walk does not track (accessor slots
@@ -1031,10 +1087,11 @@ function inspectExprBody(
   ownRendering: boolean,
 ): IrExpr {
   // A Dirent row renders through its dyn view: Node's `Dirent { ... }`
-  // with the Symbol(type) key.
+  // with the Symbol(type) key. So do TextEncoder and TextDecoder, through
+  // their handles' inspectors.
   if (t.kind === "record") {
     const shape = lowerer.shapes.get(t.shapeId);
-    if (shape && isDirentShape(shape)) {
+    if (shape && (isDirentShape(shape) || recordTextCodecClass(shape) !== null)) {
       return {
         kind: "libCall",
         fn: "insp.dyn",
@@ -1368,6 +1425,23 @@ export function typeReachesCustomInspect(lowerer: Lowerer, t: IrType): boolean {
     if (seen.has(k)) return false;
     seen.add(k);
     if (u.kind === "object" && customInspectMethodOf(lowerer, u.className)) return true;
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
+/** Whether a `t` value can reach a TextEncoder or TextDecoder, whose
+ * handles print through Node's custom inspectors. */
+function typeReachesTextCodec(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    if (u.kind === "record") {
+      const shape = lowerer.shapes.get(u.shapeId);
+      if (shape && recordTextCodecClass(shape) !== null) return true;
+    }
     return typeConstituents(lowerer, u).some(walk);
   };
   return walk(t);
@@ -2594,7 +2668,36 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
     });
   }
   lowerer.liftedFns.push(fn);
+  if (t.kind === "record" && recordMayKeepSource(lowerer, t))
+    registerLinkedHelper(lowerer, fn, t.shapeId, "inspect");
   return name;
+}
+
+/** The rendering of `value` at recursion `r` and depth budget `d`: its
+ * type's inspect helper, or the checked-dynamic view's rendering when the
+ * type has no inspect lowering (a record with a function field). */
+export function inspectHelperCall(
+  lowerer: Lowerer,
+  value: IrExpr,
+  r: IrExpr,
+  d: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (inspectSupport(lowerer, value.type, new Set(), { recursive: false }) !== null)
+    return {
+      kind: "libCall",
+      fn: "insp.dyn",
+      args: [{ kind: "dynFrom", value, liveRef: true, type: DYN, loc }, r, d],
+      type: STRING,
+      loc,
+    };
+  return {
+    kind: "call",
+    callee: inspectHelper(lowerer, value.type, loc),
+    args: [value, r, d],
+    type: STRING,
+    loc,
+  };
 }
 
 /* ── the console/format top-level value rendering ────────────────────── */
@@ -2965,6 +3068,8 @@ function parseInspectOptions(
       (value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword)
     ) {
       options.customInspect = value.kind === ts.SyntaxKind.TrueKeyword;
+    } else if (key === "showHidden" && value.kind === ts.SyntaxKind.FalseKeyword) {
+      // util.inspect's default.
     } else if (dir && key === "customInspect") {
       // console.dir's own default; only that value is lowered.
       if (value.kind !== ts.SyntaxKind.FalseKeyword) {
@@ -2978,7 +3083,7 @@ function parseInspectOptions(
       lowerer.noLowering(
         `${surface} with the '${key}' option`,
         prop,
-        `the lowered options are depth (numeric literal or null), colors: false, compact (false or a number), breakLength, ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
+        `the lowered options are depth (numeric literal or null), colors: false, showHidden: false, compact (false or a number), breakLength, ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
       );
     }
   }
@@ -3267,41 +3372,65 @@ export function lowerInspectValue(
   // false (console.dir's default), apply around the render when the value
   // can reach a custom method; the previous settings return afterwards.
   const reachesCustom =
-    typeReachesCustomInspect(lowerer, value.type) || typeReachesDyn(lowerer, value.type);
+    typeReachesCustomInspect(lowerer, value.type) ||
+    typeReachesDyn(lowerer, value.type) ||
+    typeReachesTextCodec(lowerer, value.type);
   const depthContext = reachesCustom && depth === Infinity && options.depthKind !== 1;
   const customContext = reachesCustom && !options.customInspect;
   if (depthContext || customContext) {
-    const stmts: IrStmt[] = [];
-    const restore: IrStmt[] = [];
-    const setting = (fn: "insp.customInspect" | "insp.depthKind", arg: IrExpr, type: IrType) => {
-      const previous = lowerer.declareHiddenLocal("%inspectContext", type);
-      const call = (a: IrExpr): IrExpr => ({ kind: "libCall", fn, args: [a], type, loc });
-      stmts.push({ kind: "varDecl", localId: previous.id, init: call(arg), loc });
-      restore.push({ kind: "exprStmt", expr: call(varRef(previous.id, type, loc)), loc });
-    };
-    if (customContext) setting("insp.customInspect", boolLit(false, loc), BOOL);
-    if (depthContext) setting("insp.depthKind", numLit(options.depthKind, loc), F64);
-    const text = lowerer.declareHiddenLocal("%inspectText", STRING);
-    stmts.push({
-      kind: "varDecl",
-      localId: text.id,
-      init: withInspectLayout(
-        lowerer,
-        options,
-        value,
-        "inspect",
-        (input) => inspectExpr(lowerer, value.type, input, numLit(0, loc), numLit(depth, loc), loc),
+    // The settings apply in a lifted function, `(v) => { set; try { return
+    // render(v); } finally { restore; } }`, so the previous ones return on
+    // every exit, an inspection refusal's throw included (a seqExpr cannot
+    // hold the try).
+    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${depth}`;
+    let name = lowerer.inspectHelpers.get(key);
+    if (name === undefined) {
+      name = keyedHelperName(lowerer, "%util.inspContext", key);
+      lowerer.inspectHelpers.set(key, name);
+      const locals: IrLocal[] = [{ id: "v.0", name: "v", type: value.type, mutable: false }];
+      const stmts: IrStmt[] = [];
+      const restore: IrStmt[] = [];
+      const setting = (fn: "insp.customInspect" | "insp.depthKind", arg: IrExpr, type: IrType) => {
+        const previous = `previous.${locals.length}`;
+        locals.push({ id: previous, name: "previous", type, mutable: false });
+        const call = (a: IrExpr): IrExpr => ({ kind: "libCall", fn, args: [a], type, loc });
+        stmts.push({ kind: "varDecl", localId: previous, init: call(arg), loc });
+        restore.push({ kind: "exprStmt", expr: call(varRef(previous, type, loc)), loc });
+      };
+      if (customContext) setting("insp.customInspect", boolLit(false, loc), BOOL);
+      if (depthContext) setting("insp.depthKind", numLit(options.depthKind, loc), F64);
+      const input = varRef("v.0", value.type, loc);
+      stmts.push({
+        kind: "tryCatch",
+        tryBody: [
+          {
+            kind: "return",
+            value: withInspectLayout(
+              lowerer,
+              options,
+              input,
+              "inspect",
+              (v) => inspectExpr(lowerer, value.type, v, numLit(0, loc), numLit(depth, loc), loc),
+              loc,
+            ),
+            loc,
+          },
+        ],
+        catchBody: null,
+        catchLocalId: null,
+        finallyBody: restore.reverse(),
         loc,
-      ),
-      loc,
-    });
-    return {
-      kind: "seqExpr",
-      stmts: [...stmts, ...restore.reverse()],
-      result: varRef(text.id, STRING, loc),
-      type: STRING,
-      loc,
-    };
+      });
+      lowerer.liftedFns.push({
+        name,
+        params: [{ localId: "v.0", name: "v", type: value.type }],
+        returnType: STRING,
+        locals,
+        body: stmts,
+        loc,
+      });
+    }
+    return { kind: "call", callee: name, args: [value], type: STRING, loc };
   }
   if (dir && value.type.kind === "dyn") {
     return withInspectLayout(

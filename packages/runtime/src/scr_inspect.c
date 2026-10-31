@@ -533,6 +533,16 @@ ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s) {
 
 /* formatRaw's Date base: toISOString(), or toString()'s "Invalid Date"
  * when the time value is NaN (the only time value outside the ISO range). */
+/* util.inspect's placeholder past the depth limit for an instance whose
+ * inspector returns `this` there: `[cls]`, in the special style. */
+static ScrStr *insp_bracketed_class(const char *cls) {
+  InspBuf out = {0};
+  ib_char(&out, '[');
+  ib_cstr(&out, cls);
+  ib_char(&out, ']');
+  return insp_styled(ib_take(&out), INSP_SPECIAL);
+}
+
 ScrStr *scr_insp_date(double ms) {
   if (isnan(ms)) return scr_str_new("Invalid Date", 12);
   return scr_date_to_iso(ms);
@@ -1150,6 +1160,115 @@ static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double dept
 }
 
 static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth);
+/* The stack-aware renderer behind scr_insp_dyn_error: a caller that holds
+ * the error natively passes its formatted stack (`given`), which stands in
+ * only when the view's shared `stack` accessor cannot resolve the error on
+ * its own (a field-built view or a materialized snapshot), and the
+ * constructor name (`display_name`) the view no longer carries. */
+static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError *owner,
+                              const ScrStr *stack, bool given, const char *display_name);
+
+/* Whether a formatted stack carries at least one frame line — Node's
+ * formatError wraps a stack without one in brackets, `[custom stack]`. */
+static bool insp_stack_has_frames(const ScrStr *stack) {
+  return scr_str_find_bytes(stack->data, stack->len, "\n    at", 7) != NULL;
+}
+
+/* Appends rendered error text with every newline carrying the enclosing
+ * property's indentation (formatError's final replaceAll over the stack and
+ * the message, at ctx.indentationLvl). */
+static void insp_indented_into(InspBuf *b, const ScrStr *s) {
+  size_t start = 0;
+  for (size_t i = 0; i < s->len; i++) {
+    if (s->data[i] != '\n') continue;
+    ib_bytes(b, s->data + start, i - start + 1);
+    ib_spaces(b, g_indent);
+    start = i + 1;
+  }
+  ib_bytes(b, s->data + start, s->len - start);
+}
+
+/* A stack or message getter that throws is ignored (Node's getStackString
+ * and formatError catch it) — but only an exception this render raised:
+ * one already pending belongs to the caller. */
+static void insp_swallow_new_exc(bool had_pending) {
+  if (had_pending || !scr_exc_pending()) return;
+  ScrCaught *caught = scr_exc_take();
+  scr_caught_release(caught);
+}
+
+/* Appends the base an error's stack renders as: the stack text itself, or
+ * Node's bracket form when it carries no frame line. */
+static void insp_stack_base_into(InspBuf *b, const ScrStr *stack) {
+  bool frames = insp_stack_has_frames(stack);
+  if (!frames) ib_char(b, '[');
+  insp_indented_into(b, stack);
+  if (!frames) ib_char(b, ']');
+}
+
+/* Node's constructor name of a runtime error class, which improveStack
+ * compares the error's `name` against and prints in the header. This is the
+ * CLASS name, not `scr_error_names`' default name: DOMException's default
+ * name is "Error" (WebIDL), while its constructor is DOMException. NULL for
+ * an instance of a program-declared subclass (its class supplies the name). */
+static const char *insp_error_class_name(const ScrError *e) {
+  static const char *const names[SCR_ERR_COUNT] = {
+      [SCR_ERR_ERROR] = "Error",
+      [SCR_ERR_TYPE] = "TypeError",
+      [SCR_ERR_RANGE] = "RangeError",
+      [SCR_ERR_SYNTAX] = "SyntaxError",
+      [SCR_ERR_DOMEX] = "DOMException",
+      [SCR_ERR_REFERENCE] = "ReferenceError",
+      [SCR_ERR_EVAL] = "EvalError",
+      [SCR_ERR_URI] = "URIError",
+      [SCR_ERR_AGGREGATE] = "AggregateError",
+      [SCR_ERR_ASSERTION] = "AssertionError",
+      [SCR_ERR_SUPPRESSED] = "SuppressedError",
+  };
+  for (int i = 0; i < SCR_ERR_COUNT; i++)
+    if (e->vt == &scr_error_vts[i]) return names[i];
+  return NULL;
+}
+
+/* The class name a typed-ref capsule's identity tag carries
+ * (`object:<Name>`), for a view whose snapshot kept no prototype chain: a
+ * compiled error subclass crossing into an untyped slot keeps its name
+ * there, where Node reads `err.constructor.name`. NULL for anything but an
+ * object tag, and for the runtime's own classes (a leading `%`), whose
+ * error class already supplies the name. */
+static const char *insp_tag_class_name(const ScrDyn *d) {
+  if (d->kind != SCR_DYN_TYPED_REF) return NULL;
+  const char *key = d->v.typed_ref.type_key;
+  if (key == NULL || strncmp(key, "object:", 7) != 0) return NULL;
+  const char *name = key + 7;
+  return name[0] == '\0' || name[0] == '%' ? NULL : name;
+}
+
+/* Node's improveStack over a rendered error text (`Name: message[frames]`):
+ * when the constructor name differs from the error's `name` and that name
+ * ends in "Error", the header names both — "Plain [Error]: m", or
+ * "FetchError: m" when the constructor name already contains the name. */
+static ScrStr *insp_improve_stack(const ScrStr *text, const char *name, size_t name_len,
+                                  const char *display, size_t display_len) {
+  if (display == NULL || name_len == 0 || name_len < 5 ||
+      memcmp(name + name_len - 5, "Error", 5) != 0 ||
+      text->len < name_len || memcmp(text->data, name, name_len) != 0)
+    return scr_str_retain(text);
+  bool boundary = text->len == name_len ||
+                  text->data[name_len] == ':' || text->data[name_len] == '\n';
+  if (!boundary) return scr_str_retain(text);
+  if (display_len == name_len && memcmp(display, name, display_len) == 0)
+    return scr_str_retain(text);
+  InspBuf out = {0};
+  ib_bytes(&out, display, display_len);
+  if (scr_str_find_bytes(display, display_len, name, name_len) == NULL) {
+    ib_cstr(&out, " [");
+    ib_bytes(&out, name, name_len);
+    ib_char(&out, ']');
+  }
+  ib_bytes(&out, text->data + name_len, text->len - name_len);
+  return ib_take(&out);
+}
 
 /* An error's own `cause` property and whether it is enumerable, read where
  * `e.cause` reads it: the error's checked-dynamic node when it has one,
@@ -1213,26 +1332,35 @@ ScrStr *scr_insp_error_cause(ScrError *e, double recurse, double depth) {
 }
 
 /* A runtime error through its node: the cached one, or one built from its
- * fields. */
+ * fields. The stack comes from the error itself — a field-built node's
+ * shared `stack` accessor has no error behind it to resolve. */
 ScrStr *scr_insp_error_node(ScrError *e, double recurse, double depth) {
+  bool pending = scr_exc_pending();
+  ScrStr *stack = scr_error_stack(e);
+  insp_swallow_new_exc(pending);
   ScrDyn *view = scr_errdyn_view_of(e);
-  if (view != NULL && view->kind == SCR_DYN_OBJ) return scr_insp_dyn_error(view, recurse, depth);
+  if (view != NULL && view->kind == SCR_DYN_OBJ) {
+    ScrStr *out = insp_dyn_error(view, recurse, depth, e, stack, true, NULL);
+    scr_str_release(stack);
+    return out;
+  }
   ScrDyn *fields = scr_error_dyn_fields(e);
-  ScrStr *out = scr_insp_dyn_error(fields, recurse, depth);
+  ScrStr *out = insp_dyn_error(fields, recurse, depth, e, stack, true, NULL);
   scr_dyn_release(fields);
+  scr_str_release(stack);
   return out;
 }
 
-/* Errors: the STACKLESS rendering — compiled binaries carry no stack, so
- * the base is formatError's bracket form `[Name: message]` / `[Name]`
- * (Node prints these exact forms for an error whose stack is empty;
- * stack-carrying Node output is a documented divergence). A runtime error
- * renders through its checked-dynamic node, so the own properties Node
- * shows follow in key order: the system-error fields, code, and the extra
- * properties a throw site attached (`[Error: m] { errno: -2, code:
- * 'ENOENT', ... }`). Other errors render a stamped `code` slot as their
- * one extra property: `[Error: m] { code: 'X' }`, `[Error]` beyond depth.
- * Message newlines indent like Node's formatError tail. */
+/* Errors: formatError over the error's stack — the captured frames under
+ * the "Name: message" heading, bracketed when the stack carries no frame
+ * line (an assigned custom stack, or one cleared to "") and `[Name: m]`
+ * from the slots when it has no stack at all. A runtime error renders
+ * through its checked-dynamic node, so the own properties Node shows follow
+ * in key order: the system-error fields, code, and the extra properties a
+ * throw site attached (`Error: m\n    at f (file) {\n  errno: -2, code:
+ * 'ENOENT', ... }`). Other errors render a stamped `code` slot as their one
+ * extra property, and `[Error]` beyond depth. Stack and message newlines
+ * indent like Node's formatError tail. */
 ScrStr *scr_insp_error(ScrError *e, double recurse, double depth) {
   if (e->vt >= &scr_error_vts[0] && e->vt < &scr_error_vts[SCR_ERR_COUNT])
     return scr_insp_error_node(e, recurse, depth);
@@ -1245,20 +1373,22 @@ ScrStr *scr_insp_error(ScrError *e, double recurse, double depth) {
     ib_char(&out, ']');
     return ib_take(&out);
   }
+  bool pending = scr_exc_pending();
+  ScrStr *stack = scr_error_stack(e);
+  insp_swallow_new_exc(pending);
   InspBuf base = {0};
-  ib_char(&base, '[');
-  ib_str(&base, e->name);
-  if (e->message->len) {
-    ib_cstr(&base, ": ");
-    /* indent embedded newlines by the CURRENT level (formatError's
-     * final replaceAll — g_indent is the property's own level here). */
-    for (size_t i = 0; i < e->message->len; i++) {
-      char c = e->message->data[i];
-      ib_char(&base, c);
-      if (c == '\n') ib_spaces(&base, g_indent);
+  if (stack != NULL && stack->len) {
+    insp_stack_base_into(&base, stack);
+  } else {
+    ib_char(&base, '[');
+    ib_str(&base, e->name);
+    if (e->message->len) {
+      ib_cstr(&base, ": ");
+      insp_indented_into(&base, e->message);
     }
+    ib_char(&base, ']');
   }
-  ib_char(&base, ']');
+  scr_str_release(stack);
   ScrStr *base_str = ib_take(&base);
   if (!has_code) return base_str;
   scr_insp_begin(recurse + 1);
@@ -1369,9 +1499,11 @@ static ScrDyn *insp_assertion_ellipsis(ScrDyn *value) {
 }
 
 /* The checked-dynamic Error encoding (scr_error_dyn_fields) rendered like
- * scr_insp_error: the stackless bracket form `[Name: message]`, then the
- * remaining enumerable own properties (code, errno, syscall, ...) in
- * Node's `{ ... }` tail. */
+ * scr_insp_error: formatError over the error's `stack` member — the frames
+ * under the "Name: message" heading, bracket-wrapped when it has none, and
+ * the slots' `[Name: message]` when it has no stack — then the remaining
+ * enumerable own properties (code, errno, syscall, ...) in Node's
+ * `{ ... }` tail. */
 /* An own non-enumerable entry of the error encoding, NULL when absent or
  * enumerable (an enumerable one prints with the other own keys). */
 static const ScrDynProp *insp_error_hidden_entry(const ScrDyn *d, const char *key, size_t len,
@@ -1382,16 +1514,10 @@ static const ScrDynProp *insp_error_hidden_entry(const ScrDyn *d, const char *ke
   return out->enumerable ? NULL : out;
 }
 
-static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
-  /* An error already on the traversal stack (a spawnSync error's own
-   * `error`): Node's [Circular *N], and <ref *N> on the outer rendering. */
-  double circular = scr_insp_circ_check(d);
-  if (circular != 0) return scr_insp_circular(circular);
-  const ScrDyn *name = insp_error_slot(d, "name", 4);
-  const ScrDyn *message = insp_error_slot(d, "message", 7);
-  bool assertion = name != NULL && name->v.str->len == 14 &&
-                   memcmp(name->v.str->data, "AssertionError", 14) == 0;
-  double value_depth = assertion ? recurse : depth;
+/* How many properties formatError prints after the stack: the enumerable
+ * own properties other than name, message and stack, plus a non-enumerable
+ * `cause` and an `errors` array (AggregateError's). */
+static size_t insp_error_extra(const ScrDyn *d) {
   size_t extra = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
@@ -1402,32 +1528,141 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
       continue;
     extra++;
   }
-  /* formatError shows a non-enumerable `cause`, and an AggregateError's
-   * `errors` array, after the enumerable keys: `[cause]`, `[errors]`. */
   ScrDynProp cause_prop, errors_prop;
   const ScrDynProp *cause = insp_error_hidden_entry(d, "cause", 5, &cause_prop);
   const ScrDynProp *errors = insp_error_hidden_entry(d, "errors", 6, &errors_prop);
   if (errors && errors->value->kind != SCR_DYN_ARR) errors = NULL;
-  extra += (cause != NULL) + (errors != NULL);
-  InspBuf base = {0};
-  ib_char(&base, '[');
-  if (name != NULL) ib_str(&base, name->v.str);
-  else ib_cstr(&base, "Error");
+  return extra + (cause != NULL) + (errors != NULL);
+}
+
+static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
+  return insp_dyn_error(d, recurse, depth, NULL, NULL, false, NULL);
+}
+
+static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError *owner,
+                              const ScrStr *stack, bool given, const char *display_name) {
+  /* An error already on the traversal stack (a spawnSync error's own
+   * `error`): Node's [Circular *N], and <ref *N> on the outer rendering. */
+  double circular = scr_insp_circ_check(d);
+  if (circular != 0) return scr_insp_circular(circular);
+  /* The depth answer is decided before any stack getter runs, as Node's
+   * is; its [Name] form names the `name` the error reads then. */
+  const ScrDyn *depth_name = insp_error_slot(d, "name", 4);
+  size_t extra = insp_error_extra(d);
   if (extra > 0 && recurse > depth) {
-    ib_char(&base, ']');
-    return ib_take(&base);
+    /* `[${getCtxStyle(...)}]` with the trailing space sliced: [Name] */
+    InspBuf out = {0};
+    ib_char(&out, '[');
+    if (depth_name != NULL) ib_str(&out, depth_name->v.str);
+    else ib_cstr(&out, "Error");
+    ib_char(&out, ']');
+    return ib_take(&out);
   }
-  if (message != NULL && message->v.str->len) {
-    ib_cstr(&base, ": ");
-    for (size_t i = 0; i < message->v.str->len; i++) {
-      char c = message->v.str->data[i];
-      ib_char(&base, c);
-      if (c == '\n') ib_spaces(&base, g_indent);
+  /* The constructor name Node's improveStack compares the error's `name`
+   * against: the capsule's class when the caller names it, else the view's
+   * class, else the runtime error class behind it. */
+  ScrError *resolved = NULL;
+  if (owner == NULL) {
+    resolved = scr_errdyn_err_of(d);
+    owner = resolved;
+  }
+  const char *class_name = display_name != NULL ? display_name : scr_dyn_class_name(d);
+  if (class_name == NULL) class_name = insp_tag_class_name(d);
+  const char *native_class =
+      class_name == NULL && owner != NULL ? insp_error_class_name(owner) : NULL;
+  /* Node's formatError reads the error's stack first, and a `stack` getter
+   * runs ordinary program code: every property read below happens after
+   * it, so a getter that replaces `name`, `message`, `cause` or `errors`
+   * leaves no borrowed entry behind. */
+  ScrStr *owned_stack = NULL;
+  {
+    bool pending = scr_exc_pending();
+    owned_stack = scr_error_dyn_stack_text(d);
+    bool threw = !pending && scr_exc_pending();
+    insp_swallow_new_exc(pending);
+    /* The shared accessor resolves its error through the identity cache,
+     * which names a cached error view but not a field-built view or a
+     * materialized snapshot: there the error's own formatted stack stands
+     * in. A replaced member (a data property, a program getter, a deleted
+     * one) is what the program reads, so nothing stands in for it. */
+    if (owned_stack == NULL && !threw && given && stack != NULL &&
+        scr_error_dyn_stack_shared(d))
+      owned_stack = scr_str_retain((ScrStr *)stack);
+  }
+  /* Node reads the error's `name` and `message` after its stack, and a
+   * compiled write updates the error's native slots rather than the view
+   * that mirrors them: a view with an error behind it reads the slots for
+   * the properties the error owns, and the view for the inherited ones. */
+  ScrStr *name_text = NULL;
+  ScrStr *message_text = NULL;
+  if (owner != NULL && owner->name_present && owner->name != NULL) {
+    name_text = scr_str_retain(owner->name);
+  } else {
+    const ScrDyn *slot = insp_error_slot(d, "name", 4);
+    if (slot != NULL) name_text = scr_str_retain(slot->v.str);
+  }
+  if (owner != NULL && owner->message_present && owner->message != NULL) {
+    message_text = scr_str_retain(owner->message);
+  } else {
+    const ScrDyn *slot = insp_error_slot(d, "message", 7);
+    if (slot != NULL) message_text = scr_str_retain(slot->v.str);
+  }
+  bool assertion = name_text != NULL && name_text->len == 14 &&
+                   memcmp(name_text->data, "AssertionError", 14) == 0;
+  double value_depth = assertion ? recurse : depth;
+  /* Node snapshots the error's keys before formatError reads the stack, so
+   * a key a `stack` getter adds does not print: the count decided above,
+   * before the getter ran, is what the tail renders. */
+  size_t shown = extra;
+  const ScrStr *text = owned_stack;
+  /* getStackString's fallback: Error.prototype.toString from the slots. */
+  ScrStr *slots = NULL;
+  if (text == NULL || text->len == 0) {
+    InspBuf flat = {0};
+    if (name_text != NULL) ib_str(&flat, name_text);
+    else ib_cstr(&flat, "Error");
+    if (message_text != NULL && message_text->len) {
+      ib_cstr(&flat, ": ");
+      ib_str(&flat, message_text);
     }
+    slots = ib_take(&flat);
+    text = slots;
   }
-  ib_char(&base, ']');
+  const char *display = class_name != NULL ? class_name : native_class;
+  /* err.name, with formatError's `name ??= 'Error'`. */
+  const char *name_data = name_text != NULL ? name_text->data : "Error";
+  size_t name_len = name_text != NULL ? name_text->len : 5;
+  ScrStr *improved = display != NULL
+      ? insp_improve_stack(text, name_data, name_len, display, strlen(display))
+      : scr_str_retain((ScrStr *)text);
+  InspBuf base = {0};
+  if (improved->len) {
+    insp_stack_base_into(&base, improved);
+  } else {
+    ib_char(&base, '[');
+    ib_char(&base, ']');
+  }
+  scr_str_release(improved);
+  scr_str_release(slots);
+  scr_str_release(name_text);
+  scr_str_release(message_text);
+  scr_str_release(owned_stack);
+  scr_error_release(resolved);
   ScrStr *base_str = ib_take(&base);
-  if (extra == 0) return base_str;
+  if (shown == 0) return base_str;
+  /* The hidden entries are read after the stack getter, and their values
+   * are kept alive across the enumerable properties' rendering, which can
+   * run getters of its own. */
+  ScrDynProp cause_prop, errors_prop;
+  const ScrDynProp *cause = insp_error_hidden_entry(d, "cause", 5, &cause_prop);
+  const ScrDynProp *errors = insp_error_hidden_entry(d, "errors", 6, &errors_prop);
+  if (errors && errors->value->kind != SCR_DYN_ARR) errors = NULL;
+  ScrDyn *hidden_value[2] = {
+      cause ? scr_dyn_retain(cause->value) : NULL,
+      errors ? scr_dyn_retain(errors->value) : NULL};
+  ScrStr *hidden_key[2] = {
+      cause ? scr_str_new(cause->key, cause->key_len) : NULL,
+      errors ? scr_str_new(errors->key, errors->key_len) : NULL};
   scr_insp_begin(recurse + 1);
   scr_insp_seen_push(d);
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
@@ -1439,31 +1674,36 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
       continue;
     bool shortened = assertion && ((ent.key_len == 6 && memcmp(ent.key, "actual", 6) == 0) ||
                                    (ent.key_len == 8 && memcmp(ent.key, "expected", 8) == 0));
-    ScrDyn *shown = shortened ? insp_assertion_ellipsis(ent.value) : scr_dyn_retain(ent.value);
-    ScrStr *val = scr_insp_dyn(shown, recurse + 1, value_depth);
-    scr_dyn_release(shown);
+    ScrDyn *value = shortened ? insp_assertion_ellipsis(ent.value) : scr_dyn_retain(ent.value);
+    /* The key renders before the value, whose own getters can change this
+     * error's entries. */
     InspBuf eb = {0};
     insp_key_into(&eb, ent.key, ent.key_len);
     ib_cstr(&eb, ": ");
+    ScrStr *val = scr_insp_dyn(value, recurse + 1, value_depth);
+    scr_dyn_release(value);
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
   }
-  const ScrDynProp *hidden[] = {cause, errors};
   for (size_t i = 0; i < 2; i++) {
-    if (!hidden[i]) continue;
-    ScrStr *val = scr_insp_dyn(hidden[i]->value, recurse + 1, value_depth);
+    if (!hidden_value[i]) continue;
+    ScrStr *val = scr_insp_dyn(hidden_value[i], recurse + 1, value_depth);
     InspBuf eb = {0};
     ib_char(&eb, '[');
-    ib_bytes(&eb, hidden[i]->key, hidden[i]->key_len);
+    ib_str(&eb, hidden_key[i]);
     ib_cstr(&eb, "]: ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
+  }
+  for (size_t i = 0; i < 2; i++) {
+    scr_dyn_release(hidden_value[i]);
+    scr_str_release(hidden_key[i]);
   }
   ScrStr *b0 = scr_str_new("{", 1);
   ScrStr *b1 = scr_str_new("}", 1);
@@ -2684,8 +2924,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_FUNC:
       return scr_insp_dyn_func(d, recurse, depth);
     case SCR_DYN_HANDLE: {
+      /* TextDecoder's text takes no colors and TextEncoder's view styles
+       * its string, as Node's inspectors do. */
       if (g_colors && d->v.handle.tag != SCR_DYNH_SET && d->v.handle.tag != SCR_DYNH_MAP &&
-          d->v.handle.tag != SCR_DYNH_DATE)
+          d->v.handle.tag != SCR_DYNH_DATE && d->v.handle.tag != SCR_DYNH_TEXT_DECODER &&
+          d->v.handle.tag != SCR_DYNH_TEXT_ENCODER)
         return insp_colors_fence_values(scr_dyn_handle_cls(d));
       if (d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
@@ -2709,6 +2952,17 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       if (d->v.handle.tag == SCR_DYNH_NODE_ISLAND) return scr_ni_inspect(d, recurse, depth);
 #endif
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
+      if (ops->inspect_custom_only && !g_custom_inspect) {
+        if (recurse > depth) return insp_bracketed_class(ops->cls);
+        InspBuf out = {0};
+        ib_cstr(&out, "util.inspect of a ");
+        ib_cstr(&out, ops->cls);
+        ib_cstr(&out, " with customInspect: false is not supported yet");
+        scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+        return scr_str_new("", 0);
+      }
+      if (ops->inspect_text)
+        return recurse > depth ? insp_bracketed_class(ops->cls) : ops->inspect_text(d->v.handle.ptr);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the
          * depth limit (`depth < 0`); the ones that return `this` there
@@ -2723,11 +2977,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
             return ib_take(&out);
           }
           if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
-          InspBuf out = {0};
-          ib_char(&out, '[');
-          ib_cstr(&out, ops->cls);
-          ib_char(&out, ']');
-          return ib_take(&out);
+          return insp_bracketed_class(ops->cls);
         }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
         if (ops->inspect_view_nested) {
@@ -2742,6 +2992,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         }
         ScrStr *body = scr_insp_dyn(view, recurse, depth);
         scr_dyn_release(view);
+        if (ops->inspect_view_bare) return body;
         InspBuf out = {0};
         if (insp_tag_names_class(ops->to_string_tag, ops->cls)) {
           ib_cstr(&out, ops->to_string_tag);
@@ -2867,6 +3118,21 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         g_pending_seen = NULL;
         if (g_nseen > nseen) g_nseen = nseen;
         free(cls);
+      } else if (materialized->kind == SCR_DYN_OBJ &&
+                 scr_dyn_obj_get(materialized, "%error", 6) != NULL) {
+        /* An error view's shared `stack` accessor resolves through the
+         * identity cache, which names the capsule, not the materialized
+         * snapshot: the stack comes from the error behind it, and the
+         * capsule's class names the constructor the snapshot lost. */
+        ScrError *owner = scr_errdyn_err_of(d);
+        bool pending = scr_exc_pending();
+        ScrStr *stack = owner ? scr_error_stack(owner) : NULL;
+        insp_swallow_new_exc(pending);
+        const char *display_name = scr_dyn_class_name(d);
+        if (display_name == NULL) display_name = insp_tag_class_name(d);
+        out = insp_dyn_error(materialized, recurse, depth, owner, stack, true, display_name);
+        scr_str_release(stack);
+        scr_error_release(owner);
       } else {
         out = scr_insp_dyn(materialized, recurse, depth);
       }
@@ -3159,6 +3425,63 @@ ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOpt
   ops.number = insp_fmt_number;
   ops.inspect = insp_fmt_inspect_full;
   return insp_format_loop(args, argc, o, &ops);
+}
+
+/* new StringDecoder(encoding) with an encoding that may not be a string:
+ * Node's normalizeEncoding. Strings, undefined and null go through
+ * scr_strdec_encoding. Another value matches only as an object whose
+ * `length` is 3 to 9: its string, in lower case, against the names of that
+ * length (slowCases converts it once). Everything else throws
+ * ERR_UNKNOWN_ENCODING, formatted as Node formats it ("Unknown encoding:
+ * %s"). The canonical name (+1), or NULL with the exception pending. */
+ScrStr *scr_strdec_encoding_value(const ScrDyn *enc) {
+  if (enc->kind == SCR_DYN_STR || enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL)
+    return scr_strdec_encoding(enc);
+  if (insp_fmt_object(enc)) {
+    ScrStr *name = scr_str_new("length", 6);
+    ScrDyn *key = scr_dyn_new_str(name);
+    scr_str_release(name);
+    ScrDyn *length = scr_dyn_reflect_get((ScrDyn *)enc, key, (ScrDyn *)enc);
+    scr_dyn_release(key);
+    if (!length) return NULL;
+    double count = length->kind == SCR_DYN_NUM ? length->v.num : 0;
+    scr_dyn_release(length);
+    static const struct { int length; const char *from; const char *to; } names[] = {
+      {3, "hex", "hex"},         {4, "utf8", "utf8"},           {4, "ucs2", "utf16le"},
+      {5, "utf-8", "utf8"},      {5, "ascii", "ascii"},         {5, "ucs-2", "utf16le"},
+      {6, "base64", "base64"},   {6, "latin1", "latin1"},       {6, "binary", "latin1"},
+      {7, "utf16le", "utf16le"}, {8, "utf-16le", "utf16le"},    {9, "base64url", "base64url"},
+    };
+    if (count >= 3 && count <= 9 && count == (int)count) {
+      ScrStr *text = scr_dyn_string_coerce_js(enc);
+      if (!text) return NULL;
+      const char *match = NULL;
+      for (size_t i = 0; i < sizeof names / sizeof names[0] && !match; i++) {
+        size_t n = strlen(names[i].from);
+        if (names[i].length != (int)count || text->len != n) continue;
+        bool same = true;
+        for (size_t k = 0; k < n && same; k++) {
+          char c = text->data[k];
+          if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+          same = c == names[i].from[k];
+        }
+        if (same) match = names[i].to;
+      }
+      scr_str_release(text);
+      if (match) return scr_str_new(match, strlen(match));
+    }
+  }
+  ScrStr *format = scr_str_new("Unknown encoding: %s", 20);
+  ScrDyn *args[2] = {scr_dyn_new_str(format), (ScrDyn *)enc};
+  scr_str_release(format);
+  ScrInspFormatOptions options;
+  scr_insp_format_defaults(&options, "new StringDecoder");
+  ScrStr *message = scr_insp_format(args, 2, &options);
+  scr_dyn_release(args[0]);
+  if (!message) return NULL;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_UNKNOWN_ENCODING");
+  scr_str_release(message);
+  return NULL;
 }
 
 /* The formatter over arguments that are all strings, numbers, booleans,

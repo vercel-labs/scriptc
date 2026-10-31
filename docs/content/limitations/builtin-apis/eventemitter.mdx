@@ -1,11 +1,18 @@
 - **EventEmitter:** Literal event names use fixed argument tuples.
-  Computed string names require a constant prefix or suffix that excludes `error`, meta events, and stream-internal events; their arguments must match the exact arity and support checked conversion.
-  Unrestricted names, symbols, and names that may reach internal events are unsupported.
+  Number, `null`, `undefined`, and boolean names register under `String(name)`, as in Node.
+  Computed string names with a constant prefix or suffix that excludes `error`, meta events, and stream-internal events pass arguments of the exact arity with checked conversion.
+  Other names reach an EventEmitter as through an untyped value: a name computed at run time converts with `String(name)`, then the name is matched against the program's literal event names when the call runs.
+  The name expression is evaluated before it converts; a name whose static type is a string or number literal is a compile-time key only when reading it runs no program code (a literal, a `null`, `undefined`, `true` or `false` keyword, a binding read, a stored field or record entry read), and a call or an accessor lowers as a run-time name.
+  On streams, those names and names that may reach internal events are unsupported.
+  Symbol names other than `events.errorMonitor` are unsupported.
+  Once the program registers a listener under an unrestricted name, typed `listeners()`/`rawListeners()` results are unsupported for events that literal names register with typed listeners.
   An emitter reached through an untyped value shares one listener list with its typed uses, so untyped registrations and emits reach typed listeners and typed emits reach untyped listeners.
   An untyped `emit` of an event that has a listener with typed parameters converts its arguments to the event's typed tuple before any listener runs, and throws a `TypeError` when they do not convert.
   Through an untyped value, `listeners()` and `rawListeners()` of an event with a listener that has typed parameters are unsupported, and `emit('error')` of an object that is not an Error with no `error` listener is unsupported.
   A `newListener` or `removeListener` listener registered through an untyped value receives `undefined` in place of a listener registered with typed parameters.
   A typed `error` or `errorMonitor` listener throws a `TypeError` when an emitted payload that is not an Error does not convert to its parameter.
   Reading EventEmitter methods as properties through an untyped value (`typeof emitter.listeners`) answers `undefined`.
+  `EventEmitter.prototype.<method>.call(receiver, ...)` runs the method typed when `receiver` is statically an emitter instance; a receiver of type `any` runs the untyped method over its JavaScript `_events`, which does not reach a compiled emitter's listeners.
+  The method is read from `EventEmitter.prototype` or from an emitter reached through a binding, a stored field, or a record entry; an accessor or a call on that path is unsupported, since skipping it would drop its effects.
   `events.once` accepts EventEmitter and stream instances with a literal event name and an optional object-literal `{ signal }`; a stream's `data` event, other options values, and EventTarget emitters are unsupported.
   Reading `defaultMaxListeners` through a CommonJS destructured or member binding (`const { defaultMaxListeners } = require("events")`) is unsupported.

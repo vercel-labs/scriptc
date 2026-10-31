@@ -27,6 +27,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { decodeFunctionBinary, encodeFunctionStrings, functionDigest } from "../../ir/codec.js";
 import type { IrFunction } from "../../ir/ir.js";
 import { deserializeFunction, encodeFunction } from "../../ir/serialize.js";
+import { invalidateTrackedPath } from "../input-tracker.js";
 
 /** A function as table entries hold it, or null when it does not encode.
  * Every function an entry holds goes through this pair. */
@@ -306,7 +307,9 @@ export function journalDump(): string | null {
 export function writeRecords(dir: string, lines: readonly string[]): void {
   if (lines.length === 0) return;
   mkdirSync(dir, { recursive: true });
-  appendFileSync(join(dir, "records.jsonl"), `${lines.join("\n")}\n`);
+  const path = join(dir, "records.jsonl");
+  appendFileSync(path, `${lines.join("\n")}\n`);
+  invalidateTrackedPath(path);
 }
 
 /** What a build's recorded waves did (SCRIPTC_TIMING). */

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-listener-return-values.ts"
+ ],
+ "diags": []
+}

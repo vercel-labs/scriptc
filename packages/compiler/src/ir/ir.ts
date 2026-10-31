@@ -1114,6 +1114,14 @@ export interface IrModule {
    * hold elements outside their element type (SCR_ARR_FOREIGN), stored
    * through dynamic views; "*" for every array. Absent when none can. */
   foreignElementKeys?: string[];
+  /** The narrowing conversions that link a record copy to its source
+   * (record.link): a conversion from record type `from` into the narrower
+   * record type `to`, whose source has properties `to` does not declare.
+   * `compose(copy, source)` answers a record of type `from` with the
+   * copy's values for the fields both declare and the source's for the
+   * others: what the copy's reflective surfaces answer from. `pair` is
+   * the nonzero number the link stores. Absent when there are none. */
+  recordLinks?: IrRecordLink[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
@@ -1543,6 +1551,14 @@ export interface IrLibIdentity {
   abiVersion: number;
 }
 
+/** One narrowing conversion that links copies to sources (IrModule.recordLinks). */
+export interface IrRecordLink {
+  pair: number;
+  from: string;
+  to: string;
+  compose: string;
+}
+
 export interface IrClassDef {
   name: string;
   /** Present for a class evaluated inside a function. Each evaluation owns
@@ -1966,6 +1982,10 @@ export interface IrFunction {
   name: string;
   /** Source function name for native error stack frames. */
   sourceName?: string;
+  /** The function's JavaScript `name` when it differs from sourceName: an
+   * object literal's method. Present only in modules that box function
+   * values into checked values (function-names.ts). */
+  displayName?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
   params: IrParam[];
@@ -4074,6 +4094,12 @@ export type IrExpr =
        * evaluated; the AssertionError constructor consumes them, and a
        * call that passes clears them. */
       assertOptions?: { diff?: "full"; skipPrototype?: true };
+      /** An `emitter.on` or `emitter.onData` registration whose listener
+       * can read `this`: each call of the listener binds the receiver as
+       * `this`, as Node does. The checked-dynamic registrations
+       * (`emitter.onDyn`, `emitter.onDataDyn`, `emitter.onFlex`,
+       * `emitter.onAny`) always bind it. */
+      bindsThis?: true;
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,

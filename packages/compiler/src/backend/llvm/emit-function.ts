@@ -260,7 +260,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // Initializer bindings proven int32 move into an i32 local of their
   // initializer: no other code observes the global, so the loop-carried
   // value never round-trips through the double slot.
-  const initializerLocals = initializerLocalCandidates(initializerBindings);
+  const initializerLocals = initializerLocalCandidates(fn, initializerBindings);
   const int32Locals =
     emitter.debug === null
       ? findInt32Locals(
@@ -383,7 +383,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // and reentry returns before reaching it, so a local slot can stand in
   // for it: LLVM keeps it in a register across calls and loops that would
   // otherwise force a store and reload per iteration. The global's
-  // storage is never read again, so nothing writes the slot back. Bindings
+  // storage is never read again before an overwrite, including on retries,
+  // so nothing writes the slot back. Bindings
   // proven int32 already live in an i32 local (localizedGlobals above);
   // this covers the remaining doubles.
   emitter.privateGlobalSlots.clear();

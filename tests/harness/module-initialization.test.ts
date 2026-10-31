@@ -15,10 +15,12 @@ const cases = [
   { extension: "cts", graph: true, esm: false },
   { extension: "mjs", graph: false, esm: true },
   { extension: "mts", graph: false, esm: true },
+  { extension: "cts", graph: false, esm: false, numeric: true },
+  { extension: "cts", graph: true, esm: false, numeric: true },
 ];
 
-for (const { extension, graph, esm } of cases) {
-  const name = `failed module evaluation preserves ${extension} caching (metadata=${graph})`;
+for (const { extension, graph, esm, numeric = false } of cases) {
+  const name = `failed module evaluation preserves ${extension} caching (metadata=${graph}, numeric=${numeric})`;
   test(
     name,
     async () => {
@@ -30,6 +32,23 @@ for (const { extension, graph, esm } of cases) {
         const entryName = esm ? "main.mjs" : "main.cjs";
         const loadFailed = `${loadModule}("./failed.${extension}")`;
         const loadSuccess = `${loadModule}("./ok.${extension}")`;
+        const numbers = numeric
+          ? `
+function step(x: number, n: number): number { return (x * 31 + n) % 1000003; }
+let value = 1;
+for (let r = 0; r < 3; r++) for (let n = 0; n < 1000; n++) value = step(value, n);
+let fraction = 0.5;
+fraction += 0.25;
+let signed = -1;
+signed -= 1;
+let unsigned = 2147483648;
+unsigned += 1;
+let zero = -0;
+let nan = NaN;
+const bytes = new Uint8Array([3, 4]);
+console.log("numbers", value, fraction, signed, unsigned, Object.is(zero, -0), Number.isNaN(nan), bytes[0] + bytes[1]);
+`
+          : "";
         const files = {
           [entryName]: `${graph ? "void require.cache;\n" : ""}for (let i = 0; i < 2; i++) {
   try { ${loadFailed}; }
@@ -41,7 +60,7 @@ ${loadSuccess};
 ${loadSuccess};
 console.log("done");
 `,
-          [`failed.${extension}`]: 'console.log("failed");\nthrow new Error("retry");\n',
+          [`failed.${extension}`]: numbers + 'console.log("failed");\nthrow new Error("retry");\n',
           [`ok.${extension}`]: `const value${extension.endsWith("ts") ? ": number" : ""} = 7;
 console.log("ok", value);
 `,
@@ -49,9 +68,9 @@ console.log("ok", value);
         for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
         const entry = join(dir, entryName);
         const expected = await execFileAsync(process.execPath, [entry], { encoding: "utf8" });
-        expect(expected.stdout).toBe(
-          (esm ? "failed\nretry\nretry\n" : "failed\nretry\nfailed\nretry\n") + "ok 7\ndone\n",
-        );
+        const failure =
+          (numeric ? "numbers 673909 0.75 -2 2147483649 true true 7\n" : "") + "failed\nretry\n";
+        expect(expected.stdout).toBe(failure + (esm ? "retry\n" : failure) + "ok 7\ndone\n");
         expect(expected.stderr).toBe("");
         const result = await compile(entry, {
           outPath: join(dir, "program"),

@@ -47,6 +47,11 @@ export interface PackageEdge {
   toDir: string | null;
   /** Served by a registry shim, a builtin alias, or marked unloaded. */
   shim: boolean;
+  /** Whether loading the importing module loads this package: a static
+   * import or re-export, or a top-level require() call outside any condition.
+   * A require() inside a function, a loop, a try block or a condition, and a
+   * dynamic import(), load it only when that code runs. */
+  loads: boolean;
   loc: SrcLoc;
 }
 
@@ -75,11 +80,57 @@ function locOfNode(node: ts.Node): SrcLoc {
   return { file: sf.fileName, start: ts.tokenStartOfNode(node), end: node.end };
 }
 
+/** True when `require` names the CommonJS loader Node provides. A binding the
+ * file declares itself (a parameter, a variable, an import) shadows it and
+ * loads nothing. */
+function isNodeRequire(program: ts.Program, identifier: ts.Identifier): boolean {
+  const symbol = program.getTypeChecker().getSymbolAtLocation(identifier);
+  return (symbol?.declarations ?? []).every((d) => ts.getSourceFileOfNode(d).isDeclarationFile);
+}
+
+/** True when a call runs whenever its module evaluates: every node between it
+ * and the module's top level is an expression that always evaluates its
+ * operands, or a top-level statement. A function body, a condition, a short
+ * circuit, a loop or a try block runs the call only when that code runs, so a
+ * package it names is not loaded on evaluation. */
+function loadsWithModule(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  while (node.parent !== undefined) {
+    const parent: ts.Node = node.parent;
+    if (ts.isSourceFile(parent)) return true;
+    if (ts.isConditionalExpression(parent)) return false;
+    if (
+      ts.isBinaryExpression(parent) &&
+      (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+    )
+      return false;
+    if (
+      !ts.isExpression(parent) &&
+      !ts.isExpressionStatement(parent) &&
+      // `const up = require("upper")` at a module's top level runs where the
+      // module evaluates, so the declaration between the call and its
+      // statement is part of the chain, not a deferral.
+      !ts.isVariableDeclaration(parent) &&
+      !ts.isVariableStatement(parent) &&
+      !ts.isVariableDeclarationList(parent) &&
+      !ts.isExportAssignment(parent)
+    )
+      return false;
+    node = parent;
+  }
+  return false;
+}
+
 /** The literal module specifiers of a file with their sites: top-level
  * import and export declarations, and the require() and import() calls the
  * program's shared module-source scan already collected (no second walk). */
-function specifiersOf(program: ts.Program, sf: ts.SourceFile): { spec: string; node: ts.Node }[] {
-  const out: { spec: string; node: ts.Node }[] = [];
+function specifiersOf(
+  program: ts.Program,
+  sf: ts.SourceFile,
+): { spec: string; node: ts.Node; loads: boolean }[] {
+  const out: { spec: string; node: ts.Node; loads: boolean }[] = [];
   for (const node of sf.statements.nodes) {
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
@@ -88,18 +139,22 @@ function specifiersOf(program: ts.Program, sf: ts.SourceFile): { spec: string; n
     ) {
       // Type-only imports load nothing.
       const typeOnly = ts.isImportDeclaration(node) ? erasedTypeOnlyImport(node) : node.isTypeOnly;
-      if (!typeOnly) out.push({ spec: node.moduleSpecifier.text, node });
+      if (!typeOnly) out.push({ spec: node.moduleSpecifier.text, node, loads: true });
     }
   }
   for (const call of moduleSourceCandidates(program, sf).calls) {
     const arg = call.arguments.nodes[0];
-    if (
-      arg !== undefined &&
-      ts.isStringLiteralLike(arg) &&
-      (call.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(call.expression) && call.expression.text === "require"))
-    )
-      out.push({ spec: arg.text, node: call });
+    if (arg === undefined || !ts.isStringLiteralLike(arg)) continue;
+    if (call.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      out.push({ spec: arg.text, node: call, loads: false });
+      continue;
+    }
+    if (!ts.isIdentifier(call.expression) || call.expression.text !== "require") continue;
+    const loads = loadsWithModule(call);
+    // A top-level require() that a local binding shadows is not a load of the
+    // package; one below the top level never proved one anyway.
+    if (loads && !isNodeRequire(program, call.expression)) continue;
+    out.push({ spec: arg.text, node: call, loads });
   }
   return out;
 }
@@ -188,7 +243,7 @@ export function scanFiles(
       dropped: opts.dropped,
     });
     if (!opts.edges) continue;
-    for (const { spec, node } of specifiersOf(program, sf)) {
+    for (const { spec, node, loads } of specifiersOf(program, sf)) {
       if (isRelativeSpecifier(spec) || spec.startsWith("/") || spec.startsWith("#")) continue;
       // scriptc's own packages lower at their use sites.
       if (spec.startsWith("@scriptc/")) continue;
@@ -213,6 +268,7 @@ export function scanFiles(
         to: name,
         toDir,
         shim,
+        loads,
         loc: locOfNode(node),
       });
     }

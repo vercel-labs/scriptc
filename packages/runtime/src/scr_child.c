@@ -149,17 +149,14 @@ static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, b
   return d;
 }
 
-/* The spawnSync capture accessors (in both platform arms below) answer a
- * stored capture as the typed Buffer result.stdout/result.stderr reads when
- * no { encoding } option was given (SpawnSyncReturns<Buffer>): the captured
- * bytes, branded as a Buffer exactly like scr_child_sync_output's dynamic
- * Buffers. A program can only observe the brand through the Buffer-brand
- * reads the fsBufferBrand scan finds, and Node builds ONE Buffer per
- * capture while building the result, so every read of `result.stdout`
- * answers that same object. The memo that answers it, and the thread-local
- * state it keeps, live in scr_child_capture.c — a unit linked only by
- * programs that call these accessors — so this unit's layout stays put for
- * every other program. */
+/* The spawnSync capture accessors (scr_spawn_res_stdout_bytes /
+ * scr_spawn_res_stderr_bytes, and the one-Buffer-per-capture memo behind
+ * them) live in scr_child_capture.c, a unit linked only by programs that
+ * read an unencoded capture. Nothing in this unit names them: a unit of the
+ * always-linked set may not reference an optional one, because a link of
+ * that set alone (the runtime unit tests, and the precompiled pack's own
+ * archive) would carry the undefined symbol — which is exactly what broke
+ * every Windows program when the accessors lived here. */
 /* execSync/execFileSync: the spawnSync result's status, signal, output,
  * pid, stdout and stderr. out/err move in (null for a stream that was not
  * piped); output is [null, stdout, stderr]. A child that never started
@@ -1064,12 +1061,6 @@ bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) { return scr_str_retain(r->out); }
 ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) { return scr_str_retain(r->err); }
-ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r) {
-  return scr_spawn_res_capture_bytes(r->out);
-}
-ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r) {
-  return scr_spawn_res_capture_bytes(r->err);
-}
 bool scr_spawn_res_has_signal(ScrSpawnRes *r) { return r->signal_name != NULL; }
 ScrStr *scr_spawn_res_signal(ScrSpawnRes *r) {
   return scr_str_new(r->signal_name, strlen(r->signal_name));
@@ -3191,12 +3182,6 @@ bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) { return scr_str_retain(r->out); }
 ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) { return scr_str_retain(r->err); }
-ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r) {
-  return scr_spawn_res_capture_bytes(r->out);
-}
-ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r) {
-  return scr_spawn_res_capture_bytes(r->err);
-}
 bool scr_spawn_res_has_signal(ScrSpawnRes *r) { return r->signal_name != NULL; }
 ScrStr *scr_spawn_res_signal(ScrSpawnRes *r) {
   return scr_str_new(r->signal_name, strlen(r->signal_name));

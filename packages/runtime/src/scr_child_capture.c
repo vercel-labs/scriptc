@@ -81,6 +81,28 @@ static void scr_spawn_capture_buffers_sweep(void) {
   scr_spawn_capture_buffer_n = keep;
 }
 
+/* result.stdout / result.stderr as the typed Buffer reads (`spawnRes
+ * .stdoutBytes` / `spawnRes.stderrBytes`). The capture's own +1 is what the
+ * memo keys on, so the accessor's retain is handed to it and dropped here;
+ * the memo's entry holds its own reference, which is what makes two reads
+ * of one capture answer the same object. These two entry points live in
+ * this unit, not in scr_child.c, so that no unit of the always-linked set
+ * references an optional one (the unit tests and the pack's own archive
+ * link that set alone). */
+ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r) {
+  ScrStr *capture = scr_spawn_res_stdout(r); /* +1 */
+  ScrBytes *bytes = scr_spawn_res_capture_bytes(capture);
+  scr_str_release(capture);
+  return bytes;
+}
+
+ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r) {
+  ScrStr *capture = scr_spawn_res_stderr(r); /* +1 */
+  ScrBytes *bytes = scr_spawn_res_capture_bytes(capture);
+  scr_str_release(capture);
+  return bytes;
+}
+
 ScrBytes *scr_spawn_res_capture_bytes(ScrStr *capture) {
   if (capture == NULL) {
     if (scr_spawn_capture_null_buffer == NULL) {

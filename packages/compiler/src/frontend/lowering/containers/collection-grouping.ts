@@ -188,6 +188,16 @@ function lowerDynamicGroupByCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
+  // The checked-dynamic grouping builds a generic checked-dynamic Map. It
+  // converts to a typed result only when that result states no key/value
+  // types (`Map<any, any>`, what an untyped source's call is typed as); a
+  // result the checker types as a Map<…> keeps the typed helper and its
+  // refusal, so the program never takes a conversion the value cannot
+  // satisfy. An object result converts structurally, so it stays dynamic.
+  if (isMap) {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (mapped !== null && mapped.kind === "map") return null;
+  }
   const source =
     items.type.kind === "dyn"
       ? items

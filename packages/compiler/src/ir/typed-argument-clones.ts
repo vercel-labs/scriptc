@@ -173,6 +173,27 @@ function operationOf(node: IrExpr, params: ReadonlyMap<string, number>): Propert
   return null;
 }
 
+/** The record shapes a partial record assertion names: a value asserted to
+ * one may lack fields the shape declares (`{ hits: 1 } as Stats`), and the
+ * runtime answers a partial view whose absent fields a typed read throws on
+ * (record-views.ts). The helper's read of such a field is a dynamic read,
+ * which answers undefined as JavaScript does, so a clone — whose read is a
+ * typed one — would change the program's answer. Calls that pass one of
+ * these shapes keep the original function. */
+function partialAssertionTargets(mod: IrModule): Set<string> {
+  const targets = new Set<string>();
+  for (const fn of mod.functions)
+    everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (expr) => {
+        if (expr.kind === "dynCheck" && expr.partialView === true && expr.type.kind === "record")
+          targets.add(expr.type.shapeId);
+        return true;
+      },
+    });
+  return targets;
+}
+
 /** The helper bodies' shapes, by helper name. */
 function helperOperations(mod: IrModule): Map<string, PropertyOp> {
   const ops = new Map<string, PropertyOp>();
@@ -698,6 +719,7 @@ export function specializeTypedArguments(
   for (const fn of mod.functions) moduleNodes += countNodes(fn, index);
   let budget = Math.max(MIN_CLONED_NODES, moduleNodes * CLONED_NODE_FRACTION);
   const names = new Set(mod.functions.map((fn) => symbolName(fn.name)));
+  const partialTargets = partialAssertionTargets(mod);
   const cloneCounts = new Map<string, number>();
   const clones = new Map<string, IrFunction | null>();
   const pending: IrFunction[] = [];
@@ -708,6 +730,9 @@ export function specializeTypedArguments(
     if (value.type.kind !== "record") return null;
     const shape = context.records.get(value.type.shapeId);
     if (!shape || shape.tuple) return null;
+    // A shape a partial record assertion names may hold a value its own
+    // fields are absent from; the clone would read one natively.
+    if (partialTargets.has(value.type.shapeId)) return null;
     return value;
   }
 

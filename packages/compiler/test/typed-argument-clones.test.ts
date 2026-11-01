@@ -107,6 +107,36 @@ main();
   expect(clones).toMatch(/getelementptr inbounds %sc_rs_\S+, ptr \S+, i64 0, i32 \d+/);
 });
 
+test("a shape a partial record assertion names is not cloned", async () => {
+  const helper = `
+function peek(target: unknown, key: string): any {
+  const record = target as Record<string, number>;
+  return record[key];
+}
+const full: Stats = { hits: 2, misses: 3 };
+`;
+  const withoutPartial = await llvmFor(`
+type Stats = { hits: number; misses: number };
+${helper}function main(): void {
+  console.log(peek(full, "hits"));
+}
+main();
+`);
+  expect(bodiesContaining(withoutPartial, "typedArg").length).toBeGreaterThan(0);
+  // `partial` may be missing the field the helper reads: the dynamic read
+  // answers undefined, where a clone's typed read would abort on the absent
+  // field of the partial view.
+  const withPartial = await llvmFor(`
+type Stats = { hits: number; misses: number };
+${helper}const partial = { hits: 1 } as Stats;
+function main(): void {
+  console.log(peek(full, "hits"), peek(partial, "misses"));
+}
+main();
+`);
+  expect(bodiesContaining(withPartial, "typedArg")).toHaveLength(0);
+});
+
 test("a receiver reassigned inside an expression is not cloned", async () => {
   const llvm = await llvmFor(`
 type Stats = { hits: number; misses: number };

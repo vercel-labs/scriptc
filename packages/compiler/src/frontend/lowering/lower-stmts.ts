@@ -2648,19 +2648,35 @@ export function lowerDestructuringDecl(
       throw new PoisonError();
     }
   }
+  // A unit-typed source in a JavaScript file (`const [a] = null`,
+  // `const { a } = undefined`): the IR has no standalone unit value, so
+  // the hidden source temp cannot hold it. The checked-dynamic form of
+  // the same value can, and the pattern lowering below throws Node's
+  // destructuring TypeError before any binding, spelled the way V8
+  // spells the source.
+  const unitSource =
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) && isUnitType(init.type)
+      ? (init.type.kind as "nullT" | "undefinedT")
+      : null;
+  if (unitSource !== null) init = lowerer.coerceToExpected(init, DYN);
   const out: IrStmt[] = [];
   // V8's destructuring TypeError spells STATIC sources: an identifier
   // source reads "<name> is not iterable", an identifier-callee call
   // "<name> is not a function or its return value is not iterable";
   // everything else (property reads, method calls, parameters) gets the
   // runtime kind wording — exactly V8's CallPrinter behavior. The DYN
-  // pattern arm and the unit arms of a narrowed union consume this.
+  // pattern arm and the unit arms of a narrowed union consume this. A
+  // bare `null` literal is the one static source V8 spells without a
+  // name ("null is not iterable"); a parenthesized one gets the generic
+  // runtime wording, so only the bare keyword qualifies.
   const src = decl.initializer!;
   const dynSpell = ts.isIdentifier(src)
     ? `${src.text} is not iterable`
     : ts.isCallExpression(src) && ts.isIdentifier(src.expression)
       ? `${src.expression.text} is not a function or its return value is not iterable`
-      : undefined;
+      : unitSource === "nullT" && src.kind === ts.SyntaxKind.NullKeyword
+        ? "null is not iterable"
+        : undefined;
   // JS: a union source with exactly ONE destructurable arm beside unit
   // arms (`nameAndArgs.match(re)` — `RegExpMatchArray | null`, the
   // always-matches idiom) destructures through a VALIDATED narrow: the
@@ -2785,11 +2801,17 @@ export function lowerDestructuringDecl(
   // skips the check when the first element has a default and a static
   // key: the read of that key throws ("Cannot read properties of null
   // (reading 'a')"), and so does the lowering's.
+  // A unit-typed null source needs no spelling machinery: V8 names the
+  // literal itself, "null", whether or not it is parenthesized (an
+  // `undefined` source is an identifier and spells itself).
+  const sourceSpelling =
+    destrSpellingOf(decl.initializer) ??
+    (unitSource === "nullT" && isNullLiteralSource(decl.initializer) ? "null" : null);
   const jsSourceCheck =
     init.type.kind === "dyn" &&
     ts.isObjectBindingPattern(decl.name) &&
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    destrSpellingOf(decl.initializer) !== null;
+    sourceSpelling !== null;
   if (
     (jsSourceCheck ||
       (init.type.kind === "dyn" &&
@@ -2798,7 +2820,7 @@ export function lowerDestructuringDecl(
         lowerer.anyOrigin(decl.initializer))) &&
     !firstReadsWithDefault(decl.name as ts.ObjectBindingPattern)
   ) {
-    const spelling = destrSpellingOf(decl.initializer);
+    const spelling = sourceSpelling;
     if (spelling === null) {
       lowerer.unsupported(
         "SC1031",
@@ -7681,6 +7703,13 @@ export function lowerSwitch(lowerer: Lowerer, stmt: ts.SwitchStatement): IrStmt 
     () => {
       const dk = disc.type.kind;
       if (dk === "dyn") return lowerDynSwitch(lowerer, stmt, disc, labels);
+      // A unit-typed discriminant (`switch (null)`, `switch (undefined)`):
+      // the IR has no standalone unit value, so the snapshot local cannot
+      // hold it. The checked-dynamic form of the same value can, and the
+      // dynamic switch compares every case test with Node's strict
+      // equality (unit tests by kind, the rest through dynScalarEq).
+      if (isUnitType(disc.type))
+        return lowerDynSwitch(lowerer, stmt, lowerer.coerceToExpected(disc, DYN), labels);
       if (dk === "union") return lowerUnionSwitch(lowerer, stmt, disc, labels);
       // Objects, arrays, functions and other references match their cases
       // with ===, which compares them by identity. In JavaScript, a case
@@ -10086,6 +10115,24 @@ function destrSpellingOf(rhs: ts.Expression): string | null {
   return null;
 }
 
+/** True when an expression is a `null` literal once parentheses and the
+ * type-only wrappers are removed — the one source V8's destructuring
+ * TypeErrors name without a spelling ("Cannot destructure property 'a'
+ * of 'null' as it is null."). */
+function isNullLiteralSource(e: ts.Expression): boolean {
+  let x = e;
+  while (
+    ts.isParenthesizedExpression(x) ||
+    ts.isAsExpression(x) ||
+    ts.isSatisfiesExpression(x) ||
+    ts.isTypeAssertion(x) ||
+    ts.isNonNullExpression(x)
+  ) {
+    x = x.expression;
+  }
+  return x.kind === ts.SyntaxKind.NullKeyword;
+}
+
 /** Destructuring ASSIGNMENT (existing bindings — the declaration twin is
  * lowerDestructuringDecl): the RHS evaluates ONCE into a hidden temp,
  * each target assigns in source order, and the parts' VALUE is the
@@ -10184,6 +10231,19 @@ function destructuringAssignInto(
       }
     }
   }
+  // A unit-typed source in a JavaScript file (`[a] = null`,
+  // `({ a } = undefined)`): the declaration path's reasoning — the IR has
+  // no standalone unit value, so the hidden temp takes the
+  // checked-dynamic form instead, where the array path's GetIterator and
+  // the object path's RequireObjectCoercible throw Node's TypeError
+  // before any target assigns.
+  const unitSource =
+    (init.type.kind === "nullT" || init.type.kind === "undefinedT") &&
+    rhs !== null &&
+    isJsSourceFile(ts.getSourceFileOfNode(rhs))
+      ? (init.type.kind as "nullT" | "undefinedT")
+      : null;
+  if (unitSource !== null) init = lowerer.coerceToExpected(init, DYN);
   const tmp = lowerer.declareHiddenLocal("%destr", init.type);
   const out: IrStmt[] = [{ kind: "varDecl", localId: tmp.id, init, loc }];
   const tmpRef = (): IrExpr => ({ kind: "varRef", localId: tmp.id, type: init.type, loc });
@@ -10210,7 +10270,9 @@ function destructuringAssignInto(
       rhsInner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       (ts.isObjectLiteralExpression(rhsInner.left) || ts.isArrayLiteralExpression(rhsInner.left));
     if (!checkedByInner && rhs !== null) {
-      const spelling = destrSpellingOf(rhs);
+      const spelling =
+        destrSpellingOf(rhs) ??
+        (unitSource === "nullT" && isNullLiteralSource(rhs) ? "null" : null);
       if (spelling === null) {
         lowerer.unsupported(
           "SC1031",

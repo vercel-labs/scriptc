@@ -1049,6 +1049,69 @@ export function lowerRecordOvfCaptureHelper(
   toId: string,
   loc: SrcLoc,
 ): string | null {
+  return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
+    key: `ovf:${fromId}:${toId}`,
+    namePrefix: "%rec.capture",
+    excluded: EMPTY_CAPTURE_EXCLUSION,
+    propagateNullProto: true,
+    keepSourceTail: true,
+  });
+}
+
+/** Interned `%rec.rest.<n>(s)` — the fresh object `const { a, x, ...rest } =
+ * s` binds over an INDEX-SIGNATURE source (or into an index-signature rest
+ * type): the capture reshape with an explicit EXCLUSION set, which is the
+ * one thing JavaScript's CopyDataProperties does differently from a plain
+ * reshape. Declared target fields the two shapes share are direct-copied
+ * (presence kept), every other source declared field is keyed-written in
+ * declaration order, and the source overflow is copied in JS own-key order
+ * — each skipping an excluded literal key. The result is always a fresh
+ * object with `Object.prototype` (a rest copy never inherits its source's
+ * null prototype), so `nullProto` is not propagated. Null when the pair is
+ * outside the matrix (recordOvfCapturePlan's gates), when the rest type
+ * declares an excluded name (never a rest type tsc produces), or when the
+ * source could keep an out-of-shape view that the field-by-field rebuild
+ * cannot see — the caller keeps its named fence for those. */
+export function lowerRecordRestCaptureHelper(
+  lowerer: Lowerer,
+  fromId: string,
+  toId: string,
+  excluded: readonly string[],
+  loc: SrcLoc,
+): string | null {
+  const names = [...new Set(excluded)].sort();
+  return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
+    key: `rest:${fromId}:${toId}:${names.join(",")}`,
+    namePrefix: "%rec.rest",
+    excluded: new Set(names),
+    propagateNullProto: false,
+    keepSourceTail: false,
+  });
+}
+
+const EMPTY_CAPTURE_EXCLUSION: ReadonlySet<string> = new Set();
+
+interface RecordCaptureOptions {
+  /** The interned-helper key (its hash names the function). */
+  key: string;
+  namePrefix: string;
+  /** Literal keys the reshape must NOT copy (the rest's consumed set). */
+  excluded: ReadonlySet<string>;
+  /** Whether a null-prototype source keeps its null prototype in the
+   * result. A rest copy is a fresh ordinary object, so it never does. */
+  propagateNullProto: boolean;
+  /** Whether a closed source's kept out-of-shape view is rebuilt through
+   * the checked conversion (a rest copy would carry the excluded keys). */
+  keepSourceTail: boolean;
+}
+
+function buildRecordCaptureHelper(
+  lowerer: Lowerer,
+  fromId: string,
+  toId: string,
+  loc: SrcLoc,
+  opts: RecordCaptureOptions,
+): string | null {
   const plan = recordOvfCapturePlan(lowerer, fromId, toId);
   if (!plan) return null;
   const to = lowerer.shapes.get(toId);
@@ -1057,15 +1120,28 @@ export function lowerRecordOvfCaptureHelper(
   const fIv = from.indexValue ?? null;
   const tIv = to.indexValue;
   if (tIv === undefined) return null;
+  const { excluded, propagateNullProto } = opts;
+  if (excluded.size > 0 && to.fields.some((f) => excluded.has(f.name))) return null;
+  // A rest reshape over a CLOSED source that can keep an out-of-shape view
+  // cannot see that view's keys, and the checked-conversion tail would
+  // carry the excluded ones back in — decline (the caller keeps its named
+  // fence).
+  if (
+    !opts.keepSourceTail &&
+    fIv === null &&
+    recordMayKeepSource(lowerer, { kind: "record", shapeId: fromId })
+  )
+    return null;
   // The copy below writes the source's declared fields in order, so a
   // program that reaches it observes that order (the plan itself is pure:
   // a speculative widthLiftPlan call must not mark a shape observed).
   lowerer.keyOrder.observed.add(from.id);
-  const { inits, fieldLifts, orderedFields, consumed } = plan;
-  const key = `ovf:${fromId}:${toId}`;
+  const { fieldLifts, orderedFields, consumed } = plan;
+  const inits = excluded.size === 0 ? plan.inits : plan.inits.filter((d) => !excluded.has(d.name));
+  const key = opts.key;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%rec.capture", key);
+  const name = keyedHelperName(lowerer, opts.namePrefix, key);
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "record", shapeId: fromId };
   const toT: IrType = { kind: "record", shapeId: toId };
@@ -1116,7 +1192,7 @@ export function lowerRecordOvfCaptureHelper(
   // The source and its reshape are one object in JavaScript, so a
   // null-prototype source (a match's groups, Object.groupBy) keeps it.
   const init: IrExpr =
-    nullProtoRecordShape(lowerer, fromT) && nullProtoRecordShape(lowerer, toT)
+    propagateNullProto && nullProtoRecordShape(lowerer, fromT) && nullProtoRecordShape(lowerer, toT)
       ? {
           kind: "ternary",
           cond: recordNullProtoTest(sRef, fromId, loc),
@@ -1131,7 +1207,7 @@ export function lowerRecordOvfCaptureHelper(
   // Source declared fields in declaration order, skipping unset
   // optionals (stance 37) and the direct-initialized (consumed) names.
   for (const ff of orderedFields) {
-    if (consumed.has(ff.name)) continue;
+    if (consumed.has(ff.name) || excluded.has(ff.name)) continue;
     const raw: IrExpr = {
       kind: "recordGet",
       obj: sRef,
@@ -1166,10 +1242,46 @@ export function lowerRecordOvfCaptureHelper(
     body.push(fieldStmt);
   }
   // The source overflow, in JS own-key order (only index-signature
-  // sources carry one).
+  // sources carry one). A rest reshape skips the excluded literal keys
+  // here (a strEq chain against the key literal), which is what removes
+  // the consumed entries from the fresh object.
   const ksT = arrayOf(STRING);
   if (fIv) {
     const ovfLift = plan.ovfLift!;
+    const ovfWrite: IrStmt = {
+      kind: "recordKeySet",
+      obj: outRef,
+      shapeId: toId,
+      key: varRef("k.0", STRING, loc),
+      value: intoSlot(
+        {
+          kind: "recordKeyGet",
+          obj: sRef,
+          shapeId: fromId,
+          key: varRef("k.0", STRING, loc),
+          overflowOnly: true,
+          type: fIv,
+          loc,
+        },
+        ovfLift,
+      ),
+      loc,
+    };
+    let notExcluded: IrExpr | null = null;
+    for (const name of [...excluded].sort()) {
+      const test: IrExpr = {
+        kind: "strEq",
+        negated: true,
+        left: varRef("k.0", STRING, loc),
+        right: { kind: "strLit", value: name, type: STRING, loc },
+        type: BOOL,
+        loc,
+      };
+      notExcluded =
+        notExcluded === null
+          ? test
+          : { kind: "logical", op: "&&", left: notExcluded, right: test, type: BOOL, loc };
+    }
     body.push(
       {
         kind: "varDecl",
@@ -1200,25 +1312,9 @@ export function lowerRecordOvfCaptureHelper(
             },
             loc,
           },
-          {
-            kind: "recordKeySet",
-            obj: outRef,
-            shapeId: toId,
-            key: varRef("k.0", STRING, loc),
-            value: intoSlot(
-              {
-                kind: "recordKeyGet",
-                obj: sRef,
-                shapeId: fromId,
-                key: varRef("k.0", STRING, loc),
-                overflowOnly: true,
-                type: fIv,
-                loc,
-              },
-              ovfLift,
-            ),
-            loc,
-          },
+          notExcluded === null
+            ? ovfWrite
+            : { kind: "if", cond: notExcluded, then: [ovfWrite], else_: null, loc },
         ],
       ),
     );
@@ -1238,6 +1334,7 @@ export function lowerRecordOvfCaptureHelper(
   // closed record at all. Both facts are settled before the shape helpers
   // finalize their bodies, so the tail is chosen there.
   const sourcedFromView =
+    opts.keepSourceTail &&
     fIv === null &&
     recordMayKeepSource(lowerer, fromT) &&
     canDynCheckTo(

@@ -26,23 +26,16 @@ destructuring-fences.ts:51:7 - error SC1031: object destructuring of non-record 
      |       ^~~~~~~~~~~~~~~~
   52 | console.log(typeof append);
 
-destructuring-fences.ts:55:9 - error SC1031: rest bindings over index-signature shapes (the undeclared entries would need overflow packing) are not supported yet
+destructuring-fences.ts:56:4 - error SC1031: defaults on nested patterns in destructuring assignment (bind a variable with the default, then destructure it) is not supported yet
 
-  54 | const indexed: Record<string, number> = { a: 1 };
-  55 | const { ...allOfIt } = indexed; // index-signature rest needs overflow packing
-     |         ^~~~~~~~~~
-  56 | console.log(allOfIt["a"]);
-
-destructuring-fences.ts:60:4 - error SC1031: defaults on nested patterns in destructuring assignment (bind a variable with the default, then destructure it) is not supported yet
-
-  59 | let sink = 0;
-  60 | ({ inner: { v: sink } = { v: 2 } } = holder); // a DEFAULT on a nested assignment target keeps the fence
+  55 | let sink = 0;
+  56 | ({ inner: { v: sink } = { v: 2 } } = holder); // a DEFAULT on a nested assignment target keeps the fence
      |    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  61 | console.log(sink);
+  57 | console.log(sink);
 
-destructuring-fences.ts:68:14 - error SC1031: rest bindings over instances of 'WithPrivate' (JS copies the non-public field 'hidden' into the rest object, which the rest type cannot name) is not supported yet
+destructuring-fences.ts:64:14 - error SC1031: rest bindings over instances of 'WithPrivate' (JS copies the non-public field 'hidden' into the rest object, which the rest type cannot name) is not supported yet
 
-  67 | }
-  68 | const { pub, ...restOfPriv } = new WithPrivate(); // JS copies 'hidden' into the rest object; the rest type cannot name it
+  63 | }
+  64 | const { pub, ...restOfPriv } = new WithPrivate(); // JS copies 'hidden' into the rest object; the rest type cannot name it
      |              ^~~~~~~~~~~~~
-  69 | console.log(pub, JSON.stringify(restOfPriv));
+  65 | console.log(pub, JSON.stringify(restOfPriv));

@@ -2239,34 +2239,27 @@ function refuseCopyingErasureBoundary(
  * copies it, or null when the conversion is exact. */
 function erasureCopyReason(lowerer: Lowerer, src: IrType, dst: IrType): string | null {
   if (typeEquals(src, dst)) return null;
-  if (src.kind === "dyn") {
-    // An unboxed capsule answers the same object; only re-materializing a
-    // promise's payload at settlement copies.
-    if (dst.kind === "promise" && promisePayloadHoldsStructure(lowerer, dst.inner))
-      return `its promise payload is re-materialized when it settles`;
-    return null;
-  }
+  // An unboxed capsule answers the same object, and a promise payload
+  // boxes by reference as well (object-model S1), so no dynamic-side
+  // crossing copies.
+  if (src.kind === "dyn") return null;
   if (dst.kind === "dyn") return dynCrossingCopyReason(lowerer, src);
   if (src.kind === "record" && dst.kind === "record")
     return `a '${lowerer.fmt(src)}' becomes the narrower '${lowerer.fmt(dst)}' by copying it`;
   if (src.kind === "array" && dst.kind === "array")
     return `a '${lowerer.fmt(src)}' becomes '${lowerer.fmt(dst)}' by copying it`;
-  if (src.kind === "promise" && dst.kind === "promise") {
-    if (dst.inner.kind === "dyn" && promisePayloadHoldsStructure(lowerer, src.inner))
-      return `the '${lowerer.fmt(src)}' payload is re-materialized when it settles`;
+  if (src.kind === "promise" && dst.kind === "promise")
     return erasureCopyReason(lowerer, src.inner, dst.inner);
-  }
   if (src.kind === "func" && dst.kind === "func")
     return erasureCopyReason(lowerer, src.ret, dst.ret);
   return null;
 }
 
 /** Why a value of type `t` crossing INTO `unknown` copies, or null. A
- * record or array boxes as a live capsule of itself; a function boxes as a
- * callable whose RESULT converts the same way, so the result decides, and a
- * record or array result comes back as a fresh value because the boxed
- * callable converts it through the dynamic call; a promise's payload is
- * re-materialized when it settles. */
+ * record, array or promise boxes as a live capsule of itself (a promise's
+ * payload boxes by reference too, object-model S1); a function boxes as a
+ * callable whose RESULT converts through the dynamic call, so a record or
+ * array result comes back as a fresh value. */
 function dynCrossingCopyReason(lowerer: Lowerer, t: IrType): string | null {
   if (t.kind === "func") {
     const inner = dynCrossingCopyReason(lowerer, t.ret);
@@ -2283,10 +2276,7 @@ function dynCrossingCopyReason(lowerer: Lowerer, t: IrType): string | null {
     }
     return null;
   }
-  if (t.kind !== "promise") return null;
-  return promisePayloadHoldsStructure(lowerer, t.inner)
-    ? `a promise of '${lowerer.fmt(t.inner)}' is re-materialized when it settles`
-    : null;
+  return null;
 }
 
 /** True when a boxed function's RESULT is a record or array, or a union with
@@ -2298,24 +2288,6 @@ function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
   if (t.kind !== "union") return false;
   const def = lowerer.unions.get(t.unionId);
   return def !== undefined && def.arms.some((arm) => structuredResultHoldsCopy(lowerer, arm));
-}
-
-/** True when a promise payload holds a value the dynamic tier re-materializes
- * at settlement (records, arrays, class instances and their unions) rather
- * than carrying by reference. */
-function promisePayloadHoldsStructure(lowerer: Lowerer, t: IrType): boolean {
-  if (t.kind === "record") {
-    const shape = lowerer.shapes.get(t.shapeId);
-    return !!shape && (shape.fields.length > 0 || shape.indexValue !== undefined);
-  }
-  if (t.kind === "array" || t.kind === "object") return true;
-  if (t.kind === "promise") return promisePayloadHoldsStructure(lowerer, t.inner);
-  if (t.kind === "func") return promisePayloadHoldsStructure(lowerer, t.ret);
-  if (t.kind === "union") {
-    const def = lowerer.unions.get(t.unionId);
-    return !!def && def.arms.some((arm) => promisePayloadHoldsStructure(lowerer, arm));
-  }
-  return false;
 }
 
 /** A call through an evaluated callee value: checked-dynamic callees,

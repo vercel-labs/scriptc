@@ -40,6 +40,7 @@ import {
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
+import { isExecErrorMemberRead } from "../builtins/errors.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
@@ -687,6 +688,11 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   if (isOptionalProcessVersionsRead(lowerer, node)) return expr;
   if (ts.isPropertyAccessExpression(node) && isOptionalReadlineCursorRead(lowerer, node))
     return expr;
+  // An exec/execFile callback error's metadata member answers Node's
+  // runtime value, which a flow guard can narrow below (@types/node types
+  // `code` as a number, so `code !== undefined` proves one). The read
+  // keeps the runtime union and its consumers check the value.
+  if (ts.isPropertyAccessExpression(node) && isExecErrorMemberRead(lowerer, node)) return expr;
 
   // Represented fields and index values can include undefined even when
   // checker inference or lib.d.ts declares strings (RegExp captures).

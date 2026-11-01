@@ -65,7 +65,6 @@ import { hasGlobalFunctionValue } from "../global-function-values.js";
 import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
 import { NARROW_FIRST, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "../surfaces.js";
-import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { recordMayKeepSource } from "../record-sources.js";
@@ -1793,9 +1792,6 @@ export function lowerInExpression(
       type: BOOL,
       loc,
     };
-  }
-  if (key === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.right))) {
-    refuseExecExceptionCode(lowerer, expr);
   }
   // A literal key that names no declared member of an index-signature
   // record (`"id" in match.groups`): the same keyed presence probe a

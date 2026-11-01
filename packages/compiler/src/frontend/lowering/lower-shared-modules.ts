@@ -46,6 +46,7 @@ import {
   islandSharedPath,
 } from "./lower-node-island.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
+import { InternalCompilerError } from "../../errors.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
 
@@ -502,12 +503,11 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
       const flag = `%g.shared.${plans.length}.${e.name}%initialized`;
       lowerer.globalsList.push({ id: flag, name: "%initialized", type: BOOL, mutable: true });
       e.flag = flag;
-      let stmt: ts.Node | undefined = e.ident.parent;
-      while (stmt !== undefined && !ts.isVariableStatement(stmt)) stmt = stmt.parent;
-      if (stmt !== undefined) {
-        const list = lowerer.sharedInitFlags.get(stmt as ts.Statement) ?? [];
+      const decl = e.ident.parent;
+      if (decl !== undefined && ts.isVariableDeclaration(decl)) {
+        const list = lowerer.sharedInitFlags.get(decl) ?? [];
         list.push(flag);
-        lowerer.sharedInitFlags.set(stmt as ts.Statement, list);
+        lowerer.sharedInitFlags.set(decl, list);
       }
     }
     plans.push({ sf, path, exports });
@@ -519,11 +519,35 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
   return plans;
 }
 
-/** The flag stores after a shared module's declaration statement. */
-export function sharedInitFlagStores(lowerer: Lowerer, stmt: ts.Statement): IrStmt[] {
-  const flags = lowerer.sharedInitFlags.get(stmt);
+/** Instantiate only the callable; module evaluation still owns every authored initializer. */
+export function lowerSharedFunctionValue(
+  lowerer: Lowerer,
+  declaration: ts.FunctionDeclaration,
+): IrExpr {
+  const ctx = newFnCtx(false, null, null, VOID);
+  if (lowerer.pendingClassExprInits.length !== 0)
+    throw new InternalCompilerError("shared function instantiation has pending class effects");
+  lowerer.fnStack.push(ctx);
+  try {
+    const value = lowerer.lowerLambda(declaration);
+    if (
+      value.kind !== "closure" ||
+      value.captures.length !== 0 ||
+      ctx.locals.length !== 0 ||
+      lowerer.pendingClassExprInits.length !== 0
+    )
+      throw new InternalCompilerError("shared function instantiation depends on module evaluation");
+    return lowerer.coerceToExpected(value, DYN);
+  } finally {
+    lowerer.fnStack.pop();
+  }
+}
+
+/** Each declarator publishes its binding before the next initializer can call an island. */
+export function sharedInitFlagStores(lowerer: Lowerer, decl: ts.VariableDeclaration): IrStmt[] {
+  const flags = lowerer.sharedInitFlags.get(decl);
   if (flags === undefined) return [];
-  const loc = locOf(stmt);
+  const loc = locOf(decl);
   return flags.map((flag) => ({
     kind: "assign",
     localId: flag,

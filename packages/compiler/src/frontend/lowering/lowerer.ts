@@ -3913,7 +3913,7 @@ export class Lowerer {
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
   readonly sharedModuleWarnings: ScrDiagnostic[] = [];
-  readonly sharedInitFlags = new Map<ts.Statement, string[]>();
+  readonly sharedInitFlags = new Map<ts.VariableDeclaration, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -4650,6 +4650,7 @@ export class Lowerer {
       checkedTable("collectingClassDeclarations", () => this.collectingClassDeclarations.size),
       checkedTable("genericClassInstances", () => this.genericClassInstances.length),
       checkedTable("mainPrelude", () => this.mainPrelude.length),
+      checkedTable("sharedFunctionInitializers", () => this.sharedFunctionInitializers.length),
       checkedTable("structuralFnInfos", () => this.structuralFnInfos.size),
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
@@ -15780,6 +15781,9 @@ export class Lowerer {
   /** Statements %main runs before any module initializer: runtime
    * registrations the lowering passes add. */
   readonly mainPrelude: IrStmt[] = [];
+
+  /** Initializers that allocate shared functions before module evaluation in every context. */
+  readonly sharedFunctionInitializers: string[] = [];
 
   buildMain(): IrFunction {
     return buildMain(this);

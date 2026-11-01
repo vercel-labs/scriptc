@@ -340,6 +340,252 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect(conflicting).toEqual([]);
   });
 
+  test("shared declarations publish before later initializers call an island", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-shared-declarators-"));
+    try {
+      const files = {
+        "package.json": JSON.stringify({
+          type: "module",
+          scriptc: { nodeIslands: { auto: false, modules: ["island.mjs"] } },
+        }),
+        "main.mjs": `import { first, second, third, fourth } from "./helper.mjs";
+console.log(first, second, third, fourth);
+`,
+        "helper.mjs": `import { readFirst, readThird } from "./island.mjs";
+export let first = 41, second = readFirst();
+export { first as renamed };
+export const third = 7, fourth = readThird();
+`,
+        "island.mjs": `import { first, renamed, third } from "./helper.mjs";
+export function readFirst() { return first + renamed; }
+export function readThird() { return third + 1; }
+`,
+      };
+      for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
+      const entry = join(dir, "main.mjs");
+      const expected = await run(process.execPath, [entry]);
+      expect(expected).toEqual({ stdout: "41 82 7 8\n", stderr: "", code: 0 });
+      const result = await compile(entry, {
+        outPath: join(dir, "program"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["island.mjs"]);
+      expect(
+        await run(result.binaryPath, [], { ...process.env, XDG_CACHE_HOME: join(dir, "cache") }),
+      ).toEqual(expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
+
+  test.each([
+    { order: "island-first", root: "main" },
+    { order: "native-first", root: "main" },
+    { order: "island-first", root: "worker" },
+    { order: "island-first", root: "fork" },
+  ])(
+    "shared function instantiation preserves reassignment ($order, $root)",
+    async ({ order, root }) => {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-shared-functions-"));
+      try {
+        const imports = [
+          'import { checkSaved } from "./island.mjs";',
+          'import { choose, choosePrivate, make } from "./helper.mjs";',
+        ];
+        if (order === "native-first") imports.reverse();
+        const rootEntry =
+          root === "worker"
+            ? `import { Worker } from "node:worker_threads";
+const worker = new Worker(new URL("./worker.mjs", import.meta.url));
+console.log("worker", await new Promise((resolve) => worker.once("message", resolve)));
+`
+            : root === "fork"
+              ? `import { fork } from "node:child_process";
+const child = fork(new URL("./child.mjs", import.meta.url), [], {
+  stdio: ["ignore", "ignore", "inherit", "ipc"],
+});
+console.log("fork", await new Promise((resolve) => child.once("message", resolve)));
+`
+              : "";
+        const files = {
+          "package.json": JSON.stringify({
+            type: "module",
+            scriptc: { nodeIslands: { auto: false, modules: ["island.mjs"] } },
+          }),
+          "main.mjs": `${imports.join("\n")}
+import { read } from "./observer.mjs";
+console.log("native", choose(), choosePrivate());
+checkSaved();
+console.log("diamond", read());
+console.log("class", make().read(), make());
+${rootEntry}
+`,
+          "helper.mjs": `export function choose() {
+  // @ts-expect-error JavaScript permits reassignment of a function declaration.
+  choose = () => "replacement";
+  return "original";
+}
+function hidden() {
+  // @ts-expect-error JavaScript permits reassignment of a function declaration.
+  hidden = () => "private-replacement";
+  return "private-original";
+}
+export function choosePrivate() { return hidden(); }
+class Box { read() { return 7; } }
+export function make() {
+  // @ts-expect-error JavaScript permits reassignment of a function declaration.
+  make = () => null;
+  return new Box();
+}
+`,
+          "island.mjs": `import { choose, choosePrivate } from "./helper.mjs";
+const original = choose;
+console.log("island", original === choose, original(), choose(), original === choose);
+console.log("private", choosePrivate(), choosePrivate());
+export function checkSaved() {
+  console.log("saved", original === choose, original(), choose());
+}
+`,
+          "observer.mjs": `import { choose } from "./helper.mjs";
+export function read() { return choose(); }
+`,
+          ...(root === "worker"
+            ? {
+                "worker.mjs": `import { parentPort } from "node:worker_threads";
+import { choose, choosePrivate } from "./helper.mjs";
+parentPort.postMessage(choose() + " " + choosePrivate() + " " + choose());
+`,
+              }
+            : {}),
+          ...(root === "fork"
+            ? {
+                "child.mjs": `import { choose, choosePrivate } from "./helper.mjs";
+process.send(choose() + " " + choosePrivate() + " " + choose());
+process.disconnect();
+`,
+              }
+            : {}),
+        };
+        for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
+        const entry = join(dir, "main.mjs");
+        const expected = await run(process.execPath, [entry]);
+        expect(expected).toEqual({
+          stdout:
+            "island true original replacement false\nprivate private-original private-replacement\nnative replacement private-replacement\nsaved false original replacement\ndiamond replacement\nclass 7 null\n" +
+            (root === "main" ? "" : `${root} original private-original replacement\n`),
+          stderr: "",
+          code: 0,
+        });
+        const result = await compile(entry, {
+          outPath: join(dir, "program"),
+          outDir: dir,
+          sanitize,
+          libnode: pack!,
+        });
+        if (!result.ok)
+          throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+        expect(result.islands?.modules.map((file) => basename(file))).toEqual(["island.mjs"]);
+        expect(
+          await run(result.binaryPath, [], { ...process.env, XDG_CACHE_HOME: join(dir, "cache") }),
+        ).toEqual(expected);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    300_000,
+  );
+
+  test("nonshared CommonJS retries recreate reassigned functions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-function-retry-"));
+    try {
+      writeFileSync(join(dir, "package.json"), "{}");
+      writeFileSync(
+        join(dir, "failed.cjs"),
+        `function choose() { return "original"; }
+console.log("before", choose());
+// @ts-expect-error JavaScript permits reassignment of a function declaration.
+choose = () => "replacement";
+console.log("after", choose());
+throw new Error("retry");
+`,
+      );
+      const entry = join(dir, "main.cjs");
+      writeFileSync(
+        entry,
+        `for (let i = 0; i < 2; i++) {
+  try { require("./failed.cjs"); }
+  catch (error) { console.log(error.message); }
+}
+`,
+      );
+      const expected = await run(process.execPath, [entry]);
+      expect(expected).toEqual({
+        stdout: "before original\nafter replacement\nretry\n".repeat(2),
+        stderr: "",
+        code: 0,
+      });
+      expect(await run(await build("shared-function-cjs-retry", undefined, entry), [])).toEqual(
+        expected,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
+
+  test("shared function instantiation leaves module effects lazy and ordered", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-function-effects-"));
+    try {
+      const files = {
+        "main.mjs": `import { requireModule } from "@scriptc/node";
+console.log("before");
+const first = await import("./helper.mjs");
+console.log("values", first.C.value, first.default, first.choose());
+const second = await import("./helper.mjs");
+console.log("cached", first === second, second.choose());
+const island = requireModule("./island.mjs");
+console.log("island", island.read());
+`,
+        "helper.mjs": `console.log("body");
+function mark(name) { console.log(name); return name; }
+export class C { static value = mark("static"); }
+export default mark("default");
+export function choose() {
+  // @ts-expect-error JavaScript permits reassignment of a function declaration.
+  choose = () => "replacement";
+  return "original";
+}
+`,
+        "island.mjs": `import { choose } from "./helper.mjs";
+export function read() { return choose(); }
+`,
+      };
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+      for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
+      const dependency = join(dir, "node_modules/@scriptc/node");
+      mkdirSync(dependency, { recursive: true });
+      for (const file of ["package.json", "index.js", "index.d.ts"])
+        copyFileSync(join(repoRoot, "packages/node", file), join(dependency, file));
+      const entry = join(dir, "main.mjs");
+      const expected = await run(process.execPath, [entry]);
+      expect(expected).toEqual({
+        stdout:
+          "before\nbody\nstatic\ndefault\nvalues static default original\ncached true replacement\nisland replacement\n",
+        stderr: "",
+        code: 0,
+      });
+      const binary = await build("shared-function-effects", pack!, entry);
+      expect(await run(binary, [], { ...process.env, XDG_CACHE_HOME: join(dir, "cache") })).toEqual(
+        expected,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
+
   // A module that patches a builtin module's CommonJS object runs in a Node
   // island automatically (H3): the patch is meant for code that shares
   // Node's builtin, and only Node has that object.

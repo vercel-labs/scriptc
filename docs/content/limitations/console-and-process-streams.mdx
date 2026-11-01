@@ -2,12 +2,14 @@
 They accept `unknown`, printing strings verbatim and other values through native `util.inspect`.
 Direct calls support global `console` and `node:console` imports.
 Console output, `util.format`, and `util.formatWithOptions` with a format string known only at run time, spread arguments, or an options object format their arguments at run time.
-There, `%s` of a function or of a class instance whose class defines `toString` and `%o` of an object throw `SC2020`.
-`util.inspect` with `colors`, with option values known only at run time, or in the `inspect(value, showHidden, depth, colors)` form renders the value's untyped view in the runtime with Node's styles.
+There, `%s` of a function or of a class instance whose class defines `toString` throws `SC2020`.
+`util.inspect` with `colors`, with `showHidden`, with option values known only at run time, or in the `inspect(value, showHidden, depth, colors)` form renders the value's untyped view in the runtime with Node's styles.
 Colored output of errors, promises, regular expressions, `DataView`, `ArrayBuffer`, weak collections, iterators, and other native objects throws `SC2020`.
-Inspect options other than `depth`, `colors`, `customInspect`, `compact` (a number or `false`), `breakLength`, `maxArrayLength` (a non-negative integer or `null`), and `sorted` (a boolean) throw `SC2020` when they are set to a value other than Node's default.
+Inspect options other than `depth`, `colors`, `customInspect`, `showHidden`, `compact` (a number or `false`), `breakLength`, `maxArrayLength` (a non-negative integer or `null`), and `sorted` (a boolean) throw `SC2020` when they are set to a value other than Node's default.
 `util.inspect` calls `[util.inspect.custom]` methods of classes and objects with Node's depth, options, and `util.inspect` arguments, and `console.dir` and `customInspect: false` skip them.
 A class instance with such a method that is held as an untyped value throws `SC2020` when it is inspected, and a class whose subclasses declare the method without declaring it itself is refused.
+Under `showHidden` — the option, the boolean second argument, and `%o` — arrays print their hidden `[length]` entry, typed arrays their `[BYTES_PER_ELEMENT]`, `[length]`, `[byteLength]`, `[byteOffset]`, and `[buffer]` entries, `ArrayBuffer` and `DataView` their hidden byte fields, and objects their non-enumerable and symbol keys.
+Values this runtime has no hidden view of — functions, errors, `RegExp`, weak collections, and `SharedArrayBuffer` (and views over one) — throw `SC2020` under `showHidden`, and `console.dir` refuses the option because its rendering has no `showHidden` form.
 Stored global console values and detached output methods retain identity and accept ordinary arguments.
 Stored methods do not support format specifiers with substitution arguments.
 Other stored console APIs, custom `Console` instances, and console mutation are unsupported.

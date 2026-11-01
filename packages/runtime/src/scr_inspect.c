@@ -481,6 +481,11 @@ static SCR_TL size_t g_nseen;
 /* util.format's %o (scr_insp_dyn_hidden): this render shows hidden own
  * properties, like util.inspect's showHidden. */
 static SCR_TL bool g_show_hidden;
+/* The call a showHidden render answers for (its API name, and whether it is
+ * util.format's %o), named in the refusal of the kinds whose hidden entries
+ * the walk does not render. */
+static SCR_TL const char *g_hidden_surface;
+static SCR_TL bool g_hidden_spec;
 static SCR_TL size_t g_seen_cap;
 /* Detection-numbered circular targets (persist across the call). */
 static SCR_TL const void *g_circ[64];
@@ -667,20 +672,31 @@ static bool insp_below_break_length(InspFrame *f, size_t start, const ScrStr *ba
   return base->len == 0 || !insp_contains_byte(base->data, base->len, '\n');
 }
 
+/* sorted: true orders entries by their rendered text, in UTF-16 code-unit
+ * order. Node sorts an object-type composite's whole output, and an array's
+ * or typed array's trailing own-property entries only — its `keys`, after
+ * the elements, the hidden extras, and any "... N more items" tail — and
+ * only when there are at least two of them. */
+#define INSP_SORT_ALL ((size_t)-1)
+
 /* reduceToSingleString for a numeric or false compact (only a compact of
  * at least 1 groups arrays and tries the single line). Pops the
  * frame. base/b0/b1 are borrowed; +1 result. `recurse` is the frame's
  * recurseTimes (the children's depth); array_extras marks kArrayExtrasType
  * (grid grouping applies); trailing_more marks a "... N more items" tail
- * entry (excluded from the grid). */
-ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse, bool array_extras,
-                     bool trailing_more) {
+ * entry (excluded from the grid); sort_tail is the number of trailing
+ * entries sorted, or INSP_SORT_ALL for the whole frame. */
+static ScrStr *insp_end_tail(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse, bool array_extras,
+                             bool trailing_more, size_t sort_tail) {
   InspFrame *f = insp_top();
   g_indent -= 2;
-  /* sorted: true orders an object-type composite's entries (properties,
-   * and Map and Set entries) by their rendered text, in UTF-16 code-unit
-   * order; arrays keep their element order. */
-  if (g_sorted && !array_extras && f->len > 1) qsort(f->items, f->len, sizeof *f->items, insp_item_cmp);
+  if (g_sorted && f->len > 1) {
+    size_t from = 0;
+    if (sort_tail != INSP_SORT_ALL) {
+      from = sort_tail > 1 && sort_tail <= f->len ? f->len - sort_tail : f->len;
+    }
+    if (from < f->len) qsort(f->items + from, f->len - from, sizeof *f->items, insp_item_cmp);
+  }
   /* Node adds a circular target's `<ref *N>` to the base before it chooses
    * the layout, so the reference counts toward the line width. */
   ScrStr *ref_base = NULL;
@@ -747,6 +763,15 @@ done:;
   g_nframes--;
   if (ref_base) scr_str_release(ref_base);
   return ib_take(&out);
+}
+
+/* The generated container walks: an object-type composite sorts its whole
+ * frame, and an array walk, whose entries are elements only, sorts none of
+ * them. */
+ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse, bool array_extras,
+                     bool trailing_more) {
+  return insp_end_tail(base, b0, b1, recurse, array_extras, trailing_more,
+                       array_extras ? 0 : INSP_SORT_ALL);
 }
 
 /* ── nested inspections ──────────────────────────────────────────────
@@ -995,8 +1020,12 @@ static size_t insp_view_property_slots(const ScrDyn *props) {
 static ScrStr *insp_accessor_tag(const ScrDynProp *ent);
 static void insp_key_into(InspBuf *b, const char *key, size_t len);
 
-/* Slot k's `key: value` entry when it is enumerable, else NULL. */
-static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, double depth) {
+/* Slot k's `key: value` entry when it shows (an enumerable one, or any
+ * under showHidden; a hidden string key renders in brackets, or bare when
+ * the Render copies the properties onto a plain object first, as Buffer's
+ * custom inspect does), else NULL. */
+static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, double depth,
+                                  bool bracket_hidden) {
   ScrDynProp found;
   const ScrDynProp *ent = NULL;
   ScrStr *key = NULL;
@@ -1006,13 +1035,16 @@ static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, doubl
   } else {
     ScrDyn *symbol = props->symbol_keys->v.arr.items[k - scr_dyn_obj_count(props)];
     if (scr_dyn_own_symbol_prop(props, symbol, &found)) ent = &found;
-    if (ent && ent->enumerable) key = scr_insp_dyn(symbol, recurse, depth);
+    if (ent && (ent->enumerable || g_show_hidden)) key = scr_insp_dyn(symbol, recurse, depth);
   }
-  if (!ent || !ent->enumerable) return NULL;
+  if (!ent || !(ent->enumerable || g_show_hidden)) return NULL;
   ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse, depth);
   InspBuf eb = {0};
+  bool brackets = !ent->enumerable && bracket_hidden;
+  if (brackets) ib_char(&eb, '[');
   if (key) ib_bytes(&eb, key->data, key->len);
   else insp_key_into(&eb, ent->key, ent->key_len);
+  if (brackets) ib_char(&eb, ']');
   ib_cstr(&eb, ": ");
   ib_bytes(&eb, val->data, val->len);
   scr_str_release(key);
@@ -1023,11 +1055,11 @@ static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, doubl
 static size_t insp_view_property_count(ScrDyn *props) {
   size_t count = 0;
   for (size_t k = 0; k < insp_view_property_slots(props); k++) {
-    if (k < scr_dyn_obj_count(props)) count += scr_dyn_obj_prop_at(props, k).enumerable;
+    if (k < scr_dyn_obj_count(props)) count += scr_dyn_obj_prop_at(props, k).enumerable || g_show_hidden;
     else {
       ScrDynProp ent;
       count += scr_dyn_own_symbol_prop(props, props->symbol_keys->v.arr.items[k - scr_dyn_obj_count(props)], &ent) &&
-               ent.enumerable;
+               (ent.enumerable || g_show_hidden);
     }
   }
   return count;
@@ -1059,7 +1091,7 @@ ScrStr *scr_insp_buffer(ScrBytes *b) {
    * an object at depth 0 (Buffer's custom inspect). */
   bool first = true;
   for (size_t k = 0; k < insp_view_property_slots(b->properties); k++) {
-    ScrStr *entry = insp_view_property(b->properties, k, 1, 2);
+    ScrStr *entry = insp_view_property(b->properties, k, 1, 2, false);
     if (!entry) continue;
     if (!first || b->len) ib_cstr(&out, ", ");
     first = false;
@@ -1068,6 +1100,32 @@ ScrStr *scr_insp_buffer(ScrBytes *b) {
   }
   ib_char(&out, '>');
   return ib_take(&out);
+}
+
+/* Node's showHidden render of `kind` lists hidden entries this inspector
+ * does not render; the call throws an SC2020 Error naming the surface
+ * instead of printing without them. */
+static void insp_hidden_throw(const char *kind) {
+  InspBuf out = {0};
+  ib_cstr(&out, g_hidden_surface ? g_hidden_surface : "util.inspect");
+  ib_cstr(&out, g_hidden_spec ? " %o of " : " with showHidden of ");
+  ib_cstr(&out, kind);
+  ib_cstr(&out, " values is not supported yet");
+  ScrStr *message = ib_take(&out);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+  scr_str_release(message);
+}
+
+/* A view over a SharedArrayBuffer under showHidden: Node lists that
+ * buffer's own byte accessors (byteLength, maxByteLength, growable) and
+ * its toStringTag symbol, which this inspector does not model. Past the
+ * depth limit the placeholder holds either way, so the caller checks
+ * there first. */
+static bool insp_hidden_shared_view(const ScrBytes *b) {
+  const ScrBytes *owner = b->backing ? b->backing : b;
+  if (!g_show_hidden || !owner->shared) return false;
+  insp_hidden_throw("SharedArrayBuffer");
+  return true;
 }
 
 /* ArrayBuffer/SharedArrayBuffer: formatArrayBuffer's
@@ -1131,6 +1189,7 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
  * depth. */
 static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double depth) {
   if (recurse > depth) return scr_str_new("[DataView]", 10);
+  if (insp_hidden_shared_view(b)) return scr_str_new("", 0);
   const ScrBytes *owner = b->backing ? b->backing : b;
   char line[64];
   scr_insp_begin(recurse + 1);
@@ -1152,7 +1211,7 @@ static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double dept
   scr_insp_entry(entry, false);
   scr_str_release(entry);
   for (size_t k = 0; k < insp_view_property_slots(b->properties); k++) {
-    entry = insp_view_property(b->properties, k, recurse + 1, depth);
+    entry = insp_view_property(b->properties, k, recurse + 1, depth, true);
     if (!entry) continue;
     scr_insp_entry(entry, false);
     scr_str_release(entry);
@@ -2114,6 +2173,22 @@ static ScrStr *insp_bytes_bigint(const ScrBytes *b, size_t i) {
 }
 #endif
 
+/* The backing ArrayBuffer of a typed array, rendered as Node's typed-array
+ * `buffer` extra: formatValue's typedArray-marked fast path, which prints
+ * `ArrayBuffer { [byteLength]: N }` and never the [Uint8Contents] form.
+ * The buffer carries no properties either way — a view's properties belong
+ * to the view, and the runtime refuses properties on an ArrayBuffer — and
+ * the fast path runs before the depth check, so the form holds at every
+ * depth. Borrows b; +1. */
+static ScrStr *insp_backing_buffer(const ScrBytes *b) {
+  const ScrBytes *owner = b->backing ? b->backing : b;
+  const char *cls = owner->shared ? "SharedArrayBuffer" : "ArrayBuffer";
+  char line[64];
+  int n = snprintf(line, sizeof line, "%s { [byteLength]: %zu }", cls,
+                   (size_t)scr_bytes_byte_len(owner));
+  return scr_str_new(line, (size_t)n);
+}
+
 /* A numeric typed array (not a Buffer): `Uint8Array(n) [ ... ]` with
  * Node's maxArrayLength and array grid, `[Uint8Array]` past the depth
  * limit. Borrows b; +1. */
@@ -2123,7 +2198,7 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   /* Named properties follow the elements as `key: value` entries. */
   ScrDyn *props = b->properties;
   size_t nprops = insp_view_property_count(props);
-  if (b->len == 0 && nprops == 0) {
+  if (b->len == 0 && nprops == 0 && !g_show_hidden) {
     InspBuf out = {0};
     ib_bytes(&out, prefix, (size_t)pn);
     ib_char(&out, ']');
@@ -2134,6 +2209,7 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
     int n = snprintf(tag, sizeof tag, "[%s]", scr_bytes_elem_name(b->elem));
     return insp_styled_lit(tag, (size_t)n, INSP_SPECIAL);
   }
+  if (insp_hidden_shared_view(b)) return scr_str_new("", 0);
   scr_insp_begin(recurse + 1);
   size_t shown = (double)b->len < g_max_array_length ? b->len : (size_t)g_max_array_length;
   for (size_t i = 0; i < shown; i++) {
@@ -2155,8 +2231,38 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
     scr_str_release(m);
   }
   size_t entries = shown + (more ? 1 : 0);
+  if (g_show_hidden) {
+    /* Node's extraKeys for a typed array, after the elements. */
+    char line[64];
+    size_t elem = scr_bytes_elem_size(b->elem);
+    int n = snprintf(line, sizeof line, "[BYTES_PER_ELEMENT]: %zu", elem);
+    ScrStr *s = scr_str_new(line, (size_t)n);
+    scr_insp_entry(s, false);
+    scr_str_release(s);
+    n = snprintf(line, sizeof line, "[length]: %zu", b->len);
+    s = scr_str_new(line, (size_t)n);
+    scr_insp_entry(s, false);
+    scr_str_release(s);
+    n = snprintf(line, sizeof line, "[byteLength]: %zu", b->len * elem);
+    s = scr_str_new(line, (size_t)n);
+    scr_insp_entry(s, false);
+    scr_str_release(s);
+    n = snprintf(line, sizeof line, "[byteOffset]: %.0f", scr_bytes_byte_offset(b));
+    s = scr_str_new(line, (size_t)n);
+    scr_insp_entry(s, false);
+    scr_str_release(s);
+    ScrStr *owner = insp_backing_buffer(b);
+    InspBuf eb = {0};
+    ib_cstr(&eb, "[buffer]: ");
+    ib_bytes(&eb, owner->data, owner->len);
+    scr_str_release(owner);
+    s = ib_take(&eb);
+    scr_insp_entry(s, false);
+    scr_str_release(s);
+    entries += 5;
+  }
   for (size_t k = 0; nprops && k < insp_view_property_slots(props); k++) {
-    ScrStr *entry = insp_view_property(props, k, recurse + 1, depth);
+    ScrStr *entry = insp_view_property(props, k, recurse + 1, depth, true);
     if (!entry) continue;
     /* Node's grouping pads by the element at the entry's output position. */
     scr_insp_entry(entry, entries < b->len);
@@ -2166,8 +2272,13 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   ScrStr *base = scr_str_new("", 0);
   ScrStr *b0 = scr_str_new(prefix, (size_t)pn);
   ScrStr *b1 = scr_str_new("]", 1);
-  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true,
-                             nprops ? (double)entries > g_max_array_length : more);
+  /* Node's grouping leaves out the last entry when there are more entries
+   * than maxArrayLength: the `... more items` entry, one of the hidden
+   * extras, or the last property. */
+  bool last_out = (double)entries > g_max_array_length;
+  /* sorted orders the trailing own properties, after the elements and the
+   * five hidden extras. */
+  ScrStr *out = insp_end_tail(base, b0, b1, recurse + 1, true, last_out, nprops);
   scr_str_release(base);
   scr_str_release(b0);
   scr_str_release(b1);
@@ -2744,21 +2855,23 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
 }
 
 /* Under showHidden, the kinds whose hidden entries this inspector does not
- * render (a function's length/name/prototype, an error's stack, a typed
- * array's byte fields, a native handle's internals): the kind's name, NULL
- * for the kinds it renders. */
+ * render (a function's length/name/prototype, an error's stack, a weak
+ * collection's entries, a SharedArrayBuffer's byte accessors, a native
+ * handle's internals): the kind's name, NULL for the kinds it renders. */
 static const char *insp_hidden_refusal(const ScrDyn *d) {
   switch (d->kind) {
     case SCR_DYN_FUNC: return "function";
-    case SCR_DYN_BYTES: return d->buffer ? "Buffer" : d->v.bytes->is_data_view ? "DataView" : "typed array";
     case SCR_DYN_OBJ: return scr_dyn_obj_get(d, "%error", 6) != NULL ? "Error" : NULL;
     case SCR_DYN_HANDLE:
-      /* A MIMEParams keeps its entries private: Node prints MIMEParams {}
-       * with or without showHidden. */
-      return d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_SET ||
-                     d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS
-                 ? NULL
-                 : scr_dyn_handle_cls(d);
+      /* These print the same entries with or without showHidden. */
+      if (d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_SET ||
+          d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS ||
+          d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS ||
+          d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER)
+        return NULL;
+      if (d->v.handle.tag == SCR_DYNH_WEAK_MAP) return "WeakMap";
+      if (d->v.handle.tag == SCR_DYNH_WEAK_SET) return "WeakSet";
+      return scr_dyn_handle_cls(d);
     default: return NULL;
   }
 }
@@ -2829,11 +2942,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   }
   const char *refused = g_show_hidden ? insp_hidden_refusal(d) : NULL;
   if (refused) {
-    InspBuf out = {0};
-    ib_cstr(&out, "util.format %o of ");
-    ib_cstr(&out, refused);
-    ib_cstr(&out, " values is not supported yet");
-    scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+    insp_hidden_throw(refused);
     return scr_str_new("", 0);
   }
   switch (d->kind) {
@@ -2861,6 +2970,15 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       for (size_t i = 0; props && i < scr_dyn_obj_count(props); i++) {
         ScrDynProp ent = scr_dyn_obj_prop_at(props, i);
         nprops += insp_obj_shows(&ent);
+      }
+      /* Own symbol keys follow the string keys, enumerable ones (any under
+       * showHidden), as in Node's key list. An array keeps them on itself
+       * (its named properties live in v.arr.properties). */
+      size_t nsymbols = d->symbol_keys ? d->symbol_keys->v.arr.len : 0;
+      for (size_t i = 0; i < nsymbols; i++) {
+        ScrDynProp ent;
+        nprops += scr_dyn_own_symbol_prop(d, d->symbol_keys->v.arr.items[i], &ent) &&
+                  (ent.enumerable || g_show_hidden);
       }
       /* An instance of a class that extends Array: Node's `Name(length) `
        * prefix (scr_arr_copy_metadata names the class). */
@@ -2908,6 +3026,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       }
       bool more = i < len;
       size_t entries = shown + (more ? 1 : 0);
+      /* The own-property entries trailing the elements and the hidden
+       * `[length]`; sorted orders those. */
+      size_t sort_tail = g_show_hidden ? 1 : 0;
       if (more) {
         ScrStr *m = scr_insp_more_items((double)(len - i));
         scr_insp_entry(m, d->v.arr.items[i]->kind == SCR_DYN_NUM);
@@ -2945,6 +3066,31 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_insp_entry(entry, number);
         scr_str_release(entry);
         entries++;
+        sort_tail++;
+      }
+      for (size_t k = 0; k < nsymbols; k++) {
+        ScrDynProp ent;
+        ScrDyn *symbol = d->symbol_keys->v.arr.items[k];
+        if (!scr_dyn_own_symbol_prop(d, symbol, &ent)) continue;
+        if (!(ent.enumerable || g_show_hidden)) continue;
+        ScrStr *key = scr_insp_dyn(symbol, recurse + 1, depth);
+        ScrStr *val = ent.accessor ? insp_accessor_tag(&ent) : scr_insp_dyn(ent.value, recurse + 1, depth);
+        InspBuf eb = {0};
+        /* A hidden symbol key is bracketed like a hidden string key. */
+        if (!ent.enumerable) ib_char(&eb, '[');
+        ib_bytes(&eb, key->data, key->len);
+        if (!ent.enumerable) ib_char(&eb, ']');
+        ib_cstr(&eb, ": ");
+        ib_bytes(&eb, val->data, val->len);
+        scr_str_release(key);
+        scr_str_release(val);
+        ScrStr *entry = ib_take(&eb);
+        bool number = entries < len && (!presence || presence[entries]) &&
+                      d->v.arr.items[entries]->kind == SCR_DYN_NUM;
+        scr_insp_entry(entry, number);
+        scr_str_release(entry);
+        entries++;
+        sort_tail++;
       }
       /* Node's grouping leaves out the last entry when there are more
        * entries than maxArrayLength: the `... more items` entry,
@@ -2956,7 +3102,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       ib_char(&ob, '[');
       ScrStr *b0 = ib_take(&ob);
       ScrStr *b1 = scr_str_new("]", 1);
-      ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, last_out);
+      ScrStr *out = insp_end_tail(base, b0, b1, recurse + 1, true, last_out, sort_tail);
       scr_str_release(base);
       scr_str_release(b0);
       scr_str_release(b1);
@@ -3277,6 +3423,8 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
   o->depth_kind = 0;
   o->depth_number = 2;
   o->colors = false;
+  o->show_hidden = false;
+  o->hidden_spec = false;
   o->custom_inspect = true;
   o->break_length = 80;
   o->compact = 3;
@@ -3293,18 +3441,27 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
   double break_length = g_break_length, saved_compact = g_compact;
   double saved_max_array_length = g_max_array_length;
   bool sorted = g_sorted, saved_colors = g_colors, saved_custom = g_custom_inspect;
+  bool saved_hidden = g_show_hidden;
+  const char *saved_hidden_surface = g_hidden_surface;
+  bool saved_hidden_spec = g_hidden_spec;
   int saved_depth_kind = g_depth_kind;
   double saved_depth_number = g_depth_number;
   const ScrDyn *saved_user = g_user_options;
   scr_insp_layout(o->break_length, compact, o->sorted, o->max_array_length);
   g_colors = colors;
   g_custom_inspect = o->custom_inspect;
+  g_show_hidden = o->show_hidden;
+  g_hidden_surface = o->surface;
+  g_hidden_spec = o->hidden_spec;
   g_depth_kind = o->depth_kind;
   g_depth_number = o->depth_number;
   g_user_options = o->user_options;
   ScrStr *text = scr_insp_dyn(value, 0, depth);
   g_colors = saved_colors;
   g_custom_inspect = saved_custom;
+  g_show_hidden = saved_hidden;
+  g_hidden_surface = saved_hidden_surface;
+  g_hidden_spec = saved_hidden_spec;
   g_depth_kind = saved_depth_kind;
   g_depth_number = saved_depth_number;
   g_user_options = saved_user;
@@ -3412,13 +3569,14 @@ static ScrStr *insp_format_loop(ScrDyn *const *args, size_t argc, const ScrInspF
         case 'i':
         case 'f': piece = ops->number(args[++a], next); break;
         case 'O': piece = ops->inspect(args[++a], o, o->depth); break;
-        case 'o':
-          if (insp_fmt_object(args[a + 1])) {
-            insp_fmt_fence(o, "%o of objects renders hidden properties, which have no lowering; use %O");
-            break;
-          }
-          piece = ops->inspect(args[++a], o, 4);
+        case 'o': {
+          /* inspect(arg, { ...inspectOptions, showHidden: true, depth: 4 }) */
+          ScrInspFormatOptions hidden = *o;
+          hidden.show_hidden = true;
+          hidden.hidden_spec = true;
+          piece = ops->inspect(args[++a], &hidden, 4);
           break;
+        }
         case 'c':
           a += 1;
           piece = scr_str_new("", 0);
@@ -3710,6 +3868,8 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
   }
   INSP_OPT("colors");
   if (present) o->colors = scr_dyn_truthy(value);
+  INSP_OPT("showHidden");
+  if (present) o->show_hidden = scr_dyn_truthy(value);
   INSP_OPT("customInspect");
   if (present) o->custom_inspect = scr_dyn_truthy(value);
   INSP_OPT("compact");
@@ -3754,8 +3914,8 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
     const char *key;
     int kind; /* 0: falsy, 1: true, 2: the number 10000 */
   } fixed[] = {
-      {"showHidden", 0}, {"showProxy", 0}, {"maxStringLength", 2},
-      {"getters", 0},    {"numericSeparator", 0}, {"stylize", 0},
+      {"showProxy", 0},  {"maxStringLength", 2}, {"getters", 0},
+      {"numericSeparator", 0}, {"stylize", 0},
   };
   for (size_t i = 0; i < sizeof fixed / sizeof *fixed; i++) {
     INSP_OPT(fixed[i].key);
@@ -3821,10 +3981,7 @@ ScrStr *scr_insp_inspect(ScrDyn *value, ScrDyn *options, ScrDyn *depth, ScrDyn *
   }
   if (argc >= 4 && colors->kind != SCR_DYN_UNDEF) o.colors = scr_dyn_truthy(colors);
   if (options->kind == SCR_DYN_BOOL) {
-    if (options->v.b) {
-      insp_fmt_fence(&o, "with showHidden has no lowering");
-      return NULL;
-    }
+    o.show_hidden = options->v.b;
   } else if (options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_TYPED_REF) {
     if (!scr_insp_format_read_options(options, &o)) return NULL;
   }
@@ -3864,9 +4021,15 @@ ScrStr *scr_insp_format_with_options(ScrDyn *options, ScrDyn *pack) {
  * given depth. */
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth) {
   bool outer = g_show_hidden;
+  const char *surface = g_hidden_surface;
+  bool spec = g_hidden_spec;
   g_show_hidden = true;
+  g_hidden_surface = "util.format";
+  g_hidden_spec = true;
   ScrStr *out = scr_insp_dyn(d, 0, depth);
   g_show_hidden = outer;
+  g_hidden_surface = surface;
+  g_hidden_spec = spec;
   return out;
 }
 

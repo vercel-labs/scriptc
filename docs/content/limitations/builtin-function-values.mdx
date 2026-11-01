@@ -42,7 +42,7 @@ Deprecation warnings are emitted on the next tick and follow assignments to `pro
 A stored `util.deprecate` reports a `length` of 4, where Node reports 3.
 In TypeScript, a `util.callbackify` result must reach a callback whose error parameter accepts `null`; the @types/node overloads that type it as non-null are refused.
 `util.debuglog` reads `NODE_DEBUG` as the process started.
-Its `%s` refuses functions and objects with symbol-keyed members, `%o` refuses objects, and object arguments are refused on a color terminal.
+Its `%s` refuses functions and objects with symbol-keyed members, and object arguments are refused on a color terminal.
 
 `util.isDeepStrictEqual` supports primitives, ordinary records and arrays, cycles, enumerable string and symbol properties, and byte views.
 Its optional third argument skips prototype and constructor comparisons.

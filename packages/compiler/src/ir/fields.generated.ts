@@ -2074,6 +2074,1027 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
   }
 }
 
+/** Replaces the child expression `from` of `node` with `to`: the field,
+ * array element or field of a plain object under it that holds `from`
+ * (child IR nodes are not entered). Returns false when no slot holds it. */
+export function replaceChildExpr(node: IrExpr | IrStmt, from: IrExpr, to: IrExpr): boolean {
+  switch (node.kind) {
+    case "arrIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index52 = 0; index52 < node.args.length; index52++) {
+        const item51 = node.args[index52]!;
+        if (item51 === from) {
+          node.args[index52] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "arrayDelete": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "arrayGet": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "arrayHas": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "arrayLit": {
+      for (let index56 = 0; index56 < node.elems.length; index56++) {
+        const item55 = node.elems[index56]!;
+        if (item55 === from) {
+          node.elems[index56] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "arrayNewLen": {
+      if (node.length === from) {
+        node.length = to;
+        return true;
+      }
+      return false;
+    }
+    case "arraySet": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "arraySetLength": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.length === from) {
+        node.length = to;
+        return true;
+      }
+      return false;
+    }
+    case "arraySetUndefined": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "arrayState": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "assign": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "assignExpr": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "awaitExpr": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "awaitUnionExpr": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "bin": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "bytesIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index66 = 0; index66 < node.args.length; index66++) {
+        const item65 = node.args[index66]!;
+        if (item65 === from) {
+          node.args[index66] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "bytesNew": {
+      if (node.source !== undefined && node.source !== null) {
+        if (node.source === from) {
+          node.source = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "bytesSet": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "call": {
+      for (let index70 = 0; index70 < node.args.length; index70++) {
+        const item69 = node.args[index70]!;
+        if (item69 === from) {
+          node.args[index70] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "callValue": {
+      if (node.callee === from) {
+        node.callee = to;
+        return true;
+      }
+      if (node.receiver !== undefined && node.receiver !== null) {
+        if (node.receiver === from) {
+          node.receiver = to;
+          return true;
+        }
+      }
+      for (let index74 = 0; index74 < node.args.length; index74++) {
+        const item73 = node.args[index74]!;
+        if (item73 === from) {
+          node.args[index74] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "caughtCheck": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "caughtNarrow": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "caughtTest": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "caughtToDyn": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "doWhile": {
+      if (node.cond === from) {
+        node.cond = to;
+        return true;
+      }
+      return false;
+    }
+    case "downcast": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynArrLit": {
+      for (let index86 = 0; index86 < node.elems.length; index86++) {
+        const item85 = node.elems[index86]!;
+        if (item85 === from) {
+          node.elems[index86] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "dynCall": {
+      if (node.callee === from) {
+        node.callee = to;
+        return true;
+      }
+      if (node.receiver !== undefined && node.receiver !== null) {
+        if (node.receiver === from) {
+          node.receiver = to;
+          return true;
+        }
+      }
+      if (node.calleeNameValue !== undefined && node.calleeNameValue !== null) {
+        if (node.calleeNameValue === from) {
+          node.calleeNameValue = to;
+          return true;
+        }
+      }
+      for (let index90 = 0; index90 < node.args.length; index90++) {
+        const item89 = node.args[index90]!;
+        if (item89 === from) {
+          node.args[index90] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "dynCheck": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynDestrCheck": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynFrom": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynHasKey": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynInvoke": {
+      if (node.recv === from) {
+        node.recv = to;
+        return true;
+      }
+      if (node.calleeNameValue !== undefined && node.calleeNameValue !== null) {
+        if (node.calleeNameValue === from) {
+          node.calleeNameValue = to;
+          return true;
+        }
+      }
+      for (let index96 = 0; index96 < node.args.length; index96++) {
+        const item95 = node.args[index96]!;
+        if (item95 === from) {
+          node.args[index96] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "dynIterN": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynKeyGet": {
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynObjLit": {
+      if (node.fields !== undefined && node.fields !== null) {
+        for (let index100 = 0; index100 < node.fields.length; index100++) {
+          const item99 = node.fields[index100]!;
+          if (item99.key === from) {
+            item99.key = to;
+            return true;
+          }
+          if (item99.value === from) {
+            item99.value = to;
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case "dynScalarEq": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynTest": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "exprStmt": {
+      if (node.expr === from) {
+        node.expr = to;
+        return true;
+      }
+      return false;
+    }
+    case "ffiCall": {
+      for (let index104 = 0; index104 < node.args.length; index104++) {
+        const item103 = node.args[index104]!;
+        if (item103 === from) {
+          node.args[index104] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "fieldGet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "fieldIncDec": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "fieldSet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "for": {
+      if (node.cond !== undefined && node.cond !== null) {
+        if (node.cond === from) {
+          node.cond = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "forOf": {
+      if (node.iterable === from) {
+        node.iterable = to;
+        return true;
+      }
+      return false;
+    }
+    case "genResume": {
+      if (node.gen === from) {
+        node.gen = to;
+        return true;
+      }
+      if (node.arg !== undefined && node.arg !== null) {
+        if (node.arg === from) {
+          node.arg = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "if": {
+      if (node.cond === from) {
+        node.cond = to;
+        return true;
+      }
+      return false;
+    }
+    case "instanceOf": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "instanceOfValue": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      if (node.classValue === from) {
+        node.classValue = to;
+        return true;
+      }
+      return false;
+    }
+    case "intrinsic": {
+      for (let index120 = 0; index120 < node.args.length; index120++) {
+        const item119 = node.args[index120]!;
+        if (item119 === from) {
+          node.args[index120] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "jsonStringify": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "libCall": {
+      for (let index124 = 0; index124 < node.args.length; index124++) {
+        const item123 = node.args[index124]!;
+        if (item123 === from) {
+          node.args[index124] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "logical": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "mapIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index128 = 0; index128 < node.args.length; index128++) {
+        const item127 = node.args[index128]!;
+        if (item127 === from) {
+          node.args[index128] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "mapNew": {
+      if (node.seed !== undefined && node.seed !== null) {
+        for (let index132 = 0; index132 < node.seed.length; index132++) {
+          const item131 = node.seed[index132]!;
+          if (item131.key === from) {
+            item131.key = to;
+            return true;
+          }
+          if (item131.value === from) {
+            item131.value = to;
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case "new": {
+      for (let index136 = 0; index136 < node.args.length; index136++) {
+        const item135 = node.args[index136]!;
+        if (item135 === from) {
+          node.args[index136] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "newPromise": {
+      if (node.executor === from) {
+        node.executor = to;
+        return true;
+      }
+      return false;
+    }
+    case "newValue": {
+      if (node.callee === from) {
+        node.callee = to;
+        return true;
+      }
+      for (let index140 = 0; index140 < node.args.length; index140++) {
+        const item139 = node.args[index140]!;
+        if (item139 === from) {
+          node.args[index140] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "nullish": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "optChain": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      if (node.body === from) {
+        node.body = to;
+        return true;
+      }
+      return false;
+    }
+    case "orDefault": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "promiseVoidWiden": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordClone": {
+      if (node.source === from) {
+        node.source = to;
+        return true;
+      }
+      for (let index144 = 0; index144 < node.overrides.length; index144++) {
+        const item143 = node.overrides[index144]!;
+        if (item143.value === from) {
+          item143.value = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "recordGet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordHas": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordKeyDelete": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordKeyGet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordKeySet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordLit": {
+      for (let index148 = 0; index148 < node.fields.length; index148++) {
+        const item147 = node.fields[index148]!;
+        if (item147.value === from) {
+          item147.value = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "recordNullProto": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordOvfHas": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordOvfKeys": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordSet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "regexIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index152 = 0; index152 < node.args.length; index152++) {
+        const item151 = node.args[index152]!;
+        if (item151 === from) {
+          node.args[index152] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "return": {
+      if (node.value !== undefined && node.value !== null) {
+        if (node.value === from) {
+          node.value = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "seqExpr": {
+      if (node.result === from) {
+        node.result = to;
+        return true;
+      }
+      return false;
+    }
+    case "setIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index158 = 0; index158 < node.args.length; index158++) {
+        const item157 = node.args[index158]!;
+        if (item157 === from) {
+          node.args[index158] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "setNew": {
+      if (node.seed !== undefined && node.seed !== null) {
+        if (node.seed === from) {
+          node.seed = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "strCmp": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "strConcat": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "strEq": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "strIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index162 = 0; index162 < node.args.length; index162++) {
+        const item161 = node.args[index162]!;
+        if (item161 === from) {
+          node.args[index162] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "switch": {
+      if (node.disc === from) {
+        node.disc = to;
+        return true;
+      }
+      for (let index168 = 0; index168 < node.cases.length; index168++) {
+        const item167 = node.cases[index168]!;
+        if (item167.test !== undefined && item167.test !== null) {
+          if (item167.test === from) {
+            item167.test = to;
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case "ternary": {
+      if (node.cond === from) {
+        node.cond = to;
+        return true;
+      }
+      if (node.then === from) {
+        node.then = to;
+        return true;
+      }
+      if (node.else_ === from) {
+        node.else_ = to;
+        return true;
+      }
+      return false;
+    }
+    case "throw": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "toBool": {
+      if (node.operand === from) {
+        node.operand = to;
+        return true;
+      }
+      return false;
+    }
+    case "toString": {
+      if (node.operand === from) {
+        node.operand = to;
+        return true;
+      }
+      return false;
+    }
+    case "unary": {
+      if (node.operand === from) {
+        node.operand = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionDisc": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionEq": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionFuncEq": {
+      if (node.union === from) {
+        node.union = to;
+        return true;
+      }
+      if (node.func === from) {
+        node.func = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionIsTag": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionKeyGet": {
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionNarrow": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionRetype": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionWrap": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "upcast": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "varDecl": {
+      if (node.init !== undefined && node.init !== null) {
+        if (node.init === from) {
+          node.init = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "virtualCall": {
+      for (let index186 = 0; index186 < node.args.length; index186++) {
+        const item185 = node.args[index186]!;
+        if (item185 === from) {
+          node.args[index186] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "while": {
+      if (node.cond === from) {
+        node.cond = to;
+        return true;
+      }
+      return false;
+    }
+    case "yieldExpr": {
+      if (node.value !== undefined && node.value !== null) {
+        if (node.value === from) {
+          node.value = to;
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
 /** A field ir.ts declares that this file does not read. */
 type FieldsNotRead<T, Read extends PropertyKey> = Exclude<keyof T, Read>;
 /** The string or object values a field read as a scalar can hold. */
@@ -2119,12 +3140,13 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>, "arg" | "what">>,
   Unread<ValuesNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>["arg"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCall" }>, "kind" | "callee" | "receiver" | "calleeName" | "calleeNameValue" | "args" | "spreads" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "exact" | "partialView" | "inferredSite" | "origin" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "exact" | "partialView" | "inferredSite" | "origin" | "pathIndex" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["preserveRefs"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["adopt"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["origin"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["pathIndex"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynDestrCheck" }>, "kind" | "value" | "spelling" | "firstProp" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynFrom" }>, "kind" | "value" | "type" | "loc" | "liveRef" | "fnName" | "fnLength">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynFrom" }>["liveRef"]>>,

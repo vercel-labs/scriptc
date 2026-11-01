@@ -254,8 +254,8 @@ direct(new Base());
         "true TypeError: Value is not an instance of 'Sub'",
         "true TypeError: Value is not an instance of 'Sub'",
         "ok 0",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
         "",
       ].join("\n"),
     );
@@ -1944,7 +1944,9 @@ describe("builtin constructor values (JS lane)", () => {
     // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // `key in Ctor` answers from the constructor's fixed keys.
+    // Date.prototype is the one value: it reads as the prototype object, so
+    // a direct read, a member read through it and reflection on it answer as
+    // Node does. `key in Ctor` answers from the constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -1971,6 +1973,12 @@ describe("builtin constructor values (JS lane)", () => {
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
+    // The reads that answer from Date.prototype's object rather than refusing.
+    const readsAsValue = new Map<string, string>([
+      ["Date.prototype", "read object"],
+      ["Date.prototype.getYear", "read function"],
+      ["isExtensible(Date.prototype)", "read boolean"],
+    ]);
     const source = `"use strict";
 const MapAlias = Map;
 const DateAlias = Date;
@@ -1991,13 +1999,16 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
     expect(r.exitCode).toBe(0);
     const lines = r.stdout.trimEnd().split("\n");
     expect(lines.slice(0, reads.length)).toEqual(
-      reads.map(([label], i) =>
-        expect.stringMatching(
-          new RegExp(
-            `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
-          ),
-        ),
-      ),
+      reads.map(([label], i) => {
+        const read = readsAsValue.get(label);
+        return read === undefined
+          ? expect.stringMatching(
+              new RegExp(
+                `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
+              ),
+            )
+          : `${label} ${read}`;
+      }),
     );
     // Promise.prototype reads as an object holding the runtime's methods,
     // and `in` on a builtin constructor answers from its fixed keys.
@@ -2007,6 +2018,40 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
       "object function true",
       "true true true false",
     ]);
+  });
+});
+
+// `Date.prototype` reads as the prototype object; a WRITE into it cannot be
+// observed by a typed Date, so every writer keeps the SC1090 fence it had
+// before the prototype had a value — including the plural defineProperties,
+// which the dynamic path would otherwise apply to the prototype object while
+// `new Date(0).getTime()` kept answering the builtin method.
+describe("standard library prototype writes (JS lane)", () => {
+  test("defineProperties keeps the fence, like defineProperty", async () => {
+    const r = await compileAndRun(
+      "date-prototype-write",
+      `"use strict";
+function refuse(label, run) {
+  try {
+    run();
+    console.log(label, "wrote");
+  } catch (e) {
+    console.log(label, /\\[(SC\\d{4}) at/.exec(e.message)[1]);
+  }
+}
+refuse("defineProperties", () =>
+  Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } }),
+);
+refuse("defineProperty", () => Object.defineProperty(Date.prototype, "getTime", { value: () => 42 }));
+refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
+console.log("getTime", new Date(0).getTime());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\ngetTime 0\n",
+    );
   });
 });
 
@@ -2304,6 +2349,7 @@ const attempts: Array<() => string> = [
   () => util.format(o, { a: 1 }),
   () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
   () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
+  () => util.formatWithOptions({ maxArrayLength: 1.5 }, [1, 2]),
   () => util.formatWithOptions({ compact: true }, [1, 2]),
 ];
 for (const attempt of attempts) {
@@ -2322,7 +2368,8 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
       "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
         "Error SC2020 util.format %o of objects renders hidden properties, which have no lowering; use %O\n" +
         "Error SC2020 colored inspect output of Error values has no lowering\n" +
-        "Error SC2020 util.formatWithOptions with the maxArrayLength option has no lowering\n" +
+        "[ 1, ... 1 more item ]\n" +
+        "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
         "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
         "{ a: 1 } [ 1, 2 ]\n",
     );

@@ -158,3 +158,80 @@ test("proven-present reads and guarded occurrences keep numeric parameters plain
   // detach a buffer), so `zs` escaping to `grab` keeps the proof.
   expect(fn(mod, "escaped").params[0]!.type).toEqual(f64);
 });
+
+const guardedUpdates = `
+function reverse(values: Int32Array): number {
+  let i = 0;
+  let j = values[0];
+  while (i < j) {
+    const t = values[i];
+    values[i] = values[j];
+    values[j] = t;
+    i++;
+    j--;
+  }
+  return i;
+}
+function fill(values: Int32Array): void {
+  for (let j = values[0]; j < values.length; j++) values[j] = 1;
+}
+function rewritten(values: Int32Array): void {
+  let j = values[0];
+  if (j < 10) {
+    j = values[5];
+    values[j] = 1;
+  }
+}
+function nested(values: Int32Array): void {
+  let j = values[0];
+  if (j > 0) {
+    for (let n = 0; n < 3; n++) {
+      values[j] = n;
+      j = values[n + 1];
+    }
+  }
+}
+function viaClosure(values: Int32Array): void {
+  let j = values[0];
+  const reset = (): void => {
+    j--;
+  };
+  if (j > 0) {
+    reset();
+    values[j] = 1;
+  }
+}
+function viaClass(values: Int32Array): void {
+  let j = values[0];
+  class Step {
+    taken = j--;
+  }
+  if (j > 0) {
+    new Step();
+    values[j] = 1;
+  }
+}
+const values = new Int32Array([1, 0]);
+console.log(reverse(values));
+fill(values);
+rewritten(values);
+nested(values);
+viaClosure(values);
+viaClass(values);
+`;
+
+test("updated bindings used as indexes under a relational guard lower to plain numbers", async () => {
+  const mod = await lower(guardedUpdates);
+  const local = (name: string) => fn(mod, name).locals.find((l) => l.name === "j")!.type.kind;
+  // The guard is false for undefined and NaN, and no write of `j` runs
+  // between it and the index (the for loop's update runs before its
+  // condition does again).
+  expect(local("reverse")).toBe("f64");
+  expect(local("fill")).toBe("f64");
+  // A write after the guard, a loop that writes `j` around the index, or a
+  // closure or class field that writes it can make the index undefined.
+  expect(local("rewritten")).toBe("union");
+  expect(local("nested")).toBe("union");
+  expect(local("viaClosure")).toBe("union");
+  expect(local("viaClass")).toBe("union");
+});

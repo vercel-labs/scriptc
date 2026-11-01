@@ -1114,6 +1114,14 @@ export interface IrModule {
    * hold elements outside their element type (SCR_ARR_FOREIGN), stored
    * through dynamic views; "*" for every array. Absent when none can. */
   foreignElementKeys?: string[];
+  /** The narrowing conversions that link a record copy to its source
+   * (record.link): a conversion from record type `from` into the narrower
+   * record type `to`, whose source has properties `to` does not declare.
+   * `compose(copy, source)` answers a record of type `from` with the
+   * copy's values for the fields both declare and the source's for the
+   * others: what the copy's reflective surfaces answer from. `pair` is
+   * the nonzero number the link stores. Absent when there are none. */
+  recordLinks?: IrRecordLink[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
@@ -1541,6 +1549,14 @@ export interface IrLibIdentity {
    * encoding; backends parse it back to emit the integer constant). */
   buildId: string;
   abiVersion: number;
+}
+
+/** One narrowing conversion that links copies to sources (IrModule.recordLinks). */
+export interface IrRecordLink {
+  pair: number;
+  from: string;
+  to: string;
+  compose: string;
 }
 
 export interface IrClassDef {
@@ -4163,6 +4179,11 @@ export type IrExpr =
        * compiler analysis bug and reports itself as one. */
       inferredSite?: string;
       origin?: number;
+      /** The element position of an array literal whose store checks this
+       * value: a failure inside the check reports that position in its
+       * path (`$[0]`), where a standalone check names only the root
+       * (`$`). */
+      pathIndex?: number;
       type: IrType;
       loc: SrcLoc;
     };

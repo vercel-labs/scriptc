@@ -402,6 +402,13 @@ function buildLibFnSignatures() {
      * the may-throw seed set. */
     "dyn.defineProps": { argTypes: [DYN, DYN], result: DYN },
     "dyn.defineProperty": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** dyn.defineProps / dyn.defineProperty / dyn.objCreateWithProperties
+     * for a descriptor (or a property-descriptor map) built by an expression
+     * instead of a plain object literal: ToPropertyDescriptor accepts any
+     * object and reads each field through [[HasProperty]] and [[Get]]. */
+    "dyn.definePropsShapes": { argTypes: [DYN, DYN], result: DYN },
+    "dyn.definePropertyShapes": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "dyn.objCreateWithPropertiesShapes": { argTypes: [DYN, DYN], result: DYN },
     "dyn.getOwnPropertyDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "dyn.arrayProtoCall": { argTypes: [DYN, STRING, DYN], result: DYN },
     /** The same call through the array-like unit (JavaScript sources):
@@ -1623,16 +1630,19 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING],
       result: SPAWNRES_T,
     },
-    /** spawnSync with the `cwd` and `input` options (the
+    /** spawnSync with the `cwd`, `input`, and `shell` options (the
      * SCR_CHILD_CP_OPTIONS build of scr_child.c): the cp.spawnSyncOpts
-     * contract plus the child's working directory ("" = inherit) and
-     * stdin input (has_input false leaves fd 0 to the stdio mode — an
-     * absent `input` option; "" pipes an empty stdin), exactly Node's
-     * reading of the member. Args (cmd, argv, timeout, killSignal,
-     * inMode, outMode, errMode, cwd, input, hasInput). Never throws, like
-     * every spawnSync form. */
+     * contract plus the child's working directory ("" = inherit), stdin
+     * input (has_input false leaves fd 0 to the stdio mode — an absent
+     * `input` option; "" pipes an empty stdin), and the shell form
+     * (the complete command line through /bin/sh -c — the compiler emits
+     * it with an empty args list only, since Node warns DEP0190 for
+     * separate shell arguments), exactly Node's reading of the members.
+     * Args (cmd, argv, timeout, killSignal, inMode, outMode, errMode,
+     * cwd, input, hasInput, shell). Never throws, like every spawnSync
+     * form. */
     "cp.spawnSyncExt": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
@@ -1648,6 +1658,7 @@ function buildLibFnSignatures() {
         F64,
         STRING,
         STRING,
+        BOOL,
         BOOL,
         arrayOf(STRING),
       ],
@@ -2252,6 +2263,8 @@ function buildLibFnSignatures() {
     "http.reqHttpVersionMajor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqHttpVersionMinor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqAborted": { argTypes: [HTTPREQ_T], result: BOOL },
+    "http.reqDestroyed": { argTypes: [HTTPREQ_T], result: BOOL },
+    "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
     "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
     "http.resDestroy": { argTypes: [HTTPRES_T], result: VOID },
     "http.resOnClose": {
@@ -2899,10 +2912,11 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), BOOL, STRING, BOOL, arrayOf(STRING), F64],
       result: SPAWNRES_T,
     },
-    /** child_process.spawn (scr_child.c + the scr_async.c loop): posix_spawnp
-     * with per-slot ignore/inherit/pipe modes (and number output fds), the
-     * all-piped Node default, and the child registered with the event loop,
-     * which polls waitpid(WNOHANG) at quiescence like timers.
+    /** child_process.spawn (scr_child.c + the scr_async.c loop): posix_spawn
+     * after the PATH search in the parent, with per-slot ignore/inherit/pipe
+     * modes (and number output fds), the all-piped Node default, and the
+     * child registered with the event loop, which polls waitpid(WNOHANG) at
+     * quiescence like timers.
      * NEVER throws: spawn failure defers to the "error" event, Node-exact
      * (the error message is Node's "spawn <cmd> <ERRNO-NAME>"; an "error"
      * event with no listener prints it and exits 1 like an EventEmitter).
@@ -3854,6 +3868,12 @@ function buildLibFnSignatures() {
      * (scr_js_wrapper_this_string). */
     "wrapper.isStringMethod": { argTypes: [DYN, STRING], result: BOOL },
     "wrapper.thisString": { argTypes: [DYN, STRING], result: DYN },
+    /** Boolean.prototype as a value in a JavaScript source: the wrapper
+     * unit's Boolean prototype object (the one `new Boolean(v)` instances
+     * inherit from), so its valueOf/toString accept a primitive boolean or
+     * a Boolean wrapper receiver and throw Node's brand-check TypeError for
+     * a foreign one. `constructor` is the compiled Boolean constructor. */
+    "wrapper.booleanPrototype": { argTypes: [DYN], result: DYN },
     "fs.callbackValue": { argTypes: [STRING], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },
@@ -4041,6 +4061,9 @@ function buildLibFnSignatures() {
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Installs the program's builtin-global lookup (global-values.ts). */
     "global.installValues": { argTypes: [DYN], result: VOID },
+    /** Installs the program's static-member lookup for builtin constructor
+     * values (builtin-statics.ts). */
+    "dyn.installBuiltinStatics": { argTypes: [DYN], result: VOID },
     /** The keys `for (key in globalThis)` visits, as a fresh object. */
     "global.forInObject": { argTypes: [], result: DYN },
     /** Node's navigator global (scr_node_builtin.c). */
@@ -4250,6 +4273,10 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A standard library prototype object as a value (`Date.prototype` read
+     * in a JavaScript source), named by its constructor: the unit in
+     * scr_dyn_stdlib_prototype.c. */
+    "dyn.stdlibPrototype": { argTypes: [STRING], result: DYN },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
@@ -4294,6 +4321,13 @@ function buildLibFnSignatures() {
     "dyn.isExtensible": { argTypes: [DYN], result: BOOL },
     "dyn.seal": { argTypes: [DYN], result: DYN },
     "dyn.isSealed": { argTypes: [DYN], result: BOOL },
+    /** Object.isExtensible / Object.isSealed of a value whose kind is known
+     * only at runtime: a native handle or a promise has no modeled integrity
+     * state, so these refuse (SC2020) instead of answering like
+     * dyn.isExtensible/dyn.isSealed, which the static arms (a class
+     * instance's checked view, a typed function value) keep using. */
+    "dyn.isExtensibleQuery": { argTypes: [DYN], result: BOOL },
+    "dyn.isSealedQuery": { argTypes: [DYN], result: BOOL },
     "dyn.objValues": { argTypes: [DYN], result: DYN },
     /** Object.values as a native vector of checked values, for results the
      * program consumes directly (for-of, index reads, read-only methods). */
@@ -5048,9 +5082,13 @@ function buildLibFnSignatures() {
      * 'not supported yet' Error. */
     "insp.dynHidden": { argTypes: [DYN, F64], result: STRING },
     "insp.begin": { argTypes: [F64], result: VOID },
-    /** util.inspect's breakLength, compact (-1 for false) and sorted for the
-     * renders that follow; the call site restores 80, 3 and false afterwards. */
-    "insp.layout": { argTypes: [F64, F64, BOOL], result: VOID },
+    /** util.inspect's breakLength, compact (-1 for false), sorted and
+     * maxArrayLength (Infinity for null) for the renders that follow; the
+     * call site restores 80, 3, false and 100 afterwards. */
+    "insp.layout": { argTypes: [F64, F64, BOOL, F64], result: VOID },
+    /** The render's maxArrayLength, which the array, Map and Set traversals
+     * read: the option applies at every nesting level. */
+    "insp.maxArrayLength": { argTypes: [], result: F64 },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
     // Circular references: the receiver slot is program-dependent (any
     // cycle-capable record/array/map/class type — the insp.error precedent).
@@ -5073,6 +5111,21 @@ function buildLibFnSignatures() {
      * (key-order-witness.ts ordered spreads). Both are record types. Never
      * throws. */
     "record.sourceSpread": { argTypes: [null, null], result: VOID },
+    /** `record.sourceShare(built, value)`: the record `built`, of value's
+     * record type, keeps value's kept source too (record-links.ts compose
+     * helpers). Never throws. */
+    "record.sourceShare": { argTypes: [null, null], result: VOID },
+    /** `record.link(copy, source, pair)`: the copy a narrowing conversion
+     * just built links to its source record (IrModule.recordLinks; `pair`
+     * a numLit). Borrows both. Never throws. */
+    "record.link": { argTypes: [null, null, F64], result: VOID },
+    /** `record.linkIs(copy, pair)`: whether the record links to a source
+     * through the pair (a numLit). Never throws. */
+    "record.linkIs": { argTypes: [null, F64], result: BOOL },
+    /** `record.linkSource(copy, pair)`: the source a record links to
+     * through the pair, which the caller has tested (record.linkIs); its
+     * type is the pair's source type. Never throws. */
+    "record.linkSource": { argTypes: [null, F64], result: VOID },
     /** `record.sourceNote(built, keys)`: the record a width spread just
      * built keeps `keys` (the copy's own keys, in order; declared ones are
      * placeholders) as its kept source when they hold an undeclared key or

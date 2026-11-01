@@ -55,7 +55,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     e.fn === "cp.spawnDynamic" ||
     e.fn === "cp.fork"
   ) {
-    // child_process.spawn: the child starts NOW (posix_spawnp); the
+    // child_process.spawn: the child starts NOW (posix_spawn); the
     // loop reaps it and fires its listeners. Never throws — spawn
     // failure defers to "error".
     host.usesTimers = true;

@@ -44,11 +44,16 @@
  * the frontend permits only unions of reference-identity arms for this kind.
  * DYN owns a checked-value box and compares its JavaScript value using
  * SameValueZero, including reference identity for object payloads.
+ * CLOSURE keys are function values: they hash and compare their identity
+ * roots (scr_closure_identity), so a signature adapter is the key of the
+ * function it adapts, and the map stores the closure it was given. A
+ * UNION_VALUE map's function arms use this kind too.
  * These key kinds serve both Maps and Sets. */
 typedef enum {
   SCR_MAP_KEY_F64, SCR_MAP_KEY_STR, SCR_MAP_KEY_REF, SCR_MAP_KEY_UNION_REF, SCR_MAP_KEY_DYN,
   SCR_MAP_KEY_BIGINT, SCR_MAP_KEY_BOOL, SCR_MAP_KEY_UNION_VALUE,
-  SCR_MAP_KEY_NULL, SCR_MAP_KEY_UNDEFINED /* tag-only union arms */
+  SCR_MAP_KEY_NULL, SCR_MAP_KEY_UNDEFINED /* tag-only union arms */,
+  SCR_MAP_KEY_CLOSURE
 } ScrMapKeyKind;
 /* SCR_MAP_VAL_CREF: a string-key map whose values are compact class
  * instances in the program-lifetime region (llvm/classes.ts

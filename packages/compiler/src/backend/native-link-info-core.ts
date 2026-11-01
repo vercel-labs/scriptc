@@ -85,15 +85,18 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
-  /** The spawnSync and exec/execFile-callback `cwd`/`input` entries:
-   * selects the SCR_CHILD_CP_OPTIONS build of scr_child.c. Absent (false)
-   * otherwise. */
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
+   * Absent (false) otherwise. */
   childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically:
+   * scr_dyn_integrity.c. Absent (false) for programs without it. */
+  dynIntegrityQueries?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
@@ -116,6 +119,10 @@ export interface NativeLinkFeatures {
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
+   * (false) otherwise, so other programs keep their exact link line. */
+  stdlibPrototypeValue?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

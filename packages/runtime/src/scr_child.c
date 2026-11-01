@@ -1,19 +1,22 @@
-/* child_process — the synchronous slice: spawnSync as posix_spawnp +
+/* child_process — the synchronous slice: spawnSync as posix_spawn +
  * piped utf8 capture + waitpid.
  *
  * Node parity notes (SEMANTICS.md has the user-facing story):
- * - The command PATH-searches like Node's (posix_spawnp; a command
- *   containing '/' spawns directly). No shell, ever.
+ * - The command PATH-searches like Node's (the parent searches PATH and
+ *   spawns the candidate; a command containing '/' spawns directly).
+ *   `shell` (always with an empty args list — see DEP0190 below) runs the
+ *   command line through /bin/sh -c instead.
  * - stdin is /dev/null (Node's spawnSync default reads nothing without
- *   `input`); stdout/stderr are captured to strings, utf8 assumed — the
- *   compiler fences every other encoding.
+ *   `input`; `input` pipes that string instead); stdout/stderr are
+ *   captured to strings, utf8 assumed — the compiler fences every other
+ *   encoding.
  * - `status` is the exit code; a child killed by a signal has NO status
  *   (has_status = false → the compiler's `number | null` union takes the
  *   null arm), exactly Node's status: null there.
- * - Spawn FAILURE (nonexistent binary, EACCES) never throws: Node reports
- *   it through the result's `error` property, which this surface does not
- *   carry — status is null and both outputs are "" (Node types them null;
- *   divergence documented).
+ * - Spawn FAILURE (nonexistent binary, EACCES) never throws, and a
+ *   timeout kill never throws either: the result carries Node's `error`
+ *   (code ENOENT/ETIMEDOUT, ETIMEDOUT with the killSignal name as
+ *   `signal`), the shape scr_child_error_sync_fields stamps.
  * - No zombies: every successfully spawned child is waitpid()ed before
  *   this function returns, unconditionally.
  */
@@ -2718,25 +2721,7 @@ static SCR_TL const char *scr_child_err_code = NULL;
 
 /* The errno name embedded in an errnoException-style message — the
  * POSIX arm's parser, shared story (see its comment). */
-static const char *scr_err_msg_code(const ScrStr *msg) {
-  static SCR_TL char buf[32];
-  const char *known = scr_error_message_code(msg);
-  if (known != NULL) return known;
-  const char *sp = strchr((const char *)msg->data, ' ');
-  if (sp == NULL || sp[1] != 'E') return NULL;
-  const char *tok = sp + 1;
-  size_t n = 1;
-  while (tok[n] != '\0' && tok[n] != ' ' && tok[n] != ':') {
-    char ch = tok[n];
-    if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) return NULL;
-    if (n + 1 >= sizeof buf) return NULL;
-    n++;
-  }
-  if (n < 3) return NULL; /* "EIO" is the shortest real name */
-  memcpy(buf, tok, n);
-  buf[n] = '\0';
-  return buf;
-}
+static const char *scr_err_msg_code(const ScrStr *msg) { return scr_error_event_code(msg); }
 
 void scr_child_err_thunk_error(ScrClosure *cb, ScrStr *msg) {
   if (scr_event_error_payload != NULL) {
@@ -2997,10 +2982,33 @@ void scr_children_poll(void) {
 static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                             int killsig, int in_mode, int out_mode,
                                             int err_mode, ScrArr *env_pairs,
-                                            ScrStr *cwd, ScrStr *input, bool has_input) {
+                                            ScrStr *cwd, ScrStr *input, bool has_input,
+                                            bool shell) {
   ScrWinSyncRes w;
-  scr_win_run_sync(cmd, args, has_input ? input : NULL, in_mode, out_mode, err_mode,
+  /* `shell`: the command runs through cmd.exe /d /s /c, Node's Windows
+   * shape. The compiler emits the form with an EMPTY args list only (a
+   * non-empty one is Node's DEP0190 warning, which a native build cannot
+   * report), so the command string IS the command line. */
+  ScrStr *run_cmd = cmd;
+  ScrArr *run_args = args;
+  ScrArr *shell_args = NULL;
+  if (shell) {
+    const char *comspec = getenv("COMSPEC");
+    if (comspec == NULL || *comspec == '\0') comspec = "cmd.exe";
+    run_cmd = scr_str_new(comspec, strlen(comspec));
+    shell_args = scr_arr_new(SCR_ELEM_STR, 4);
+    scr_arr_push_ref(shell_args, scr_str_new("/d", 2));
+    scr_arr_push_ref(shell_args, scr_str_new("/s", 2));
+    scr_arr_push_ref(shell_args, scr_str_new("/c", 2));
+    scr_arr_push_ref(shell_args, scr_str_retain(cmd));
+    run_args = shell_args;
+  }
+  scr_win_run_sync(run_cmd, run_args, has_input ? input : NULL, in_mode, out_mode, err_mode,
                    cwd != NULL && cwd->len > 0 ? cwd : NULL, env_pairs, timeout_ms, &w);
+  if (shell_args != NULL) {
+    scr_str_release(run_cmd);
+    scr_arr_release(shell_args);
+  }
   if (w.spawn_errname != NULL) {
     free(w.out.data);
     free(w.err.data);
@@ -3027,7 +3035,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, ScrArr *env_pairs) {
+                                     bool has_input, bool shell, ScrArr *env_pairs) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
     int resolved = scr_signal_from_name(killsignal);
@@ -3035,15 +3043,15 @@ ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms
   }
   return scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
                                  (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                                 has_input);
+                                 has_input, shell);
 }
 
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input) {
+                                 bool has_input, bool shell) {
   return scr_spawn_sync_ext_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode,
-                                err_mode, cwd, input, has_input, NULL);
+                                err_mode, cwd, input, has_input, shell, NULL);
 }
 
 /* exec/execFile (the callback slice) with the `cwd` option. */
@@ -3278,24 +3286,29 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
 static char **scr_exec_envp(ScrArr *pairs);
 static void scr_exec_envp_free(char **envp);
 
-/* posix_spawnp for the child_process spawns. Without `envp` the command
- * resolves on this process's PATH over `environ`. With `envp` (a
- * replacement environment) it resolves the way Node's libuv runs execvp
- * in the child: a name with a '/' runs as given; otherwise each entry of
- * the replacement's PATH (an empty entry is the current directory), or of
- * the default path when the replacement has no PATH, is tried in order,
- * and a candidate whose exec fails with ENOENT, ENOTDIR or EACCES (a
- * missing file, or a script whose interpreter is missing) moves on to the
- * next entry. The last such failure is EACCES if any candidate was denied,
- * else ENOENT. Relative entries are resolved by the child, which starts in
- * `cwd`. Returns posix_spawn's error number. */
+/* posix_spawn for the child_process spawns, never posix_spawnp. Node
+ * reaches a child through libuv, which resolves the command itself: a name
+ * with a '/' runs as given; otherwise each entry of the command's PATH (a
+ * replacement environment's `envp`, or this process's when `envp` is NULL;
+ * an empty entry is the current directory), or of the default path when
+ * there is no PATH, is tried in order, and a candidate whose spawn fails
+ * with ENOENT, ENOTDIR or EACCES (a missing file, or a script whose
+ * interpreter is missing) moves on to the next entry. The last such
+ * failure is EACCES if any candidate was denied, else ENOENT. Relative
+ * entries are resolved by the child, which starts in `cwd`. Returns
+ * posix_spawn's error number.
+ *
+ * posix_spawnp is avoided because Apple's answers a spurious ENOENT when
+ * a chdir file action is staged and the command is relative, even though
+ * the child is spawned: resolving the command here and spawning the
+ * candidate directly keeps a `cwd` with a relative command working. */
 static int scr_spawn_resolved(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
                               const posix_spawnattr_t *attr, char *const *argv,
                               char *const *envp) {
-  if (envp == NULL) return posix_spawnp(pid, file, fa, attr, argv, environ);
-  if (strchr(file, '/')) return posix_spawn(pid, file, fa, attr, argv, envp);
+  char *const *env = envp != NULL ? envp : environ;
+  if (strchr(file, '/')) return posix_spawn(pid, file, fa, attr, argv, env);
   const char *path = "/usr/bin:/bin";
-  for (char *const *e = envp; *e; e++) {
+  for (char *const *e = env; *e; e++) {
     if (strncmp(*e, "PATH=", 5) == 0) {
       path = *e + 5;
       break;
@@ -3313,7 +3326,7 @@ static int scr_spawn_resolved(pid_t *pid, const char *file, const posix_spawn_fi
     memcpy(candidate, prefix, prefix_len);
     candidate[prefix_len] = '/';
     memcpy(candidate + prefix_len + 1, file, file_len + 1);
-    int err = posix_spawn(pid, candidate, fa, attr, argv, envp);
+    int err = posix_spawn(pid, candidate, fa, attr, argv, env);
     free(candidate);
     if (err == EACCES) denied = true;
     else if (err != ENOENT && err != ENOTDIR) return err;
@@ -3969,7 +3982,7 @@ ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd
 /* ── spawn: the asynchronous child + its event registry ──────────────────
  *
  * spawn(cmd, args, { stdio: "ignore" }) starts the child IMMEDIATELY
- * (posix_spawnp, all three stdio fds on /dev/null) and registers it with
+ * (posix_spawn, all three stdio fds on /dev/null) and registers it with
  * the loop: scr_async.c polls scr_children_poll() at quiescence, which
  * waitpid(WNOHANG)s every running child and fires listeners when one is
  * reaped. Node semantics, matched exactly:
@@ -4364,7 +4377,7 @@ void scr_child_release(ScrChild *c) {
 void *scr_child_retain_v(void *p) { return scr_child_retain((ScrChild *)p); }
 void scr_child_release_v(void *p) { scr_child_release((ScrChild *)p); }
 
-/* Node's error-code names for the spawn failures a posix_spawnp can
+/* Node's error-code names for the spawn failures posix_spawn can
  * report (libuv reports the same POSIX names). */
 static const char *scr_errname(int err) {
   switch (err) {
@@ -5735,37 +5748,10 @@ void scr_child_err_thunk0(ScrClosure *cb, ScrStr *msg) {
 static SCR_TL const char *scr_child_err_code = NULL;
 
 /* [.code on event errors — net/http/dgram parity with spawn failures]
- * The errno name embedded in an errnoException-style message ("connect
- * ECONNREFUSED 127.0.0.1:80", "listen EADDRINUSE: address already in use
- * :::4000", "bind EADDRINUSE 0.0.0.0:4000"): the SECOND space-separated
- * token when it spells an errno name (E + capitals/digits, a colon or
- * space terminating). Every message fired through this thunk is this
- * runtime's own construction, and exactly the ones carrying a code embed
- * it in this shape — Node builds the same messages FROM the code
- * (errnoException), so parsing it back is exact over the closed message
- * set. Fallback only (an explicit context wins); returns a static buffer
- * valid until the next call, or NULL for code-less messages. Messages
- * whose text carries no errno name take their code from
- * scr_error_message_code. */
-static const char *scr_err_msg_code(const ScrStr *msg) {
-  static SCR_TL char buf[32];
-  const char *known = scr_error_message_code(msg);
-  if (known != NULL) return known;
-  const char *sp = strchr((const char *)msg->data, ' ');
-  if (sp == NULL || sp[1] != 'E') return NULL;
-  const char *tok = sp + 1;
-  size_t n = 1;
-  while (tok[n] != '\0' && tok[n] != ' ' && tok[n] != ':') {
-    char c = tok[n];
-    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return NULL;
-    if (n + 1 >= sizeof buf) return NULL;
-    n++;
-  }
-  if (n < 3) return NULL; /* "EIO" is the shortest real name */
-  memcpy(buf, tok, n);
-  buf[n] = '\0';
-  return buf;
-}
+ * The message's code (scr_error_event_code: the errno name an
+ * errnoException-style message embeds, or scr_error_message_code's
+ * table). Fallback only: an explicit context wins. */
+static const char *scr_err_msg_code(const ScrStr *msg) { return scr_error_event_code(msg); }
 
 /* An (err: Error) listener: constructs the %Error instance from the
  * message (borrowed; scr_error_new retains its copy) — the listener owns
@@ -6029,7 +6015,8 @@ void scr_children_poll(void) {
 static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                             int killsig, int in_mode, int out_mode,
                                             int err_mode, ScrArr *env_pairs,
-                                            ScrStr *cwd, ScrStr *input, bool has_input) {
+                                            ScrStr *cwd, ScrStr *input, bool has_input,
+                                            bool shell) {
   bool use_cwd = cwd != NULL && cwd->len > 0;
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
@@ -6073,9 +6060,25 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 #endif
 
   char **argv = scr_child_argv(cmd, args);
+  /* `shell`: the command line through /bin/sh -c (the async spawn's exact
+   * shape), so the command's quoting and operators apply. The form is
+   * emitted with an EMPTY args list only (Node's DEP0190 warns otherwise,
+   * and a native build has no warning channel), so the command string IS
+   * the command line. */
+  const char *file = cmd->data;
+  if (shell) {
+    free(argv);
+    argv = malloc(4 * sizeof(char *));
+    if (!argv) scr_child_oom();
+    argv[0] = (char *)"/bin/sh";
+    argv[1] = (char *)"-c";
+    argv[2] = cmd->data;
+    argv[3] = NULL;
+    file = "/bin/sh";
+  }
   char **envp = env_pairs != NULL ? scr_exec_envp(env_pairs) : NULL;
   pid_t pid = -1;
-  int spawn_err = scr_spawn_command(&pid, cmd->data, &fa, NULL, argv, envp,
+  int spawn_err = scr_spawn_command(&pid, file, &fa, NULL, argv, envp,
                                     use_cwd ? cwd->data : NULL);
   posix_spawn_file_actions_destroy(&fa);
   free(argv);
@@ -6209,7 +6212,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, ScrArr *env_pairs) {
+                                     bool has_input, bool shell, ScrArr *env_pairs) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
     int resolved = scr_signal_from_name(killsignal);
@@ -6217,15 +6220,15 @@ ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms
   }
   return scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
                                  (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                                 has_input);
+                                 has_input, shell);
 }
 
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input) {
+                                 bool has_input, bool shell) {
   return scr_spawn_sync_ext_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode,
-                                err_mode, cwd, input, has_input, NULL);
+                                err_mode, cwd, input, has_input, shell, NULL);
 }
 
 /* exec/execFile (the callback slice) with the `cwd` option: scr_exec_file's

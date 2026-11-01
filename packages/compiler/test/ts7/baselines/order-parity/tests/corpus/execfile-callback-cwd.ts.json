@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/execfile-callback-cwd.ts"
- ],
- "diags": []
-}

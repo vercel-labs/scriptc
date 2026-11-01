@@ -4010,11 +4010,16 @@ export function lowerServerProperty(
         name === "httpVersionMajor" ? "http.reqHttpVersionMajor" : "http.reqHttpVersionMinor";
       return { kind: "libCall", fn, args: [receiver], type: F64, loc };
     }
-    if (name === "aborted" || name === "complete") {
-      // The compat pair's flags (Http2ServerRequest); an http/1 request
-      // answers aborted: false and complete-once-ended the same way.
+    if (name === "aborted" || name === "complete" || name === "destroyed") {
+      // aborted: the connection (or the h2 stream) closed before the
+      // response finished; complete: the whole message arrived.
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
-      const fn: IrLibFn = name === "aborted" ? "http.reqAborted" : "http.reqComplete";
+      const fn: IrLibFn =
+        name === "aborted"
+          ? "http.reqAborted"
+          : name === "complete"
+            ? "http.reqComplete"
+            : "http.reqDestroyed";
       return { kind: "libCall", fn, args: [receiver], type: BOOL, loc };
     }
     if (name === "rawHeaders" || name === "rawTrailers") {
@@ -4402,6 +4407,10 @@ export function lowerServerProperty(
     if (name === "writableFinished") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
       return { kind: "libCall", fn: "http.resWritableFinished", args: [receiver], type: BOOL, loc };
+    }
+    if (name === "destroyed") {
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+      return { kind: "libCall", fn: "http.resDestroyed", args: [receiver], type: BOOL, loc };
     }
     if (name === "sendDate" || name === "strictContentLength") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
@@ -8378,7 +8387,13 @@ function lowerHttpResMethodCall(
         msg = lowerer.lowerExprExpecting(args[1]!, STRING);
       else headersNode = args[1];
     } else if (args.length === 3) {
-      msg = lowerer.lowerExprExpecting(args[1]!, STRING);
+      // writeHead(status, undefined | null, headers): Node takes a reason
+      // that is not a string as absent and reads the third argument.
+      const reason = args[1]!;
+      const absent =
+        reason.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(reason) && reason.text === "undefined");
+      if (!absent) msg = lowerer.lowerExprExpecting(reason, STRING);
       headersNode = args[2];
     }
     // Node answers the response (`return this` — the chaining shape

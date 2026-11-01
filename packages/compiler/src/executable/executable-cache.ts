@@ -92,6 +92,7 @@ export interface EarlyExecutableNativeFeatures {
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynIntegrityQueries?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
@@ -106,6 +107,9 @@ export interface EarlyExecutableNativeFeatures {
   bigint: boolean;
   /** BigIntStats member reads: scr_stats_bigint.c. Absent (false) otherwise. */
   bigstats?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source: scr_dyn_stdlib_prototype.c. */
+  stdlibPrototypeValue?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;

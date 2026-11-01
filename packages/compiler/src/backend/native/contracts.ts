@@ -134,13 +134,16 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
-  /** The spawnSync and exec/execFile-callback `cwd`/`input` entries: the
-   * SCR_CHILD_CP_OPTIONS build of scr_child.c. */
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically:
+   * compiles scr_dyn_integrity.c. */
+  dynIntegrityQueries?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -164,6 +167,9 @@ export interface CcOptions {
   computedRequire?: boolean;
   /** Builtin functions read as values: compiles scr_builtin_values.c. */
   builtinValues?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
+  stdlibPrototypeValue?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
@@ -305,9 +311,9 @@ export interface CcOptions {
    * exact link line. */
   watchFile?: boolean;
   /** A typed fs read whose bytes value the program can observe as a Buffer
-   * (moduleUsesFsBufferBrand on the IR): compiles scr_lib.c's
+   * (the fsBufferBrand feature on the IR): compiles scr_lib.c's
    * SCR_FS_BUFFER_BRAND build, so programs that never see the brand keep the
-   * default object byte for byte. */
+   * default object unchanged. */
   fsBufferBrand?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries

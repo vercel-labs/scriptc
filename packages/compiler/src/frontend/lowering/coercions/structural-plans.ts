@@ -57,9 +57,10 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         lowerer.armTag(dst.unionId, UNDEFINED_T) >= 0
       )
         return { how: "unitRetag" };
-      // Inside a checked method adapter (contravariant positions): source
-      // arms with no destination home trap instead of refusing the pair.
-      if (lowerer.coercions.checkedRetags > 0) {
+      // Inside a checked method adapter (contravariant positions) and inside
+      // the operand of a type assertion: source arms with no destination
+      // home trap instead of refusing the pair.
+      if (lowerer.coercions.checkedRetags > 0 || lowerer.coercions.assertedOperand > 0) {
         const from = lowerer.unions.get(src.unionId);
         const to = lowerer.unions.get(dst.unionId);
         if (from && to) {
@@ -115,8 +116,23 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         (src.kind === "object" && arm.kind === "record") ||
         (src.kind === "record" && arm.kind === "object");
       const armLift = sameFamily ? lowerer.widthLiftPlan(src, arm) : null;
-      if (armLift !== null)
-        candidates.push({ tag: i, arm, checked: armLift.how === "funcAdaptChecked" });
+      if (armLift !== null) {
+        // A layout the source reaches only inside the assertion's checked
+        // context (a field retagging with trapping arms, or a record or
+        // array hiding one) is a CHECKED candidate: a layout the program's
+        // own types reach without the claim wins, so a conversion that
+        // already lowered keeps its code instead of taking the trapping
+        // route the claim admits.
+        const unclaimed =
+          lowerer.coercions.assertedOperand > 0
+            ? lowerer.coercions.withoutAssertedClaim(() => lowerer.widthLiftPlan(src, arm))
+            : armLift;
+        candidates.push({
+          tag: i,
+          arm,
+          checked: armLift.how === "funcAdaptChecked" || unclaimed === null,
+        });
+      }
     });
     let selected = candidates;
     // A clean function candidate always wins over a checked one, so every

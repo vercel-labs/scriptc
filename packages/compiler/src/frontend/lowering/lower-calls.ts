@@ -11,6 +11,7 @@ import { lowerStaticPrivateCall } from "./private-statics.js";
 import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
+import { keepsLivePropertyTable } from "./live-property-table.js";
 import { lowerDateToPrimitiveCall } from "./builtins/dates.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
@@ -8495,13 +8496,15 @@ function lowerObjectStaticCall(
       isUnitType(object.type)
     )
       object = { kind: "dynFrom", value: object, type: DYN, loc: locOf(call) };
-    // An array or class instance reflects through its own checked-dynamic
-    // view (own fields and elements, in property order). A record keeps its
-    // static key walk below when it has one — `getOwnPropertyNames` over a
-    // fixed record is exactly Object.keys' construction, and boxing a typed
-    // record would link the dynamic tier into a program that needs none of
-    // it. The descriptor and symbol forms have no static walk, so a record
-    // takes the view there.
+    // An array, class instance or function reflects through its own
+    // checked-dynamic view (own fields and elements, in property order): the
+    // same live property table its expando writes use, so the keys it
+    // reports are the keys Node's object has. A record keeps its static key
+    // walk below when it has one — `getOwnPropertyNames` over a fixed record
+    // is exactly Object.keys' construction, and boxing a typed record would
+    // link the dynamic tier into a program that needs none of it. The
+    // descriptor and symbol forms have no static walk, so a record takes the
+    // view there.
     const staticWalk = member === "getOwnPropertyNames" && object.type.kind === "record";
     if (!staticWalk && object.type.kind !== "dyn" && lowerer.dynConvertible(object.type))
       object = lowerer.coerceToExpected(object, DYN);
@@ -9212,6 +9215,23 @@ function lowerObjectStaticCall(
       member === "getOwnPropertyDescriptor" &&
       target &&
       (target.type.kind === "bool" || target.type.kind === "f64" || target.type.kind === "string");
+    // A typed receiver of a representation that keeps its own-property
+    // table live (a record, an array, an instance): the descriptor comes
+    // from the value's checked-dynamic view, which the descriptor builder
+    // already answers for those kinds. Reads of a declared field keep their
+    // own lowerings above; this arm only replaces the SC2020 fence.
+    if (
+      member === "getOwnPropertyDescriptor" &&
+      target &&
+      target.type.kind !== "dyn" &&
+      target.type.kind !== "func" &&
+      target.type.kind !== "classval" &&
+      !isUnitType(target.type) &&
+      !descriptorPrimitive &&
+      lowerer.dynConvertible(target.type) &&
+      keepsLivePropertyTable(lowerer, target.type)
+    )
+      target = lowerer.coerceToExpected(target, DYN);
     if (!target || (target.type.kind !== "dyn" && !isUnitType(target.type) && !descriptorPrimitive))
       return null;
     if (target.type.kind !== "dyn")
@@ -9386,8 +9406,14 @@ function lowerObjectStaticCall(
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
-    } else if (isDynTypedRefType(value.type)) {
-      // The instance's checked view carries its integrity state.
+    } else if (
+      isDynTypedRefType(value.type) ||
+      (lowerer.dynConvertible(value.type) && keepsLivePropertyTable(lowerer, value.type))
+    ) {
+      // The instance's checked view carries its integrity state. A record,
+      // array or function reaches the same state through its live property
+      // table, which is what an untyped caller's preventExtensions/seal
+      // flag lives on.
       return {
         kind: "libCall",
         fn: member === "isSealed" ? "dyn.isSealed" : "dyn.isExtensible",

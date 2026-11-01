@@ -83,7 +83,7 @@ With two or more partitions, the helper keeps each partition's summary and objec
 
 A program of one partition has no partition cache: a rebuild after an edit compiles the whole program again, and a rebuild that leaves the LLVM text unchanged takes the compiled code from the build cache.
 
-The partition count is part of a cached partition's key and of a cached executable's key, so a build cache shared between hosts that divide a program differently serves each host its own builds.
+The partition count is part of a cached partition's key, and a cached executable records the count it was linked from, so a build cache shared between hosts that divide a program differently serves each host its own builds.
 
 When the LLVM text grows past a partition boundary (128 KiB, 512 KiB, 1 MiB, 2 MiB, and on in 4 MiB steps for large programs), the partition count doubles, functions move to new partitions, and the next build compiles every partition again.
 

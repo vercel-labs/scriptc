@@ -20,6 +20,7 @@ import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
 import { type TargetCpu, cpuDispatchKeyParts, targetCpuKeyParts } from "../backend/target-cpu.js";
+import { nativeProgramPartitions } from "../backend/native-codegen-core.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -173,6 +174,12 @@ interface EarlyExecutableCacheStamp {
   libnode?: string;
   /** How a --profile-use build's profile matched, which a cache hit reports. */
   profileMatch?: NativeProfileMatch;
+  /** The partitions the executable was linked from, when the build divided
+   * the module (native-codegen-core.ts nativeProgramPartitions; a single
+   * native object leaves it out). Part of the entry rather than of the key:
+   * only a module whose count the host's thread count changes can differ,
+   * and the count follows from the cached translation unit. */
+  partitions?: number;
   integrity: string;
 }
 
@@ -291,6 +298,9 @@ export interface EarlyExecutableCacheHit {
 
 export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   nativeDependencies?: NativeArtifactDependency[];
+  /** The partitions the native helper compiled, when the build divided the
+   * module; omitted when it linked one object. */
+  partitions?: number;
 }
 
 function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
@@ -657,6 +667,8 @@ async function readExecutableCache(
           (stamp.files.debugSymbols !== undefined)) ||
       (stamp.files.executable === null) !== (stamp.nativeDependencies === null) ||
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
+      (stamp.partitions !== undefined &&
+        (!Number.isInteger(stamp.partitions) || stamp.partitions < 2)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
       (stamp.native.nodeIsland === true &&
@@ -699,6 +711,16 @@ async function readExecutableCache(
       (stamp.files.ir !== null && ir === null) ||
       (stamp.files.executable !== null && executable === null) ||
       (stamp.files.debugSymbols !== undefined && debugSymbols === null)
+    )
+      return null;
+    // A divided module's partition count follows from its text and the host's
+    // thread count (nativeProgramPartitions), and the executable is linked
+    // from those partitions: one built for another count is not the
+    // executable this host builds, so it is a miss.
+    if (
+      stamp.partitions !== undefined &&
+      stamp.partitions !==
+        nativeProgramPartitions(translationUnit.length, options.optimization === "dev")
     )
       return null;
 
@@ -975,6 +997,9 @@ export async function publishEarlyExecutableCache(
       },
       nativeDependencies: executable === null ? null : result.nativeDependencies!,
       native: result.native,
+      ...(executable !== null && result.partitions !== undefined
+        ? { partitions: result.partitions }
+        : {}),
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),

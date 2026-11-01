@@ -621,6 +621,12 @@ function profileMatchField(object: NativeProgramObject | null): {
   return object?.profileMatch === undefined ? {} : { profileMatch: object.profileMatch };
 }
 
+/** The partitions a divided module's executable was linked from, for its
+ * executable cache entry (executable/executable-cache.ts). */
+function partitionsField(object: NativeProgramObject | null): { partitions?: number } {
+  return object?.partitions === undefined ? {} : { partitions: object.partitions };
+}
+
 function withCompileWarnings<T extends CompileRequestResult>(
   result: T,
   sink: CompileWarningSink,
@@ -905,6 +911,8 @@ interface NativeProgramObject {
   linkPath: string;
   /** Further partition objects linked after linkPath. */
   partitionPaths: string[];
+  /** The partitions the helper compiled, when the module was divided. */
+  partitions?: number;
   artifactPath: string;
   dependencies: NativeArtifactDependency[];
   profileMatch?: NativeProfileMatch;
@@ -938,9 +946,12 @@ async function emitNativeProgramObject(
       partitions,
       ...(profile === undefined ? {} : { profile }),
     });
+    // A divided module's executable depends on the host's thread count, which
+    // chose the count, so the cache entry records it (executable/executable-cache.ts).
     return {
       linkPath,
       partitionPaths: artifact.outputPaths.slice(1),
+      ...(single ? {} : { partitions }),
       artifactPath,
       dependencies: artifact.dependencies,
       ...(artifact.profileMatch === undefined ? {} : { profileMatch: artifact.profileMatch }),
@@ -2182,6 +2193,7 @@ async function compileTracked(
                 nativeDependencies: dependencies,
                 frontend: earlyHit.frontend,
                 ...profileMatchField(nativeProgramObject),
+                ...partitionsField(nativeProgramObject),
               });
             },
         nativeProgramObject?.partitionPaths,
@@ -2333,6 +2345,7 @@ async function compileTracked(
               ...performanceWarnings(warningSink),
               ...islandFields(warningSink),
               ...profileMatchField(nativeProgramObject),
+              ...partitionsField(nativeProgramObject),
             });
             publishedExecutable = true;
           },
@@ -2356,6 +2369,7 @@ async function compileTracked(
         ...performanceWarnings(warningSink),
         ...islandFields(warningSink),
         ...profileMatchField(nativeProgramObject),
+        ...partitionsField(nativeProgramObject),
       }).catch(() => undefined);
     }
   } catch (err) {

@@ -196,6 +196,10 @@ import {
 import { devirtualizeVirtualCalls } from "./devirtualize.js";
 import { foldRegexSpanReads } from "./regex-span-reads.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
+import {
+  runtimeOptionalNarrowings,
+  type RuntimeOptionalNarrowing,
+} from "./runtime-optional-report.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
 import { NarrowingStability, widenedReceiver } from "./narrowing-stability.js";
 import { ArrayElementStates } from "./runtime-optional-elements.js";
@@ -1154,6 +1158,11 @@ export interface LowererMode {
    * always-reachable init bodies and module building, and report deferred
    * collection diagnostics nothing flushed. */
   remainder?: boolean;
+  /** Coverage (--explain-dynamic): keep the runtime-optional storage
+   * decisions and the reads the checker narrows below the widened
+   * storage, for the report (runtime-optional-report.ts). Report-only:
+   * lowering does not change. */
+  runtimeOptionalReport?: boolean;
   /** Node's startup refusal (preflight's resolution walk / named-import
    * link checks): %main opens with exactly this throw, before any
    * module init — Node refuses the whole graph before anything evaluates,
@@ -1351,6 +1360,7 @@ function lowerToIrWithIslands(
   const externalTypeSpecifiersByFile =
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const tierMode = options.tierMode ?? "auto";
+  const runtimeOptionalReport = options.tierReport !== undefined;
   const validation = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
     projectCheckJs: options.projectCheckJs ?? false,
@@ -1365,6 +1375,7 @@ function lowerToIrWithIslands(
     externalTypes,
     externalTypeSpecifiersByFile,
     tierMode,
+    runtimeOptionalReport,
   });
   const ffiValidation = validateFfiImports(validation);
   timing("ffi-validate");
@@ -1390,6 +1401,7 @@ function lowerToIrWithIslands(
           externalTypes,
           externalTypeSpecifiersByFile,
           tierMode,
+          runtimeOptionalReport,
           ffiBindingSymbols: ffiValidation.symbolsByName,
         });
   for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
@@ -1419,6 +1431,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      runtimeOptionalReport,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       wholeSlotDegradation: true,
     });
@@ -1456,6 +1469,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      runtimeOptionalReport,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
       ...(dyn ? { dynNodeStreams: true } : {}),
@@ -1503,6 +1517,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      runtimeOptionalReport,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
@@ -1649,6 +1664,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      runtimeOptionalReport,
     });
   let remainder = remainderPass(generalNodeStreams);
   let rem = remainder.run();
@@ -1676,6 +1692,7 @@ function lowerToIrWithIslands(
           reached: [...options.tierReport.preflight, ...result.diagnostics],
           deferred: result.runtimeFences,
           unreached: [...rem.diagnostics, ...rem.runtimeFences],
+          runtimeOptional: resultLowerer.runtimeOptionalNarrowings,
         });
   // A dynamic function's own statements can include ones that failed.
   const statementsDynamic = Math.min(
@@ -2824,6 +2841,15 @@ export class Lowerer {
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
   readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** The indexed-read analysis's storage decisions: kept for the coverage
+   * report when --explain-dynamic asks, and written to stderr under
+   * SCRIPTC_DEBUG_RUNTIME_OPTIONAL=1. */
+  readonly runtimeOptionalProvenance: RuntimeOptionalProvenance | null;
+  /** Coverage (--explain-dynamic): the widened slots whose storage holds
+   * an absence the checker's type does not admit, with the reads that
+   * narrow them below it (runtime-optional-report.ts). Empty unless the
+   * report was asked for. */
+  runtimeOptionalNarrowings: readonly RuntimeOptionalNarrowing[] = [];
   /** JavaScript bindings assigned values outside their declared type
    * (analyzeJsWidenedBindings): checked-dynamic storage, and reads keep the
    * stored value instead of narrowing it to the checker's type. */
@@ -4650,6 +4676,7 @@ export class Lowerer {
     "overridesAmbient",
     "remainder",
     "tierMode",
+    "runtimeOptionalReport",
     "generalNodeStreams",
     "dynNodeStreams",
     "targetPlatform",
@@ -4683,6 +4710,10 @@ export class Lowerer {
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
+    // Coverage's --explain-dynamic report: the indexed-read analysis's
+    // storage decisions and the narrowed reads they explain.
+    "runtimeOptionalProvenance",
+    "runtimeOptionalNarrowings",
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
@@ -4930,6 +4961,8 @@ export class Lowerer {
    * refuse and fence exactly as before. Stage S6 demotes the units of
    * committed refusals in "auto" and keeps them refusals in "static-only". */
   readonly tierMode: TierMode;
+  /** LowererMode.runtimeOptionalReport. */
+  readonly runtimeOptionalReport: boolean;
   readonly generalNodeStreams: boolean;
   readonly dynNodeStreams: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
@@ -5224,6 +5257,10 @@ export class Lowerer {
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.tierMode = mode.tierMode ?? "auto";
+    this.runtimeOptionalReport = mode.runtimeOptionalReport === true;
+    this.runtimeOptionalProvenance = this.runtimeOptionalReport
+      ? RuntimeOptionalProvenance.forReport()
+      : RuntimeOptionalProvenance.fromEnvironment();
     this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
     this.workerTargets = mode.workerTargets ?? [];
@@ -6910,7 +6947,7 @@ export class Lowerer {
   }
 
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
-    const provenance = RuntimeOptionalProvenance.fromEnvironment();
+    const provenance = this.runtimeOptionalProvenance;
     // The site whose value the current promotion follows (debug only).
     let provenanceSite: ts.Node | undefined;
     const optionalSymbols = new Set<ts.Symbol>();
@@ -9753,6 +9790,11 @@ export class Lowerer {
     }
 
     provenance?.flush();
+    // Coverage (--explain-dynamic): the slots the analysis widened past the
+    // checker's type, with the reads that narrow them back and the
+    // decisions that widened them. Report-only; lowering does not read it.
+    if (this.runtimeOptionalReport)
+      this.runtimeOptionalNarrowings = runtimeOptionalNarrowings(this, sourceFiles);
   }
 
   run(): LowerResult {

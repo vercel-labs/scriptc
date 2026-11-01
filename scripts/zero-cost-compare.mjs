@@ -474,6 +474,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/channel-messages",
   "bench/dynamic-methods",
   "bench/dynamic-properties",
+  "bench/dynamic-properties-json",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",
@@ -485,6 +486,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/record-untyped-writes",
   "bench/layered-errors",
   "bench/stream-buffered-drain",
+  "bench/untyped-validate",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O

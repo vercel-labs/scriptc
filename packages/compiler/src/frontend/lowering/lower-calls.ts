@@ -3541,6 +3541,20 @@ function lowerStringPrototypeCall(
   if (receiverType.kind === "dyn") {
     return lowerDynamicStringPrototypeCall(lowerer, call, methodAccess, receiverValue, method);
   }
+  // A symbol receiver is no String wrapper, and every method admitted above
+  // begins with ToString(this): Node throws
+  // "TypeError: Cannot convert a Symbol value to a string" after evaluating
+  // the arguments. The dynamic string-method lowering performs exactly that
+  // conversion, in that order.
+  if (receiverType.kind === "symbol") {
+    return lowerDynamicStringPrototypeCall(
+      lowerer,
+      call,
+      methodAccess,
+      lowerer.coerceToExpected(receiverValue, DYN),
+      method,
+    );
+  }
   const padding = entry?.method === "padStart" || entry?.method === "padEnd";
   const scalar =
     receiverType.kind === "string" ||

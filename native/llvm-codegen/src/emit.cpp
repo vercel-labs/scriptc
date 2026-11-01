@@ -187,16 +187,18 @@ std::optional<PGOOptions> profileOptions(const EmitOptions &Options) {
 }
 
 // Block placement by the extended TSP model, which needs the exact block
-// counts a context-sensitive profile gives. The option is process-wide; the
-// helper sets it once.
-void enableExtTspPlacement() {
-  static const bool Enabled = [] {
-    if (cl::Option *Option = cl::getRegisteredOptions().lookup(
-            "enable-ext-tsp-block-placement"))
-      Option->addOccurrence(0, "enable-ext-tsp-block-placement", "true");
-    return true;
-  }();
-  (void)Enabled;
+// counts a context-sensitive profile gives. The option is process-wide, and
+// a resident server answers many emits in one process, so each emit resets it
+// to its default, as a one-shot helper starts, and a profile emit turns it on.
+void setExtTspPlacement(bool Enabled) {
+  cl::Option *Option =
+      cl::getRegisteredOptions().lookup("enable-ext-tsp-block-placement");
+  if (Option == nullptr) return;
+  // A single-valued option rejects a second occurrence and keeps the value of
+  // the first, so the reset is what lets the next emit change it.
+  Option->reset();
+  if (!Enabled) return;
+  Option->addOccurrence(0, "enable-ext-tsp-block-placement", "true");
 }
 
 // With a profile, the thin link imports the callees of hot call edges up to
@@ -450,27 +452,50 @@ void reportProfileMatch(const ProfileMatch &Match) {
 }
 
 // The sum of each function's counters in the indexed profile at `Path`, by
-// profile name, read once per process. An unreadable profile has no counts
-// (the annotation reports it).
+// profile name. A one-shot helper reads one profile in its process; a resident
+// server answers many emits with whatever profile each one names, so the
+// totals belong to one emit: resetProfileCounts clears them, and the first
+// weight of the emit reads the profile that emit named. An unreadable profile
+// has no counts (the annotation reports it).
+StringMap<uint64_t> ProfileCounts;
+std::string ProfileCountsPath;
+bool ProfileCountsLoaded = false;
+// A multi-partition emit weighs its partitions on threads, so each of them
+// asks for the totals while the others may be filling them. The lock makes the
+// first asker read the profile and the others wait for a complete map, which
+// then stays unchanged until the next emit resets it on one thread.
+std::mutex ProfileCountsMutex;
+
+void resetProfileCounts() {
+  std::lock_guard<std::mutex> Lock(ProfileCountsMutex);
+  ProfileCounts.clear();
+  ProfileCountsPath.clear();
+  ProfileCountsLoaded = false;
+}
+
 const StringMap<uint64_t> &profileCounts(const std::string &Path) {
-  static std::once_flag Once;
-  static StringMap<uint64_t> Counts;
-  std::call_once(Once, [&Path] {
-    Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
-        IndexedInstrProfReader::create(Path, *vfs::getRealFileSystem());
-    if (!Reader) {
-      consumeError(Reader.takeError());
-      return;
-    }
-    for (const NamedInstrProfRecord &Record : **Reader) {
-      uint64_t Sum = 0;
-      for (uint64_t Count : Record.Counts)
-        Sum += Count;
-      Counts[Record.Name] += Sum;
-    }
-    consumeError((*Reader)->getError());
-  });
-  return Counts;
+  std::lock_guard<std::mutex> Lock(ProfileCountsMutex);
+  if (ProfileCountsLoaded && ProfileCountsPath == Path) return ProfileCounts;
+  ProfileCounts.clear();
+  ProfileCountsPath = Path;
+  Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
+      IndexedInstrProfReader::create(Path, *vfs::getRealFileSystem());
+  if (!Reader) {
+    consumeError(Reader.takeError());
+    ProfileCountsLoaded = true;
+    return ProfileCounts;
+  }
+  for (const NamedInstrProfRecord &Record : **Reader) {
+    uint64_t Sum = 0;
+    for (uint64_t Count : Record.Counts)
+      Sum += Count;
+    ProfileCounts[Record.Name] += Sum;
+  }
+  consumeError((*Reader)->getError());
+  // Published last, under the lock, so no thread can take the map as complete
+  // before it is.
+  ProfileCountsLoaded = true;
+  return ProfileCounts;
 }
 
 // Weighs one module's profile match by the profile's counters: collects the
@@ -517,6 +542,16 @@ private:
 // hold IR-level counts. Context-sensitive counts lay out the code by them;
 // a profile that has them cannot take a second set.
 std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
+  // A one-shot helper starts with empty profile state; a resident server
+  // answers many emits in one process, so each emit clears what the emits
+  // before it left: the recorder it collected blocks in, the counts it read,
+  // and the layout a context-sensitive profile turned on.
+  FallbackCounts.reset();
+  Recorder.reset();
+  resetProfileCounts();
+  ContextProfile = false;
+  setProfileLayout(false);
+  setExtTspPlacement(false);
   if (Options.ProfileUse.empty())
     return std::nullopt;
   Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
@@ -537,8 +572,8 @@ std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
                            ": already holds context-sensitive counts; "
                            "collect them on top of the IR-level profile"};
   if (ContextProfile && Triple(Options.Target).isOSBinFormatELF()) {
-    enableProfileLayout();
-    enableExtTspPlacement();
+    setProfileLayout(true);
+    setExtTspPlacement(true);
   }
   if (!Options.ProfileBlocks.empty()) {
     std::string Error;

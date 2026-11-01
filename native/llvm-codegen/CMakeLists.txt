@@ -96,6 +96,7 @@ add_executable(scriptc-llvm-codegen
   src/profile.cpp
   src/runtime-import.cpp
   src/runtime-unit.cpp
+  src/server.cpp
   src/target.cpp
 )
 

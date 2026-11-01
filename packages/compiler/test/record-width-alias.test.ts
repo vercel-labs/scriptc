@@ -257,3 +257,31 @@ export {};
   expect(ok).toBe(true);
   expect(ir).toContain("%rec.width");
 });
+
+test("a bracket write through a binding that kept another layout compiles", async () => {
+  const { ok, ir, messages } = await compileSource(`const value = { n: 1 as any, k: 1 };
+const alias: { n: number; k: number } = value;
+alias["k"] = 2;
+console.log(alias.k, value.k);
+export {};
+`);
+  expect(messages).toEqual([]);
+  expect(ok).toBe(true);
+  expect(ir).not.toContain("%rec.width");
+});
+
+test("a store of another kept binding's member in the same layout is not refused", async () => {
+  const { ok, messages } = await compileSource(`type Item = { list: number[] };
+const wide = { list: [1] as any[] };
+const one: Item = wide;
+const two: Item = wide;
+two.list = one.list;
+one.list.push(2);
+console.log(two.list.length);
+export {};
+`);
+  // `one.list` is the initializer's `unknown[]` array, the layout `two` kept:
+  // the declaration's `number[]` would rebuild it, but the store shares it.
+  expect(messages).toEqual([]);
+  expect(ok).toBe(true);
+});

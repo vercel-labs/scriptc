@@ -1,6 +1,7 @@
 /* Element reads and writes (`a[i]`, `a[i] = v`), compound element updates, and keyed record reads. */
 import { OBJECT_PROTOTYPE_MEMBERS } from "../../shape-inference/domain.js";
 import { lowerUnionTupleRead } from "./union-fields.js";
+import { keptLayoutTypeOf } from "../structural-instances.js";
 import { constituentTypes } from "../../ts7/checker.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -2397,7 +2398,12 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       };
     }
   }
-  let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(target.expression));
+  // A binding that kept its initializer's layout stores a different record
+  // shape than the checker's type for it: the element write resolves against
+  // the layout the receiver really has.
+  let receiverIr = lowerer.mapTypeOf(
+    keptLayoutTypeOf(lowerer, target.expression) ?? lowerer.typeOf(target.expression),
+  );
   if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && checkedReceiver) {
     const represented =
       checkedReceiver.type.kind === "union"

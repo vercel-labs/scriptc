@@ -46,3 +46,28 @@ function pushThrough(seed: any[]): [number, number] {
 }
 
 console.log(pushThrough([1]).join(","));
+
+// A bracket write reaches the field in the kept layout, so both names see it.
+function bracketWrite(next: any, start: number): [number, number] {
+  const value = { next, count: start };
+  const alias: Box = value;
+  alias["count"] = 3;
+  return [alias.count, value.count];
+}
+
+console.log(bracketWrite(undefined, 1).join(","));
+
+// A member of another binding that kept the layout stores without a copy:
+// the push through `one.list` is visible through `two.list`.
+type Item = { list: number[] };
+
+function memberStore(seed: any[]): number {
+  const wide = { list: seed };
+  const one: Item = wide;
+  const two: Item = wide;
+  two.list = one.list;
+  one.list.push(2);
+  return two.list.length;
+}
+
+console.log(memberStore([1]));

@@ -289,6 +289,35 @@ export function preservedLayoutOf(lowerer: Lowerer, arg: ts.Expression): ts.Type
   return binding && layout && typeEquals(binding, layout) ? recorded : undefined;
 }
 
+/** The type a value really has at run time when it names a binding that kept
+ * its initializer's layout, or a member of one: the binding's kept layout,
+ * or that member's type in it. Undefined for every other expression. The
+ * checker answers `p.list` from `p`'s declaration, which a kept binding
+ * stores in a wider layout. */
+export function keptLayoutTypeOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | undefined {
+  const names: string[] = [];
+  let e = arg;
+  for (;;) {
+    if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+    else if (ts.isPropertyAccessExpression(e) && !ts.isPrivateIdentifier(e.name)) {
+      names.unshift(e.name.text);
+      e = e.expression;
+    } else if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression)) {
+      names.unshift(e.argumentExpression.text);
+      e = e.expression;
+    } else break;
+  }
+  if (!ts.isIdentifier(e)) return undefined;
+  let type = preservedLayoutOf(lowerer, e);
+  if (type === undefined) return undefined;
+  for (const name of names) {
+    const property = lowerer.checker.getPropertyOfType(type, name);
+    if (property === undefined) return undefined;
+    type = lowerer.checker.getTypeOfSymbol(property);
+  }
+  return type;
+}
+
 /** Whether a `const` binding typed `declared` keeps the record or array
  * layout `actual` of an initializer that names an existing value or returns
  * one, instead of converting it by a copy. Fresh literals convert as
@@ -413,7 +442,7 @@ export function copiedStoreIntoKeptLayout(
   const root = ts.isIdentifier(e) ? e : undefined;
   if (root === undefined || preservedLayoutOf(lowerer, root) === undefined) return null;
   if (!namesExistingValue(value)) return null;
-  const source = lowerer.mapTypeOf(preservedLayoutOf(lowerer, value) ?? lowerer.typeOf(value));
+  const source = lowerer.mapTypeOf(keptLayoutTypeOf(lowerer, value) ?? lowerer.typeOf(value));
   if (!source || !storeRebuilds(lowerer, source, slot)) return null;
   return { binding: root.text, field, kept: slot };
 }

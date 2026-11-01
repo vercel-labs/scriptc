@@ -328,20 +328,77 @@ export function lowerDynObjectLiteral(
       !ts.isComputedPropertyName(prop.name) &&
       prop.name.text === "__proto__"
     ) {
-      if (prop.initializer.kind !== ts.SyntaxKind.NullKeyword)
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          "object-literal prototypes other than null (use Object.setPrototypeOf)",
-        );
       flushFields();
       acc ??= { kind: "dynObjLit", fields: [], type: DYN, loc };
-      acc = {
+      const protoLoc = locOf(prop);
+      if (prop.initializer.kind === ts.SyntaxKind.NullKeyword) {
+        acc = {
+          kind: "libCall",
+          fn: "dyn.setPrototype",
+          args: [acc, lowerer.lowerExprExpecting(prop.initializer, DYN)],
+          type: DYN,
+          loc: protoLoc,
+        };
+        continue;
+      }
+      // `__proto__: v` with any other value sets the [[Prototype]] only when
+      // v is an Object — null included, functions too. Every other value
+      // (a number, string, boolean, symbol, bigint or undefined) is SKIPPED:
+      // no TypeError, and no own "__proto__" property (unlike
+      // Object.setPrototypeOf, which throws). The value evaluates once.
+      const objectSlot = lowerer.declareHiddenLocal("%protoObj", DYN);
+      const protoSlot = lowerer.declareHiddenLocal("%proto", DYN);
+      const objectRead = (): IrExpr => varRef(objectSlot.id, DYN, protoLoc);
+      const protoRead = (): IrExpr => varRef(protoSlot.id, DYN, protoLoc);
+      const typeOf: IrExpr = {
         kind: "libCall",
-        fn: "dyn.setPrototype",
-        args: [acc, lowerer.lowerExprExpecting(prop.initializer, DYN)],
+        fn: "dyn.typeof",
+        args: [protoRead()],
+        type: STRING,
+        loc: protoLoc,
+      };
+      const typeIs = (name: string): IrExpr => ({
+        kind: "strEq",
+        negated: false,
+        left: typeOf,
+        right: { kind: "strLit", value: name, type: STRING, loc: protoLoc },
+        type: BOOL,
+        loc: protoLoc,
+      });
+      acc = {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: objectSlot.id, init: acc, loc: protoLoc },
+          {
+            kind: "varDecl",
+            localId: protoSlot.id,
+            init: lowerer.lowerExprExpecting(prop.initializer, DYN),
+            loc: protoLoc,
+          },
+        ],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "logical",
+            op: "||",
+            left: typeIs("object"),
+            right: typeIs("function"),
+            type: BOOL,
+            loc: protoLoc,
+          },
+          then: {
+            kind: "libCall",
+            fn: "dyn.setPrototype",
+            args: [objectRead(), protoRead()],
+            type: DYN,
+            loc: protoLoc,
+          },
+          else_: objectRead(),
+          type: DYN,
+          loc: protoLoc,
+        },
         type: DYN,
-        loc: locOf(prop),
+        loc: protoLoc,
       };
       continue;
     }
@@ -893,6 +950,24 @@ export function lowerObjectLiteral(
    * whole union, so its contextual type cannot choose the layout. */
   exact = false,
 ): IrExpr {
+  // `__proto__: v` sets the literal's [[Prototype]] as the literal is built.
+  // A record is a native struct with no dynamic prototype slot, so a
+  // JavaScript literal that carries one builds as a checked-dynamic object,
+  // which models the prototype chain like every other JS object. A bare
+  // `__proto__: null` keeps its existing route (both representations model
+  // a null prototype, and the checked-dynamic one is the only one anyway).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    expr.properties.nodes.some(
+      (prop) =>
+        ts.isPropertyAssignment(prop) &&
+        !ts.isComputedPropertyName(prop.name) &&
+        prop.name.text === "__proto__" &&
+        prop.initializer.kind !== ts.SyntaxKind.NullKeyword,
+    )
+  ) {
+    return lowerDynObjectLiteral(lowerer, expr);
+  }
   // A spread of an untyped (`any`) source into a typed slot: TypeScript
   // types such a literal `any`, and the copy holds whatever own properties
   // the source has at runtime. Build it as a checked-dynamic object, then

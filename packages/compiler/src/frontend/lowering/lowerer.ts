@@ -13317,7 +13317,26 @@ export class Lowerer {
         if (checked?.how === "checkedRetag")
           return this.applyWidthLift(checked, expr, expected, expr.loc);
       }
-      return assertedConversion(this, expr, expected) ?? expr;
+      const asserted = assertedConversion(this, expr, expected);
+      if (asserted) return asserted;
+      // The checked retag, asked only after every ordinary route declined:
+      // an arm the destination cannot copy can still enter the one arm it
+      // checked-widens into (a narrowed `{ role: string }` arm claimed as the
+      // wider record its predicate named). It is asked HERE, not inside the
+      // plan, so a program that converted keeps its own route and a program
+      // that refused (this point otherwise returns the value unchanged and
+      // requireExactShape reports SC2003) gains the checked conversion.
+      const checkedHelper = this.unionRetagHelper(
+        expr.type.unionId,
+        expected.unionId,
+        expr.loc,
+        undefined,
+        true,
+      );
+      if (checkedHelper) {
+        return { kind: "call", callee: checkedHelper, args: [expr], type: expected, loc: expr.loc };
+      }
+      return expr;
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
@@ -13646,13 +13665,17 @@ export class Lowerer {
     return recordUnionRouteHelper(this, source, toId, loc);
   }
 
+  /** `checked` is the conversion's own second question (see
+   * unionRetagHelper): only a call site that already saw the ordinary plan
+   * decline asks it, so no converting program changes route. */
   unionRetagHelper(
     fromId: string,
     toId: string,
     loc: SrcLoc,
     trappable?: ReadonlySet<number>,
+    checked = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, checked);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {

@@ -787,3 +787,58 @@ describe("promise payload widening", () => {
     ).toEqual([0, 1]);
   });
 });
+
+describe("checked arm conversion", () => {
+  const narrow = record("n");
+  const wide = record("w");
+  const wide2 = record("w2");
+  const from: IrUnionDef = { id: "cu0", arms: [narrow, UNDEFINED_T] };
+  const shapes: IrRecordShape[] = [
+    { id: "n", fields: [{ name: "role", type: STRING }] },
+    {
+      id: "w",
+      fields: [
+        { name: "role", type: STRING },
+        { name: "content", type: STRING },
+      ],
+    },
+    {
+      id: "w2",
+      fields: [
+        { name: "role", type: STRING },
+        { name: "timestamp", type: F64 },
+      ],
+    },
+  ];
+  const shapeOf = (id: string) => shapes.find((shape) => shape.id === id);
+  const lift = (source: IrType, target: IrType): WidthLift | null =>
+    typeEquals(source, target) ? { how: "copy" } : null;
+  const checkedLift = (source: IrType, target: IrType): WidthLift | null =>
+    source.kind === "record" && target.kind === "record" && !typeEquals(source, target)
+      ? { how: "checkedWiden" }
+      : null;
+
+  test("a narrower record arm enters the one wider arm by the checked lift", () => {
+    const to: IrUnionDef = { id: "cu1", arms: [wide, UNDEFINED_T] };
+    expect(planUnionRetag(from, to, shapeOf, lift, undefined, checkedLift)).toEqual([
+      { kind: "direct", route: { tag: 0, lift: { how: "checkedWiden" }, values: [] } },
+      { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
+    ]);
+    // The ordinary plan is unchanged: a caller that does not ask the second
+    // question still refuses the conversion.
+    expect(planUnionRetag(from, to, shapeOf, lift)).toBeNull();
+  });
+
+  test("two destination arms accepting the checked lift stay ambiguous", () => {
+    const to: IrUnionDef = { id: "cu2", arms: [wide, wide2, UNDEFINED_T] };
+    expect(planUnionRetag(from, to, shapeOf, lift, undefined, checkedLift)).toBeNull();
+  });
+
+  test("an exact arm still wins over the checked lift", () => {
+    const to: IrUnionDef = { id: "cu3", arms: [narrow, wide, UNDEFINED_T] };
+    expect(planUnionRetag(from, to, shapeOf, lift, undefined, checkedLift)).toEqual([
+      { kind: "direct", route: { tag: 0, lift: { how: "copy" }, values: [] } },
+      { kind: "direct", route: { tag: 2, lift: { how: "copy" }, values: [] } },
+    ]);
+  });
+});

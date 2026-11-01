@@ -1,5 +1,6 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
+import { boxedHandleReceiver } from "../handle-properties.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -2042,6 +2043,13 @@ export function lowerInExpression(
         };
   }
   if (recv.type.kind !== "record") {
+    // A typed handle in a program that adds properties to handles: own
+    // keys and the class's members answer from its property table
+    // (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, expr.right, recv);
+      if (boxed) return { kind: "dynHasKey", key, value: boxed, type: BOOL, loc };
+    }
     lowerer.unsupported(
       "SC1090",
       expr,

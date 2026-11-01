@@ -91,8 +91,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "async.awaitDyn",
   // So does SlowBuffer's DEP0030.
   "buffer.slowBuffer",
-  // The child property table adopts thenables through the dyn-async unit.
-  "child.propsInstall",
+  // The handle property table adopts child thenables through the dyn-async
+  // unit.
+  "handle.propsInstall",
   "child.propsResolve",
   "crypto.native",
   // The crypto global's object extends crypto.native's.
@@ -358,6 +359,10 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.stdlibPrototype",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
+  "handle.propsDefineProps",
+  // The table's member test reads inherited prototype members through
+  // scr_dyn_invoke.c's scr_dyn_inherited_read.
+  "handle.propsInstall",
   "child.propsDefine",
   "dyn.defineProps",
   "dyn.definePropsShapes",
@@ -1000,8 +1005,13 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  handleProps?: boolean;
 }): boolean {
-  return features.jsObjectModel === true || features.bigintBytes === true;
+  return (
+    features.jsObjectModel === true ||
+    features.bigintBytes === true ||
+    features.handleProps === true
+  );
 }
 
 /** One rule per runtime feature, sorted by name. A new feature is an
@@ -1188,8 +1198,9 @@ const RUNTIME_FEATURE_RULES = {
   streamDyn: rule({
     fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
   }),
-  /** Own properties JavaScript adds to children (scr_dyn_handle_props.c). */
-  handleProps: rule({ fns: ["child.propsInstall"] }),
+  /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
+   * a Date, RegExp, Map, Set, weak collection, buffer or child. */
+  handleProps: rule({ fns: ["handle.propsInstall"] }),
   /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */

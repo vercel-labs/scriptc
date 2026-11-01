@@ -24,6 +24,16 @@
 #include "scr_runtime.h"
 #include "scr_key.h"
 
+/* The JavaScript object model build asks scr_dyn_handle_props.c about a
+ * runtime handle's own properties (a Date, RegExp, Map, Set, buffer or
+ * child that JavaScript added properties to). The pointer is NULL until the
+ * program's first handle.propsInstall; the other builds own-property
+ * operations of a handle keep their non-table paths byte for byte. */
+#ifdef SCR_JS_OBJECT_MODEL
+SCR_TL const ScrDynHandlePropsHooks *scr_dyn_handle_props_hooks = NULL;
+#define SCR_HP(v) ((v)->kind == SCR_DYN_HANDLE && scr_dyn_handle_props_hooks)
+#endif
+
 
 static SCR_TL ScrDyn *scr_builtin_object_prototype;
 
@@ -3140,6 +3150,13 @@ ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function) {
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object)) return NULL;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.preventExtensions"); return NULL; }
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(object)) {
+    ScrDyn *out = NULL;
+    bool unused;
+    if (scr_dyn_handle_props_hooks->integrity(object, 0, &out, &unused)) return out;
+  }
+#endif
   ScrMap *collection = scr_dyn_native_collection(object);
   if (collection) {
     scr_map_prevent_extensions(collection);
@@ -3182,6 +3199,13 @@ bool scr_dyn_is_extensible(ScrDyn *object) {
 ScrDyn *scr_dyn_seal(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object)) return NULL;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.seal"); return NULL; }
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(object)) {
+    ScrDyn *out = NULL;
+    bool unused;
+    if (scr_dyn_handle_props_hooks->integrity(object, 1, &out, &unused)) return out;
+  }
+#endif
   ScrMap *collection = scr_dyn_native_collection(object);
   if (collection) {
     scr_map_prevent_extensions(collection);
@@ -7300,6 +7324,11 @@ static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
 
 void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A tag with own-property tables keeps the wrapper that consults them,
+   * which forwards to the ops installed here. */
+  if (scr_dyn_handle_props_hooks) ops = scr_dyn_handle_props_hooks->install(tag, ops);
+#endif
   scr_dynh_ops[tag] = ops;
 }
 
@@ -8080,6 +8109,12 @@ static void scr_dyn_descriptor_fields_drop(ScrDyn **fields) {
  * combination; every field is then released. */
 static bool scr_dyn_descriptor_fields_read(const ScrDyn *descriptor, ScrDyn **fields) {
   for (size_t i = 0; i < 6; i++) fields[i] = NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(descriptor)) {
+    ScrDyn *table = scr_dyn_handle_props_hooks->table(descriptor);
+    if (table) descriptor = table;
+  }
+#endif
   if (descriptor->kind != SCR_DYN_OBJ) {
     static const char msg[] = "Property description must be an object";
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
@@ -8150,6 +8185,25 @@ static ScrDyn *scr_dyn_descriptor_field_get(const ScrDyn *descriptor, const ScrS
   return scr_dyn_obj_read(descriptor, key->data, key->len);
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Whether a handle's prototype chain names `name` (`get`, `set`): the
+ * builtin prototypes dyn_inherited_read models for Date, RegExp, Map, Set
+ * and the Weak collections. A descriptor snapshot cannot turn such a method
+ * into the accessor Node builds, so the caller keeps its refusal. */
+static bool scr_dyn_handle_proto_field(const ScrDyn *handle, const char *name) {
+  ScrStr *key = scr_str_new(name, strlen(name));
+  ScrDyn *member = scr_dyn_inherited_read(handle, key, scr_dyn_retain(scr_dyn_undefined()));
+  bool present = member && member->kind != SCR_DYN_UNDEF;
+  scr_dyn_release(member);
+  scr_str_release(key);
+  if (scr_exc_pending()) {
+    scr_exc_clear();
+    present = true;
+  }
+  return present;
+}
+#endif
+
 /* ToPropertyDescriptor of any object, for the entry points that a
  * descriptor built by an expression reaches (scr_dyn_define_property_shapes
  * and its siblings). The spec's Type(Desc) is Object, so an array, a
@@ -8160,9 +8214,10 @@ static ScrDyn *scr_dyn_descriptor_field_get(const ScrDyn *descriptor, const ScrS
  * holding the present fields as own data properties (+1), which
  * scr_dyn_descriptor_fields_read then checks, or NULL with an exception
  * pending: Node's TypeError for a primitive, or a getter's exception. A
- * handle without a method table, such as a native Map, answers `in` for
- * none of its prototype's methods, so a `get` or `set` it inherits would be
- * missed: it throws an SC2020 Error instead. */
+ * handle with an own-property table answers its fields from the table. A
+ * handle without one, such as a native Map, answers `in` for none of its
+ * prototype's methods, so a `get` or `set` it inherits would be missed: it
+ * throws an SC2020 Error instead. */
 ScrDyn *scr_dyn_descriptor_snapshot(const ScrDyn *descriptor) {
   if (!scr_iterator_object(descriptor)) {
     /* Node names the primitive as String() renders it. */
@@ -8177,8 +8232,19 @@ ScrDyn *scr_dyn_descriptor_snapshot(const ScrDyn *descriptor) {
     return NULL;
   }
   if (descriptor->kind == SCR_DYN_HANDLE) {
+    bool fields_from_table = false;
+#ifdef SCR_JS_OBJECT_MODEL
+    /* A handle in a program that adds properties to handles reads its
+     * descriptor fields from its own-property table (a Date's `value`
+     * and `enumerable`). A Map or WeakMap inherits get/set methods where
+     * the fields would be read, which this snapshot cannot turn into
+     * accessors: those keep the refusal below. */
+    fields_from_table = SCR_HP(descriptor) && scr_dyn_handle_props_hooks->table(descriptor) &&
+                        !scr_dyn_handle_proto_field(descriptor, "get") &&
+                        !scr_dyn_handle_proto_field(descriptor, "set");
+#endif
     const ScrDynHandleOps *ops = scr_dyn_handle_ops(descriptor->v.handle.tag);
-    if (!ops->methods || !ops->invoke) {
+    if (!fields_from_table && (!ops->methods || !ops->invoke)) {
       ScrJsonBuf message;
       scr_jb_init(&message);
       scr_jb_puts(&message, "a ");
@@ -10307,6 +10373,12 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
   if (scr_dyn_error_prototype_fence(target)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(target)) {
+    ScrDyn *out;
+    if (scr_dyn_handle_props_hooks->define(target, key, descriptor, &out)) return out;
+  }
+#endif
   if (target->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(target) &&
       (key->kind == SCR_DYN_STR || key->kind == SCR_DYN_NUM)) {
     /* A native array's numeric properties ("-1", "1.5") live in its
@@ -10568,6 +10640,12 @@ ScrDyn *scr_dyn_define_property_shapes(ScrDyn *target, ScrDyn *key, ScrDyn *desc
 }
 
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(target)) {
+    ScrDyn *out;
+    if (scr_dyn_handle_props_hooks->own_descriptor(target, key, &out)) return out;
+  }
+#endif
   if (key->kind == SCR_DYN_SYMBOL) {
     ScrDyn *receiver = scr_dyn_symbol_receiver(target);
     if (!receiver) {
@@ -12836,6 +12914,15 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
     return false;
   }
   if (scr_dyn_class_reflection_fence(v)) return false;
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A handle with an own-property table answers its table's keys (a
+   * for-in's per-visit presence recheck sees a key the body deleted). */
+  if (SCR_HP(v)) {
+    bool out;
+    if (scr_dyn_handle_props_hooks->in(v, key, &out)) return out;
+    if (scr_exc_pending()) return false;
+  }
+#endif
   if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_has(v, key);
 
   if (v->kind == SCR_DYN_TYPED_REF) {
@@ -12935,6 +13022,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_has(v, key);
   if (v->kind == SCR_DYN_BYTES) return scr_dyn_bytes_in(v, key);
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(v)) {
+    bool out;
+    if (scr_dyn_handle_props_hooks->in(v, key, &out)) return out;
+  }
+#endif
   if (v->kind == SCR_DYN_HANDLE) return scr_dyn_handle_in(v, key);
   if (scr_dyn_has_key(v, key)) return true;
   if (scr_exc_pending()) return false;
@@ -12988,7 +13081,19 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
     scr_jb_puts(&buffer, object->v.bytes->is_data_view ? "#<" : "[object ");
     scr_jb_puts(&buffer, kind);
     scr_jb_puts(&buffer, object->v.bytes->is_data_view ? ">" : "]");
-  } else if (object->null_proto) scr_jb_puts(&buffer, "[object Object]");
+  }
+#ifdef SCR_JS_OBJECT_MODEL
+  else if (object->kind == SCR_DYN_HANDLE && scr_dyn_handle_props_hooks &&
+           (object->v.handle.tag == SCR_DYNH_DATE || object->v.handle.tag == SCR_DYNH_REGEXP)) {
+    /* A property of a handle's own-property table: V8 names a Date or
+     * RegExp by its toString tag (the other handles print by class, the
+     * branch below). */
+    scr_jb_puts(&buffer, "[object ");
+    scr_jb_puts(&buffer, scr_dyn_handle_cls(object));
+    scr_jb_puts(&buffer, "]");
+  }
+#endif
+  else if (object->null_proto) scr_jb_puts(&buffer, "[object Object]");
   else {
     scr_jb_puts(&buffer, "#<");
     scr_jb_puts(&buffer, name ? name : "Object");
@@ -13226,6 +13331,20 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     return;
   }
   if (recv->kind == SCR_DYN_HANDLE) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_dyn_handle_props_hooks) {
+      /* A property the tag's ops model (RegExp lastIndex, the child's
+       * wrapped set) takes the write first, as today. */
+      const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(recv);
+      if (ops->set && ops->set(recv->v.handle.ptr, key->data, key->len, value)) return;
+      ScrDyn *table = scr_dyn_handle_props_hooks->write_table(recv, key);
+      if (scr_exc_pending()) return;
+      if (table) {
+        scr_dyn_object_key_set(table, key, value, recv);
+        return;
+      }
+    }
+#endif
     scr_dyn_handle_key_set(recv, key, value);
     return;
   }
@@ -15303,6 +15422,9 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     return;
   }
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(recv) && scr_dyn_handle_props_hooks->delete_key(recv, key, strict)) return;
+#endif
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_delete(recv, key); return; }
   if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit &&
       (!strncmp(recv->v.typed_ref.type_key, "record:", 7) ||
@@ -17223,6 +17345,12 @@ ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v) {
 }
 
 ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(value)) {
+    ScrDyn *out;
+    if (scr_dyn_handle_props_hooks->own_names(value, &out)) return out;
+  }
+#endif
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
@@ -17344,6 +17472,25 @@ ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(object)) {
+    ScrDyn *names;
+    if (scr_dyn_handle_props_hooks->own_names(object, &names)) {
+      if (!names) return NULL;
+      ScrDyn *result = scr_dyn_new_obj();
+      for (size_t i = 0; i < names->v.arr.len; i++) {
+        ScrStr *name = names->v.arr.items[i]->v.str;
+        ScrDyn *descriptor = scr_dyn_get_own_property_descriptor(object, names->v.arr.items[i]);
+        if (!descriptor) { scr_dyn_release(names); scr_dyn_release(result); return NULL; }
+        if (descriptor->kind != SCR_DYN_UNDEF)
+          scr_dyn_obj_set(result, name->data, name->len, descriptor);
+        else scr_dyn_release(descriptor);
+      }
+      scr_dyn_release(names);
+      return result;
+    }
+  }
+#endif
   if (object->kind == SCR_DYN_PROXY || object->kind == SCR_DYN_HANDLE) {
     static const char message[] = "Object.getOwnPropertyDescriptors on this value is not supported yet";
     scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
@@ -17465,6 +17612,12 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     scr_dyn_release(keys);
     return out;
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(v)) {
+    ScrDyn *out;
+    if (scr_dyn_handle_props_hooks->objwalk(v, (int)mode, &out)) return out;
+  }
+#endif
   if (v->kind == SCR_DYN_PROXY) {
     ScrDyn *trap = scr_dyn_proxy_trap(v, "ownKeys");
     if (scr_exc_pending()) return NULL;
@@ -17684,6 +17837,12 @@ static ScrDyn *scr_typed_ref_record_walk(const ScrDyn *d, const ScrDynTypedRecor
  * Non-enumerable own names shadow names farther up the chain. */
 ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(v)) {
+    ScrDyn *out;
+    if (scr_dyn_handle_props_hooks->for_in_keys(v, &out)) return out;
+  }
+#endif
   if (v->kind == SCR_DYN_TYPED_REF) {
     /* The snapshot has no prototype: for-in visits its own keys. */
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
@@ -18449,6 +18608,10 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     return has;
   }
   if (v->kind == SCR_DYN_HANDLE) {
+#ifdef SCR_JS_OBJECT_MODEL
+    bool out;
+    if (SCR_HP(v) && scr_dyn_handle_props_hooks->has_own(v, key, false, &out)) return out;
+#endif
     const char *m = "Own-property checks on this checked-dynamic kind are not supported yet";
     scr_throw_error_msg(SCR_ERR_ERROR, m, strlen(m));
     return false;
@@ -18458,6 +18621,12 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
 
 bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
   if (scr_dyn_class_reflection_fence(value)) return false;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(value)) {
+    bool out;
+    if (scr_dyn_handle_props_hooks->has_own(value, key, true, &out)) return out;
+  }
+#endif
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     bool result = !scr_exc_pending() && scr_dyn_property_is_enumerable(view, key);
@@ -20327,6 +20496,13 @@ static ScrDyn *scr_dyn_freeze_native(ScrDyn *value) {
 
 ScrDyn *scr_dyn_freeze(ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value) || scr_dyn_error_prototype_fence(value)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (SCR_HP(value)) {
+    ScrDyn *out = NULL;
+    bool unused;
+    if (scr_dyn_handle_props_hooks->integrity(value, 2, &out, &unused)) return out;
+  }
+#endif
   ScrDyn *native = scr_dyn_freeze_native(value);
   if (native) return native;
   if (scr_dyn_class_integrity(value, scr_dyn_freeze_data))
@@ -20380,6 +20556,13 @@ ScrDyn *scr_dyn_freeze_data(ScrDyn *value) {
  * `refuse` is set, and otherwise answers false: Object.freeze refuses such
  * a value too, so it is never frozen. */
 static bool scr_dyn_frozen_answer(const ScrDyn *value, bool (*self)(const ScrDyn *), bool refuse) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (value->kind == SCR_DYN_HANDLE && scr_dyn_handle_props_hooks) {
+    ScrDyn *unused = NULL;
+    bool answer;
+    if (scr_dyn_handle_props_hooks->integrity((ScrDyn *)value, 5, &unused, &answer)) return answer;
+  }
+#endif
   if (scr_dyn_published_object(value)) return true;
   bool answer;
   if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, self, &answer)) return answer;

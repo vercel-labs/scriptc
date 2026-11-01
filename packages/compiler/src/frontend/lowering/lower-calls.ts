@@ -222,7 +222,11 @@ import {
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
-import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
+import {
+  boxedHandleReceiver,
+  lowerChildMethodValue,
+  lowerChildPropertyCall,
+} from "./handle-properties.js";
 import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { structuralReadType } from "./class-unions.js";
@@ -3088,7 +3092,10 @@ function lowerObjectOwnMethodCall(
     return null;
   if (!lowerer.isStdlibMember(access)) {
     const receiver = tryLowerExpression(lowerer, access.expression);
-    if (receiver?.type.kind !== "dyn") return null;
+    // A typed handle in a program that adds properties to handles answers
+    // from its own property table (scr_dyn_handle_props.c).
+    if (receiver?.type.kind !== "dyn" && !boxedHandleReceiver(lowerer, access.expression, receiver))
+      return null;
   }
   return lowerObjectOwnCall(
     lowerer,
@@ -3153,6 +3160,9 @@ function lowerObjectOwnCall(
     stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
     receiverRef = varRef(local.id, receiver.type, loc);
   }
+  // A typed handle in a program that adds properties to handles answers
+  // from its own property table (scr_dyn_handle_props.c).
+  const handleBox = boxedHandleReceiver(lowerer, receiverNode ?? call, receiverRef);
   const rawKey = keyNode ? lowerer.lowerExpr(keyNode) : null;
   let keyRef: IrExpr | null = rawKey;
   if (rawKey && (isUnitType(rawKey.type) || rawKey.type.kind === "void")) {
@@ -3320,6 +3330,16 @@ function lowerObjectOwnCall(
         }
       : no;
     result = { kind: "logical", op: "||", left: lengthOwn, right: indexOwn, type: BOOL, loc };
+  } else if (handleBox) {
+    if (enumerable)
+      result = {
+        kind: "libCall",
+        fn: "dyn.propertyIsEnumerable",
+        args: [handleBox, key],
+        type: BOOL,
+        loc,
+      };
+    else result = { kind: "libCall", fn: "dyn.hasOwn", args: [handleBox, key], type: BOOL, loc };
   } else if (
     type.kind === "f64" ||
     type.kind === "bool" ||
@@ -9066,6 +9086,12 @@ function lowerObjectStaticCall(
       member === "getOwnPropertyDescriptor" &&
       target &&
       (target.type.kind === "bool" || target.type.kind === "f64" || target.type.kind === "string");
+    // A typed handle target in a program that adds properties to handles:
+    // its property table answers (scr_dyn_handle_props.c).
+    if (target && target.type.kind !== "dyn") {
+      const boxed = boxedHandleReceiver(lowerer, targetNode, target);
+      if (boxed) target = boxed;
+    }
     if (!target || (target.type.kind !== "dyn" && !isUnitType(target.type) && !descriptorPrimitive))
       return null;
     if (target.type.kind !== "dyn")
@@ -9152,6 +9178,12 @@ function lowerObjectStaticCall(
     ) {
       target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
     }
+    // A typed handle target in a program that adds properties to handles:
+    // its property table answers (scr_dyn_handle_props.c).
+    if (target && target.type.kind !== "dyn") {
+      const boxed = boxedHandleReceiver(lowerer, call.arguments.nodes[0]!, target);
+      if (boxed) target = boxed;
+    }
     if (target?.type.kind === "dyn") {
       const descs = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
       if (descs.type.kind === "dyn") {
@@ -9205,6 +9237,29 @@ function lowerObjectStaticCall(
       locOf(call),
     );
     if (fnIntegrity) return fnIntegrity;
+    // A typed handle in a program that adds properties to handles: the
+    // table holds the integrity state, so the checked-dynamic entries
+    // answer (scr_dyn_handle_props.c). The queries are the hook-carrying
+    // entries; with the table installed they answer from it.
+    {
+      const boxed = boxedHandleReceiver(lowerer, call.arguments.nodes[0]!, value);
+      if (boxed) {
+        const operation = {
+          preventExtensions: "dyn.preventExtensions",
+          isExtensible: "dyn.isExtensibleQuery",
+          seal: "dyn.seal",
+          isSealed: "dyn.isSealedQuery",
+        } as const;
+        const query = member.startsWith("is");
+        return {
+          kind: "libCall",
+          fn: operation[member as keyof typeof operation],
+          args: [boxed],
+          type: query ? BOOL : DYN,
+          loc: locOf(call),
+        };
+      }
+    }
     // A Map or Set has no own properties: freeze, seal and preventExtensions
     // all only make it not extensible.
     if (value.type.kind === "map" || value.type.kind === "set") {
@@ -9282,7 +9337,15 @@ function lowerObjectStaticCall(
   // reference would need a runtime frozen bit (strict mode throws).
   if (member === "isFrozen" && call.arguments.nodes.length === 1) {
     const argNode = call.arguments.nodes[0]!;
-    const probedKind = tryLowerExpression(lowerer, argNode)?.type.kind;
+    const probed = tryLowerExpression(lowerer, argNode);
+    // A typed handle in a program that adds properties to handles: the
+    // table holds the integrity state (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, argNode, probed);
+      if (boxed)
+        return { kind: "libCall", fn: "dyn.isFrozen", args: [boxed], type: BOOL, loc: locOf(call) };
+    }
+    const probedKind = probed?.type.kind;
     if (
       probedKind === "record" ||
       probedKind === "array" ||
@@ -9335,6 +9398,13 @@ function lowerObjectStaticCall(
     if (value.type.kind === "dyn") {
       noteUntypedIntegrity(lowerer, argNode);
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
+    }
+    // A typed handle in a program that adds properties to handles freezes
+    // its own property table (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, argNode, value);
+      if (boxed)
+        return { kind: "libCall", fn: "dyn.freeze", args: [boxed], type: DYN, loc: locOf(call) };
     }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
       // A fresh literal can still reach untyped code, which observes and
@@ -9629,12 +9699,16 @@ function lowerObjectStaticCall(
     // An array walks its live view: the present indices, then its numeric
     // and named properties.
     const isArray = probed?.type.kind === "array" && lowerer.dynConvertible(probed.type);
+    // A typed handle in a program that adds properties to handles reads its
+    // own property table through the checked-dynamic walk.
+    const isHandle = probed ? boxedHandleReceiver(lowerer, argNode, probed) : null;
     if (
       isDyn ||
       isPrimitive ||
       isFunction ||
       isJsUnion ||
       isArray ||
+      isHandle !== null ||
       (probed && isDynTypedRefType(probed.type))
     ) {
       const fn =
@@ -9643,7 +9717,7 @@ function lowerObjectStaticCall(
           : member === "values"
             ? "dyn.objValues"
             : "dyn.objEntries";
-      let v = lowerer.lowerExpr(argNode);
+      let v = isHandle ?? lowerer.lowerExpr(argNode);
       if (v.type.kind !== "dyn")
         v = {
           kind: "dynFrom",

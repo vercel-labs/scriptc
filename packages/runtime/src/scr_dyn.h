@@ -1933,6 +1933,13 @@ ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs);
+/* Object.defineProperties' read-and-convert half, for the entry points that
+ * define the properties themselves (the handle property table): an array of
+ * [key, descriptor] pairs (+1), every descriptor read and converted before
+ * any definition, or NULL with the exception pending. `read_any` admits
+ * descriptor objects of any shape (scr_dyn_descriptor_snapshot); NULL keeps
+ * the plain-object rule. */
+ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor));
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys);
 /* Boxes a closure as a callable dyn value. Ownership of `clo` MOVES in
  * (callers retain first when they keep their own reference); `sig`/`name`
@@ -2207,6 +2214,37 @@ typedef struct ScrDynHandleOps {
    * methods; the owning unit supplies it, since promises are a gated unit. */
   ScrDyn *(*rejected)(void);
 } ScrDynHandleOps;
+
+/* The own-property tables of runtime handles (scr_dyn_handle_props.c),
+ * consulted by scr_json.c's JavaScript object model build (SCR_JS_OBJECT_MODEL).
+ * Each answers true when it handled the operation (its result in the out
+ * parameter; NULL results mean an exception is pending) and false to leave
+ * the handle to the ordinary path. NULL until the program's first
+ * handle.propsInstall. */
+typedef struct ScrDynHandlePropsHooks {
+  /* The handle's table (borrowed), or NULL when it has none. */
+  ScrDyn *(*table)(const ScrDyn *handle);
+  /* scr_dyn_handle_install: the ops to install for `tag` in place of
+   * `ops` (the wrapped ops when the tag has tables). */
+  const ScrDynHandleOps *(*install)(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
+  /* The table a write of `key` lands in (borrowed, made on first use), or
+   * NULL when the write is not a table write (a modeled property, or a
+   * member key the slice refuses). */
+  ScrDyn *(*write_table)(ScrDyn *handle, const ScrStr *key);
+  bool (*in)(const ScrDyn *handle, const ScrStr *key, bool *out);
+  bool (*has_own)(const ScrDyn *handle, const ScrStr *key, bool enumerable_only, bool *out);
+  bool (*delete_key)(ScrDyn *handle, const ScrStr *key, bool strict);
+  bool (*own_descriptor)(ScrDyn *handle, ScrDyn *key, ScrDyn **out);
+  bool (*define)(ScrDyn *handle, ScrDyn *key, ScrDyn *descriptor, ScrDyn **out);
+  bool (*own_names)(const ScrDyn *handle, ScrDyn **out);
+  /* The ScrObjWalk modes private to scr_json.c: keys 0, values 1, entries 2. */
+  bool (*objwalk)(const ScrDyn *handle, int mode, ScrDyn **out);
+  bool (*for_in_keys)(const ScrDyn *handle, ScrDyn **out);
+  /* op: 0 preventExtensions, 1 seal, 2 freeze (out_value = the handle +1);
+   * 3 isExtensible, 4 isSealed, 5 isFrozen (out_bool). */
+  bool (*integrity)(ScrDyn *handle, int op, ScrDyn **out_value, bool *out_bool);
+} ScrDynHandlePropsHooks;
+extern SCR_TL const ScrDynHandlePropsHooks *scr_dyn_handle_props_hooks;
 
 /* ToPrimitive hints (scr_ni_to_primitive, Node island objects). */
 enum { SCR_DYN_HINT_DEFAULT = 0, SCR_DYN_HINT_NUMBER = 1, SCR_DYN_HINT_STRING = 2 };

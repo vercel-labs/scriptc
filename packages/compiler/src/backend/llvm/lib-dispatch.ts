@@ -1358,6 +1358,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     // Primitive wrapper objects (scr_js_wrapper.c).
     case "wrapper":
       return host.emitGenericLibCall(e);
+    // Own properties JavaScript adds to runtime handles
+    // (scr_dyn_handle_props.c).
+    case "handle":
+      return host.emitGenericLibCall(e);
     case "webstream":
       // A stream's start, pull and cancel steps run as promise jobs, so
       // a program with the classes runs its event loop.

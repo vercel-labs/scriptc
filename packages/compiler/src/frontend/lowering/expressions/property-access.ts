@@ -1530,6 +1530,23 @@ export function lowerPropertyAccessExpr(
         expr,
       );
     }
+    // A GENERIC instantiation keeps every OPTIONAL member the CONSTRAINT
+    // declares even when the instantiated type has no such key
+    // (`f<TO extends { headers?: H }>(o: TO)`, called with `{ apiKey }`):
+    // the read resolves through the constraint and the value was never
+    // stored, so it is undefined. The field is declared, not undeclared —
+    // nothing here is a failed type assertion.
+    if (recvShape && !recvShape.tuple && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const declared = lowerer.checker.getPropertyOfType(
+        lowerer.typeOf(expr.expression),
+        expr.name.text,
+      );
+      if (declared && (declared.flags & ts.SymbolFlags.Optional) !== 0) {
+        const readT = lowerer.mapTypeOf(lowerer.typeOf(expr));
+        const missing = readT ? lowerer.wrappedUndefined(readT, loc) : null;
+        if (missing) return afterReceiver(recvLowered, missing, loc);
+      }
+    }
     // An inferred package-JS call specializes a parameter to the
     // caller's own record shape. Optional option names omitted by that
     // caller read undefined; the missing field is not a failed type

@@ -1063,6 +1063,11 @@ bool scr_dyn_native_url_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
 bool scr_dyn_native_search_params_is(const ScrDyn *value);
 bool scr_dyn_native_date_is(const ScrDyn *value);
+/* The member value the builtin named `prototype` answers for `key` (+1) from
+ * its own unit, or NULL: the value that builtin's prototype holds as its
+ * member too, so a member read off an instance and off the prototype are one
+ * function (scr_native_builtin_member_value, scr_lib.c). */
+ScrDyn *scr_native_builtin_member_value(const char *prototype, const char *key, size_t key_len);
 /* Instances of program classes declared `extends Date` (scr_lib.c). */
 void scr_date_class_operation_install(ScrDyn *time, ScrDyn *methods);
 /* Set by scr_date_class_operation_install; NULL in a program without such
@@ -1148,6 +1153,11 @@ ScrDyn *scr_dyn_using_dispose(const ScrDyn *method, const ScrDyn *value);
  * class instance, whose dyn view has no methods. The stack's other members
  * are function values and getters of its dyn handle. */
 ScrDyn *scr_disposable_stack_new(void);
+/* The member value a DisposableStack answers for the method named `key` (+1),
+ * or NULL: the value DisposableStack.prototype holds as its member, so a
+ * member read off a stack and off the prototype are one function
+ * (scr_symbol.c). */
+ScrDyn *scr_disposable_stack_member_value(const char *key, size_t len);
 bool scr_disposable_stack_is(const ScrDyn *value);
 bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);

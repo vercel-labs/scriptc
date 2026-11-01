@@ -236,6 +236,14 @@ export function isWebReadableIteratorSource(lowerer: Lowerer, expression: ts.Exp
   return webReadablePlan(lowerer, expression) !== null;
 }
 
+/** `readable.iterator(...)` or `readable[Symbol.asyncIterator](...)` on a
+ * Node readable — the view `lowerNodeReadable` consumes directly. Its TYPE
+ * is AsyncIterableIterator<T> too, and the loop must reach that lowering
+ * rather than lower the call as an async-generator value. */
+export function isNodeReadableIteratorSource(lowerer: Lowerer, expression: ts.Expression): boolean {
+  return nodeReadablePlan(lowerer, expression) !== null;
+}
+
 function classAsyncIteratorPlan(
   lowerer: Lowerer,
   expression: ts.Expression,

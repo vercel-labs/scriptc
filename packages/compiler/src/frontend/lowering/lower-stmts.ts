@@ -102,6 +102,7 @@ import {
 } from "./lower-generators.js";
 import {
   classAsyncGeneratorIterator,
+  isNodeReadableIteratorSource,
   isWebReadableIteratorSource,
   lowerForAwaitBuiltin,
 } from "./lower-async-iteration.js";
@@ -11426,10 +11427,14 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   const awaitArray =
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";
   if (stmt.awaitModifier && !awaitArray) {
-    // A web ReadableStream's iterator view types as AsyncIterableIterator,
-    // which lowers like the async protocols — but the loop consumes the
-    // stream view through its own lowering (lowerForAwaitBuiltin below).
-    if (!isWebReadableIteratorSource(lowerer, stmt.expression)) {
+    // A web ReadableStream's and a Node readable's iterator views both type
+    // as AsyncIterableIterator, which lowers like the async protocols — but
+    // the loop consumes each view through its own lowering
+    // (lowerForAwaitBuiltin below).
+    if (
+      !isWebReadableIteratorSource(lowerer, stmt.expression) &&
+      !isNodeReadableIteratorSource(lowerer, stmt.expression)
+    ) {
       const genT =
         lowerer.stageSourceType(stmt.expression) ??
         lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));

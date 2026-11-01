@@ -90,6 +90,9 @@ export interface CcOptions {
   /** The program uses node:zlib's Brotli forms (with zlib): compiles
    * scr_brotli.c and links the vendored brotli archive. */
   brotli?: boolean;
+  /** The program uses node:zlib's zstd forms (with zlib): compiles
+   * scr_zstd.c and links the vendored zstd objects. */
+  zstd?: boolean;
   /** The program uses an Intl form that only ICU can answer (the `icu.*`
    * libCalls: default-locale number/date formats, word segmentation):
    * compiles scr_intl.c and links the ICU archive, and the

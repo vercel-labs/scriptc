@@ -718,6 +718,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "zlib.inflateSync": "scr_zlib_inflate",
   "zlib.crc32": "scr_zlib_crc32",
   "zlib.brotliInstall": "scr_brotli_install",
+  "zlib.zstdInstall": "scr_zstd_install",
   // The CA-store unit. get/set throw (an unknown type name, a
   // certificate-free set) and take the generic path's pending check.
   "tlsca.root": "scr_tls_ca_root",

@@ -15,7 +15,7 @@ import {
   type RuntimePackManifest,
   type RuntimePackMode,
 } from "../backend/runtime-pack-core.js";
-import { LRE_SOURCES, zlibInputs } from "../backend/vendor-inputs.js";
+import { LRE_SOURCES, zlibInputs, zstdInputs } from "../backend/vendor-inputs.js";
 import { contentDigest, type NativeCache } from "./cache.js";
 import type { NativeToolchain } from "./toolchain.js";
 
@@ -139,6 +139,7 @@ export function buildSanitizedRuntime(
   const zlib = join(vendor, "zlib");
   const mbedtls = join(vendor, "mbedtls");
   const brotli = join(vendor, "brotli", "c");
+  const zstd = join(vendor, "zstd");
   const manifest = runtimePackManifest(selection);
   const cacheIdentity = contentDigest(
     JSON.stringify({
@@ -186,6 +187,8 @@ export function buildSanitizedRuntime(
     join(mbedtls, "include"),
     "-I",
     join(brotli, "include"),
+    "-I",
+    join(zstd, "lib"),
     ...(toolchain.target.platform === "linux" ? ["-ffunction-sections", "-fdata-sections"] : []),
   ];
   // The units and variants the pack selection chose, compiled from source.
@@ -249,6 +252,11 @@ export function buildSanitizedRuntime(
         )
         .sort();
       args = ["-std=c11", "-I", join(brotli, "include")];
+    } else if (name === "zstd") {
+      const inputs = zstdInputs(toolchain.target.llvmTriple);
+      directory = join(zstd, "lib");
+      sources = inputs.sources;
+      args = ["-std=c11", ...inputs.defines.map((define) => "-D" + define), "-I", directory];
     } else throw new NativeCodegenError("SC3003", `unsupported runtime vendor archive: ${name}`);
     const objects = sources.map((source) =>
       compile(

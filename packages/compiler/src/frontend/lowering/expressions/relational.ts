@@ -2074,6 +2074,20 @@ export function lowerInExpression(
         staticAnswers = false;
         break;
       }
+      // Hoisted var storage can retain an undefined arm even at a read
+      // whose checked type is the builtin class. Its brand record stores
+      // internal state, not the prototype members used by feature probes.
+      if (
+        siteType !== null &&
+        typeEquals(siteType, arm) &&
+        shape.fields.length > 0 &&
+        shape.fields.every((f) => f.name.startsWith("%"))
+      ) {
+        const declared =
+          lowerer.checker.getPropertyOfType(lowerer.typeOf(expr.right), key) !== undefined;
+        answers.push({ tag, has: declared || OBJECT_PROTOTYPE_KEYS.has(key), arm });
+        continue;
+      }
       const f = shape.fields.find((x) => x.name === key);
       const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
       if (

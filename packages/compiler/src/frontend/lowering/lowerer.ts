@@ -11819,7 +11819,14 @@ export class Lowerer {
         indexSignatureTypeDiag(this.checker.typeToString(type), locOf(node)),
       );
     }
-    // Attribute an unsupported package type to its package.
+    // Attribute an unsupported package type to its package. A PACKAGE DATA
+    // SHAPE (an interface or type alias declared only by a package the
+    // module graph never loads) never reaches this: it describes data the
+    // program itself builds, so mapTypeEntry already widened it to the
+    // checked-dynamic value exactly as it does for the same shape declared
+    // locally. What arrives here is a package's VALUE shape — a class or a
+    // merged value declaration, which only that package's implementation
+    // could produce.
     {
       const pkg = this.npmPackageOf(widened);
       if (pkg) {
@@ -14382,6 +14389,11 @@ export class Lowerer {
   ): boolean {
     if (typeEquals(from, to)) return true;
     if (to.inner.kind === "void") return from.inner.kind !== "void";
+    // A module namespace widens into a checked-dynamic payload: both settle
+    // the module's namespace object (coerceToExpected routes the value
+    // through moduleNamespacePromiseDynValue). The joint payload of several
+    // namespace-valued promise arms is exactly this dyn (mergePromiseArms).
+    if (from.inner.kind === "moduleNs" && to.inner.kind === "dyn") return true;
     return (
       this.dynConvertible(from) &&
       canDynCheckTo(

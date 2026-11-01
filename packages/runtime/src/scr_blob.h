@@ -98,6 +98,10 @@ void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPat
  * linked only by programs that add them). `child` is 1 when the program adds
  * properties to children. */
 void scr_dyn_handle_props_install(double child);
+/* The member names the compiler reroutes through the box,
+ * `<Class>:<name>,<name>;<Class>:*`; a member key outside them (and every
+ * protocol and implicit-conversion name) keeps the member refusal. */
+void scr_dyn_handle_props_grant(ScrStr *grants);
 /* Object.defineProperties with a handle target. */
 ScrDyn *scr_dyn_define_props_hp(ScrDyn *target, ScrDyn *descs);
 /* The graph walkers' refusal: a value whose graph holds a handle with added

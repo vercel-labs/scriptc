@@ -16,9 +16,12 @@
  * handle; member calls and reads reach it through the tag's wrapped ops,
  * which scr_dyn_handle_install keeps installed when the owning unit
  * installs its ops again. A key that names a member of the handle's class
- * is refused unless the compiler routes that member through the box (the
- * child's members, all of them). Linked only by programs that add
- * properties to a handle (the compiler's handle-properties.ts). */
+ * is refused unless the compiler routes that member through the box: every
+ * child member, and the Date/RegExp/Map/Set/collection member names a
+ * program writes or defines (handle.propsGrant; its typed reads, calls and
+ * implicit conversions of those names reroute or refuse). Linked only by
+ * programs that add properties to a handle (the compiler's
+ * handle-properties.ts). */
 #include "scr_runtime.h"
 
 #include <stdint.h>
@@ -37,9 +40,16 @@ static SCR_TL size_t hp_count, hp_capacity; /* capacity: 0 or a power of two */
 static SCR_TL const ScrDynHandleOps *hp_orig[SCR_DYNH_CAPACITY];
 static SCR_TL ScrDynHandleOps hp_ops[SCR_DYNH_CAPACITY];
 static SCR_TL bool hp_wrapped[SCR_DYNH_CAPACITY];
-/* Member keys a program may add for the tag: the compiler routes them
- * through the box (the child's, all of them; H2 adds per-name grants). */
+/* Member keys a program may add for the tag: `*` opens every name, and a
+ * name grant allows one. The child's tag is always open (its compiler side
+ * already routes every member through the box). */
 static SCR_TL bool hp_members_open[SCR_DYNH_CAPACITY];
+typedef struct {
+  ScrDynHandleTag tag;
+  char *name; /* owned, NUL-terminated */
+} HpGrant;
+static SCR_TL HpGrant *hp_grants;
+static SCR_TL size_t hp_grant_n, hp_grant_cap;
 
 static size_t hp_bucket(const void *ptr) {
   uintptr_t x = (uintptr_t)ptr;
@@ -61,6 +71,10 @@ static void hp_cleanup(void) {
     hp_orig[slots[i].tag]->release(slots[i].ptr);
   }
   free(slots);
+  for (size_t i = 0; i < hp_grant_n; i++) free(hp_grants[i].name);
+  free(hp_grants);
+  hp_grants = NULL;
+  hp_grant_n = hp_grant_cap = 0;
 }
 
 static ScrDyn *hp_find(const void *ptr) {
@@ -326,12 +340,96 @@ static void hp_member_refusal(const ScrDyn *handle, const ScrStr *key, const cha
 
 static ScrDyn *hp_table_of(const ScrDyn *handle) { return hp_find(handle->v.handle.ptr); }
 
+/* Member names a grant never opens. A builtin algorithm reads them from the
+ * native object (RegExpExec, species, thenables, lastIndex, the RegExp flag
+ * getters, Map/Set iteration and size), JSON.stringify looks for toJSON,
+ * the Object.prototype probes have lowerings of their own, and ToPrimitive
+ * reads toString/valueOf implicitly — that one reaches the table only for
+ * Date and RegExp, whose string and number conversions call the tag's
+ * ops->invoke, which the wrapper routes to the own property. A denied grant
+ * keeps the H1 refusal (loud) instead of diverging silently. */
+static bool hp_denied_member(const char *name, size_t len, ScrDynHandleTag tag) {
+  static const char *const denied[] = {
+    "constructor", "then", "exec", "lastIndex", "flags", "global", "source",
+    "ignoreCase", "multiline", "dotAll", "sticky", "unicode", "unicodeSets",
+    "hasIndices", "size", "toJSON", "hasOwnProperty", "propertyIsEnumerable",
+    "isPrototypeOf", "__proto__", "__defineGetter__", "__defineSetter__",
+    "__lookupGetter__", "__lookupSetter__",
+  };
+  for (size_t i = 0; i < sizeof denied / sizeof *denied; i++)
+    if (strlen(denied[i]) == len && memcmp(denied[i], name, len) == 0) return true;
+  /* ToPrimitive reaches the table only where the coercion calls the tag's
+   * ops->invoke: Date (toString, valueOf, toLocaleString) and RegExp
+   * (toString, toLocaleString). Every other class keeps the refusal. */
+  bool string_hint = (len == 8 && memcmp("toString", name, 8) == 0) ||
+                     (len == 14 && memcmp("toLocaleString", name, 14) == 0);
+  if (string_hint) return tag != SCR_DYNH_DATE && tag != SCR_DYNH_REGEXP;
+  if (len == 7 && memcmp("valueOf", name, 7) == 0) return tag != SCR_DYNH_DATE;
+  return false;
+}
+
+/* Whether the compiler routed member `key` of a handle of `tag` through the
+ * box: a name the program's JavaScript writes or defines (its typed readers
+ * are rerouted too), every name for `*`, and every name of a child. */
+static bool hp_granted(ScrDynHandleTag tag, const ScrStr *key) {
+  if (tag == SCR_DYNH_CHILD) return true; /* H1: every child key */
+  if (hp_denied_member(key->data, key->len, tag)) return false;
+  if (hp_members_open[tag]) return true;
+  for (size_t i = 0; i < hp_grant_n; i++)
+    if (hp_grants[i].tag == tag && strlen(hp_grants[i].name) == key->len &&
+        memcmp(hp_grants[i].name, key->data, key->len) == 0)
+      return true;
+  return false;
+}
+
+static void hp_add_grant(ScrDynHandleTag tag, const char *name, size_t len) {
+  if (hp_grant_n == hp_grant_cap) {
+    size_t cap = hp_grant_cap ? hp_grant_cap * 2 : 16;
+    HpGrant *grown = realloc(hp_grants, cap * sizeof *grown);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    hp_grants = grown;
+    hp_grant_cap = cap;
+  }
+  char *copy = malloc(len + 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, name, len);
+  copy[len] = 0;
+  hp_grants[hp_grant_n].tag = tag;
+  hp_grants[hp_grant_n].name = copy;
+  hp_grant_n++;
+}
+
+static bool hp_class_tag(const char *name, size_t len, ScrDynHandleTag *out) {
+  static const struct {
+    const char *name;
+    ScrDynHandleTag tag;
+  } classes[] = {
+    { "Date", SCR_DYNH_DATE },
+    { "RegExp", SCR_DYNH_REGEXP },
+    { "Map", SCR_DYNH_MAP },
+    { "Set", SCR_DYNH_SET },
+    { "WeakMap", SCR_DYNH_WEAK_MAP },
+    { "WeakSet", SCR_DYNH_WEAK_SET },
+    { "ArrayBuffer", SCR_DYNH_ARRAY_BUFFER },
+    { "SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER },
+    { "FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY },
+  };
+  for (size_t i = 0; i < sizeof classes / sizeof *classes; i++)
+    if (strlen(classes[i].name) == len && memcmp(classes[i].name, name, len) == 0) {
+      *out = classes[i].tag;
+      return true;
+    }
+  return false;
+}
+
 static ScrDyn *hp_write_table(ScrDyn *handle, const ScrStr *key) {
   ScrDyn *props = hp_find(handle->v.handle.ptr);
   if (hp_has(props, key->data, key->len)) return props;
   ScrDynHandleTag tag = handle->v.handle.tag;
   if (!hp_accepts(tag)) return NULL;
-  if (!hp_members_open[tag] && hp_is_member(handle, key)) return NULL; /* ordinary arm refuses */
+  /* An ordinary key needs no grant; a member key needs one, or the
+   * ordinary arm refuses it. */
+  if (hp_is_member(handle, key) && !hp_granted(tag, key)) return NULL;
   return hp_props_of_box(handle);
 }
 
@@ -476,7 +574,7 @@ static bool hp_define(ScrDyn *handle, ScrDyn *key, ScrDyn *descriptor, ScrDyn **
   ScrDynHandleTag tag = handle->v.handle.tag;
   if (!hp_has(props, name->data, name->len)) {
     if (!hp_accepts(tag)) { scr_str_release(name); return false; }
-    if (!hp_members_open[tag] && hp_is_member(handle, name)) {
+    if (hp_is_member(handle, name) && !hp_granted(tag, name)) {
       hp_member_refusal(handle, name, "Object.defineProperty of");
       scr_str_release(name);
       *out = NULL;
@@ -693,6 +791,33 @@ void scr_dyn_handle_props_install(double child) {
   hp_refresh(SCR_DYNH_CHILD, current);
   hp_wrapped[SCR_DYNH_CHILD] = true;
   scr_dyn_handle_install(SCR_DYNH_CHILD, &hp_ops[SCR_DYNH_CHILD]);
+}
+
+/* The program's member-name grants, `<Class>:<name>,<name>;<Class>:*`:
+ * names its compiler reroutes through the box, so a write or definition of
+ * one lands in the table instead of keeping the member refusal. Names a
+ * builtin algorithm or an implicit conversion reads are ignored here. */
+void scr_dyn_handle_props_grant(ScrStr *grants) {
+  if (!grants) return;
+  if (!hp_slots && !hp_grants) scr_atexit(hp_cleanup); /* the table registers it otherwise */
+  const char *p = grants->data;
+  const char *end = grants->data + grants->len;
+  while (p < end) {
+    const char *semi = memchr(p, ';', (size_t)(end - p));
+    if (!semi) semi = end;
+    const char *colon = memchr(p, ':', (size_t)(semi - p));
+    ScrDynHandleTag tag;
+    if (colon && hp_class_tag(p, (size_t)(colon - p), &tag)) {
+      for (const char *q = colon + 1; q < semi;) {
+        const char *comma = memchr(q, ',', (size_t)(semi - q));
+        if (!comma) comma = semi;
+        if (comma - q == 1 && q[0] == '*') hp_members_open[tag] = true;
+        else if (comma > q) hp_add_grant(tag, q, (size_t)(comma - q));
+        q = comma + 1;
+      }
+    }
+    p = semi + 1;
+  }
 }
 
 /* Object.defineProperty / Reflect.defineProperty: every accepted handle

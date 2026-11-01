@@ -130,6 +130,7 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { versionUnionArmLoops } from "../../ir/union-arm-loops.js";
 import { unitSafeFunctions } from "./string-unit-versions.js";
 import { stringScanInline } from "./string-reads.js";
 import {
@@ -779,25 +780,28 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // an earlier pass rewrote, which the index does not record.
   const nodes = new IrNodeIndex(mod);
   rounds.nodes = nodes;
-  const passed = versionParameters(
-    addRecordResultEntries(
-      scalarizeLiteralResults(
-        scalarizeNumericRecords(
-          specializeCallbackCalls(
-            specializeNumericCalls(
-              pairRowSums(
-                jamSaturatingLoops(
-                  inlineArraysPass(
-                    options,
-                    inlineExpressionFunctions(
-                      foldConstantGlobals(
-                        copyStableCaptures(
-                          resolveSelfCaptures(
-                            hoistFinalFieldReads(
-                              freezeInitOnlyGlobals(
-                                holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(
-                                    runPairedWhileLoopsAsFor(mod, nodes),
+  const passed = versionUnionArmLoops(
+    versionParameters(
+      addRecordResultEntries(
+        scalarizeLiteralResults(
+          scalarizeNumericRecords(
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                pairRowSums(
+                  jamSaturatingLoops(
+                    inlineArraysPass(
+                      options,
+                      inlineExpressionFunctions(
+                        foldConstantGlobals(
+                          copyStableCaptures(
+                            resolveSelfCaptures(
+                              hoistFinalFieldReads(
+                                freezeInitOnlyGlobals(
+                                  holdCharLocalsAsUnits(
+                                    dropUnwrittenPropertyBags(
+                                      runPairedWhileLoopsAsFor(mod, nodes),
+                                      nodes,
+                                    ),
                                     nodes,
                                   ),
                                   nodes,
@@ -812,19 +816,19 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                         ),
                         nodes,
                       ),
-                      nodes,
                     ),
+                    nodes,
                   ),
                   nodes,
                 ),
+                mangleFunction,
                 nodes,
               ),
               mangleFunction,
               nodes,
             ),
-            mangleFunction,
-            nodes,
           ),
+          nodes,
         ),
         nodes,
       ),

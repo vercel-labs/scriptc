@@ -2,6 +2,7 @@ import {
   BOOL,
   DYN,
   F64,
+  VOID,
   typeKey,
   type IrExpr,
   type IrFunction,
@@ -11,7 +12,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "./ir.js";
-import { strLit, varRef } from "./build.js";
+import { numLit, strLit, varRef } from "./build.js";
 import { everyStmtList, mapExprChildren, mapStmtChildren, transformStmtList } from "./traverse.js";
 import { reparseExpr, reparseStmt } from "./serialize.js";
 import { type IrNodeIndex } from "./node-index.js";
@@ -37,6 +38,9 @@ interface PropertyOp {
   receiver: number;
   key: number | { literal: string } | null;
   value?: number;
+  /** The operation's source range in the helper: the key a sloppy-mode
+   * write is listed under (IrModule.sloppyDynWrites). */
+  loc: SrcLoc;
 }
 
 /** The dynamic operations that read a value's properties without retaining
@@ -152,7 +156,7 @@ function operationOf(node: IrExpr, params: ReadonlyMap<string, number>): Propert
     const receiver = operandParam(node.value, params);
     if (receiver === null) return null;
     const key = keyOperand(node.key, params);
-    return key === null ? null : { kind: "get", receiver, key };
+    return key === null ? null : { kind: "get", receiver, key, loc: node.loc };
   }
   if (node.kind !== "libCall") return null;
   const args = node.args;
@@ -162,10 +166,10 @@ function operationOf(node: IrExpr, params: ReadonlyMap<string, number>): Propert
     const key = keyOperand(args[1], params);
     const value = args[2] === undefined ? null : operandParam(args[2]!, params);
     if (key === null || value === null) return null;
-    return { kind: "set", receiver, key, value };
+    return { kind: "set", receiver, key, value, loc: node.loc };
   }
   if (node.fn === "dyn.in" || node.fn === "dyn.hasKeyComputed" || node.fn === "dyn.hasOwnComputed")
-    return { kind: "has", receiver, key: keyOperand(args[1], params) };
+    return { kind: "has", receiver, key: keyOperand(args[1], params), loc: node.loc };
   return null;
 }
 
@@ -205,6 +209,23 @@ function receiverLocals(fn: IrFunction, paramIndex: number): Set<string> | null 
       for (const id of node.captures) captured.add(id);
     });
   }
+  // A write can sit at any depth of an expression, so every expression
+  // below a statement is walked: an assignment the clone would leave in
+  // place stores a dynamic value into the record-typed local.
+  const scanExpr = (node: IrExpr): void => {
+    if (node.kind === "assignExpr" || node.kind === "incDec") note(node.localId, null);
+    mapExprChildren(
+      node,
+      (child) => {
+        scanExpr(child);
+        return child;
+      },
+      (child) => {
+        scan(child);
+        return child;
+      },
+    );
+  };
   const scan = (statement: IrStmt): void => {
     if (statement.kind === "varDecl") note(statement.localId, statement.init);
     else if (statement.kind === "assign") note(statement.localId, statement.value);
@@ -214,7 +235,7 @@ function receiverLocals(fn: IrFunction, paramIndex: number): Set<string> | null 
     mapStmtChildren(
       statement,
       (child) => {
-        if (child.kind === "assignExpr" || child.kind === "incDec") note(child.localId, null);
+        scanExpr(child);
         return child;
       },
       (child) => {
@@ -250,6 +271,15 @@ function receiverLocals(fn: IrFunction, paramIndex: number): Set<string> | null 
 interface RewriteContext {
   helpers: ReadonlyMap<string, PropertyOp>;
   records: ReadonlyMap<string, IrRecordShape>;
+  /** IrModule.sloppyDynWrites: the source ranges of untyped property writes
+   * in sloppy-mode code, which leave a frozen record unchanged. */
+  sloppyWrites: ReadonlySet<string>;
+}
+
+/** The key a write's source range is listed under in
+ * IrModule.sloppyDynWrites. */
+function writeKey(loc: SrcLoc): string {
+  return `${loc.file}\0${loc.start}\0${loc.end}`;
 }
 
 /** A clone of `origin` in which parameter `paramIndex` is `type`, its
@@ -301,13 +331,15 @@ function buildClone(
   }
 
   /** The record write, behind the frozen-bit test when the shape has values
-   * that can be frozen. A frozen record takes no write: the dynamic path
-   * this replaces leaves it unchanged. */
+   * that can be frozen. A frozen record takes no write: strict-mode code
+   * throws Node's TypeError, as the dynamic write this replaces does, and
+   * sloppy-mode code leaves the record unchanged. */
   function recordStore(
     receiver: IrExpr,
     declared: { name: string; type: IrType },
     value: IrExpr,
     loc: SrcLoc,
+    sloppy: boolean,
   ): IrStmt {
     const store = (obj: IrExpr, stored: IrExpr): IrStmt => ({
       kind: "recordSet",
@@ -321,6 +353,21 @@ function buildClone(
     const receiverSlot = local("%typedReceiver", receiver.type, loc);
     const valueSlot = local("%typedValue", value.type, loc);
     const receiverRef = varRef(receiverSlot.localId, receiver.type, loc);
+    const refused: IrStmt[] = sloppy
+      ? []
+      : [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "record.throwFrozen",
+              args: [strLit(declared.name, loc), strLit("#<Object>", loc), numLit(0, loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ];
     return {
       kind: "block",
       body: [
@@ -329,7 +376,7 @@ function buildClone(
         {
           kind: "if",
           cond: { kind: "libCall", fn: "record.isFrozen", args: [receiverRef], type: BOOL, loc },
-          then: [],
+          then: refused,
           else_: [store(receiverRef, varRef(valueSlot.localId, value.type, loc))],
           loc,
         },
@@ -361,6 +408,7 @@ function buildClone(
     const recv = call.args[op.receiver] as VarRef;
     const receiver = typed(recv);
     const loc = call.loc;
+    const sloppy = context.sloppyWrites.has(writeKey(op.loc));
     const fallback = (): IrStmt => ({
       kind: "exprStmt",
       expr: genericCall(call, op, receiver),
@@ -383,7 +431,7 @@ function buildClone(
       const declared = field(literal);
       if (!declared || !fits(declared)) return fallback();
       rewritten++;
-      return recordStore(receiver, declared, value, loc);
+      return recordStore(receiver, declared, value, loc, sloppy);
     }
     if (!keyArg || keyArg.kind !== "varRef" || keyArg.type.kind !== "string") return fallback();
     const arms = shape.fields.filter(fits);
@@ -402,7 +450,7 @@ function buildClone(
           type: BOOL,
           loc,
         },
-        then: [recordStore(receiver, declared, reparseExpr(value), loc)],
+        then: [recordStore(receiver, declared, reparseExpr(value), loc, sloppy)],
         else_: [chain],
         loc,
       };
@@ -626,8 +674,9 @@ function buildClone(
  * given. Every other key, and every operation on a shape that has no such
  * field, takes the operation exactly as it runs today, on a capsule built at
  * that point. A write to a shape whose values can be frozen tests the frozen
- * bit first and leaves a frozen record unchanged, as the dynamic operation
- * does. Calls that do not qualify keep the original function.
+ * bit first: a frozen record takes the TypeError the dynamic operation
+ * throws in strict-mode code, and is left unchanged in sloppy-mode code.
+ * Calls that do not qualify keep the original function.
  *
  * Code growth is bounded: at most MAX_CLONES_PER_FUNCTION clones per
  * function and MIN_CLONED_NODES (or CLONED_NODE_FRACTION of the module) of
@@ -642,6 +691,7 @@ export function specializeTypedArguments(
   const context: RewriteContext = {
     helpers: helperOperations(mod),
     records: new Map((mod.records ?? []).map((shape) => [shape.id, shape])),
+    sloppyWrites: new Set(mod.sloppyDynWrites ?? []),
   };
   if (!context.helpers.size || !context.records.size) return mod;
   let moduleNodes = 0;

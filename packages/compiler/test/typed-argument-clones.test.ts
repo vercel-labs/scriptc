@@ -83,3 +83,46 @@ test("a call with a dynamic argument is not cloned", async () => {
   const llvm = await llvmFor(BUMP(`bump(other, "hits", 1);`));
   expect(bodiesContaining(llvm, "typedArg")).toHaveLength(0);
 });
+
+test("a write to a frozen record in a clone throws, as the dynamic write does", async () => {
+  const llvm = await llvmFor(`
+type Stats = { hits: number; misses: number };
+function setHits(target: unknown): number {
+  const record = target as Record<string, number>;
+  record.hits = 4;
+  return 1;
+}
+const stats: Stats = { hits: 0, misses: 0 };
+const frozen: Stats = { hits: 0, misses: 0 };
+Object.freeze(frozen);
+function main(): void {
+  console.log(setHits(stats), setHits(frozen), stats.hits, frozen.hits);
+}
+main();
+`);
+  const clones = bodiesContaining(llvm, "typedArg").join("\n");
+  // The frozen bit gates the store, and the write it refuses throws.
+  expect(clones).toMatch(/lshr i64 \S+, 62/);
+  expect(clones).toMatch(/call void @scr_record_throw_frozen/);
+  expect(clones).toMatch(/getelementptr inbounds %sc_rs_\S+, ptr \S+, i64 0, i32 \d+/);
+});
+
+test("a receiver reassigned inside an expression is not cloned", async () => {
+  const llvm = await llvmFor(`
+type Stats = { hits: number; misses: number };
+const other: any = { hits: 9, misses: 0 };
+function bump(target: unknown): number {
+  const record = target as Record<string, number>;
+  record.hits = 5;
+  const keep = Math.max((target = other, 0), 1);
+  record.misses = keep;
+  return keep;
+}
+const stats: Stats = { hits: 1, misses: 2 };
+function main(): void {
+  console.log(bump(stats), stats.hits, stats.misses);
+}
+main();
+`);
+  expect(bodiesContaining(llvm, "typedArg")).toHaveLength(0);
+});

@@ -475,6 +475,32 @@ static bool scr_js_id_is_prototype(const char *id) {
   return length > 10 && strcmp(id + length - 10, "Prototype%") == 0;
 }
 
+/* The prototype object a program's own builder answers: `Number.prototype`
+ * from the primitive-prototype unit and `Boolean.prototype` from the
+ * wrapper unit, whose object is the one `new Boolean(v)` instances inherit
+ * from and whose members run Node's brand check on a primitive boolean or a
+ * Boolean wrapper receiver. A program with the object model links both
+ * builders (the graph calls into them), so the graph adopts their objects
+ * instead of building a second one: a prototype read, a primitive's
+ * `Object.getPrototypeOf`, an instance's chain and a write through the
+ * prototype all name one object. NULL for every other id; the table builds
+ * those itself. +1. */
+static ScrDyn *scr_js_builder_prototype(const char *id) {
+  if (strcmp(id, "Number.prototype") == 0) {
+    ScrStr *kind = scr_str_new("Number", sizeof "Number" - 1);
+    ScrDyn *prototype = scr_dyn_builtin_prototype(kind);
+    scr_str_release(kind);
+    return prototype;
+  }
+  if (strcmp(id, "Boolean.prototype") == 0) {
+    ScrDyn *constructor = scr_js_intrinsic_sized(scr_js_object_index("Boolean"), "Boolean");
+    ScrDyn *prototype = scr_js_wrapper_boolean_prototype(constructor);
+    scr_dyn_release(constructor);
+    return prototype;
+  }
+  return NULL;
+}
+
 /* The object `id` names: the runtime's singleton when it has one, else the
  * interned constructor value, else — for Function.prototype — a callable
  * object, else an ordinary object. +1. */
@@ -484,12 +510,14 @@ static ScrDyn *scr_js_create(const char *id) {
   if (strcmp(id, "Error.prototype") == 0) return scr_dyn_error_prototype();
   if (strcmp(id, "Function.prototype") == 0)
     return scr_dyn_new_func(scr_closure_new(NULL, 0), scr_js_function_prototype_call, 0, "native:prototype", "");
-  /* String, Number, Boolean, BigInt, Symbol and Date prototypes are built by
-   * this unit too (t262-da A2): one intrinsic, one builder, so a write the
-   * program makes through the prototype object is the object a read answers
-   * (§4.4). A wrapper value keeps its own prototype builder for a program
-   * that never reads an intrinsic; a program that reads one walks into the
-   * graph through scr_js_intrinsic_prototype_of. */
+  /* String, BigInt, Symbol and Date prototypes are built by this unit: one
+   * intrinsic, one builder, so a write the program makes through the
+   * prototype object is the object a read answers (§4.4).
+   * Number and Boolean have their own builders (scr_js_builder_prototype),
+   * whose objects the wrapper and primitive-prototype units also answer: the
+   * graph adopts those objects here. */
+  ScrDyn *builder = scr_js_builder_prototype(id);
+  if (builder) return builder;
   if (!scr_js_id_is_prototype(id)) {
     ScrStr *name = scr_str_new(id, strlen(id));
     ScrDyn *constructor = scr_dyn_global_constructor_known(name) ? scr_dyn_global_constructor(name) : NULL;
@@ -506,10 +534,13 @@ static ScrDyn *scr_js_create(const char *id) {
  * primitive (+0, "" and false), so a member called on the prototype object
  * itself runs on that value: `Number.prototype.toFixed(1)` is "0.0",
  * `Number.prototype == 0` is true, `String.prototype.valueOf()` is "".
- * The table's members are the invoke unit's functions, which read the
- * receiver's primitive and refuse an object, so each method of these three
- * prototypes is wrapped to hand the primitive its prototype object wraps to
- * the member; every other receiver keeps the member's own check. */
+ * Number.prototype and Boolean.prototype carry their own builders' members
+ * (scr_dyn_builtin_prototype.c and scr_js_wrapper.c), which read the
+ * primitive the prototype object wraps themselves. String.prototype's
+ * members are this table's rows, the invoke unit's functions, which read the
+ * receiver's primitive and refuse an object, so each of them is wrapped to
+ * hand the member the primitive the prototype object wraps; every other
+ * receiver keeps the member's own check. */
 static SCR_TL size_t scr_js_wrapper_ids[3];
 static SCR_TL bool scr_js_wrapper_ids_indexed;
 
@@ -545,35 +576,6 @@ static ScrDyn *scr_js_wrapper_zero(const ScrDyn *receiver) {
   return value;
 }
 
-/* Boolean.prototype.valueOf and Boolean.prototype.toString, which the invoke
- * unit's member does not answer: its dispatch has no Boolean receiver arm, so
- * it refuses every receiver. The wrapper answers them the way the runtime's
- * own Boolean prototype builder does: a Boolean receiver is its value, the
- * prototype object is `false` (the wrapper Node builds around it), and any
- * other receiver is the TypeError the builder raises. */
-static ScrDyn *scr_js_boolean_member(ScrDyn *receiver, const ScrStr *owner, const ScrStr *method) {
-  ScrDyn *wrapped;
-  bool value;
-  if (receiver->kind == SCR_DYN_BOOL) {
-    value = receiver->v.b;
-  } else if ((wrapped = scr_js_wrapper_zero(receiver)) != NULL) {
-    value = wrapped->v.b;
-    scr_dyn_release(wrapped);
-  } else {
-    char message[128];
-    snprintf(message, sizeof message, "%s.prototype.%s requires that 'this' be a %s", owner->data,
-             method->data, owner->data);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
-    return NULL;
-  }
-  if (strcmp(method->data, "valueOf") == 0) return scr_dyn_new_bool(value);
-  const char *text = value ? "true" : "false";
-  ScrStr *string = scr_str_new(text, strlen(text));
-  ScrDyn *result = scr_dyn_new_str(string);
-  scr_str_release(string);
-  return result;
-}
-
 /* A wrapped wrapper-prototype method: caps[0] the owner name, caps[1] the
  * method name, caps[2] the member function. */
 static ScrDyn *scr_js_wrapper_member_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
@@ -582,14 +584,6 @@ static ScrDyn *scr_js_wrapper_member_call(ScrClosure *closure, ScrDyn *const *ar
   ScrStr *method = scr_box_get_ref(closure->caps[1]);
   ScrDyn *callee = scr_box_get_ref(closure->caps[2]);
   ScrDyn *receiver = scr_dyn_this_get();
-  if (strcmp(owner->data, "Boolean") == 0) {
-    ScrDyn *result = scr_js_boolean_member(receiver, owner, method);
-    scr_dyn_release(receiver);
-    scr_dyn_release(callee);
-    scr_str_release(owner);
-    scr_str_release(method);
-    return result;
-  }
   ScrDyn *wrapped = scr_js_wrapper_zero(receiver);
   ScrDyn *result;
   if (wrapped) {
@@ -770,6 +764,13 @@ static ScrDyn *scr_js_build(size_t index) {
   scr_js_register_cleanup();
   const char *id = scr_js_object_ids[index];
   ScrDyn *object = scr_js_create(id);
+  /* Creating a prototype can build it through its own members: the
+   * constructor's `prototype` row is the pair's other half, so the fill of
+   * that row registers and fills the prototype while this build is still
+   * inside scr_js_create. The slot then already owns a reference and the
+   * object is filled; this build hands its own reference to the caller
+   * instead of storing it a second time. */
+  if (scr_js_filled[index] && scr_js_objects[index] == object) return object;
   scr_js_objects[index] = object;
   scr_js_filled[index] = true;
   scr_js_built_count++;

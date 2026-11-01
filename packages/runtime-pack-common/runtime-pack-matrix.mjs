@@ -87,8 +87,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
-  // Number.prototype and Boolean.prototype read as values in JavaScript.
-  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
+  // Number.prototype and Boolean.prototype read as values in JavaScript, and
+  // the Number.prototype object the intrinsic graph adopts when a program
+  // reads intrinsics (scr_js_builder_prototype). A graph program carries the
+  // invoke unit too, so the reading programs are the ones that reach this
+  // unit either way.
+  ["scr_dyn_builtin_prototype.c", any("builtinPrototypeValue", "intrinsicObjects")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
@@ -137,8 +141,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_module_namespace.c", "moduleNamespace"],
   // The same namespace as the frozen null-prototype object typed code sees.
   ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
-  // Primitive wrapper objects.
-  ["scr_js_wrapper.c", "primitiveWrapper"],
+  // Primitive wrapper objects, and the Boolean.prototype object the intrinsic
+  // graph adopts when a program reads intrinsics (scr_js_builder_prototype).
+  ["scr_js_wrapper.c", any("primitiveWrapper", "intrinsicObjects")],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],

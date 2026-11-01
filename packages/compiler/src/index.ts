@@ -2434,6 +2434,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     textDecoderLegacy: features.legacyTextDecoder,
     bigintBytes: features.bigintBytes,
     dynInvoke: features.dynInvoke,
+    ...(features.dynArrayAttrs ? { dynArrayAttrs: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
@@ -2531,6 +2532,7 @@ async function compileLibraryNative(
     textDecoderLegacy: features.textDecoderLegacy,
     bigintBytes: features.bigintBytes,
     dynInvoke: features.dynInvoke,
+    ...(features.dynArrayAttrs === true ? { dynArrayAttrs: true } : {}),
     ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(features.dynTier === true ? { dynTier: true } : {}),
   };

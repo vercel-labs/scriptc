@@ -28,6 +28,7 @@ export async function compilePackedLibrary(
     copying: options.copying ?? false,
     textDecoderLegacy: options.textDecoderLegacy ?? false,
     bigintBytes: options.bigintBytes ?? false,
+    ...(options.dynArrayAttrs === true ? { dynArrayAttrs: true } : {}),
     fileHandle: false,
     fetch: false,
     zlib: options.zlib ?? false,

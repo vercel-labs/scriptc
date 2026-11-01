@@ -47,7 +47,7 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
-  test("selects the array-attribute build only for the program's own call", () => {
+  test("marks the array-attribute fact only for the program's own call", () => {
     const call = (fn: IrLibFn, mayTargetArray?: true) => ({
       kind: "exprStmt" as const,
       loc,

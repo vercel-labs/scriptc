@@ -544,7 +544,7 @@ struct ScrDyn {
     /* Callbacks keep the optional symbol unit out of symbol-free binaries. */
     struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); } symbol;
     /* `length_readonly` is Object.defineProperty's writable:false on an
-     * array's length (SCR_ARRAY_ATTRS); zero means writable, so every
+     * array's length (SCR_JS_OBJECT_MODEL); zero means writable, so every
      * construction path keeps the default by zeroing. It sits in the
      * padding after the two integrity bits, so no offset moves. */
     struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; bool length_readonly; unsigned char *presence; struct ScrDynRegion *region; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
@@ -1213,7 +1213,7 @@ ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read)
 ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
-#ifdef SCR_ARRAY_ATTRS
+#ifdef SCR_JS_OBJECT_MODEL
 /* The element-attribute bits an array's presence byte carries: bit 0 is
  * presence (so a byte of 1 is exactly what other units write when a hole
  * becomes present), the others an element's deviation from the default

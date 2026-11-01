@@ -799,8 +799,8 @@ const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
 const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resize"]);
 
 /** The user-level calls that can make a dynamic array's index or length
- * part of its state (SCR_ARRAY_ATTRS): Object/Reflect.defineProperty, and
- * the integrity mutators that can make an array non-extensible. */
+ * part of its state (the jsObjectModel rule): Object/Reflect.defineProperty,
+ * and the integrity mutators that can make an array non-extensible. */
 const DYN_ARRAY_ATTRS_FNS: ReadonlySet<string> = new Set([
   "dyn.defineProperty",
   "dyn.preventExtensions",
@@ -1004,14 +1004,19 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]
 
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
- * (BigInt views today, array attributes and handle property tables next), so
+ * (BigInt views and array attributes today, handle property tables next), so
  * pack selection and the source build (RUNTIME_DEFINES, the library's
  * cflags) agree on when the build is on. */
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  dynArrayAttrs?: boolean;
 }): boolean {
-  return features.jsObjectModel === true || features.bigintBytes === true;
+  return (
+    features.jsObjectModel === true ||
+    features.bigintBytes === true ||
+    features.dynArrayAttrs === true
+  );
 }
 
 /** One rule per runtime feature, sorted by name. A new feature is an
@@ -1193,11 +1198,12 @@ const RUNTIME_FEATURE_RULES = {
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
   dynTier: rule({ prefixes: ["js."] }),
-  /** Object.defineProperty on a checked-dynamic array's index or length
-   * (SCR_ARRAY_ATTRS in scr_json.c and scr_dyn_invoke.c): the dynamic tier
-   * keeps per-element writable/enumerable/configurable bits and a
-   * length-writability bit only for programs that can set them, so every
-   * other program keeps the default runtime object. The program's own
+  /** Object.defineProperty on a checked-dynamic array's index or length:
+   * the dynamic tier keeps per-element writable/enumerable/configurable bits
+   * and a length-writability bit only for programs that can set them, and
+   * the code lives in the JavaScript object model build t262-da §J shares
+   * (jsObjectModelFact ORs this fact in), so every other program keeps the
+   * default runtime object. The program's own
    * defineProperty (and the integrity calls that can make an array
    * non-extensible) mark the call mayTargetArray; the lowering's own calls
    * on targets it built — class machinery, tagged-template `raw`, object

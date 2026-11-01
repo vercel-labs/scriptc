@@ -177,4 +177,5 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
     "scr_console_native.c",
   ]) {
     expect(selected(source, plain).defines).toEqual([]);
-  }});
+  }
+});

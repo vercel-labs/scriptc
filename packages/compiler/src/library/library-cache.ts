@@ -58,6 +58,7 @@ interface EarlyLibraryCacheStamp {
     copying: boolean;
     textDecoderLegacy: boolean;
     bigintBytes: boolean;
+    dynArrayAttrs?: boolean;
   };
   integrity: string;
 }
@@ -80,6 +81,10 @@ export interface EarlyLibraryNativeFeatures {
   copying: boolean;
   textDecoderLegacy: boolean;
   bigintBytes: boolean;
+  /** Object.defineProperty on a dynamic array's index or length: the
+   * archive's bytes and json units carry the JavaScript object model build
+   * (t262-da §J). */
+  dynArrayAttrs?: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }

@@ -1152,24 +1152,30 @@ function globalCharPattern(text: string): string | null {
   return null;
 }
 
-/** `String.prototype.{includes,startsWith,endsWith}(searchString)` throws a
- * TypeError when the search value is a RegExp (spec: IsRegExp, then throw);
- * `indexOf`/`lastIndexOf` convert it with ToString instead and search for
- * "/x/". Both operands are evaluated first — receiver, then search value. */
+/** `String.prototype.{includes,startsWith,endsWith}(searchString, position)`
+ * throws a TypeError when the search value is a RegExp (spec: IsRegExp, then
+ * throw); `indexOf`/`lastIndexOf` convert it with ToString instead and search
+ * for "/x/". Every argument is evaluated first, in source order — receiver,
+ * search value, then the remaining arguments — because the throw replaces the
+ * call, not the evaluation of its arguments. */
 function rejectRegexpSearchArgument(
   lowerer: Lowerer,
   method: string,
   receiver: IrExpr,
   needle: ts.Expression,
+  rest: readonly ts.Expression[],
   loc: SrcLoc,
 ): IrExpr | null {
   if (method === "indexOf") return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(needle))?.kind !== "regex") return null;
   const message = `First argument to String.prototype.${method} must not be a regular expression`;
   const stmts: IrStmt[] = [];
-  if (!isSafeToDiscard(receiver)) stmts.push({ kind: "exprStmt", expr: receiver, loc });
-  const value = lowerer.lowerExpr(needle);
-  if (!isSafeToDiscard(value)) stmts.push({ kind: "exprStmt", expr: value, loc });
+  const discard = (expr: IrExpr): void => {
+    if (!isSafeToDiscard(expr)) stmts.push({ kind: "exprStmt", expr, loc });
+  };
+  discard(receiver);
+  discard(lowerer.lowerExpr(needle));
+  for (const argument of rest) discard(lowerer.lowerExpr(argument));
   const thrown = nodeThrowExpr(1, "", message, BOOL, loc);
   return stmts.length === 0 ? thrown : { kind: "seqExpr", stmts, result: thrown, type: BOOL, loc };
 }
@@ -1293,6 +1299,7 @@ export function lowerStringMethodCall(
       entry.method,
       receiver,
       argumentNodes[0]!,
+      argumentNodes.slice(1),
       loc,
     );
     if (rejection !== null) return rejection;

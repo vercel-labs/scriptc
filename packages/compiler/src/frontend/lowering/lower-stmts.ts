@@ -60,7 +60,7 @@ import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
-import { lowerConstructorReturn } from "./constructor-returns.js";
+import { clearPendingPrimitiveReturn, lowerConstructorReturn } from "./constructor-returns.js";
 import type { DynamicSlot, Lowerer } from "./lowerer.js";
 import type { ScrDiagnostic, TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
@@ -2022,13 +2022,21 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // observed empty returns even when JSDoc omits undefined. Any remaining
     // incompatible boundary keeps the ordinary per-statement refusal.
     let value: IrExpr | null = null;
+    // A derived constructor that can record a pending TypeError on a
+    // primitive return drops it before a return of its own: a `finally`
+    // block's `return;`, `return undefined` or `return this` replaces the
+    // earlier completion instead of leaving it pending.
+    const withClearedPending = (ret: IrStmt): IrStmt => {
+      const clear = clearPendingPrimitiveReturn(lowerer, stmt);
+      return clear.length === 0 ? ret : { kind: "block", body: [...clear, ret], loc: locOf(stmt) };
+    };
     if (stmt.expression) {
       // A constructor's returned object replaces the constructed `this`.
       if (lowerer.currentClass?.ctor) {
         const constructorReturn = lowerConstructorReturn(lowerer, stmt);
         if (constructorReturn !== null) return constructorReturn;
       }
-      return lowerer.lowerReturnStmt(stmt.expression, locOf(stmt));
+      return withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
     } else if (lowerer.ctx.returnType.kind === "union") {
       value = lowerer.wrappedUndefined(lowerer.ctx.returnType, locOf(stmt));
       if (value === null) {
@@ -2049,8 +2057,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     }
     // An async generator's bare return has no operand to await.
     if (lowerer.ctx.isAsync === true && lowerer.ctx.generator)
-      return { kind: "return", value, awaited: true, loc: locOf(stmt) };
-    return { kind: "return", value, loc: locOf(stmt) };
+      return withClearedPending({ kind: "return", value, awaited: true, loc: locOf(stmt) });
+    return withClearedPending({ kind: "return", value, loc: locOf(stmt) });
   }
   if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {
     const kw = ts.isBreakStatement(stmt) ? ("break" as const) : ("continue" as const);

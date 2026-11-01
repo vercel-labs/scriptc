@@ -142,6 +142,18 @@ function nodeWithin(node: ts.Node, ancestor: ts.Node): boolean {
   return node.pos >= ancestor.pos && node.end <= ancestor.end;
 }
 
+/** A return inside a `finally` block: the completion of the `try` (or of a
+ * `catch`) it belongs to is discarded, so a primitive return from there no
+ * longer decides the construction. Only these returns can run while a
+ * primitive return is pending. */
+function insideFinallyBlock(node: ts.Node, ctor: ts.ConstructorDeclaration): boolean {
+  for (let p = node.parent; p !== undefined && p !== ctor; p = p.parent) {
+    if (ts.isTryStatement(p) && p.finallyBlock !== undefined && nodeWithin(node, p.finallyBlock))
+      return true;
+  }
+  return false;
+}
+
 function instanceType(info: ClassInfo): IrType {
   return { kind: "object", className: info.def.name };
 }
@@ -330,6 +342,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
       kind: "block",
       body: [
         { kind: "assign", localId: plan.slot!.id, value, loc },
+        ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
         { kind: "return", value: null, loc },
       ],
       loc,
@@ -412,6 +425,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
                       ),
                       loc,
                     },
+                    ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
                     { kind: "return" as const, value: null, loc },
                   ],
                   else_: null,
@@ -432,21 +446,15 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
       // A derived constructor's non-object result must be `undefined`; any
       // other primitive (null answers "object" here) throws once the
       // construction returns. A base constructor keeps the constructed
-      // instance.
+      // instance. The flag records this return's own answer, so a `finally`
+      // that overrides an earlier primitive return with `undefined` clears
+      // it.
       ...(plan.primitiveFlag !== null && info.base !== null
         ? [
             {
-              kind: "if" as const,
-              cond: dynTypeofIs(read, "undefined", true, loc),
-              then: [
-                {
-                  kind: "assign" as const,
-                  localId: plan.primitiveFlag.id,
-                  value: { kind: "boolLit" as const, value: true, type: BOOL, loc },
-                  loc,
-                },
-              ],
-              else_: null,
+              kind: "assign" as const,
+              localId: plan.primitiveFlag.id,
+              value: dynTypeofIs(read, "undefined", true, loc),
               loc,
             },
           ]
@@ -458,11 +466,11 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
 }
 
 /** `return <primitive>` in a derived constructor: the operand is evaluated
- * for its side effects, then a non-`undefined` value records the pending
- * TypeError and returns normally. The error is raised where the
- * construction returns, because [[Construct]] raises it there: a `try` or
- * `catch` inside the constructor body cannot observe it, and a `finally`
- * block still runs first. A base constructor's primitive return is
+ * for its side effects, then the flag records whether a non-`undefined`
+ * value is pending, and the return completes normally. The error is raised
+ * where the construction returns, because [[Construct]] raises it there: a
+ * `try` or `catch` inside the constructor body cannot observe it, and a
+ * `finally` block still runs first. A base constructor's primitive return is
  * ignored, so only a derived class reaches this. */
 function lowerDerivedPrimitiveReturn(
   lowerer: Lowerer,
@@ -477,20 +485,7 @@ function lowerDerivedPrimitiveReturn(
     kind: "block",
     body: [
       { kind: "varDecl", localId: held.id, init: value, loc },
-      {
-        kind: "if",
-        cond: dynTypeofIs(read, "undefined", true, loc),
-        then: [
-          {
-            kind: "assign",
-            localId: flag.id,
-            value: { kind: "boolLit", value: true, type: BOOL, loc },
-            loc,
-          },
-        ],
-        else_: null,
-        loc,
-      },
+      { kind: "assign", localId: flag.id, value: dynTypeofIs(read, "undefined", true, loc), loc },
       { kind: "return", value: null, loc },
     ],
     loc,
@@ -524,16 +519,42 @@ export function constructorPrimitiveFlag(lowerer: Lowerer, info: ClassInfo): IrG
   return constructorReturnPlan(lowerer, info)?.primitiveFlag ?? null;
 }
 
+/** The assignment that drops a pending derived primitive return. */
+function clearFlag(flag: IrGlobal, loc: SrcLoc): IrStmt {
+  return {
+    kind: "assign",
+    localId: flag.id,
+    value: { kind: "boolLit", value: false, type: BOOL, loc },
+    loc,
+  };
+}
+
+function clearPrimitiveFlag(plan: ConstructorReturnPlan, loc: SrcLoc): IrStmt[] {
+  return plan.primitiveFlag === null ? [] : [clearFlag(plan.primitiveFlag, loc)];
+}
+
+/** The statements a `return` needs before it leaves the constructor with a
+ * value of its own: a `finally` block that overrides an earlier primitive
+ * return replaces that completion, so `try { return 1 } finally { return; }`
+ * constructs normally in Node. Empty for a return that is not the
+ * constructor's own, for a return outside a `finally` block, or for a class
+ * that records no flag. */
+export function clearPendingPrimitiveReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrStmt[] {
+  const info = lowerer.currentClass;
+  if (info === null || info.ctor === null) return [];
+  let fn: ts.Node | undefined = stmt.parent;
+  while (fn !== undefined && !ts.isFunctionLike(fn) && !ts.isClassLikeDeclaration(fn))
+    fn = fn.parent;
+  if (fn !== info.ctor || !insideFinallyBlock(stmt, info.ctor)) return [];
+  const flag = constructorPrimitiveFlag(lowerer, info);
+  return flag === null ? [] : [clearFlag(flag, locOf(stmt))];
+}
+
 /** Node's TypeError for a construction whose derived constructor recorded a
  * primitive return, as a statement. */
 function throwPendingPrimitiveReturn(flag: IrGlobal, loc: SrcLoc): IrStmt[] {
   return [
-    {
-      kind: "assign",
-      localId: flag.id,
-      value: { kind: "boolLit", value: false, type: BOOL, loc },
-      loc,
-    },
+    clearFlag(flag, loc),
     { kind: "exprStmt", expr: nodeThrowExpr(1, "", DERIVED_PRIMITIVE_RETURN, VOID, loc), loc },
   ];
 }

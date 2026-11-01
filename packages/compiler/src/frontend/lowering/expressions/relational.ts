@@ -67,6 +67,11 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import {
+  hostAbsentInstall,
+  isGlobalObjectRead,
+  NODE_GLOBALS_WITHOUT_NATIVE,
+} from "../host-globals.js";
 import { hasGlobalFunctionValue } from "../global-function-values.js";
 import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
@@ -1690,6 +1695,48 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  // `… in <global object>`: presence on the runtime's global object. Node HAS
+  // the globals the native runtime does not implement, so the answer must not
+  // be a silent false — arming the compiler's derived set makes the runtime
+  // throw for them (host-globals.ts) and answer the global object's own
+  // presence otherwise. A symbol key keeps its checked-dynamic path below;
+  // this answer is keyed by a string.
+  const inGlobalKey = foldedStringKeyOf(lowerer, expr.left);
+  if (
+    isGlobalObjectRead(lowerer, expr.right) &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind !== "symbol" &&
+    // A static key the runtime already answers correctly (a name Node does
+    // not define) keeps its existing lowering, byte for byte.
+    (inGlobalKey === null || NODE_GLOBALS_WITHOUT_NATIVE.has(inGlobalKey))
+  ) {
+    const folded = inGlobalKey;
+    let key: IrExpr;
+    if (folded !== null) {
+      key = { kind: "strLit", value: folded, type: STRING, loc };
+    } else {
+      // JS evaluates the key before the receiver; the receiver is the global
+      // object, whose evaluation has no effects, so lowering the key first is
+      // the whole evaluation order.
+      const lowered = lowerer.lowerExpr(expr.left);
+      key =
+        lowered.type.kind === "string"
+          ? lowered
+          : {
+              kind: "libCall",
+              fn: "dyn.toStringCoerce",
+              args: [lowerer.coerceInto(expr.left, lowered, DYN)],
+              type: STRING,
+              loc,
+            };
+    }
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: hostAbsentInstall(loc), loc }],
+      result: { kind: "libCall", fn: "dyn.globalHas", args: [key], type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
   }
   // Compile-time-known STRING keys fold — literals, and the same
   // const/enum-literal and template folding computed property keys get

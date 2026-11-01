@@ -43,10 +43,12 @@ import { globalSymbolKey } from "./global-symbols.js";
 import {
   HOST_GLOBAL_PROTOTYPE_MEMBERS,
   HOST_GLOBAL_VALUE_MEMBERS,
+  hostAbsentInstall,
   hostGlobalCallTarget,
   hostGlobalNameOfElement,
   hostGlobalNameOfRead,
   hostGlobalPrototypeOf,
+  isGlobalObjectRead,
 } from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -236,7 +238,25 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         lowerer.hostGlobalFence(prototypeOf, expr);
     }
   }
-  if (!expr.questionDotToken && stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis") {
+  // A computed key over the global object: the runtime answers from its own
+  // table, which cannot tell that a name is Node's. Reading a Node global the
+  // native runtime does not implement must not answer undefined, so the
+  // derived host-global set is armed before the read (host-globals.ts). A
+  // static string key never needs it (the fence above decides those), and a
+  // symbol key keeps its identity-indexed store.
+  const globalName = expr.questionDotToken ? null : stdlibGlobalNameOf(lowerer, expr.expression);
+  const plainGlobalRead = globalName === "globalThis";
+  // The alias/cast spellings (`const scope = globalThis as T`) resolve to no
+  // global name at all, which is what keeps them out of the check above.
+  const aliasGlobalRead =
+    !plainGlobalRead &&
+    globalName === null &&
+    !expr.questionDotToken &&
+    isGlobalObjectRead(lowerer, expr.expression, undefined, globalName);
+  const dynamicKey =
+    !ts.isStringLiteralLike(expr.argumentExpression) &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.argumentExpression))?.kind !== "symbol";
+  if (plainGlobalRead || (aliasGlobalRead && dynamicKey)) {
     const symbol = globalSymbolKey(lowerer, expr.expression, expr.argumentExpression);
     if (symbol)
       return {
@@ -257,12 +277,21 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
             type: STRING,
             loc: locOf(expr),
           };
-    return {
+    const loc = locOf(expr);
+    const read: IrExpr = {
       kind: "dynKeyGet",
       value: lowerGlobalValue(lowerer, expr.expression),
       key: name,
       type: DYN,
-      loc: locOf(expr),
+      loc,
+    };
+    if (!dynamicKey) return read;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: hostAbsentInstall(loc), loc }],
+      result: read,
+      type: DYN,
+      loc,
     };
   }
   // `req.headers["x-name"]` — the computed twin of `req.headers.host`

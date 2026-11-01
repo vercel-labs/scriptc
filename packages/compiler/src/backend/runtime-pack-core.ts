@@ -23,8 +23,6 @@ export interface RuntimePackVariant extends RuntimePackArtifact {
   id: string;
   when: Record<string, boolean>;
   defines: string[];
-  /** LLVM bitcode of the same unit, imported by the helper for inlining. */
-  bitcode?: RuntimePackArtifact;
 }
 
 interface RuntimePackUnit {
@@ -96,9 +94,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   streamDyn: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
+  childOptionExt: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   dynForAwait: boolean;
+  dynIntegrityQueries: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -107,6 +107,15 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   utilTiming: boolean;
   dynBuffer: boolean;
   builtinValues: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (scr_dyn_stdlib_prototype.c). */
+  stdlibPrototypeValue?: boolean;
+  /** Array.prototype's generic algorithms over array-likes
+   * (scr_dyn_array_like.c). */
+  arrayLikeDispatch?: boolean;
+  /** Number.prototype and Boolean.prototype as values
+   * (scr_dyn_builtin_prototype.c). */
+  builtinPrototypeValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
   recordViewPartial: boolean;
@@ -206,7 +215,6 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
             const when = object(variant?.when);
             return (
               validArtifact(variantRaw) &&
-              (variant?.bitcode === undefined || validArtifact(variant.bitcode)) &&
               typeof variant?.id === "string" &&
               when !== null &&
               Object.values(when).every((entry) => typeof entry === "boolean") &&
@@ -311,6 +319,7 @@ export function effectiveRuntimeFeatures(
   const tlsCaEffective = features.tlsCa || tlsEffective;
   return {
     ...features,
+    fsBufferBrand: features.fsBufferBrand === true,
     workers: features.workers === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
@@ -319,9 +328,11 @@ export function effectiveRuntimeFeatures(
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
+    childOptionExt: features.childOptionExt === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
+    dynIntegrityQueries: features.dynIntegrityQueries === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
@@ -330,6 +341,9 @@ export function effectiveRuntimeFeatures(
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
+    stdlibPrototypeValue: features.stdlibPrototypeValue === true,
+    arrayLikeDispatch: features.arrayLikeDispatch === true,
+    builtinPrototypeValue: features.builtinPrototypeValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     recordViewPartial: features.recordViewPartial === true,
@@ -417,8 +431,8 @@ export function validateRuntimePackIdentity(
 
 export interface RuntimePackArtifacts {
   features: RuntimeFeatureSet;
-  /** Selected unit variants; each may carry its bitcode artifact. */
-  runtime: (RuntimePackArtifact & { bitcode?: RuntimePackArtifact })[];
+  /** Selected unit variants. */
+  runtime: RuntimePackArtifact[];
   archives: RuntimePackArtifact[];
   /** Files to install beside the executable (ICU's data file for Intl). */
   data: RuntimePackArtifact[];

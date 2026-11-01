@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, test, vi } from "vitest";
-import { FrontendServices, type ComptimeEvaluator } from "./services.js";
+import {
+  FrontendServices,
+  PROGRAM_HOST_LOADS,
+  programHostLoads,
+  type ComptimeEvaluator,
+} from "./services.js";
 import { Ts7Api } from "./ts7/rpc-api.js";
 import { checkPreflight, isNodeEsmFile, loadProgram } from "./program.js";
 import { clearResolveCaches } from "./resolve.js";
@@ -167,4 +172,65 @@ test("Node format decisions belong to their program even when source ASTs are re
     services.close();
   }
   expect(first.analysis.nodeEsmFiles.size).toBe(0);
+});
+
+test("reused program hosts serve later loads, up to their share, one connection per live host", () => {
+  const { services, connections, dir } = setup();
+  services.reuseProgramHosts(3);
+  const entry = join(dir, "main.ts");
+  writeFileSync(entry, "export const value = 1;");
+  try {
+    // Two loads alive at once hold two hosts; after they close, the next
+    // loads reuse those connections.
+    const a = loadProgram(entry, services);
+    const b = loadProgram(entry, services);
+    expect(connections).toHaveLength(2);
+    a.dispose();
+    b.dispose();
+    for (let load = 0; load < 5; load++) {
+      const next = loadProgram(entry, services);
+      expect(checkPreflight(next)).toEqual([]);
+      next.dispose();
+    }
+    // Each host served 3 loads (the share), then closed: a third host
+    // started for the last load.
+    expect(connections).toHaveLength(3);
+    expect(connections[0]!.close).toHaveBeenCalledTimes(1);
+    expect(connections[1]!.close).toHaveBeenCalledTimes(1);
+    expect(connections[2]!.close).not.toHaveBeenCalled();
+  } finally {
+    services.close();
+  }
+  expect(connections[2]!.close).toHaveBeenCalledTimes(1);
+});
+
+test("without reuse, and for timed hosts, every load gets its own host", () => {
+  const { services, connections } = setup();
+  try {
+    services.createProgramHost().close();
+    services.createProgramHost().close();
+    expect(connections).toHaveLength(2);
+    services.reuseProgramHosts(4);
+    services.createProgramHost({ collectTiming: true }).close();
+    services.createProgramHost({ collectTiming: true }).close();
+    expect(connections).toHaveLength(4);
+    for (const connection of connections) expect(connection.close).toHaveBeenCalledTimes(1);
+    // A host in a different directory is not reused for this one.
+    services.createProgramHost({ cwd: tmpdir() }).close();
+    services.createProgramHost().close();
+    expect(connections).toHaveLength(6);
+  } finally {
+    services.close();
+  }
+  for (const connection of connections) expect(connection.close).toHaveBeenCalledTimes(1);
+});
+
+test("SCRIPTC_TS7_HOST_LOADS selects the share and rejects malformed values", () => {
+  expect(programHostLoads({})).toBe(PROGRAM_HOST_LOADS);
+  expect(programHostLoads({ SCRIPTC_TS7_HOST_LOADS: "1" })).toBe(1);
+  expect(programHostLoads({ SCRIPTC_TS7_HOST_LOADS: "12" })).toBe(12);
+  for (const value of ["0", "-1", "2.5", "many"])
+    expect(() => programHostLoads({ SCRIPTC_TS7_HOST_LOADS: value })).toThrow(
+      "SCRIPTC_TS7_HOST_LOADS must be a positive integer",
+    );
 });

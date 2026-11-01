@@ -15,6 +15,7 @@ import {
   CYC_HDR,
   FIRST_EMITTED_CYC_KIND,
   inlineAllocSupported,
+  RECORD_KEPT_GATE,
   RECORD_SOURCES_GATE,
   WEAK_KEYS_GATE,
 } from "./alloc.js";
@@ -255,7 +256,12 @@ import { emitCallExpr } from "./expr-calls.js";
 import { emitDynamicExpr } from "./expr-dynamic.js";
 import { emitIntrinsicExpr, emitSerializationExpr, emitAsyncExpr } from "./expr-async.js";
 import { PublishWalkers } from "./publish.js";
-import { computeImmutableFields, stableGlobals, type ImmutableFields } from "../immutability.js";
+import {
+  computeConstructionFacts,
+  computeImmutableFields,
+  stableGlobals,
+  type ImmutableFields,
+} from "../immutability.js";
 import { computeCycleMutability, hierarchyUnitOfClass } from "../cycle-mutability.js";
 import { computePublishedTypes, type PublishedTypes } from "../publication.js";
 import { emitExpr } from "./expr-dispatch.js";
@@ -943,6 +949,25 @@ function isIdentifierByte(code: number): boolean {
  * bookkeeping calls do not suspend it. */
 export const SUSPENDS =
   /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_)|sc_a[wd]_)/;
+/** The literal text each SUSPENDS alternative starts with. The `@scr_` prefix
+ * is joined to each suffix here so that a prefix is not read as an emitted
+ * symbol name by the runtime ABI scan. */
+const SUSPEND_PREFIXES = [
+  "await_",
+  "module_await",
+  "promise_await_settled",
+  "test_sub",
+  "gen_yield_",
+  "async_gen_",
+  "fiber_",
+]
+  .map((suffix) => `@scr_${suffix}`)
+  .concat("@sc_aw_", "@sc_ad_");
+/** Whether `text` mentions a SUSPENDS entry point. The regex runs only on
+ * text that holds one of its prefixes, which most function bodies do not. */
+export function mentionsSuspension(text: string): boolean {
+  return SUSPEND_PREFIXES.some((prefix) => text.includes(prefix)) && SUSPENDS.test(text);
+}
 /** The suspensions of a fiber body's own awaits, which its stackless
  * coroutine form suspends itself at instead. */
 const AWAIT_SUSPENSIONS =
@@ -1606,6 +1631,9 @@ export class LlEmitter {
   /** Static types whose values can be published (@scriptc/threads): their
    * stores carry the frozen-object guard. Null without publish calls. */
   readonly publishedTypes: PublishedTypes | null;
+  /** Constructor stores that write a field's first value (immutability.ts
+   * computeConstructionFacts): they store without releasing an old value. */
+  readonly freshFieldStores: ReadonlySet<IrStmt>;
   /** Construction-only class and record fields (immutability.ts); null
    * where the facts are disabled. */
   private readonly immutableFields: ImmutableFields | null;
@@ -1678,6 +1706,12 @@ export class LlEmitter {
   readonly arraySearchKinds = new Set<ArraySearchKind>();
   /** Typed-ref recipe constants by type key (lazy receivers). */
   readonly typedRefRecipes = new Map<string, string>();
+
+  /** The module links narrowed record copies to their sources
+   * (IrModule.recordLinks). */
+  hasRecordLinks(): boolean {
+    return (this.mod.recordLinks?.length ?? 0) > 0;
+  }
   /** ReadableStream.from adapters keep typed arrays by reference and box
    * one current element per pull. */
   readonly streamFromArrayAdapters = new Map<string, string>();
@@ -2199,7 +2233,9 @@ export class LlEmitter {
     // and per async fiber; WASI, Windows and library builds have none.
     const triple = (options.targetTriple ?? "").toLowerCase();
     const windows = triple === "" ? process.platform === "win32" : triple.includes("windows");
-    this.publishedTypes = computePublishedTypes(mod, this.nodeIndex);
+    const construction = computeConstructionFacts(mod, this.nodeIndex);
+    this.freshFieldStores = construction.freshStores;
+    this.publishedTypes = computePublishedTypes(mod, this.nodeIndex, construction);
     const mt = computeMayThrow(mod, {
       stackChecks: !this.wasi && mod.lib === undefined && !windows,
       published: this.publishedTypes,
@@ -2391,6 +2427,9 @@ export class LlEmitter {
       this.tracedUnions,
     );
     this.shapeHost = {
+      ...((mod.recordLinks?.length ?? 0) > 0
+        ? { recordSourcesGate: RECORD_KEPT_GATE, recordLinks: mod.recordLinks }
+        : {}),
       // Journal hooks only on emitters that can emit ranges (chunk
       // emitters, and emitters whose workers take a journal after the
       // fork), so the host's optional calls cost nothing otherwise.
@@ -2816,9 +2855,17 @@ export class LlEmitter {
    * displayName, else its sourceName. Function boxes without a static name
    * look the closure's entry up in this table. */
   private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  private closureNameByEntry: Map<string, string> | undefined;
+  /** The declared functions `closureNames` lists by their wrapper. A scan
+   * sees closures in statements the emitter never reaches (a statement
+   * after a runtimeFence: the fence always jumps), so some of these names
+   * never enter `fnValues`; emitFnValueDefs defines their wrapper anyway,
+   * because the table's entry has to resolve. */
+  private readonly closureWrapperNames = new Set<string>();
   closureNames(): readonly { entry: string; name: string }[] {
     if (this.closureNameEntries !== undefined) return this.closureNameEntries;
     const entries = new Map<string, string>();
+    this.closureNameByEntry = entries;
     const scan = this.nodeIndex.scan(CLOSURE_KINDS);
     for (const fn of this.mod.functions) {
       eachNodeOfKinds(fn, scan, (node) => {
@@ -2828,13 +2875,29 @@ export class LlEmitter {
           target?.displayName ??
           (target?.sourceName !== "<anonymous>" ? target?.sourceName : undefined);
         if (target === undefined || name === undefined || name === "") return true;
-        const entry =
-          target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        const entry = this.closureEntry(node.fnName, target);
+        if (target.captures === undefined) this.closureWrapperNames.add(node.fnName);
         if (!entries.has(entry)) entries.set(entry, name);
         return true;
       });
     }
     return (this.closureNameEntries = [...entries].map(([entry, name]) => ({ entry, name })));
+  }
+
+  /** The entry point of a closure of `fnName` (closureNames). */
+  private closureEntry(fnName: string, target: IrFunction): string {
+    return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
+  }
+
+  /** The name the closure-name table gives a closure made of `fnName`
+   * (null when it has none), which lets a box of a closure made at the site
+   * skip the table lookup; undefined for a function the module does not
+   * define. */
+  closureNameOf(fnName: string): string | null | undefined {
+    const target = this.fnByName.get(fnName);
+    if (target === undefined) return undefined;
+    this.closureNames();
+    return this.closureNameByEntry!.get(this.closureEntry(fnName, target)) ?? null;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -2847,7 +2910,10 @@ export class LlEmitter {
     );
     return [
       `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
-      `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`,
+      `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources || this.hasRecordLinks()}`,
+      ...(this.hasRecordLinks()
+        ? [`${RECORD_KEPT_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`]
+        : []),
       ``,
     ];
   }
@@ -2889,10 +2955,14 @@ export class LlEmitter {
 
   /** Env-signature wrappers + interned immortal closures for declared
    * functions used as values (the runtime ABI’s sc_w_/sc_fc_ pair): every
-   * mention of `f` yields the same pointer, so `f === f` holds. */
+   * mention of `f` yields the same pointer, so `f === f` holds. The
+   * closure-name table's wrapper entries are included even when their
+   * closure was never emitted (see closureWrapperNames). */
   emitFnValueDefs(): string[] {
     const out: string[] = [];
-    for (const name of this.fnValues) {
+    const names = new Set(this.fnValues);
+    for (const name of this.closureWrapperNames) names.add(name);
+    for (const name of names) {
       const fn = this.fnByName.get(name)!;
       const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
       const args = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`).join(", ");
@@ -7750,6 +7820,7 @@ export class LlEmitter {
     field: string,
     nullable: NullableRefField,
     value: IrExpr,
+    fresh: boolean,
   ): void {
     let next: string;
     if (
@@ -7774,6 +7845,10 @@ export class LlEmitter {
       next = this.unionToNullable(this.emitUnionProjection(value).name, nullable);
     }
     const { ptr } = this.classFieldPtr(obj, className, field, "compressed");
+    if (fresh) {
+      this.storeRef(ptr, next);
+      return;
+    }
     const old = this.loadRef(ptr, false);
     this.storeRef(ptr, next);
     this.releaseHeap(old, nullable.arm);

@@ -78,6 +78,13 @@ export function lowerYield(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
         type: raw.type.inner,
         loc: raw.loc,
       };
+      // An awaited promise typed `Promise<never>` never fulfills: its
+      // rejection is the whole of its evaluation, and it reaches the
+      // consumer with the reason's identity. Marking the await `never`
+      // makes the coercion into a valued channel produce the unreachable
+      // trap instead of an SC1090 void-value fence, which would replace the
+      // operand's own rejection with a compiler error.
+      if (awaitedTypeIsNever(lowerer, expr.expression)) lowerer.neverValued.add(awaitedValue);
       value = lowerer.coerceInto(expr.expression, awaitedValue, gen.yieldT);
       // AsyncGeneratorYield itself awaits its operand. The explicit IR
       // await above performs that one required hop; the runtime must settle
@@ -101,7 +108,30 @@ export function lowerYield(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
   // the expression is void (statement position; the checker types reads of
   // it undefined, whose uses fence downstream).
   const type = gen.nextT.kind === "undefinedT" ? VOID : gen.nextT;
+  // A VOID yield channel is the `never` sentinel ("a generator that never
+  // yields"): every operand is a `never` value, so evaluating it abandons
+  // the generator and the suspension is unreachable. Emitting the yield
+  // would store a void operand (rc:void) — evaluate the operand for its
+  // effects instead and end in the unreachable trap, the same shape a
+  // `never` call takes in a value position.
+  if (gen.yieldT.kind === "void")
+    return lowerer.divergentValue(
+      value,
+      // A valueless next channel (`.next()` resumes with undefined) has no
+      // storage form; the trap's dead result rides dyn, which any use of
+      // the yield expression (a read of `undefined`) coerces from.
+      type.kind === "void" ? DYN : type,
+      "unreachable: a yield on a 'never' channel produced a value — please report this",
+    );
   return { kind: "yieldExpr", value, ...(awaited ? { awaited: true as const } : {}), type, loc };
+}
+
+/** Whether the awaited type of `node` is `never` (a promise that can only
+ * reject). */
+function awaitedTypeIsNever(lowerer: Lowerer, node: ts.Expression): boolean {
+  const operandTs = lowerer.typeOf(node);
+  const awaitedTs = lowerer.checker.getAwaitedType(operandTs) ?? operandTs;
+  return (awaitedTs.flags & ts.TypeFlags.Never) !== 0;
 }
 
 /** `g.next(v)` / `g.return(v)` / `g.throw(e)` on a generator-typed
@@ -927,8 +957,12 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
       loc,
     });
     const retT = dT.retT;
+    // A `never` delegate channel (the VOID sentinel) yields nothing to
+    // re-yield: the drive runs the delegate for its steps and its thrown
+    // error alone. Any other channel needs an OUT-slot value to re-yield.
+    const neverYields = dT.yieldT.kind === "void";
     if (
-      hasOutSlot(dT.yieldT) &&
+      (hasOutSlot(dT.yieldT) || neverYields) &&
       (retT.kind === "void" || (hasOutSlot(retT) && retT.kind !== "union" && retT.kind !== "dyn"))
     ) {
       // Drive the delegate record-free, re-yielding each value as it is
@@ -939,7 +973,7 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
         retT.kind === "void"
           ? channelUndefined(lowerer, DYN, loc)!
           : { kind: "genResume", mode: "value", gen: dRef(), arg: null, type: retT, loc };
-      return {
+      const sequence: IrExpr & { kind: "seqExpr" } = {
         kind: "seqExpr",
         result,
         type: result.type,
@@ -956,21 +990,37 @@ function lowerYieldStar(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
               type: BOOL,
               loc,
             },
-            body: [
-              {
-                kind: "assign",
-                localId: done.id,
-                value: drive(
-                  reYield(genValue({ kind: "varRef", localId: d.id, type: dT, loc }, loc)),
-                  BOOL,
-                ),
-                loc,
-              },
-            ],
+            body: neverYields
+              ? [
+                  // A non-done step on a `never` channel: the type says the
+                  // delegate never yields, so this is unreachable.
+                  {
+                    kind: "runtimeFence",
+                    code: "SC9002",
+                    message:
+                      "unreachable: a delegate yielded a value into a 'never' channel — please report this",
+                    loc,
+                  },
+                ]
+              : [
+                  {
+                    kind: "assign",
+                    localId: done.id,
+                    value: drive(
+                      reYield(genValue({ kind: "varRef", localId: d.id, type: dT, loc }, loc)),
+                      BOOL,
+                    ),
+                    loc,
+                  },
+                ],
             loc,
           },
         ],
       };
+      // The unfenced fast path never needed the flag; the unreachable-step
+      // fence in a `never` body is allowed only in a delegation sequence.
+      if (neverYields) sequence.generatorDelegate = true;
+      return sequence;
     }
     const r = lowerer.declareHiddenLocal("%dres", recT);
     r.mutable = true;

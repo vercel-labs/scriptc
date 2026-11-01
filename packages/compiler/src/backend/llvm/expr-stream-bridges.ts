@@ -52,6 +52,7 @@ import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { emitPerKeyOrder } from "./key-orders.js";
+import { emitLinkedRecordBranches } from "./walkers.js";
 import { registerReplay } from "./emit-journal.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
@@ -1181,6 +1182,14 @@ export function streamTypedRefMaterializeAdapter(
       }
       B.terminate(`ret ptr ${out}`);
     } else {
+      // A copy linked to its source (IrModule.recordLinks) views as its
+      // composed record: the field operations below answer the declared
+      // fields from the copy, and the view the source's other properties.
+      emitLinkedRecordBranches(host.shapeHost, B, t.shapeId, "%p", (sourceT, composed) => {
+        const view = B.tmp();
+        B.line(`${view} = call ptr @${host.dyn.toDynHelper(sourceT)}(ptr ${composed})`);
+        return `ret ptr ${view}`;
+      });
       host.declare(`declare ptr @scr_dyn_new_obj()`);
       host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
       const out = B.tmp();

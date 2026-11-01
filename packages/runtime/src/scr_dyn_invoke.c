@@ -2163,6 +2163,32 @@ static ScrDyn *dyn_inherited_from(const char *ctor, int methods, const ScrStr *k
   return method;
 }
 
+/* The methods Array.prototype installs, in the order the prototype object
+ * defines them. `arity` is the ECMAScript `length` of the function the name
+ * holds. */
+static const struct {
+  const char *name;
+  size_t arity;
+} dyn_array_prototype_methods[] = {
+  {"at", 1}, {"concat", 1}, {"copyWithin", 2}, {"fill", 1}, {"find", 1}, {"findIndex", 1},
+  {"findLast", 1}, {"findLastIndex", 1}, {"lastIndexOf", 1}, {"pop", 0}, {"push", 1},
+  {"reverse", 0}, {"shift", 0}, {"unshift", 1}, {"slice", 2}, {"sort", 1}, {"splice", 2},
+  {"includes", 1}, {"indexOf", 1}, {"join", 1}, {"keys", 0}, {"entries", 0}, {"values", 0},
+  {"forEach", 1}, {"filter", 1}, {"flat", 0}, {"flatMap", 1}, {"map", 1}, {"every", 1},
+  {"some", 1}, {"reduce", 1}, {"reduceRight", 1}, {"toReversed", 0}, {"toSorted", 1},
+  {"toSpliced", 2}, {"with", 2}, {"toLocaleString", 0}, {"toString", 0},
+};
+
+/* Whether `key` names one of the methods Array.prototype installs. */
+static bool dyn_array_prototype_defines(const ScrStr *key) {
+  for (size_t i = 0; i < sizeof dyn_array_prototype_methods / sizeof dyn_array_prototype_methods[0];
+       i++) {
+    const char *name = dyn_array_prototype_methods[i].name;
+    if (strlen(name) == key->len && memcmp(name, key->data, key->len) == 0) return true;
+  }
+  return false;
+}
+
 /* The inherited member `key` of `d` when its own chain does not define it,
  * or NULL (the read's undefined stands). */
 static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
@@ -2194,8 +2220,22 @@ static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
     return dyn_inherited_from(dyn_s26, DYN_INHERIT_ALL, key);
   }
   case SCR_DYN_ARR:
-    /* Array.prototype defines toString and answers constructor itself. */
+    /* Array.prototype answers constructor itself. */
     if (d->null_proto || d->prototype || scr_dyn_has_own(d, key)) return NULL;
+    /* An array literal's implicit prototype is the object Array.prototype
+     * installs its methods on, so reading `[].slice` answers the function
+     * `Array.prototype.slice` reads as. The read that reached here already
+     * went through that prototype, so a name it carries — a program's own
+     * definition, a getter included — has already run once with the array
+     * as its receiver: the undefined read stands instead of a second read
+     * running the getter again. Otherwise the table installs on first use,
+     * exactly as a read of Array.prototype does. */
+    if (dyn_array_prototype_defines(key)) {
+      if (scr_dyn_array_prototype_owns(key)) return NULL;
+      ScrDyn *prototype = scr_dyn_array_prototype();
+      scr_dyn_release(prototype);
+      return scr_dyn_arr_named_get(d, key);
+    }
     return dyn_inherited_from(NULL, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
   case SCR_DYN_FUNC:
     /* Function.prototype defines toString and answers constructor itself. */
@@ -2337,10 +2377,29 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
   ScrDyn *result = NULL;
   bool timeout = strcmp(name->data, dyn_s16) == 0;
   if (timeout || strcmp(name->data, dyn_s15) == 0) {
-    double ms = 0;
-    if (dyn_builtin_fn_callback(args, argc) && (argc < 2 || scr_dyn_number_coerce_js(args[1], &ms))) {
-      ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
-      result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+    /* Node validates the callback, then its Timeout constructor takes an
+     * undefined delay as the default 1ms, converts another as `after *= 1`
+     * does (a BigInt throws its TypeError) and warns when it sets the
+     * delay to 1. */
+    if (dyn_builtin_fn_callback(args, argc)) {
+      double ms = NAN;
+      bool converted = true;
+      if (argc >= 2 && args[1]->kind != SCR_DYN_UNDEF) {
+        ScrDyn *one = scr_dyn_new_num(1);
+        ScrStr *times = scr_str_new("*", 1);
+        ScrDyn *product = scr_dyn_arithmetic(args[1], one, times);
+        scr_str_release(times);
+        scr_dyn_release(one);
+        converted = product != NULL;
+        if (product) {
+          ms = scr_timer_user_delay(product->v.num, timeout ? 0 : 1);
+          scr_dyn_release(product);
+        }
+      }
+      if (converted) {
+        ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
+        result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+      }
     }
   } else if (strcmp(name->data, dyn_s13) == 0) {
     if (dyn_builtin_fn_callback(args, argc))
@@ -2425,25 +2484,28 @@ ScrDyn *scr_dyn_array_prototype(void) {
   ScrDyn *prototype = scr_dyn_array_prototype_base();
   if (initialized) return prototype;
   initialized = true;
-  static const struct { const char *name; size_t arity; } methods[] = {
-    {"at", 1}, {"concat", 1}, {"copyWithin", 2}, {"fill", 1}, {"find", 1}, {"findIndex", 1},
-    {"findLast", 1}, {"findLastIndex", 1}, {"lastIndexOf", 1}, {"pop", 0}, {"push", 1},
-    {"reverse", 0}, {"shift", 0}, {"unshift", 1}, {"slice", 2}, {"sort", 1}, {"splice", 2},
-    {"includes", 1}, {"indexOf", 1}, {"join", 1}, {"keys", 0}, {"entries", 0}, {"values", 0},
-    {"forEach", 1}, {"filter", 1}, {"flat", 0}, {"flatMap", 1}, {"map", 1}, {"every", 1},
-    {"some", 1}, {"reduce", 1}, {"reduceRight", 1}, {"toReversed", 0}, {"toSorted", 1},
-    {"toSpliced", 2}, {"with", 2}, {"toLocaleString", 0}, {"toString", 0},
-  };
-  for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {
-    ScrStr *name = scr_str_new(methods[i].name, strlen(methods[i].name));
+  for (size_t i = 0; i < sizeof dyn_array_prototype_methods / sizeof dyn_array_prototype_methods[0];
+       i++) {
+    ScrStr *name = scr_str_new(dyn_array_prototype_methods[i].name,
+                               strlen(dyn_array_prototype_methods[i].name));
+    /* A name the program already installed on Array.prototype keeps the
+     * program's descriptor. A JavaScript prototype carries its methods
+     * before the program runs, so a program's definition replaces one; the
+     * lazily installed table must not replace the program's definition. */
+    if (scr_dyn_has_own(prototype, name)) {
+      scr_str_release(name);
+      continue;
+    }
     ScrDyn *method;
-    if (!strcmp(methods[i].name, "values")) method = scr_dyn_array_values_function();
+    if (!strcmp(dyn_array_prototype_methods[i].name, "values"))
+      method = scr_dyn_array_values_function();
     else {
       ScrClosure *closure = scr_closure_new(NULL, 1);
       closure->caps[0] = scr_box_new(SCR_BOX_STR);
       scr_box_set_ref(closure->caps[0], scr_str_retain(name));
-      method = scr_dyn_new_func(closure, dyn_array_method_value_call, methods[i].arity,
-        "native:Array.prototype", methods[i].name);
+      method = scr_dyn_new_func(closure, dyn_array_method_value_call,
+        dyn_array_prototype_methods[i].arity, "native:Array.prototype",
+        dyn_array_prototype_methods[i].name);
     }
     ScrDyn *descriptor = scr_dyn_new_obj();
     scr_dyn_obj_set(descriptor, "value", 5, method);
@@ -2459,8 +2521,12 @@ ScrDyn *scr_dyn_array_prototype(void) {
   return prototype;
 }
 
-/* Object.defineProperties over dyn values (see scr_runtime.h). */
-static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
+/* Object.defineProperties over dyn values (see scr_runtime.h). With a
+ * `read_any` (scr_dyn_descriptor_snapshot), each descriptor may be any
+ * object; otherwise it must be a plain object. Only the entry point that
+ * passes it references the reader, so other programs do not link it. */
+static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys,
+                                             ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
   /* Island-held operands ARE objects to Node — the non-object TypeError
    * below would be a wrong claim. They are fenced with a "not supported
    * yet" error instead (lane dyn-routing-ops). */
@@ -2487,6 +2553,12 @@ static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrD
     if (!scr_dyn_obj_enumerable(descs, name->data, name->len)) continue;
     ScrDyn *descriptor = scr_dyn_obj_read(descs, name->data, name->len);
     if (!descriptor) goto fail;
+    if (read_any) {
+      ScrDyn *snapshot = read_any(descriptor);
+      scr_dyn_release(descriptor);
+      if (!snapshot) goto fail;
+      descriptor = snapshot;
+    }
     if (descriptor->kind != SCR_DYN_OBJ) {
       ScrJsonBuf b;
       scr_jb_init(&b);
@@ -2559,11 +2631,15 @@ fail:
 }
 
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs) {
-  return scr_dyn_define_props_internal(target, descs, NULL);
+  return scr_dyn_define_props_internal(target, descs, NULL, NULL);
+}
+
+ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs) {
+  return scr_dyn_define_props_internal(target, descs, NULL, scr_dyn_descriptor_snapshot);
 }
 
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
-  return scr_dyn_define_props_internal(target, descs, protected_keys);
+  return scr_dyn_define_props_internal(target, descs, protected_keys, NULL);
 }
 
 ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptors) {
@@ -2571,6 +2647,16 @@ ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptor
   if (!object) return NULL;
   if (descriptors->kind == SCR_DYN_UNDEF) return object;
   ScrDyn *defined = scr_dyn_define_props(object, descriptors);
+  if (!defined) { scr_dyn_release(object); return NULL; }
+  scr_dyn_release(defined);
+  return object;
+}
+
+ScrDyn *scr_dyn_obj_create_with_properties_shapes(ScrDyn *prototype, ScrDyn *descriptors) {
+  ScrDyn *object = scr_dyn_obj_create(prototype);
+  if (!object) return NULL;
+  if (descriptors->kind == SCR_DYN_UNDEF) return object;
+  ScrDyn *defined = scr_dyn_define_props_shapes(object, descriptors);
   if (!defined) { scr_dyn_release(object); return NULL; }
   scr_dyn_release(defined);
   return object;

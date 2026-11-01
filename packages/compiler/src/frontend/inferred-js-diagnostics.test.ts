@@ -114,3 +114,21 @@ test("TypeScript keeps the async-iterator demand", () => {
     ).some((diagnostic) => diagnostic.message.includes("Symbol.asyncIterator")),
   ).toBe(true);
 });
+
+test("a JavaScript module keeps three checker opinions to itself", () => {
+  const library = `export const comma = (1, 2);
+export const arithmetic = null + 1;
+export function* generator() {
+  const sent = yield 1;
+  return sent;
+}
+`;
+  const main =
+    'import { arithmetic, comma, generator } from "./library.js"; console.log(comma, arithmetic, generator);';
+  expect(diagnostics(library, main)).toEqual([]);
+  expect(diagnostics(library, main, "ts").map((diagnostic) => diagnostic.message)).toEqual([
+    "Left side of comma operator is unused and has no side effects.",
+    "The value 'null' cannot be used here.",
+    "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.",
+  ]);
+});

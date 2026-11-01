@@ -426,6 +426,35 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       const key = lowerer.lowerExprExpecting(expr.argumentExpression, DYN);
       return lowerer.maybeNarrow({ kind: "dynKeyGet", key, value: boxed, type: DYN, loc }, expr);
     }
+    if (
+      receiver &&
+      (receiver.type.kind === "set" || receiver.type.kind === "map") &&
+      lowerer.dynConvertible(receiver.type)
+    ) {
+      // `new Set()[name]` / `m[k]` on a Set or Map instance: JavaScript
+      // reads the property the key names (size, a method object, or
+      // undefined) — never a collection entry. The checker's Set/Map type
+      // describes no such result, so the read stays checked-dynamic: the
+      // native collection boxes into the checked-dynamic tree as a handle
+      // that answers member reads (and fences a method value that has no
+      // lowering).
+      const loc = locOf(expr);
+      const key = lowerRecordPropertyKey(
+        lowerer,
+        lowerer.lowerExpr(expr.argumentExpression),
+        expr.argumentExpression,
+      );
+      return lowerer.maybeNarrow(
+        {
+          kind: "dynKeyGet",
+          value: lowerer.coerceInto(expr.expression, receiver, DYN),
+          key,
+          type: DYN,
+          loc,
+        },
+        expr,
+      );
+    }
     if (receiver?.type.kind === "array" || receiver?.type.kind === "bytes")
       receiverIr = receiver.type;
     if (receiver?.type.kind === "union") {

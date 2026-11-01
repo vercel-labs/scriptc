@@ -2595,6 +2595,33 @@ console.log(new B().a());
       "Uncaught Error: Object.setPrototypeOf with this value is not supported yet\n",
     );
   });
+
+  test("Reflect.set through a class prototype keeps the refusal", async () => {
+    // A compiled class calls its own methods, so replacing one through the
+    // prototype view cannot reach it: Node would print 2. Writing through
+    // the view is refused like the Object.defineProperty/assign forms
+    // instead of answering the stale method.
+    const r = await compileAndRun(
+      "class-prototype-reflect-set",
+      `'use strict';
+class C {
+  m() {
+    return 1;
+  }
+}
+Reflect.set(C.prototype, "m", function () {
+  return 2;
+});
+console.log(new C().m());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain(
+      "class prototype reflection and accessor replacement (named prototype data and methods compile) is not supported yet",
+    );
+  });
 });
 
 // `{ ...maybe }` over a `T | undefined` source the checker PROVED present

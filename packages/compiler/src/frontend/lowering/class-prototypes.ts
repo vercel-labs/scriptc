@@ -529,42 +529,66 @@ export function isErrorPrototypeValue(
   );
 }
 
-/** Whether a bare `C.prototype` read becomes the prototype of another object
- * or is only compared or inspected: the argument of `Object.create` or
- * `Object.getPrototypeOf` / `Reflect.getPrototypeOf`, the prototype argument
- * of `Object.setPrototypeOf` / `Reflect.setPrototypeOf`, or an operand of
- * `===` / `!==`. In these positions the complete view of the
- * prototype (reflectClassPrototype) answers. Objects that inherit from it
- * run the class's methods with themselves as the receiver, which the
- * methods' receiver-independent lowering (reflectedClassMethodValue)
- * supports. Other positions, such as `Object.setPrototypeOf(C.prototype, X)`,
- * which would relink the class, keep the diagnostic. */
-function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+/** Whether a bare `C.prototype` read hands the value to a position that would
+ * MUTATE it instead of reading it: an assignment or update target, or the
+ * target argument of the Object/Reflect operations that change an object in
+ * place. The complete view of the prototype (reflectClassPrototype) is a
+ * faithful read wherever the value is only inspected — compared, passed to
+ * `Object.create` / `getPrototypeOf` / `setPrototypeOf`'s prototype argument,
+ * an arbitrary call's argument (`Object.prototype.hasOwnProperty.call` above
+ * all), or the receiver of an inherited method. Objects that inherit from it
+ * run the class's methods with themselves as the receiver, which the methods'
+ * receiver-independent lowering (reflectedClassMethodValue) supports.
+ * A write through the view or `Object.setPrototypeOf(C.prototype, X)`, which
+ * would relink the class, cannot reach the compiled class, so those keep the
+ * diagnostic. */
+function prototypeMutationTarget(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
   let node: ts.Node = expr;
   let parent = node.parent;
-  while (parent && ts.isParenthesizedExpression(parent)) {
+  while (
+    parent &&
+    (ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isNonNullExpression(parent))
+  ) {
     node = parent;
     parent = parent.parent;
   }
   if (!parent) return false;
-  if (ts.isCallExpression(parent) && ts.isPropertyAccessExpression(parent.expression)) {
-    const args = parent.arguments.nodes;
-    const objectMethod = lowerer.stdlibGlobalMember(parent.expression, "Object");
-    const reflectMethod = lowerer.stdlibGlobalMember(parent.expression, "Reflect");
-    if (
-      objectMethod === "create" ||
-      objectMethod === "getPrototypeOf" ||
-      reflectMethod === "getPrototypeOf"
-    )
-      return args[0] === node;
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
-      return args[1] === node;
-    return false;
-  }
-  return (
+  if (
     ts.isBinaryExpression(parent) &&
-    (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken)
+    parent.left === node &&
+    parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  )
+    return true;
+  if (
+    (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+    (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken)
+  )
+    return true;
+  if (ts.isDeleteExpression(parent)) return true;
+  if (!ts.isCallExpression(parent) || !ts.isPropertyAccessExpression(parent.expression))
+    return false;
+  if (parent.arguments.nodes.indexOf(node as ts.Expression) !== 0) return false;
+  const objectMethod = lowerer.stdlibGlobalMember(parent.expression, "Object");
+  const reflectMethod = lowerer.stdlibGlobalMember(parent.expression, "Reflect");
+  return (
+    objectMethod === "defineProperty" ||
+    objectMethod === "defineProperties" ||
+    objectMethod === "assign" ||
+    objectMethod === "setPrototypeOf" ||
+    objectMethod === "freeze" ||
+    objectMethod === "seal" ||
+    objectMethod === "preventExtensions" ||
+    reflectMethod === "setPrototypeOf" ||
+    reflectMethod === "defineProperty" ||
+    reflectMethod === "deleteProperty" ||
+    // `Reflect.set(C.prototype, "m", f)` replaces a compiled method the
+    // view cannot reach: a write through the view, exactly like the
+    // `Object` forms above.
+    reflectMethod === "set"
   );
 }
 
@@ -572,11 +596,54 @@ function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
  * may hold a subclass at run time): its prototype has a complete view whose
  * methods accept any receiver. */
 function viewableClass(lowerer: Lowerer, info: ClassInfo, receiver: ts.Expression): boolean {
+  return viewableClassShape(info) && exactClassOfReceiver(lowerer, receiver) === info;
+}
+
+/** The parts of `viewableClass` that do not depend on how the receiver is
+ * spelled: a JavaScript class that has one static identity. */
+function viewableClassShape(info: ClassInfo): boolean {
   return (
     info.decl !== null &&
     info.localClass === undefined &&
-    isJsSourceFile(ts.getSourceFileOfNode(info.decl)) &&
-    exactClassOfReceiver(lowerer, receiver) === info
+    isJsSourceFile(ts.getSourceFileOfNode(info.decl))
+  );
+}
+
+/** The receiver is the binding of the class expression itself (`var C = class
+ * { ... }`, the form a class-value receiver takes when it is not a class
+ * name). `exactClassOfReceiver` has no call-site class type to read from such
+ * a binding, but the binding cannot hold a subclass either: assigning another
+ * class to it is a type error, and the class expression evaluates once, so the
+ * binding's class value IS this class. A parameter, an array element, or a
+ * class expression evaluated per loop iteration may hold a different class at
+ * run time, so those stay refused. */
+function boundClassExpression(lowerer: Lowerer, info: ClassInfo, receiver: ts.Expression): boolean {
+  if (info.decl === null || !ts.isClassExpression(info.decl)) return false;
+  const declaration = info.decl.parent;
+  if (
+    !declaration ||
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.initializer !== info.decl ||
+    !ts.isIdentifier(declaration.name)
+  )
+    return false;
+  // One evaluation: a class expression in a loop body builds a new class per
+  // iteration, whose prototype view is not the class type's static one.
+  for (let node: ts.Node | undefined = declaration.parent; node; node = node.parent)
+    if (
+      ts.isForStatement(node) ||
+      ts.isForInStatement(node) ||
+      ts.isForOfStatement(node) ||
+      ts.isWhileStatement(node) ||
+      ts.isDoStatement(node)
+    )
+      return false;
+  let target = receiver;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isIdentifier(target)) return false;
+  return (
+    lowerer.checker.getSymbolAtLocation(target) ===
+    lowerer.checker.getSymbolAtLocation(declaration.name)
   );
 }
 
@@ -657,10 +724,18 @@ export function lowerClassPrototypeData(
   }
   if (
     name === null &&
-    prototypeViewPosition(lowerer, expr) &&
-    viewableClass(lowerer, info, expr.expression)
-  )
-    return reflectClassPrototype(lowerer, info, locOf(expr), classValueRef(lowerer, info, expr));
+    !prototypeMutationTarget(lowerer, expr) &&
+    (viewableClass(lowerer, info, expr.expression) ||
+      (viewableClassShape(info) && boundClassExpression(lowerer, info, expr.expression)))
+  ) {
+    const reflected = reflectClassPrototype(
+      lowerer,
+      info,
+      locOf(expr),
+      classValueRef(lowerer, info, expr),
+    );
+    if (reflected) return reflected;
+  }
   if (name === null || (isCompiledPrototypeMember(lowerer, info, name) && !method)) {
     lowerer.unsupported(
       "SC1090",

@@ -217,6 +217,7 @@ import {
 } from "./lower-server.js";
 import {
   EMITTER_API_MEMBERS,
+  classValueRef,
   exactClassOfReceiver,
   exactInstanceClassOf,
   findGenericMethodOn,
@@ -3224,6 +3225,31 @@ function lowerObjectOwnCall(
     type.kind === "symbol"
   ) {
     result = { kind: "boolLit", value: false, type: BOOL, loc };
+  } else if (
+    (type.kind === "classval" || type.kind === "func") &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    (type.kind === "func" || lowerer.classes.get(type.className)?.constructorReflected === true)
+  ) {
+    // A class value or function object in a JavaScript source keeps its own
+    // properties in its checked-dynamic table (scr_dyn_fn_properties), so
+    // the own-property test is the dynamic one (t262-da A2). A class value
+    // is listed only when the program reflects it, so its table exists; a
+    // function's table is built by its first own-key query (the descriptor
+    // path answers only length and name before that), so materialize it.
+    const boxed = lowerer.coerceToExpected(receiverRef, DYN);
+    if (type.kind === "func")
+      stmts.push({
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "dyn.getOwnPropertyNames", args: [boxed], type: DYN, loc },
+        loc,
+      });
+    result = {
+      kind: "libCall",
+      fn: enumerable ? "dyn.propertyIsEnumerable" : "dyn.hasOwn",
+      args: [boxed, key],
+      type: BOOL,
+      loc,
+    };
   } else {
     lowerer.noLowering(
       "Object.prototype." + method + " over a " + lowerer.fmt(type) + " receiver",
@@ -5439,6 +5465,20 @@ function lowerClassHasOwnPropertyCall(
         type: BOOL,
         loc,
       };
+    if (hasRuntimeStatics(info)) {
+      // A class with runtime statics has no expando bag (classStaticData
+      // refuses one): its statics, expandos, and the reflected trio live
+      // in the runtime own-property table, so an undeclared name is a
+      // runtime query rather than a folded false (t262-da A2).
+      const boxed = lowerer.coerceToExpected(classValueRef(lowerer, info, access.expression), DYN);
+      return {
+        kind: "libCall",
+        fn: "dyn.hasOwn",
+        args: [boxed, { kind: "strLit", value: key, type: STRING, loc }],
+        type: BOOL,
+        loc,
+      };
+    }
   }
   return { kind: "boolLit", value: own.has(key), type: BOOL, loc: locOf(call) };
 }

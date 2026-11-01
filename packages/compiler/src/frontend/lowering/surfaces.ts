@@ -3607,6 +3607,25 @@ export function isChildSurfaceMember(
   return lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(iface.name))?.kind === "child";
 }
 
+/** The writer half of isChildSurfaceMember: a stdlib member, OR a member
+ * the user's own writable-pipe interface declares (the hand-written
+ * `Pipe { write; end }` idiom naming child.stdin — mapType's writer duck
+ * rule admits an interface only when every member names the child writer
+ * surface and `write` takes a written chunk and answers the backpressure
+ * boolean, so accepting its members here cannot widen the surface). */
+export function isChildWriterSurfaceMember(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): boolean {
+  if (isStdlibMember(lowerer, access)) return true;
+  const sym = lowerer.checker.getSymbolAtLocation(access.name);
+  const decl = sym ? sym.declarations[0] : undefined;
+  const iface = decl?.parent;
+  if (!decl || !iface || !ts.isInterfaceDeclaration(iface)) return false;
+  if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return false;
+  return lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(iface.name))?.kind === "childWriter";
+}
+
 /** True iff some declaration of the symbol lives in the standard library
  * (shipped ambient or default lib — the provenance half of every
  * supported-surface check). `some`, not `[0]`: divergence overrides merge

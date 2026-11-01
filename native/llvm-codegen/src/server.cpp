@@ -2,6 +2,19 @@
 
 #include "diagnostics.h"
 
+#ifdef _WIN32
+
+namespace scriptc {
+
+int serve(int, char **) {
+  return reportError("unsupported_platform",
+                     "the code generation server needs Unix sockets");
+}
+
+} // namespace scriptc
+
+#else
+
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -298,3 +311,5 @@ int serve(int Argc, char **Argv) {
 }
 
 } // namespace scriptc
+
+#endif

@@ -187,16 +187,18 @@ std::optional<PGOOptions> profileOptions(const EmitOptions &Options) {
 }
 
 // Block placement by the extended TSP model, which needs the exact block
-// counts a context-sensitive profile gives. The option is process-wide; the
-// helper sets it once.
-void enableExtTspPlacement() {
-  static const bool Enabled = [] {
-    if (cl::Option *Option = cl::getRegisteredOptions().lookup(
-            "enable-ext-tsp-block-placement"))
-      Option->addOccurrence(0, "enable-ext-tsp-block-placement", "true");
-    return true;
-  }();
-  (void)Enabled;
+// counts a context-sensitive profile gives. The option is process-wide, and
+// a resident server answers many emits in one process, so each emit resets it
+// to its default, as a one-shot helper starts, and a profile emit turns it on.
+void setExtTspPlacement(bool Enabled) {
+  cl::Option *Option =
+      cl::getRegisteredOptions().lookup("enable-ext-tsp-block-placement");
+  if (Option == nullptr) return;
+  // A single-valued option rejects a second occurrence and keeps the value of
+  // the first, so the reset is what lets the next emit change it.
+  Option->reset();
+  if (!Enabled) return;
+  Option->addOccurrence(0, "enable-ext-tsp-block-placement", "true");
 }
 
 // With a profile, the thin link imports the callees of hot call edges up to
@@ -517,6 +519,15 @@ private:
 // hold IR-level counts. Context-sensitive counts lay out the code by them;
 // a profile that has them cannot take a second set.
 std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
+  // A one-shot helper starts with empty profile state; a resident server
+  // answers many emits in one process, so each emit clears what the emits
+  // before it left: the recorder it collected blocks in, the counts it read,
+  // and the layout a context-sensitive profile turned on.
+  FallbackCounts.reset();
+  Recorder.reset();
+  ContextProfile = false;
+  setProfileLayout(false);
+  setExtTspPlacement(false);
   if (Options.ProfileUse.empty())
     return std::nullopt;
   Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
@@ -537,8 +548,8 @@ std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
                            ": already holds context-sensitive counts; "
                            "collect them on top of the IR-level profile"};
   if (ContextProfile && Triple(Options.Target).isOSBinFormatELF()) {
-    enableProfileLayout();
-    enableExtTspPlacement();
+    setProfileLayout(true);
+    setExtTspPlacement(true);
   }
   if (!Options.ProfileBlocks.empty()) {
     std::string Error;

@@ -15,23 +15,23 @@
  * There is no JavaScript host on that path, so the connection, the request
  * framing's transfers, and the server's lifetime are all here. */
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
-#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
-#include <time.h>
-#include <unistd.h>
-
-#ifndef _WIN32
 #include <sys/un.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 // macOS reports a peer's disconnect as SIGPIPE unless the socket asked
@@ -40,7 +40,9 @@
 #define MSG_NOSIGNAL 0
 #endif
 
+#ifndef _WIN32
 extern char **environ;
+#endif
 
 #define CODEGEN_ERROR_BYTES 512
 
@@ -56,6 +58,8 @@ int32_t scriptc_codegen_error(uint8_t *bytes, size_t size) {
 static void error_text(const char *text) {
   snprintf(last_error, sizeof(last_error), "%s", text);
 }
+
+#ifndef _WIN32
 
 static void system_error(int code) {
   snprintf(last_error, sizeof(last_error), "%s (errno %d)", strerror(code), code);
@@ -120,8 +124,6 @@ void scriptc_codegen_close(uint32_t handle) {
   close(server->lock);
   free(server);
 }
-
-#ifndef _WIN32
 
 /* This user's server directory: $XDG_RUNTIME_DIR/scriptc, or
  * /tmp/scriptc-<uid>. It must be a directory this user owns with no access
@@ -326,6 +328,12 @@ int32_t scriptc_codegen_write(uint32_t handle, const uint8_t *bytes, size_t size
 }
 
 #else
+
+/* Attach reports that servers need Unix sockets and returns no handle, so
+ * there is never one to close. */
+void scriptc_codegen_close(uint32_t handle) { (void)handle; }
+
+void scriptc_codegen_close_all(void) {}
 
 uint32_t scriptc_codegen_attach(const uint8_t *name, size_t name_size,
                                 const uint8_t *executable, size_t executable_size,

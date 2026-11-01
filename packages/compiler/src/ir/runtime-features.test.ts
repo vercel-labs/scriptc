@@ -47,6 +47,12 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("links the inspect unit for a BigInt rendered in Node's form", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("bigint.inspect"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({ bigint: true, inspect: true });
+  });
+
   test("gates the BigIntStats unit on its member reads, not on bigint", () => {
     const reads = module();
     reads.functions[0]!.body.push(call("bigstats.size"));

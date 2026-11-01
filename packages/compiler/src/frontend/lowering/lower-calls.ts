@@ -301,6 +301,7 @@ import { nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
   completeFuncValueArgs,
+  checkedRestCallArgs,
   lowerSpreadArgsCall,
   completeArgs,
 } from "./call-arguments.js";
@@ -10574,13 +10575,15 @@ export function lowerRecordFieldCall(
   // here too.
   refuseCopyingErasureInstanceCall(lowerer, call, callee);
   // A rest-marked field value hides one synthetic trailing dyn array in
-  // its lifted signature (filled by the boxed call thunk) — the checked
-  // variadic ABI a JS rest closure has, and the one a generic member's
-  // erased instance keeps when its erased signature cannot pin the tail
-  // (`...args: EventArguments<…>`, a conditional tuple over the member's
-  // own type parameters). A native `callValue` cannot spell that hidden
-  // slot, so the call rides the thunk, exactly like a call through such a
-  // value itself (lowerCallThroughValueRaw's dyn-rest lane).
+  // its lifted signature — the checked variadic ABI a JS rest closure
+  // has, and the one a generic member's erased instance keeps when its
+  // erased signature cannot pin the tail (`...args: EventArguments<…>`, a
+  // conditional tuple over the member's own type parameters). The call
+  // passes that slot natively, so a record or array the callee returns
+  // comes back as the object it returned, exactly as JavaScript hands it
+  // back; the boxed thunk would copy it and break identity and mutation
+  // sharing. A call that leaves an omitted parameter without an absent
+  // spelling still rides the thunk (JavaScript's own arity).
   if (
     init === null &&
     receiver === undefined &&
@@ -10593,6 +10596,26 @@ export function lowerRecordFieldCall(
       (id) => lowerer.unions.get(id),
     )
   ) {
+    const nativeArgs = checkedRestCallArgs(lowerer, call, callee.type, loc);
+    if (nativeArgs) {
+      // The resolved result converts exactly like the fixed-arity lane
+      // below; a void result needs no conversion (the call's own value is
+      // discarded, as an `unknown` has no void spelling).
+      let nativeResult: IrExpr = {
+        kind: "callValue",
+        callee,
+        args: nativeArgs,
+        type: callee.type.ret,
+        loc,
+      };
+      const resolved = lowerer.irTypeOf(call);
+      if (
+        resolved.kind !== "void" &&
+        isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker)
+      )
+        nativeResult = lowerer.coerceInto(call, nativeResult, resolved);
+      return nativeResult;
+    }
     const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
     let boxedResult: IrExpr = {
       kind: "dynCall",
@@ -10602,9 +10625,6 @@ export function lowerRecordFieldCall(
       type: DYN,
       loc,
     };
-    // The resolved result converts back exactly like the fixed-arity lane
-    // below; a void result needs no conversion (the checked call's own
-    // value is discarded, as an `unknown` has no void spelling).
     const resolved = lowerer.irTypeOf(call);
     if (
       resolved.kind !== "void" &&

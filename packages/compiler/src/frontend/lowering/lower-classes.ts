@@ -25,6 +25,7 @@ import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.
 import {
   constructedFromValue,
   constructedValue,
+  constructorPrimitiveFlag,
   superIntoResultSlot,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
@@ -8241,6 +8242,20 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
     const thisLocal = lowerer.declareThis(thisType);
     const params: IrParam[] = [{ localId: thisLocal.id, name: "this", type: thisType }];
     const body: IrStmt[] = [];
+    // A derived constructor that can return a primitive records the pending
+    // TypeError for the construction site to raise. Drop a stale record on
+    // entry: a `finally` that throws after the return abandons the
+    // construction before any site reads it.
+    const pendingPrimitive = constructorPrimitiveFlag(lowerer, info);
+    if (pendingPrimitive !== null) {
+      const clearLoc = locOf(info.ctor ?? info.decl!);
+      body.push({
+        kind: "assign",
+        localId: pendingPrimitive.id,
+        value: { kind: "boolLit", value: false, type: BOOL, loc: clearLoc },
+        loc: clearLoc,
+      });
+    }
     // The construction-relevant base: generic families are transparent
     // (an instantiation of a base-less generic class IS a base class —
     // its source has no super()).

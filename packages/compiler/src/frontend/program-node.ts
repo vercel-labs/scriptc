@@ -61,14 +61,13 @@ export function checkPreflightTs7(
   entryPath: string,
   sharedHost?: Ts7Host,
 ): ReturnType<typeof preflightWithHost> {
-  if (sharedHost !== undefined) return preflightWithHost(entryPath, sharedHost);
   const services = createNodeFrontendServices();
   try {
-    const host = services.createProgramHost({ cwd: dirname(resolve(entryPath)) });
+    const host = sharedHost ?? services.createProgramHost({ cwd: dirname(resolve(entryPath)) });
     try {
-      return preflightWithHost(entryPath, host);
+      return preflightWithHost(entryPath, host, services);
     } finally {
-      host.close();
+      if (sharedHost === undefined) host.close();
     }
   } finally {
     services.close();

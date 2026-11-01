@@ -40,6 +40,7 @@
  *    that path (no snapshot pins it). */
 
 import { isFrontendIsland } from "../node-islands/boundary.js";
+import { ProjectSidecars } from "./project-sidecars.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -58,7 +59,6 @@ import {
   nearestPackageType,
   nearestPkgJsonPath,
   packageImportTarget,
-  projectDtsRuntimeSibling,
   resolveBareModule,
   resolveProjectModule,
   resolveTypeDirective,
@@ -915,6 +915,8 @@ function loadProgram7(
   /** Shape inference's typed overlay (shape-inference/overlay.ts):
    * rewritten package JavaScript for the lowering world, or null. */
   overlayer?: (program: ts.Program, round: number) => ReadonlyMap<string, string> | null,
+  /** Local declaration/value alignment, scoped to the lowering load. */
+  sidecars?: ProjectSidecars,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -970,8 +972,18 @@ function loadProgram7(
   const programRoots = [...coreRoots];
   let program = host.createProgram([...programRoots, overridesDtsPath()], options);
   try {
-    for (let pass = 0; pass < 32; pass++) {
+    // Rebuilds add unseen resolved roots or advance the finite sidecar
+    // plan: retained sources, fixed aliases, and changed text. JSX/shape
+    // overlays run later; module graph depth is not a pass budget.
+    for (;;) {
+      const sidecarsChanged =
+        sidecars?.update(
+          program,
+          host,
+          (call) => requireCallBindingKind7(program, call) !== "source",
+        ) ?? false;
       const candidates = [
+        ...(sidecars?.runtimeRoots() ?? []),
         ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
         ...entryPackageProgramRoots7(program, entryPath, rootNpmStaticEdges),
         ...createRequireProgramRoots7(program),
@@ -981,11 +993,10 @@ function loadProgram7(
       const extraRoots = candidates.filter(
         (root, index) => !programRoots.includes(root) && candidates.indexOf(root) === index,
       );
-      if (extraRoots.length === 0) break;
+      if (extraRoots.length === 0 && !sidecarsChanged) break;
       program.dispose();
       for (const root of extraRoots) programRoots.push(root);
       program = host.createProgram([...programRoots, overridesDtsPath()], options);
-      if (pass === 31) throw new Error("static program-root discovery did not converge");
     }
     // Node 24 ships no temporal global, but TS 7 types it in an ESNext
     // lib slice. Programs that name it (feature probes such as smol-toml's
@@ -1337,22 +1348,17 @@ export function loadProgram(
     if (probe?.workspaceDir !== undefined)
       registerWorkspacePackage(probe.packageName, probe.workspaceDir);
   }
-  // Declaration-twin hiding is scoped to the entry's own package realm
-  // (see projectDtsRuntimeSibling) — set before the host exists so the
-  // program never sees an out-of-realm twin hidden.
+  // Local values and explicit type edges select separate identities in the
+  // same checker program. Foreign workspace/npm declarations keep their
+  // package boundary; the local plan never hides them.
   setProjectRealm(entryPath);
-  // Two fs shadows compose: --npm-static's per-package hiding, and the
-  // always-on project declaration-TWIN hiding (a .d.ts beside runtime JS
-  // outside node_modules — the classic typed-JS-library entry — must not exist for
-  // the checker, so its resolution lands on the JS Node actually loads;
-  // resolve.ts answers the same sibling for scriptc's own edges).
+  const sidecars = new ProjectSidecars(services);
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
   const fsShadow = {
     readFile: (path: string) =>
       npmShadow?.readFile(path) ?? programBuiltinAliasSource(services, path),
-    hideFile: (path: string) =>
-      (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
+    hideFile: (path: string) => (npmShadow?.hideFile(path) ?? false) || sidecars.hides(path),
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
   let authoredHost: ts.Ts7Host | null = null;
@@ -1411,6 +1417,7 @@ export function loadProgram(
         (jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0")
         ? shapeOverlayer
         : undefined,
+      sidecars,
     );
     // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
     const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
@@ -5583,14 +5590,30 @@ function processModuleAliasImport7(spec: string, stmt: ts.ImportDeclaration): bo
 export function checkPreflightTs7(
   entryPath: string,
   host: ts.Ts7Host,
+  services: FrontendServices,
 ): { diags: ScrDiagnostic[]; moduleOrder: string[] } {
-  const load = loadProgram7(host, resolve(entryPath));
-  try {
-    const { diags, moduleOrder } = preflight7(load);
-    return { diags, moduleOrder: moduleOrder.map((sf) => sf.fileName) };
-  } finally {
-    load.disposeAll();
-  }
+  setProjectRealm(entryPath);
+  const sidecars = new ProjectSidecars(services);
+  return host.withFileSystemShadow(
+    { readFile: () => undefined, hideFile: (path) => sidecars.hides(path) },
+    () => {
+      const load = loadProgram7(
+        host,
+        resolve(entryPath),
+        undefined,
+        false,
+        undefined,
+        undefined,
+        sidecars,
+      );
+      try {
+        const { diags, moduleOrder } = preflight7(load);
+        return { diags, moduleOrder: moduleOrder.map((sf) => sf.fileName) };
+      } finally {
+        load.disposeAll();
+      }
+    },
+  );
 }
 
 /** Whether a declaration file has the runtime file TypeScript pairs it

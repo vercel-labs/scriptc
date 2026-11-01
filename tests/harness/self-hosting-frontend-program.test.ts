@@ -153,6 +153,14 @@ function inputs(directory: string): FrontendProgramRequest {
     "value.js": "export const value = 4;",
     "value.d.ts": "export const value: string;",
   });
+  add("typed-local-js-sidecar", {
+    "main.ts":
+      'import { read, type Options } from "./value.mjs"; const options: Options = { amount: 3 }; console.log(read(options));',
+    "value.mjs":
+      '/** @typedef {import("./value.d.mts").Options} Options */\n/** @param {Options} options */\nexport function read(options) { return options.amount + 1; }',
+    "value.d.mts":
+      "export interface Options { amount: number } export declare function read(options: Options): number;",
+  });
   add(
     "npm-static",
     {
@@ -277,6 +285,7 @@ function verify(reports: Report[]): void {
     "fork-url",
     "unicode",
     "declaration-twin",
+    "typed-local-js-sidecar",
     "npm-static",
     "npm-class-alias",
     "reload",
@@ -339,6 +348,17 @@ function verify(reports: Report[]): void {
     "declaration-twin/value.js",
     "declaration-twin/main.ts",
   ]);
+  expect(get("typed-local-js-sidecar").order).toEqual([
+    "typed-local-js-sidecar/value.mjs",
+    "typed-local-js-sidecar/main.ts",
+  ]);
+  expect(
+    get("typed-local-js-sidecar").sources.find((source) => source.path.endsWith("/value.mjs"))
+      ?.text,
+  ).toContain('import("./value.scriptc-types.mjs")');
+  expect(
+    get("typed-local-js-sidecar").sources.find((source) => source.path.endsWith("/main.ts"))?.text,
+  ).toContain('import type { Options } from "./value.scriptc-types.mjs"');
   expect(get("npm-static").order).toEqual([
     "npm-static/node_modules/native-fixture/value.js",
     "npm-static/node_modules/native-fixture/index.js",

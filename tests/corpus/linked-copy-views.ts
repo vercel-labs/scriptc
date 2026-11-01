@@ -48,3 +48,13 @@ const fromSpreadView: unknown = fromSpread;
 console.log(JSON.stringify(fromSpreadView), Object.keys(fromSpreadView as object).join(","));
 const fromSpreadCopy: One = fromSpread;
 console.log(JSON.stringify(fromSpreadCopy), Object.keys(fromSpreadCopy as object).join(","));
+
+// Object.assign reads a member after the setter of the previous member ran:
+// a setter that changes a later field copies the changed value.
+const assigned: any = {
+  set a(value: number) {
+    two.b = 100;
+  },
+};
+Object.assign(assigned, two as unknown);
+console.log(assigned.a, assigned.b, assigned.c, two.b);

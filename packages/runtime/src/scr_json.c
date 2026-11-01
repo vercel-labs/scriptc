@@ -4950,14 +4950,20 @@ static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   return ops && ops->select ? ops->select(d->v.typed_ref.ptr) : ops;
 }
 
-/* A live record capsule of a copy linked to its source (scr_record_link).
- * The source's other properties are only in the capsule's snapshot, so
+/* A record capsule of a copy linked to its source (scr_record_link), whether
+ * or not it has a cached view. */
+static bool scr_typed_ref_linked_copy(const ScrDyn *d) {
+  return scr_record_link_count && d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.record &&
+         scr_record_link_pair(d->v.typed_ref.ptr) != 0;
+}
+
+/* A live record capsule of a copy linked to its source: one without a cached
+ * view. The source's other properties are only in the capsule's snapshot, so
  * answers that list or test own keys read a fresh one
  * (scr_dyn_typed_ref_peek), which the capsule does not keep: field reads
  * and writes keep answering from the native record. */
 static bool scr_typed_ref_linked_live(const ScrDyn *d) {
-  return scr_record_link_count && d->kind == SCR_DYN_TYPED_REF && scr_typed_ref_record_ops(d) &&
-         scr_record_link_pair(d->v.typed_ref.ptr) != 0;
+  return scr_typed_ref_linked_copy(d) && scr_typed_ref_record_ops(d);
 }
 
 /* The field table of a live record capsule whose fields are all its own
@@ -17449,11 +17455,125 @@ static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool 
   scr_dyn_release(pairs);
 }
 
-static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
-  if (scr_typed_ref_linked_live(src)) {
-    ScrDyn *snapshot = scr_dyn_typed_ref_peek(src);
-    scr_dyn_assign_from(target, snapshot, define);
+/* Whether assigning `key` on `target` can run user code: an accessor on the
+ * target or on one of its prototypes, or a prototype whose writes are not
+ * plain data. Object.assign reads a member after the previous assignment,
+ * so a write that ran code may have changed a member not read yet. */
+static bool scr_dyn_set_runs_user(const ScrDyn *target, const ScrStr *key) {
+  const ScrDyn *current = target;
+  while (current) {
+    ScrDyn *table = current->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(current) : NULL;
+    const ScrDyn *object = table ? table : current;
+    bool found = false;
+    bool accessor = false;
+    if (object->kind != SCR_DYN_OBJ) {
+      /* The write goes through a provider that can run code. */
+      found = accessor = true;
+    } else if (object->v.obj.layout) {
+      found = scr_layout_find(object->v.obj.layout, key->data, key->len) != UINT32_MAX;
+    } else {
+      ScrDynEntry *entry = scr_dyn_find_entry(object, key->data, key->len);
+      if (entry) found = true;
+      accessor = entry && entry->accessor;
+    }
+    scr_dyn_release(table);
+    if (found) return accessor;
+    current = scr_dyn_proto_next(object);
+  }
+  return false;
+}
+
+/* The symbol keys a source lists before it copies any member. */
+static ScrDyn *scr_dyn_symbol_assign_keys(const ScrDyn *holder) {
+  ScrDyn *symbols = scr_dyn_new_arr();
+  if (holder && holder->symbol_keys)
+    for (size_t i = 0; i < holder->symbol_keys->v.arr.len; i++)
+      scr_dyn_arr_push(symbols, scr_dyn_retain(holder->symbol_keys->v.arr.items[i]));
+  return symbols;
+}
+
+/* `keys`' enumerable members of `holder` onto `target`, values read from
+ * `src`. */
+static void scr_dyn_assign_symbols(ScrDyn *target, const ScrDyn *src, const ScrDyn *holder,
+                                   ScrDyn *keys, bool define) {
+  for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
+    ScrDyn *key = keys->v.arr.items[i];
+    ScrDynEntry *entry = scr_dyn_symbol_entry(holder, key, true);
+    if (!entry || !entry->enumerable) continue;
+    ScrDyn *value = scr_dyn_symbol_key_get(src, key, false);
+    if (!value) break;
+    if (define) {
+      ScrDyn *descriptor = scr_dyn_new_obj();
+      scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
+      scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
+      scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
+      scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+      ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
+      scr_dyn_release(defined);
+      scr_dyn_release(descriptor);
+    } else scr_dyn_symbol_key_set(target, key, value);
+    scr_dyn_release(value);
+  }
+}
+
+/* A linked copy's own members onto `target` in own-key order. One snapshot
+ * gives the key list; a member's value is read from the snapshot that
+ * follows the previous assignment, because a setter the copy runs, or a
+ * getter it reads an earlier member through, can change a member that has
+ * not been read yet. The snapshot is fresh for a capsule without a cached
+ * view (scr_dyn_typed_ref_peek) and the refreshed cached view otherwise. */
+static void scr_dyn_assign_linked_from(ScrDyn *target, const ScrDyn *src, bool define) {
+  if (target->kind == SCR_DYN_PROXY) {
+    scr_dyn_proxy_unsupported("Object.assign");
+    return;
+  }
+  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC &&
+      target->kind != SCR_DYN_BYTES)
+    return;
+  ScrDyn *snapshot = scr_dyn_typed_ref_peek(src);
+  if (scr_exc_pending() || !snapshot || snapshot->kind != SCR_DYN_OBJ) {
     scr_dyn_release(snapshot);
+    return;
+  }
+  ScrDyn *symbols = scr_dyn_symbol_assign_keys(snapshot);
+  ScrDyn *keys = scr_dyn_obj_own_keys(snapshot);
+  if (!keys) {
+    scr_dyn_release(symbols);
+    scr_dyn_release(snapshot);
+    return;
+  }
+  for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
+    const ScrDyn *key = keys->v.arr.items[i];
+    if (key->kind != SCR_DYN_STR) continue;
+    const char *name = key->v.str->data;
+    size_t len = key->v.str->len;
+    if (!scr_dyn_obj_enumerable(snapshot, name, len)) continue;
+    ScrDynEntry *entry = scr_dyn_is_layout(snapshot) ? NULL : scr_dyn_find_entry(snapshot, name, len);
+    bool getter = entry && entry->accessor;
+    ScrDyn *value = scr_dyn_obj_read(snapshot, name, len);
+    if (!value) break;
+    scr_dyn_copy_property(target, key->v.str, value, define);
+    scr_dyn_release(value);
+    if (scr_exc_pending()) break;
+    /* A define writes a data property, so only the read can run user code. */
+    if (!getter && (define || !scr_dyn_set_runs_user(target, key->v.str))) continue;
+    ScrDyn *fresh = scr_dyn_typed_ref_peek(src);
+    if (scr_exc_pending() || !fresh || fresh->kind != SCR_DYN_OBJ) {
+      scr_dyn_release(fresh);
+      break;
+    }
+    scr_dyn_release(snapshot);
+    snapshot = fresh;
+  }
+  scr_dyn_assign_symbols(target, src, snapshot, symbols, define);
+  scr_dyn_release(symbols);
+  scr_dyn_release(keys);
+  scr_dyn_release(snapshot);
+}
+
+static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
+  if (scr_typed_ref_linked_copy(src)) {
+    scr_dyn_assign_linked_from(target, src, define);
     return;
   }
   const ScrDynTypedRecordOps *record =
@@ -17478,28 +17598,9 @@ static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) 
   ScrDyn *view = src->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(src) : scr_dyn_retain((ScrDyn *)src);
   /* A view's symbol properties live on its named-property table. */
   const ScrDyn *holder = src->kind == SCR_DYN_BYTES ? src->v.bytes->properties : view;
-  ScrDyn *symbols = scr_dyn_new_arr();
-  if (holder && holder->symbol_keys) for (size_t i = 0; i < holder->symbol_keys->v.arr.len; i++)
-    scr_dyn_arr_push(symbols, scr_dyn_retain(holder->symbol_keys->v.arr.items[i]));
+  ScrDyn *symbols = scr_dyn_symbol_assign_keys(holder);
   scr_dyn_assign_strings_from(target, view, define);
-  for (size_t i = 0; i < symbols->v.arr.len && !scr_exc_pending(); i++) {
-    ScrDyn *key = symbols->v.arr.items[i];
-    ScrDynEntry *entry = scr_dyn_symbol_entry(holder, key, true);
-    if (!entry || !entry->enumerable) continue;
-    ScrDyn *value = scr_dyn_symbol_key_get(src, key, false);
-    if (!value) break;
-    if (define) {
-      ScrDyn *descriptor = scr_dyn_new_obj();
-      scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
-      scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
-      scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
-      scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
-      ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
-      scr_dyn_release(defined);
-      scr_dyn_release(descriptor);
-    } else scr_dyn_symbol_key_set(target, key, value);
-    scr_dyn_release(value);
-  }
+  scr_dyn_assign_symbols(target, src, holder, symbols, define);
   scr_dyn_release(symbols);
   scr_dyn_release(view);
 }

@@ -66,6 +66,10 @@ typedef struct ScrInspFormatOptions {
   int depth_kind;
   double depth_number;
   bool colors;
+  bool show_hidden;
+  /* Whether the render is util.format's %o, which the refusal of the
+   * kinds whose hidden entries the walk does not render names. */
+  bool hidden_spec;
   bool custom_inspect;
   double break_length;
   double compact; /* -1 for false */

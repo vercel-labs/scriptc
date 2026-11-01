@@ -22,6 +22,10 @@ export interface NativeLinkFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** A BigInt typed-array constructor is read as a value: its element kinds
+   * live in the JavaScript object model build (t262-da §J), which
+   * jsObjectModelFact ORs this fact into. */
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
@@ -70,6 +74,9 @@ export interface NativeLinkFeatures {
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
    * otherwise. */
   primitiveWrapper?: boolean;
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
+  promiseGeneric?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
@@ -170,10 +177,6 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
-  /** A typed fs read whose bytes value the program can observe as a Buffer:
-   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
-   * brand keep the default object. */
-  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;

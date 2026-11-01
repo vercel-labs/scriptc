@@ -1,4 +1,12 @@
-import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } from "./ir.js";
+import {
+  BIGINT_BYTES_NAMES,
+  type IrClassDef,
+  type IrExpr,
+  type IrModule,
+  type IrRecordShape,
+  type IrType,
+  type IrUnionDef,
+} from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
@@ -97,6 +105,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
   "dyn.promiseResolve",
+  // The generic Promise statics build and settle their capability's promise
+  // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
+  "promise.genericStatic",
   "fs.callbackCall",
   "fs.callbackGlob",
   "fs.callbackValue",
@@ -966,9 +977,8 @@ export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
   return webcrypto && named;
 }
 
-/** The typed file reads that answer a ScrBytes: Node answers a Buffer, but
- * scr_lib.c brands it only in the SCR_FS_BUFFER_BRAND build, so a program
- * that can observe the difference links that build. */
+/** The typed file reads that answer a ScrBytes: Node answers a Buffer, and
+ * scr_lib.c's read entries brand it, so a typed read makes a Buffer value. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
@@ -977,130 +987,6 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fileHandle.readFileBytes",
 ]);
 
-/** The bytesIntrinsic searches whose runtime branch reads the brand: a
- * Buffer viewed as a Uint8Array searches bytes, a plain Uint8Array compares
- * element values (NaN and out-of-range needles differ). */
-const FS_BUFFER_SEARCH_METHODS: ReadonlySet<string> = new Set([
-  "indexOfElem",
-  "lastIndexOfElem",
-  "includesElem",
-]);
-
-/** Whether a type holds bytes without passing another declaration, collecting
- * the record and union declarations it references. A boxed function's call
- * thunk boxes its result, and a checked function's thunk boxes its
- * arguments, with no dynFrom in the IR. */
-function reachesBytesDirect(t: IrType, deps: string[]): boolean {
-  switch (t.kind) {
-    case "bytes":
-      return true;
-    case "array":
-    case "set":
-      return reachesBytesDirect(t.elem, deps);
-    case "map":
-      return reachesBytesDirect(t.key, deps) || reachesBytesDirect(t.value, deps);
-    case "promise":
-      return reachesBytesDirect(t.inner, deps);
-    case "func":
-      return reachesBytesDirect(t.ret, deps) || t.params.some((p) => reachesBytesDirect(p, deps));
-    case "record":
-      deps.push(`r:${t.shapeId}`);
-      return false;
-    case "union":
-      deps.push(`u:${t.unionId}`);
-      return false;
-    default:
-      return false;
-  }
-}
-
-/** The module's declarations that can hold bytes, resolved to a fixpoint: a
- * record or union that references another declaration holding bytes holds
- * bytes, and a recursive declaration resolves like a non-recursive one. The
- * closure answers each reference from one pass over the declarations instead
- * of walking the shape tree at every reference. */
-function bytesCarryingDecls(mod: IrModule): (t: IrType) => boolean {
-  const referrers = new Map<string, string[]>();
-  const carrying = new Set<string>();
-  const queue: string[] = [];
-  const direct = (id: string, t: IrType): void => {
-    const deps: string[] = [];
-    if (reachesBytesDirect(t, deps)) {
-      if (!carrying.has(id)) {
-        carrying.add(id);
-        queue.push(id);
-      }
-    }
-    for (const dep of deps) {
-      const list = referrers.get(dep);
-      if (list === undefined) referrers.set(dep, [id]);
-      else list.push(id);
-    }
-  };
-  for (const record of mod.records ?? []) {
-    for (const field of record.fields) direct(`r:${record.id}`, field.type);
-    if (record.indexValue !== undefined) direct(`r:${record.id}`, record.indexValue);
-  }
-  for (const union of mod.unions ?? []) {
-    for (const arm of union.arms) direct(`u:${union.id}`, arm);
-  }
-  for (let i = 0; i < queue.length; i++) {
-    for (const from of referrers.get(queue[i]!) ?? []) {
-      if (carrying.has(from)) continue;
-      carrying.add(from);
-      queue.push(from);
-    }
-  }
-  const deps: string[] = [];
-  const holdsBytes = (t: IrType): boolean => {
-    deps.length = 0;
-    if (reachesBytesDirect(t, deps)) return true;
-    for (const dep of deps) if (carrying.has(dep)) return true;
-    return false;
-  };
-  return holdsBytes;
-}
-
-/** fsBufferBrand's condition as a scan over the module: it reads file bytes
- * through a typed read and can observe their Buffer-ness. scr_lib.c's read
- * entries set is_buffer only under SCR_FS_BUFFER_BRAND, so this conjunction
- * selects that variant; a program that reads bytes without observing them
- * keeps the default object. */
-function fsBufferBrandScan(mod: IrModule): RuleScan {
-  let reads = false;
-  let observes = false;
-  let holdsBytes: ((t: IrType) => boolean) | undefined;
-  return {
-    expr: (node) => {
-      if (reads && observes) return;
-      if (node.kind === "libCall" && FS_READ_BYTES_FNS.has(node.fn)) {
-        reads = true;
-        return;
-      }
-      if (observes) return;
-      switch (node.kind) {
-        case "dynFrom":
-          observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.value.type);
-          return;
-        case "dynCheck":
-          if (node.type.kind === "func") {
-            observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.type);
-          }
-          return;
-        case "bytesIntrinsic":
-          observes = FS_BUFFER_SEARCH_METHODS.has(node.method);
-          return;
-        case "libCall":
-          observes = node.fn === "buffer.isBranded" || node.fn === "insp.bytes";
-          return;
-        default:
-          return;
-      }
-    },
-    result: () => reads && observes,
-  };
-}
-
 /** The entries that need the JavaScript object model build (t262-da §J):
  * the runtime code a JavaScript source reaches for builtin intrinsics,
  * array attributes, BigInt views, handle property tables and buffer views
@@ -1108,6 +994,18 @@ function fsBufferBrandScan(mod: IrModule): RuleScan {
  * (A1 adds dyn.intrinsic); the slices share one SCR_JS_OBJECT_MODEL build
  * of every unit they touch instead of one build column per feature. */
 export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]);
+
+/** The JavaScript object model build's program facts (t262-da §J): every
+ * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
+ * (BigInt views today, array attributes and handle property tables next), so
+ * pack selection and the source build (RUNTIME_DEFINES, the library's
+ * cflags) agree on when the build is on. */
+export function jsObjectModelFact(features: {
+  jsObjectModel?: boolean;
+  bigintBytes?: boolean;
+}): boolean {
+  return features.jsObjectModel === true || features.bigintBytes === true;
+}
 
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
@@ -1231,6 +1129,10 @@ const RUNTIME_FEATURE_RULES = {
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
   }),
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor (scr_js_promise_generic.c): NewPromiseCapability(C), the
+   * C.resolve lookup and the iterator protocol. */
+  promiseGeneric: rule({ fns: ["promise.genericStatic"] }),
   /** EventEmitter and the stream classes as untyped constructor values
    * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
    * unit, render unhandled 'error' payloads through the inspect unit and
@@ -1274,6 +1176,9 @@ const RUNTIME_FEATURE_RULES = {
       // The Boolean prototype's methods run scr_js_wrapper_apply in the
       // same unit, which calls scr_dyn_invoke.
       "wrapper.booleanPrototype",
+      // The generic Promise statics call C's resolve and the iterable's
+      // next/return through scr_dyn_invoke.
+      "promise.genericStatic",
     ],
     // Constant-key reads of Object.prototype member names, and of
     // Array.prototype method names on arrays, answer the inherited member
@@ -1406,10 +1311,6 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
-  /** A typed fs read whose bytes value the program can observe as a Buffer:
-   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
-   * brand keep the default object. */
-  fsBufferBrand: rule({ scan: fsBufferBrandScan }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
@@ -1440,6 +1341,9 @@ const RUNTIME_FEATURE_RULES = {
   inspect: rule({
     fns: [
       "global.native",
+      // formatBigInt renders a bigint's digits in Node's form, and the
+      // numericSeparator groups they take are inspect state.
+      "bigint.inspect",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
@@ -1593,9 +1497,23 @@ const RUNTIME_FEATURE_RULES = {
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
   /** A record literal asserted to a wider record type answers a partial
    * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
-   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c. */
+   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c, so neither program
+   * links the other's code. */
   recordViewPartial: rule({
     expr: (node) => node.kind === "dynCheck" && node.partialView === true,
+  }),
+  /** A BigInt typed-array constructor read as a value (BigInt64Array,
+   * BigUint64Array): their element kinds, which no double represents, live
+   * in the JavaScript object model build (t262-da §J) of scr_bytes.c,
+   * scr_json.c, scr_dyn_invoke.c and the assert, inspect and console units.
+   * The fact ORs into jsObjectModel (jsObjectModelFact), so it selects no
+   * build column of its own. Every other program keeps the byte-for-byte
+   * default objects. */
+  bigintBytes: rule({
+    libCall: (node) =>
+      node.fn === "bytes.constructor" &&
+      node.args[0]?.kind === "strLit" &&
+      BIGINT_BYTES_NAMES.has(node.args[0].value),
   }),
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
@@ -1694,6 +1612,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     textCodecDyn: false,
     dnsPromises: false,
     dynAsync: false,
+    promiseGeneric: false,
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
@@ -1709,7 +1628,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
-    fsBufferBrand: false,
     fsFlags: false,
     fsWatch: false,
     fsWatchFile: false,
@@ -1767,6 +1685,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     utilPromisify: false,
     warningReplace: false,
     recordViewPartial: false,
+    bigintBytes: false,
     wasm: false,
     webcrypto: false,
     zlib: false,

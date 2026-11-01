@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8770-tuple-spread-math.ts"
+ ],
+ "diags": []
+}

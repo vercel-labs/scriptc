@@ -435,6 +435,11 @@ function buildLibFnSignatures() {
      * a promise that adopts a thenable's settlement, or a promise fulfilled
      * with the value. The second argument reads `then` as above. */
     "dyn.promiseResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** `Promise.<s>.call(C, value)` in a JavaScript source (scr_js_
+     * promise_generic.c): the static's name, the `this` constructor and the
+     * one argument the algorithm takes. Answers the capability's promise as
+     * a checked-dynamic value (a foreign C may answer anything). */
+    "promise.genericStatic": { argTypes: [STRING, DYN, DYN], result: DYN },
     /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
      * borrowed; result: an owned string) — the dyn kind's JS answer:
      * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest
@@ -2248,6 +2253,11 @@ function buildLibFnSignatures() {
      * per-shape adapter — the tags are program data). */
     "http.serverOnConnect": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.clientOnUpgrade": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
+    /** server.on("clientError", (err, socket) => ...): a request the parser
+     * rejects, or a connection error, goes to the listeners instead of the
+     * default 400/413/431 answer, as in Node. (err, socket) and shorter
+     * prefixes (the libCall case checks). */
+    "http.serverOnClientError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.reqSocket": { argTypes: [HTTPREQ_T], result: NETSOCKET_T },
     // reqH2Stream's program-interned Http2Stream | undefined result is
     // checked in the special libCall cases in validate.ts.

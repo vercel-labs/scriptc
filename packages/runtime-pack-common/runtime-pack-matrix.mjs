@@ -108,6 +108,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     "scr_async_dyn.c",
     any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
   ],
+  // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
+  // the specification's algorithms over the checked-dynamic tier. Its
+  // feature also selects dynInvoke and dynAsync, whose units it calls.
+  ["scr_js_promise_generic.c", "promiseGeneric"],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -272,6 +276,24 @@ export function variantsFor(source) {
       when: { recordViewPartial: true },
       defines: ["SCR_RECORD_VIEW_PARTIAL"],
     });
+    // An error thrown by island code answers `constructor` from V8 (NI-4),
+    // so `e.constructor === TypeError` holds with the island's TypeError.
+    // Pushed before the object model twins below, so a program that has both
+    // selects one build that carries both defines. Every other program keeps
+    // the default object, byte for byte.
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
+    });
+    // A program with both a partial record assertion and Node islands links
+    // the build that carries both defines; the variant with the most
+    // conditions is the one selected.
+    variants.push({
+      id: "record-view-partial-node-island",
+      when: { recordViewPartial: true, nodeIsland: true },
+      defines: ["SCR_RECORD_VIEW_PARTIAL", "SCR_NODE_ISLANDS"],
+    });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —
@@ -303,29 +325,25 @@ export function variantsFor(source) {
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
     });
+    // The BigInt element kinds and their element accessors are part of the
+    // JavaScript object model build (t262-da §J): a BigInt view's program
+    // has jsObjectModel, so it selects the object model build beside the
+    // TextDecoder legacy one when it has both. Every other program keeps the
+    // default object, byte for byte.
+    withJsObjectModel(variants);
   }
-  // fs.watchFile's poll needs a path stat that reports the errno (its failed
-  // poll IS a reportable event). The Stats snapshot is private to scr_lib.c,
-  // so the two entry points live in a build of that unit only programs that
-  // poll link; every other program keeps the default object, byte for byte.
-  if (source === "scr_lib.c") {
-    variants.push({
-      id: "fs-watch-file",
-      when: { watchFile: true },
-      defines: ["SCR_FS_WATCH_FILE"],
-    });
-    // Node answers a Buffer from a file read, and its brand is observable
-    // (Buffer.isBuffer, instanceof, inspect): a program that can observe it
-    // links the build that sets it. Combined with every variant above so a
-    // program that also polls keeps scr_watch_file's stat entry points
-    // (selectVariant takes the variant with the most conditions).
-    for (const { id, when, defines } of variants.slice()) {
-      variants.push({
-        id: `${id}-fs-buffer-brand`,
-        when: { ...when, fsBufferBrand: true },
-        defines: [...defines, "SCR_FS_BUFFER_BRAND"],
-      });
-    }
+  // util.inspect prints a BigInt typed array by reading its elements as
+  // BigInts, whichever build of the unit the program selects. Its Node island
+  // build is not the one these variants name: island output keeps its own
+  // object.
+  if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
+    withJsObjectModel(variants);
+  }
+  // console.table reads the cells of a row's typed array, so a BigInt view
+  // needs the element accessor that answers BigInts. The default object keeps
+  // the numeric read, byte for byte.
+  if (source === "scr_console_native.c") {
+    withJsObjectModel(variants);
   }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.

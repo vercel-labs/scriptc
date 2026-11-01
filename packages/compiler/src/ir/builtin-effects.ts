@@ -570,6 +570,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.classBasePrototype",
   "dyn.classInherit",
   "dyn.classSuper",
+  // Promise.<s>.call(C, …) validates its `this` and runs C's constructor and
+  // resolve — every throw (a non-object this, a non-constructor, a throwing
+  // executor or resolve) rejects the capability or propagates.
+  "promise.genericStatic",
   "dyn.hasKey",
   "dyn.in",
   "child.kill",

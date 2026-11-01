@@ -1222,6 +1222,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
   "dyn.promiseResolve": "scr_dyn_promise_resolve",
+  // Promise statics with a foreign `this` (scr_js_promise_generic.c).
+  "promise.genericStatic": "scr_js_promise_generic_call",
   "child.propsInstall": "scr_dyn_handle_props_install",
   "child.propsDefine": "scr_dyn_define_property_hp",
   "child.propsDescriptor": "scr_dyn_get_own_property_descriptor_hp",

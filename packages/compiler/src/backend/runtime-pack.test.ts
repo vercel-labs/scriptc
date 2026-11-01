@@ -41,6 +41,7 @@ const BASE: NativeLinkFeatures = {
   regex: false,
   copying: false,
   textDecoderLegacy: false,
+  bigintBytes: false,
   fileHandle: false,
   fetch: false,
   zlib: false,
@@ -69,7 +70,6 @@ const BASE: NativeLinkFeatures = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
-  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -336,8 +336,12 @@ describe("runtime pack manifests", () => {
     // dynamic-tier units too. A program without it keeps both off.
     const objectModel = effectiveRuntimeFeatures({ ...BASE, jsObjectModel: true });
     expect(objectModel).toMatchObject({ jsObjectModel: true, dynTier: true });
+    // The features that share the build OR into it: BigInt views today, so a
+    // program with them selects the object model build without naming it.
+    const bigint = effectiveRuntimeFeatures({ ...BASE, bigintBytes: true });
+    expect(bigint).toMatchObject({ bigintBytes: true, jsObjectModel: true, dynTier: true });
     const plain = effectiveRuntimeFeatures(BASE);
-    expect(plain).toMatchObject({ jsObjectModel: false, dynTier: false });
+    expect(plain).toMatchObject({ jsObjectModel: false, dynTier: false, bigintBytes: false });
   });
 
   test("static runtime-pack executable links dead-strip too", async () => {

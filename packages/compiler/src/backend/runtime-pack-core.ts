@@ -2,6 +2,7 @@
  * discovery, artifact verification and staging belong to the calling host. */
 import { optimizationClass, type NativeOptimization } from "./optimization.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { jsObjectModelFact } from "../ir/runtime-features.js";
 import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import type { NativeTargetSpec } from "./targets.js";
 
@@ -326,14 +327,10 @@ export function effectiveRuntimeFeatures(
   // The JavaScript object model build (t262-da §J): the features reached only
   // from JavaScript sources OR into one define and one runtime feature, so
   // their migrations share one build of each unit they touch instead of one
-  // build column per feature. Only a feature present on this branch is named
-  // here; BigInt views (bigintBytes), array attributes (arrayAttrs) and
-  // handle property tables (handleProps) are added by the PRs that rebase
-  // onto this build.
-  const jsObjectModel = features.jsObjectModel === true;
+  // build column per feature.
+  const jsObjectModel = jsObjectModelFact(features);
   return {
     ...features,
-    fsBufferBrand: features.fsBufferBrand === true,
     workers: features.workers === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
@@ -365,6 +362,7 @@ export function effectiveRuntimeFeatures(
     warningReplace: features.warningReplace === true,
     recordViewPartial: features.recordViewPartial === true,
     jsObjectModel,
+    bigintBytes: features.bigintBytes === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioWriteSlot: features.stdioWriteSlot === true,

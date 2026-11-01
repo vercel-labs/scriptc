@@ -190,6 +190,84 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
+  // A bare string that merely names a package is not a load. The type-only
+  // reachability pass and the reexport planner over-approximate calls (any
+  // call with a leading string literal is an edge), so a package named only
+  // by an ordinary function argument reached npm-static classification
+  // through them: the package was reported as "its entry … did not join the
+  // type-checked program" and islanded or refused, and whether that pass ran
+  // depends on the program the island rounds hand it, so the same build
+  // classified the package differently run to run.
+  test("a package named only by a call argument is not classified", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-named-only-"));
+    try {
+      for (const [name, value] of [
+        ["loaded-pkg", "loaded"],
+        ["named-only-pkg", "named-only"],
+      ] as const) {
+        const pkg = join(dir, "node_modules", name);
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(
+          join(pkg, "package.json"),
+          JSON.stringify({ name, version: "1.0.0", type: "module", main: "./index.js" }),
+        );
+        writeFileSync(join(pkg, "index.js"), `export const value = ${JSON.stringify(value)};`);
+        writeFileSync(join(pkg, "index.d.ts"), "export declare const value: string;");
+      }
+      writeFileSync(join(dir, "types.ts"), "export interface Label { text: string }");
+      const entry = join(dir, "main.ts");
+      writeFileSync(
+        entry,
+        [
+          'import { value } from "loaded-pkg";',
+          'import type { Label } from "./types.js";',
+          "function describeArgument(name: string): string {",
+          "\treturn `got ${name}`;",
+          "}",
+          'const label: Label = { text: describeArgument("named-only-pkg") };',
+          "console.log(value, label.text);",
+        ].join("\n"),
+      );
+      const npmStatic = ["loaded-pkg", "named-only-pkg"];
+      // Both packages are plain static modules: the second is never loaded,
+      // so its classification may not depend on how the call above is read.
+      expect(
+        analyze(entry, { npmStatic }).coverage.npmStatic.toSorted((a, b) =>
+          a.package.localeCompare(b.package),
+        ),
+      ).toEqual([
+        { package: "loaded-pkg", status: "static" },
+        { package: "named-only-pkg", status: "static" },
+      ]);
+      const outDir = join(dir, "out");
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic,
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(
+        (result.warnings ?? []).filter(
+          (d) => d.code === "SC8001" || /named-only-pkg/.test(d.message),
+        ),
+      ).toEqual([]);
+      expect(result.islands?.packages ?? []).toEqual([]);
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(native.exitCode).toEqual(reference.exitCode);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test.each(["llvm"] as const)(
     "renderer values and callbacks compile from shipped JavaScript (%s)",
     async (backend) => {

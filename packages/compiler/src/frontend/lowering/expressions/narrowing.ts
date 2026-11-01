@@ -1763,9 +1763,24 @@ function checkedDynCast(
     !freshDynSource(lowerer, expr, inner) &&
     !resultOnlyRead(lowerer, expr)
   ) {
+    // An index-signature type keeps the keys it does not declare in an
+    // overflow map, which a record view does not share (plainShape in
+    // record-views.ts): the conversion answers a copy, so a
+    // write through the assertion would reach that copy alone and be lost
+    // to the record the source still names. The value keeps its dynamic
+    // form instead, and every key of the assertion rides the source's own
+    // keyed reads and writes.
+    if (overflowMapRecord(lowerer, target)) return inner;
     return adoptingCast(lowerer, inner, target, locOf(expr), "dyn.adoptShared");
   }
   return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
+}
+
+/** Whether `target` keeps undeclared keys in an overflow map, the one
+ * record storage a checked conversion cannot share with its source. */
+function overflowMapRecord(lowerer: Lowerer, target: IrType): boolean {
+  if (target.kind !== "record") return false;
+  return lowerer.shapes.get(target.shapeId)?.indexValue !== undefined;
 }
 
 /** A cast whose result only serves one read of a primitive member

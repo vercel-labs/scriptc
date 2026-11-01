@@ -19,7 +19,7 @@ import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
-import { inheritedBuiltinCtorFence } from "./lower-classes.js";
+import { classDeclaresHasInstanceHook, inheritedBuiltinCtorFence } from "./lower-classes.js";
 import { throwTypeError } from "./primitive-throws.js";
 
 const PREFIX = "%class.construct:";
@@ -472,6 +472,12 @@ export class ClassConstructionDispatch {
         const info = lowerer.classes.get(name);
         if (!info || info.generic || info.def.runtime) continue;
         if (fn.name === INSTANCEOF) {
+          // A class that declares a static `Symbol.hasInstance` hook (its
+          // bases included): Node asks the hook first, and only without one
+          // walks the prototype chain. The fast path below IS the prototype
+          // walk, so this class must reach `bytes.instanceOf`, which asks
+          // the hook.
+          if (classDeclaresHasInstanceHook(info)) continue;
           const type: IrType = { kind: "classval", className: name };
           const callee = varRef("callee", DYN, loc);
           const result = classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {

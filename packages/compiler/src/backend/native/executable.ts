@@ -256,6 +256,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.nodeIsland === true,
     "scr_async_dyn.c",
   ),
+  // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
+  // the specification's algorithms over the checked-dynamic tier. Their
+  // values adopt through scr_async_dyn.c's thenable path, so the call
+  // selects dynAsync as well.
+  unit((u) => u.opts.promiseGeneric === true, "scr_js_promise_generic.c"),
   // The performance timeline (every perf_hooks user-timing call selects
   // dynAsync, whose unit carries the timeline's buffer warning).
   unit((u) => u.opts.dynAsync, "scr_perf.c"),
@@ -495,10 +500,6 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
-  // scr_lib.c's path stat and zero Stats for the fs.watchFile poll.
-  { define: "SCR_FS_WATCH_FILE", when: (opts) => opts.watchFile },
-  // scr_lib.c's file reads brand their bytes as Node's Buffer answers.
-  { define: "SCR_FS_BUFFER_BRAND", when: (opts) => opts.fsBufferBrand },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

@@ -12,8 +12,10 @@
  * Date.prototype`).
  *
  * The method values are the invoke unit's interned builtin-method functions
- * (scr_dyn_builtin_method), which are what `Date.prototype.<method>` reads
- * already answer, so both spellings are the same function; the constructor's
+ * (scr_dyn_builtin_method) — which for a member a Date value answers
+ * (getTime, setTime, toISOString, ...) IS that value, so
+ * `date.getTime === Date.prototype.getTime`; the members only the prototype
+ * carries (toDateString, the locale forms) are interned here; the constructor's
  * `prototype` is seeded with this same object, so `Date.prototype
  * .constructor === Date` and `Date. prototype.getTime` agree with a Date
  * value's inherited members. A Date method called on the prototype object

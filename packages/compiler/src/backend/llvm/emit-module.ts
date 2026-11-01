@@ -115,6 +115,15 @@ export function workerMinFunctions(): number {
   return Number.isFinite(value) && value > 0 ? value : 2000;
 }
 
+/** Whether the worker for `range` exits failing on purpose, from
+ * SCRIPTC_EMIT_WORKER_FAIL (`all`, or one range's index). The self-hosting
+ * driver pins that a failed worker's range falls back to this process and
+ * still emits the serial text. */
+function workerFailureRequested(range: number): boolean {
+  const requested = process.env["SCRIPTC_EMIT_WORKER_FAIL"];
+  return requested === "all" || requested === String(range);
+}
+
 /** A function's estimated emission cost beyond its IR nodes, in nodes:
  * fitted to the worker emission times of a large program's ranges. */
 const FUNCTION_EMIT_COST = 22;
@@ -170,6 +179,7 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
     if (pid === 0) {
       let code = 1;
       try {
+        if (workerFailureRequested(range)) throw new Error("requested worker failure");
         emitter.journal = new EmitJournal();
         emitter.debug?.record();
         const texts: string[] = [];
@@ -215,7 +225,9 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
         if (first !== pid && other !== undefined) reap(first, other);
         else reap(pid, range);
       }
-      const merged = ended.get(range)!;
+      // A failed range's worker, or one whose files are missing, left null:
+      // this process emits that range itself.
+      const merged = ended.get(range) ?? null;
       ended.delete(range);
       const slice = rangeFunctions(range);
       if (merged !== null && merged.texts.length === slice.length) {

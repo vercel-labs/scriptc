@@ -25,7 +25,7 @@ import {
 } from "./indexed-unions.js";
 import {
   declaredMemberOf,
-  fenceDatePrototypeWrite,
+  fenceIntrinsicPrototypeWrite,
   isPromisePrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
@@ -8174,9 +8174,10 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   if (!ts.isElementAccessExpression(target) && !ts.isPropertyAccessExpression(target)) {
     lowerer.unsupported("SC1090", expr, "'delete' of non-property expressions");
   }
-  // Deleting a member of `Date.prototype` is a write through the read-only
-  // prototype value (property-access.ts's fence).
-  fenceDatePrototypeWrite(lowerer, target);
+  // Deleting a builtin member of a standard library prototype
+  // (`Date.prototype.getTime`) is a write through the read-only prototype
+  // value (property-access.ts's fence, t262-da A2).
+  fenceIntrinsicPrototypeWrite(lowerer, target);
   fenceNodeModuleMutation(lowerer, target, "delete");
   if (ts.isPropertyAccessExpression(target) && target.name.text === "cause") {
     const field = lowerer.fieldTarget(target);
@@ -9162,10 +9163,11 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (urlWrite) return { kind: "exprStmt", expr: urlWrite, loc: locOf(expr) };
     }
     if (opKind === ts.SyntaxKind.EqualsToken) {
-      // A write through `Date.prototype` or one of its members keeps its
-      // fence: the prototype value is a read surface (property-access.ts).
+      // A write through a standard library prototype or one of its builtin
+      // members keeps its fence: the prototype value is a read surface
+      // (property-access.ts, t262-da A2).
       if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left))
-        fenceDatePrototypeWrite(lowerer, expr.left);
+        fenceIntrinsicPrototypeWrite(lowerer, expr.left);
       const staticPrivateWrite = lowerStaticPrivateAssignment(lowerer, expr);
       if (staticPrivateWrite)
         return { kind: "exprStmt", expr: staticPrivateWrite, loc: locOf(expr) };
@@ -9846,7 +9848,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     if (compound !== undefined) {
       // Desugar `x op= e` to `x = x op e` — reads x before e, like JS.
       if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left))
-        fenceDatePrototypeWrite(lowerer, expr.left);
+        fenceIntrinsicPrototypeWrite(lowerer, expr.left);
       if (ts.isElementAccessExpression(expr.left)) {
         // `this[kLimit] += v` — a declared symbol-keyed class field is
         // the dotted compound in element spelling. Array and byte-view
@@ -9893,7 +9895,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       expr.operator === ts.SyntaxKind.MinusMinusToken)
   ) {
     if (ts.isPropertyAccessExpression(expr.operand) || ts.isElementAccessExpression(expr.operand)) {
-      fenceDatePrototypeWrite(lowerer, expr.operand);
+      fenceIntrinsicPrototypeWrite(lowerer, expr.operand);
       // Statement and value positions share ToNumeric and reference order.
       // Namespace/expando globals retain their direct binding path below.
       const binding = ts.isPropertyAccessExpression(expr.operand)

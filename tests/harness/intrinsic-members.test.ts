@@ -21,6 +21,20 @@ test("intrinsic prototype members are the runtime's functions", async () => {
 console.log(Array.prototype.push === [].push);
 console.log(Map.prototype.get === new Map().get);
 console.log(Object.prototype.hasOwnProperty === {}.hasOwnProperty);
+// The prototype's constructor is the program's own X value for the
+// primitive wrappers, Symbol and Date as it is for Object: the table's
+// constructor member is the graph's twin of that interface, a different
+// object.
+console.log(
+  [
+    Symbol.prototype.constructor === Symbol,
+    Number.prototype.constructor === Number,
+    Boolean.prototype.constructor === Boolean,
+    String.prototype.constructor === String,
+    BigInt.prototype.constructor === BigInt,
+    Date.prototype.constructor === Date,
+  ].join(" "),
+);
 const size = Object.getOwnPropertyDescriptor(Map.prototype, "size");
 const map = new Map();
 map.set("a", 1);
@@ -37,6 +51,8 @@ console.log(typeof read, typeof read === "function" ? read.call(map) : "none");
   expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true);
   if (!result.ok) return;
   const { stdout, stderr } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
-  expect(stdout).toBe(["true", "true", "true", "function 1", ""].join("\n"));
+  expect(stdout).toBe(
+    ["true", "true", "true", "true true true true true true", "function 1", ""].join("\n"),
+  );
   expect(stderr).toBe("");
 });

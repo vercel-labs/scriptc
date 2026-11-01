@@ -6,6 +6,7 @@ import {
 } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, dynFallbackType } from "../lowerer.js";
+import { isWrapperPrototypeId } from "../intrinsics.js";
 import {
   BOOL,
   CAUGHT,
@@ -403,14 +404,20 @@ export function lowerTernary(
   }
 }
 
-/** Whether `expr` is the Number/Boolean prototype value a JavaScript
- * source read (jsPrimitivePrototypeValue: dyn.builtinPrototype for Number,
- * wrapper.booleanPrototype for Boolean), or one of its members: the value
- * is the prototype OBJECT, not the wrapper's primitive, so the checker's
- * wrapper type must not extract a scalar from it. */
+/** Whether `expr` is a wrapper prototype object a JavaScript source read
+ * (jsPrimitivePrototypeValue's dyn.builtinPrototype for Number,
+ * wrapper.booleanPrototype for Boolean, and the intrinsic table's
+ * Number.prototype and siblings once a program reads intrinsics), or one of
+ * its members: the value is the prototype OBJECT, not the wrapper's
+ * primitive, so the checker's wrapper type must not extract a scalar from
+ * it. */
 function isPrimitivePrototypeValue(expr: IrExpr): boolean {
-  if (expr.kind === "libCall")
-    return expr.fn === "dyn.builtinPrototype" || expr.fn === "wrapper.booleanPrototype";
+  if (expr.kind === "libCall") {
+    if (expr.fn === "dyn.builtinPrototype" || expr.fn === "wrapper.booleanPrototype") return true;
+    if (expr.fn !== "dyn.intrinsic") return false;
+    const id = expr.args[0];
+    return id !== undefined && id.kind === "strLit" && isWrapperPrototypeId(id.value);
+  }
   return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
 }
 

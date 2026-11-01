@@ -28,6 +28,7 @@
 #include "llvm/IR/DiagnosticHandler.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
@@ -856,6 +857,10 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
     ParseDiagnostic.print("scriptc-llvm-codegen", Stream);
     return EmitFailure{"invalid_ir", Stream.str()};
   }
+  // Normalize before serialization: these bytes key the partition cache.
+  // The input IR filename is temporary, unlike the caller's source path.
+  if (!Options.SourcePath.empty())
+    Mod->setSourceFileName(moduleSourceName(Options.SourcePath));
   if (std::optional<EmitFailure> Failure = verify(*Mod, "verification_failed"))
     return Failure;
   for (const GlobalValue &GV : Mod->global_values())
@@ -974,6 +979,36 @@ public:
       : CachedFileStream(std::make_unique<raw_svector_ostream>(Buffer)) {}
 };
 
+// Darwin's relocatable linker can conflate objects with the same CU path.
+// Qualify every CU after imports/optimization, retaining authored DIFile nodes
+// for source locations and distinct CUs for file-local bindings.
+void identifyDebugPartition(Module &Mod, const EmitOptions &Options, size_t I) {
+  if (!Mod.getTargetTriple().isOSDarwin())
+    return;
+  for (DICompileUnit *Unit : Mod.debug_compile_units()) {
+    DIFile *File = Unit->getFile();
+    std::string Identity = Options.SourcePath.empty()
+                               ? hashParts({File->getDirectory(), File->getFilename()})
+                               : hashParts({Options.SourcePath});
+    std::string Name = File->getFilename().str() + ".scriptc-" + Identity +
+                       "-partition-" + std::to_string(I) + ".ll";
+    // DIScope operand zero is its file. Replacing the CU operand leaves the
+    // original file's checksums, embedded source and other users unchanged.
+    Unit->replaceOperandWith(0, DIFile::get(Mod.getContext(), Name,
+                                          File->getDirectory()));
+  }
+}
+
+std::string partitionObjectKey(const EmitOptions &Options, StringRef Salt,
+                               StringRef Source, size_t I) {
+  std::string Key = hashParts({Salt, "object", Source});
+  // Final code generation adds the physical index to Darwin debug metadata;
+  // identical source in another partition must not restore that object's CU.
+  return Triple(Options.Target).isOSDarwin()
+             ? hashParts({Key, "debug-partition", std::to_string(I)})
+             : Key;
+}
+
 // Unoptimized partitions are independent: each compiles, or comes from the
 // cache keyed by its exact source, on its own thread.
 std::optional<EmitFailure>
@@ -983,7 +1018,7 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
                              std::vector<SmallVector<char, 0>> &Objects) {
   SharedFailure Failures;
   forEachPartition(Plan.Modules.size(), [&](size_t I) {
-    std::string Key = hashParts({Salt, "object", Plan.Modules[I]});
+    std::string Key = partitionObjectKey(Options, Salt, Plan.Modules[I], I);
     if (std::unique_ptr<MemoryBuffer> Hit = Cache.lookup(Key, "o")) {
       Objects[I].assign(Hit->getBufferStart(), Hit->getBufferEnd());
       return;
@@ -1008,6 +1043,7 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
                                      CodeGenFileType::ObjectFile))
       return Failures.set({"emission_not_supported",
                            "target does not support object emission"});
+    identifyDebugPartition(**Mod, Options, I);
     CodeGeneration.run(**Mod);
     Cache.store(Key, "o", StringRef(Objects[I].data(), Objects[I].size()));
   });
@@ -1150,8 +1186,8 @@ compileOptimizedPartitions(const EmitOptions &Options,
       HashingStream Stream(Hash);
       WriteBitcodeToFile(Mod, Stream);
     }
-    std::string Key =
-        hashParts({Salt, "object", toHex(Hash.final(), /*LowerCase=*/true)});
+    std::string Key = partitionObjectKey(
+        Options, Salt, toHex(Hash.final(), /*LowerCase=*/true), I);
     if (std::unique_ptr<MemoryBuffer> Hit = Cache.lookup(Key, "o")) {
       Objects[I].assign(Hit->getBufferStart(), Hit->getBufferEnd());
       return false;
@@ -1200,8 +1236,11 @@ compileOptimizedPartitions(const EmitOptions &Options,
   else
     // The backend passes the module it owns; only the hook's signature is
     // const.
-    Config.PreCodeGenModuleHook = [](unsigned, const Module &Optimized) {
-      useBaselineBodies(const_cast<Module &>(Optimized));
+    Config.PreCodeGenModuleHook = [&](unsigned Task, const Module &Optimized) {
+      Module &Mod = const_cast<Module &>(Optimized);
+      useBaselineBodies(Mod);
+      if (Task > 0 && Task <= Count)
+        identifyDebugPartition(Mod, Options, Task - 1);
       return true;
     };
 
@@ -1633,8 +1672,10 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
   SharedFailure Failures;
   forEachPartition(Count, [&](size_t I) {
     if (I == 0) {
-      if (Split)
+      if (Split) {
         keepCodegenPart(M, Split->PartOf, 0);
+        identifyDebugPartition(M, Options, 0);
+      }
       if (std::optional<EmitFailure> Failure =
               generateCode(M, Machine, CodeGenFileType::ObjectFile,
                            Options.Outputs[0], Temporaries[0]))
@@ -1658,6 +1699,7 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
             {"partition_failed", toString(Parsed.takeError())});
       Part = std::move(*Parsed);
       keepCodegenPart(*Part, Split->PartOf, I);
+      identifyDebugPartition(*Part, Options, I);
     } else {
       Part = std::make_unique<Module>(Identifier, Context);
       Part->setSourceFileName(SourceFileName);

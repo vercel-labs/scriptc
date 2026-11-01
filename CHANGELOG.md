@@ -4,6 +4,11 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Preserve object ownership in Darwin debug maps when compiling LLVM shards or native partitions, so dSYM generation resolves functions to their defining objects while retaining authored source locations.
+- Keep parsed native partition cache entries stable when temporary LLVM input filenames change.
+
 <!-- release:start -->
 
 ## 0.4.7

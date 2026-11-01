@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { afterAll, expect, test } from "vitest";
 import { splitLlvmLibraryProgram, splitLlvmProgram, splitLlvmProgramFile } from "./split.js";
 import { LlvmDebugInfo } from "./debug-info.js";
-import { VOID } from "../../ir/ir.js";
+import { BOOL, VOID } from "../../ir/ir.js";
+import { expectDarwinDebugMap } from "../darwin-debug-map.test-support.js";
+import { mangleFunction } from "../mangle.js";
 
 const scratch: string[] = [];
 afterAll(async () => {
@@ -288,14 +290,30 @@ test("shared metadata bounds shard growth while preserving every definition", ()
   expect(splitLlvmProgram(shared, { minimumBytes: 0 })).toBeNull();
 });
 
-test("debug metadata stays on definitions when splitting LLVM modules", async () => {
+function debugSample(entry = "/source/main.ts"): string {
+  const shared = "/source/shared.ts";
   const debug = new LlvmDebugInfo(
-    "/source/main.ts",
-    new Map([["/source/main.ts", "console.log(1);\n"]]),
+    entry,
+    new Map([
+      [entry, "console.log(1);\n"],
+      [shared, "console.log(2);\n"],
+    ]),
   );
   let source = SAMPLE;
+  const loc = { file: shared, start: 0, end: 1 };
+  const flag = debug.global({
+    id: "debug_flag",
+    name: "debug_flag",
+    type: BOOL,
+    mutable: true,
+    source: { loc, scope: loc },
+  });
+  source = source.replace(
+    "@hidden_value = internal global i64 7",
+    `@hidden_value = internal global i64 7\n@debug_flag = internal global i8 1, !dbg ${flag}`,
+  );
   for (const name of ["left", "right", "public_entry"]) {
-    const loc = { file: "/source/main.ts", start: 0, end: 1 };
+    const loc = { file: name === "public_entry" ? entry : shared, start: 0, end: 1 };
     const scope = debug.function({ name, loc, params: [], locals: [], body: [], returnType: VOID });
     const location = debug.location(loc, scope);
     source = source.replace(
@@ -307,7 +325,136 @@ test("debug metadata stays on definitions when splitting LLVM modules", async ()
           .join("\n")}\n}`,
     );
   }
-  source += debug.render();
+  // The hand-written LLVM definitions use the same linkage names as the
+  // emitter's debug metadata, so dsymutil can resolve their addresses.
+  for (const name of ["left", "right", "public_entry"])
+    source = source.replaceAll(`@${name}`, `@${mangleFunction(name)}`);
+  return source + debug.render();
+}
+
+test.runIf(process.platform === "darwin")(
+  "merged debug maps retain authored and generated functions in their defining shards",
+  async () => {
+    const source = debugSample().replace(
+      "attributes #0",
+      `define internal i64 @generated_helper() {
+entry:
+  %flag = load i8, ptr @debug_flag
+  %value = zext i8 %flag to i64
+  ret i64 %value
+}
+
+attributes #0`,
+    );
+    const split = splitLlvmProgram(source, { minimumBytes: 0 })!;
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-debug-map-"));
+    scratch.push(dir);
+    const objects: string[] = [];
+    for (const shard of split.shards) {
+      const path = join(dir, shard.name);
+      await writeFile(path, shard.source());
+      const object = `${path}.o`;
+      execFileSync("clang", ["-Wno-override-module", "-c", path, "-o", object]);
+      objects.push(object);
+    }
+    const keep = join(dir, "keep.syms");
+    await writeFile(keep, split.publicSymbols.map((name) => `_${name}\n`).join(""));
+    const merged = join(dir, "merged.o");
+    execFileSync("ld", ["-r", ...objects, "-o", merged, "-exported_symbols_list", keep]);
+    await expectDarwinDebugMap(objects, merged, [
+      ...["left", "right", "public_entry"].map(mangleFunction),
+      "generated_helper",
+      "debug_flag",
+    ]);
+    const main = join(dir, "main.c");
+    const entry = mangleFunction("public_entry");
+    await writeFile(
+      main,
+      `long long ${entry}(void); int main(void) { return ${entry}() != 18; }\n`,
+    );
+    const binary = join(dir, "program");
+    execFileSync("clang", [main, merged, "-o", binary]);
+    const symbols = spawnSync("dsymutil", [binary], { encoding: "utf8" });
+    expect(symbols.status, symbols.stderr).toBe(0);
+    expect(symbols.stderr).toBe("");
+    expect(spawnSync(binary).status).toBe(0);
+    const debug = execFileSync(
+      "lldb",
+      [
+        "--batch",
+        binary,
+        "-o",
+        "breakpoint set --file shared.ts --line 1 --move-to-nearest-code false",
+        "-o",
+        "breakpoint set --file main.ts --line 1 --move-to-nearest-code false",
+        "-o",
+        "breakpoint list",
+      ],
+      { encoding: "utf8" },
+    );
+    expect(debug).not.toContain("pending");
+    expect(debug).toContain("shared.ts:1");
+    expect(debug).toContain("main.ts:1");
+  },
+);
+
+test("shard CUs have distinct physical identities and preserve authored metadata", async () => {
+  const source = debugSample('/source space é "quoted"/main.ts');
+  const options = { minimumBytes: 0 };
+  const split = splitLlvmProgram(source, options)!;
+  const original = source.split("\n").filter((line) => line.startsWith("!"));
+  const units = original.filter((line) => line.includes("distinct !DICompileUnit("));
+  expect(units).toHaveLength(2);
+  const files = new Set<string>();
+  for (const shard of split.shards) {
+    const text = shard.source();
+    for (const line of original.filter((line) => !units.includes(line)))
+      expect(text).toContain(line);
+    expect(text.match(/distinct !DICompileUnit\(/g)).toHaveLength(units.length);
+    for (const unit of units) {
+      const id = unit.split(" = ")[0]!;
+      const projected = text.split("\n").find((line) => line.startsWith(`${id} = `))!;
+      expect(projected.replace(/file: !\d+/, "file: !source")).toBe(
+        unit.replace(/file: !\d+/, "file: !source"),
+      );
+      const fileId = /file: (!\d+)/.exec(projected)![1];
+      const file = text.split("\n").find((line) => line.startsWith(`${fileId} = `))!;
+      expect(file).toContain(`-${shard.name}"`);
+      const descriptor = file.slice(file.indexOf(" = ") + 3);
+      expect(files.has(descriptor)).toBe(false);
+      files.add(descriptor);
+    }
+  }
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-debug-split-identity-"));
+  scratch.push(dir);
+  const path = join(dir, "input.ll");
+  await writeFile(path, source);
+  expect(splitLlvmProgramFile(path, options)!.shards.map((shard) => shard.source())).toEqual(
+    split.shards.map((shard) => shard.source()),
+  );
+
+  const edited = splitLlvmProgram(source.replace("global i64 7", "global i64 9"), options)!;
+  expect(edited.shards[0]!.source()).not.toBe(split.shards[0]!.source());
+  expect(edited.shards.slice(1).map((shard) => shard.source())).toEqual(
+    split.shards.slice(1).map((shard) => shard.source()),
+  );
+  // Different entries can share the same dependency CU in the same bucket.
+  const other = splitLlvmProgram(debugSample("/other/main.ts"), options)!;
+  for (const shard of other.shards) {
+    for (const file of files) expect(shard.source()).not.toContain(file);
+  }
+});
+
+test("unrecognized debug file forms retain the canonical module fallback", () => {
+  const source = debugSample().replace(
+    '!DIFile(filename: "main.ts", directory: "/source")',
+    '!DIFile(filename: "main.ts", directory: "/source", checksumkind: CSK_MD5, checksum: "000102030405060708090a0b0c0d0e0f")',
+  );
+  expect(splitLlvmProgram(source, { minimumBytes: 0 })).toBeNull();
+});
+
+test("debug metadata stays on definitions when splitting LLVM modules", async () => {
+  const source = debugSample();
   const split = splitLlvmProgram(source, { minimumBytes: 0 });
   expect(split).not.toBeNull();
   const dir = await mkdtemp(join(tmpdir(), "scriptc-debug-split-"));

@@ -59,12 +59,14 @@ export interface EarlyExecutableNativeFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
   recordViewPartial?: boolean;
+  jsObjectModel?: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;
@@ -132,7 +134,6 @@ export interface EarlyExecutableNativeFeatures {
   textCodecDyn: boolean;
   watch: boolean;
   watchFile: boolean;
-  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -313,6 +314,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "regex",
   "copying",
   "textDecoderLegacy",
+  "bigintBytes",
   "fileHandle",
   "fetch",
   "zlib",
@@ -341,7 +343,6 @@ const BOOLEAN_NATIVE_KEYS = [
   "textCodecDyn",
   "watch",
   "watchFile",
-  "fsBufferBrand",
   "foreignFfi",
   "nodeTest",
   "tls",

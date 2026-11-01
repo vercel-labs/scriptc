@@ -55,6 +55,7 @@ import {
 import type { FnCtx, Lowerer } from "./lowerer.js";
 import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inline-require.js";
 import {
+  BIGINT_BYTES_NAMES,
   BOOL,
   BYTES_U8,
   canDynCheckTo,
@@ -11541,7 +11542,17 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // TextEncoder, ...) typechecks and reports SC2020 here. The named
     // families carry pointed hints: each states WHY no honest static
     // lowering exists (or what to use instead).
-    if (lowerer.isStdlibSymbol(symbol ?? undefined)) {
+    // `new BigInt64Array(...)` / `new BigUint64Array(...)` are exempt where
+    // the checked-dynamic tier exists: the typed IR has no BigInt element
+    // kind, so these construct through the typed-array constructor VALUE
+    // (the checked-construction fallback below, whose runtime build reads and
+    // stores BigInt elements). Static code keeps the refusal.
+    const bigintBytesCtor =
+      ts.isIdentifier(identifier) &&
+      symbol != null &&
+      BIGINT_BYTES_NAMES.has(ts.symbolName(symbol)) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr));
+    if (!bigintBytesCtor && lowerer.isStdlibSymbol(symbol ?? undefined)) {
       const ctorHints: Record<string, string | undefined> = {
         RegExp: "use a regex literal (/pattern/flags) — constructed regexes have no lowering",
         String:

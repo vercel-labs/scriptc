@@ -641,9 +641,9 @@ export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
 /** Function versions on loop-bounding number parameters
  * (ir/parameter-versions.ts). Library builds have no int32 entries, and a
  * module that observes call stacks could see the version's frame. */
-function versionParameters(mod: IrModule): IrModule {
-  if (mod.lib !== undefined || observesStacks(mod)) return mod;
-  return versionLoopBoundParameters(mod, mangleFunction);
+function versionParameters(mod: IrModule, nodes: IrNodeIndex): IrModule {
+  if (mod.lib !== undefined || observesStacks(mod, nodes)) return mod;
+  return versionLoopBoundParameters(mod, mangleFunction, nodes);
 }
 
 /** The int32 slot analysis of one module and the inputs it read: the
@@ -659,12 +659,15 @@ export interface Int32SlotAnalysis {
 
 /** The int32 slot analysis of `mod`, with the inputs LlEmitter gives it.
  * With `revise`, the analysis revises the functions of candidates that drop
- * (Int32SlotInputs.revise), and `mod` is the module it started from. */
+ * (Int32SlotInputs.revise), and `mod` is the module it started from. The
+ * node index of `mod` takes the nodes `previous` recorded for the functions
+ * both hold. */
 function analyzeModuleInt32Slots(
   mod: IrModule,
+  previous: IrNodeIndex | undefined,
   revise?: (fnName: string, dropped: ReadonlySet<string>) => IrFunction,
 ): Int32SlotAnalysis {
-  const nodeIndex = new IrNodeIndex(mod);
+  const nodeIndex = new IrNodeIndex(mod, previous);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
   const slots = analyzeInt32Slots(mod, {
@@ -686,7 +689,7 @@ function keptInt32Arrays(analysis: Int32SlotAnalysis): ReadonlySet<string> {
  * node index of `mod`, and its initializer bindings and dynamic stores,
  * which must be the ones the analysis read. Null when they differ. */
 function revisedAnalysis(analysis: Int32SlotAnalysis, mod: IrModule): Int32SlotAnalysis | null {
-  const nodeIndex = new IrNodeIndex(mod);
+  const nodeIndex = new IrNodeIndex(mod, analysis.nodeIndex);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
   const read = analysis.initializerBindings;
@@ -735,20 +738,24 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Each proof selectInt32Arrays asks for analyzes a marked module; the
   // emitter of the module it returns reuses the last one. A proof that
   // revised functions analyzed the module of the functions it ended with.
+  // Each round's node index takes the recorded nodes of the functions it
+  // shares with the latest index (`nodes`).
   const rounds: {
     last: Int32SlotAnalysis | null;
     functions: readonly IrFunction[] | null;
     revising: boolean;
-  } = { last: null, functions: null, revising: true };
+    nodes: IrNodeIndex | undefined;
+  } = { last: null, functions: null, revising: true, nodes: undefined };
   const proven = (marked: IrModule, revise: Int32ArrayRevision | null): Int32ArrayProof | null => {
     rounds.functions = null;
     if (revise === null || !rounds.revising) {
-      rounds.last = analyzeModuleInt32Slots(marked);
+      rounds.last = analyzeModuleInt32Slots(marked, rounds.nodes);
+      rounds.nodes = rounds.last.nodeIndex;
       return { kept: keptInt32Arrays(rounds.last), functions: null };
     }
     const latest = new Map<string, IrFunction>();
     try {
-      rounds.last = analyzeModuleInt32Slots(marked, (fnName, dropped) => {
+      rounds.last = analyzeModuleInt32Slots(marked, rounds.nodes, (fnName, dropped) => {
         const fn = revise(fnName, dropped);
         latest.set(fnName, fn);
         return fn;
@@ -758,6 +765,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       rounds.last = null;
       return null;
     }
+    rounds.nodes = rounds.last.nodeIndex;
     if (latest.size === 0) return { kept: keptInt32Arrays(rounds.last), functions: null };
     rounds.functions = marked.functions.map((fn) => latest.get(fn.name) ?? fn);
     return { kept: keptInt32Arrays(rounds.last), functions: rounds.functions };
@@ -765,6 +773,12 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Keep source storage intact for debugger inspection in dev builds.
   if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
   const timing = options.timing ?? (() => {});
+  // One index of the module the passes start from. Each pass skips the
+  // functions the index records without the node kinds it rewrites, and
+  // reads its scans of whole bodies from the index; it walks the functions
+  // an earlier pass rewrote, which the index does not record.
+  const nodes = new IrNodeIndex(mod);
+  rounds.nodes = nodes;
   const passed = versionParameters(
     addRecordResultEntries(
       scalarizeLiteralResults(
@@ -782,24 +796,41 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                             hoistFinalFieldReads(
                               freezeInitOnlyGlobals(
                                 holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                  dropUnwrittenPropertyBags(
+                                    runPairedWhileLoopsAsFor(mod, nodes),
+                                    nodes,
+                                  ),
+                                  nodes,
                                 ),
+                                nodes,
                               ),
+                              nodes,
                             ),
+                            nodes,
                           ),
+                          nodes,
                         ),
+                        nodes,
                       ),
+                      nodes,
                     ),
                   ),
+                  nodes,
                 ),
+                nodes,
               ),
               mangleFunction,
+              nodes,
             ),
             mangleFunction,
+            nodes,
           ),
         ),
+        nodes,
       ),
+      nodes,
     ),
+    nodes,
   );
   timing("llvm-emit-rewrites");
   let emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
@@ -829,6 +860,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
     options,
     null,
     prepared?.mod === emitted ? prepared : null,
+    rounds.nodes,
   );
   timing("llvm-emit-analyses");
   return emitter;
@@ -846,7 +878,7 @@ function verifyInt32Selection(
   const reference = selectInt32Arrays(
     passed,
     (marked) => {
-      last = analyzeModuleInt32Slots(marked);
+      last = analyzeModuleInt32Slots(marked, undefined);
       return { kept: keptInt32Arrays(last), functions: null };
     },
     resultEntryTargets,
@@ -855,7 +887,7 @@ function verifyInt32Selection(
   if (text(reference) !== text(emitted))
     throw new InternalCompilerError("int32 selection: the revised module differs from the rounds'");
   const facts = (mod: IrModule, prepared: Int32SlotAnalysis | null): string =>
-    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod)).slots.summary(mod);
+    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod, undefined)).slots.summary(mod);
   const expected = facts(reference, last);
   const actual = facts(emitted, analysis);
   if (expected !== actual) {
@@ -2117,6 +2149,7 @@ export class LlEmitter {
     options: LlvmTargetOptions,
     journal: EmitJournal | null = null,
     int32Analysis: Int32SlotAnalysis | null = null,
+    previousIndex?: IrNodeIndex,
   ) {
     this.targetOptions = options;
     this.journal = journal;
@@ -2124,8 +2157,9 @@ export class LlEmitter {
       journal !== null ||
       ((options.functionWorkers ?? 1) > 1 && options.forkPrimitives !== undefined);
     // One walk of every body, which the analyses below read instead of
-    // walking the bodies themselves.
-    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
+    // walking the bodies themselves. The functions `previousIndex` (an index
+    // of an earlier module) recorded are not walked again.
+    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod, previousIndex);
     this.initializerBindings =
       int32Analysis?.initializerBindings ?? findInitializerBindings(mod, this.nodeIndex);
     // One walk finds the dynamic field stores every analysis below consults.
@@ -6081,6 +6115,8 @@ export class LlEmitter {
       this.mod,
       { ...this.targetOptions, functionChunks: 1 },
       new EmitJournal(),
+      null,
+      this.nodeIndex,
     );
     chunk.debug?.record();
     return chunk;

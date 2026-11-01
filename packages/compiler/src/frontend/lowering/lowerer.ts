@@ -3598,6 +3598,10 @@ export class Lowerer {
   readonly builtinCallableValueFns = new Map<string, string>();
   /** Each builtin function-value adapter's Node name, for boxed values. */
   readonly builtinCallableValueNames = new Map<string, string>();
+  /** Adapters whose name holds on the main thread only
+   * (BuiltinModuleFn.valueNameMainThreadOnly): a Worker boxes them
+   * unnamed, as Node's unwrapped function is. */
+  readonly builtinCallableValueMainThreadNames = new Set<string>();
   /** Builtin function values whose `length` differs from their adapter's
    * parameter count (BuiltinModuleFn.valueLength), by adapter name. */
   readonly builtinCallableValueLengths = new Map<string, number>();
@@ -4348,6 +4352,7 @@ export class Lowerer {
       mapTable("primitiveCtorFns", this.primitiveCtorFns),
       mapTable("builtinCallableValueFns", this.builtinCallableValueFns),
       mapTable("builtinCallableValueNames", this.builtinCallableValueNames),
+      setTable("builtinCallableValueMainThreadNames", this.builtinCallableValueMainThreadNames),
       countTable("builtinCallableValueLengths", this.builtinCallableValueLengths),
       irDataTable("builtinCheckedValues", this.builtinCheckedValues),
       mapTable("regionRunHelpers", this.regionRunHelpers),
@@ -17724,6 +17729,7 @@ export class Lowerer {
         fnName,
         fn.valueName ?? display.slice(display.lastIndexOf(".") + 1),
       );
+      if (fn.valueNameMainThreadOnly) this.builtinCallableValueMainThreadNames.add(fnName);
       if (fn.valueLength !== undefined)
         this.builtinCallableValueLengths.set(fnName, fn.valueLength);
       const params = funcType.params.map((type, index) => ({
@@ -17831,15 +17837,22 @@ export class Lowerer {
   }
 
   /** The name and length a builtin function's adapter boxes under: the ones
-   * Node's function carries (`[Function: randomUUID]`). Empty for any other
-   * value. */
-  builtinFunctionIdentity(expr: IrExpr): { fnName?: string; fnLength?: number } {
+   * Node's function carries (`[Function: randomUUID]`), with the main-thread
+   * qualifier of a name a Worker does not carry (`process.cwd`). Empty for
+   * any other value. */
+  builtinFunctionIdentity(expr: IrExpr): {
+    fnName?: string;
+    fnLength?: number;
+    fnNameMainThreadOnly?: true;
+  } {
     if (expr.kind !== "closure") return {};
     const name = this.builtinCallableValueNames.get(expr.fnName);
     const length = this.builtinCallableValueLengths.get(expr.fnName);
+    const mainThreadOnly = this.builtinCallableValueMainThreadNames.has(expr.fnName);
     return {
       ...(name !== undefined ? { fnName: name } : {}),
       ...(length !== undefined ? { fnLength: length } : {}),
+      ...(mainThreadOnly ? { fnNameMainThreadOnly: true as const } : {}),
     };
   }
 

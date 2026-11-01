@@ -2696,6 +2696,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1660-buffer-read-write-num.ts",
           "tests/corpus/2902-bigint-bytes.ts",
           "tests/corpus/2904-bigint-errors.ts",
           "tests/corpus/5285-blob-construct.ts",
@@ -2916,8 +2918,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.buffer.SlowBuffer",
+        "tests": [
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/2902-bigint-bytes.ts",
+          "tests/corpus/2904-bigint-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3115,8 +3123,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.buffer.kMaxLength",
+        "tests": [
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/2902-bigint-bytes.ts",
+          "tests/corpus/2904-bigint-errors.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

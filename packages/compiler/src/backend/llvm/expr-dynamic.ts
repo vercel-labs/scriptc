@@ -131,9 +131,18 @@ export function emitDynamicExpr(
               : undefined;
         if (name !== undefined) {
           const box = host.dyn.dynFuncBoxHelper(v.type);
-          B.line(
-            `${t} = call ptr @${box}(ptr ${v.name}, ptr ${name === null ? "null" : host.cstr(name)})`,
-          );
+          let nameArg = name === null ? "null" : host.cstr(name);
+          if (name !== null && e.fnNameMainThreadOnly) {
+            // Node's main thread wraps the function under this name; a
+            // Worker hands out the unwrapped function, named "".
+            host.declare(`declare zeroext i1 @scr_context_is_main()`);
+            const onMain = B.tmp();
+            B.line(`${onMain} = call zeroext i1 @scr_context_is_main()`);
+            const chosen = B.tmp();
+            B.line(`${chosen} = select i1 ${onMain}, ptr ${nameArg}, ptr ${host.cstr("")}`);
+            nameArg = chosen;
+          }
+          B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${nameArg})`);
         } else B.line(`${t} = ${host.dyn.unnamedFuncBoxCall(v.type, v.name)}`);
         if (e.fnLength !== undefined) {
           host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);

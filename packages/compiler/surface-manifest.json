@@ -384,6 +384,12 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.buffer.SlowBuffer",
+      "kind": "node-builtin",
+      "name": "buffer.SlowBuffer",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.buffer.isAscii",
       "kind": "node-builtin",
       "name": "buffer.isAscii",
@@ -394,6 +400,13 @@
       "kind": "node-builtin",
       "name": "buffer.isUtf8",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.buffer.kMaxLength",
+      "kind": "node-builtin",
+      "name": "buffer.kMaxLength",
+      "status": "static",
+      "note": "constant value read"
     },
     {
       "id": "node-builtin.buffer.transcode",

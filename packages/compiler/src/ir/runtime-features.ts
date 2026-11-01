@@ -738,6 +738,12 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onData",
   "stdin.onEnd",
   "stdin.onError",
+  "stdin.onReadable",
+  "stdin.pause",
+  "stdin.resume",
+  "stdin.isPaused",
+  "stdin.readableLength",
+  "stdin.read",
   // node:readline rides the stdin unit (scr_readline.c links beside
   // scr_events.c under the same gate).
   "rl.checkCompleter",

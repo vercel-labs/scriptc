@@ -521,6 +521,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
+  // read(size) above the 1 GiB high-water mark: Node's ERR_OUT_OF_RANGE.
+  "stdin.read",
   // The unguarded h2-only stream call: always throws Node's TypeError.
   "http2.streamUndefCall",
   "http.reqH2StreamOrThrow",

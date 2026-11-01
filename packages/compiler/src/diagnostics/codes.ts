@@ -25,6 +25,7 @@ export const DIAGNOSTIC_CODES = {
   SC0008: "dynamic import call with an argument list the grammar does not allow",
   SC0009: "private name used outside a class that declares it",
   SC0010: "assignment to a target that is not a variable or a property access",
+  SC0011: "arguments referenced from a class field initializer or static block",
   SC1010: "package imports outside the supported set",
   SC1012: "default exports/imports (residual edges)",
   SC1013: "namespace imports (residual edges)",

@@ -16,7 +16,8 @@
  *            argument list the grammar does not allow (SC0008), a private
  *            name with no declaring enclosing class (SC0009), and an
  *            assignment target that is not a variable or a property access
- *            (SC0010)
+ *            (SC0010), and a reference to `arguments` from a class field
+ *            initializer or a static block (SC0011)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected

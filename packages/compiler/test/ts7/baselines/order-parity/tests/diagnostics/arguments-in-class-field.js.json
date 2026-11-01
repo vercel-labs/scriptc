@@ -1,0 +1,61 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/arguments-in-class-field.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'arguments'. Did you mean the static member 'Fields.arguments'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",
+    "start": 394,
+    "end": 403
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'arguments'. Did you mean the static member 'Fields.arguments'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",
+    "start": 425,
+    "end": 434
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'arguments'. Did you mean the static member 'Fields.arguments'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",
+    "start": 475,
+    "end": 484
+   }
+  },
+  {
+   "code": "SC0011",
+   "message": "'arguments' cannot be referenced from a class field initializer or a static block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",
+    "start": 475,
+    "end": 484
+   }
+  },
+  {
+   "code": "SC0011",
+   "message": "'arguments' cannot be referenced from a class field initializer or a static block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",
+    "start": 425,
+    "end": 434
+   }
+  },
+  {
+   "code": "SC0011",
+   "message": "'arguments' cannot be referenced from a class field initializer or a static block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",
+    "start": 394,
+    "end": 403
+   }
+  }
+ ]
+}

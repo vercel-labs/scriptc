@@ -2199,6 +2199,31 @@ function builtinMemberValueName(
   return builtinModuleFnOf(lowerer, module, member)?.valueName ?? null;
 }
 
+/** ECMAScript's ExpectedArgumentCount (ECMA-262 15.1.3, FunctionInitialize):
+ * the parameters before the first one that has an initializer or a rest
+ * element. That count, not the native parameter count, is a JavaScript
+ * function's `length`. Null for anything that is not a function definition
+ * (the IR erases defaults, so the declaration is the only place it is
+ * still visible). */
+export function jsFuncLengthOf(node: ts.Node): number | null {
+  const n = ts.isParenthesizedExpression(node) ? node.expression : node;
+  if (!ts.isFunctionLike(n)) return null;
+  const parameters = n.parameters.nodes;
+  let count = 0;
+  while (count < parameters.length) {
+    const param = parameters[count]!;
+    if (param.dotDotDotToken || param.initializer) break;
+    count++;
+  }
+  return count;
+}
+
+/** The jsValueIdentities key of a module-level binding (a global id is
+ * unique across the program, unlike a local id). */
+export function globalIdentityKey(id: string): string {
+  return `global:${id}`;
+}
+
 /** Whether `node` is a function, arrow or class DEFINITION that carries no
  * name of its own, so the binding or property it initializes names it
  * (V8's SetFunctionName). Every other expression evaluates to a value that
@@ -2208,11 +2233,108 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
   return (ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name === undefined;
 }
 
+/** The JavaScript identity (its `name` and its ExpectedArgumentCount
+ * `length`) of the function value `expr` holds, resolved through the
+ * checker: the call signature's own declaration, when that declaration is a
+ * real function body. A function TYPE declaration (the annotation
+ * `(a: number, b?: number) => void`) describes the shape the value is used
+ * at, not the function that exists, so it answers null and the box keeps
+ * the IR signature's count.
+ *
+ * Restricted to JavaScript sources: a typed TypeScript module keeps the IR
+ * count its signature spells, so this compatibility surface costs a typed
+ * program's IR nothing. */
+export function jsFuncIdentityOfValue(
+  lowerer: Lowerer,
+  expr: ts.Node,
+): { fnName?: string; fnLength?: number; fnLengthFromValue?: true } | null {
+  const value = jsFuncValueOf(lowerer, expr);
+  // The checker answers a conditional over two function types with ONE of
+  // their types (`flag ? f : g` types as the first arm), so its call
+  // signature cannot tell a single function from a choice between them.
+  // Only the value's own resolution can.
+  const decl = value ?? lowerer.checker.getCallSignatures(lowerer.typeOf(expr))[0]?.declaration;
+  if (decl === undefined) return null;
+  if (
+    !(
+      ts.isFunctionExpression(decl) ||
+      ts.isArrowFunction(decl) ||
+      ts.isFunctionDeclaration(decl) ||
+      ts.isMethodDeclaration(decl)
+    )
+  )
+    return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
+  const name = jsFuncNameOf(decl, lowerer);
+  const identity = { ...(name !== null ? { fnName: name } : {}) };
+  // The value can be any of several functions: which one it is at runtime
+  // decides its `length` (ExpectedArgumentCount), so the box reads the
+  // function value's own instead of one declaration's.
+  if (value === null) return { ...identity, fnLengthFromValue: true };
+  const length = jsFuncLengthOf(value);
+  return { ...identity, ...(length !== null ? { fnLength: length } : {}) };
+}
+
+/** The one function declaration the value `expr` IS, resolved through
+ * `const` aliases: the declaration whose ExpectedArgumentCount
+ * (`jsFuncLengthOf`) its `length` is. Null when the
+ * value can stand for more than one function — a conditional over two of
+ * them, a call's answer, a mutable binding or a class field — because then
+ * which one it is is a runtime fact. */
+export function jsFuncValueOf(lowerer: Lowerer, expr: ts.Node): ts.Node | null {
+  const seen = new Set<ts.Symbol>();
+  let n: ts.Node = expr;
+  for (;;) {
+    while (ts.isParenthesizedExpression(n) || ts.isAsExpression(n)) n = n.expression;
+    if (
+      ts.isFunctionExpression(n) ||
+      ts.isArrowFunction(n) ||
+      ts.isFunctionDeclaration(n) ||
+      ts.isMethodDeclaration(n)
+    )
+      return n;
+    if (!ts.isIdentifier(n) && !ts.isPropertyAccessExpression(n)) return null;
+    const symbol = ts.isIdentifier(n)
+      ? lowerer.resolveValueSymbol(n)
+      : (lowerer.checker.getSymbolAtLocation(n) ?? null);
+    // A reassignable binding is not the function its declaration names: the
+    // checker's type of the read may be the declared one, not the held one.
+    if (symbol === null || seen.has(symbol)) return null;
+    seen.add(symbol);
+    const declaration = symbol.valueDeclaration;
+    if (declaration === undefined) return null;
+    if (
+      ts.isFunctionDeclaration(declaration) ||
+      ts.isMethodDeclaration(declaration) ||
+      ts.isFunctionExpression(declaration) ||
+      ts.isArrowFunction(declaration)
+    )
+      return declaration;
+    // A class field is a reassignable property (`obj.fn = other`), so its
+    // initializer is not the function every read holds.
+    if (
+      ts.isVariableDeclaration(declaration) &&
+      declaration.initializer !== undefined &&
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
+    ) {
+      n = declaration.initializer;
+      continue;
+    }
+    return null;
+  }
+}
+
 /** The name V8 gives a function value read from this expression: its own
  * definition, through parenthesized, rebindable and const bindings and
  * property reads (`process.cwd`), or the binding an anonymous definition
  * initializes. Null when the source does not determine it. */
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
+  // The SetFunctionName rules below are the JavaScript surface's, so they
+  // answer only in a JavaScript source. A typed module keeps what this
+  // function always answered for it: its boxed functions' `dynFrom.fnName`
+  // is part of its IR (inspect output, call-error text), and a compatibility
+  // fix must not change a typed program's IR.
+  const js = isJsSourceFile(ts.getSourceFileOfNode(node));
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
   const seen = new Set<ts.Symbol>();
@@ -2225,6 +2347,11 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       n = declaration;
       break;
     }
+    // A PARAMETER carries no function name: the value it holds was named
+    // where it was created (`(resolve) => rf = resolve` stores Node's
+    // anonymous resolve function, whose name is ""), so the parameter's
+    // spelling is not an answer.
+    if (js && declaration && ts.isParameter(declaration)) return null;
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
     let value: ts.Node = declaration.initializer;
     while (ts.isParenthesizedExpression(value)) value = value.expression;
@@ -2249,6 +2376,8 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   if (ts.isPropertyAccessExpression(n)) return n.name.text;
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
   if (ts.isClassExpression(n) && n.name) return n.name.text;
+  // A method's SetFunctionName is its property key (`class C { m() {} }`).
+  if (js && ts.isMethodDeclaration(n) && ts.isIdentifier(n.name)) return n.name.text;
   if (ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassExpression(n)) {
     // An anonymous function takes the name of the binding or property it
     // initializes, through parentheses (`const f = (function () {})`).
@@ -2262,6 +2391,34 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       return p.name.text;
     }
     if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
+      return p.name.text;
+    }
+    // `f = function () {}`: an assignment whose target is a bare reference
+    // names the value it stores (NamedEvaluation of an anonymous
+    // AssignmentExpression, ECMA-262 13.15.2). A PARENTHESIZED target is not
+    // an IdentifierReference — `(f) = function () {}` leaves the function
+    // unnamed — and the frontend's write-target view drops the parentheses,
+    // so the source's own spelling has to answer that.
+    if (
+      js &&
+      p &&
+      ts.isBinaryExpression(p) &&
+      p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      p.right === outer &&
+      ts.isIdentifier(p.left) &&
+      !ts.isParenthesizedWriteTarget(p.left)
+    ) {
+      return p.left.text;
+    }
+    // `class C { f = function () {} }`: a field initializer takes the field's
+    // name, exactly like a variable initializer.
+    if (
+      js &&
+      p &&
+      ts.isPropertyDeclaration(p) &&
+      p.initializer === outer &&
+      ts.isIdentifier(p.name)
+    ) {
       return p.name.text;
     }
   }
@@ -3612,6 +3769,41 @@ export class Lowerer {
   /** Builtin function values whose `length` differs from their adapter's
    * parameter count (BuiltinModuleFn.valueLength), by adapter name. */
   readonly builtinCallableValueLengths = new Map<string, number>();
+  /** A source function's ECMAScript `length` (its ExpectedArgumentCount,
+   * jsFuncLengthOf), by lifted-function name. The IR erases parameter
+   * initializers, so a box built from the closure alone would report the
+   * native parameter count (`(a, b = 1) => {}` is 2 there, 1 in JS). */
+  readonly jsCallableLengths = new Map<string, number>();
+  /** The same source functions' SetFunctionName (ECMA-262 7.3.24, applied
+   * where the value is defined — a variable or property it initializes, the
+   * assignment that stores it), by lifted-function name. A box built where
+   * the value is created has no source expression to read the name from
+   * (`class C { f = (a, b = 1) => {} }` stores the field), so the
+   * definition records it. */
+  readonly jsCallableNames = new Map<string, string>();
+  /** The same identity, by the STORAGE a read produces (`varRef`): a value
+   * the source never spells as a function literal at its box site —
+   * `var ref; ref = function (a, b = 1) {}`, `const f = (a, b = 1) => {}` —
+   * is boxed from its binding, whose IR type spells the native count and no
+   * name. identifiers.ts fills this from the call signature's declaration
+   * (jsFuncIdentityOfValue) when a function-typed binding is read. */
+  readonly jsValueIdentities = new Map<
+    string,
+    { fnName?: string; fnLength?: number; fnLengthFromValue?: true }
+  >();
+
+  /** The jsValueIdentities key of a local in the context being lowered:
+   * local ids repeat across functions, the context sequence disambiguates. */
+  jsValueIdentityKey(local: IrLocal): string {
+    return `${this.ctx.seq}:${local.id}`;
+  }
+  /** The context key a box site may consult, or null when nothing is being
+   * lowered in a function (class dynamic dispatch and error-method post
+   * passes box values after the function bodies are done). */
+  activeContextKey(): string | null {
+    const top = this.fnStack[this.fnStack.length - 1];
+    return top === undefined ? null : String(top.seq);
+  }
   /** Typed builtin adapters with a checked twin (checkedBuiltinValue): the
    * builtin, its display name and the location the twin is lowered at. */
   readonly builtinCheckedValues = new Map<
@@ -4361,6 +4553,12 @@ export class Lowerer {
       mapTable("builtinCallableValueNames", this.builtinCallableValueNames),
       setTable("builtinCallableValueMainThreadNames", this.builtinCallableValueMainThreadNames),
       countTable("builtinCallableValueLengths", this.builtinCallableValueLengths),
+      // A JavaScript function's SetFunctionName and ExpectedArgumentCount,
+      // keyed by its lifted function — the shape of the builtin triple above.
+      // A box of that closure in a later unit reads them, so a record carries
+      // the entries its unit added.
+      mapTable("jsCallableNames", this.jsCallableNames),
+      countTable("jsCallableLengths", this.jsCallableLengths),
       irDataTable("builtinCheckedValues", this.builtinCheckedValues),
       mapTable("regionRunHelpers", this.regionRunHelpers),
       mapTable("internTableHelpers", this.internTableHelpers),
@@ -4721,6 +4919,13 @@ export class Lowerer {
     "fallibleFsCalls",
     "failureTouches",
     "partialHits",
+    // A function-typed JavaScript binding's identity, keyed by the context
+    // that read it (or by a module binding's global id): each read records it
+    // from the checker (jsFuncIdentityOfValue) before the box that reads it,
+    // so it is state of the unit being lowered, and a unit that records a
+    // binding it read differs from one that reuses another's entry only in
+    // which unit wrote it first.
+    "jsValueIdentities",
     // sized by journalTables, indexes over journaled tables, and state that
     // applying a unit's events rebuilds
     "deferredModuleInitializers",
@@ -13027,7 +13232,7 @@ export class Lowerer {
           type: DYN,
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
-          ...this.builtinFunctionIdentity(expr),
+          ...this.functionIdentity(expr),
         };
       }
       return expr;
@@ -17903,6 +18108,64 @@ export class Lowerer {
       ...(length !== undefined ? { fnLength: length } : {}),
       ...(mainThreadOnly ? { fnNameMainThreadOnly: true as const } : {}),
     };
+  }
+
+  /** The name and length a boxed function value carries. A builtin adapter
+   * boxes under Node's name and length; a JavaScript source function boxes
+   * under its SetFunctionName and its ECMAScript length (ExpectedArgumentCount),
+   * neither of which its IR signature still spells. Typed TypeScript sources
+   * keep the IR signature's answer: both maps are filled for JavaScript
+   * declarations only. */
+  functionIdentity(expr: IrExpr): {
+    fnName?: string;
+    fnLength?: number;
+    fnNameMainThreadOnly?: true;
+    fnLengthFromValue?: true;
+  } {
+    const identity = this.builtinFunctionIdentity(expr);
+    if (identity.fnLength !== undefined) return identity;
+    // A closure boxes by the function it names; a binding boxes by the
+    // storage the read resolves to (jsValueIdentities, filled at the read).
+    if (expr.kind === "closure") {
+      const name = this.jsCallableNames.get(expr.fnName);
+      const length = this.jsCallableLengths.get(expr.fnName);
+      if (name === undefined && length === undefined) return identity;
+      return {
+        ...(name !== undefined ? { fnName: name } : {}),
+        ...(length !== undefined ? { fnLength: length } : {}),
+        ...identity,
+      };
+    }
+    if (expr.kind === "varRef") {
+      // A box built from a post pass has no context to key a local by; a
+      // global id is unique on its own, so it stays readable there.
+      const contextKey = this.activeContextKey();
+      const value =
+        (contextKey === null
+          ? undefined
+          : this.jsValueIdentities.get(`${contextKey}:${expr.localId}`)) ??
+        this.jsValueIdentities.get(globalIdentityKey(expr.localId));
+      return value === undefined ? identity : { ...value, ...identity };
+    }
+    return identity;
+  }
+
+  /** The identity a box of `expr` carries, for a box built from the source
+   * expression `node`. Same as `functionIdentity`, except that a JavaScript
+   * function value whose declaration the static type cannot name — a
+   * conditional over two functions, a call's answer, any value the checker
+   * typed as one of several — carries `fnLengthFromValue`: its `length` is
+   * the function value's own, read from its closure at the box. */
+  functionIdentityOfValue(
+    expr: IrExpr,
+    node: ts.Node,
+  ): { fnName?: string; fnLength?: number; fnNameMainThreadOnly?: true; fnLengthFromValue?: true } {
+    const identity = this.functionIdentity(expr);
+    if (identity.fnLength !== undefined || identity.fnLengthFromValue === true) return identity;
+    if (expr.type.kind !== "func") return identity;
+    if (!isJsSourceFile(ts.getSourceFileOfNode(node))) return identity;
+    if (jsFuncValueOf(this, node) !== null) return identity;
+    return { ...identity, fnLengthFromValue: true };
   }
 
   isBuiltinCallableValue(expr: IrExpr): boolean {

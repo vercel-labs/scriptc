@@ -1,0 +1,41 @@
+arguments-in-class-field.js:7:12 - error SC0001: Cannot find name 'arguments'. Did you mean the static member 'Fields.arguments'?
+
+  6 | class Fields {
+  7 |   direct = arguments;
+    |            ^~~~~~~~~
+  8 |   fromArrow = () => arguments;
+
+arguments-in-class-field.js:7:12 - error SC0011: 'arguments' cannot be referenced from a class field initializer or a static block
+
+  6 | class Fields {
+  7 |   direct = arguments;
+    |            ^~~~~~~~~
+  8 |   fromArrow = () => arguments;
+
+arguments-in-class-field.js:8:21 - error SC0001: Cannot find name 'arguments'. Did you mean the static member 'Fields.arguments'?
+
+  7 |   direct = arguments;
+  8 |   fromArrow = () => arguments;
+    |                     ^~~~~~~~~
+  9 |   static {
+
+arguments-in-class-field.js:8:21 - error SC0011: 'arguments' cannot be referenced from a class field initializer or a static block
+
+  7 |   direct = arguments;
+  8 |   fromArrow = () => arguments;
+    |                     ^~~~~~~~~
+  9 |   static {
+
+arguments-in-class-field.js:10:29 - error SC0001: Cannot find name 'arguments'. Did you mean the static member 'Fields.arguments'?
+
+   9 |   static {
+  10 |     const fromBlock = () => arguments;
+     |                             ^~~~~~~~~
+  11 |   }
+
+arguments-in-class-field.js:10:29 - error SC0011: 'arguments' cannot be referenced from a class field initializer or a static block
+
+   9 |   static {
+  10 |     const fromBlock = () => arguments;
+     |                             ^~~~~~~~~
+  11 |   }

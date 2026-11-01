@@ -34,7 +34,8 @@ import { isJsSourceFileName } from "./tsc-codes.js";
  * `import.defer` and friends take exactly one); SC0009 is
  * AllPrivateNamesValid (a `#name` may only be read where an enclosing class
  * declares it); SC0010 is AssignmentTargetType (an assignment target must be
- * a variable reference or a property access). */
+ * a variable reference or a property access); SC0011 is ContainsArguments
+ * over a class field initializer or a static block. */
 export const EARLY_ERROR_CODES = [
   "SC0005",
   "SC0006",
@@ -42,6 +43,7 @@ export const EARLY_ERROR_CODES = [
   "SC0008",
   "SC0009",
   "SC0010",
+  "SC0011",
 ] as const;
 
 const NO_DUPLICATE_LEXICAL = "SC0005";
@@ -50,6 +52,7 @@ const NOT_A_STATEMENT = "SC0007";
 const IMPORT_CALL_FORM = "SC0008";
 const UNBOUND_PRIVATE_NAME = "SC0009";
 const INVALID_ASSIGNMENT_TARGET = "SC0010";
+const CONTAINS_ARGUMENTS = "SC0011";
 
 /** Whether the code around a node is strict — the one input this pass needs
  * from outside: Node's own module classification (program.ts's
@@ -78,6 +81,7 @@ export function earlyErrorDiagnostics7(
       checkImportCallForm(node, diags);
       checkPrivateNameUse(node, diags, privateNames);
       checkAssignmentTarget(node, diags);
+      checkContainsArguments(node, diags);
       ts.forEachChild(node, (child) => {
         stack.push(child);
         return undefined;
@@ -670,4 +674,86 @@ function hasUseStrictPrologue(statements: readonly ts.Statement[]): boolean {
     if (expr.text === "use strict") return true;
   }
   return false;
+}
+
+/* ── SC0011: ContainsArguments over a class field initializer ────────────
+ *
+ *   ClassElement : FieldDefinition ;
+ *     It is a Syntax Error if ContainsArguments of Initializer is true.
+ *   ClassStaticBlockBody : StatementList
+ *     It is a Syntax Error if ContainsArguments of StatementList is true.
+ *
+ * ContainsArguments is a plain reference to `arguments` anywhere in the
+ * initializer. An ARROW function has no `arguments` binding of its own, so
+ * its body is searched too; every other function form (function expression,
+ * method, accessor, constructor) binds its own and ends the search, which is
+ * exactly Node's split:
+ *
+ *   class C { x = () => arguments }              // SyntaxError
+ *   class C { x = function () { return arguments } }  // legal
+ *
+ * A nested class is searched: its own fields and static block carry the same
+ * rule, and its methods are function bodies. */
+function checkContainsArguments(node: ts.Node, diags: ScrDiagnostic[]): void {
+  let root: ts.Node | undefined;
+  if (ts.isPropertyDeclaration(node)) root = node.initializer;
+  else if (ts.isClassStaticBlockDeclaration(node)) root = node.body;
+  if (root === undefined) return;
+  const reference = argumentsReferenceIn(root);
+  if (reference === null) return;
+  report(
+    diags,
+    CONTAINS_ARGUMENTS,
+    reference,
+    "'arguments' cannot be referenced from a class field initializer or a static block",
+  );
+}
+
+/** The first `arguments` identifier reference below `root`, stopping at
+ * every non-arrow function boundary (inclusive of a root that is one). */
+function argumentsReferenceIn(root: ts.Node): ts.Identifier | null {
+  const stack: ts.Node[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (ts.isIdentifier(node) && node.text === "arguments" && isArgumentsReference(node))
+      return node;
+    if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) continue;
+    ts.forEachChild(node, (child) => {
+      stack.push(child);
+      return undefined;
+    });
+  }
+  return null;
+}
+
+/** Whether an identifier spelled `arguments` reads a binding rather than
+ * naming something: property and member names, declarations and labels are
+ * not references. */
+function isArgumentsReference(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (parent === undefined) return true;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isPropertyAssignment(parent) && parent.name === node) return false;
+  if (ts.isPropertyDeclaration(parent) && parent.name === node) return false;
+  if (ts.isMethodDeclaration(parent) && parent.name === node) return false;
+  if (ts.isVariableDeclaration(parent) && parent.name === node) return false;
+  if (ts.isParameter(parent) && parent.name === node) return false;
+  if (ts.isBindingElement(parent) && parent.name === node) return false;
+  // `const { arguments: a } = src` NAMES the property `arguments`; it reads
+  // no binding, so only a shorthand binding (`const { arguments } = src`)
+  // reaches the rule above.
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  // `get arguments() {}` and `set arguments(v) {}` name an accessor.
+  if (
+    (ts.isGetAccessorDeclaration(parent) || ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
+  if (ts.isFunctionDeclaration(parent) && parent.name === node) return false;
+  if (ts.isFunctionExpression(parent) && parent.name === node) return false;
+  if (ts.isClassDeclaration(parent) && parent.name === node) return false;
+  if (ts.isClassExpression(parent) && parent.name === node) return false;
+  if (ts.isLabeledStatement(parent) && parent.label === node) return false;
+  if (ts.isBreakOrContinueStatement(parent) && parent.label === node) return false;
+  return true;
 }

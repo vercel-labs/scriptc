@@ -14,6 +14,11 @@ export interface ClassSymbolKey {
    * Symbol() calls retain the declaring binding's distinct identity. */
   identity: ts.Symbol;
   fieldName: string;
+  /** Whether the symbol was created with a description ARGUMENT:
+   * `Symbol("")` has the description "" and names its function "[]", while
+   * `Symbol()` has no description and names it "" (SetFunctionName,
+   * ECMA-262 7.3.24 step 2). Both print `Symbol()` (Node's toString). */
+  described: boolean;
 }
 
 const FIELD_PREFIX = "%symbol:";
@@ -150,7 +155,7 @@ function wellKnownSymbolKeyOf(
   const sym = lowerer.checker.getSymbolAtLocation(key.name);
   if (!sym || !(lowerer.typeOf(key).flags & ts.TypeFlags.UniqueESSymbol)) return undefined;
   if (!FIELD_WELL_KNOWN_SYMBOLS.has(name)) return null;
-  return { sym, identity: sym, fieldName: wellKnownSymbolFieldName(name) };
+  return { sym, identity: sym, fieldName: wellKnownSymbolFieldName(name), described: true };
 }
 
 /** The layout name of a field keyed by the well-known `Symbol.<name>`: a
@@ -214,7 +219,7 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
   }
   const call = init ? literalSymbolCallOf(lowerer, init) : null;
   if (!call) return null;
-  const { registered, description } = call;
+  const { registered, description, described } = call;
   // Ordinary Symbol() is a fresh identity per evaluation, so only the
   // module-scope declaration above can name one fixed layout slot.
   const sf = ts.getSourceFileOfNode(decl);
@@ -260,7 +265,7 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
     ) !== null
   )
     return null;
-  const key = symbolKeyOf(lowerer, sym, registered, description);
+  const key = symbolKeyOf(lowerer, sym, registered, description, false, described);
   cache.set(sym, key);
   return key;
 }
@@ -271,6 +276,7 @@ function symbolKeyOf(
   registered: boolean,
   description: string,
   table = false,
+  described = true,
 ): ClassSymbolKey {
   // A registry name denotes one symbol even when several source bindings
   // initialize it. Intern those names into a representative checker symbol;
@@ -297,6 +303,7 @@ function symbolKeyOf(
     // them out of the native class's string-keyed dynamic view, including
     // Object.keys/JSON serialization and string-property writeback.
     fieldName: `${FIELD_PREFIX}${table && ordinal > 0 ? `${ordinal}:` : ""}Symbol(${description})`,
+    described,
   };
 }
 
@@ -304,7 +311,7 @@ function symbolKeyOf(
 function literalSymbolCallOf(
   lowerer: Lowerer,
   init: ts.Expression,
-): { registered: boolean; description: string } | null {
+): { registered: boolean; description: string; described: boolean } | null {
   if (!ts.isCallExpression(init) || init.questionDotToken) return null;
   const callee = init.expression;
   const registered =
@@ -319,7 +326,7 @@ function literalSymbolCallOf(
         : undefined;
   if (arg === undefined || (registered && arg === null)) return null;
   const description = arg === null ? "" : constantSymbolDescription(lowerer, arg);
-  return description === null ? null : { registered, description };
+  return description === null ? null : { registered, description, described: arg !== null };
 }
 
 /** A key table property: `kX: Symbol('x')` in a JS module's effective
@@ -393,7 +400,10 @@ function cjsTableSymbolKeyOf(
   // identity every requirer and the table's export global share.
   const canonical = lowerer.checker.getSymbolAtLocation(decl.name) ?? sym;
   if (tablePropertyWritten(lowerer, new Set([sym, canonical]), decl.name.text, sf)) return null;
-  return { ...symbolKeyOf(lowerer, canonical, call.registered, call.description, true), sym };
+  return {
+    ...symbolKeyOf(lowerer, canonical, call.registered, call.description, true, call.described),
+    sym,
+  };
 }
 
 function tablePropertyWritten(

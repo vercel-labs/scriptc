@@ -26,7 +26,7 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { PoisonError, jsFuncNameOf, newFnCtx } from "./lowerer.js";
+import { PoisonError, jsFuncLengthOf, jsFuncNameOf, newFnCtx } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import { returnsOnlyThis } from "./lower-classes.js";
 import { declSymbolOf } from "./lower-modules.js";
@@ -355,6 +355,18 @@ export function lowerLambda(
     !ts.isArrowFunction(node) && node.name && ts.isIdentifier(node.name) ? node.name : null;
   const baseName = nameIdent ? nameIdent.text : "";
   const fnName = lowerer.closureName(locOf(node), baseName ? `_${baseName}` : "");
+  // The value's JavaScript `length` (ExpectedArgumentCount) is a property of
+  // the declaration, which the IR signature no longer spells once defaults
+  // are lowered: record it for every box of this closure. JavaScript sources
+  // only — a typed TypeScript module keeps the count its IR signature
+  // spells, so this compatibility surface costs typed code nothing.
+  let jsLength: number | null = null;
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) {
+    jsLength = jsFuncLengthOf(node);
+    if (jsLength !== null) lowerer.jsCallableLengths.set(fnName, jsLength);
+    const jsName = jsFuncNameOf(node, lowerer);
+    if (jsName !== null) lowerer.jsCallableNames.set(fnName, jsName);
+  }
   // Named function expressions/declarations can self-reference by name; an
   // object-literal method's name is a PROPERTY, not a binding — no self.
   const selfSymbol =
@@ -551,6 +563,7 @@ export function lowerLambda(
     const lifted: IrFunction = {
       name: fnName,
       sourceName: jsFuncNameOf(node) ?? "<anonymous>",
+      ...(jsLength !== null ? { jsLength } : {}),
       ...(!isAsync &&
       !isGenerator &&
       (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node))
@@ -679,9 +692,19 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       ? [...prologue, { kind: "genBindBarrier" as const, loc: locOf(decl) }, ...statements]
       : [...prologue, ...statements];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(decl));
+    // JavaScript's `length` of this function value (ExpectedArgumentCount),
+    // for JavaScript sources only (see lowerLambda).
+    let jsLength: number | null = null;
+    if (isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+      jsLength = jsFuncLengthOf(decl);
+      if (jsLength !== null) lowerer.jsCallableLengths.set(sig.name, jsLength);
+      const jsName = jsFuncNameOf(decl, lowerer);
+      if (jsName !== null) lowerer.jsCallableNames.set(sig.name, jsName);
+    }
     const fn: IrFunction = {
       name: sig.name,
       sourceName: decl.name?.text ?? "<anonymous>",
+      ...(jsLength !== null ? { jsLength } : {}),
       ...(!sig.isAsync && !sig.generator ? { ownsPrototype: true as const } : {}),
       params,
       returnType: bodyReturn,

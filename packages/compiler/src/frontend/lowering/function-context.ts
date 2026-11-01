@@ -7,6 +7,10 @@ import { InternalCompilerError } from "../../errors.js";
  * turns into a capture (boxing the binding at its origin and threading it
  * through every function in between). */
 export interface FnCtx {
+  /** Unique per created context. Local ids (`name.0`) repeat across
+   * functions, so anything keyed by a local id outside this context must
+   * include it. */
+  readonly seq: number;
   locals: IrLocal[];
   scopes: Map<ts.Symbol, IrLocal>[];
   /** Lexical this has no checker symbol and one binding per function.
@@ -80,6 +84,8 @@ export interface FnCtx {
   ctl: { kind: "loop" | "switch" | "block"; labels?: string[] }[];
 }
 
+let nextCtxSeq = 0;
+
 export function newFnCtx(
   lifted: boolean,
   selfSymbol: ts.Symbol | null,
@@ -87,6 +93,7 @@ export function newFnCtx(
   returnType: IrType,
 ): FnCtx {
   return {
+    seq: nextCtxSeq++,
     locals: [],
     scopes: [new Map()],
     thisLocal: null,

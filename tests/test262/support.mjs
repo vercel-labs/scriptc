@@ -360,6 +360,7 @@ const ownEarlyErrorCodes = new Set([
   "SC0008",
   "SC0009",
   "SC0010",
+  "SC0011",
 ]);
 
 export function matchesParseNegative(outcome, source, variant = "strict") {

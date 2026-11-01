@@ -1178,6 +1178,66 @@ static void check_bypass_per_closure_function(void) {
   scr_collect_cycles();
 }
 
+/* A box that holds a closure is counted with that closure's body, so counting
+ * its free reads the closure (SCR_CYC_KIND_BOX + SCR_BOX_FUNC). A teardown
+ * frees the white set one object at a time, so a closure that is itself in
+ * the set can already be gone when its box is counted: scr_cyc_settle counts
+ * those boxes before it frees anything. Everything here is dead in one
+ * nursery pass, and the closure is walked into the white set before its
+ * box. */
+typedef struct BoxClosure {
+  size_t rc;
+  void *fn;
+  struct BoxClosure *next;
+} BoxClosure;
+static size_t box_freed;
+static size_t boxed_closure_freed;
+static void box_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  void *closure;
+  memcpy(&closure, &((ScrBox *)obj)->slot, sizeof closure);
+  visit(closure, ctx);
+}
+static void box_free(void *obj) {
+  box_freed++;
+  scr_cyc_free(obj);
+}
+static void boxed_closure_free(void *obj) {
+  boxed_closure_freed++;
+  scr_cyc_free(obj);
+}
+static ScrCycType box_type = { &box_trace, &box_free, SCR_CYC_KIND_BOX };
+static ScrCycType boxed_closure_type = { &fake_closure_trace, &boxed_closure_free,
+                                         SCR_CYC_KIND_CLOSURE };
+
+static void check_box_freed_with_its_closure(void) {
+  enum { RING = 64 };
+  scr_collect_cycles(); /* drain the candidates of earlier checks */
+  size_t freed_before = freed;
+  size_t box_before = box_freed;
+  size_t closure_before = boxed_closure_freed;
+
+  Node *ring = make_ring(RING);
+  ScrBox *box = scr_cyc_alloc(sizeof *box, &box_type);
+  BoxClosure *closure = scr_cyc_alloc(sizeof *closure, &boxed_closure_type);
+  box->rc = 1; /* the ring's edge */
+  box->kind = SCR_BOX_FUNC;
+  memcpy(&box->slot, &closure, sizeof box->slot);
+  closure->rc = 2; /* the box's edge and the ring's */
+  closure->fn = (void *)fake_body_short_lived;
+
+  /* The walk follows the ring's `next` chain to its last node and unwinds,
+   * visiting each node's `other` edge on the way back: the second node's
+   * edge puts the closure into the white set before the root's box. */
+  ring->next->other = (Node *)closure;
+  ring->other = (Node *)box;
+  release_live(ring);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+
+  check(freed == freed_before + RING, "a nursery pass did not free exactly the dead ring");
+  check(box_freed == box_before + 1, "the ring's box was not freed with it");
+  check(boxed_closure_freed == closure_before + 1, "the box's closure was not freed with it");
+}
+
 /* The mature level's bypass: a type whose mature candidates keep surviving
  * goes straight to the old generation, its dead cycles are found by full
  * passes, and once its objects die at the mature level again it is judged
@@ -1859,6 +1919,7 @@ int main(void) {
   check_nursery_bypass();
   check_mature_bypass();
   check_bypass_per_closure_function();
+  check_box_freed_with_its_closure();
   check_probe_window_runs_mature_pass();
   check_probe_sees_candidate_rings();
   check_rebuffer_past_mature();

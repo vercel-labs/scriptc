@@ -1158,11 +1158,17 @@ static SCR_CYC_COMPACT ScrCycKind *scr_cyc_site_claim(const void *fn) {
   return &site->stats;
 }
 
+/* Whether `obj` of `kind` is a box that holds a closure, which it is judged
+ * with. */
+static inline bool scr_cyc_holds_closure(const void *obj, uint32_t kind) {
+  return kind == SCR_CYC_KIND_BOX && ((const ScrBox *)obj)->kind == SCR_BOX_FUNC;
+}
+
 /* The function whose statistics judge a candidate of a closure or of a box
  * that holds a closure, or NULL. */
 static inline const void *scr_cyc_site_fn(const void *obj, uint32_t kind) {
   if (kind == SCR_CYC_KIND_CLOSURE) return ((const ScrClosure *)obj)->fn;
-  if (kind == SCR_CYC_KIND_BOX && ((const ScrBox *)obj)->kind == SCR_BOX_FUNC) {
+  if (scr_cyc_holds_closure(obj, kind)) {
     const ScrClosure *closure;
     memcpy(&closure, &((const ScrBox *)obj)->slot, sizeof closure);
     return closure ? closure->fn : NULL;
@@ -2140,15 +2146,28 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
    * objects. In address order the blocks come back in the order the bump
    * pointers hand out fresh memory. Teardown order is not observable. The
    * level statistics are counted here, where the teardown reads the type
-   * anyway; they only steer later passes. */
+   * anyway; they only steer later passes.
+   *
+   * A box that holds a closure is judged by the closure's body, so counting
+   * its free reads the closure — and the loop below frees one object at a
+   * time, so that closure can be an entry of the same set that an earlier
+   * turn already freed. Count those boxes first, while the whole set is
+   * still alive; a closure is safe to read at its own turn. */
   size_t freed = scr_white.n;
   if (scr_white.n >= SCR_CYC_ORDER_MIN)
     scr_mem_order_for_free(scr_white.v, scr_white.n, sizeof(ScrCycHdr));
+  if (gen_limit < SCR_CYC_OLD)
+    for (size_t i = 0; i < scr_white.n; i++) {
+      void *obj = scr_white.v[i];
+      const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
+      if (scr_cyc_holds_closure(obj, type->kind)) scr_cyc_freed(obj, type, gen_limit);
+    }
   for (size_t i = 0; i < scr_white.n; i++) {
     void *obj = scr_white.v[i];
     ScrCycHdr *h = scr_cyc_hdr(obj);
     const ScrCycType *type = scr_cyc_type(h);
-    if (gen_limit < SCR_CYC_OLD) scr_cyc_freed(obj, type, gen_limit);
+    if (gen_limit < SCR_CYC_OLD && !scr_cyc_holds_closure(obj, type->kind))
+      scr_cyc_freed(obj, type, gen_limit);
     scr_cyc_mature_dead += scr_cyc_gen(h) == SCR_CYC_MATURE;
 #ifdef SCR_YIN
     if (scr_cyc_gen(h) == SCR_CYC_YOUNG) scr_yin_leave(h, obj);

@@ -323,6 +323,12 @@ export function variantsFor(source) {
   if (source === "scr_console_native.c") {
     withJsObjectModel(variants);
   }
+  // The integrity queries answer from the handle property table when the
+  // program's JavaScript object model build carries it (a program whose
+  // JavaScript adds own properties to handles).
+  if (source === "scr_dyn_integrity.c") {
+    withJsObjectModel(variants);
+  }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
   if (source === "scr_async_dyn.c") {

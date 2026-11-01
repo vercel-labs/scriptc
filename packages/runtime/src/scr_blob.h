@@ -94,6 +94,17 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag);
  * identity, no copy); anything else throws the path-annotated catchable
  * TypeError and returns NULL. */
 void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPath *path, const char *want);
+/* Own properties JavaScript adds to a runtime handle (scr_dyn_handle_props.c,
+ * linked only by programs that add them). `child` is 1 when the program adds
+ * properties to children. */
+void scr_dyn_handle_props_install(double child);
+/* Object.defineProperties with a handle target. */
+ScrDyn *scr_dyn_define_props_hp(ScrDyn *target, ScrDyn *descs);
+/* The graph walkers' refusal: a value whose graph holds a handle with added
+ * properties cannot be printed or compared (+1, or NULL pending). */
+ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer);
+ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer);
+void scr_dyn_handle_props_check(ScrDyn *value, ScrStr *consumer);
 /* Keyed read on a HANDLE box (the emitted sc_dyn_key_get's arm): the
  * tag's modeled properties answer boxed values; everything else answers
  * the undefined singleton (the checked-dynamic tree's own-property stance — SEMANTICS.md)

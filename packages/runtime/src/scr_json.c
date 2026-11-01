@@ -73,6 +73,13 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+/* Set by scr_dyn_invoke.c when the object model build links it, so a
+ * DataView's `constructor` is the global's own interned value. A program that
+ * only needs the object model (a .js program that never reads a global
+ * constructor as a value) keeps this NULL and its named refusal. */
+ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
+#endif
 
 /* Live dyn-node count for the RC audit lane (-DSCR_RC_AUDIT); same contract
  * as scr_str_live_count in scr_string.c. */
@@ -7146,8 +7153,21 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
 #endif
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
   if (bytes->is_data_view) {
-    /* A DataView has no length or indexed elements. */
+    /* A DataView has no length or indexed elements. Its constructor is the
+     * interned DataView function value — the same one a JavaScript source
+     * reads from the global — so `dv.constructor === DataView` is exact
+     * (t262-dc C3). Only the object model build answers it, and only when the
+     * program links the unit that holds the interned table; every other build
+     * keeps the named refusal. */
     if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_dyn_global_constructor_hook) {
+        ScrStr *name = scr_str_new("DataView", sizeof "DataView" - 1);
+        ScrDyn *ctor = scr_dyn_global_constructor_hook(name);
+        scr_str_release(name);
+        return ctor;
+      }
+#endif
       static const char message[] = "DataView's constructor through unknown is not supported yet";
       scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
       return NULL;
@@ -19214,14 +19234,39 @@ static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method
   return NULL;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Both buffers answer their prototypes' methods as values (`typeof ab.resize`
+ * is "function", `ab.transfer === ab.transfer`), which invoke already reaches
+ * by name. Lengths are Node's Function.prototype.length. SharedArrayBuffer has
+ * slice and grow and no resize/transfer: it cannot detach (t262-dc C3). */
+static const ScrDynHandleMethod scr_array_buffer_methods[] = {
+  {"slice", 2, false, NULL},
+  {"resize", 1, false, NULL},
+  {"transfer", 0, false, NULL},
+  {"transferToFixedLength", 0, false, NULL},
+  {NULL, 0, false, NULL},
+};
+static const ScrDynHandleMethod scr_shared_array_buffer_methods[] = {
+  {"slice", 2, false, NULL},
+  {"grow", 1, false, NULL},
+  {NULL, 0, false, NULL},
+};
+#endif
+
 ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
   static const ScrDynHandleOps ops = {
     "ArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+#ifdef SCR_JS_OBJECT_MODEL
+    .methods = scr_array_buffer_methods,
+#endif
   };
   static const ScrDynHandleOps shared_ops = {
     "SharedArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+#ifdef SCR_JS_OBJECT_MODEL
+    .methods = scr_shared_array_buffer_methods,
+#endif
   };
   ScrDynHandleTag tag = view->shared ? SCR_DYNH_SHARED_ARRAY_BUFFER : SCR_DYNH_ARRAY_BUFFER;
   scr_dyn_handle_install(tag, view->shared ? &shared_ops : &ops);

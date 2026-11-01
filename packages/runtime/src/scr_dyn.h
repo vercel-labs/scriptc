@@ -1181,6 +1181,12 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+#ifdef SCR_JS_OBJECT_MODEL
+/* That table as the object model build reaches it: this unit installs the
+ * hook when a program links both builds, and scr_json.c keeps its named
+ * refusal where it is NULL. */
+extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
+#endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);

@@ -243,18 +243,21 @@ export function declaredReturnType(
       retT: DYN,
       nextT: DYN,
     };
-  let mappedReturn = lowerer.mapTypeOf(retTsType);
+  // An `async *` declaration spelled with one of the protocol interfaces
+  // (`AsyncIterator<T>`, `AsyncIterableIterator<T>`, `AsyncIterable<T>`)
+  // builds an async generator: ask before the value rule, which maps those
+  // annotations to the checked-dynamic value they hold anywhere else.
+  let mappedReturn =
+    decl.asteriskToken &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      ? mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx)
+      : null;
+  if (mappedReturn === null) mappedReturn = lowerer.mapTypeOf(retTsType);
   if (mappedReturn !== null)
     mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
     mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
-  if (
-    mappedReturn === null &&
-    decl.asteriskToken &&
-    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-  )
-    mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx);
   if (
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&

@@ -2633,7 +2633,9 @@ function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
   return out;
 }
 
-type RequireCallBindingKind7 = "ambient" | "createRequire" | "source";
+/** What a call spelled `require(...)` runs: Node's ambient loader, a
+ * createRequire binding, or a binding the file declares itself. */
+export type RequireCallBindingKind7 = "ambient" | "createRequire" | "source";
 
 function stripRequireCasts7(expr: ts.Expression): ts.Expression {
   let cur = expr;
@@ -7681,6 +7683,7 @@ export { npmPackageNameOf, workspacePackageOfPath } from "./workspace-registry.j
 
 export {
   requireSpecOf7 as requireSpecOf,
+  requireCallBindingKind7 as requireCallBindingKind,
   isRequireStatement7 as isRequireStatement,
   requiresOf7 as requiresOf,
   splitRequireCallOf7 as splitRequireCallOf,

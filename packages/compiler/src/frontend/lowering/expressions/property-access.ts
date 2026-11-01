@@ -4718,6 +4718,53 @@ function readOnlyAccess(access: ts.PropertyAccessExpression): boolean {
   );
 }
 
+/** The receiver a member WRITE addresses through a type assertion:
+ * `(p as View).x = v`. Node erases a type assertion, so the write lands on
+ * the very object the operand names; the asserted view's conversion may
+ * instead build a fresh width record (`%rec.width`), and a write into that
+ * temporary is dropped. Address the unasserted value when its stored layout
+ * already holds the member at the asserted type — the erased write of Node.
+ * A view that ADDS a member has no slot to write, so it keeps the
+ * assertion's conversion. Null when the receiver is not an assertion. */
+function assertedWriteReceiver(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  fieldType: IrType,
+  assertedType: IrType & { kind: "record" },
+): IrExpr | null {
+  let node: ts.Expression = access.expression;
+  let asserted = false;
+  for (;;) {
+    if (ts.isParenthesizedExpression(node)) {
+      node = node.expression;
+      continue;
+    }
+    if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
+      node = node.expression;
+      asserted = true;
+      continue;
+    }
+    break;
+  }
+  if (!asserted) return null;
+  const staticType = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (staticType?.kind !== "record") return null;
+  const staticField = lowerer.shapes
+    .get(staticType.shapeId)
+    ?.fields.find((f) => f.name === access.name.text);
+  if (!staticField || !typeEquals(staticField.type, fieldType)) return null;
+  const obj = lowerer.lowerExpr(node);
+  if (obj.type.kind === "record") {
+    const actualField = lowerer.shapes
+      .get(obj.type.shapeId)
+      ?.fields.find((f) => f.name === access.name.text);
+    if (actualField && typeEquals(actualField.type, fieldType)) return obj;
+  }
+  // The value's own layout differs from the checker's view (a generic
+  // body, an aliased layout): keep the assertion's conversion.
+  return lowerer.coerceInto(access.expression, obj, assertedType);
+}
+
 export function fieldTarget(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -4916,7 +4963,10 @@ export function fieldTarget(
     const shape = lowerer.shapes.get(receiverIr.shapeId);
     const fieldType = shape?.fields.find((f) => f.name === access.name.text)?.type;
     if (fieldType) {
-      let obj = lowerer.lowerExpr(access.expression);
+      const writeReceiver = readOnlyAccess(access)
+        ? null
+        : assertedWriteReceiver(lowerer, access, fieldType, receiverIr);
+      let obj = writeReceiver ?? lowerer.lowerExpr(access.expression);
       const nominal = representedClassFieldTarget(
         lowerer,
         access.expression,

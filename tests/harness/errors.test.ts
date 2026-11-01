@@ -1938,6 +1938,59 @@ console.log(count(require("./lib.cjs")));
 });
 
 describe("builtin constructor values (JS lane)", () => {
+  test("constructing one without a lowering keeps its fence, not a token-spelled TypeError", async () => {
+    // `AsyncResource` has no lowering, so a JavaScript source reads the
+    // import as the identifier chokepoint's identity token: an IR string
+    // whose text Node never produces. A String's construction does throw
+    // "… is not a constructor", but from the token that reports a class
+    // Node constructs as if the program could see the carrier — the wrong
+    // error class AND a fabricated message. The construction keeps the
+    // named refusal instead.
+    const r = await compileAndRun(
+      "builtin-token-construction",
+      `import { AsyncResource } from "node:async_hooks";
+function run() {
+  return new AsyncResource("demo");
+}
+console.log("before");
+run();
+`,
+      "mjs",
+    );
+    expect(r.stdout).toBe("before\n");
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: constructing values other than classes declared in the program is not supported yet \[SC1090 at .*builtin-token-construction\.mjs:3\]\n$/,
+    );
+  });
+
+  test("a program's own string casts keep Node's answers at the same sites", async () => {
+    // The token is recognized by the text it interns, so a real string the
+    // program widens to `any` is no token: every object-coercion site runs
+    // and answers exactly as Node does.
+    const r = await compileAndRun(
+      "string-cast-object-coercion",
+      `"use strict";
+const s: string = "hello";
+try { new (s as any)(); } catch (e) { console.log("new", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { console.log("in", "value", "x" in (s as any)); } catch (e) { console.log("in", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { delete (s as any).x; console.log("delete", "value", "ok"); } catch (e) { console.log("delete", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { console.log("delete index", "value", String(delete (s as any)[0])); } catch (e) { console.log("delete index", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "new threw TypeError: s as any is not a constructor",
+        "in threw TypeError: Cannot use 'in' operator to search for 'x' in hello",
+        "delete value ok",
+        "delete index threw TypeError: Cannot delete property '0' of [object String]",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("members without a lowering stay refused instead of reading undefined", async () => {
     // Builtin constructors read as interned function values that model only
     // name, length and constructor. Every other static member or prototype

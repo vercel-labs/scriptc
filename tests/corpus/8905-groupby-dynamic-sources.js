@@ -55,3 +55,71 @@ try {
 } catch (e) {
   console.log("caught", e.message);
 }
+
+// The source is walked by its own iterator while the callbacks run, as
+// Node's ArrayGroupBy walks it: entries an untyped source gains during the
+// call are grouped and entries it loses are skipped.
+function groupLiveArray(items) {
+  return Object.groupBy(items, (n) => {
+    if (n === 1) items.push(3);
+    return n % 2;
+  });
+}
+const growable = [1, 2];
+const grown = groupLiveArray(growable);
+console.log(grown["1"].join(","), grown["0"].join(","), growable.join(","));
+
+function groupLiveSet(values) {
+  return Object.groupBy(values, (n) => {
+    if (n === 1) values.add(3);
+    if (n === 2) values.delete(3);
+    return n % 2;
+  });
+}
+const growingSet = new Set([1, 2]);
+const grownSet = groupLiveSet(growingSet);
+console.log(grownSet["1"].join(","), grownSet["0"].join(","), [...growingSet].join(","));
+
+function groupLiveMap(entries) {
+  return Map.groupBy(entries, (entry) => {
+    if (entry[0] === "a") entries.set("c", 3);
+    return entry[1];
+  });
+}
+const growingMap = new Map([
+  ["a", 1],
+  ["b", 2],
+]);
+const grownMap = groupLiveMap(growingMap);
+console.log(
+  grownMap.get(1).join(","),
+  grownMap.get(2).join(","),
+  grownMap.get(3).join(","),
+  growingMap.size,
+);
+
+// A throwing callback closes the source's iterator where the throw
+// happened: the generator is not drained first, and its finally block runs
+// before the throw reaches the caller.
+function* traced(values) {
+  try {
+    for (const value of values) {
+      console.log("yield", value);
+      yield value;
+    }
+  } finally {
+    console.log("closed");
+  }
+}
+function groupUntilTwo(items) {
+  return Object.groupBy(items, (n) => {
+    if (n === 2) throw new Error("stop");
+    return n;
+  });
+}
+try {
+  groupUntilTwo(traced([1, 2, 3]));
+  console.log("no throw");
+} catch (e) {
+  console.log("caught", e.message);
+}

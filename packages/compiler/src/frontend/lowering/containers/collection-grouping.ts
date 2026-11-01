@@ -1,9 +1,10 @@
 import { keyedHelperName } from "../stable-names.js";
-import { countedFor, numLit, varRef } from "../../../ir/build.js";
+import { boolLit, countedFor, dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
+  CAUGHT,
   DYN,
   F64,
   type IrExpr,
@@ -21,6 +22,7 @@ import {
 import { isJsSourceFile, locOf } from "../../program.js";
 import { type GenType, genStep, genValue, stepDrivable } from "../lower-generators.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
+import { iteratorCanStep } from "../iterator-consumption.js";
 import { typeKey } from "../../type-mapper.js";
 
 /** Object.groupBy / Map.groupBy (ES2024): group the elements of an
@@ -167,9 +169,9 @@ export function lowerGroupByStaticCall(
  * over an untyped value), Node's ArrayGroupBy over the checked-dynamic tree:
  *
  *   g = new Map() | Object.create(null)
- *   items = %iterPack%(source)          // the values, in iteration order
- *   for (i = 0; i < items.length; i++) {
- *     v = items[i]; k = f(v, i);        // Map keeps k, Object takes ToPropertyKey
+ *   it = %iterator%(source)             // the source's own iterator, walked LIVE
+ *   for (step = it.next(); !step.done; step = it.next()) {
+ *     v = step.value; k = f(v, i);      // Map keeps k, Object takes ToPropertyKey
  *     cur = g.get(k)                    // the object's own keyed read
  *     if (cur === undefined) g.set(k, [v]); else cur.push(v);
  *   }
@@ -238,11 +240,16 @@ function lowerDynamicGroupByCall(
   return { kind: "call", callee: helper, args: [source, f, accumulator], type: DYN, loc };
 }
 
-/** The dynamic grouping loop (lowerDynamicGroupByCall). The group read and
- * write go through the dynamic receiver's own stores — a Map handle's get/set
- * for Map.groupBy (SameValueZero keys, Node's Map), an own keyed read/write of
- * the null-prototype object for Object.groupBy, whose key passes
- * ToPropertyKey first (symbols stay symbols, other keys stringify). */
+/** The dynamic grouping loop (lowerDynamicGroupByCall). The source is walked
+ * by its iterator, one element per callback, so the source is LIVE while the
+ * callbacks run exactly as Node's ArrayGroupBy walks it: an array, Set or Map
+ * the callback appends to groups the added entries, and entries it deletes
+ * are skipped. A throwing callback closes the iterator, with return()'s own
+ * error suppressed behind the callback's. The group read and write go through
+ * the dynamic receiver's own stores — a Map handle's get/set for Map.groupBy
+ * (SameValueZero keys, Node's Map), an own keyed read/write of the
+ * null-prototype object for Object.groupBy, whose key passes ToPropertyKey
+ * first (symbols stay symbols, other keys stringify). */
 function buildDynGroupByFn(
   lowerer: Lowerer,
   name: string,
@@ -252,8 +259,23 @@ function buildDynGroupByFn(
 ): IrFunction {
   const items = (): IrExpr => varRef("items.0", DYN, loc);
   const g = (): IrExpr => varRef("g.0", DYN, loc);
-  const v = (): IrExpr => varRef("v.0", DYN, loc);
+  const iterator = (): IrExpr => varRef("iterator.0", DYN, loc);
+  const next = (): IrExpr => varRef("next.0", DYN, loc);
+  const fast = (): IrExpr => varRef("fast.0", BOOL, loc);
+  const done = (): IrExpr => varRef("done.0", BOOL, loc);
+  const value = (): IrExpr => varRef("value.0", DYN, loc);
+  const step = (): IrExpr => varRef("step.0", DYN, loc);
+  const returned = (): IrExpr => varRef("close.0", DYN, loc);
   const cur = (): IrExpr => varRef("cur.0", DYN, loc);
+  const v = value;
+  const notDone = (): IrExpr => ({ kind: "unary", op: "!", operand: done(), type: BOOL, loc });
+  const member = (source: IrExpr, key: string): IrExpr => ({
+    kind: "dynKeyGet",
+    value: source,
+    key: { kind: "strLit", value: key, type: STRING, loc },
+    type: DYN,
+    loc,
+  });
   const index = (): IrExpr => ({
     kind: "dynFrom",
     value: varRef("i.0", F64, loc),
@@ -326,16 +348,34 @@ function buildDynGroupByFn(
         },
     loc,
   };
+  const push: IrStmt = {
+    kind: "exprStmt",
+    expr: {
+      kind: "dynInvoke",
+      recv: cur(),
+      method: "push",
+      calleeName: "push",
+      args: [v()],
+      type: DYN,
+      loc,
+    },
+    loc,
+  };
   const locals: IrLocal[] = [
     { id: "items.0", name: "items", type: DYN, mutable: false },
     { id: "f.0", name: "f", type: fT, mutable: false },
     { id: "g.0", name: "g", type: DYN, mutable: true },
-    { id: "pack.0", name: "pack", type: DYN, mutable: false },
-    { id: "n.0", name: "n", type: F64, mutable: false },
+    { id: "iterator.0", name: "iterator", type: DYN, mutable: false },
+    { id: "next.0", name: "next", type: DYN, mutable: false },
+    { id: "fast.0", name: "fast", type: BOOL, mutable: false },
+    { id: "done.0", name: "done", type: BOOL, mutable: true },
+    { id: "value.0", name: "value", type: DYN, mutable: true },
+    { id: "step.0", name: "step", type: DYN, mutable: false },
     { id: "i.0", name: "i", type: F64, mutable: true },
-    { id: "v.0", name: "v", type: DYN, mutable: false },
     { id: "k.0", name: "k", type: DYN, mutable: false },
     { id: "cur.0", name: "cur", type: DYN, mutable: false },
+    { id: "close.0", name: "close", type: DYN, mutable: false },
+    { id: "error.0", name: "error", type: CAUGHT, mutable: false },
   ];
   return {
     name,
@@ -349,65 +389,192 @@ function buildDynGroupByFn(
     body: [
       {
         kind: "varDecl",
-        localId: "pack.0",
+        localId: "iterator.0",
         init: {
           kind: "libCall",
-          fn: "dyn.iterPack",
+          fn: "dyn.iterator",
           args: [items(), { kind: "strLit", value: "items", type: STRING, loc }],
           type: DYN,
           loc,
         },
         loc,
       },
+      // next is read once, as JS keeps it in the iterator record.
+      { kind: "varDecl", localId: "next.0", init: member(iterator(), "next"), loc },
+      { kind: "varDecl", localId: "fast.0", init: iteratorCanStep(iterator(), next(), loc), loc },
+      { kind: "varDecl", localId: "done.0", init: boolLit(false, loc), loc },
+      { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
       {
-        kind: "varDecl",
-        localId: "n.0",
-        init: {
-          kind: "libCall",
-          fn: "dyn.arrLen",
-          args: [varRef("pack.0", DYN, loc)],
-          type: F64,
-          loc,
-        },
-        loc,
-      },
-      countedFor(loc, varRef("n.0", F64, loc), () => [
-        {
-          kind: "varDecl",
-          localId: "v.0",
-          init: {
-            kind: "libCall",
-            fn: "dyn.arrAt",
-            args: [varRef("pack.0", DYN, loc), varRef("i.0", F64, loc)],
-            type: DYN,
-            loc,
-          },
-          loc,
-        },
-        { kind: "varDecl", localId: "k.0", init: key, loc },
-        { kind: "varDecl", localId: "cur.0", init: read(), loc },
-        {
-          kind: "if",
-          cond: { kind: "dynTest", test: "undefined", value: cur(), type: BOOL, loc },
-          then: [store],
-          else_: [
-            {
-              kind: "exprStmt",
-              expr: {
-                kind: "dynInvoke",
-                recv: cur(),
-                method: "push",
-                calleeName: "push",
-                args: [v()],
-                type: DYN,
+        kind: "while",
+        cond: { kind: "unary", op: "!", operand: done(), type: BOOL, loc },
+        body: [
+          // Declared before the branches, which each assign it: a local
+          // declared in a branch is released when the branch ends.
+          { kind: "varDecl", localId: "value.0", init: dynUndefinedExpr(loc), loc },
+          {
+            kind: "if",
+            cond: fast(),
+            then: [
+              {
+                kind: "assign",
+                localId: "value.0",
+                value: {
+                  kind: "libCall",
+                  fn: "dyn.iteratorStep",
+                  args: [iterator()],
+                  type: DYN,
+                  loc,
+                },
                 loc,
               },
-              loc,
-            },
-          ],
-          loc,
-        },
-      ]),
+              {
+                kind: "assign",
+                localId: "done.0",
+                value: {
+                  kind: "libCall",
+                  fn: "dyn.iteratorStepDone",
+                  args: [iterator()],
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            else_: [
+              {
+                kind: "varDecl",
+                localId: "step.0",
+                init: {
+                  kind: "libCall",
+                  fn: "dyn.iteratorResult",
+                  args: [
+                    {
+                      kind: "dynCall",
+                      callee: next(),
+                      receiver: iterator(),
+                      calleeName: "iterator.next",
+                      args: [],
+                      type: DYN,
+                      loc,
+                    },
+                  ],
+                  type: DYN,
+                  loc,
+                },
+                loc,
+              },
+              // done before value: a completed iterator's value is never read.
+              {
+                kind: "assign",
+                localId: "done.0",
+                value: {
+                  kind: "dynTest",
+                  test: "truthy",
+                  value: member(step(), "done"),
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "if",
+                cond: notDone(),
+                then: [{ kind: "assign", localId: "value.0", value: member(step(), "value"), loc }],
+                else_: null,
+                loc,
+              },
+            ],
+            loc,
+          },
+          {
+            kind: "if",
+            cond: notDone(),
+            then: [
+              {
+                kind: "tryCatch",
+                tryBody: [
+                  { kind: "varDecl", localId: "k.0", init: key, loc },
+                  { kind: "varDecl", localId: "cur.0", init: read(), loc },
+                  {
+                    kind: "if",
+                    cond: { kind: "dynTest", test: "undefined", value: cur(), type: BOOL, loc },
+                    then: [store],
+                    else_: [push],
+                    loc,
+                  },
+                  {
+                    kind: "assign",
+                    localId: "i.0",
+                    value: {
+                      kind: "bin",
+                      op: "+",
+                      left: varRef("i.0", F64, loc),
+                      right: numLit(1, loc),
+                      type: F64,
+                      loc,
+                    },
+                    loc,
+                  },
+                ],
+                // IteratorClose: an abrupt end of the grouping loop closes
+                // the source, and return()'s own error never displaces the
+                // callback's.
+                catchLocalId: "error.0",
+                catchBody: [
+                  {
+                    kind: "tryCatch",
+                    tryBody: [
+                      {
+                        kind: "varDecl",
+                        localId: "close.0",
+                        init: member(iterator(), "return"),
+                        loc,
+                      },
+                      {
+                        kind: "if",
+                        cond: {
+                          kind: "dynTest",
+                          test: "function",
+                          value: returned(),
+                          type: BOOL,
+                          loc,
+                        },
+                        then: [
+                          {
+                            kind: "exprStmt",
+                            expr: {
+                              kind: "dynCall",
+                              callee: returned(),
+                              receiver: iterator(),
+                              calleeName: "iterator.return",
+                              args: [],
+                              type: DYN,
+                              loc,
+                            },
+                            loc,
+                          },
+                        ],
+                        else_: null,
+                        loc,
+                      },
+                    ],
+                    catchBody: [],
+                    catchLocalId: null,
+                    finallyBody: null,
+                    loc,
+                  },
+                  { kind: "rethrow", localId: "error.0", loc },
+                ],
+                finallyBody: null,
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+        ],
+        loc,
+      },
       { kind: "return", value: g(), loc },
     ],
     loc,

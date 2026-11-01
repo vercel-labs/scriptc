@@ -43,3 +43,20 @@ try {
 
 // The call form keeps working alongside the computed key.
 console.log(set.has(2), map.get("a"));
+
+// A symbol key names a symbol property, exactly as it does on an object:
+// the key passes ToPropertyKey, so a symbol is not stringified (which would
+// throw) and a Set's or Map's well-known symbol members answer.
+const symbolSet = new Set([1, 2]);
+const symbolMap = new Map([["a", 1]]);
+function readSetKey(key) {
+  return symbolSet[key];
+}
+function readMapKey(key) {
+  // @ts-expect-error A computed key on a typed Map is not an index read.
+  return symbolMap[key];
+}
+const tag = Symbol("tag");
+console.log(readSetKey(tag), readMapKey(tag), readSetKey("size"), readMapKey("size"));
+console.log(typeof readSetKey(Symbol.iterator), typeof readMapKey(Symbol.iterator));
+console.log(readSetKey(0), readMapKey(0), readSetKey(null), readMapKey(undefined));

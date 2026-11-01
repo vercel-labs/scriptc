@@ -96,9 +96,11 @@ test("every scr_json build has a JavaScript object model twin", () => {
     "default",
     "record-view-partial",
     "node-island",
+    "record-view-partial-node-island",
     "js-om",
     "js-om-record-view-partial",
     "js-om-node-island",
+    "js-om-record-view-partial-node-island",
   ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
@@ -130,6 +132,19 @@ test("every scr_json build has a JavaScript object model twin", () => {
   expect(
     selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
   ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program with both a partial record assertion and Node islands keeps
+  // both defines, with and without the object model build.
+  expect(
+    selected("scr_json.c", { workers: false, nodeIsland: true, recordViewPartial: true }).defines,
+  ).toEqual(["SCR_RECORD_VIEW_PARTIAL", "SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      nodeIsland: true,
+      recordViewPartial: true,
+    }).defines,
+  ).toEqual(["SCR_RECORD_VIEW_PARTIAL", "SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);

@@ -282,6 +282,14 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+    // A program with both a partial record assertion and Node islands links
+    // the build that carries both defines; the variant with the most
+    // conditions is the one selected.
+    variants.push({
+      id: "record-view-partial-node-island",
+      when: { recordViewPartial: true, nodeIsland: true },
+      defines: ["SCR_RECORD_VIEW_PARTIAL", "SCR_NODE_ISLANDS"],
+    });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —

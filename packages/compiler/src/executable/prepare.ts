@@ -27,6 +27,7 @@ import {
 } from "../backend/target-diagnostics.js";
 import type { LowerResult, LowerStats } from "../frontend/lowering/lowerer.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
+import type { NpmStaticStatus } from "../coverage/report.js";
 import type { UnitStore } from "../frontend/lowering/unit-reuse.js";
 import type { CompilationTiming } from "../timing.js";
 import { readProjectConfig } from "../project-config.js";
@@ -36,6 +37,7 @@ import {
   type NodeIslandPolicy,
 } from "../node-islands/policy.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
+import { nodeIslandSet } from "../node-islands/boundary.js";
 import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
 import {
   classifyDiagnostic,
@@ -122,8 +124,39 @@ export function prepareExecutableModule(
       sourceTexts: fe.sourceTexts(),
     });
 
-    const refused = fe.npmStatic.filter((entry) => entry.status === "refused");
+    // A package already bound to a Node island is never compiled statically,
+    // so a refusal status it still carries is the bookkeeping of the analysis
+    // that islanded it (the entry-join check runs before islanding is
+    // applied). The island boundary owns it: a package that cannot actually
+    // run in Node fails there, with the island's own diagnostic.
+    const islanded = islandedPackages(lowerIslands, islandDecision);
+    const refused = fe.npmStatic.filter(
+      (entry) => entry.status === "refused" && !islanded.has(entry.package),
+    );
     if (refused.length > 0) {
+      // A refusal the island decision could not place — one discovered
+      // before the package joined the type-checked program is missing from
+      // the detector's report and can fall outside its fallback resolution
+      // too (the `retry`/`proper-lockfile` shape) — is islanded here under
+      // the automatic policy, and the program is analysed once more.
+      const late = refusalIslands(entryPath, opts, fe, refused, islanded);
+      if (late !== null) {
+        fe.dispose();
+        frontendDisposed();
+        disposed = true;
+        return prepareExecutableModule(
+          entryPath,
+          opts,
+          ffi,
+          buildPlatform,
+          createFrontend,
+          timing,
+          late,
+          retryFences,
+          unitStore,
+          lowerModules,
+        );
+      }
       return fail(
         refused.map((entry) =>
           npmStaticRefusalDiag(
@@ -555,7 +588,7 @@ function decideNodeIslands(
       }
     }
   }
-  if (errors.length > 0) return { packages: new Map(), modules: new Map(), notes: [], errors };
+  if (errors.length > 0) return { ...nodeIslandSet(new Map(), new Map()), notes: [], errors };
   // A user module that reads a patched member runs in a Node island, so its
   // read goes through the patched object exactly as in Node (H3.4).
   for (const [file, reader] of readerModules) {
@@ -612,21 +645,18 @@ function decideNodeIslands(
   for (const name of refused) {
     if (packages.has(name) || lowerIslands.has(name)) continue;
     const site = fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 };
-    const js =
-      resolveBareModule(site.file, name, "js-only") ??
-      resolveBareModule(site.file, name, "js-only", "require");
-    const at = js === null ? null : packageDirOf(js.typesFile);
-    if (at === null) continue;
+    const dir = installedDirOf(site.file, name);
+    if (dir === null) continue;
     const status = fe.npmStatic.find((e) => e.package === name);
     packages.set(name, {
       name,
-      version: packageVersionOf(at.dir),
-      dir: at.dir,
+      version: packageVersionOf(dir),
+      dir,
       class: "packaging",
       reason: status?.detail ?? "its static compilation was refused",
     });
     notes.push(
-      nodeIslandNoteDiag(name, packageVersionOf(at.dir), "packaging", status?.detail ?? "", site),
+      nodeIslandNoteDiag(name, packageVersionOf(dir), "packaging", status?.detail ?? "", site),
     );
   }
   // Packages islanded by their lowering refusals keep their first reason
@@ -681,7 +711,73 @@ function decideNodeIslands(
         end: 0,
       }),
     );
-  return packages.size === 0 && modules.size === 0 ? null : { packages, modules, notes, errors };
+  return packages.size === 0 && modules.size === 0
+    ? null
+    : { ...nodeIslandSet(packages, modules), notes, errors };
+}
+
+/** The installed package directory of `name` as Node resolves it from
+ * `fromFile`, or null when there is none. `packageDirOf` reads the directory
+ * off a file path, which answers only while that path names a node_modules
+ * segment: a workspace-linked package's realpath elides the link, so its
+ * directory is the resolution's own `workspaceDir` (the same answer the
+ * checker's program registered the package under). */
+function installedDirOf(fromFile: string, name: string): string | null {
+  const js =
+    resolveBareModule(fromFile, name, "js-only") ??
+    resolveBareModule(fromFile, name, "js-only", "require");
+  if (js === null) return null;
+  return packageDirOf(js.typesFile)?.dir ?? js.workspaceDir ?? null;
+}
+
+/** Every package this pass binds to a Node island: the ones earlier rounds
+ * decided (`lowerIslands`) plus this pass's decision. */
+function islandedPackages(
+  lowerIslands: ReadonlyMap<string, IslandPackage>,
+  decision: NodeIslandSet | null,
+): Map<string, IslandPackage> {
+  const all = new Map(lowerIslands);
+  if (decision !== null) for (const [name, island] of decision.packages) all.set(name, island);
+  return all;
+}
+
+/** The island set grown by refused packages no island binds yet, or null
+ * when there are none. `decideNodeIslands` places the refusals it can see in
+ * the detector's report and resolve from their import sites; a package
+ * refused before it joined the type-checked program can be missing from
+ * both. Under `--node-islands=auto` such a refusal is not fatal while the
+ * package can run in Node: grow the island set and analyse the program once
+ * more. Growth is monotone — an islanded package is never compiled
+ * statically again — and a project has finitely many packages, so the retry
+ * reaches a fixed point instead of looping. An explicit `--node-islands`
+ * list or `off` keeps refusals fatal. */
+function refusalIslands(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  fe: ReturnType<FrontendFactory>,
+  refused: readonly NpmStaticStatus[],
+  known: ReadonlyMap<string, IslandPackage>,
+): Map<string, IslandPackage> | null {
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  if (policy.mode !== "auto") return null;
+  const grown = new Map(known);
+  for (const entry of refused) {
+    if (grown.has(entry.package)) continue;
+    if (policy.forcedNative.has(entry.package) || policy.unloaded.has(entry.package)) continue;
+    const site = fe.npmImportSites.get(entry.package) ?? { file: entryPath, start: 0, end: 0 };
+    const dir = installedDirOf(site.file, entry.package);
+    // A refusal whose directory cannot be resolved has nothing to island;
+    // the fatal diagnostic keeps it visible.
+    if (dir === null) continue;
+    grown.set(entry.package, {
+      name: entry.package,
+      version: packageVersionOf(dir),
+      dir,
+      class: "packaging",
+      reason: entry.detail ?? "its static compilation was refused",
+    });
+  }
+  return grown.size === known.size ? null : grown;
 }
 
 /** The builtin module a patched member belongs to ("fs" of
@@ -719,7 +815,12 @@ function loweringIslands(
   edges: readonly PackageEdge[] | undefined,
 ): Map<string, IslandPackage> | null {
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  if (policy.mode !== "auto" || known.size > 16) return null;
+  // No island-count cap (the former `known.size > 16`): every retry adds
+  // packages that were never islanded, so growth is monotone and bounded by
+  // the project's package count — the reload reaches a fixed point. A
+  // numeric cap only turned refusals the automatic policy promised to
+  // island into fatal SC2013 errors.
+  if (policy.mode !== "auto") return null;
   const compiled = new Set(fe.npmStatic.filter((e) => e.status === "static").map((e) => e.package));
   const grown = new Map(known);
   for (const d of diagnostics) {
@@ -830,7 +931,12 @@ function preflightIslands(
   known: ReadonlyMap<string, IslandPackage>,
 ): Map<string, IslandPackage> | null {
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  if (policy.mode !== "auto" || known.size > 16) return null;
+  // No island-count cap (the former `known.size > 16`): every retry adds
+  // packages that were never islanded, so growth is monotone and bounded by
+  // the project's package count — the reload reaches a fixed point. A
+  // numeric cap only turned refusals the automatic policy promised to
+  // island into fatal SC2013 errors.
+  if (policy.mode !== "auto") return null;
   const compiled = new Set(fe.npmStatic.filter((e) => e.status === "static").map((e) => e.package));
   if (compiled.size === 0) return null;
   const texts = fe.sourceTexts();
@@ -885,7 +991,9 @@ function fenceIslands(
   if (fe.nodeIslandScan === undefined) return null;
   if (requireFence && lowered.runtimeFences.length === 0) return null;
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  if (policy.mode !== "auto" || known.size > 32) return null;
+  // No island-count cap (see loweringIslands): the retry terminates on
+  // monotone growth, not on a cap that drops refusals.
+  if (policy.mode !== "auto") return null;
   // An explicit --npm-static request keeps its package native.
   const explicit = new Set(
     Array.isArray(opts.npmStatic) ? opts.npmStatic.map((n) => n.replace(/\.\.\.$/, "")) : [],

@@ -1213,8 +1213,10 @@ export function lambdaSignature(
         type: DYN,
         mode: "required",
       }));
-      // `arguments` holds the call's own tuple: a console line passes one
-      // or two arguments whatever the replacement declares.
+      // The replacement can also read `arguments`: `arguments.length` is the
+      // count the caller passed (a console line passes one or two arguments
+      // whatever the replacement declares), so it needs the hidden argument
+      // array this ABI would otherwise drop.
       appendArgumentsParameter(lowerer, node, shapes, "arguments");
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
@@ -1239,6 +1241,9 @@ export function lambdaSignature(
       );
     const isAsync = node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
     const ret = isAsync ? lowerer.declaredReturnType(node, node) : VOID;
+    // The runtime calls this callback with the arguments the event carried,
+    // not with its declared arity: a body reading `arguments` gets them.
+    appendArgumentsParameter(lowerer, node, shapes, "arguments");
     return { shapes, funcType: funcTypeFromParamShapes(shapes, ret) };
   }
   if (node.typeParameters?.nodes && !lowerer.erasingLambdas.has(node)) {

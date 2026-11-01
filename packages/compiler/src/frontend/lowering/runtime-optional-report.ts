@@ -138,10 +138,20 @@ function decisionSymbol(lowerer: Lowerer, target: ts.Node | undefined): ts.Symbo
 }
 
 /** The checker's symbol for a value reference, resolved through aliases
- * like the analysis does. The lowerer's own resolution flushes deferred
+ * like the analysis does. An object shorthand (`{ v }`) names the member it
+ * creates, so its own location resolves to the property symbol; the value is
+ * the binding read behind it. The lowerer's own resolution flushes deferred
  * diagnostics; a report must not change the build. */
 function symbolOf(lowerer: Lowerer, node: ts.Node): ts.Symbol | null {
-  const symbol = lowerer.checker.getSymbolAtLocation(node);
+  const parent = node.parent;
+  const symbol =
+    parent !== undefined &&
+    ts.isIdentifier(node) &&
+    ts.isShorthandPropertyAssignment(parent) &&
+    parent.name === node
+      ? (lowerer.checker.getShorthandAssignmentValueSymbol(parent) ??
+        lowerer.checker.getSymbolAtLocation(node))
+      : lowerer.checker.getSymbolAtLocation(node);
   if (!symbol) return null;
   return symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
 }
@@ -230,7 +240,15 @@ function narrowingBelow(
   const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
   if (!narrowed || narrowed.kind === "dyn") return null;
   if (typeEquals(narrowed, lowerer.stripUndefinedArm(storage))) return narrowed;
-  return lowerer.armTag(storage.unionId, narrowed) >= 0 ? narrowed : null;
+  if (lowerer.armTag(storage.unionId, narrowed) >= 0) return narrowed;
+  // A guard can narrow the slot to several storage arms at once
+  // (`typeof v === "string" || typeof v === "number"`): the union itself is
+  // not an arm, but each of its arms is, so the read is still below the
+  // storage the checker called present.
+  const narrowedDef = narrowed.kind === "union" ? lowerer.unions.get(narrowed.unionId) : undefined;
+  if (narrowedDef && narrowedDef.arms.every((arm) => lowerer.armTag(storage.unionId, arm) >= 0))
+    return narrowed;
+  return null;
 }
 
 function checkerAdmitsUndefined(type: ts.Type): boolean {

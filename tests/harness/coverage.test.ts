@@ -479,6 +479,27 @@ test("--explain-dynamic names the short call that passed undefined to a widened 
   ]);
 });
 
+test("--explain-dynamic reports shorthand reads and multi-arm guard narrowings", () => {
+  const { coverage } = analyze(fixture("runtime-optional-shorthand.ts"), { explainDynamic: true });
+  const slots = coverage.tiers!.runtimeOptional;
+  // A guard that narrows the slot to several storage arms at once is still a
+  // read below the storage, and every distinct narrowing it reaches is
+  // listed.
+  const item = slots.find((s) => s.name === "item");
+  expect(item?.storage).toBe("string | number | boolean | undefined");
+  expect(item?.narrowed.split(" or ").sort()).toEqual([
+    "boolean | number",
+    "boolean | number | string",
+    "number | string",
+  ]);
+  // An object shorthand reads the binding behind the property it creates, so
+  // a slot whose only read is a shorthand keeps that read.
+  const label = slots.find((s) => s.name === "label");
+  expect(label?.storage).toBe("string | undefined");
+  expect(label?.narrowed).toBe("string");
+  expect(label?.reads).toHaveLength(1);
+});
+
 test("--explain-dynamic lists the type failures localized failure would turn into dynamic slots", async () => {
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;

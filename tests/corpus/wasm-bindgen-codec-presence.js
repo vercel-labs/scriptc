@@ -1,3 +1,4 @@
+// @deferred-fences: 1
 // wasm-bindgen's encoder polyfill must stay unexecuted when encodeInto exists.
 var encoder = new TextEncoder;
 console.log("encodeInto" in encoder, "encode" in encoder, "missing" in encoder);

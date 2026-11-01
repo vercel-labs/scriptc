@@ -1416,10 +1416,21 @@ typedef struct {
   const char *key;
   size_t key_len;
   const size_t *offsets;
+  /* The source record's declared names in declaration order, as strided
+   * tables: what a partial view needs to keep the properties a write adds
+   * to a field the source does not declare. */
+  const char *names;
+  const char *lens;
+  size_t name_stride, len_stride, count;
 } ScrRecordViewSource;
 /* The slot of field `position` of a view, or NULL for a field the viewed
  * record does not declare (a partial record view, record-views.ts). */
 void *scr_record_view_slot(void *view, size_t position);
+/* A partial view's field the viewed record does not declare: the property
+ * a write added for it (borrowed), or NULL. */
+ScrDyn *scr_record_view_extra(void *view, const char *name, size_t name_len);
+/* Adds or replaces that property; consumes one reference. */
+void scr_record_view_extra_set(void *view, const char *name, size_t name_len, ScrDyn *value);
 void *scr_record_view_field(void *value, size_t offset, size_t position);
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
                           const char *key, size_t key_len, void *(*alloc)(void));

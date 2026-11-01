@@ -41,6 +41,7 @@ import * as ts from "../ts7/adapter.js";
 import { isPackageShimFile, isShimIntrinsicName, packageShimFor } from "../package-shims.js";
 import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
+import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { isIslandImportBinding } from "./lower-node-island.js";
 import type { FileParts } from "./lower-modules.js";
 import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
@@ -751,6 +752,12 @@ export function nsUndefRead(
   node: ts.Node,
   type: IrType,
 ): IrExpr {
+  // A root that is really a Node 24 global the native runtime does not
+  // provide (host-globals.ts): Node's read succeeds, so the ReferenceError
+  // this would emit is the wrong answer. Refuse instead — the `declare var
+  // WebSocket` spelling has an ambient declaration, so it never reaches the
+  // identifier/typeof/member read hooks.
+  if (NODE_GLOBALS_WITHOUT_NATIVE.has(rootName)) lowerer.hostGlobalFence(rootName, node);
   const loc = locOf(node);
   return {
     kind: "libCall",

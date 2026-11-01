@@ -293,6 +293,7 @@ import {
   componentTypeDiag,
   isCheckerPanic,
   genericSignatureTypeDiag,
+  hostGlobalDiag,
   indexSignatureTypeDiag,
   intersectionTypeDiag,
   noLoweringDiag,
@@ -11983,6 +11984,14 @@ export class Lowerer {
     const diag = noLoweringDiag(surface, locOf(node), hint, this.nodeTypesOnlySymbol(sym));
     if (reason !== undefined) diag.reason = reason;
     this.pushDiag(diag);
+    throw new PoisonError();
+  }
+
+  /** A read of a Node 24 global the native runtime does not implement
+   * (host-globals.ts): refusing is the honest answer, and the reason id
+   * lets a Node island run the module instead. */
+  hostGlobalFence(name: string, node: ts.Node): never {
+    this.pushDiag(hostGlobalDiag(name, locOf(node)));
     throw new PoisonError();
   }
 

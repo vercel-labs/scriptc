@@ -40,6 +40,7 @@ import { fenceNodeModuleMutation, lowerRequireCacheElement } from "../lower-node
 import { lowerModuleNamespaceElement } from "../module-namespace-elements.js";
 import { type CompoundOp, stdlibGlobalNameOf } from "../surfaces.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import { hostGlobalNameOfElement } from "../host-globals.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
 import { expandoMemberRead } from "../lower-expando.js";
@@ -186,6 +187,15 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   lowerer.fenceStaticReadableStreamMember(expr, "read");
   // Computed global reads share the stored global object's custom
   // properties. Symbol keys retain their identity-indexed store.
+  // `globalThis["WebSocket"]` is the same read as `globalThis.WebSocket`;
+  // the dynamic path below answers undefined for names it does not know,
+  // which would silently diverge (host-globals.ts). Checked before the
+  // receiver test because a cast receiver (`(globalThis as T)["X"]`) is
+  // not the bare global spelling that test resolves.
+  {
+    const hostGlobal = hostGlobalNameOfElement(lowerer, expr);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr);
+  }
   if (!expr.questionDotToken && stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis") {
     const symbol = globalSymbolKey(lowerer, expr.expression, expr.argumentExpression);
     if (symbol)

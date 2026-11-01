@@ -10,7 +10,7 @@ function unparenthesized(e: ts.Expression): ts.Expression {
 
 /** `e` without parentheses and type-only wrappers (as, satisfies, type
  * assertions, non-null assertions), which change no runtime value. */
-function withoutTypeCasts(e: ts.Expression): ts.Expression {
+export function withoutTypeCasts(e: ts.Expression): ts.Expression {
   while (
     ts.isParenthesizedExpression(e) ||
     ts.isAsExpression(e) ||

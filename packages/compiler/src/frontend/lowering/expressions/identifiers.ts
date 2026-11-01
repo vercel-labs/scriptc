@@ -1,5 +1,6 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
+import { hostGlobalNameOfIdentifier } from "../host-globals.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
@@ -166,6 +167,15 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "'arguments' in a function expression whose value is not asserted to one fixed-arity signature (assert it, as in `function () { … } as F`, and the function lowers against that signature)",
       );
     }
+  }
+  // A read of a Node 24 global the native runtime does not implement
+  // (WebSocket, FormData, …): Node has the value, so answering undefined
+  // would silently diverge — refuse instead (host-globals.ts). Imports,
+  // locals and program declarations of the same name are the program's
+  // own bindings and never reach here.
+  {
+    const hostGlobal = hostGlobalNameOfIdentifier(lowerer, expr);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr);
   }
   // A compiler-projected adapter as a VALUE: the adapter has no
   // runtime function object (its calls rewrite directly) — call it

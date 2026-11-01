@@ -3,6 +3,7 @@ import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
+import { hostGlobalNameOfMember } from "../host-globals.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
@@ -602,6 +603,14 @@ export function lowerPropertyAccessExpr(
       type: DYN,
       loc,
     };
+  }
+  // A read of a Node 24 global the native runtime does not implement
+  // (globalThis.WebSocket, (globalThis as T).FormData, alias.X) is not a
+  // capability probe: Node has the value, so the branch below would answer
+  // a silently wrong undefined. Refuse instead (host-globals.ts).
+  {
+    const hostGlobal = hostGlobalNameOfMember(lowerer, expr);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr);
   }
   // Missing host globals (Bun/Deno capability probes) have no binding
   // in a native program. Declared globals retain their own lowering;

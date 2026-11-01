@@ -1350,21 +1350,8 @@ function lowerAssertEqual(
       const ok =
         e.kind === "unitLit" ||
         (unionAgainstPrimitive && convertibleArms(e.type)) ||
-        k === "f64" ||
-        k === "string" ||
-        k === "bool" ||
-        // A union of scalars and units crosses by value, like its arms.
-        (e.type.kind === "union" &&
-          (lowerer.unions
-            .get(e.type.unionId)
-            ?.arms.every(
-              (arm) =>
-                arm.kind === "f64" ||
-                arm.kind === "string" ||
-                arm.kind === "bool" ||
-                isUnitType(arm),
-            ) ??
-            false)) ||
+        // Scalars, and unions of scalars and units, cross by value.
+        primitive(e.type) ||
         (k === "func" && lowerer.dynConvertible(e.type)) ||
         // Runtime handles cross by REFERENCE (identity preserved), so the
         // strict compare is honest: assert.strictEqual(this, server) —
@@ -1385,6 +1372,10 @@ function lowerAssertEqual(
         // A symbol crosses as itself, so strict compares are identity.
         (!deep && k === "symbol") ||
         (deep && k !== "bytes" && k !== "object" && lowerer.dynConvertible(e.type)) ||
+        // A typed array whose constructor the static type names crosses
+        // with its Buffer-or-Uint8Array brand, which the runtime's deep
+        // walk compares as Node compares prototypes.
+        (deep && k === "bytes" && bytesBrandOf(lowerer, node) !== null) ||
         // Under skipPrototype the prototype a class instance or Buffer
         // brand would carry is not compared.
         (skipPrototype && lowerer.dynConvertible(e.type));
@@ -1393,7 +1384,7 @@ function lowerAssertEqual(
           !deep && (k === "record" || k === "array" || k === "map" || k === "set" || k === "union")
             ? "strictEqual on objects is reference equality, which does not survive the unknown boundary (values copy when they cross) — deepStrictEqual compares structure, or narrow the unknown side first"
             : k === "bytes"
-              ? "the unknown boundary cannot carry the Buffer-vs-Uint8Array brand Node compares — narrow the unknown side to a typed array and compare those"
+              ? "Node compares prototypes (a Buffer is never deep-equal to a plain Uint8Array), and the static type here does not name the typed array's constructor — annotate it (Buffer, Uint8Array, ...)"
               : "the static side must convert into the checked-dynamic tree (numbers, strings, booleans, null/undefined, boxable functions, or JSON-safe structures under the deep forms) — narrow the unknown side instead";
         lowerer.noLowering(
           `${surface} of 'unknown' and '${lowerer.fmt(e.type)}' values`,
@@ -1574,6 +1565,25 @@ function lowerAssertEqual(
         loc,
       };
     }
+  }
+  // Scalars and unions of scalars and units of different static types (a
+  // `string | undefined` result against a string): both cross by value, so
+  // SameValue over the two checked-dynamic values is the strict compare.
+  if (!deep && primitive(a.type) && primitive(b.type)) {
+    return {
+      kind: "libCall",
+      fn: "assert.eqDyn",
+      args: [
+        { kind: "dynFrom", value: a, type: DYN, loc: a.loc },
+        { kind: "dynFrom", value: b, type: DYN, loc: b.loc },
+        boolLit(negated, loc),
+        boolLit(false, loc),
+        msg,
+        hasMsg,
+      ],
+      type: VOID,
+      loc,
+    };
   }
   if (!deep) {
     const hint =
@@ -1919,14 +1929,18 @@ function classifyThrowsExpected(
   // An error INSTANCE (`assert.rejects(p, expectedError)` — the
   // tracingChannel suite's shape): the value crosses as a dyn error and
   // the runtime compares per Node's expectsError key walk. A
-  // checked-dynamic expected rides directly; a static %Error boxes.
+  // checked-dynamic expected rides directly; a static Error or subclass
+  // instance boxes.
   // An untyped JavaScript value (a parameter) too: a function there is
   // checked at run time (assertThrowsHelper).
   if (expectedT?.kind === "dyn" || expectedT === null) {
     const value = lowerer.lowerExpr(node);
     if (value.type.kind === "dyn") return { form: "errValue", value };
   }
-  if (expectedT?.kind === "object" && expectedT.className === "%Error") {
+  if (
+    expectedT?.kind === "object" &&
+    (expectedT.className === "%Error" || lowerer.isSubclassOf(expectedT.className, "%Error"))
+  ) {
     const value = lowerer.lowerExpr(node);
     if (value.type.kind === "object") {
       return { form: "errValue", value: { kind: "dynFrom", value, type: DYN, loc } };

@@ -1,3 +1,5 @@
+/// <reference path="./stream.d.ts" />
+
 /* node:child_process — the synchronous slice: spawnSync(command, args?)
  * runs the child to completion (posix_spawn + waitpid) with stdout/stderr
  * captured as UTF-8 bytes. The capture's TYPE is Node's: a string when the
@@ -5,12 +7,14 @@
  * (`SpawnSyncReturns<Buffer>` in @types/node); reading the Buffer form is
  * the bytes<u8> Buffer reads fs uses. `status` is the exit code, or null
  * when the child died to a signal OR could not be spawned at all
- * (nonexistent binary, permission denied) — Node reports spawn failure
- * through the result's `error` property, which this surface does not
- * carry, and types stdout/stderr null there where scriptc returns "" or an
- * empty Buffer (SEMANTICS.md). No shell: the command runs directly
- * (PATH-searched, like Node). */
+ * (nonexistent binary, permission denied). A spawn failure is DATA on the
+ * result, never a throw: `error` is the Error Node builds ("spawnSync
+ * <file> ENOENT", `code` stamped, or ETIMEDOUT after a timeout kill) and
+ * both outputs are "" (or an empty Buffer) where Node types them null
+ * (SEMANTICS.md). */
 declare module "child_process" {
+  import type { Readable, Writable } from "stream";
+
   /* T is the capture type the options select. The default keeps a bare
    * `SpawnSyncReturns` annotation meaning the string form, as before. */
   export interface SpawnSyncReturns<T = string> {
@@ -33,14 +37,33 @@ declare module "child_process" {
    * the signal, never a throw), killSignal (a signal NAME literal),
    * stdio ("ignore"/"inherit"/"pipe" or a 3-tuple of those — captures
    * read "" / an empty Buffer for non-piped streams), env (replaces the
-   * child's environment), and windowsHide (a POSIX no-op). */
+   * child's environment), cwd (the child's directory), input (the string
+   * piped to its stdin — `| undefined` means the option is absent, ""
+   * pipes an empty stdin), shell (the complete command line in
+   * `command`, with a statically empty args list, run by /bin/sh -c),
+   * and windowsHide (a POSIX no-op).
+   * The shell form takes no separate args: Node warns DEP0190 because it
+   * concatenates them unescaped, and a native build has no warning
+   * channel, so the compiler REFUSES `shell: true` with a non-empty args
+   * list. */
   export interface SpawnSyncOptions {
     encoding?: "utf8" | "utf-8";
     timeout?: number;
     killSignal?: string;
     stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
     env?: { [k: string]: string | undefined };
+    cwd?: string;
+    /* Piped to the child's stdin. undefined is an ABSENT option (no
+     * pipe, fd 0 is /dev/null or inherited per stdio); "" is an EMPTY
+     * stdin, which the child reads as immediate EOF — Node's reading. */
+    input?: string | undefined;
     windowsHide?: boolean;
+    /* Node's shell form: the complete command line in `command`, with
+     * an empty args list, runs through /bin/sh -c, so quoting and
+     * operators follow the shell's rules. A non-empty args list with
+     * shell: true is a compile error (Node warns DEP0190 for unescaped
+     * shell arguments). */
+    shell?: boolean;
   }
   export function spawnSync(
     command: string,
@@ -52,6 +75,27 @@ declare module "child_process" {
     args?: string[],
     options?: SpawnSyncOptions,
   ): SpawnSyncReturns<Buffer>;
+
+  /* The named options interface for the string-encoding spawnSync form —
+   * @types/node's SpawnSyncOptionsWithStringEncoding, narrowed to the
+   * honestly-implemented members (env and killSignal keep the inline
+   * literal form: a runtime record cannot carry a replacement
+   * environment). VALUES of this type are a real record (type-mapper.ts
+   * interns the shape), so a typed const or a runner function's options
+   * parameter flows to spawnSync at runtime with its members read at the
+   * call. */
+  export interface SpawnSyncOptionsWithStringEncoding {
+    encoding: "utf8" | "utf-8";
+    cwd?: string;
+    input?: string;
+    stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+    timeout?: number;
+    windowsHide?: boolean;
+    /* Read at the call. The call then takes the command-line form only:
+     * a statically non-empty args list is a compile error (Node warns
+     * DEP0190 for unescaped shell arguments). */
+    shell?: boolean;
+  }
 
   /* The asynchronous slice: spawn with stdio "ignore"/"inherit"/fd/"pipe"
    * tuples (piped stdin is writable through child.stdin; piped stdout/stderr
@@ -67,18 +111,19 @@ declare module "child_process" {
    * loop quiescence (SEMANTICS.md documents the divergence). An "error"
    * event with no registered listener prints the error and exits 1,
    * exactly the unhandled-'error' EventEmitter behavior. */
-  export interface ChildStdin {
-    readonly writable: boolean;
-    write(chunk: string | Uint8Array): boolean;
-    end(): void;
-    destroy(): void;
-    on(event: "drain" | "finish", listener: () => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    on(event: string, listener: (...args: any[]) => void): void;
-    once(event: "drain" | "finish", listener: () => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
-    once(event: string, listener: (...args: any[]) => void): void;
-  }
+  /* The piped child stdin is the node:stream Writable Node's typings give
+   * it, so it flows into any Writable slot and back. Members the direct
+   * handle does not lower (the underscored hooks, cork, an encoding, a
+   * third argument) typecheck and need the general stream
+   * representation. */
+  export interface ChildStdin extends Writable {}
+
+  /* The piped child output is the node:stream Readable Node's typings
+   * give it. The direct handle delivers one chunk per pipe read (a
+   * Buffer, or a string after setEncoding); the rest of the Readable
+   * surface typechecks and needs the general stream representation to
+   * lower. */
+  export interface ChildStdout extends Readable {}
 
   export interface ChildProcess extends Disposable {
     ref(): void;
@@ -135,10 +180,11 @@ declare module "child_process" {
     disconnect(): void;
     [Symbol.dispose](): void;
     /* The piped streams — non-null exactly when the matching stdio slot
-     * was "pipe" (Node's shape). */
+     * was "pipe" (Node's shape; the node:stream classes, narrowed to the
+     * members the direct handles deliver). */
     readonly stdin: ChildStdin | null;
-    readonly stdout: NodeJS.ReadableStream | null;
-    readonly stderr: NodeJS.ReadableStream | null;
+    readonly stdout: ChildStdout | null;
+    readonly stderr: ChildStdout | null;
   }
   export interface SpawnOptions {
     /* The 3-tuple form admits number fds in the stdout/stderr slots —
@@ -150,7 +196,9 @@ declare module "child_process" {
     /* detached gives the child its own session and process group
      * (POSIX_SPAWN_SETSID); env REPLACES the child environment; cwd
      * sets its working directory; windowsHide is a POSIX no-op; shell
-     * runs the complete command string through /bin/sh or cmd.exe. */
+     * runs the complete command string through /bin/sh or cmd.exe (with
+     * an empty args list — a non-empty one is a compile error, because
+     * Node warns DEP0190 for unescaped shell arguments). */
     detached?: boolean;
     env?: { [k: string]: string | undefined };
     cwd?: string;
@@ -196,6 +244,8 @@ declare module "child_process" {
     maxBuffer?: number;
     killSignal?: string;
     windowsHide?: boolean;
+    /* Runs the complete command line through /bin/sh -c; it takes an
+     * empty args list (Node warns DEP0190 for unescaped shell args). */
     shell?: boolean;
   }
   /* The named options interface for the string-encoding exec form —

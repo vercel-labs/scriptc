@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-constructor-statics.cjs"
+ ],
+ "diags": []
+}

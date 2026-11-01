@@ -73,6 +73,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.countReset",
   "console.table",
   "console.dirDyn",
+  "console.dirHidden",
   "worker.new",
   "worker.data",
   "worker.parentPort",
@@ -87,6 +88,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.isAscii",
   "buffer.isUtf8",
   "buffer.transcode",
+  "buffer.slowBuffer",
   "cp.spawnDynamic",
   "child.onDyn",
   "text.decoderEncoding",
@@ -133,6 +135,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "bytes.instanceOf",
   "buffer.byteLenDyn",
   "buffer.byteLenValue",
+  "buffer.normalizeEncoding",
+  "buffer.normalizeEncodingEmptyUtf8",
+  "buffer.writeStrDyn",
+  "buffer.writeStrDynLen",
   "buffer.allocValue",
   "fs.realpathValue",
   "dyn.validateString",
@@ -143,6 +149,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",
+  "arrayBuffer.newResizable",
+  "sharedArrayBuffer.newGrowable",
   "atomics.op",
   "atomics.wait",
   "atomics.notify",
@@ -513,6 +521,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
+  // read(size) above the 1 GiB high-water mark: Node's ERR_OUT_OF_RANGE.
+  "stdin.read",
   // The unguarded h2-only stream call: always throws Node's TypeError.
   "http2.streamUndefCall",
   "http.reqH2StreamOrThrow",
@@ -565,6 +575,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.classBasePrototype",
   "dyn.classInherit",
   "dyn.classSuper",
+  // Promise.<s>.call(C, …) validates its `this` and runs C's constructor and
+  // resolve — every throw (a non-object this, a non-constructor, a throwing
+  // executor or resolve) rejects the capability or propagates.
+  "promise.genericStatic",
   "dyn.hasKey",
   "dyn.in",
   "child.kill",
@@ -762,6 +776,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackCall",
   "dyn.keyDelete",
   "dyn.keyDeleteComputed",
+  "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
   "dyn.hasKeyComputed",

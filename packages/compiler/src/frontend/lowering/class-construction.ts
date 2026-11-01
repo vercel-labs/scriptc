@@ -19,7 +19,8 @@ import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
-import { inheritedBuiltinCtorFence } from "./lower-classes.js";
+import { classDeclaresHasInstanceHook, inheritedBuiltinCtorFence } from "./lower-classes.js";
+import { throwTypeError } from "./primitive-throws.js";
 
 const PREFIX = "%class.construct:";
 const PACKED = `${PREFIX}packed`;
@@ -121,6 +122,109 @@ export function checkedClassConstruction(
     });
   }
   return { kind: "call", callee: name, args: [callee, ...args], type: DYN, loc };
+}
+
+/** Outside `%class.construct:` on purpose: every lifted function under that
+ * prefix is an argument helper whose parameters after the callee ARE the
+ * construction's arguments, and the class specialization below reads them
+ * that way. This helper's second parameter is the message, not an argument,
+ * and it hands the construction to the argument helper, which carries that
+ * specialization. */
+const PRIMITIVE = "%class.primitiveConstruct:";
+
+/** Checked construction whose callee the CHECKER types as a primitive while
+ * the value lowers to a dynamic slot. The refusal cannot be a compile-time
+ * throw: a JavaScript property keeps its initializer's type through a later
+ * assignment (`reg.ctor = Foo; new reg.ctor()`), so only the value knows
+ * whether anything is there. V8 evaluates the callee, then every argument,
+ * then IsConstructor, so the arguments are this helper's own parameters and
+ * the check runs between them and the construction: anything that is not a
+ * function throws Node's `<callee> is not a constructor`. */
+export function primitiveCheckedConstruction(
+  lowerer: Lowerer,
+  callee: IrExpr,
+  message: string,
+  args: IrExpr[],
+  loc: SrcLoc,
+  packed?: IrExpr,
+): IrExpr {
+  const name = `${PRIMITIVE}:${packed === undefined ? args.length : "spread"}`;
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const params = [
+      { localId: "p.0", name: "callee", type: DYN },
+      { localId: "p.1", name: "message", type: STRING },
+      ...(packed === undefined
+        ? args.map((_, index) => ({ localId: `p.${index + 2}`, name: `a${index}`, type: DYN }))
+        : [{ localId: "p.2", name: "arguments", type: DYN }]),
+    ];
+    const construction =
+      packed === undefined
+        ? checkedClassConstruction(
+            lowerer,
+            varRef("p.0", DYN, loc),
+            params.slice(2).map((param) => varRef(param.localId, DYN, loc)),
+            loc,
+          )
+        : checkedClassConstructionPacked(
+            lowerer,
+            varRef("p.0", DYN, loc),
+            varRef("p.2", DYN, loc),
+            loc,
+          );
+    lowerer.liftedFns.push({
+      name,
+      params,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: param.type,
+        mutable: false,
+      })),
+      returnType: DYN,
+      speculativeDispatch: true,
+      body: [
+        {
+          kind: "if",
+          cond: {
+            kind: "strEq",
+            negated: true,
+            left: {
+              kind: "libCall",
+              fn: "dyn.typeof",
+              args: [varRef("p.0", DYN, loc)],
+              type: STRING,
+              loc,
+            },
+            right: { kind: "strLit", value: "function", type: STRING, loc },
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: throwTypeError(varRef("p.1", STRING, loc), DYN, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: construction, loc },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "call",
+    callee: name,
+    args: [
+      callee,
+      { kind: "strLit", value: message, type: STRING, loc },
+      ...(packed === undefined ? args : [packed]),
+    ],
+    type: DYN,
+    loc,
+  };
 }
 
 /** Runtime-length constructor spreads keep argument evaluation before defaults. */
@@ -368,6 +472,12 @@ export class ClassConstructionDispatch {
         const info = lowerer.classes.get(name);
         if (!info || info.generic || info.def.runtime) continue;
         if (fn.name === INSTANCEOF) {
+          // A class that declares a static `Symbol.hasInstance` hook (its
+          // bases included): Node asks the hook first, and only without one
+          // walks the prototype chain. The fast path below IS the prototype
+          // walk, so this class must reach `bytes.instanceOf`, which asks
+          // the hook.
+          if (classDeclaresHasInstanceHook(info)) continue;
           const type: IrType = { kind: "classval", className: name };
           const callee = varRef("callee", DYN, loc);
           const result = classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {

@@ -1,6 +1,6 @@
 /** Runtime requirements derived from the lowered program, shared by compiler hosts. */
 import { type IrModule } from "../ir/ir.js";
-import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
+import { jsObjectModelFact, moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import { youngNurseryRequested } from "./young-nursery.js";
@@ -14,12 +14,14 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     regex: features.regex,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
+    bigintBytes: features.bigintBytes,
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
-    ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
+    ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
+    mutableBuffers: features.mutableBuffers,
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -32,20 +34,24 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.primitiveWrapper ? { primitiveWrapper: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
+    ...(features.zstd ? { zstd: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
+    ...(features.childOptionExt ? { childOptionExt: true } : {}),
     ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
+    ...(features.genBind ? { genBind: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
@@ -80,7 +86,6 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     textCodecDyn: features.textCodecDyn,
     watch: features.fsWatch,
     watchFile: features.fsWatchFile,
-    fsBufferBrand: features.fsBufferBrand,
     foreignFfi: hasForeignFfiCallback(mod.ffiImports ?? []),
     nodeTest: features.nodeTest,
     tls: features.tls,

@@ -359,13 +359,14 @@ describe.skipIf(skip)("Node islands in-process", () => {
 
     /** A build with a cache of its own: a hit reports the islands but not
      * the SC8001 notes, and these tests read the notes. */
-    async function buildDir(dir: string, name: string) {
+    async function buildDir(dir: string, name: string, native: readonly string[] = []) {
       return withFreshBuildCache(() =>
         compile(join(dir, "main.ts"), {
           outPath: join(dir, name),
           outDir: dir,
           sanitize,
           libnode: pack!,
+          ...(native.length === 0 ? {} : { nodeIslands: { native } }),
         }),
       );
     }
@@ -403,22 +404,264 @@ describe.skipIf(skip)("Node islands in-process", () => {
       expect(notes[0]!.message).toContain("Node island");
     }, 300_000);
 
-    test("a native read of the patched member is SC8020", async () => {
+    test("a user module that reads a patched member joins the island set", async () => {
+      // The pi shape (provider-env.ts): a user module reads a patched member
+      // through the builtin's CommonJS object. It joins the island set like
+      // an npm reader, so the read sees the patch exactly as in Node.
       const dir = copyCorpus(
-        "read",
-        `import fs from "node:fs";
-import { loadPayload } from "./loader.ts";
-const result = await loadPayload();
-console.log(result.text, fs.readFileSync("payload.txt", "utf8"));
+        "user-reader",
+        `import { installPatch } from "./patch.ts";
+import { readProbe } from "./read.ts";
+installPatch();
+console.log(readProbe());
 `,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched payload") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+          "read.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+export function readProbe(): string {
+  const { readFileSync } = require("fs") as {
+    readFileSync(path: string, encoding: BufferEncoding): string;
+  };
+  return readFileSync("/scriptc/does/not/exist", "utf-8");
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect((result.islands?.modules ?? []).map((file) => basename(file)).sort()).toEqual([
+        "patch.ts",
+        "read.ts",
+      ]);
+      const reader = (result.warnings ?? []).find(
+        (d) => d.code === "SC8001" && d.message.includes("read.ts"),
+      );
+      expect(reader?.message).toContain("it reads 'fs.readFileSync'");
+      expect(reader?.message).toContain("patch.ts");
+      // The island sources are cached under XDG_CACHE_HOME and Node strips
+      // their types when it requires them: a cache below the repository's
+      // node_modules is refused (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING).
+      const islandCache = mkdtempSync(join(tmpdir(), "scriptc-user-reader-cache-"));
+      expect(
+        await run(join(dir, "main"), [], { ...process.env, XDG_CACHE_HOME: islandCache }),
+      ).toEqual({
+        stdout: "patched payload\n",
+        stderr: "",
+        code: 0,
+      });
+    }, 300_000);
+
+    test("a reader whose island subgraph loads a module by a computed specifier is SC8006", async () => {
+      // The pi shape past the reader rule (provider-env.ts): an islanded user
+      // module statically imports a program module that loads by a computed
+      // specifier. The island tree cannot ship that module, so the build
+      // reports SC8006 — it used to throw the collection's PoisonError
+      // through the driver instead, a stack trace and no diagnostic.
+      const dir = copyCorpus(
+        "reader-computed-import",
+        `import { installPatch } from "./patch.ts";
+import { readProbe } from "./read.ts";
+installPatch();
+console.log(readProbe());
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched payload") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+          "read.ts": `import { loadByName } from "./helper.ts";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+export function readProbe(): string {
+  void loadByName;
+  const { readFileSync } = require("fs") as {
+    readFileSync(path: string, encoding: BufferEncoding): string;
+  };
+  return readFileSync("/scriptc/does/not/exist", "utf-8");
+}
+`,
+          "helper.ts": `export function loadByName(name: string): Promise<unknown> {
+  return import(name);
+}
+`,
+        },
       );
       const result = await buildDir(dir, "main");
       expect(result.ok).toBe(false);
-      const list = messages(result);
-      const read = list.find((m) => m.startsWith("SC8020:"));
+      if (result.ok) return;
+      const problem = result.diagnostics.find((d) => d.code === "SC8006");
+      expect(problem?.message).toContain("helper.ts");
+      expect(problem?.message).toContain("import() with a computed specifier");
+    }, 300_000);
+
+    test("the entry module reading a patched member is SC8006", async () => {
+      const dir = copyCorpus(
+        "entry-reader",
+        `import { createRequire } from "node:module";
+import { installPatch } from "./patch.ts";
+const require = createRequire(import.meta.url);
+installPatch();
+const { readFileSync } = require("fs") as {
+  readFileSync(path: string, encoding: BufferEncoding): string;
+};
+console.log(readFileSync("/scriptc/does/not/exist", "utf-8"));
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const entry = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("the entry module reads 'fs.readFileSync'"),
+      );
+      expect(entry).toBeDefined();
+      expect(entry).toContain("patch.ts");
+    }, 300_000);
+
+    test("a TypeScript reader Node cannot strip is SC8006", async () => {
+      const dir = copyCorpus(
+        "reader-enum",
+        `import { installPatch } from "./patch.ts";
+import { readProbe } from "./readenum.ts";
+installPatch();
+console.log(readProbe());
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+          "readenum.ts": `import { createRequire } from "node:module";
+enum Kind {
+  A,
+}
+const require = createRequire(import.meta.url);
+export function readProbe(): string {
+  const { readFileSync } = require("fs") as {
+    readFileSync(path: string, encoding: BufferEncoding): string;
+  };
+  return readFileSync("/scriptc/does/not/exist", "utf-8") + Kind.A;
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const stripped = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("Node cannot strip its types"),
+      );
+      expect(stripped).toBeDefined();
+      expect(stripped).toContain("readenum.ts");
+      expect(stripped).toContain("fs.readFileSync");
+      expect(stripped).toContain("enum");
+    }, 300_000);
+
+    test("replacing process.stdout.write beside an island is an SC8006 error", async () => {
+      // The planner refuses the combination (the island's process.stdout is
+      // its own object), so it is an error. It used to be SC8020, which the
+      // renderer prints as a warning and the planner still failed the build
+      // on: a diagnostic is a warning or an error, never both.
+      const dir = copyCorpus(
+        "stdio-patch",
+        `import { installPatch } from "./patch.ts";
+installPatch();
+process.stdout.write = (() => true) as unknown as typeof process.stdout.write;
+console.log("ok");
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const refusal = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("process.stdout.write"),
+      );
+      expect(refusal).toBeDefined();
+      expect(messages(result).filter((m) => m.startsWith("SC8020:"))).toEqual([]);
+    }, 300_000);
+
+    // A package that reads the patched member joins the island set, where the
+    // patch exists. A package marked native stays native: the island does not
+    // take it, and the read is SC8003 rather than a build whose package sees
+    // the unpatched function.
+    test("a package that reads the patched member is islanded, or SC8003 when marked native", async () => {
+      const main = `import reader from "payload-reader";
+import { loadPayload } from "./loader.ts";
+const result = await loadPayload();
+console.log(reader.payload.trim(), result.text);
+`;
+      const typed = {
+        "node_modules/payload-reader/index.d.ts":
+          "declare const reader: { payload: string };\nexport default reader;\n",
+        "node_modules/payload-reader/package.json":
+          '{ "name": "payload-reader", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+      };
+      const islanded = copyCorpus("read-package", main, typed);
+      const joined = await buildDir(islanded, "main");
+      expect(messages(joined)).toEqual([]);
+      expect(joined.ok).toBe(true);
+      if (!joined.ok) return;
+      expect(joined.islands?.packages).toEqual(["payload-reader"]);
+      expect(joined.islands?.modules.map((file) => basename(file))).toEqual(["loader.ts"]);
+      const marked = copyCorpus("read-package-native", main, typed);
+      const blocked = await buildDir(marked, "main", ["payload-reader"]);
+      expect(blocked.ok).toBe(false);
+      if (blocked.ok) return;
+      const list = messages(blocked);
+      const read = list.find((m) => m.startsWith("SC8003:"));
       expect(read).toBeDefined();
+      expect(read).toContain("'payload-reader'");
       expect(read).toContain("fs.readFileSync");
-      expect(read).toContain("loader.ts");
+      expect(blocked.islands?.packages ?? []).toEqual([]);
     }, 300_000);
 
     test("--node-islands=off makes the patch a native refusal again", async () => {
@@ -594,7 +837,172 @@ export function patchAndBump(): number {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 300_000);
+
+  // A sloppy-mode write to an undeclared name creates a global at run time.
+  // The native tier has no global object, so the checker refuses the write
+  // (SC1091) and the module runs in a Node island instead (the user's policy
+  // for sloppy-only semantics, 2026-10-31). Strict-mode code keeps the
+  // refusal: there the write throws ReferenceError, which is an ordinary
+  // lowering gap rather than a sloppy semantic.
+  test("a sloppy implicit-global write islands the module", async () => {
+    const dir = implicitGlobalProject("island");
+    const cache = mkdtempSync(join(tmpdir(), "scriptc-implicit-global-cache-"));
+    const islandCache = mkdtempSync(join(tmpdir(), "scriptc-island-cache-"));
+    const previous = process.env["SCRIPTC_CACHE_DIR"];
+    process.env["SCRIPTC_CACHE_DIR"] = cache;
+    try {
+      const result = await compile(join(dir, "main.js"), {
+        outPath: join(dir, "main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["legacy.cjs"]);
+      const out = await run(join(dir, "main"), [], { ...process.env, XDG_CACHE_HOME: islandCache });
+      expect(out).toEqual({ stdout: "42\n43\n", stderr: "", code: 0 });
+      // The same write under a "use strict" prologue throws instead: the
+      // native refusal stands, and no island is chosen.
+      const strict = await compile(join(dir, "strict-main.js"), {
+        outPath: join(dir, "strict-main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      expect(strict.ok).toBe(false);
+      if (strict.ok) return;
+      expect(
+        strict.diagnostics.some((d) => d.code === "SC1091" && d.loc.file.endsWith("strict.cjs")),
+      ).toBe(true);
+      expect(strict.islands?.modules).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = previous;
+      rmSync(cache, { recursive: true, force: true });
+      rmSync(islandCache, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
+
+  // A sloppy implicit-global write creates the name on Node's global object
+  // when its island module runs. Native code has no global object, so a
+  // native user module that reads the name is SC8020, and a native npm
+  // package that reads it joins the island set, where the global exists.
+  test("a native read of an island's implicit global", async () => {
+    const dir = implicitGlobalProject("readers");
+    const cache = mkdtempSync(join(tmpdir(), "scriptc-implicit-global-cache-"));
+    const islandCache = mkdtempSync(join(tmpdir(), "scriptc-island-cache-"));
+    const previous = process.env["SCRIPTC_CACHE_DIR"];
+    process.env["SCRIPTC_CACHE_DIR"] = cache;
+    try {
+      const reader = await compile(join(dir, "reader-main.js"), {
+        outPath: join(dir, "reader-main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      expect(reader.ok).toBe(false);
+      if (reader.ok) return;
+      const read = reader.diagnostics.find((d) => d.code === "SC8020");
+      expect(read?.loc.file.endsWith("reader-main.js")).toBe(true);
+      expect(read?.message).toContain("'counter'");
+      const viaPackage = await compile(join(dir, "package-main.js"), {
+        outPath: join(dir, "package-main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      if (!viaPackage.ok)
+        throw new Error(viaPackage.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(viaPackage.islands?.packages).toEqual(["reads-global"]);
+      expect(viaPackage.islands?.modules.map((file) => basename(file))).toEqual(["legacy.cjs"]);
+      // A package the build marks native stays native: the island does not
+      // take it, and the global it reads is SC8003 rather than a built
+      // executable that reads an absent global.
+      const marked = await compile(join(dir, "package-main.js"), {
+        outPath: join(dir, "package-native"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+        nodeIslands: { native: ["reads-global"] },
+      });
+      expect(marked.ok).toBe(false);
+      if (marked.ok) return;
+      const blocked = marked.diagnostics.find((d) => d.code === "SC8003");
+      expect(blocked?.message).toContain("'reads-global'");
+      expect(blocked?.message).toContain("'counter'");
+      expect(blocked?.loc.file.endsWith("package-main.js")).toBe(true);
+      expect(marked.islands?.packages ?? []).toEqual([]);
+      const out = await run(join(dir, "package-main"), [], {
+        ...process.env,
+        XDG_CACHE_HOME: islandCache,
+      });
+      expect(out).toEqual({ stdout: "42\n", stderr: "", code: 0 });
+    } finally {
+      if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = previous;
+      rmSync(cache, { recursive: true, force: true });
+      rmSync(islandCache, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
 });
+
+/** A CommonJS program whose entry requires a sloppy-mode module that writes
+ * an undeclared name (an implicit global), and a strict-mode sibling whose
+ * write throws, a reader that reads the global natively, and an npm package
+ * that reads it. */
+function implicitGlobalProject(name: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `scriptc-implicit-global-${name}-`));
+  writeFileSync(join(dir, "package.json"), "{}\n");
+  writeFileSync(
+    join(dir, "main.js"),
+    'const legacy = require("./legacy.cjs");\nconsole.log(legacy.read());\nlegacy.bump();\nconsole.log(legacy.read());\n',
+  );
+  writeFileSync(
+    join(dir, "legacy.cjs"),
+    [
+      "counter = 41;",
+      "function bump() {",
+      "  counter = counter + 1;",
+      "}",
+      "function read() {",
+      "  return counter + 1;",
+      "}",
+      "module.exports = { read, bump };",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(dir, "strict-main.js"), 'require("./strict.cjs");\n');
+  writeFileSync(
+    join(dir, "strict.cjs"),
+    ['"use strict";', "strictCounter = 1;", "module.exports = {};", ""].join("\n"),
+  );
+  // Both readers run after legacy.cjs created the global.
+  writeFileSync(
+    join(dir, "reader-main.js"),
+    'require("./legacy.cjs");\nconsole.log(counter + 1);\n',
+  );
+  mkdirSync(join(dir, "node_modules/reads-global"), { recursive: true });
+  writeFileSync(
+    join(dir, "node_modules/reads-global/package.json"),
+    '{"name":"reads-global","version":"1.0.0","main":"index.js","types":"index.d.ts"}\n',
+  );
+  writeFileSync(
+    join(dir, "node_modules/reads-global/index.js"),
+    "module.exports = function read() {\n  return counter + 1;\n};\n",
+  );
+  writeFileSync(
+    join(dir, "node_modules/reads-global/index.d.ts"),
+    "declare function read(): number;\nexport = read;\n",
+  );
+  writeFileSync(
+    join(dir, "package-main.js"),
+    'const read = require("reads-global");\nrequire("./legacy.cjs");\nconsole.log(read());\n',
+  );
+  return dir;
+}
 
 /** A CommonJS program whose entry requires a sloppy-mode module (a `with`
  * statement islands it under the default `--node-islands=auto`). The
@@ -651,6 +1059,85 @@ test("a program module that runs in an island is never a deferral candidate", as
     else process.env["SCRIPTC_NODE_ISLANDS_TRACE"] = previous;
     rmSync(dir, { recursive: true, force: true });
   }
+}, 300_000);
+
+// A use of a Node 24 global native code does not provide is the one runtime
+// refusal JavaScript defers honestly: the statement throws where it is
+// reached (SC2020, host-global), so a package that keeps such a path inside
+// a function body keeps compiling natively (jose's CompressionStream). Only
+// a use in module code, which throws before the module finishes evaluating,
+// makes the package a Node island. Needs no libnode pack: the native build
+// links without one, and the island build stops before linking without one.
+test("a host-global fence inside a function body keeps its package native", async () => {
+  const dir = join(outDir, "host-global-fence");
+  rmSync(dir, { recursive: true, force: true });
+  const writePackage = (name: string, body: string): void => {
+    const at = join(dir, "node_modules", name);
+    mkdirSync(at, { recursive: true });
+    writeFileSync(
+      join(at, "package.json"),
+      JSON.stringify({ name, version: "1.0.0", type: "module", exports: "./index.js" }),
+    );
+    writeFileSync(join(at, "index.js"), body);
+    writeFileSync(
+      join(at, "index.d.ts"),
+      "export declare const api: { probe(): unknown; answer(): string };\n",
+    );
+  };
+  const entry = (name: string): string => {
+    const file = join(dir, `${name}.mjs`);
+    writeFileSync(file, `import { api } from "${name}";\nconsole.log(api.answer());\n`);
+    return file;
+  };
+  // The exported object reaches `probe` at module load, so its body is
+  // lowered and fenced; a program that never calls it still runs.
+  writePackage(
+    "fenced-body",
+    [
+      "function probe() {",
+      "  return new FormData();",
+      "}",
+      "function answer() {",
+      '  return "native";',
+      "}",
+      "export const api = { probe, answer };",
+      "",
+    ].join("\n"),
+  );
+  writePackage(
+    "fenced-module",
+    [
+      "const eager = new FormData();",
+      "function probe() {",
+      "  return typeof eager;",
+      "}",
+      "function answer() {",
+      '  return "native";',
+      "}",
+      "export const api = { probe, answer };",
+      "",
+    ].join("\n"),
+  );
+  const native = await compile(entry("fenced-body"), {
+    outPath: join(dir, "fenced-body"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(native.ok ? [] : native.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  if (!native.ok) return;
+  expect((native.warnings ?? []).map((d) => d.code)).not.toContain("SC8001");
+  expect(await run(native.binaryPath, [])).toEqual({ stdout: "native\n", stderr: "", code: 0 });
+
+  const islanded = await compile(entry("fenced-module"), {
+    outPath: join(dir, "fenced-module"),
+    outDir: dir,
+    sanitize,
+  });
+  if (islanded.ok)
+    expect(
+      (islanded.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message),
+    ).toEqual([expect.stringContaining("'fenced-module@1.0.0' runs in a Node island")]);
+  else expect(islanded.diagnostics.map((d) => d.code)).toContain("SC8005");
 }, 300_000);
 
 // Lowering checks every argument and result type for JSON data; IR output

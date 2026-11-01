@@ -512,11 +512,12 @@ function classUnion(def: IrUnionDef, classes: ClassForest): ClassUnion | null {
 /** Unions the runtime itself inspects as tagged boxes keep that
  * representation: Map keys and Set elements hash and compare union keys by
  * tag and payload inside the C map. A union whose arms all compare by
- * identity (records, class instances, arrays, functions), with at most an
+ * pointer identity (records, class instances, arrays), with at most an
  * undefined and a null arm, is the exception: a pointer representation
  * carries that identity, with NULL and the null sentinel as two more
- * distinct keys, so the map keys it by reference. Library builds keep
- * such unions boxed, except unions of records alone. */
+ * distinct keys, so the map keys it by reference. A function arm keeps its
+ * union boxed: a function keys by its identity root (SCR_MAP_KEY_CLOSURE).
+ * Library builds keep such unions boxed, except unions of records alone. */
 function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
   const boxed = new Set<string>();
   // Only the module's union definitions consult the result.
@@ -550,8 +551,8 @@ function recordsOnly(def: IrUnionDef): boolean {
   return def.arms.length >= 2 && def.arms.every((arm) => arm.kind === "record");
 }
 
-/** Every arm compares by identity as a key, beside at most one undefined
- * and one null arm. */
+/** Every arm compares by pointer identity as a key, beside at most one
+ * undefined and one null arm. */
 function identityKeyUnion(def: IrUnionDef): boolean {
   let refs = 0,
     undefinedArms = 0,
@@ -559,7 +560,7 @@ function identityKeyUnion(def: IrUnionDef): boolean {
   for (const arm of def.arms) {
     if (arm.kind === "undefinedT") undefinedArms++;
     else if (arm.kind === "nullT") nullArms++;
-    else if (isIdentityCollectionKey(arm)) refs++;
+    else if (isIdentityCollectionKey(arm) && arm.kind !== "func") refs++;
     else return false;
   }
   return refs > 0 && undefinedArms <= 1 && nullArms <= 1;

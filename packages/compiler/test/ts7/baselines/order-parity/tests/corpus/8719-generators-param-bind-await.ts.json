@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8719-generators-param-bind-await.ts"
+ ],
+ "diags": []
+}

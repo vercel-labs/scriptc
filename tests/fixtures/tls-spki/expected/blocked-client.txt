@@ -2,7 +2,9 @@ client client-default authorized true error null error-type object
 client client-noreject authorized true error null error-type object
 client client-empty-ca failure Error UNABLE_TO_VERIFY_LEAF_SIGNATURE unable to verify the first certificate; if the root CA is installed locally, try running Node.js with --use-system-ca
 client client-verified-unrelated authorized true error null error-type object
+client client-wrong-name failure Error ERR_TLS_CERT_ALTNAME_INVALID Hostname/IP does not match certificate's altnames
 client client-trusted-intermediate authorized true error null error-type object
+client client-blocked-ancestor authorized true error null error-type object
 client client-tls12-unselected failure Error UNABLE_TO_VERIFY_LEAF_SIGNATURE unable to verify the first certificate; if the root CA is installed locally, try running Node.js with --use-system-ca
 client client-tls12-default authorized true error null error-type object
 server server-noreject authorized false error CERT_REVOKED

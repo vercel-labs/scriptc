@@ -873,8 +873,8 @@ static bool scr_tls_alert_error(ScrTlsSock *t, unsigned char alert);
  * revoked"), which outranks the error the verification itself found.
  *
  * mbedTLS's walk ends at the first certificate it trusts, which may be an
- * intermediate; the chain Node keeps building there, up to the root it can
- * resolve from the trust list, is continued by scr_tls_spki_anchor_blocked,
+ * intermediate; the chain Node keeps building there, through every issuer
+ * the trust list can resolve, is continued by scr_tls_spki_anchor_blocked,
  * and the peer's whole list is scanned on the leaf's turn when the chain did
  * not verify, because mbedTLS releases it with the handshake. */
 
@@ -973,15 +973,29 @@ static bool scr_tls_cert_signed_by(const mbedtls_x509_crt *crt, mbedtls_x509_crt
   return mbedtls_pk_verify(&ca->pk, sig_md, hash, mbedtls_md_get_size(md), sig, sig_len) == 0;
 }
 
-/* The trust anchor that ended the chain: the trusted certificate whose
- * subject is the top certificate's issuer and whose key verifies it. */
+/* The certificates Node's chain gains past the one mbedTLS stopped at: each
+ * time the trusted certificate whose subject is the current certificate's
+ * issuer and whose key verifies it, until the trust list supplies no further
+ * issuer. OpenSSL builds that continuation, so CheckSPKIs sees a blocked key
+ * along any of it and rejects a chain mbedTLS alone would accept. */
 static bool scr_tls_spki_anchor_blocked(const ScrTlsSock *t, const mbedtls_x509_crt *top) {
   if (t->vrfy_trust == NULL || top == NULL) return false;
-  for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
-    if (ca->subject_raw.len != top->issuer_raw.len || ca->subject_raw.p == NULL) continue;
-    if (memcmp(ca->subject_raw.p, top->issuer_raw.p, ca->subject_raw.len) != 0) continue;
-    if (scr_tls_spki_check(ca) == 0) continue;
-    if (scr_tls_cert_signed_by(top, ca)) return true;
+  const mbedtls_x509_crt *cur = top;
+  /* the bound ends a certificate that names itself and a trust list whose
+   * issuers circle back; a longer chain is not one mbedTLS would accept */
+  for (size_t hop = 0; hop <= MBEDTLS_X509_MAX_INTERMEDIATE_CA; hop++) {
+    const mbedtls_x509_crt *issuer = NULL;
+    for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+      if (ca->subject_raw.len != cur->issuer_raw.len || ca->subject_raw.p == NULL) continue;
+      if (memcmp(ca->subject_raw.p, cur->issuer_raw.p, ca->subject_raw.len) != 0) continue;
+      if (!scr_tls_cert_signed_by(cur, ca)) continue;
+      issuer = ca;
+      break;
+    }
+    if (issuer == NULL) return false;
+    if (scr_tls_spki_check(issuer) != 0) return true;
+    if (issuer == cur) return false; /* a self-signed certificate ends the chain */
+    cur = issuer;
   }
   return false;
 }
@@ -1040,9 +1054,10 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     *flags |= MBEDTLS_X509_BADCERT_REVOKED;
     t->vrfy_blocked = true;
   }
-  /* the chain Node selects continues past a trusted certificate to the root
-   * it can build, which mbedTLS never walks; the leaf's turn, which closes
-   * the walk, adds that issuer to the chain under the same policy */
+  /* the chain Node selects continues past a trusted certificate through
+   * every issuer the trust list can supply, which mbedTLS never walks; the
+   * leaf's turn, which closes the walk, adds those certificates to the chain
+   * under the same policy */
   if (depth == 0 && !t->vrfy_blocked && scr_tls_spki_anchor_blocked(t, t->vrfy_top)) {
     *flags |= MBEDTLS_X509_BADCERT_REVOKED;
     t->vrfy_blocked = true;
@@ -1053,9 +1068,11 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
    * of the chain's own error. The parsed peer list hangs off the leaf and
    * is released once the handshake call returns (a failed TLS 1.2 chain is
    * gone by then), so the scan runs here, on the leaf's turn, which has
-   * seen every flag of the walk. */
+   * seen every flag of the walk. The hostname check runs outside Node's
+   * X509_verify_cert, so a name mismatch alone leaves the chain verified and
+   * the peer list unread: the name error stands. */
   t->vrfy_flags |= *flags;
-  if (depth == 0 && t->vrfy_flags != 0 && !t->vrfy_blocked) {
+  if (depth == 0 && !t->vrfy_blocked && (t->vrfy_flags & ~(uint32_t) MBEDTLS_X509_BADCERT_CN_MISMATCH) != 0) {
     for (const mbedtls_x509_crt *c = crt->next; c != NULL; c = c->next) {
       if (scr_tls_spki_check(c) != 0) {
         t->vrfy_blocked = true;

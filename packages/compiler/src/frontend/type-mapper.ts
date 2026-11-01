@@ -5450,6 +5450,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     try {
       const byKey = new Map<string, IrType>();
       const recordParts: { source: ts.Type; mapped: IrType & { kind: "record" } }[] = [];
+      const classParts: { source: ts.Type; mapped: IrType & { kind: "object" } }[] = [];
       const substitutedUnions: IrUnionDef[] = [];
       // The lib's `T extends readonly unknown[] | []` idiom (Promise.all,
       // allSettled) maps an array input to `X[] | []`: the empty tuple is
@@ -5542,6 +5543,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
         byKey.set(typeKey(mapped), mapped);
         if (mapped.kind === "record") recordParts.push({ source: part, mapped });
+        if (mapped.kind === "object") classParts.push({ source: part, mapped });
+      }
+      // A subclass arm beside one of its ancestor classes (`Shape | Circle`
+      // with `class Circle extends Shape`) is that ancestor: every instance
+      // of the subclass is an instance of the ancestor, the ancestor's slot
+      // holds it as the same pointer, and `instanceof` and member dispatch
+      // read the instance's own class. A union would box each value.
+      if (classParts.length > 1) {
+        for (const { source, mapped } of classParts) {
+          if (programClassBases(source, ctx).some((base) => byKey.has(typeKey(base))))
+            byKey.delete(typeKey(mapped));
+        }
       }
       const arms = [...byKey.values()];
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
@@ -5659,6 +5672,35 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   return null;
+}
+
+/** The classes a non-generic program class extends, nearest first, as
+ * long as each is a non-generic class the program declares. Empty for
+ * other types. */
+function programClassBases(instance: ts.Type, ctx: TypeMapperCtx): IrType[] {
+  const bases: IrType[] = [];
+  let current = instance;
+  while (bases.length < MAP_TYPE_MAX_DEPTH) {
+    if (!programClassDeclaration(current, ctx)) break;
+    const base = ctx.checker.getBaseTypes(current as ts.InterfaceType)[0];
+    if (base === undefined || !programClassDeclaration(base, ctx)) break;
+    const mapped = mapType(base, ctx);
+    if (mapped?.kind !== "object") break;
+    bases.push(mapped);
+    current = base;
+  }
+  return bases;
+}
+
+/** Whether `type` is the instance type of a non-generic class declared in
+ * the program's source. */
+function programClassDeclaration(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  if ((type.flags & ts.TypeFlags.Object) === 0 || !type.isClassOrInterface()) return false;
+  const decl = type.getSymbol()?.valueDeclaration;
+  if (decl === undefined || !ts.isClassDeclaration(decl) || decl.typeParameters?.nodes.length)
+    return false;
+  const file = ts.getSourceFileOfNode(decl);
+  return !file.isDeclarationFile && ctx.isProgramFile(file);
 }
 
 /** One non-overloaded call signature's func type (mapTypeInner's

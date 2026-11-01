@@ -2243,6 +2243,11 @@ function buildLibFnSignatures() {
      * per-shape adapter — the tags are program data). */
     "http.serverOnConnect": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.clientOnUpgrade": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
+    /** server.on("clientError", (err, socket) => ...): a request the parser
+     * rejects, or a connection error, goes to the listeners instead of the
+     * default 400/413/431 answer, as in Node. (err, socket) and shorter
+     * prefixes (the libCall case checks). */
+    "http.serverOnClientError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.reqSocket": { argTypes: [HTTPREQ_T], result: NETSOCKET_T },
     // reqH2Stream's program-interned Http2Stream | undefined result is
     // checked in the special libCall cases in validate.ts.

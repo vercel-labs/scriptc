@@ -1,6 +1,6 @@
 /* Narrowings that refine record arms without naming a stored arm. */
 import type { Lowerer } from "../lowerer.js";
-import { type IrExpr, type IrType, type SrcLoc, typeEquals } from "../../../ir/ir.js";
+import { type IrExpr, type IrType, type SrcLoc, UNDEFINED_T, typeEquals } from "../../../ir/ir.js";
 
 /** A checker narrowing can refine the arms of a union of records with an
  * intersection: a predicate `r is Route & { path: string }`, or the
@@ -92,6 +92,49 @@ export function hostsAll(lowerer: Lowerer, storage: IrType, narrowed: IrType): b
     refined = true;
   }
   return refined;
+}
+
+/** Whether a type assertion to `target` only ADDS optional members to the
+ * record layout `storage` (`item as Base & { icons?: unknown }`): every
+ * member `storage` declares keeps its exact type, and every member only
+ * `target` declares can hold undefined. Node erases such an assertion, so
+ * the value keeps the storage layout — a read of an added member has no
+ * slot to read and answers from the layout's kept source instead
+ * (assertedOnlyFieldRead). A target that adds a REQUIRED member, narrows a
+ * stored one, or brings an index signature keeps its conversion: a closed
+ * record has no slot to hold what it adds. */
+export function assertedOptionalExtension(
+  lowerer: Lowerer,
+  storage: IrType,
+  target: IrType,
+): boolean {
+  if (storage.kind !== "record" || target.kind !== "record") return false;
+  if (storage.shapeId === target.shapeId) return false;
+  const stored = lowerer.shapes.get(storage.shapeId);
+  const added = lowerer.shapes.get(target.shapeId);
+  if (!stored || !added || stored.tuple || added.tuple) return false;
+  // A hybrid storage answers undeclared keys from its overflow store, so
+  // the assertion has nothing to add there; its own keyed read stands.
+  if (stored.indexValue !== undefined) return false;
+  if (added.indexValue !== undefined || added.fields.length === 0) return false;
+  // Accessor slots are not properties an assertion adds (they dispatch a
+  // getter), and a stored accessor keeps its own read.
+  if (stored.fields.some((f) => f.name.startsWith("%"))) return false;
+  if (added.fields.some((f) => f.name.startsWith("%"))) return false;
+  for (const field of stored.fields) {
+    const same = added.fields.find((f) => f.name === field.name);
+    if (!same || !typeEquals(same.type, field.type)) return false;
+  }
+  let extra = false;
+  for (const field of added.fields) {
+    if (stored.fields.some((f) => f.name === field.name)) continue;
+    const holdsUndefined =
+      field.type.kind === "dyn" ||
+      (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0);
+    if (!holdsUndefined) return false;
+    extra = true;
+  }
+  return extra;
 }
 
 function recordHosts(lowerer: Lowerer, storedId: string, narrowedId: string): boolean {

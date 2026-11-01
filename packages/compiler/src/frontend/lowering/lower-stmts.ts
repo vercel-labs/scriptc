@@ -33,7 +33,12 @@ import {
   isPromisePrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
-import { hostedStorageView, hostsAll } from "./expressions/hosted-narrowing.js";
+import {
+  assertedOptionalExtension,
+  hostedStorageView,
+  hostsAll,
+} from "./expressions/hosted-narrowing.js";
+import { assertedOnlyMemberWrite } from "./expressions/asserted-receiver.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
@@ -4125,7 +4130,7 @@ function patternBindingType(lowerer: Lowerer, name: ts.BindingName): IrType | nu
  * undefined does not reproduce), and a binding type that cannot hold
  * undefined is the required-asserted-field representation gap (a slot that
  * cannot hold the value Node would bind). */
-function assertedOnlyFieldRead(
+export function assertedOnlyFieldRead(
   lowerer: Lowerer,
   propName: string,
   srcType: IrType & { kind: "record" },
@@ -7444,7 +7449,8 @@ export function lowerVarDecl(
     isAssertionInitializer(decl.initializer) &&
     (settledType.kind === "union" || settledType.kind === "record") &&
     (init.type.kind === "union" || init.type.kind === "record") &&
-    hostsAll(lowerer, init.type, settledType)
+    (hostsAll(lowerer, init.type, settledType) ||
+      assertedOptionalExtension(lowerer, init.type, settledType))
   ) {
     settledType = init.type;
   }
@@ -9848,6 +9854,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);
           return lowerer.fieldSetStmt(target, value, locOf(expr), expr.left);
         }
+        assertedOnlyMemberWrite(lowerer, expr.left.expression, expr.left.name.text, expr.left);
         const callback = lowerClassCallbackAssign(lowerer, expr);
         if (callback) return callback;
         // A write to an ABSTRACT property through an abstract-typed

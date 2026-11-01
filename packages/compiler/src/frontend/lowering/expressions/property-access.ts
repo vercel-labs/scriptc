@@ -147,6 +147,7 @@ import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../../builtin-modules
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   applyDeferredAssertion,
+  assertedOptionalMemberRead,
   assertedReceiverNode,
   deferredMemberReadTarget,
   deferredProbeReadAccess,
@@ -3603,6 +3604,15 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   // very arm the probe exists to detect. Leave the read to the per-arm
   // answer in lowerPropertyAccessExpr (asserted-receiver.ts).
   if (deferredProbeReadAccess(lowerer, expr)) return null;
+  // A member only an asserted intersection declares
+  // (`(item as Base & { icons?: unknown }).icons`): the assertion's width
+  // copy has the name but no value in it, while the record the value
+  // actually holds still carries the property in its kept source. Answer
+  // from there (assertedOnlyFieldRead), as the destructuring twin does.
+  {
+    const assertedOnly = assertedOptionalMemberRead(lowerer, expr);
+    if (assertedOnly) return assertedOnly;
+  }
   const target = lowerer.fieldTarget(expr);
   if (target) return lowerer.fieldGetExpr(target, locOf(expr), expr);
   if (expr.questionDotToken) return null;

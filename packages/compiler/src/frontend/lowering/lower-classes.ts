@@ -23,6 +23,7 @@ import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import {
+  isBuiltinIdentityToken,
   isPrimitiveValueType,
   staticallyPrimitive,
   throwAfterEach,
@@ -207,6 +208,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "./lower-namespaces.js";
+import { hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
 import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
@@ -10408,6 +10410,14 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // Constructing a Node 24 global the native runtime does not provide
+  // (WebSocket, FormData, …): the value a read answers refuses construction
+  // (host-global-values.ts), so the construction is that refusal — SC2020,
+  // which a JavaScript source defers to the throw at this statement.
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr.expression);
+  }
   // The deprecated `new Buffer(...)` (containers/bytes.ts).
   {
     const buffer = lowerBufferConstruct(lowerer, expr);
@@ -11983,7 +11993,11 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // throws Node's TypeError, which names the constructed expression. V8
   // evaluates the callee, then every argument, and only then checks, so the
   // arguments lower for their effects ahead of the throw.
-  if (callee && isPrimitiveValueType(callee.type)) {
+  if (
+    callee &&
+    isPrimitiveValueType(callee.type) &&
+    !isBuiltinIdentityToken(lowerer, expr.expression, callee)
+  ) {
     return primitiveCalleeThrow(lowerer, expr, callee, loc);
   }
   if (callee && callee.type.kind === "union") {

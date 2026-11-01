@@ -1,6 +1,7 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
-import { hostGlobalNameOfIdentifier } from "../host-globals.js";
+import { hostGlobalCallTarget, hostGlobalNameOfIdentifier } from "../host-globals.js";
+import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
@@ -169,13 +170,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     }
   }
   // A read of a Node 24 global the native runtime does not implement
-  // (WebSocket, FormData, …): Node has the value, so answering undefined
-  // would silently diverge — refuse instead (host-globals.ts). Imports,
-  // locals and program declarations of the same name are the program's
-  // own bindings and never reach here.
+  // (WebSocket, FormData, …) answers the constructor Node has
+  // (host-global-values.ts); constructing or calling it is the use that
+  // refuses (SC2020, host-global). Imports, locals and program
+  // declarations of the same name are the program's own bindings and
+  // never reach here.
   {
     const hostGlobal = hostGlobalNameOfIdentifier(lowerer, expr);
-    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr);
+    if (hostGlobal !== null) {
+      if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
+      return hostGlobalValue(lowerer, hostGlobal, expr);
+    }
   }
   // A compiler-projected adapter as a VALUE: the adapter has no
   // runtime function object (its calls rewrite directly) — call it

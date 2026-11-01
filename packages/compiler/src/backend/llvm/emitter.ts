@@ -170,7 +170,7 @@ import {
   bridgePlainUnwindCalls,
   unwindAbiFunctions,
 } from "./unwind-abi.js";
-import { cloneForCpuDispatch } from "./cpu-dispatch.js";
+import { cloneForCpuDispatch, type CpuCopies } from "./cpu-dispatch.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -1472,6 +1472,9 @@ export class LlEmitter {
   readonly sanitizeAttributes: boolean;
   /** LlvmTargetOptions.cpuDispatch, where it applies. */
   readonly cpuDispatch: boolean;
+  /** How the program's functions are copied (cpu-dispatch.ts): for runtime
+   * dispatch, for an x86-64-v3 `targetCpu` ("target"), or not at all. */
+  readonly cpuCopies: CpuCopies | null;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -2241,13 +2244,17 @@ export class LlEmitter {
     this.nodeIslandModuleData = options.nodeIslandModuleData ?? null;
     this.targetCpu = options.targetCpu;
     this.sanitizeAttributes = options.sanitizeAttributes !== false;
-    this.cpuDispatch =
-      options.cpuDispatch === true &&
-      options.targetCpu === undefined &&
+    const copyable =
       !this.wasi &&
       mod.lib === undefined &&
       this.debug === null &&
       /^(x86_64|amd64|x64)\b/.test(options.targetTriple || process.arch);
+    this.cpuDispatch = options.cpuDispatch === true && options.targetCpu === undefined && copyable;
+    this.cpuCopies = this.cpuDispatch
+      ? "dispatch"
+      : options.targetCpu === "x86-64-v3" && copyable
+        ? "target"
+        : null;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -2887,7 +2894,7 @@ export class LlEmitter {
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    const out = this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    const out = this.cpuCopies === null ? bridged : cloneForCpuDispatch(bridged, this.cpuCopies);
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 

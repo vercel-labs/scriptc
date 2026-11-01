@@ -13,6 +13,7 @@ import {
 } from "./builtins/array-classes.js";
 import { canonShadowHook, mapCanonical, type CanonMapNotes } from "../canon-map.js";
 import { Normalizer } from "../canon.js";
+import { resolveEntryExportSymbol } from "../lib-exports.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -196,6 +197,10 @@ import {
 import { devirtualizeVirtualCalls } from "./devirtualize.js";
 import { foldRegexSpanReads } from "./regex-span-reads.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
+import {
+  runtimeOptionalNarrowings,
+  type RuntimeOptionalNarrowing,
+} from "./runtime-optional-report.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
 import { NarrowingStability, widenedReceiver } from "./narrowing-stability.js";
 import { ArrayElementStates } from "./runtime-optional-elements.js";
@@ -234,6 +239,7 @@ import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
+import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -983,6 +989,13 @@ export interface LowerResult {
    * (SC8006), whose process objects would not see the patch. Present only
    * when the build has islands. */
   stdioPatches?: StdioPatchSite[];
+  /** LIBRARY mode (LowerOptions.libRoots): each root name resolved through
+   * the entry module's export table to the unit that supplies it — the
+   * entry's own unit for a direct export, the module-tagged unit of the
+   * declaration for a re-exported one. Absent when the build passes no lib
+   * roots; a root name that resolves to no unit is absent from the map
+   * (the export-map resolution reports it as SC4002). */
+  libExportUnits?: ReadonlyMap<string, string>;
 }
 
 export interface LowerOptions {
@@ -1021,11 +1034,13 @@ export interface LowerOptions {
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
   /** LoadResult.dynamicImportRejections. */
   dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
-  /** LIBRARY mode's reachability roots: the profile-mapped exports of the
-   * entry module. Executable builds root at the entry's top level alone
+  /** LIBRARY mode's reachability roots: the profile-mapped export names of
+   * the entry module. Executable builds root at the entry's top level alone
    * (an unreferenced export dead-strips); a library's exports are called from
-   * OUTSIDE the graph, so discovery seeds them alongside the init
-   * bodies. Names are the entry file's unqualified declaration names. */
+   * OUTSIDE the graph, so discovery seeds them alongside the init bodies.
+   * Each name resolves through the entry module's export table (see
+   * libExportUnit), so a re-exported function seeds the unit of the module
+   * that declares it. */
   libRoots?: readonly string[];
   /** Outbound native FFI declarations from a validated format-1 manifest.
    * Calls of their exact ambient TypeScript bindings lower to direct C ABI
@@ -1153,6 +1168,11 @@ export interface LowererMode {
    * always-reachable init bodies and module building, and report deferred
    * collection diagnostics nothing flushed. */
   remainder?: boolean;
+  /** Coverage (--explain-dynamic): keep the runtime-optional storage
+   * decisions and the reads the checker narrows below the widened
+   * storage, for the report (runtime-optional-report.ts). Report-only:
+   * lowering does not change. */
+  runtimeOptionalReport?: boolean;
   /** Node's startup refusal (preflight's resolution walk / named-import
    * link checks): %main opens with exactly this throw, before any
    * module init — Node refuses the whole graph before anything evaluates,
@@ -1350,6 +1370,7 @@ function lowerToIrWithIslands(
   const externalTypeSpecifiersByFile =
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const tierMode = options.tierMode ?? "auto";
+  const runtimeOptionalReport = options.tierReport !== undefined;
   const validation = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
     projectCheckJs: options.projectCheckJs ?? false,
@@ -1364,6 +1385,7 @@ function lowerToIrWithIslands(
     externalTypes,
     externalTypeSpecifiersByFile,
     tierMode,
+    runtimeOptionalReport,
   });
   const ffiValidation = validateFfiImports(validation);
   timing("ffi-validate");
@@ -1389,6 +1411,7 @@ function lowerToIrWithIslands(
           externalTypes,
           externalTypeSpecifiersByFile,
           tierMode,
+          runtimeOptionalReport,
           ffiBindingSymbols: ffiValidation.symbolsByName,
         });
   for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
@@ -1418,6 +1441,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      runtimeOptionalReport,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       wholeSlotDegradation: true,
     });
@@ -1455,6 +1479,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      runtimeOptionalReport,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
       ...(dyn ? { dynNodeStreams: true } : {}),
@@ -1502,6 +1527,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      runtimeOptionalReport,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
@@ -1509,6 +1535,19 @@ function lowerToIrWithIslands(
     result = emit.run();
     resultLowerer = emit;
     timing("historical-order-relower");
+  }
+  // LIBRARY mode: the profile's export names resolved to the units that
+  // supply them — the entry's own unit for a direct export, the declaring
+  // module's tagged unit for a re-exported one. The export-map resolution
+  // reads this to land each profile entry on the compiled function without
+  // assuming the entry file declared it.
+  if (options.libRoots !== undefined && options.libRoots.length > 0) {
+    const libExportUnits = new Map<string, string>();
+    for (const name of options.libRoots) {
+      const unit = resultLowerer.libExportUnit(name);
+      if (unit !== null) libExportUnits.set(name, unit);
+    }
+    result = { ...result, libExportUnits };
   }
   // Divergence warnings over the program's own modules: computed once,
   // after lowering, from the same checker (never part of a failure).
@@ -1648,6 +1687,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      runtimeOptionalReport,
     });
   let remainder = remainderPass(generalNodeStreams);
   let rem = remainder.run();
@@ -1675,6 +1715,7 @@ function lowerToIrWithIslands(
           reached: [...options.tierReport.preflight, ...result.diagnostics],
           deferred: result.runtimeFences,
           unreached: [...rem.diagnostics, ...rem.runtimeFences],
+          runtimeOptional: resultLowerer.runtimeOptionalNarrowings,
         });
   // A dynamic function's own statements can include ones that failed.
   const statementsDynamic = Math.min(
@@ -2823,6 +2864,15 @@ export class Lowerer {
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
   readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** The indexed-read analysis's storage decisions: kept for the coverage
+   * report when --explain-dynamic asks, and written to stderr under
+   * SCRIPTC_DEBUG_RUNTIME_OPTIONAL=1. */
+  readonly runtimeOptionalProvenance: RuntimeOptionalProvenance | null;
+  /** Coverage (--explain-dynamic): the widened slots whose storage holds
+   * an absence the checker's type does not admit, with the reads that
+   * narrow them below it (runtime-optional-report.ts). Empty unless the
+   * report was asked for. */
+  runtimeOptionalNarrowings: readonly RuntimeOptionalNarrowing[] = [];
   /** JavaScript bindings assigned values outside their declared type
    * (analyzeJsWidenedBindings): checked-dynamic storage, and reads keep the
    * stored value instead of narrowing it to the checker's type. */
@@ -3998,6 +4048,11 @@ export class Lowerer {
   /** Whether the program freezes, seals or prevents extensions of untyped
    * values other than fresh literals (noteUntypedIntegrity). */
   untypedIntegrity = false;
+  /** A JavaScript source constructs an ArrayBuffer with a maxByteLength,
+   * or reads a member that resizes, grows or detaches a buffer
+   * (buffers.ts, t262-dc §2.4). Sets IrModule.bytesHeadersMutable and arms
+   * the scr_js_buffers views registry in %main. */
+  buffersMutable = false;
   readonly liftedFns: IrFunction[] = [];
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
@@ -4644,6 +4699,7 @@ export class Lowerer {
     "overridesAmbient",
     "remainder",
     "tierMode",
+    "runtimeOptionalReport",
     "generalNodeStreams",
     "dynNodeStreams",
     "targetPlatform",
@@ -4677,6 +4733,10 @@ export class Lowerer {
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
+    // Coverage's --explain-dynamic report: the indexed-read analysis's
+    // storage decisions and the narrowed reads they explain.
+    "runtimeOptionalProvenance",
+    "runtimeOptionalNarrowings",
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
@@ -4694,6 +4754,10 @@ export class Lowerer {
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
     "packageFileMemo",
+    // LIBRARY mode: the unit each root export name seeds is a pure function
+    // of the entry's export table and the signatures collected before any
+    // body lowers, so a pass that asks again computes the same answer.
+    "libExportUnits",
     // NI-5: whether a symbol names an island handle binding depends only on
     // its declaration, so the answer is a memo keyed by symbol.
     "islandHandleBindings",
@@ -4858,6 +4922,11 @@ export class Lowerer {
         () => (this.untypedIntegrity = true),
       ),
       flag(
+        "buffersMutable",
+        () => this.buffersMutable,
+        () => (this.buffersMutable = true),
+      ),
+      flag(
         "partialDegradedTypesMapped",
         () => this.partialDegradedTypesMapped,
         () => (this.partialDegradedTypesMapped = true),
@@ -4919,6 +4988,8 @@ export class Lowerer {
    * refuse and fence exactly as before. Stage S6 demotes the units of
    * committed refusals in "auto" and keeps them refusals in "static-only". */
   readonly tierMode: TierMode;
+  /** LowererMode.runtimeOptionalReport. */
+  readonly runtimeOptionalReport: boolean;
   readonly generalNodeStreams: boolean;
   readonly dynNodeStreams: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
@@ -5213,6 +5284,10 @@ export class Lowerer {
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.tierMode = mode.tierMode ?? "auto";
+    this.runtimeOptionalReport = mode.runtimeOptionalReport === true;
+    this.runtimeOptionalProvenance = this.runtimeOptionalReport
+      ? RuntimeOptionalProvenance.forReport()
+      : RuntimeOptionalProvenance.fromEnvironment();
     this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
     this.workerTargets = mode.workerTargets ?? [];
@@ -6899,7 +6974,7 @@ export class Lowerer {
   }
 
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
-    const provenance = RuntimeOptionalProvenance.fromEnvironment();
+    const provenance = this.runtimeOptionalProvenance;
     // The site whose value the current promotion follows (debug only).
     let provenanceSite: ts.Node | undefined;
     const optionalSymbols = new Set<ts.Symbol>();
@@ -9742,6 +9817,11 @@ export class Lowerer {
     }
 
     provenance?.flush();
+    // Coverage (--explain-dynamic): the slots the analysis widened past the
+    // checker's type, with the reads that narrow them back and the
+    // decisions that widened them. Report-only; lowering does not read it.
+    if (this.runtimeOptionalReport)
+      this.runtimeOptionalNarrowings = runtimeOptionalNarrowings(this, sourceFiles);
   }
 
   run(): LowerResult {
@@ -9974,6 +10054,9 @@ export class Lowerer {
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
     installBufferValue(functions);
+    // A mutable-buffers program arms the views registry before any buffer
+    // exists, so every buffer in it is detachable from the start.
+    const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
     installFetchBodyWebStreams(this, functions);
     returnDispatchReceivers(this, functions);
 
@@ -10103,6 +10186,7 @@ export class Lowerer {
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
             ...(this.untypedIntegrity ? { untypedIntegrity: true as const } : {}),
+            ...(buffersMutable ? { bytesHeadersMutable: true as const } : {}),
             ...(sloppyDynWrites.length > 0 ? { sloppyDynWrites } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
@@ -10250,6 +10334,41 @@ export class Lowerer {
   }
 
   /* ── reachability ─────────────────────────────────────────────────── */
+
+  /** LIBRARY mode: the unit the root name `name` seeds, resolved through
+   * the entry module's export table. A direct `export function f` and every
+   * facade that names it (`export { f }`, `export { f as g }`,
+   * `export { f } from "./m"`, `export * from "./m"`) reach the same
+   * declaration, and the unit is whatever the declaration's own module
+   * qualified it as — the entry's bare name or another module's `%mN.` tag.
+   * Memoized: the four emit passes and the result's export map read one
+   * answer. Null when the name is not an export of a compiled function
+   * (SC4002/SC4004/SC4007 report it). */
+  libExportUnit(name: string): string | null {
+    const memo = this.libExportUnits;
+    if (memo.has(name)) return memo.get(name)!;
+    const symbol = resolveEntryExportSymbol(this.checker, this.entry, name);
+    let unit: string | null = null;
+    if (symbol !== null) {
+      unit = this.fnSigsBySymbol.get(symbol)?.name ?? null;
+      if (unit === null) {
+        // The export table's symbol can be a copy of the declaration's; the
+        // declaration's own symbol is the one signatures are keyed by.
+        for (const declaration of symbol.declarations) {
+          if (!ts.isFunctionDeclaration(declaration)) continue;
+          const declared = declSymbolOf(this, declaration);
+          unit = declared === undefined ? null : (this.fnSigsBySymbol.get(declared)?.name ?? null);
+          if (unit !== null) break;
+        }
+      }
+    }
+    memo.set(name, unit);
+    return unit;
+  }
+
+  /** One answer per root name: a pass builds its own Lowerer, and the
+   * signatures this reads are collected before any body is lowered. */
+  private readonly libExportUnits = new Map<string, string | null>();
 
   /** Reachable emit: computes the set of body names the program's entry
    * reaches and retains each body IR as it lowers. Seeds are the per-file
@@ -10765,10 +10884,15 @@ export class Lowerer {
     });
     // LIBRARY mode's extra reachability roots (LowerOptions.libRoots): the
     // profile-mapped exports are called from outside the graph, so they
-    // seed the worklist beside the init bodies. Unknown names are inert
-    // (the export-map resolution reports them as SC4002 later).
+    // seed the worklist beside the init bodies. Each name resolves through
+    // the entry module's export table to the unit that supplies it, so a
+    // re-exported function seeds its own module's unit. Unknown names are
+    // inert (the export-map resolution reports them as SC4002 later).
     const rootEdge = this.onEdge;
-    for (const root of extraRoots ?? []) rootEdge?.(root);
+    for (const root of extraRoots ?? []) {
+      const unit = this.libExportUnit(root);
+      if (unit !== null) rootEdge?.(unit);
+    }
     const shuffle = lowerShuffle();
     const lowerUnitBody = (name: string): IrFunction | null => {
       const unit = units.get(name)!;

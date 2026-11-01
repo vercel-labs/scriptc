@@ -106,6 +106,7 @@ import {
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
+import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
@@ -279,6 +280,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "./lower-namespaces.js";
+import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
 import { expandoMemberRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
@@ -406,6 +408,20 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
+  // A JavaScript source calling a member that resizes, grows or detaches a
+  // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The
+  // receiver may be a checked-dynamic value, so the callee's name decides;
+  // the member read never reaches lowerPropertyAccessExpr when the call
+  // lowers straight through its receiver.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const callee = expr.expression;
+    const name = ts.isPropertyAccessExpression(callee)
+      ? callee.name.text
+      : ts.isElementAccessExpression(callee)
+        ? lowerer.foldedStringKeyOf(callee.argumentExpression)
+        : null;
+    if (name !== null && MUTABLE_BUFFER_MEMBERS.has(name)) lowerer.buffersMutable = true;
+  }
   // `(null).foo()` / `(undefined)["foo"]()`: the MEMBER READ throws Node's
   // TypeError before the arguments evaluate, exactly as a plain read does.
   // Only a nullish LITERAL qualifies — every other receiver, a binding or a
@@ -428,6 +444,22 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
   }
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
+  // Calling a Node 24 global the native runtime does not provide (WebSocket,
+  // FormData, …): the value a read answers refuses the call
+  // (host-global-values.ts), so the call is that refusal — SC2020, which a
+  // JavaScript source defers to the throw at this statement.
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr.expression);
+  }
+  // A method on the value's prototype (`FormData.prototype.append(...)`):
+  // the prototype carries the constructor link only, so the method is
+  // surface native code does not have (SC2020, host-global). A call reads
+  // its callee without going through the member-read hook.
+  {
+    const prototypeOf = hostGlobalPrototypeMemberOf(lowerer, expr.expression);
+    if (prototypeOf !== null) lowerer.hostGlobalFence(prototypeOf, expr.expression);
+  }
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (
@@ -8973,9 +9005,28 @@ function lowerObjectStaticCall(
           }
         }
       }
-      if (tProbe?.type.kind === "record" && sProbe?.type.kind === "record") {
-        const tShape = lowerer.shapes.get(tProbe.type.shapeId);
-        const sShape = lowerer.shapes.get(sProbe.type.shapeId);
+      // An operand the CHECKER narrowed to one record ARM of its declared
+      // union (`content?.type === "toolCall"` narrows the array element to
+      // ToolCall, whose lowered value still carries the element's
+      // `ToolCall | ToolResult`): the plan runs over the arm, and the
+      // operand lowers through the CHECKED extraction — the same
+      // `%union.narrow` every other arm-typed site uses, so a value that
+      // is not that arm throws the catchable TypeError instead of being
+      // copied through the wrong layout. The extraction yields the arm's
+      // own record, so the write still mutates the value the program holds.
+      const assignOperand = (node: ts.Expression, probe: IrExpr | null): IrType | null => {
+        if (probe?.type.kind === "record") return probe.type;
+        if (probe?.type.kind !== "union") return null;
+        const site = lowerer.mapTypeOf(lowerer.typeOf(node));
+        return site?.kind === "record" && lowerer.armTag(probe.type.unionId, site) >= 0
+          ? site
+          : null;
+      };
+      const tOperand = assignOperand(call.arguments.nodes[0]!, tProbe);
+      const sOperand = assignOperand(call.arguments.nodes[1]!, sProbe);
+      if (tOperand?.kind === "record" && sOperand?.kind === "record") {
+        const tShape = lowerer.shapes.get(tOperand.shapeId);
+        const sShape = lowerer.shapes.get(sOperand.shapeId);
         const ok =
           tShape &&
           sShape &&
@@ -8996,8 +9047,12 @@ function lowerObjectStaticCall(
           });
         if (ok) {
           const loc = locOf(call);
-          const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
-          const source = lowerer.lowerExpr(call.arguments.nodes[1]!);
+          const operand = (node: ts.Expression, arm: IrType): IrExpr => {
+            const value = lowerer.lowerExpr(node);
+            return value.type.kind === "record" ? value : lowerer.coerceToExpected(value, arm);
+          };
+          const target = operand(call.arguments.nodes[0]!, tOperand);
+          const source = operand(call.arguments.nodes[1]!, sOperand);
           if (target.type.kind === "record" && source.type.kind === "record") {
             const helper = recordAssignHelper(
               lowerer,

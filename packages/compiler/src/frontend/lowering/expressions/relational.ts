@@ -47,7 +47,12 @@ import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
-import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
+import {
+  inOperatorTypeError,
+  isBuiltinIdentityToken,
+  isPrimitiveValueType,
+  throwAfterEach,
+} from "../primitive-throws.js";
 import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
@@ -71,6 +76,7 @@ import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { recordMayKeepSource } from "../record-sources.js";
 import { recordHasOwnHelper } from "../lower-calls.js";
+import { hostGlobalConstructorOfPrototype, hostGlobalNameOfRead } from "../host-globals.js";
 
 /** The class value an `instanceof` right-hand side holds. A JavaScript
  * object's property holding a program class (`holder.type`) reads as a
@@ -112,6 +118,25 @@ const NO_CLASS_INSTANCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
 
 const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] as const;
 
+/** The known answer of an `instanceof` test on a listed Node global's value,
+ * after the left operand's evaluation (kept for its effects, as Node runs
+ * it before the test). */
+function hostGlobalInstanceOfAnswer(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  answer: boolean,
+  loc: SrcLoc,
+): IrExpr {
+  const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: { kind: "boolLit", value: answer, type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
+}
+
 /** `x instanceof C` for a program-declared class C. When x's static
  * class and C are both in extends-hierarchies the test is dynamic — the
  * O(1) preorder-interval check against the vtable (`instanceOf` node).
@@ -122,6 +147,22 @@ const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] a
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  // A listed Node global's value is a constructor native code never created
+  // an instance from, so `x instanceof X` is false for every value — an
+  // ordinary function's [[Prototype]] included, which the generic walk
+  // cannot read and would throw its unsupported-getPrototypeOf error for.
+  // The value is itself a Function instance, as Node's class is; the
+  // runtime's generic walk stops at the object that terminates the value's
+  // prototype chain, so that one answer is folded here too. The operand
+  // still runs, as Node evaluates it before the test.
+  if (hostGlobalNameOfRead(lowerer, expr.right) !== null)
+    return hostGlobalInstanceOfAnswer(lowerer, expr, false, loc);
+  if (lowerer.isStdlibGlobal(expr.right, "Function")) {
+    const value =
+      hostGlobalNameOfRead(lowerer, expr.left) ??
+      hostGlobalConstructorOfPrototype(lowerer, expr.left);
+    if (value !== null) return hostGlobalInstanceOfAnswer(lowerer, expr, true, loc);
+  }
   const arrayClassTest = lowerArrayClassInstanceOf(lowerer, expr, loc);
   if (arrayClassTest !== null) return arrayClassTest;
   const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
@@ -1827,7 +1868,7 @@ export function lowerInExpression(
   // that reaches here, so only the receiver's own evaluation remains. The
   // message spells the receiver's value, so a receiver the IR cannot
   // re-evaluate (`receiver()`) evaluates once into a hidden local.
-  if (isPrimitiveValueType(recv.type)) {
+  if (isPrimitiveValueType(recv.type) && !isBuiltinIdentityToken(lowerer, expr.right, recv)) {
     if (isUnitType(recv.type) || isSafeToRepeat(recv)) {
       return throwAfterEach([recv], inOperatorTypeError(lowerer, key, recv, BOOL, loc), loc);
     }

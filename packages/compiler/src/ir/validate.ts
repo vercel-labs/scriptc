@@ -138,6 +138,8 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     errors.push({ message: "declOrigins must be an array of strings", loc: moduleLoc });
   if (mod.untypedIntegrity !== undefined && mod.untypedIntegrity !== true)
     errors.push({ message: "untypedIntegrity must be true when present", loc: moduleLoc });
+  if (mod.bytesHeadersMutable !== undefined && mod.bytesHeadersMutable !== true)
+    errors.push({ message: "bytesHeadersMutable must be true when present", loc: moduleLoc });
   if (mod.lifetimeRegions !== undefined && mod.lifetimeRegions !== true)
     errors.push({ message: "lifetimeRegions must be true when present", loc: moduleLoc });
   if (mod.workers && mod.lib !== undefined)

@@ -103,6 +103,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
   ["scr_js_object.c", "dynTier"],
+  // Mutable ArrayBuffers (t262-dc C1/C2): the views registry that recomputes
+  // every view's length when a buffer resizes, grows or detaches, and the
+  // operations themselves. A JavaScript source with the `mutableBuffers`
+  // fact arms it at the top of %main (arrayBuffer.armMutable); every other
+  // program keeps the base units' hooks NULL and links no registry.
+  ["scr_js_buffers.c", "mutableBuffers"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
@@ -128,6 +134,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
+  ["scr_zstd.c", all("zlib", "zstd")],
   // Intl over ICU (scr_intl.c): the default-locale number/date formats and
   // word segmentation, over the packed ICU archive and its data file.
   // Every engine-free Intl form (the en-US fast paths, default grapheme
@@ -319,6 +326,12 @@ export function variantsFor(source) {
     // default object, byte for byte.
     withJsObjectModel(variants);
   }
+  // The mutable-buffers registry (t262-dc C1/C2) is part of the JavaScript
+  // object model build: its tables and the ScrJsBufferOps contract it fills
+  // exist only there (SCR_JS_OBJECT_MODEL), so the unit selects that build
+  // and its default object compiles empty. A program with the fact links
+  // the unit at all (OPTIONAL_RUNTIME_SOURCES).
+  if (source === "scr_js_buffers.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects. Its Node island
   // build is not the one these variants name: island output keeps its own
@@ -553,6 +566,7 @@ export function createRuntimePackMatrix({
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];

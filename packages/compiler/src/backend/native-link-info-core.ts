@@ -40,6 +40,12 @@ export interface NativeLinkFeatures {
    * (t262-da §J). Absent for every other program, so their objects stay
    * identical. */
   jsObjectModel?: boolean;
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
+   * registry those operations maintain. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
+  mutableBuffers?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
@@ -76,6 +82,8 @@ export interface NativeLinkFeatures {
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
+  /** node:zlib's zstd forms: scr_zstd.c and the vendored zstd archive. */
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;

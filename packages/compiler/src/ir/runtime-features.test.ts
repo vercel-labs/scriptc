@@ -260,17 +260,30 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
   });
 
-  test("the JavaScript object model build owns no entry yet", () => {
+  test("the JavaScript object model build owns the buffer views registry calls", () => {
     // t262-da §J: the features only a JavaScript source reaches share one
-    // runtime feature, whose entry list the slices fill as they land. This
-    // branch lists none, so a program with a sibling dynamic feature keeps
-    // the default objects.
-    expect(JS_OBJECT_MODEL_LIB_FNS.size).toBe(0);
+    // runtime feature, whose entry list the slices fill as they land. The
+    // buffer views registry (t262-dc C2) arms itself through these calls, and
+    // the resizable constructors lower to them, so a program that makes one
+    // selects the object model build; every other program keeps the default
+    // objects.
+    expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
+      "arrayBuffer.armMutable",
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+    ]);
     const mod = module();
     mod.functions[0]!.body.push(call("dyn.stdlibPrototype"));
     const features = moduleRuntimeFeatures(mod);
     expect(features.stdlibPrototypeValue).toBe(true);
     expect(features.jsObjectModel).toBe(false);
+    expect(features.mutableBuffers).toBe(false);
+    for (const fn of JS_OBJECT_MODEL_LIB_FNS) {
+      const armed = module();
+      armed.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
+      expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);
+    }
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {

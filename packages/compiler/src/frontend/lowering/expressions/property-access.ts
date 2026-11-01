@@ -4,7 +4,15 @@ import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
-import { hostGlobalNameOfMember } from "../host-globals.js";
+import {
+  HOST_GLOBAL_PROTOTYPE_MEMBERS,
+  HOST_GLOBAL_VALUE_MEMBERS,
+  hostGlobalCallTarget,
+  hostGlobalNameOfMember,
+  hostGlobalNameOfRead,
+  hostGlobalPrototypeOf,
+} from "../host-globals.js";
+import { hostGlobalValue } from "../host-global-values.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
@@ -144,6 +152,7 @@ import {
   deferredProbeReadAccess,
 } from "./asserted-receiver.js";
 import { lowerRecordInheritedMember } from "../record-inherited.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
   cjsClassExprWholeExportOf,
@@ -341,6 +350,11 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // A JavaScript source reading a member that resizes, grows or detaches a
+  // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The name
+  // decides: the receiver may be a checked-dynamic value.
+  if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+    lowerer.buffersMutable = true;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `R.#x` for a static private on a checked-dynamic receiver: the brand
@@ -607,11 +621,32 @@ export function lowerPropertyAccessExpr(
   }
   // A read of a Node 24 global the native runtime does not implement
   // (globalThis.WebSocket, (globalThis as T).FormData, alias.X) is not a
-  // capability probe: Node has the value, so the branch below would answer
-  // a silently wrong undefined. Refuse instead (host-globals.ts).
+  // capability probe: the branch below would answer undefined, where Node
+  // has the constructor. Answer the constructor (host-global-values.ts);
+  // constructing or calling it is the use that refuses (SC2020,
+  // host-global).
   {
     const hostGlobal = hostGlobalNameOfMember(lowerer, expr);
-    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr);
+    if (hostGlobal !== null) {
+      if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
+      return hostGlobalValue(lowerer, hostGlobal, expr);
+    }
+  }
+  // A member read off that value (`WebSocket.OPEN`, `FormData.prototype`):
+  // the value carries the function intrinsics only, and its prototype
+  // carries the constructor link (`FormData.prototype.constructor`). Node's
+  // class also has static members and instance methods, which native code
+  // does not provide, so reading one is a use of that surface and refuses
+  // (SC2020, host-global) instead of answering undefined.
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    if (hostGlobal !== null) {
+      if (!HOST_GLOBAL_VALUE_MEMBERS.has(expr.name.text)) lowerer.hostGlobalFence(hostGlobal, expr);
+    } else {
+      const prototypeOf = hostGlobalPrototypeOf(lowerer, expr.expression);
+      if (prototypeOf !== null && !HOST_GLOBAL_PROTOTYPE_MEMBERS.has(expr.name.text))
+        lowerer.hostGlobalFence(prototypeOf, expr);
+    }
   }
   // Missing host globals (Bun/Deno capability probes) have no binding
   // in a native program. Declared globals retain their own lowering;
@@ -4683,6 +4718,53 @@ function readOnlyAccess(access: ts.PropertyAccessExpression): boolean {
   );
 }
 
+/** The receiver a member WRITE addresses through a type assertion:
+ * `(p as View).x = v`. Node erases a type assertion, so the write lands on
+ * the very object the operand names; the asserted view's conversion may
+ * instead build a fresh width record (`%rec.width`), and a write into that
+ * temporary is dropped. Address the unasserted value when its stored layout
+ * already holds the member at the asserted type — the erased write of Node.
+ * A view that ADDS a member has no slot to write, so it keeps the
+ * assertion's conversion. Null when the receiver is not an assertion. */
+function assertedWriteReceiver(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  fieldType: IrType,
+  assertedType: IrType & { kind: "record" },
+): IrExpr | null {
+  let node: ts.Expression = access.expression;
+  let asserted = false;
+  for (;;) {
+    if (ts.isParenthesizedExpression(node)) {
+      node = node.expression;
+      continue;
+    }
+    if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
+      node = node.expression;
+      asserted = true;
+      continue;
+    }
+    break;
+  }
+  if (!asserted) return null;
+  const staticType = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (staticType?.kind !== "record") return null;
+  const staticField = lowerer.shapes
+    .get(staticType.shapeId)
+    ?.fields.find((f) => f.name === access.name.text);
+  if (!staticField || !typeEquals(staticField.type, fieldType)) return null;
+  const obj = lowerer.lowerExpr(node);
+  if (obj.type.kind === "record") {
+    const actualField = lowerer.shapes
+      .get(obj.type.shapeId)
+      ?.fields.find((f) => f.name === access.name.text);
+    if (actualField && typeEquals(actualField.type, fieldType)) return obj;
+  }
+  // The value's own layout differs from the checker's view (a generic
+  // body, an aliased layout): keep the assertion's conversion.
+  return lowerer.coerceInto(access.expression, obj, assertedType);
+}
+
 export function fieldTarget(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -4881,7 +4963,10 @@ export function fieldTarget(
     const shape = lowerer.shapes.get(receiverIr.shapeId);
     const fieldType = shape?.fields.find((f) => f.name === access.name.text)?.type;
     if (fieldType) {
-      let obj = lowerer.lowerExpr(access.expression);
+      const writeReceiver = readOnlyAccess(access)
+        ? null
+        : assertedWriteReceiver(lowerer, access, fieldType, receiverIr);
+      let obj = writeReceiver ?? lowerer.lowerExpr(access.expression);
       const nominal = representedClassFieldTarget(
         lowerer,
         access.expression,

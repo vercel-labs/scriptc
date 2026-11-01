@@ -1,8 +1,0 @@
-host-global-typeof-condition.ts:6:12 - error SC2020: 'WebSocket' is a Node global that native code does not provide
-
-  5 | declare var WebSocket: { new (url: string): unknown };
-  6 | if (typeof WebSocket === "function") {
-    |            ^~~~~~~~~
-  7 |   console.log("websocket");
-
-  hint: the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global

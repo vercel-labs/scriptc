@@ -459,6 +459,36 @@ double scr_bytes_byte_len(const ScrBytes *b) {
   return (double)(b->len * scr_bytes_elem_size(b->elem));
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The mutable-buffers registry's table (scr_js_buffers.c, the optional
+ * unit a `mutableBuffers` program links). NULL until scr_js_buffers_arm
+ * installs it, so a program without the fact pays one pointer test in front
+ * of the view hooks below and links no registry at all. */
+SCR_TL const ScrJsBufferOps *scr_js_buffer_ops;
+
+#endif
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* Records a view in the registry when the program may move buffers. */
+static void scr_js_buffer_register(ScrBytes *view, bool tracking) {
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  if (ops && view->backing) ops->view_register(view, tracking);
+}
+
+/* Whether an owner reserves a maxByteLength, so a length-tracking view may
+ * end on a partial element (Node allows it and floors the element count). */
+static bool scr_js_owner_resizable(const ScrBytes *owner) {
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return ops && ops->owner_resizable(owner);
+}
+#endif
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The element accessors below guard %TypedArray%.prototype methods with
+ * this check (defined beside the DataView helpers); the guards precede it. */
+static bool scr_js_typed_method_ok(const ScrBytes *b, const char *method);
+#endif
+
 /* ── element access ────────────────────────────────────────────────────
  * Invalid writes are ignored. Typed numeric reads cannot represent
  * undefined, so invalid reads trap; checked reads return undefined. */
@@ -888,6 +918,9 @@ static size_t scr_bytes_rel_index(double i, size_t len) {
 }
 
 ScrBytes *scr_bytes_slice(const ScrBytes *b, double start, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "slice")) return scr_bytes_alloc_private(b->elem, 0);
+#endif
   size_t s = scr_bytes_rel_index(start, b->len);
   size_t e = scr_bytes_rel_index(end, b->len);
   size_t count = e > s ? e - s : 0;
@@ -898,6 +931,9 @@ ScrBytes *scr_bytes_slice(const ScrBytes *b, double start, double end) {
 }
 
 ScrBytes *scr_bytes_copy_within(ScrBytes *b, double target, double start, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "copyWithin")) return scr_bytes_retain(b);
+#endif
   size_t t = scr_bytes_rel_index(target, b->len);
   size_t s = scr_bytes_rel_index(start, b->len);
   size_t e = scr_bytes_rel_index(end, b->len);
@@ -918,6 +954,9 @@ ScrBytes *scr_bytes_copy_within(ScrBytes *b, double target, double start, double
  * rounding), slice-clamped relative indices; answers the receiver +1
  * (chaining). Never throws — Buffer's throwing fill family is separate. */
 ScrBytes *scr_bytes_fill_elem(ScrBytes *b, double v, double start, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "fill")) return scr_bytes_retain(b);
+#endif
 #ifdef SCR_JS_OBJECT_MODEL
   /* A BigInt view's fill value is ToBigInt (scr_bytes_fill_bigint). */
   if (scr_bytes_elem_is_bigint(b->elem)) scr_trap("scriptc: numeric write to a BigInt typed array\n");
@@ -955,6 +994,15 @@ ScrBytes *scr_bytes_fill_elem(ScrBytes *b, double v, double start, double end) {
  * view retains the OWNER, offsets composed here (the DataView rule).
  * Relative indices clamp like slice; never throws. */
 ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* An invalid view answers a length-0 subarray with the TypeError pending
+   * (its length is already 0, so the view below is empty and safe). An
+   * omitted end arrives as +Infinity: a subarray of a length-tracking view
+   * that runs to the buffer's end is itself length-tracking. */
+  bool tracking = false;
+  if (!scr_js_bytes_live(b)) scr_js_bytes_throw_detached("%TypedArray%.prototype.subarray");
+  else tracking = isinf(end) && end > 0 && scr_js_bytes_tracking(b);
+#endif
   size_t s = scr_bytes_rel_index(start, b->len);
   size_t e = scr_bytes_rel_index(end, b->len);
   size_t count = e > s ? e - s : 0;
@@ -977,10 +1025,22 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
+#ifdef SCR_JS_OBJECT_MODEL
+  scr_js_buffer_register(v, tracking);
+#endif
   return v;
 }
 
 void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(dst, "set")) return;
+  /* Node validates the source view before the offset: a detached source, or
+   * a fixed-length one whose buffer shrank out from under it, throws. */
+  if (!scr_js_bytes_live(src)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
+    return;
+  }
+#endif
   double t = (offset != offset) ? 0 : trunc(offset);
   if (!(t >= 0) || (double)src->len + t > (double)dst->len) {
     static const char msg[] = "offset is out of bounds";
@@ -1231,10 +1291,68 @@ double scr_bytes_byte_offset(const ScrBytes *b) {
   return b->backing ? (double)(size_t)(b->data - b->backing->data) : 0;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Whether code that Node refuses on a detached or out-of-bounds view may
+ * proceed (the registry answers; a program without it never detaches). */
+bool scr_js_bytes_live(const ScrBytes *b) {
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return !ops || !ops->view_invalid(b);
+}
+
+void scr_js_bytes_throw_detached(const char *label) {
+  char message[160];
+  int length = snprintf(message, sizeof message,
+                        "Cannot perform %s on a detached ArrayBuffer", label);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
+}
+
+/* Whether `b`'s length follows its owner (a view built without a length
+ * over a resizable buffer); a subarray that runs to the end of one stays
+ * tracking. */
+bool scr_js_bytes_tracking(const ScrBytes *b) {
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return ops && ops->view_tracks(b);
+}
+
+/* The typed-array method guard: Node's message names the method. */
+static bool scr_js_typed_method_ok(const ScrBytes *b, const char *method) {
+  if (scr_js_bytes_live(b)) return true;
+  char label[96];
+  int length = snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+  scr_js_bytes_throw_detached(label);
+  (void)length;
+  return false;
+}
+
+/* `.byteLength` / `.byteOffset` of a view whose owner may move: a DataView
+ * throws when it is detached or out of bounds, a typed array answers 0. */
+double scr_js_bytes_byte_length(const ScrBytes *b) {
+  if (b->is_data_view && !scr_js_bytes_live(b)) {
+    scr_js_bytes_throw_detached("get DataView.prototype.byteLength");
+    return 0;
+  }
+  return scr_bytes_byte_len(b);
+}
+
+double scr_js_bytes_byte_offset(const ScrBytes *b) {
+  if (b->is_data_view && !scr_js_bytes_live(b)) {
+    scr_js_bytes_throw_detached("get DataView.prototype.byteOffset");
+    return 0;
+  }
+  return scr_bytes_byte_offset(b);
+}
+#endif
+
 ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double byte_len) {
   /* `x.buffer` names the ONE buffer behind x — for a view src that is its
    * owner's storage, so indices stay buffer-relative exactly like JS. */
   ScrBytes *owner = src->backing ? src->backing : src;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_bytes_live(owner)) {
+    scr_js_bytes_throw_detached("DataView constructor");
+    return NULL;
+  }
+#endif
   double buf_bytes = (double)(owner->len * scr_bytes_elem_size(owner->elem));
   /* ToIndex on the offset; every bad value takes Node's ONE message
    * (negative, > 2^53-1, Infinity, and past-the-end alike). */
@@ -1280,12 +1398,21 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
+#ifdef SCR_JS_OBJECT_MODEL
+  scr_js_buffer_register(v, !has_len);
+#endif
   return v;
 }
 
 ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
                                double offset, bool has_len, double length) {
   ScrBytes *owner = src->backing ? src->backing : src;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_bytes_live(owner)) {
+    scr_js_bytes_throw_detached("Construct");
+    return NULL;
+  }
+#endif
   size_t width = scr_bytes_elem_size(elem);
   double available = scr_bytes_byte_len(owner);
   double off = isnan(offset) ? 0 : trunc(offset);
@@ -1293,7 +1420,11 @@ ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
   if (off < 0 || off > 9007199254740991.0 || off > available ||
       fmod(off, (double)width) != 0 ||
       (has_len && (count < 0 || count > 9007199254740991.0 || count > (available - off) / (double)width)) ||
-      (!has_len && fmod(available - off, (double)width) != 0)) {
+      (!has_len &&
+#ifdef SCR_JS_OBJECT_MODEL
+       !scr_js_owner_resizable(owner) &&
+#endif
+       fmod(available - off, (double)width) != 0)) {
     static const char msg[] = "Invalid typed array buffer range";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return NULL;
@@ -1304,8 +1435,44 @@ ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
   view->elem = elem;
   view->len /= width;
   view->is_data_view = false;
+  /* The initial registration (inside scr_dataview_new) recorded a byte
+   * view; this one states the element kind and the tracking flag. */
+#ifdef SCR_JS_OBJECT_MODEL
+  scr_js_buffer_register(view, !has_len);
+#endif
   return view;
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The getter/setter suffix Node's detached-view message names. */
+static const char *scr_dataview_kind_name(ScrDataViewGet kind) {
+  switch (kind) {
+    case SCR_DV_U8: return "Uint8";
+    case SCR_DV_I8: return "Int8";
+    case SCR_DV_U16: return "Uint16";
+    case SCR_DV_I16: return "Int16";
+    case SCR_DV_U32: return "Uint32";
+    case SCR_DV_I32: return "Int32";
+    case SCR_DV_F32: return "Float32";
+    case SCR_DV_F64: return "Float64";
+    case SCR_DV_F16: return "Float16";
+    case SCR_DV_BIGU64: return "BigUint64";
+    case SCR_DV_BIGI64: return "BigInt64";
+  }
+  return "Uint8";
+}
+
+/* Node refuses a DataView getter or setter on a detached or out-of-bounds
+ * view before it coerces the offset. */
+static bool scr_dataview_live(const ScrBytes *b, ScrDataViewGet kind, bool set) {
+  if (scr_js_bytes_live(b)) return true;
+  char label[64];
+  snprintf(label, sizeof label, "DataView.prototype.%s%s", set ? "set" : "get",
+           scr_dataview_kind_name(kind));
+  scr_js_bytes_throw_detached(label);
+  return false;
+}
+#endif
 
 static size_t scr_dataview_get_size(ScrDataViewGet kind) {
   switch (kind) {
@@ -1326,6 +1493,9 @@ static size_t scr_dataview_get_size(ScrDataViewGet kind) {
 }
 
 double scr_dataview_get(const ScrBytes *b, double byte_off, ScrDataViewGet kind, bool le) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_dataview_live(b, kind, false)) return 0;
+#endif
   size_t width = scr_dataview_get_size(kind);
   /* ToIndex, then the view-relative bounds check — Node's ONE constant
    * message for every failure mode (negative, NaN is fine, too large). */
@@ -1377,6 +1547,9 @@ double scr_dataview_get(const ScrBytes *b, double byte_off, ScrDataViewGet kind,
 }
 
 void scr_dataview_set(ScrBytes *b, double byte_off, double value, ScrDataViewGet kind, bool le) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_dataview_live(b, kind, true)) return;
+#endif
   size_t width = scr_dataview_get_size(kind);
   /* ToIndex + the view-relative bounds check — the getters' ONE message. */
   double off = (byte_off != byte_off) ? 0 : trunc(byte_off);
@@ -3963,6 +4136,9 @@ static bool scr_bytes_search_start(size_t len, double from, size_t *start) {
 }
 
 double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, last ? "lastIndexOf" : "indexOf")) return -1;
+#endif
   /* A Buffer viewed as a Uint8Array keeps Buffer's own search: the needle
    * is taken as a byte, and a NaN byteOffset searches the whole buffer. */
   if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, x, from, !last);
@@ -3986,6 +4162,9 @@ double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool la
 }
 
 bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "includes")) return false;
+#endif
   if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, x, from, true) >= 0;
   SCR_BYTES_SNAPSHOT(b);
   size_t len = b->len;
@@ -4006,6 +4185,9 @@ bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from) {
  * Uint8Array value). Returns the receiver (+1) — fill chains. */
 static ScrBytes *scr_bytes_fill_core(ScrBytes *b, const uint8_t *pat, size_t patn,
                                      bool zero_ok, double nargs, double offset, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "fill")) return scr_bytes_retain(b);
+#endif
   if (patn == 0 && !zero_ok) {
     static const char msg[] = "The argument 'value' is invalid. Received <Buffer >";
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
@@ -4718,6 +4900,9 @@ ScrArr *scr_bytes_to_arr(const ScrBytes *b) {
 }
 
 ScrStr *scr_bytes_join(const ScrBytes *b, const ScrStr *separator) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "join")) return scr_str_new("", 0);
+#endif
   ScrArr *values = scr_bytes_to_arr(b);
   ScrStr *out = scr_arr_join(values, (ScrStr *)separator);
   scr_arr_release(values);

@@ -181,6 +181,33 @@ test("byte decoding splits functions without being misled by string contents", (
   expect(deserializeModuleBytes(Buffer.from(serializeModule(mod)))).toEqual(mod);
 });
 
+test("byte decoding parses ranges of ordinary functions between sentinel functions", () => {
+  // The functions span several parsed ranges, and the sentinels at the first,
+  // middle and last elements end the ranges before them.
+  const padding = "x".repeat(2048);
+  const functions = Array.from({ length: 3000 }, (_, index) => ({
+    ...numbers([index === 0 ? NaN : index === 2000 ? -0 : index === 2999 ? Infinity : index])
+      .functions[0]!,
+    name: `fn${index}`,
+    padding,
+  }));
+  const mod: IrModule = { ...numbers([0]), functions };
+  for (const text of [serializeModule(mod, true), serializeModule(mod)]) {
+    const decoded = deserializeModuleBytes(Buffer.from(text, "utf8"));
+    expect(decoded).toEqual(mod);
+    const value = (index: number): number => {
+      const stmt = decoded.functions[index]!.body[0];
+      if (stmt?.kind !== "exprStmt" || stmt.expr.kind !== "numLit")
+        throw new Error("lost numeric literal");
+      return stmt.expr.value;
+    };
+    expect(value(0)).toBeNaN();
+    expect(value(1500)).toBe(1500);
+    expect(Object.is(value(2000), -0)).toBe(true);
+    expect(value(2999)).toBe(Infinity);
+  }
+});
+
 test("byte decoding keeps the whole-document errors and version refusal", () => {
   const text = serializeModule(structuralStrings(), true);
   for (const broken of [text.slice(0, -1), text.slice(0, text.length - 40), text + "]", "[]", ""]) {

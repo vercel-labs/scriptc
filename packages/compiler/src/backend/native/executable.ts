@@ -89,13 +89,16 @@ import {
   ensureIcuArchive,
   lreObjectPaths,
   zlibObjectPaths,
+  zstdObjectPaths,
   stageVendorInputs,
   ensureTlsArchive,
   ensureBrotliArchive,
   ensureLreObjects,
   ensureZlibObjects,
+  ensureZstdObjects,
   vendorEngineDir,
   vendorZlibDir,
+  vendorZstdDir,
   vendorTlsDir,
   vendorBrotliDir,
 } from "./vendor.js";
@@ -125,6 +128,7 @@ interface RuntimeUnitContext {
   pki: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
+  zstdObjects: readonly string[];
   tlsArchive: string | null;
   brotliArchive: string | null;
   icuArchive: string | null;
@@ -233,6 +237,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
+  // The buffer views registry (resizable/growable buffers): the program's
+  // %main installs its ops table, and its bytes headers stop being
+  // invariant. Every other program keeps the default bytes objects and
+  // links no part of the unit.
+  unit((u) => u.opts.mutableBuffers === true, "scr_js_buffers.c"),
   unit(
     (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
     "scr_event_target.c",
@@ -289,6 +298,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           u.brotliArchive,
         ]
       : [],
+  ),
+  // zstd (scr_zstd.c) plugs into the zlib engine and links the vendored
+  // zstd objects.
+  unitArgs((u) =>
+    u.zstdObjects.length === 0
+      ? []
+      : ["-I", join(vendorZstdDir(), "lib"), u.rt(join(u.rtDir, "scr_zstd.c")), ...u.zstdObjects],
   ),
   // Intl over ICU (scr_intl.c): ICU's C API only, at the default locale,
   // reading its data file from beside the executable. The ICU headers come
@@ -529,6 +545,7 @@ export async function compileCInternal(
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
   const brotli = (opts.zlib ?? false) && opts.brotli === true;
+  const zstd = (opts.zlib ?? false) && opts.zstd === true;
   const icu = opts.intl ?? false;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
@@ -803,6 +820,11 @@ export async function compileCInternal(
     (opts.zlib ?? false) || nativeFetch
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
+  // zstd rides the same rule: the vendored library Node bundles, so its
+  // frames match Node's.
+  let zstdObjects = zstd
+    ? zstdObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : [];
   const materializeVendorPrerequisites = async (
     stageRoot?: string,
     materializeCacheRoot: string = vendorCacheRoot,
@@ -886,6 +908,21 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "zlib"));
     }
+    if (zstdObjects.length > 0) {
+      for (const object of zstdObjectPaths(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      ))
+        protectCachedArtifact(cacheWarmPaths, object);
+      const materialize = async (): Promise<string[]> =>
+        await ensureZstdObjects(sanitize, driver, vendorBuildIdentity, materializeCacheRoot);
+      zstdObjects =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "zstd"));
+    }
   };
   // rt() maps each runtime source's path on the command line: identity for
   // the historical single invocation, cached-.o substitution on cache misses.
@@ -941,6 +978,7 @@ export async function compileCInternal(
       pki,
       lreObjects,
       zlibObjects,
+      zstdObjects,
       tlsArchive,
       brotliArchive,
       icuArchive,

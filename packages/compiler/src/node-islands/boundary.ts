@@ -83,13 +83,57 @@ export function islandOwnerOfFile(
  * `@types/<name>` declarations type the package `<name>`. */
 export function islandPackageOfFile(islands: NodeIslandSet, file: string): IslandPackage | null {
   const at = packageDirOf(file);
-  if (at === null) return null;
-  let name = at.name;
-  if (name.startsWith("@types/")) {
-    const bare = name.slice("@types/".length);
-    name = bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+  if (at !== null) {
+    let name = at.name;
+    if (name.startsWith("@types/")) {
+      const bare = name.slice("@types/".length);
+      name = bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+    }
+    const named = islands.packages.get(name);
+    if (named !== undefined) return named;
   }
-  return islands.packages.get(name) ?? null;
+  return islandPackageUnderDir(islands, file);
+}
+
+/* A workspace-linked package's realpath elides the node_modules segment the
+ * file path names it by, so its files carry no package name at all: the
+ * island's installed directory is the only identity left. Indexed once per
+ * island set, and only for islands installed OUTSIDE node_modules (a linked
+ * or hoisted workspace member), so an ordinary build never reaches the
+ * prefix scan — and a per-file memo keeps it off the hot path when it does. */
+const islandsOutsideNodeModules = new WeakMap<NodeIslandSet, Map<string, IslandPackage>>();
+const islandDirAnswers = new WeakMap<NodeIslandSet, Map<string, IslandPackage | null>>();
+
+function islandPackageUnderDir(islands: NodeIslandSet, file: string): IslandPackage | null {
+  if (islands.packages.size === 0) return null;
+  let index = islandsOutsideNodeModules.get(islands);
+  if (index === undefined) {
+    index = new Map();
+    for (const pkg of islands.packages.values()) {
+      const dir = normalizePath(pkg.dir).replace(/\/+$/, "");
+      if (packageDirOf(`${dir}/package.json`) !== null) continue;
+      index.set(dir, pkg);
+    }
+    islandsOutsideNodeModules.set(islands, index);
+  }
+  if (index.size === 0) return null;
+  let answers = islandDirAnswers.get(islands);
+  if (answers === undefined) {
+    answers = new Map();
+    islandDirAnswers.set(islands, answers);
+  }
+  const path = normalizePath(file);
+  const known = answers.get(path);
+  if (known !== undefined) return known;
+  let answer: IslandPackage | null = null;
+  for (const [dir, pkg] of index) {
+    if (path === dir || path.startsWith(`${dir}/`)) {
+      answer = pkg;
+      break;
+    }
+  }
+  answers.set(path, answer);
+  return answer;
 }
 
 /* Native classes extending island classes (scope-B NI-5b): their class

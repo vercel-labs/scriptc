@@ -35,6 +35,13 @@ const ScrDateClassHooks *scr_date_class_hooks = NULL;
 static SCR_TL ScrDyn *scr_builtin_error_prototype;
 static bool scr_dyn_error_prototype_fence(const ScrDyn *value) {
   if (!value || value != scr_builtin_error_prototype) return false;
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Filled with the intrinsic's members, Error.prototype is an ordinary
+   * object the program may extend. The fill itself is the table's one
+   * writer, so a registered-and-filled object is past this fence even while
+   * the fill scope is open. */
+  if (scr_js_intrinsic_filled(value)) return false;
+#endif
   static const char message[] = "Error.prototype mutation is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return true;
@@ -53,6 +60,12 @@ static void scr_dyn_namespace_member_fence(void) {
 /* Constructor capsules expose identity and name/length, but do not model
  * per-class static property tables yet. Never report a fabricated empty view. */
 static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The fill defines the members the intrinsic table lists; a filled
+   * Object.prototype is an ordinary object. */
+  if (scr_js_intrinsic_filling()) return false;
+  if (value && value == scr_builtin_object_prototype && scr_js_intrinsic_filled(value)) return false;
+#endif
   if (value && value == scr_builtin_object_prototype) {
     static const char message[] = "scriptc: Object.prototype reflection and mutation are not supported yet";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -63,6 +76,39 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
   scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
   return true;
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* Object.prototype and Error.prototype refuse every mutation outside this
+ * build, and the fill keeps that boundary: it makes the two objects ordinary
+ * readers of the table without turning a refused write into a silent one
+ * above a native entry point. A key the table does not name is an ordinary
+ * property of the now extensible object.
+ *
+ * Every other intrinsic accepts a write of its own members exactly as before
+ * this table existed, so a program that writes `Array.prototype.join = f`
+ * and reads it back does not change behaviour. Refusing those too is the
+ * DA-2 decision, which is still open: it costs 110 Test262 variants that
+ * pass today (90 in Array, 20 in Object) because propertyHelper's attribute
+ * checks write and restore the member they prove. */
+static bool scr_dyn_intrinsic_member_fence(const ScrDyn *object, const ScrDyn *key) {
+  if (scr_js_intrinsic_filling()) return false;
+  if (!object || !key || !scr_js_intrinsic_filled(object)) return false;
+  if (object != scr_builtin_object_prototype && object != scr_builtin_error_prototype) return false;
+  if (!scr_js_intrinsic_has_builtin_member(object, key)) return false;
+  static const char message[] = "replacing a builtin prototype or constructor member is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");
+  return true;
+}
+
+/* The same fence for the paths that hold the key as a ScrStr. */
+static bool scr_dyn_intrinsic_str_member_fence(const ScrDyn *object, const ScrStr *key) {
+  if (!key || scr_js_intrinsic_filling() || !scr_js_intrinsic_filled(object)) return false;
+  ScrDyn *value = scr_dyn_new_str((ScrStr *)key);
+  bool fenced = scr_dyn_intrinsic_member_fence(object, value);
+  scr_dyn_release(value);
+  return fenced;
+}
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -2809,6 +2855,12 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  {
+    ScrDyn *intrinsic = scr_js_intrinsic_prototype_of(object);
+    if (intrinsic || scr_exc_pending()) return intrinsic;
+  }
+#endif
   static const char message[] = "Object.getPrototypeOf on this value is not supported yet";
   scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
   return NULL;
@@ -3267,6 +3319,20 @@ static const ScrDyn *scr_dyn_property_owner(const ScrDyn *object, const char *ke
       scr_dyn_release(table);
       return owner;
     }
+#ifdef SCR_JS_OBJECT_MODEL
+    /* An array on the chain answers its own members like any other
+     * prototype, the way the read path already walks it: Array.prototype is
+     * an array, and the intrinsic fill (t262-da A1) gives it the table's
+     * members in its property dictionary, so an object the program creates
+     * over it finds `length` and `join` here. The default build keeps the
+     * pre-fill walk, byte for byte. */
+    if (current->kind == SCR_DYN_ARR) {
+      if (length == 6 && memcmp(key, "length", 6) == 0) return current;
+      if (current->v.arr.properties && scr_dyn_obj_get(current->v.arr.properties, key, length))
+        return current;
+      continue;
+    }
+#endif
     if (current->kind != SCR_DYN_OBJ) continue;
     if (current->v.obj.layout) {
       if (scr_layout_find(current->v.obj.layout, key, length) != UINT32_MAX) return current;
@@ -8311,6 +8377,13 @@ static ScrDyn *scr_dyn_fn_table(const ScrDyn *function) {
 static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
   ScrDyn *table = scr_dyn_fn_table(function);
   if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The constructor's own members are the intrinsic table's rows when it is
+   * the interned builtin constructor (`Object.getOwnPropertyNames(Date)`),
+   * filled in place like the prototype singletons (t262-da A1). */
+  if (function->kind == SCR_DYN_FUNC && !scr_js_intrinsic_filled(function))
+    scr_js_intrinsics_fill((ScrDyn *)function);
+#endif
   return table;
 }
 
@@ -10095,6 +10168,9 @@ static bool scr_bytes_symbol_write(ScrDyn *value, const ScrDyn *key, bool assign
 
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
   if (scr_dyn_error_prototype_fence(value)) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_member_fence(value, key)) return;
+#endif
   if (value->kind == SCR_DYN_BYTES && !scr_bytes_symbol_write(value, key, true)) return;
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
   if (!receiver) {
@@ -10275,6 +10351,12 @@ void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol) {
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *raw_key, bool strict) {
   ScrDyn *key = scr_dyn_property_key_value(raw_key);
   if (!key) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_member_fence(value, key)) {
+    scr_dyn_release(key);
+    return;
+  }
+#endif
   if (key->kind != SCR_DYN_SYMBOL) {
     scr_dyn_key_delete(value, key->v.str, strict);
     scr_dyn_release(key);
@@ -10346,6 +10428,11 @@ bool scr_dyn_reflect_delete_property(ScrDyn *target, const ScrDyn *raw_key) {
 /* Native call/apply/bind lowering still owns these prototype operations.
  * Refuse overrides until every typed call site observes the property table. */
 static bool scr_dyn_fn_property_fence(const ScrStr *key) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The intrinsic fill defines Function.prototype.call and its siblings on
+   * the function values it builds. */
+  if (scr_js_intrinsic_filling()) return false;
+#endif
   static const char *const reserved[] = {
     "call", "apply", "bind", "valueOf", "toLocaleString",
     "hasOwnProperty", "propertyIsEnumerable", "isPrototypeOf",
@@ -10362,6 +10449,9 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
   if (scr_dyn_error_prototype_fence(target)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_member_fence(target, key)) return NULL;
+#endif
   if (target->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(target) &&
       (key->kind == SCR_DYN_STR || key->kind == SCR_DYN_NUM)) {
     /* A native array's numeric properties ("-1", "1.5") live in its
@@ -13221,6 +13311,9 @@ void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn 
 
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_str_member_fence(recv, key)) return;
+#endif
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_set(recv, key, value); return; }
   if (recv->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_set(recv, key, value)) return;
@@ -15431,6 +15524,9 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     return;
   }
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_str_member_fence(recv, key)) return;
+#endif
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_delete(recv, key); return; }
   if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit &&
       (!strncmp(recv->v.typed_ref.type_key, "record:", 7) ||
@@ -16907,6 +17003,14 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
   for (const ScrDyn *current = d; current; current = scr_dyn_proto_next(current)) {
     if (current == scr_builtin_object_prototype) {
+#ifdef SCR_JS_OBJECT_MODEL
+      /* Filled from the intrinsic table, Object.prototype is an ordinary
+       * object: its own members read as any other prototype's do, and a
+       * miss walks past it (its [[Prototype]] is null) to undefined. Only
+       * the unfilled one keeps the reflection refusal — and the tail's own
+       * read answers the receiver's members when it is the receiver. */
+      if (scr_js_intrinsic_filled(current)) continue;
+#endif
       scr_dyn_class_reflection_fence(current);
       return NULL;
     }

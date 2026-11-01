@@ -3,10 +3,11 @@
 // It keeps the upstream constructor lists and argument factories. The host
 // assert.js is replaced by harness.ts, so isPrimitive is defined here, and
 // Test262Error is a class that needs `new`. Factories bind through a
-// closure, and feature checks use typeof (and tolerate an ArrayBuffer
-// without a reachable prototype, which then has no resizable or immutable
-// factories). %TypedArray% (`TypedArray`) is left out: tests that name it
-// are excluded.
+// closure. The immutable-buffer factory asks with typeof (and tolerates an
+// ArrayBuffer without a reachable prototype, which then has no such
+// factory); resizable storage is probed by building one, because a runtime
+// may carry the method and not the storage. %TypedArray% (`TypedArray`) is
+// left out: tests that name it are excluded.
 
 function isPrimitive(value) {
   return !value || (typeof value !== "object" && typeof value !== "function");
@@ -86,7 +87,20 @@ function makeArrayBuffer(TA, primitiveOrIterable) {
 }
 
 var makeResizableArrayBuffer, makeGrownArrayBuffer, makeShrunkArrayBuffer, makeImmutableArrayBuffer;
-if (typeof ArrayBuffer.prototype === "object" && typeof ArrayBuffer.prototype.resize === "function") {
+// The runtime builds every builtin prototype member as an ordinary function,
+// including the ones it refuses to perform, so `typeof resize` says nothing
+// about resizable storage. Ask for a resizable buffer instead, through a
+// binding the compiler cannot see through; a runtime that only has the
+// method's shape answers a fixed-length buffer here.
+var resizableArrayBuffersSupported = false;
+try {
+  var ResizableArrayBuffer = ArrayBuffer;
+  var resizableArrayBufferProbe = new ResizableArrayBuffer(0, { maxByteLength: 1 });
+  resizableArrayBuffersSupported = resizableArrayBufferProbe.resizable === true;
+} catch (e) {
+  resizableArrayBuffersSupported = false;
+}
+if (resizableArrayBuffersSupported) {
   var copyIntoArrayBuffer = function(destBuffer, srcBuffer) {
     var destView = new Uint8Array(destBuffer);
     var srcView = new Uint8Array(srcBuffer);

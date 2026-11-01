@@ -1845,6 +1845,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",
   "dyn.stdlibPrototype": "scr_dyn_stdlib_prototype",
+  "dyn.intrinsic": "scr_js_intrinsic",
   "dyn.classPrototype": "scr_dyn_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",

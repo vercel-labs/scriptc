@@ -359,6 +359,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.builtinFunction",
   "dyn.builtinMethod",
   "dyn.stdlibPrototype",
+  "dyn.intrinsic",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
   "child.propsDefine",
@@ -467,6 +468,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
   "dyn.usingMethod",
+  "dyn.intrinsic",
   "util.isDeepStrictEqual",
   // The Buffer function value's Symbol(kIsEncodingSymbol) member
   "buffer.constructor",
@@ -990,10 +992,13 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 /** The entries that need the JavaScript object model build (t262-da §J):
  * the runtime code a JavaScript source reaches for builtin intrinsics,
  * array attributes, BigInt views, handle property tables and buffer views
- * that no typed program can observe. Empty until the first slice lands
- * (A1 adds dyn.intrinsic); the slices share one SCR_JS_OBJECT_MODEL build
- * of every unit they touch instead of one build column per feature. */
+ * that no typed program can observe. The slices share one
+ * SCR_JS_OBJECT_MODEL build of every unit they touch instead of one build
+ * column per feature. */
 export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // A builtin prototype or constructor object read as an ordinary checked
+  // object, built from the table of the pinned Node release (A1).
+  "dyn.intrinsic",
   // Resizable ArrayBuffers and growable SharedArrayBuffers (t262-dc C2), and
   // the arming call that turns on the buffer views registry.
   "arrayBuffer.newResizable",
@@ -1486,7 +1491,13 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_dyn_dirent_finish, defined in scr_symbol.c). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS],
+    // Every object-model program links the intrinsic graph, which defines its
+    // symbol-keyed members through scr_symbol.c (scr_js_intrinsics.c calls
+    // scr_sym_well_known, scr_dyn_new_symbol and scr_sym_release). The fact is
+    // the whole JS_OBJECT_MODEL_LIB_FNS set, not just dyn.intrinsic: a program
+    // whose JavaScript source only calls Object.getPrototypeOf on a value
+    // carries it too and would otherwise fail to link (t262-da A1).
+    fns: [...SYMBOL_LIB_FNS, ...JS_OBJECT_MODEL_LIB_FNS],
     prefixes: ["sym.", "disposable."],
     types: ["symbol"],
   }),
@@ -1801,6 +1812,11 @@ function scanRuntimeFeatures(
     features.dynTier = mod.functions.some(
       (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
     );
+  // The object-model build's intrinsic graph builds its members through the
+  // invoke unit (scr_dyn_global_constructor, scr_dyn_builtin_method,
+  // scr_dyn_function_apply), so the fact links it: a JavaScript source can
+  // read an intrinsic without dispatching anything of its own (t262-da A1).
+  if (!features.dynInvoke && features.jsObjectModel) features.dynInvoke = true;
   return features;
 }
 

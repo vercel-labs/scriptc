@@ -822,6 +822,7 @@ async function compileExecutableNative(
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    ...(features.jsObjectModel === true ? { intrinsicObjects: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),

@@ -104,6 +104,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "disposable.stackUseCallback",
   "dyn.reflectSet",
   "dyn.reflectDefine",
+  // The intrinsic fill defines members with define semantics.
+  "dyn.intrinsic",
   "dyn.abstractEq",
   "text.decodeOptions",
   "text.decodeStream",

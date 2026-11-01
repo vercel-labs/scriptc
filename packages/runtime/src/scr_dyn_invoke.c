@@ -2153,6 +2153,27 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
   return ctor;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Whether scr_dyn_global_constructor answers a value for `name` (it traps on
+ * the names it does not intern). The intrinsics unit builds every constructor
+ * as the same value a JavaScript source reads, and creates a fenced function
+ * for the names the runtime does not intern. This unit is always linked, so
+ * the query lives in the object-model build only. */
+bool scr_dyn_global_constructor_known(const ScrStr *name) {
+  if (strcmp(name->data, dyn_s20) == 0) return true;
+  ScrDyn *error = scr_dyn_error_constructor(name->data);
+  if (error) {
+    scr_dyn_release(error);
+    return true;
+  }
+  for (size_t i = 0; i < DYN_GLOBAL_CTORS; i++)
+    if (dyn_global_ctor_names[i][0] == name->data[0] &&
+        strcmp(dyn_global_ctor_names[i], name->data) == 0)
+      return true;
+  return false;
+}
+#endif
+
 /* Object.prototype.toString's tag: errors answer "[object Error]" (the
  * shared tag walk in scr_json.c answers "[object Object]" for them). */
 ScrStr *scr_dyn_object_tag_of(const ScrDyn *d) {

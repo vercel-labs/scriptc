@@ -260,16 +260,17 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
   });
 
-  test("the JavaScript object model build owns the buffer views registry calls", () => {
+  test("the JavaScript object model build owns the intrinsic reads and buffer views registry calls", () => {
     // t262-da §J: the features only a JavaScript source reaches share one
-    // runtime feature, whose entry list the slices fill as they land. The
-    // buffer views registry (t262-dc C2) arms itself through these calls, and
-    // the resizable constructors lower to them, so a program that makes one
-    // selects the object model build; every other program keeps the default
-    // objects.
+    // runtime feature, whose entry list the slices fill as they land. A1
+    // contributes the intrinsic object reads; the buffer views registry
+    // (t262-dc C2) arms itself through these calls, and the resizable
+    // constructors lower to them. A program with a sibling dynamic feature
+    // keeps the default objects.
     expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
       "arrayBuffer.armMutable",
       "arrayBuffer.newResizable",
+      "dyn.intrinsic",
       "sharedArrayBuffer.newGrowable",
     ]);
     const mod = module();
@@ -281,9 +282,31 @@ describe("runtime feature snapshots", () => {
     for (const fn of JS_OBJECT_MODEL_LIB_FNS) {
       const armed = module();
       armed.functions[0]!.body.push(call(fn));
-      expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
+      const armedFeatures = moduleRuntimeFeatures(armed);
+      expect(armedFeatures.jsObjectModel, fn).toBe(true);
+      // The intrinsic graph is linked by this fact and defines its
+      // symbol-keyed members through scr_symbol.c, so the symbol unit must
+      // follow the whole fact, not only dyn.intrinsic. Its member and
+      // constructor rows come from the invoke unit for the same reason.
+      expect(armedFeatures.symbol, fn).toBe(true);
+      expect(armedFeatures.dynInvoke, fn).toBe(true);
+    }
+    const bufferFns = [
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+      "arrayBuffer.armMutable",
+    ] as const;
+    for (const fn of bufferFns) {
+      const armed = module();
+      armed.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);
     }
+    const intrinsic = module();
+    intrinsic.functions[0]!.body.push(call("dyn.intrinsic"));
+    // The pack selection ORs dynTier in (jsObjectModelFact), so the module
+    // scan only has to name the object-model build.
+    expect(moduleRuntimeFeatures(intrinsic)).toMatchObject({ jsObjectModel: true });
+    expect(moduleRuntimeFeatures(intrinsic).mutableBuffers).toBe(false);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {

@@ -334,14 +334,34 @@ describe("runtime pack manifests", () => {
     // The JavaScript object model build implies the dynamic tier (t262-da
     // §J): its code is the dynamic tier's, so a program with it links the
     // dynamic-tier units too. A program without it keeps both off.
-    const objectModel = effectiveRuntimeFeatures({ ...BASE, jsObjectModel: true });
-    expect(objectModel).toMatchObject({ jsObjectModel: true, dynTier: true });
+    const objectModel = effectiveRuntimeFeatures({
+      ...BASE,
+      jsObjectModel: true,
+      intrinsicObjects: true,
+    });
+    expect(objectModel).toMatchObject({
+      jsObjectModel: true,
+      intrinsicObjects: true,
+      dynTier: true,
+    });
     // The features that share the build OR into it: BigInt views today, so a
     // program with them selects the object model build without naming it.
+    // The intrinsic graph's column (t262-da A1) is the raw fact, so the same
+    // program links the fill stub and none of the graph.
     const bigint = effectiveRuntimeFeatures({ ...BASE, bigintBytes: true });
-    expect(bigint).toMatchObject({ bigintBytes: true, jsObjectModel: true, dynTier: true });
+    expect(bigint).toMatchObject({
+      bigintBytes: true,
+      jsObjectModel: true,
+      intrinsicObjects: false,
+      dynTier: true,
+    });
     const plain = effectiveRuntimeFeatures(BASE);
-    expect(plain).toMatchObject({ jsObjectModel: false, dynTier: false, bigintBytes: false });
+    expect(plain).toMatchObject({
+      jsObjectModel: false,
+      intrinsicObjects: false,
+      dynTier: false,
+      bigintBytes: false,
+    });
   });
 
   test("static runtime-pack executable links dead-strip too", async () => {

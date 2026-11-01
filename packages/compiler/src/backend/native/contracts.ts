@@ -213,6 +213,11 @@ export interface CcOptions {
    * %main emits. The fact ORs into jsObjectModel, so the unit's definition
    * of the JavaScript object model build is already on. */
   mutableBuffers?: boolean;
+  /** A builtin intrinsic object read from a JavaScript source: compiles
+   * scr_js_intrinsics.c (t262-da A1). Separate from `jsObjectModel`, which
+   * bigintBytes also selects, so a typed program that only constructs a
+   * BigInt typed array compiles none of the intrinsic graph. */
+  intrinsicObjects?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument

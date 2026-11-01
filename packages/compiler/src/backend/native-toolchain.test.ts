@@ -3757,6 +3757,18 @@ test("library archives hit by content, invalidate on edits, and reuse runtime ob
   }
 });
 
+test("an archive that only resizes buffers carries the intrinsic fill stub", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-intrinsics-"));
+  scratch.push(dir);
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program.lib.a");
+  await writeFile(cPath, "int scriptc_intrinsic_probe = 1;\n");
+  await compileLibArchive({ cPath, outPath, mutableBuffers: true });
+  // The object model's scr_json.c asks the intrinsic unit what it filled, and
+  // resizing buffers alone selects that build: the archive carries the stub.
+  expect(execFileSync("ar", ["t", outPath], { encoding: "utf8" })).toContain("scr_js_intrinsics.o");
+});
+
 test("library identity edits reuse the cached large program object", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-object-"));
   scratch.push(dir);

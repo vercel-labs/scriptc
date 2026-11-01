@@ -1,0 +1,42 @@
+import { execFile } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { expect, test } from "vitest";
+import { compile } from "@scriptc/compiler";
+
+const execFileAsync = promisify(execFile);
+
+// A member the table installs is the runtime's function, so calling it
+// through the prototype and through a receiver runs the same operation; a
+// primitive wrapper's prototype keeps its own builder and answers its
+// members the same way.
+test("intrinsic prototype members are the runtime's functions", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-intrinsic-members-"));
+  const entry = join(outDir, "main.cjs");
+  writeFileSync(
+    entry,
+    `
+console.log(Array.prototype.push === [].push);
+console.log(Map.prototype.get === new Map().get);
+console.log(Object.prototype.hasOwnProperty === {}.hasOwnProperty);
+const size = Object.getOwnPropertyDescriptor(Map.prototype, "size");
+const map = new Map();
+map.set("a", 1);
+const read = size.get;
+console.log(typeof read, typeof read === "function" ? read.call(map) : "none");
+`,
+  );
+  const result = await compile(entry, {
+    backend: "llvm",
+    sanitize: process.env["SCRIPTC_SAN"] === "1",
+    outDir,
+    outPath: join(outDir, "program"),
+  });
+  expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true);
+  if (!result.ok) return;
+  const { stdout, stderr } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+  expect(stdout).toBe(["true", "true", "true", "function 1", ""].join("\n"));
+  expect(stderr).toBe("");
+});

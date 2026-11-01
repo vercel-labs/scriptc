@@ -287,8 +287,12 @@ function resolveLibrarySection(
  * / `exports.<name>.return`; the u8/u32/i32 plumbing classes contribute
  * their proven inbound shapes as parameter seeds (the wrapper's coercion
  * contract), tightening the intraprocedural analysis at zero declaration
- * cost. Sidecar-declared slots (record fields, msg arms, helper params
- * and returns) merge into the same config at sidecar build. */
+ * cost. An f64 parameter contributes the shape it actually admits — any
+ * double, NaN and fractions included — because the marshalled edge passes
+ * it through untouched: if the same unit is also reached through an
+ * integer entry, that entry's tighter assumption must not survive on the
+ * f64 entry's behalf. Sidecar-declared slots (record fields, msg arms,
+ * helper params and returns) merge into the same config at sidecar build. */
 function libraryIntSlotConfig(
   profile: LibraryProfile,
   libExportUnits: ReadonlyMap<string, string>,
@@ -297,8 +301,10 @@ function libraryIntSlotConfig(
   for (const e of profile.exports) {
     const params = e.params.map((c) => (c === "i64" || c === "u64" ? c : null));
     const ret = e.returns === "i64" || e.returns === "u64" ? e.returns : null;
+    // classSeed(f64) is the unrestricted shape: the analysis counts an
+    // unconstrained double as a legitimate arrival, not as "no fact".
     const paramSeeds = e.params.map((c) =>
-      c === "u8" || c === "u32" || c === "i32" ? classSeed(c) : null,
+      c === "f64" || c === "u8" || c === "u32" || c === "i32" ? classSeed(c) : null,
     );
     if (params.every((p) => p === null) && ret === null && paramSeeds.every((s) => s === null))
       continue;
@@ -321,10 +327,11 @@ function libraryIntSlotConfig(
     // COALESCE rather than replace each other. The call-site obligation is
     // the stricter class (u64's range is inside i64's, so proving u64
     // discharges both), the parameter seed is the hull of every inbound
-    // shape (a value can arrive through any alias), and a path follows the
-    // declaration that set the class, so a refusal quotes a class that
-    // declaration actually made. Nothing an earlier export declared is
-    // dropped by a later one.
+    // shape (a value can arrive through any alias; an f64 alias admits the
+    // unrestricted shape, so nothing a sibling entry proves may stand in
+    // for it), and a path follows the declaration that set the class, so a
+    // refusal quotes a class that declaration actually made. Nothing an
+    // earlier export declared is dropped by a later one.
     params.forEach((cls, i) => {
       if (cls === null) return;
       mergeDeclaredClass(slots, i, cls, `exports.${e.export}.params[${i}]`);

@@ -909,10 +909,10 @@ class FnAnalyzer {
       const seed = slots?.paramSeeds[i] ?? null;
       // Two exports may land on one unit, so the slot's declared class is
       // the STRICTER of theirs (u64's range sits inside i64's) while the
-      // seed is the hull of every inbound shape they prove: a value can
-      // arrive through any of the aliases, and the internal call edge only
-      // has to meet the stricter class. The seed therefore bounds arrivals
-      // rather than refining the class; with one declaration the two agree.
+      // seed is the hull of the shapes every alias admits: a value can
+      // arrive through any of them, and an entry that takes a plain f64
+      // admits anything, so it bounds the binding rather than refining the
+      // class. With one declaration the two agree.
       if (declared !== null)
         env.set(p.localId, seed !== null ? join(classSeed(declared), seed) : classSeed(declared));
       else if (seed !== null) env.set(p.localId, { ...seed });

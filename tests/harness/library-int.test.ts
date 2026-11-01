@@ -547,6 +547,71 @@ describe.each(EMISSIONS)("ask-4 corpus, %s emission", (emission) => {
     );
   });
 
+  test("a plain f64 alias cannot be proven from a sibling integer entry", async () => {
+    // The unit's parameter binding receives whatever EACH alias's wrapper
+    // passes: through echoF64 any double at all, including fractions and
+    // NaN. The integer alias's tighter class proves nothing about those
+    // arrivals, so a pass-through body cannot discharge the shared integer
+    // return obligation for both entries.
+    const source =
+      `export function echo(x: number): number {\n  return x;\n}\n` +
+      `export { echo as echoF64, echo as echoI64 };\n`;
+    const profile = {
+      profile_format: 1,
+      name: "alias-f64",
+      entry: "lib.ts",
+      emission,
+      abi: {
+        prefix: "af_",
+        init_symbol: "af_init",
+        sink_register_symbol: "af_set_panic_sink",
+        collect_symbol: null,
+        result_reset_symbol: null,
+      },
+      exports: [
+        { export: "echoF64", symbol: "af_echo_f64", params: ["f64"], returns: "i64" },
+        { export: "echoI64", symbol: "af_echo_i64", params: ["i64"], returns: "i64" },
+      ],
+    };
+    const r = await buildCase(`alias-f64-${emission}`, source, profile);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics.map((d) => d.code)).toEqual(["SC4022"]);
+    expect(r.diagnostics[0]!.message).toContain("'exports.echoF64.return'");
+    expect(r.diagnostics[0]!.message).toContain("wholeness failed");
+    expect(r.diagnostics[0]!.message).toContain("NaN");
+  });
+
+  test("an f64 alias only limits the proof, it does not refuse the profile", async () => {
+    // Same aliases over a body whose result is whole whatever arrives: the
+    // unrestricted f64 arrival is bounded by the body, so the integer
+    // return still proves and both entries compile.
+    const source =
+      `export function sign(x: number): number {\n  return x > 0 ? 1 : 0;\n}\n` +
+      `export { sign as signF64, sign as signI64 };\n`;
+    const profile = {
+      profile_format: 1,
+      name: "alias-f64-proved",
+      entry: "lib.ts",
+      emission,
+      abi: {
+        prefix: "afp_",
+        init_symbol: "afp_init",
+        sink_register_symbol: "afp_set_panic_sink",
+        collect_symbol: null,
+        result_reset_symbol: null,
+      },
+      exports: [
+        { export: "signF64", symbol: "afp_sign_f64", params: ["f64"], returns: "i64" },
+        { export: "signI64", symbol: "afp_sign_i64", params: ["i64"], returns: "i64" },
+      ],
+    };
+    const r = await buildCase(`alias-f64-proved-${emission}`, source, profile);
+    expect(r.ok, r.ok ? "" : r.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n")).toBe(
+      true,
+    );
+  });
+
   /* ── outbound integer returns: real int64_t/uint64_t crossings ─────── */
 
   test("declared integer returns cross as exact int64_t/uint64_t", async () => {

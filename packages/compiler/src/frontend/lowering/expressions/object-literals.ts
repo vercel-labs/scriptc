@@ -4173,7 +4173,31 @@ function lowerDeclaredSpreadMerge(
       loc,
     });
   }
-  return { kind: "seqExpr", stmts, result: outRef, type, loc };
+  return lowerer.keyOrder.declaredMerge(
+    { kind: "seqExpr", stmts, result: outRef, type, loc },
+    {
+      outLocalId: out.id,
+      sources: srcs.map((source) => source.value.type),
+      noteable:
+        recordMayKeepSource(lowerer, type) &&
+        srcs.every((source) => {
+          if (source.value.type.kind === "dyn") return true;
+          if (source.value.type.kind !== "record") return false;
+          const sourceShape = lowerer.shapes.get(source.value.type.shapeId);
+          // A dictionary (`Record<string, unknown>`) boxes from its overflow
+          // map in the order its keys were inserted. A hybrid shape boxes
+          // its declared fields first and only then its overflow, so its
+          // boxed order is not the copy's; such a source stays out of the
+          // kept merge (its declared keys would be ordered by declaration).
+          return (
+            (sourceShape === undefined ||
+              sourceShape.indexValue === undefined ||
+              sourceShape.fields.length === 0) &&
+            lowerer.dynConvertible(source.value.type)
+          );
+        }),
+    },
+  );
 }
 
 /** The value of a shorthand property (`{ x }`): the binding `x` refers to.

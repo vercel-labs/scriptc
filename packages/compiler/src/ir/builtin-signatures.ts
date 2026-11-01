@@ -5208,11 +5208,15 @@ function buildLibFnSignatures() {
      * through the pair, which the caller has tested (record.linkIs); its
      * type is the pair's source type. Never throws. */
     "record.linkSource": { argTypes: [null, F64], result: VOID },
-    /** `record.sourceNote(built, keys)`: the record a width spread just
-     * built keeps `keys` (the copy's own keys, in order; declared ones are
-     * placeholders) as its kept source when they hold an undeclared key or
-     * another order (scr_record_source_note). The first is a record type,
-     * the second dyn (borrowed). Never throws. */
+    /** `record.sourceNote(built, keys)`: the record a spread just built
+     * keeps `keys` as its kept source (scr_record_source_note). For a
+     * declared spread merge (`{ ...a, ...b }` into one declared shape;
+     * key-order-witness.ts declared merges) they are the declared keys its
+     * sources supplied, in the order the spreads created them, kept when the
+     * record holds them in another order than it serializes them. For a width
+     * spread they are the copy's own keys, in order (declared ones are
+     * placeholders), kept when they hold an undeclared key or another order.
+     * The first is a record type, the second dyn (borrowed). Never throws. */
     "record.sourceNote": { argTypes: [null, DYN], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
     "insp.moreItems": { argTypes: [F64], result: STRING },

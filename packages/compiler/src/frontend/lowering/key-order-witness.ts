@@ -60,12 +60,14 @@
  * (and today's SC6002 warnings). Shapes that no order surface observes
  * keep today's table too. */
 import type { IrExpr, IrFunction, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
-import { dynUndefinedExpr, strLit } from "../../ir/build.js";
+import { dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import {
+  arrayOf,
   BOOL,
   DYN,
   F64,
   KEY_ORDER_FIELD,
+  STRING,
   shapeHasAccessorSlots,
   typeEquals,
   UNDEFINED_T,
@@ -130,6 +132,21 @@ export type KeyOrderSegment =
   /** A spread whose keys are only known at run time. */
   | { kind: "opaque" };
 
+/** A declared spread merge (`{ ...a, ...b }` typed as one declared shape,
+ * lowerDeclaredSpreadMerge): the hidden local it fills and the sources it
+ * spreads, in source order. Node's copy enumerates each source's own keys
+ * as the spreads run, which the record keeps as its source when an order
+ * surface observes the shape (keepDeclaredMerges). */
+export interface DeclaredMergeNote {
+  /** The hidden local every source's helper writes (`%declMerge`). */
+  outLocalId: string;
+  /** One entry per spread source, in source order. */
+  sources: IrType[];
+  /** Every source's keys can be read at run time and the target can keep a
+   * source, so the merge can carry the copy's own order. */
+  noteable: boolean;
+}
+
 /** One contributor of a width literal, in source order: a spread source's
  * binding (whose own keys the copy takes when the spread runs), or an
  * explicit key the literal creates at that position. */
@@ -153,6 +170,8 @@ export class KeyOrderNotes {
   private readonly literals = new Map<IrExpr, KeyOrderSegment[]>();
   private readonly copies = new Map<IrExpr, string>();
   private readonly methodResults = new Map<IrExpr, string>();
+  /** Declared spread merges, by the wrapper that builds them. */
+  private readonly merges = new Map<IrExpr, DeclaredMergeNote>();
   /** Literals whose spreads copy source keys the target does not declare
    * (a width spread), with their contributors (keepWidthSpreads), and
    * every spread literal over a shape that can keep a source (same-shape
@@ -170,14 +189,19 @@ export class KeyOrderNotes {
   readonly observed = new Set<string>();
   /** Shapes whose table this pass replaced. */
   readonly changed = new Set<string>();
+  /** Declared spread merges this pass kept as a record's source
+   * (keepDeclaredMerges). A kept merge holds the copy's own order, so the
+   * captures that consult a kept source must be active (lowerer.ts). */
+  keptDeclaredMerges = 0;
   /** Width-spread literals this pass kept as a record's source
    * (keepWidthSpreads). A kept copy holds undeclared keys, so the
    * index-signature capture must consult it (lowerer.ts). */
   keptWidthSpreads = 0;
-  /** The shapes those kept copies build. A width spread or clone only
-   * keeps a source on a shape in here, so the reflective helpers
-   * (lower-calls.ts) stay static for every other shape, and the pass reads
-   * it back as a spread source that can already hold one. */
+  /** The shapes those kept merges and copies build. A declared merge, width
+   * spread, or clone only keeps a source on a shape in here: the reflective
+   * helpers (lower-calls.ts) answer through the kept source for these only
+   * and stay static for every other shape, and the pass reads it back as a
+   * spread source that can already hold one. */
   readonly keptSourceShapes = new Set<string>();
 
   /** The sizes of the notes' tables (unit-journal.ts). */
@@ -186,6 +210,7 @@ export class KeyOrderNotes {
       this.literals.size,
       this.copies.size,
       this.methodResults.size,
+      this.merges.size,
       this.widths.size,
       this.sourceProbes.size,
       this.clones.size,
@@ -254,11 +279,23 @@ export class KeyOrderNotes {
     if (source !== undefined) this.copies.set(to, source);
     const method = this.methodResults.get(from);
     if (method !== undefined) this.methodResults.set(to, method);
+    const merge = this.merges.get(from);
+    if (merge !== undefined) this.merges.set(to, merge);
     const width = this.widths.get(from);
     if (width !== undefined) this.widths.set(to, width);
     const probe = this.sourceProbes.get(from);
     if (probe !== undefined) this.sourceProbes.set(to, probe);
     if (this.clones.has(from)) this.clones.add(to);
+  }
+
+  /** A declared spread merge's wrapper, with its result local and sources. */
+  declaredMerge(node: IrExpr, note: DeclaredMergeNote): IrExpr {
+    this.merges.set(node, note);
+    return node;
+  }
+
+  declaredMergeOf(node: IrExpr): DeclaredMergeNote | undefined {
+    return this.merges.get(node);
   }
 
   observe(type: IrType): void {
@@ -550,6 +587,13 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * each one is built. A literal's notes are shared by its rebuilt copies,
    * so `literalSites` counts every literal of each witness. */
   const leadingSpreads = new Map<KeyOrderSegment[], LeadingSpread[]>();
+  /** Declared spread merges (KeyOrderNotes.declaredMerge), where each is
+   * built. */
+  const mergeSites: {
+    wrapper: IrExpr & { kind: "seqExpr" };
+    note: DeclaredMergeNote;
+    fn: IrFunction;
+  }[] = [];
   /** Width literals (KeyOrderNotes.width), where each is built. */
   const widthSites: (LeadingSpread & { note: WidthNote })[] = [];
   /** `"k" in r` sites a kept source can answer true (keepSourceProbes). */
@@ -636,6 +680,10 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         noteInit(e.localId, e.value);
         return;
       case "seqExpr": {
+        // A declared spread merge fills one declared shape from its sources.
+        const merge = notes.declaredMergeOf(e);
+        if (merge !== undefined && currentFn !== null)
+          mergeSites.push({ wrapper: e, note: merge, fn: currentFn });
         // A spread literal evaluates its sources into bindings first.
         const literal = e.result;
         if (literal.kind !== "recordLit" || currentFn === null) return;
@@ -774,6 +822,16 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   for (const id of runtimeShapes) factsOf(id).runtime = true;
   for (const id of declaredShapes) if (!runtimeShapes.has(id)) factsOf(id).pinned = true;
 
+  // ── declared spread merges ──────────────────────────────────────────
+  // `{ ...a, ...b }` into one declared shape writes the shape's slots in
+  // declaration order (lowerDeclaredSpreadMerge), so every order surface
+  // reports that order. Node's copy enumerates the sources' own keys in the
+  // order the spreads run. When an order surface can observe the target
+  // shape (the same observation the tables use below), the merge keeps the
+  // copy's own order as the record's source (keepDeclaredMerges). A merge
+  // feeding another kept merge is observed through it, so this runs until
+  // no site joins.
+  const keptMerges = new Set<IrExpr>();
   // ── width spreads ───────────────────────────────────────────────────
   // A width spread keeps the copy's own keys when an order surface can
   // observe its target (keepWidthSpreads). The observation is the one the
@@ -811,6 +869,21 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const earlySeen = new Set<string>();
     for (const id of notes.observed) shapesIn({ kind: "record", shapeId: id }, early, earlySeen);
     for (const root of observedRoots) shapesIn(root, early, earlySeen);
+    const keepMerges = (): void => {
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const { wrapper, note } of mergeSites) {
+          if (!note.noteable || keptMerges.has(wrapper)) continue;
+          const target = wrapper.type;
+          if (target.kind !== "record" || !early.has(target.shapeId)) continue;
+          keptMerges.add(wrapper);
+          notes.keptSourceShapes.add(target.shapeId);
+          grew = true;
+          for (const source of note.sources) shapesIn(source, early, earlySeen);
+        }
+      }
+    };
+    keepMerges();
     // A presence test (`"k" in r`, Object.hasOwn) observes a record's own
     // keys as an order surface does.
     for (const root of presenceRoots) shapesIn(root, early, earlySeen);
@@ -914,6 +987,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         notes.keptSourceShapes.add(cloneT.shapeId);
       }
     }
+    keepMerges();
   }
   // A program that keeps no width spread is byte-identical to main: the
   // reflective surfaces below (and the two helper finalizers in
@@ -960,6 +1034,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     });
   });
   if (!interesting) {
+    keepDeclaredMerges(lowerer, notes, mergeSites, keptMerges, new Set());
     keepWidthSpreads(notes, widthSites, keptWidths, new Set());
     return;
   }
@@ -1346,6 +1421,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   for (const id of notes.observed)
     shapesIn({ kind: "record", shapeId: id }, observed, observedSeen);
   for (const root of observedRoots) shapesIn(root, observed, observedSeen);
+  // A kept declared merge reads each source's own keys at run time, an
+  // order surface over the source.
+  for (const { wrapper, note } of mergeSites) {
+    if (!keptMerges.has(wrapper)) continue;
+    for (const source of note.sources) shapesIn(source, observed, observedSeen);
+  }
   // A kept width spread snapshots its sources' own keys, an order surface
   // over each source.
   for (const { wrapper, note } of widthSites) {
@@ -1381,6 +1462,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   // Ordered spreads carry their source's order over (see above).
   let orderedResults = 0;
   const rewritten = new Set<IrExpr>();
+  keepDeclaredMerges(lowerer, notes, mergeSites, keptMerges, rewritten);
   keepWidthSpreads(notes, widthSites, keptWidths, rewritten);
   for (const [segments, sites] of leadingSpreads) {
     const first = segments[0];
@@ -1388,6 +1470,46 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       continue;
     // A shape that did not resolve keeps today's table for every value.
     if (orderedTarget(sites) === null) continue;
+    for (const { wrapper, literal, fn } of sites) {
+      if (rewritten.has(wrapper)) continue;
+      rewritten.add(wrapper);
+      const loc = literal.loc;
+      const localId = `%orderedSpread.${orderedResults++}`;
+      fn.locals.push({ id: localId, name: "%orderedSpread", type: literal.type, mutable: false });
+      const built: IrExpr = { kind: "varRef", localId, type: literal.type, loc };
+      const source: IrExpr = {
+        kind: "varRef",
+        localId: first.value.localId,
+        type: { kind: "record", shapeId: first.shapeId },
+        loc,
+      };
+      wrapper.stmts.push(
+        { kind: "varDecl", localId, init: literal, loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "record.sourceSpread",
+            args: [built, source],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      );
+      wrapper.result = { kind: "varRef", localId, type: literal.type, loc };
+    }
+  }
+  // A spread of a value a kept declared merge built carries that value's
+  // own order over even when the shape has no one resolved order: the
+  // source's view is recorded at run time (record.sourceSpread reads it,
+  // and does nothing when the value holds none). Only a literal that is
+  // nothing but the spread qualifies: a trailing explicit key would land in
+  // the table's order after it.
+  for (const [segments, sites] of leadingSpreads) {
+    const first = segments[0];
+    if (segments.length !== 1 || first?.kind !== "spread" || first.value === undefined) continue;
+    if (!notes.keptSourceShapes.has(first.shapeId)) continue;
     for (const { wrapper, literal, fn } of sites) {
       if (rewritten.has(wrapper)) continue;
       rewritten.add(wrapper);
@@ -1962,6 +2084,208 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   }
 }
 
+/** Declared spread merges: `{ ...a, ...b }` into one declared shape
+ * (lowerDeclaredSpreadMerge) writes the shape's slots in declaration order,
+ * so every order surface reports that order. Node's copy enumerates each
+ * source's own keys as the spreads run, first position kept on an override,
+ * later keys appending. When an order surface can observe the target shape,
+ * the merged record keeps the copy's own declared keys in that order as its
+ * kept source (scr_record_source_note): as each spread runs, the source's
+ * present declared keys are appended to a dyn key object in the source's own
+ * order, and the record stays the source of truth for every value (declared
+ * keys are placeholders in the view). Sources' undeclared keys stay dropped
+ * (the shape cannot represent them), so the view holds declared keys only
+ * and `in`/hasOwnProperty keep their static answers. Programs no surface
+ * observes keep the static order byte for byte. */
+function keepDeclaredMerges(
+  lowerer: Lowerer,
+  notes: KeyOrderNotes,
+  sites: readonly {
+    wrapper: IrExpr & { kind: "seqExpr" };
+    note: DeclaredMergeNote;
+    fn: IrFunction;
+  }[],
+  kept: ReadonlySet<IrExpr>,
+  rewritten: Set<IrExpr>,
+): void {
+  let site = 0;
+  for (const { wrapper, note, fn } of sites) {
+    if (!kept.has(wrapper) || rewritten.has(wrapper)) continue;
+    rewritten.add(wrapper);
+    const target = wrapper.type;
+    const shape = target.kind === "record" ? lowerer.shapes.get(target.shapeId) : undefined;
+    if (shape === undefined) continue;
+    const loc = wrapper.loc;
+    const out = (): IrExpr => varRef(note.outLocalId, target, loc);
+    // The helper calls the lowering pushed, one per source, in source order.
+    const calls = new Set<IrStmt>();
+    for (const st of wrapper.stmts) {
+      if (st.kind !== "exprStmt" || st.expr.kind !== "call") continue;
+      const receiver = st.expr.args[0];
+      if (
+        receiver !== undefined &&
+        receiver.kind === "varRef" &&
+        receiver.localId === note.outLocalId
+      )
+        calls.add(st);
+    }
+    if (calls.size !== note.sources.length) continue;
+    const declared = shape.fields
+      .map((field) => field.name)
+      .filter((name) => !name.startsWith("%"));
+    // A dyn source's copy records its keys as it walks them
+    // (keyedDeclaredMergeHelper): a second walk would run a proxy's
+    // `ownKeys` trap again.
+    const keyedHelpers = new Map<IrStmt, string>();
+    let unkeyed = false;
+    for (const st of calls) {
+      if (st.kind !== "exprStmt" || st.expr.kind !== "call") continue;
+      if (st.expr.args[1]?.type.kind !== "dyn") continue;
+      const keyed = keyedDeclaredMergeHelper(lowerer, st.expr.callee, declared, loc);
+      if (keyed === null) unkeyed = true;
+      else keyedHelpers.set(st, keyed);
+    }
+    if (unkeyed) continue;
+    notes.keptDeclaredMerges++;
+    const index = site++;
+    const keysId = `%declMergeKeys.${index}`;
+    const keys = varRef(keysId, DYN, loc);
+    fn.locals.push({ id: keysId, name: "%declMergeKeys", type: DYN, mutable: false });
+    const stmts: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: keysId,
+        init: { kind: "dynObjLit", fields: [], type: DYN, loc },
+        loc,
+      },
+    ];
+    let sourceIndex = 0;
+    for (const st of wrapper.stmts) {
+      if (!calls.has(st) || st.kind !== "exprStmt" || st.expr.kind !== "call") {
+        stmts.push(st);
+        continue;
+      }
+      const spread = st.expr.args[1];
+      if (spread === undefined) continue;
+      const i = sourceIndex++;
+      // The source evaluates once, where the spread ran, as before.
+      const sourceId = `%declMergeSource.${index}.${i}`;
+      fn.locals.push({ id: sourceId, name: "%declMergeSource", type: spread.type, mutable: false });
+      const source = varRef(sourceId, spread.type, loc);
+      stmts.push({ kind: "varDecl", localId: sourceId, init: spread, loc });
+      const keyed = keyedHelpers.get(st);
+      if (keyed !== undefined) {
+        stmts.push({
+          ...st,
+          expr: { ...st.expr, callee: keyed, args: [st.expr.args[0]!, source, keys] },
+        });
+        continue;
+      }
+      stmts.push({ ...st, expr: { ...st.expr, args: [st.expr.args[0]!, source] } });
+      stmts.push(...collectDeclaredKeys(fn, keys, source, declared, `${index}.${i}`, loc));
+    }
+    stmts.push({
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn: "record.sourceNote", args: [out(), keys], type: VOID, loc },
+      loc,
+    });
+    wrapper.stmts = stmts;
+  }
+}
+
+/** The statements that append a record `source`'s present declared keys
+ * to the dyn object `keys`, in the source's own order: a walk of its own
+ * keys (its present fields in its table's order), each one that is a
+ * declared field set into `keys`. A record has no traps, so this second
+ * walk after the copy runs no user code; a dyn source records its keys in
+ * the copy's own walk instead (keyedDeclaredMergeHelper). Setting an
+ * existing key keeps its position, as Node's copy does for an override.
+ * The source's nullish check reads one record, as the copy's does. */
+function collectDeclaredKeys(
+  fn: IrFunction,
+  keys: IrExpr,
+  source: IrExpr,
+  declared: readonly string[],
+  suffix: string,
+  loc: SrcLoc,
+): IrStmt[] {
+  if (declared.length === 0) return [];
+  const listType = arrayOf(STRING);
+  const boxed: IrExpr =
+    source.type.kind === "dyn"
+      ? source
+      : { kind: "dynFrom", value: source, liveRef: true, type: DYN, loc };
+  const listId = `%declMergeKeyList.${suffix}`;
+  const indexId = `%declMergeIndex.${suffix}`;
+  const keyId = `%declMergeKey.${suffix}`;
+  fn.locals.push(
+    { id: listId, name: "%declMergeKeyList", type: listType, mutable: false },
+    { id: indexId, name: "%declMergeIndex", type: F64, mutable: true },
+    { id: keyId, name: "%declMergeKey", type: STRING, mutable: false },
+  );
+  const list = varRef(listId, listType, loc);
+  const index = varRef(indexId, F64, loc);
+  const key = varRef(keyId, STRING, loc);
+  return [
+    {
+      kind: "if",
+      cond: { kind: "dynTest", test: "nullish", value: boxed, negated: true, type: BOOL, loc },
+      then: [
+        {
+          kind: "varDecl",
+          localId: listId,
+          init: {
+            kind: "dynCheck",
+            value: { kind: "libCall", fn: "dyn.objKeys", args: [boxed], type: DYN, loc },
+            type: listType,
+            loc,
+          },
+          loc,
+        },
+        { kind: "varDecl", localId: indexId, init: numLit(0, loc), loc },
+        {
+          // A `for` cannot stand in an expression (validate.ts), so the
+          // update is the body's last statement.
+          kind: "while",
+          cond: {
+            kind: "bin",
+            op: "<",
+            left: index,
+            right: {
+              kind: "arrIntrinsic",
+              method: "length",
+              receiver: list,
+              args: [],
+              type: F64,
+              loc,
+            },
+            type: BOOL,
+            loc,
+          },
+          body: [
+            {
+              kind: "varDecl",
+              localId: keyId,
+              init: { kind: "arrayGet", arr: list, index, type: STRING, loc },
+              loc,
+            },
+            noteDeclaredKey(keys, key, declared, loc),
+            {
+              kind: "assign",
+              localId: indexId,
+              value: { kind: "bin", op: "+", left: index, right: numLit(1, loc), type: F64, loc },
+              loc,
+            },
+          ],
+          loc,
+        },
+      ],
+      else_: null,
+      loc,
+    },
+  ];
+}
+
 /** The replacements recorded for `fn`. */
 function replacementsIn(
   byFn: Map<IrFunction, Map<IrExpr, IrExpr>>,
@@ -2285,4 +2609,85 @@ function keepRecordClones(
     replacementsIn(byFn, fn).set(node, replacement);
   }
   for (const [fn, replacements] of byFn) replaceThroughParents(fn, replacements);
+}
+
+/** `if (key is a declared field) keys[key] = undefined`: appends a declared
+ * key to the dyn key object, or keeps its position when it is already
+ * there, as Node's copy does for an override. */
+function noteDeclaredKey(
+  keys: IrExpr,
+  key: IrExpr,
+  declared: readonly string[],
+  loc: SrcLoc,
+): IrStmt {
+  let isDeclared: IrExpr | null = null;
+  for (const name of declared) {
+    const test: IrExpr = {
+      kind: "strEq",
+      negated: false,
+      left: key,
+      right: strLit(name, loc),
+      type: BOOL,
+      loc,
+    };
+    isDeclared =
+      isDeclared === null
+        ? test
+        : { kind: "logical", op: "||", left: isDeclared, right: test, type: BOOL, loc };
+  }
+  return {
+    kind: "if",
+    cond: isDeclared!,
+    then: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySet",
+          args: [keys, key, dynUndefinedExpr(loc)],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    else_: null,
+    loc,
+  };
+}
+
+/** The dyn-source copy helper of a declared merge (lowerDeclaredSpreadMerge)
+ * with a third parameter, the dyn key object: as the copy walks the
+ * source's own keys it appends each declared one there. The order comes
+ * from the walk that copies the values, so a proxy source's `ownKeys` trap
+ * runs once per spread, as in Node. Built once per helper; null when the
+ * helper does not have the walk's shape. */
+function keyedDeclaredMergeHelper(
+  lowerer: Lowerer,
+  callee: string,
+  declared: readonly string[],
+  loc: SrcLoc,
+): string | null {
+  const name = `${callee}.keyed`;
+  if (lowerer.liftedFnNamed(name) !== undefined) return name;
+  const original = lowerer.liftedFnNamed(callee);
+  if (original === undefined) return null;
+  const walk = original.body.findIndex((st) => st.kind === "for");
+  const loop = original.body[walk];
+  const first = loop?.kind === "for" ? loop.body[0] : undefined;
+  if (first?.kind !== "varDecl" || first.localId !== "key.0") return null;
+  const helper = structuredClone(original);
+  helper.name = name;
+  const keysId = "orderKeys.0";
+  helper.params = [...helper.params, { localId: keysId, name: "orderKeys", type: DYN }];
+  helper.locals.push({ id: keysId, name: "orderKeys", type: DYN, mutable: false });
+  const keyedLoop = helper.body[walk];
+  if (keyedLoop?.kind !== "for") return null;
+  keyedLoop.body.splice(
+    1,
+    0,
+    noteDeclaredKey(varRef(keysId, DYN, loc), varRef("key.0", STRING, loc), declared, loc),
+  );
+  lowerer.liftedFns.push(helper);
+  return name;
 }

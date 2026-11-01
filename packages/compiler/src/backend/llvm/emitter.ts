@@ -87,6 +87,7 @@ import {
   replayJournal,
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
+import { specializeTypedArguments } from "../../ir/typed-argument-clones.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
 import {
@@ -787,19 +788,22 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
           scalarizeNumericRecords(
             specializeCallbackCalls(
               specializeNumericCalls(
-                pairRowSums(
-                  jamSaturatingLoops(
-                    inlineArraysPass(
-                      options,
-                      inlineExpressionFunctions(
-                        foldConstantGlobals(
-                          copyStableCaptures(
-                            resolveSelfCaptures(
-                              hoistFinalFieldReads(
-                                freezeInitOnlyGlobals(
-                                  holdCharLocalsAsUnits(
-                                    dropUnwrittenPropertyBags(
-                                      runPairedWhileLoopsAsFor(mod, nodes),
+                specializeTypedArguments(
+                  pairRowSums(
+                    jamSaturatingLoops(
+                      inlineArraysPass(
+                        options,
+                        inlineExpressionFunctions(
+                          foldConstantGlobals(
+                            copyStableCaptures(
+                              resolveSelfCaptures(
+                                hoistFinalFieldReads(
+                                  freezeInitOnlyGlobals(
+                                    holdCharLocalsAsUnits(
+                                      dropUnwrittenPropertyBags(
+                                        runPairedWhileLoopsAsFor(mod, nodes),
+                                        nodes,
+                                      ),
                                       nodes,
                                     ),
                                     nodes,
@@ -814,11 +818,12 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                           ),
                           nodes,
                         ),
-                        nodes,
                       ),
+                      nodes,
                     ),
                     nodes,
                   ),
+                  mangleFunction,
                   nodes,
                 ),
                 mangleFunction,

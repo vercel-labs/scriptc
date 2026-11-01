@@ -1,8 +1,10 @@
 // util.inspect with numericSeparator: numbers group their digits in threes,
 // the integer part from the right and the fractional part from the left,
 // at every depth and inside collections, typed arrays and bigints; the
-// exponent forms, NaN, Infinity, -0 and the strings that spell a number
-// stay as they render by default. util.formatWithOptions takes the option
+// built-in numeric properties ([length], [byteLength], [byteOffset]) group
+// too, while the counts printed from a template do not. The exponent
+// forms, NaN, Infinity, -0 and the strings that spell a number stay as
+// they render by default. util.formatWithOptions takes the option
 // for %s, %d, %i, %f, %o and the joined arguments (formatNumber and
 // formatBigInt), while %j keeps its JSON form. The option reads at run
 // time too, and custom inspect functions see it in their options.
@@ -23,6 +25,22 @@ console.log(util.inspect(new Map([[1000, 2000000]]), { numericSeparator: true })
 console.log(util.inspect(new Set([1000, 2000]), { numericSeparator: true }));
 console.log(util.inspect(new Uint32Array([1000, 4000000]), { numericSeparator: true }));
 console.log(util.inspect(Buffer.from("1234"), { numericSeparator: true }));
+
+// A built-in numeric property groups its digits the way the walk's property
+// values do: an array's [length], a typed array's extras, an ArrayBuffer's
+// [byteLength] and a DataView's byte fields. The numbers Node prints from a
+// template rather than a property value -- the class-name (N), the trailers
+// and the typed array's nested [buffer] fast path -- keep their plain digits.
+const buffer = new ArrayBuffer(12345);
+console.log(util.inspect([1, 2, 3], { numericSeparator: true, showHidden: true }));
+const many: number[] = [];
+for (let i = 0; i < 12345; i++) many.push(i);
+console.log(util.inspect(many, { numericSeparator: true, showHidden: true, maxArrayLength: 2 }));
+console.log(util.inspect(new Uint8Array(buffer), { numericSeparator: true, showHidden: true, maxArrayLength: 2 }));
+console.log(util.inspect(new Uint8Array(buffer, 12345), { numericSeparator: true, showHidden: true }));
+console.log(util.inspect(buffer, { numericSeparator: true }));
+const view: any = new DataView(buffer, 3);
+console.log(util.inspect(view, { numericSeparator: true }));
 
 console.log(util.inspect(1234567n, { numericSeparator: true }));
 console.log(util.inspect(-1234567n, { numericSeparator: true }));

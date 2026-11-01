@@ -334,6 +334,26 @@ static void insp_group_frac_into(InspBuf *b, const char *digits, size_t len) {
   }
 }
 
+/* A built-in numeric property (`[length]: 12_345`): the digits group in
+ * threes under the render's numericSeparator, as formatNumber gives them
+ * for values the walk prints; a value with fewer than four digits is the
+ * same either way. Writes `key: value` into buf and answers its length.
+ * The numbers that are not property values -- a class name's `(N)`, the
+ * `<N empty items>`, `<ref *N>` and `... N more ...` counts -- stay
+ * ungrouped, as Node's template strings render them. */
+static int insp_fmt_num_prop(char *buf, size_t size, const char *key, double value) {
+  if (!g_numeric_separator) return snprintf(buf, size, "%s: %.0f", key, value);
+  char digits[32];
+  int dn = snprintf(digits, sizeof digits, "%.0f", value);
+  if (dn < 4) return snprintf(buf, size, "%s: %s", key, digits);
+  InspBuf out = {0};
+  insp_group_int_into(&out, digits, (size_t)dn);
+  ScrStr *grouped = ib_take(&out);
+  int n = snprintf(buf, size, "%s: %.*s", key, (int)grouped->len, grouped->data);
+  scr_str_release(grouped);
+  return n;
+}
+
 /* formatNumber: JS ToString EXCEPT -0 renders as '-0'. Under the render's
  * numericSeparator, finite numbers whose text has no exponent group their
  * digits: the integer part from the right and the fractional part from
@@ -1241,7 +1261,7 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
   }
   ib_char(&contents, '>');
   char byte_length[48];
-  int bn = snprintf(byte_length, sizeof byte_length, "[byteLength]: %zu", len);
+  int bn = insp_fmt_num_prop(byte_length, sizeof byte_length, "[byteLength]", (double)len);
   scr_insp_begin(recurse + 1);
   ScrStr *entry = ib_take(&contents);
   scr_insp_entry(entry, false);
@@ -1271,11 +1291,11 @@ static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double dept
   const ScrBytes *owner = b->backing ? b->backing : b;
   char line[64];
   scr_insp_begin(recurse + 1);
-  int n = snprintf(line, sizeof line, "[byteLength]: %.0f", scr_bytes_byte_len(b));
+  int n = insp_fmt_num_prop(line, sizeof line, "[byteLength]", scr_bytes_byte_len(b));
   ScrStr *entry = scr_str_new(line, (size_t)n);
   scr_insp_entry(entry, false);
   scr_str_release(entry);
-  n = snprintf(line, sizeof line, "[byteOffset]: %.0f", scr_bytes_byte_offset(b));
+  n = insp_fmt_num_prop(line, sizeof line, "[byteOffset]", scr_bytes_byte_offset(b));
   entry = scr_str_new(line, (size_t)n);
   scr_insp_entry(entry, false);
   scr_str_release(entry);
@@ -2524,19 +2544,19 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
     /* Node's extraKeys for a typed array, after the elements. */
     char line[64];
     size_t elem = scr_bytes_elem_size(b->elem);
-    int n = snprintf(line, sizeof line, "[BYTES_PER_ELEMENT]: %zu", elem);
+    int n = insp_fmt_num_prop(line, sizeof line, "[BYTES_PER_ELEMENT]", (double)elem);
     ScrStr *s = scr_str_new(line, (size_t)n);
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = snprintf(line, sizeof line, "[length]: %zu", b->len);
+    n = insp_fmt_num_prop(line, sizeof line, "[length]", (double)b->len);
     s = scr_str_new(line, (size_t)n);
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = snprintf(line, sizeof line, "[byteLength]: %zu", b->len * elem);
+    n = insp_fmt_num_prop(line, sizeof line, "[byteLength]", (double)(b->len * elem));
     s = scr_str_new(line, (size_t)n);
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = snprintf(line, sizeof line, "[byteOffset]: %.0f", scr_bytes_byte_offset(b));
+    n = insp_fmt_num_prop(line, sizeof line, "[byteOffset]", scr_bytes_byte_offset(b));
     s = scr_str_new(line, (size_t)n);
     scr_insp_entry(s, false);
     scr_str_release(s);
@@ -3332,7 +3352,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
          * grouping reads value[k] for every output position k, this one
          * included. */
         char line[48];
-        int n = snprintf(line, sizeof line, "[length]: %zu", len);
+        int n = insp_fmt_num_prop(line, sizeof line, "[length]", (double)len);
         ScrStr *s = scr_str_new(line, (size_t)n);
         scr_insp_entry(s, entries < len && (!presence || presence[entries]) &&
                               d->v.arr.items[entries]->kind == SCR_DYN_NUM);

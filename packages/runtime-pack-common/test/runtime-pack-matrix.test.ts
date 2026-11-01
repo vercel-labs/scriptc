@@ -86,18 +86,15 @@ test("scr_lib.c builds once per flavor, whatever the program's features", () => 
   ]);
 });
 
-test("every scr_json build has a JavaScript object model twin", () => {
+test("scr_json builds one object per flavor, plus its object model twin", () => {
   // The JavaScript object model build (t262-da §J) is one column for every
-  // runtime feature only a JavaScript source reaches: each scr_json.c build
-  // gets one twin, so any combination of features selects a build that
-  // carries the object model's code.
+  // runtime feature only a JavaScript source reaches: the default build gets
+  // one twin, so any combination of features selects a build that carries
+  // the object model's code. scr_json.c has no other build: its Node island
+  // and handle-class paths call through tables, and its view slot answers
+  // NULL for a field a partial record view does not have in every build.
   const variants = variantsFor("scr_json.c");
-  expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
-    "default",
-    "record-view-partial",
-    "js-om",
-    "js-om-record-view-partial",
-  ]);
+  expect(variants.map((variant: { id: string }) => variant.id)).toEqual(["default", "js-om"]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
     expect(variant.when.jsObjectModel).toBe(true);
@@ -108,13 +105,6 @@ test("every scr_json build has a JavaScript object model twin", () => {
   expect(selected("scr_json.c", { workers: false, jsObjectModel: true }).defines).toEqual([
     "SCR_JS_OBJECT_MODEL",
   ]);
-  // ...keeps the record-view twin beside a partial record assertion...
-  const partial = { workers: false, jsObjectModel: true, recordViewPartial: true };
-  expect(selected("scr_json.c", partial).id).toBe("js-om-record-view-partial");
-  expect(selected("scr_json.c", partial).defines).toEqual([
-    "SCR_RECORD_VIEW_PARTIAL",
-    "SCR_JS_OBJECT_MODEL",
-  ]);
   // ...and keeps the worker build when the program starts threads.
   expect(selected("scr_json.c", { workers: true, jsObjectModel: true }).defines).toEqual([
     "SCR_JS_OBJECT_MODEL",
@@ -123,9 +113,6 @@ test("every scr_json build has a JavaScript object model twin", () => {
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
-  expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([
-    "SCR_RECORD_VIEW_PARTIAL",
-  ]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
@@ -146,7 +133,6 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   // gets a build column of its own.
   const plain = {
     jsObjectModel: false,
-    recordViewPartial: false,
     textDecoderLegacy: false,
     webStreams: false,
     nodeIsland: false,

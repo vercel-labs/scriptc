@@ -260,18 +260,13 @@ export function variantsFor(source) {
   // scr_json.c builds one object per flavor (and workers mode): its paths
   // for Node island handles and handle classes call through tables that
   // scr_node_island_handle.c and scr_dyn_handle_class.c install when a
-  // program links them, and its dynamic-tier primitives are always defined.
-  // A program with a partial record assertion (record-views.ts) links the
-  // build whose view slot answers NULL for a field the viewed record does
-  // not declare, so the emitted guard, clone helper and presence test can
-  // stop with the program's message instead of reading a bogus slot; every
-  // other program keeps the default object.
+  // program links them, its dynamic-tier primitives are always defined, and
+  // its view slot answers NULL for a field the viewed record does not
+  // declare (a partial record assertion, record-views.ts), so the emitted
+  // guard, clone helper and presence test stop with the program's message.
+  // A full view holds an offset for every target field, so the NULL case is
+  // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
-    variants.push({
-      id: "record-view-partial",
-      when: { recordViewPartial: true },
-      defines: ["SCR_RECORD_VIEW_PARTIAL"],
-    });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —

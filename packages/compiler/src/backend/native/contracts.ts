@@ -196,9 +196,6 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
-  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
-   * NULL for a field a partial record view does not have. */
-  recordViewPartial?: boolean;
   /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
    * object model feature the program reaches (t262-da §J). */
   jsObjectModel?: boolean;

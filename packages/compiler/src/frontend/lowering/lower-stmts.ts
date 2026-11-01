@@ -9849,12 +9849,17 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         }
         const unionWrite = lowerUnionFieldWrite(lowerer, expr.left, expr.right);
         if (unionWrite) return { kind: "exprStmt", expr: unionWrite, loc: locOf(expr) };
+        // A member only the asserted type declares is refused before any
+        // field target: the checker's type names a slot the stored record
+        // does not have, so a target built from it addresses a field the
+        // receiver's shape lacks. `(view).member` and `view!.member` reach
+        // the same refusal as `view.member`.
+        assertedOnlyMemberWrite(lowerer, expr.left.expression, expr.left.name.text, expr.left);
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);
           return lowerer.fieldSetStmt(target, value, locOf(expr), expr.left);
         }
-        assertedOnlyMemberWrite(lowerer, expr.left.expression, expr.left.name.text, expr.left);
         const callback = lowerClassCallbackAssign(lowerer, expr);
         if (callback) return callback;
         // A write to an ABSTRACT property through an abstract-typed

@@ -307,6 +307,7 @@ import {
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { dynamicOverloadChoice } from "./overload-choice.js";
 import { lowerStringIteratorValue } from "./iterator-adapters.js";
+import { iterableGenerator, iterableUnionOf } from "./iterable-values.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import {
   maybePromiseReturnStmt,
@@ -3763,7 +3764,11 @@ function lowerOptionalStringNumber(
 }
 
 /** `s[Symbol.iterator]()` on a string-typed receiver: the generator over
- * its code points. Null for other element calls. */
+ * its code points. On an `Iterable<T>` value (`Iterable<SegmentData>` in a
+ * union with another iterable, an option's segment function): GetIterator
+ * over the current arm, the same interned helper for-of and spread open —
+ * the answer is the canonical iterator, so `.next()` reads like any other.
+ * Null for other element calls. */
 function lowerStringIteratorCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -3776,7 +3781,10 @@ function lowerStringIteratorCall(
     lowerer.stdlibGlobalMember(key, "Symbol") !== "iterator"
   )
     return null;
-  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "string") return null;
+  const receiverT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  const iterable = receiverT ? iterableUnionOf(lowerer, receiverT) : null;
+  if (iterable) return iterableGenerator(lowerer, lowerer.lowerExpr(access.expression), iterable);
+  if (receiverT?.kind !== "string") return null;
   const type = lowerer.mapTypeOf(lowerer.typeOf(call));
   if (type?.kind !== "generator") return null;
   const receiver = lowerer.lowerExpr(access.expression);

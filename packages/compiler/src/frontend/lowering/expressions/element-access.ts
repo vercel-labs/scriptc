@@ -1627,6 +1627,17 @@ export function lowerRecordKeyRead(
       stmts.length === 0 ? get : { kind: "seqExpr", stmts, result: get, type: get.type, loc };
     return includeUndefined ? read : lowerer.maybeNarrow(read, expr);
   }
+  // A `keyof` read whose checker answer COLLAPSES to the checked-dynamic
+  // representation (the union of the field types carries an
+  // 'object'/'unknown'-flavored arm, so the union rule maps it to dyn):
+  // there is no typed join to dispatch into, exactly like the 'unknown'
+  // answer above, and each declared field still reads through its
+  // checked-dynamic slot. Dispatch per declared key and answer dyn.
+  if (!declared) {
+    const answer = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (answer?.kind === "dyn" && !shape.indexValue && recordKeyResultOk(lowerer, shape, DYN))
+      declared = DYN;
+  }
   if (!declared) {
     lowerer.unsupported(
       "SC1090",

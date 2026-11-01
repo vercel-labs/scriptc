@@ -22,6 +22,7 @@ import {
 import { numLit, strLit } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
+import { erasedDeletePlan, lowerRecordDeleteExpr } from "./expressions/erased-delete.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { isStrictCode } from "./strict-mode.js";
 
@@ -226,7 +227,15 @@ export function lowerDeleteExpression(lowerer: Lowerer, expr: ts.DeleteExpressio
   let target: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(target)) target = target.expression;
   if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
+    // The same rule as the statement form (erased-delete.ts): a delete
+    // through a chain of type assertions addresses the operand, in place.
+    const erased = erasedDeletePlan(lowerer, target);
+    if (erased !== null) {
+      if ("refuse" in erased) lowerer.unsupported("SC1090", expr, erased.refuse);
+      return lowerRecordDeleteExpr(lowerer, expr, target, lowerer.lowerExpr(erased.operand));
+    }
     const obj = lowerer.lowerExpr(target.expression);
+    if (obj.type.kind === "record") return lowerRecordDeleteExpr(lowerer, expr, target, obj);
     if (
       isPrimitiveValueType(obj.type) &&
       !isBuiltinIdentityToken(lowerer, target.expression, obj)

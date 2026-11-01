@@ -457,8 +457,8 @@ async function merge(output: string, inputs: string[], sparse = false) {
   ]);
 }
 
-/** An instrumented build of `source` run with 1 and 3 arguments, its raw
- * profiles merged into one indexed profile. */
+/** An instrumented build of `source` run with each of `argcs` (1 and 3 by
+ * default), its raw profiles merged into one indexed profile. */
 async function collect(
   dir: string,
   source: string,
@@ -466,14 +466,14 @@ async function collect(
   name: string,
   expected: (argc: number) => number = expectedExit,
   sparse = false,
+  argcs: readonly number[] = [1, 3],
 ) {
   const raw = join(dir, `${name}-raw`);
   const objects = await emit(dir, source, { outputs, name, generate: join(raw, "%p.profraw") });
   const executable = await link(dir, objects, name, true);
-  expect(await run(executable, 1)).toBe(expected(1));
-  expect(await run(executable, 3)).toBe(expected(3));
+  for (const argc of argcs) expect(await run(executable, argc)).toBe(expected(argc));
   const profiles = (await readdir(raw)).map((file) => join(raw, file));
-  expect(profiles).toHaveLength(2);
+  expect(profiles).toHaveLength(argcs.length);
   const profile = join(dir, `${name}.profdata`);
   await merge(profile, profiles, sparse);
   return { profile, raws: profiles };
@@ -583,6 +583,46 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
       // ...and the second made the object a one-shot helper makes, without
       // recording counts to the path the first was given.
       expect(await readFile(plain.outputs[0]!)).toEqual(await readFile(reference));
+    },
+  );
+
+  test.runIf(profileLinker !== null)(
+    "a resident server weighs each emit by the profile that emit names",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-resident-counts-"));
+      dirs.push(dir);
+      // Two profiles of the same program from different amounts of training.
+      const light = await collect(dir, program(), 1, "light");
+      const heavy = await collect(dir, program(), 1, "heavy", expectedExit, false, [1, 3, 5]);
+      const report = (stdout: string) => JSON.parse(stdout.trim().split("\n").at(-1)!).profile;
+      const lightOnce = await emitReporting(dir, program(), {
+        outputs: 1,
+        name: "light-once",
+        use: light.profile,
+      });
+      const heavyOnce = await emitReporting(dir, program(), {
+        outputs: 1,
+        name: "heavy-once",
+        use: heavy.profile,
+      });
+      // The profiles weigh the same functions by different totals.
+      expect(report(heavyOnce.stdout).annotated_counts).not.toBe(
+        report(lightOnce.stdout).annotated_counts,
+      );
+      const first = await emitArguments(dir, program(), {
+        outputs: 1,
+        name: "resident-light",
+        use: light.profile,
+      });
+      const second = await emitArguments(dir, program(), {
+        outputs: 1,
+        name: "resident-heavy",
+        use: heavy.profile,
+      });
+      const replies = await serveRequests(dir, [first.args, second.args]);
+      expect(replies.map((reply) => reply.status)).toEqual([0, 0]);
+      expect(report(replies[0]!.stdout)).toEqual(report(lightOnce.stdout));
+      expect(report(replies[1]!.stdout)).toEqual(report(heavyOnce.stdout));
     },
   );
 

@@ -452,27 +452,40 @@ void reportProfileMatch(const ProfileMatch &Match) {
 }
 
 // The sum of each function's counters in the indexed profile at `Path`, by
-// profile name, read once per process. An unreadable profile has no counts
-// (the annotation reports it).
+// profile name. A one-shot helper reads one profile in its process; a resident
+// server answers many emits with whatever profile each one names, so the
+// totals belong to one emit: resetProfileCounts clears them, and the first
+// weight of the emit reads the profile that emit named. An unreadable profile
+// has no counts (the annotation reports it).
+StringMap<uint64_t> ProfileCounts;
+std::string ProfileCountsPath;
+bool ProfileCountsLoaded = false;
+
+void resetProfileCounts() {
+  ProfileCounts.clear();
+  ProfileCountsPath.clear();
+  ProfileCountsLoaded = false;
+}
+
 const StringMap<uint64_t> &profileCounts(const std::string &Path) {
-  static std::once_flag Once;
-  static StringMap<uint64_t> Counts;
-  std::call_once(Once, [&Path] {
-    Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
-        IndexedInstrProfReader::create(Path, *vfs::getRealFileSystem());
-    if (!Reader) {
-      consumeError(Reader.takeError());
-      return;
-    }
-    for (const NamedInstrProfRecord &Record : **Reader) {
-      uint64_t Sum = 0;
-      for (uint64_t Count : Record.Counts)
-        Sum += Count;
-      Counts[Record.Name] += Sum;
-    }
-    consumeError((*Reader)->getError());
-  });
-  return Counts;
+  if (ProfileCountsLoaded && ProfileCountsPath == Path) return ProfileCounts;
+  ProfileCounts.clear();
+  ProfileCountsPath = Path;
+  ProfileCountsLoaded = true;
+  Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
+      IndexedInstrProfReader::create(Path, *vfs::getRealFileSystem());
+  if (!Reader) {
+    consumeError(Reader.takeError());
+    return ProfileCounts;
+  }
+  for (const NamedInstrProfRecord &Record : **Reader) {
+    uint64_t Sum = 0;
+    for (uint64_t Count : Record.Counts)
+      Sum += Count;
+    ProfileCounts[Record.Name] += Sum;
+  }
+  consumeError((*Reader)->getError());
+  return ProfileCounts;
 }
 
 // Weighs one module's profile match by the profile's counters: collects the
@@ -525,6 +538,7 @@ std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
   // and the layout a context-sensitive profile turned on.
   FallbackCounts.reset();
   Recorder.reset();
+  resetProfileCounts();
   ContextProfile = false;
   setProfileLayout(false);
   setExtTspPlacement(false);

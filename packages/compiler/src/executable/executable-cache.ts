@@ -67,6 +67,8 @@ export interface EarlyExecutableNativeFeatures {
   warningReplace?: boolean;
   recordViewPartial?: boolean;
   jsObjectModel?: boolean;
+  /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
+  mutableBuffers: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;
@@ -315,6 +317,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "copying",
   "textDecoderLegacy",
   "bigintBytes",
+  "mutableBuffers",
   "fileHandle",
   "fetch",
   "zlib",

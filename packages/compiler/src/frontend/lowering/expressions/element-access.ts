@@ -41,6 +41,7 @@ import { lowerModuleNamespaceElement } from "../module-namespace-elements.js";
 import { type CompoundOp, stdlibGlobalNameOf } from "../surfaces.js";
 import { globalSymbolKey } from "./global-symbols.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
 import { expandoMemberRead } from "../lower-expando.js";
 import {
@@ -131,6 +132,12 @@ function assertedProbeElementRead(
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
  * typechecks against the lib's index signature; use .charAt) stay out. */
 export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpression): IrExpr {
+  // The bracket spelling of the mutableBuffers fact (`b["transfer"]()`,
+  // buffers.ts, t262-dc §2.4).
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const key = lowerer.foldedStringKeyOf(expr.argumentExpression);
+    if (key !== null && MUTABLE_BUFFER_MEMBERS.has(key)) lowerer.buffersMutable = true;
+  }
   if (isImportMeta(expr.expression)) {
     const name = lowerer.foldedStringKeyOf(expr.argumentExpression);
     if (name === null)

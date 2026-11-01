@@ -3981,10 +3981,21 @@ static void scr_record_link_disposed(void *copy);
 static SCR_TL size_t scr_record_link_count;
 
 static void scr_dispose_observers(void *object) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The mutable-buffers registry forgets a freed view or owner (t262-dc);
+   * a program without the fact has no table to consult. */
+  if (scr_js_buffer_ops) scr_js_buffer_ops->disposed(object);
+#endif
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
   if (scr_record_link_count) scr_record_link_disposed(object);
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* scr_js_buffers_arm: the registry must see frees even in a program that
+ * creates no weak collection, so it installs the one dispose hook. */
+void scr_js_dispose_hook_install(void) { scr_weak_dispose_hook = &scr_dispose_observers; }
+#endif
 
 /* Keeps live entries plus deleted markers at most half the table: grows
  * when live entries fill a quarter, otherwise rehashes in place to drop the
@@ -6470,6 +6481,16 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
   ScrBytes *bytes = recv->v.bytes;
   size_t len = bytes->len;
   *handled = true;
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Every %TypedArray%.prototype method re-validates a detached or
+   * out-of-bounds view first (t262-dc); Node names the method. */
+  if (!scr_js_bytes_live(bytes)) {
+    char label[96];
+    snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+    scr_js_bytes_throw_detached(label);
+    return NULL;
+  }
+#endif
   size_t blen = bytes->len;
   if (scr_dyn_bytes_named(method, "at")) {
     double iD = scr_dyn_bytes_index_arg(args, argc, 0, 0);
@@ -6486,7 +6507,14 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
      * owns an independent copy; all keep the receiver's Buffer flavor. */
     double startD = scr_dyn_bytes_index_arg(args, argc, 0, 0);
     if (scr_exc_pending()) return NULL;
+    /* An omitted end is +Infinity, which every clamp reads as the end; a
+     * length-tracking receiver's subarray stays length-tracking then. A
+     * program without the fact keeps the element count it always passed. */
+#ifdef SCR_JS_OBJECT_MODEL
+    double endD = scr_dyn_bytes_index_arg(args, argc, 1, INFINITY);
+#else
     double endD = scr_dyn_bytes_index_arg(args, argc, 1, (double)blen);
+#endif
     if (scr_exc_pending()) return NULL;
     const bool subarray = recv->buffer || scr_dyn_bytes_named(method, "subarray");
     bool failed;
@@ -6898,6 +6926,16 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
       }
       ScrBytes *out = scr_bytes_new(bytes->elem, (double)len);
       for (size_t i = 0; i < len; i++) {
+        /* A shrink under the index coercion makes the remaining copies read
+         * undefined, which a BigInt element store rejects with Node's
+         * TypeError (t262-dc C2). */
+        if ((double)i >= (double)bytes->len) {
+          scr_bytes_release(out);
+          scr_bigint_release(big);
+          ScrBigInt *missing = scr_dyn_bigint_coerce(scr_dyn_undefined());
+          if (missing) scr_bigint_release(missing);
+          return NULL;
+        }
         ScrDyn *element = scr_bytes_get_bigint(bytes, (double)i);
         scr_bytes_set_bigint(out, (double)i, element);
         scr_dyn_release(element);
@@ -6919,7 +6957,16 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
       return NULL;
     }
     ScrBytes *out = scr_bytes_new(bytes->elem, (double)len);
+    /* A shrink under the index or value coercion makes the remaining copies
+     * read undefined, which a numeric element store turns into NaN (0 for
+     * an integer kind); the result keeps the captured length (t262-dc C2).
+     * A program without the fact never shrinks, so it reads directly. */
+#ifdef SCR_JS_OBJECT_MODEL
+    for (size_t i = 0; i < len; i++)
+      scr_bytes_set(out, (double)i, scr_bytes_get_or_nan(bytes, (double)i));
+#else
     for (size_t i = 0; i < len; i++) scr_bytes_set(out, (double)i, scr_bytes_get(bytes, (double)i));
+#endif
     scr_bytes_set(out, actual, value);
     return dyn_bytes_wrap(recv, out);
   }
@@ -6981,8 +7028,21 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
   ScrBytes *bytes = value->v.bytes;
   /* Own named properties first; a getter sees the view as `this`. */
   if (scr_bytes_has_named(value, key)) return scr_bytes_named_get(value, key->data, key->len);
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A DataView over a detached or out-of-bounds buffer throws here; a typed
+   * array answers 0. */
+  if (key->len == 10 && memcmp(key->data, "byteLength", 10) == 0) {
+    double value = scr_js_bytes_byte_length(bytes);
+    return scr_exc_pending() ? NULL : scr_dyn_new_num(value);
+  }
+  if (key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0) {
+    double value = scr_js_bytes_byte_offset(bytes);
+    return scr_exc_pending() ? NULL : scr_dyn_new_num(value);
+  }
+#else
   if (key->len == 10 && memcmp(key->data, "byteLength", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_len(bytes));
   if (key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
+#endif
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
   if (bytes->is_data_view) {
     /* A DataView has no length or indexed elements. */
@@ -18845,12 +18905,38 @@ bool scr_array_buffer_is_view(const ScrDyn *value) {
 }
 
 static ScrDyn *scr_array_buffer_get(void *h, const char *key, size_t len) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A program with the mutableBuffers fact answers from the registry: a
+   * detached buffer reports length 0 (its maxByteLength too) and stays
+   * detached/resizable, and a resizable one reports its reserved capacity.
+   * A program without the fact never detaches or resizes. */
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+#endif
   if ((len == 10 && memcmp(key, "byteLength", len) == 0) ||
-      (len == 13 && memcmp(key, "maxByteLength", len) == 0))
+      (len == 13 && memcmp(key, "maxByteLength", len) == 0)) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (ops && ops->owner_detached(h)) return scr_dyn_new_num(0);
+    if (ops && len == 13)
+      return scr_dyn_new_num(ops->owner_capacity(h, scr_bytes_byte_len(h)));
+#endif
     return scr_dyn_new_num(scr_bytes_byte_len(h));
-  if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) return scr_dyn_new_bool(false);
+  }
+  if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (ops) return scr_dyn_new_bool(ops->owner_growable(h));
+#endif
+    return scr_dyn_new_bool(false);
+  }
   if (!((ScrBytes *)h)->shared && ((len == 9 && memcmp(key, "resizable", len) == 0) ||
-      (len == 8 && memcmp(key, "detached", len) == 0))) return scr_dyn_new_bool(false);
+      (len == 8 && memcmp(key, "detached", len) == 0))) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (ops) {
+      if (len == 9) return scr_dyn_new_bool(ops->owner_resizable(h));
+      return scr_dyn_new_bool(ops->owner_detached(h));
+    }
+#endif
+    return scr_dyn_new_bool(false);
+  }
   if (len == 11 && !memcmp(key, "constructor", len) && !((ScrBytes *)h)->shared)
     return scr_array_buffer_constructor();
   return NULL;
@@ -18864,7 +18950,39 @@ static bool scr_array_buffer_set(void *h, const char *key, size_t len, const Scr
 static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
   (void)self; (void)what;
+#ifdef SCR_JS_OBJECT_MODEL
+  {
+    const ScrJsBufferOps *ops = scr_js_buffer_ops;
+    /* The length-changing methods (t262-dc C1/C2); their arguments are
+     * coerced by the registry with Node's messages. */
+    if (ops && (strcmp(method, "transfer") == 0 || strcmp(method, "transferToFixedLength") == 0)) {
+      const bool fixed = method[8] != '\0';
+      double length = 0;
+      const bool has_length = argc > 0 && args[0]->kind != SCR_DYN_UNDEF;
+      if (has_length && !scr_dyn_number_coerce_js(args[0], &length)) return NULL;
+      return ops->transfer(h, has_length, length, fixed);
+    }
+    if (ops && strcmp(method, "resize") == 0) {
+      double length = 0;
+      if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &length)) return NULL;
+      if (!ops->resize(h, length)) return NULL;
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    if (ops && strcmp(method, "grow") == 0) {
+      double length = 0;
+      if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &length)) return NULL;
+      if (!ops->grow(h, length)) return NULL;
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+  }
+#endif
   if (strcmp(method, "slice") == 0) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_js_buffer_ops && scr_js_buffer_ops->owner_detached(h)) {
+      scr_js_bytes_throw_detached("ArrayBuffer.prototype.slice");
+      return NULL;
+    }
+#endif
     double start = 0, end = scr_bytes_byte_len(h);
     if (argc && !scr_dyn_number_coerce_js(args[0], &start)) return NULL;
     if (argc > 1 && args[1]->kind != SCR_DYN_UNDEF && !scr_dyn_number_coerce_js(args[1], &end)) return NULL;

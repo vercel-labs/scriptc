@@ -106,6 +106,7 @@ import {
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
+import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
@@ -403,6 +404,20 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
+  // A JavaScript source calling a member that resizes, grows or detaches a
+  // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The
+  // receiver may be a checked-dynamic value, so the callee's name decides;
+  // the member read never reaches lowerPropertyAccessExpr when the call
+  // lowers straight through its receiver.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const callee = expr.expression;
+    const name = ts.isPropertyAccessExpression(callee)
+      ? callee.name.text
+      : ts.isElementAccessExpression(callee)
+        ? lowerer.foldedStringKeyOf(callee.argumentExpression)
+        : null;
+    if (name !== null && MUTABLE_BUFFER_MEMBERS.has(name)) lowerer.buffersMutable = true;
+  }
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.

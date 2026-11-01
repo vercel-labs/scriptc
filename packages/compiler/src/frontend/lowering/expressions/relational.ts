@@ -613,6 +613,19 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           );
         }
         const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+        // A checked-dynamic class value (`for (const C of [A, B])`: tsc's
+        // common supertype names the first class, but the slot holds either
+        // class at run time): the test dispatches on the class the value IS,
+        // like any other untyped right-hand side. Using the statically named
+        // class's prototype here answered false for every other class.
+        if (classValue.type.kind === "dyn")
+          return checkedClassInstanceOf(
+            lowerer,
+            left,
+            classValue,
+            dynInstanceOfRefusal(lowerer, expr),
+            loc,
+          );
         return classInstanceOf(lowerer, left, targetInfo, loc, classValue);
       }
       // A union of class instances against a runtime class value (`new K()`

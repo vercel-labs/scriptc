@@ -279,6 +279,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "./lower-namespaces.js";
+import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
 import { expandoMemberRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
@@ -428,6 +429,22 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
   }
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
+  // Calling a Node 24 global the native runtime does not provide (WebSocket,
+  // FormData, …): the value a read answers refuses the call
+  // (host-global-values.ts), so the call is that refusal — SC2020, which a
+  // JavaScript source defers to the throw at this statement.
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr.expression);
+  }
+  // A method on the value's prototype (`FormData.prototype.append(...)`):
+  // the prototype carries the constructor link only, so the method is
+  // surface native code does not have (SC2020, host-global). A call reads
+  // its callee without going through the member-read hook.
+  {
+    const prototypeOf = hostGlobalPrototypeMemberOf(lowerer, expr.expression);
+    if (prototypeOf !== null) lowerer.hostGlobalFence(prototypeOf, expr.expression);
+  }
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (

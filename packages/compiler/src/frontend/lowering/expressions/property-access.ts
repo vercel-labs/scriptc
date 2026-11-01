@@ -4,7 +4,15 @@ import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
-import { hostGlobalNameOfMember } from "../host-globals.js";
+import {
+  HOST_GLOBAL_PROTOTYPE_MEMBERS,
+  HOST_GLOBAL_VALUE_MEMBERS,
+  hostGlobalCallTarget,
+  hostGlobalNameOfMember,
+  hostGlobalNameOfRead,
+  hostGlobalPrototypeOf,
+} from "../host-globals.js";
+import { hostGlobalValue } from "../host-global-values.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
@@ -607,11 +615,32 @@ export function lowerPropertyAccessExpr(
   }
   // A read of a Node 24 global the native runtime does not implement
   // (globalThis.WebSocket, (globalThis as T).FormData, alias.X) is not a
-  // capability probe: Node has the value, so the branch below would answer
-  // a silently wrong undefined. Refuse instead (host-globals.ts).
+  // capability probe: the branch below would answer undefined, where Node
+  // has the constructor. Answer the constructor (host-global-values.ts);
+  // constructing or calling it is the use that refuses (SC2020,
+  // host-global).
   {
     const hostGlobal = hostGlobalNameOfMember(lowerer, expr);
-    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr);
+    if (hostGlobal !== null) {
+      if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
+      return hostGlobalValue(lowerer, hostGlobal, expr);
+    }
+  }
+  // A member read off that value (`WebSocket.OPEN`, `FormData.prototype`):
+  // the value carries the function intrinsics only, and its prototype
+  // carries the constructor link (`FormData.prototype.constructor`). Node's
+  // class also has static members and instance methods, which native code
+  // does not provide, so reading one is a use of that surface and refuses
+  // (SC2020, host-global) instead of answering undefined.
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    if (hostGlobal !== null) {
+      if (!HOST_GLOBAL_VALUE_MEMBERS.has(expr.name.text)) lowerer.hostGlobalFence(hostGlobal, expr);
+    } else {
+      const prototypeOf = hostGlobalPrototypeOf(lowerer, expr.expression);
+      if (prototypeOf !== null && !HOST_GLOBAL_PROTOTYPE_MEMBERS.has(expr.name.text))
+        lowerer.hostGlobalFence(prototypeOf, expr);
+    }
   }
   // Missing host globals (Bun/Deno capability probes) have no binding
   // in a native program. Declared globals retain their own lowering;

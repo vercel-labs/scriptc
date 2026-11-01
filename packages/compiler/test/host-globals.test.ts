@@ -8,7 +8,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
-import { NODE_GLOBALS_WITHOUT_NATIVE } from "../src/frontend/lowering/host-globals.js";
+import {
+  NODE_GLOBALS_WITHOUT_NATIVE,
+  hostGlobalLength,
+} from "../src/frontend/lowering/host-globals.js";
 import { COMMONJS_MODULE_BINDINGS } from "../src/frontend/builtin-modules.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
@@ -109,6 +112,72 @@ test("an imported value with a listed global's name is the program's binding", a
     });
     expect(result.ok ? [] : result.diagnostics.map((diag) => diag.code)).toEqual([]);
     expect(result.ok).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("every listed global's length is Node's, and the value answers it", () => {
+  // A read answers a constructor carrying Node's Function length, so a
+  // `FormData.length` read must see what Node shows. The table is pinned
+  // against the running Node (the release the differential corpus runs).
+  const globals = globalThis as unknown as Record<string, unknown>;
+  for (const name of NODE_GLOBALS_WITHOUT_NATIVE) {
+    const value = globals[name] as { length?: number } | undefined;
+    expect(value, name).toBeDefined();
+    expect(typeof value, name).toBe("function");
+    expect(hostGlobalLength(name), name).toBe(value!.length);
+  }
+});
+
+test("a read compiles and answers the constructor; construction refuses", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-host-global-value-"));
+  const compileSource = async (name: string, source: string) => {
+    await writeFile(join(dir, `${name}.ts`), source);
+    return compile(join(dir, `${name}.ts`), {
+      outDir: join(dir, ".scriptc"),
+      outPath: join(dir, ".scriptc", `${name}.ir.json`),
+      outputKind: "ir",
+    });
+  };
+  try {
+    // The eager module-init read shape (effect's Schema): a read is not a
+    // use, so the module compiles.
+    const read = await compileSource(
+      "read",
+      [
+        "declare var FormData: { new (): unknown; readonly prototype: object };",
+        "declare var WebSocket: { new (url: string): unknown; readonly prototype: object };",
+        "const eager = FormData;",
+        "console.log(typeof FormData, FormData.name, FormData.length);",
+        "const scope = globalThis as unknown as { FormData: unknown };",
+        "console.log(typeof WebSocket, eager === FormData, scope.FormData === FormData);",
+        "console.log({} instanceof FormData, FormData.prototype.constructor === FormData);",
+        'if (typeof WebSocket === "function") console.log("websocket");',
+        "",
+      ].join("\n"),
+    );
+    expect(read.ok ? [] : read.diagnostics.map((diag) => diag.code)).toEqual([]);
+
+    // Constructing or calling the value, or reading a member it does not
+    // carry, is the use that refuses.
+    for (const [name, expression] of [
+      ["construct", "new FormData()"],
+      ["call", "FormData()"],
+      ["globalThis", "new (globalThis as unknown as { WebSocket: new () => unknown }).WebSocket()"],
+      ["static", "(FormData as unknown as { OPEN: number }).OPEN"],
+      ["prototype", "(FormData as any).prototype.append()"],
+    ] as const) {
+      const result = await compileSource(
+        name,
+        `declare var FormData: { new (): unknown; (): unknown; readonly prototype: object };\n${expression};\n`,
+      );
+      expect(result.ok, name).toBe(false);
+      expect(
+        result.ok ? [] : result.diagnostics.map((diag) => [diag.code, diag.reason]),
+        name,
+      ).toEqual([["SC2020", "host-global"]]);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

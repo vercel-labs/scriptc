@@ -2598,3 +2598,104 @@ console.log(JSON.stringify(rows));
     expect(r.stderr).toBe("");
   });
 });
+
+// A Node 24 global native code does not provide answers the constructor Node
+// has (host-global-values.ts): a READ never throws, while constructing or
+// calling the value refuses with the same SC2020 fence the direct use
+// reports. A JavaScript source defers that refusal to the operation that
+// reaches it, which is what lets a module load — effect's Schema reads
+// `globalThis.FormData` at module init — and only throws if the class is
+// ever actually constructed.
+describe("host-global constructor values", () => {
+  test("an eager JavaScript read answers the constructor without throwing", async () => {
+    const r = await compileAndRun(
+      "host-global-eager-read",
+      `const Eager = globalThis.FormData;
+console.log(typeof Eager, Eager.name, Eager.length);
+console.log({} instanceof globalThis.FormData);
+console.log(Eager.prototype.constructor === Eager);
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("function FormData 0\nfalse\ntrue\n");
+    expect(r.stderr).toBe("");
+  });
+
+  test("the value refuses construction wherever it is constructed", async () => {
+    const r = await compileAndRun(
+      "host-global-construction",
+      `const Ctor = globalThis.FormData;
+try {
+  new Ctor();
+  console.log("constructed");
+} catch (error) {
+  console.log(String(error));
+}
+console.log("still running");
+`,
+      "cjs",
+    );
+    // The binding holds the value the read answered, so constructing it
+    // through the binding throws the same fence — blamed at the read.
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toMatch(
+      /^Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:1\]\nstill running\n$/,
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("a member the value does not carry refuses the read", async () => {
+    const r = await compileAndRun(
+      "host-global-member-read",
+      `console.log(typeof globalThis.WebSocket.name);
+console.log("before");
+console.log(globalThis.WebSocket.OPEN);
+console.log("after");
+`,
+      "cjs",
+    );
+    // `name` is a function intrinsic the value carries; `OPEN` is the
+    // class's own static member, which native code does not have.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("string\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-member-read\.cjs:3\]\n$/,
+    );
+  });
+
+  test("a method on the value's prototype refuses the read", async () => {
+    const r = await compileAndRun(
+      "host-global-prototype-member",
+      `console.log(typeof globalThis.FormData.prototype.constructor);
+console.log("before");
+console.log(globalThis.FormData.prototype.append);
+console.log("after");
+`,
+      "cjs",
+    );
+    // The prototype carries `constructor`; `append` is one of the class's
+    // instance methods, which native code does not have.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("function\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-member\.cjs:3\]\n$/,
+    );
+  });
+
+  test("a deferred construction fence names the SC2020 site", async () => {
+    const r = await compileAndRun(
+      "host-global-construction-fence",
+      `console.log("before");
+new globalThis.WebSocket("ws://localhost:8080");
+console.log("after");
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-construction-fence\.cjs:2\]\n$/,
+    );
+  });
+});

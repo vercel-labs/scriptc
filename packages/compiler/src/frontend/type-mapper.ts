@@ -3051,11 +3051,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
     );
   // The async iteration protocols a `for await` source is annotated with
-  // (and the older spelling of an async generator's iterator object).
+  // (and the older spelling of an async generator's iterator object). Node's
+  // typings declare an interface named AsyncIterator too — the native handle
+  // timers/promises.setInterval answers, which that builtin's lowering
+  // builds — so only the ES lib's declarations take the protocol mapping.
+  const isLibAsyncInterface = (name: string): boolean =>
+    psym !== undefined &&
+    ts.symbolName(psym) === name &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        !isNodeTypesPath(ts.getSourceFileOfNode(d).fileName),
+    );
   const isAsyncIterationProtocol = (): boolean =>
-    isStdlibInterface("AsyncIterable") ||
-    isStdlibInterface("AsyncIterator") ||
-    isStdlibInterface("AsyncIterableIterator");
+    isLibAsyncInterface("AsyncIterable") ||
+    isLibAsyncInterface("AsyncIterator") ||
+    isLibAsyncInterface("AsyncIterableIterator");
   // The timer handles: an interface in the fallback and in @types/node 22+,
   // a class (`class Timeout implements Timer`) in @types/node 20 and older.
   const isStdlibTimerHandle = (name: string): boolean =>

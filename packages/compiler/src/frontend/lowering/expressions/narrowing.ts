@@ -378,7 +378,7 @@ export function lowerTernary(
       (thenRaw.type.kind === "dyn" || elseRaw.type.kind === "dyn") &&
       lowerer.dynConvertible(thenRaw.type) &&
       lowerer.dynConvertible(elseRaw.type);
-    const type =
+    let type =
       callableJoin || checkedJsJoin
         ? DYN
         : thenRaw.type.kind === "array" && typeEquals(thenRaw.type, elseRaw.type)
@@ -386,6 +386,21 @@ export function lowerTernary(
           : dynJoin
             ? DYN
             : (anyJoin ?? (useCtx && ctxMapped ? ctxMapped : lowerer.irTypeOf(expr)));
+    // An arm the checker types at the join can still hold an absent value
+    // at run time (`flag ? empty.a : empty.b`): an unchecked key or element
+    // read whose storage carries the undefined arm. The join keeps that
+    // arm, so the ternary's result represents the missing value instead of
+    // coercing it into the checker's narrower type.
+    const admitsUndefined = (t: IrType): boolean =>
+      t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
+    if (
+      !admitsUndefined(type) &&
+      (lowerer.runtimeOptionalWidening(thenRaw.type, type) !== null ||
+        lowerer.runtimeOptionalWidening(elseRaw.type, type) !== null)
+    ) {
+      const widened = lowerer.runtimeOptionalType(type);
+      if (admitsUndefined(widened)) type = widened;
+    }
     // Each arm flows into the ternary's type through the slot-coercion
     // path: union arms wrap, dyn slots reject the non-dyn arm with
     // SC1101, mismatched record shapes get SC2002; coerceInto is

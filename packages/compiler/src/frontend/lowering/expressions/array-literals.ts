@@ -85,12 +85,23 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
   return false;
 }
 
+/** `derived` is `base` or extends it (`class Dog extends Animal`). */
+function classIsOrExtends(lowerer: Lowerer, derived: string, base: string): boolean {
+  for (let info = lowerer.classes.get(derived) ?? null; info; info = info.base) {
+    if (info.def.name === base) return true;
+  }
+  return false;
+}
+
 /** A JavaScript array literal whose inferred element type spells ONE class
- * constructor while the literal names several (`const classes = [A, B]`:
- * tsc's best common type is the first element's `typeof A`). The literal
- * is a fresh array of every constructor it names, so a file-scope binding
- * holds the checked-dynamic array: the spelled element type would check
- * each element against A's class key and reject B at module init. */
+ * constructor while the literal names a constructor that type REJECTS
+ * (`const classes = [A, B]`: tsc's best common type is the first element's
+ * `typeof A`). The literal is a fresh array of every constructor it names,
+ * so a file-scope binding holds the checked-dynamic array: the spelled
+ * element type would check each element against A's class key and reject B
+ * at module init. A subclass element keeps the spelled class's layout —
+ * the class value dispatch already accepts it, and its static element type
+ * gives the better diagnostics — so only a rejected element counts. */
 export function jsHoldsMixedClassConstructors(lowerer: Lowerer, expr: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   if (!ts.isArrayLiteralExpression(expr)) return false;
@@ -101,7 +112,7 @@ export function jsHoldsMixedClassConstructors(lowerer: Lowerer, expr: ts.Express
     if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) return false;
     const elementType = lowerer.mapTypeOf(lowerer.typeOf(element));
     if (elementType?.kind !== "classval") return false;
-    if (elementType.className !== own.elem.className) mixed = true;
+    if (!classIsOrExtends(lowerer, elementType.className, own.elem.className)) mixed = true;
   }
   return mixed;
 }

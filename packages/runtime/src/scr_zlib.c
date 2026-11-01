@@ -468,6 +468,8 @@ static bool scr_zlib_codec_mode(int mode) {
   return mode == 8 || mode == 9 || mode == 10 || mode == 11;
 }
 
+static bool scr_zlib_zstd_mode(int mode) { return mode == 10 || mode == 11; }
+
 static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibOptions *out);
 
 /* A typed options object (a record that crossed into a checked-dynamic
@@ -907,6 +909,10 @@ static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions
   op->chunk = (uint32_t)o.chunk_size;
   op->flush = (int)o.flush;
   op->finish = (int)o.finish_flush;
+  /* Node's zstd one-shots reach the codec through the stream's write and end,
+   * and that sequence is what leaves the content size out of the frame. Deflate
+   * and Brotli write the same output in one finished pass, so they keep it. */
+  if (!scr_zlib_zstd_mode(mode)) op->flush = (int)o.finish_flush;
   op->max_output = o.max_output;
   op->reject = o.reject_garbage;
   op->cb = cb;

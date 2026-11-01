@@ -15,6 +15,9 @@ import { GENERATOR_STEP_METHODS, HELPER_METHODS } from "./generator-dynamic-disp
  * destructuring rest, the collection constructors' and Object.fromEntries'
  * seeds, and Math.min/Math.max over a spread. */
 const RUNTIME_STEP_LIB_FNS: ReadonlySet<string> = new Set([
+  // The Promise statics' generic algorithms walk the iterable in the
+  // runtime, a compiled generator among the values they step.
+  "promise.genericStatic",
   "dyn.destructureRest",
   "dyn.mathFold",
   "dyn.nativeSetNew",

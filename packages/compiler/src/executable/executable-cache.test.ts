@@ -7,6 +7,7 @@ import {
   trackedFileExists,
   trackedReadFile,
 } from "../frontend/input-tracker.js";
+import { nativeProgramPartitions } from "../backend/native-codegen-core.js";
 import {
   nativeArtifactDependenciesStillMatch,
   snapshotNativeArtifactDependencies,
@@ -23,6 +24,13 @@ import {
 } from "./executable-cache.js";
 
 const scratch: string[] = [];
+
+/** The host's threads, which size partitions (nativeProgramPartitions). */
+const hostThreads = vi.hoisted(() => ({ count: 8 }));
+vi.mock("node:os", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:os")>()),
+  availableParallelism: () => hostThreads.count,
+}));
 
 afterEach(async () => {
   await Promise.all(scratch.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -354,6 +362,76 @@ test("early executable cache restores a validated final binary", async () => {
   const staleNative = await readEarlyExecutableCache(f.root, f.options);
   expect(staleNative?.executableRestored).toBe(false);
   expect(await readFile(f.options.outPath, "utf8")).toBe("keep-current\n");
+});
+
+test("a divided module's executable cache entry depends on the host's threads", async () => {
+  const f = await fixture();
+  f.options.emitIr = false;
+  // 8 MiB of LLVM text: two partitions per thread of an 8-thread host (16),
+  // eight for a host of two or four threads.
+  await writeFile(f.llvmPath, `;${"x".repeat(8 * 1024 * 1024)}\n`);
+  await writeFile(f.options.outPath, "native binary");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  hostThreads.count = 8;
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [],
+    frontend: tracker.snapshot(),
+    partitions: 16,
+  });
+  expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+  hostThreads.count = 2;
+  expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
+  hostThreads.count = 8;
+  expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+});
+
+test("an undivided module's executable cache entry ignores the host's threads", async () => {
+  const f = await fixture();
+  await writeFile(f.options.outPath, "native binary");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  hostThreads.count = 8;
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [],
+    frontend: tracker.snapshot(),
+  });
+  hostThreads.count = 1;
+  expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+  hostThreads.count = 8;
+});
+
+test("a module small enough to stay whole records one partition and hits on every host", async () => {
+  const f = await fixture();
+  // What a runtime-pack build records for a module whose text stays one
+  // partition: the helper compiled a single partition, not a divided module.
+  const bytes = (await readFile(f.llvmPath)).length;
+  expect(nativeProgramPartitions(bytes, false)).toBe(1);
+  await writeFile(f.options.outPath, "native binary");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  hostThreads.count = 8;
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [],
+    frontend: tracker.snapshot(),
+    partitions: 1,
+  });
+  for (const threads of [1, 4, 8]) {
+    hostThreads.count = threads;
+    expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+  }
+  hostThreads.count = 8;
 });
 
 test("routed executable hits require an unchanged compiler implementation proof", async () => {

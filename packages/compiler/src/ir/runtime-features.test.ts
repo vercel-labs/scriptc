@@ -47,6 +47,12 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("links the inspect unit for a BigInt rendered in Node's form", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("bigint.inspect"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({ bigint: true, inspect: true });
+  });
+
   test("gates the BigIntStats unit on its member reads, not on bigint", () => {
     const reads = module();
     reads.functions[0]!.body.push(call("bigstats.size"));
@@ -216,6 +222,20 @@ describe("runtime feature snapshots", () => {
       mod.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(true);
     }
+  });
+
+  test("the generic Promise statics link the units their algorithms call", () => {
+    // The implementing unit calls C's resolve and the iterable's next/return
+    // through scr_dyn_invoke and builds and settles capability promises with
+    // scr_async_dyn: a program that makes only this call still links both, or
+    // the source build fails to link.
+    const mod = module();
+    mod.functions[0]!.body.push(call("promise.genericStatic"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({
+      promiseGeneric: true,
+      dynInvoke: true,
+      dynAsync: true,
+    });
   });
 
   test("constant-key reads of inherited method names link the dyn-invoke unit", () => {

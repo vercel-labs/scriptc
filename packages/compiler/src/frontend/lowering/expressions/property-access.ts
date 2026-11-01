@@ -1,8 +1,10 @@
 import { widensReducedRecords } from "../function-returns.js";
+import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
+import { hostGlobalNameOfMember } from "../host-globals.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
@@ -608,6 +610,14 @@ export function lowerPropertyAccessExpr(
       type: DYN,
       loc,
     };
+  }
+  // A read of a Node 24 global the native runtime does not implement
+  // (globalThis.WebSocket, (globalThis as T).FormData, alias.X) is not a
+  // capability probe: Node has the value, so the branch below would answer
+  // a silently wrong undefined. Refuse instead (host-globals.ts).
+  {
+    const hostGlobal = hostGlobalNameOfMember(lowerer, expr);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr);
   }
   // Missing host globals (Bun/Deno capability probes) have no binding
   // in a native program. Declared globals retain their own lowering;
@@ -1725,6 +1735,15 @@ export function lowerPropertyAccessExpr(
       },
       expr,
     );
+  }
+  // A NULLISH receiver: JavaScript's RequireObjectCoercible throws Node's
+  // TypeError at the read (only an optional chain, lowered elsewhere,
+  // answers undefined). A primitive receiver that is not nullish never
+  // reaches this fence — its members lower above.
+  if (isUnitType(recvLowered.type)) {
+    const unit = recvLowered.type.kind === "nullT" ? "null" : "undefined";
+    const t = ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+    return throwAfterEach([recvLowered], nullishReadTypeError(unit, expr.name.text, t, loc), loc);
   }
   lowerer.unsupported(
     "SC1090",
@@ -3911,6 +3930,21 @@ export function lowerUnionProperty(
       loc: locOf(expr),
     };
   }
+  if (isUnitType(value.type)) {
+    // A nullish receiver: Node's RequireObjectCoercible TypeError, after
+    // the receiver's own evaluation.
+    const unit = value.type.kind === "nullT" ? "null" : "undefined";
+    return throwAfterEach(
+      [value],
+      nullishReadTypeError(
+        unit,
+        expr.name.text,
+        lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN,
+        locOf(expr),
+      ),
+      locOf(expr),
+    );
+  }
   if (value.type.kind !== "union") {
     lowerer.unsupported(
       "SC1090",
@@ -4783,17 +4817,21 @@ export function fieldTarget(
   }
   // A member the checker ADMITS but the stored layout cannot hold. The
   // constraint of a type parameter declares it (a generic options bag read
-  // through an `"sessionId" in options` guard), and so does a cast that
-  // intersects the member onto a record (`options as Omit<T, "k"> &
-  // ProviderRequestOptions<M>`), while the record the value was STORED as
-  // has no such slot: the call site omitted the optional member, the
-  // instantiation is a union of option shapes, or the cast added a member
-  // its source layout never declared. Node reads the property off the
-  // object it actually has — undefined when the object lacks it, the value
-  // when the value kept one — so the read is the checked-dynamic keyed read
-  // of the stored value, entering the static code at the type the checker
+  // through an `"sessionId" in options` guard, or `options?.apiKey` with the
+  // guarded spelling), and so does a cast that intersects the member onto a
+  // record (`options as Omit<T, "k"> & ProviderRequestOptions<M>`), while the
+  // record the value was STORED as has no such slot: the call site omitted the
+  // optional member, the instantiation is a union of option shapes, or the cast
+  // added a member its source layout never declared. Node reads the property
+  // off the object it actually has — undefined when the object lacks it, the
+  // value when the value kept one — so the read is the checked-dynamic keyed
+  // read of the stored value, entering the static code at the type the checker
   // gave the read (a failed conversion throws; it never diverges).
-  if (!access.questionDotToken && readOnlyAccess(access)) {
+  //
+  // Inside a `?.` chain this lowering runs on the re-dispatch, with the
+  // receiver node bound to the chain's present (non-nullish) arm, so the
+  // stored value is already the record and the chain supplies the guard.
+  if ((!access.questionDotToken || lowerer.chainHandled.has(access)) && readOnlyAccess(access)) {
     const storedIr = stored ?? narrowed;
     const present = storedIr?.kind === "union" ? lowerer.stripUndefinedArm(storedIr) : storedIr;
     const arms =

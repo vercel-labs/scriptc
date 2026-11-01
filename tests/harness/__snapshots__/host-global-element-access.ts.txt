@@ -1,0 +1,8 @@
+host-global-element-access.ts:4:17 - error SC2020: 'URLPattern' is a Node global that native code does not provide
+
+  3 | // answering undefined through the dynamic global path. SC2020, host-global.
+  4 | const pattern = (globalThis as unknown as Record<string, unknown>)["URLPattern"];
+    |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 | console.log(typeof pattern);
+
+  hint: the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global

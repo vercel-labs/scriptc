@@ -6,7 +6,7 @@
 // packages/compiler/src/backend/vendor-inputs.ts keeps the same pins for the
 // source-build path; a unit test checks that the two agree.
 
-/** Node v24.22.0 bundles ICU 78.3 (`process.versions.icu`). */
+/** Node v24.22.1 bundles ICU 78.3 (`process.versions.icu`). */
 export const ICU_VERSION = "78.3";
 
 const RELEASE_URL = `https://github.com/unicode-org/icu/releases/download/release-${ICU_VERSION}`;

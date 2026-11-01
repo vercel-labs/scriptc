@@ -72,8 +72,8 @@ class Conditional extends Animal {
 const rec = { name: "r" };
 console.log(rec instanceof Animal);
 
-// ...and folds statically for standalone classes, so a computed operand
-// whose effects would be dropped is rejected
+// ...and folds statically for standalone classes, which still evaluates
+// both operands (Node evaluates them) before answering
 class Point {
   x: number = 0;
 }

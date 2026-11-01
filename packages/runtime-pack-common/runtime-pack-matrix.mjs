@@ -114,6 +114,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     "scr_async_dyn.c",
     any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
   ],
+  // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
+  // the specification's algorithms over the checked-dynamic tier. Its
+  // feature also selects dynInvoke and dynAsync, whose units it calls.
+  ["scr_js_promise_generic.c", "promiseGeneric"],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -277,6 +281,24 @@ export function variantsFor(source) {
       id: "record-view-partial",
       when: { recordViewPartial: true },
       defines: ["SCR_RECORD_VIEW_PARTIAL"],
+    });
+    // An error thrown by island code answers `constructor` from V8 (NI-4),
+    // so `e.constructor === TypeError` holds with the island's TypeError.
+    // Pushed before the object model twins below, so a program that has both
+    // selects one build that carries both defines. Every other program keeps
+    // the default object, byte for byte.
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
+    });
+    // A program with both a partial record assertion and Node islands links
+    // the build that carries both defines; the variant with the most
+    // conditions is the one selected.
+    variants.push({
+      id: "record-view-partial-node-island",
+      when: { recordViewPartial: true, nodeIsland: true },
+      defines: ["SCR_RECORD_VIEW_PARTIAL", "SCR_NODE_ISLANDS"],
     });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array

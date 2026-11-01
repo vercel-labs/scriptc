@@ -40,6 +40,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),

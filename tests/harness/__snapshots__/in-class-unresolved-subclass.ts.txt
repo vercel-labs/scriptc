@@ -1,0 +1,6 @@
+in-class-unresolved-subclass.ts:19:7 - error SC1090: 'in' on 'Base | { kind: string }' receivers (only process.env, Error instances, class instances, record-typed values, and unions of fixed record shapes answer; narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
+
+  18 |   // that carries `dispose`.
+  19 |   if ("dispose" in target && typeof (target as Extra).dispose === "function") {
+     |       ^~~~~~~~~~~~~~~~~~~
+  20 |     (target as Extra).dispose();

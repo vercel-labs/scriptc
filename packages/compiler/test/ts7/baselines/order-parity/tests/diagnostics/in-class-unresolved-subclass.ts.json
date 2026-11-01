@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/in-class-unresolved-subclass.ts"
+ ],
+ "diags": []
+}

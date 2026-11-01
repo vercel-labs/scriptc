@@ -2298,6 +2298,38 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** `lowerOptionalNumber`'s bigint twin: an `undefined`-armed BIGINT value at
+ * a `++`/`--` use (`let sequence: bigint | undefined` read back after the
+ * guard proved it present). JavaScript's ToNumeric(undefined) is NaN, which
+ * a bigint slot has no representation for, so the payload is EXTRACTED with
+ * the same checked helper a narrowed read uses: a value that is really
+ * undefined there (only a lying assertion reaches it) throws the catchable
+ * TypeError instead of yielding a number the checker says cannot appear.
+ * Null when the operand is not an optional bigint the checker narrowed to
+ * bigint — the caller keeps its refusal. */
+export function lowerOptionalBigint(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  loc: SrcLoc,
+  narrowedNode: ts.Expression,
+): IrExpr | null {
+  if (operand.type.kind !== "union") return null;
+  const unionId = operand.type.unionId;
+  const valueTag = lowerer.armTag(unionId, BIGINT_T);
+  if (valueTag < 0 || lowerer.armTag(unionId, UNDEFINED_T) < 0) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(narrowedNode))?.kind !== "bigint") return null;
+  const checked = lowerer.narrowedArmHelper(unionId, BIGINT_T, loc);
+  if (checked) return { kind: "call", callee: checked, args: [operand], type: BIGINT_T, loc };
+  return {
+    kind: "unionNarrow",
+    unionId,
+    tag: valueTag,
+    value: operand,
+    type: BIGINT_T,
+    loc,
+  };
+}
+
 /** A numeric operand of an operator: the binary arithmetic and bitwise six
  * (and their ordering comparisons), unary `+`, `-` and `~`, and compound
  * assignment's read and right side. JavaScript applies ToNumber to a

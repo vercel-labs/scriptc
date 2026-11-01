@@ -1657,6 +1657,108 @@ const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "toLocaleString",
 ]);
 
+/** The declarers of `key` on an instance of a compiled class: a declared
+ * field (inherited included in `fields`), a method, or an accessor half. */
+function declaresInstanceMember(lowerer: Lowerer, info: ClassInfo, key: string): boolean {
+  if (OBJECT_PROTOTYPE_KEYS.has(key)) return true;
+  return (
+    info.fields.has(key) ||
+    lowerer.findMethodOn(info, key) !== null ||
+    lowerer.findMethodOn(info, `get:${key}`) !== null ||
+    lowerer.findMethodOn(info, `set:${key}`) !== null
+  );
+}
+
+/** A member one class spells in its own source (no base-chain walk): the
+ * subclass check below only cares about what the class itself adds. */
+function declaresOwnMember(info: ClassInfo, key: string): boolean {
+  if (info.fields.has(key) || info.methods.has(key)) return true;
+  return info.methods.has(`get:${key}`) || info.methods.has(`set:${key}`);
+}
+
+/** `classInstanceIn`'s answer: a static boolean, "the declaration lacks the
+ * key but a subclass may declare it" (the caller resolves it with class
+ * tests), or "the declaration cannot answer" (runtime-provided root, index
+ * signature, unknown class). */
+type ClassInAnswer = boolean | "below" | "unknown";
+
+/** `classInstanceIn`'s subclass guard: a subclass whose values land in THIS
+ * arm (it is not an arm of the union itself) that declares `key` makes the
+ * arm's static `false` a lie. An arm of the union is tagged with its own
+ * arm, so its subtree answers there and is skipped. */
+function subclassDeclares(
+  info: ClassInfo,
+  key: string,
+  armNames: ReadonlySet<string> | null,
+): boolean {
+  for (const sub of info.subclasses) {
+    if (armNames?.has(sub.def.name)) continue;
+    if (declaresOwnMember(sub, key)) return true;
+    if (subclassDeclares(sub, key, armNames)) return true;
+  }
+  return false;
+}
+
+/** The program subclasses below `info` that declare `key` themselves (the
+ * class tests a "below" answer ranges over): a subclass whose declaring
+ * ancestor already answered is covered by that ancestor's test. */
+function declaringSubclasses(info: ClassInfo, key: string, out: string[] = []): string[] {
+  for (const sub of info.subclasses) {
+    if (declaresOwnMember(sub, key)) out.push(sub.def.name);
+    else declaringSubclasses(sub, key, out);
+  }
+  return out;
+}
+
+/** A class body spelling an index signature: `'k' in instance` then answers
+ * per VALUE (the overflow map), not from the declaration. */
+function declaresIndexSignature(info: ClassInfo): boolean {
+  if (!info.decl) return false;
+  for (const member of info.decl.members.nodes)
+    if (ts.isIndexSignatureDeclaration(member)) return true;
+  return false;
+}
+
+/** `'k' in instance` for a compiled class: every declared member is present
+ * on every instance (a class field is defined at construction whether or
+ * not it holds `undefined`, and a method lives on the prototype), so
+ * membership answers STATICALLY from the declaration — exactly Node's
+ * answer. `"unknown"` when the declaration cannot answer for the value:
+ * runtime-provided roots (`decl === null`, the Error/EventEmitter/stream/
+ * EventTarget/Date/Array families) expose members their declaration does
+ * not spell, and an index signature answers per value. `armNames` are the
+ * class arms of the union whose arm this is (null for a single-class
+ * receiver): a subclass that is itself an arm is tagged with that arm, so
+ * only the other subclasses can lie about this arm's `false`. */
+function classInstanceIn(
+  lowerer: Lowerer,
+  className: string,
+  key: string,
+  armNames: ReadonlySet<string> | null,
+): ClassInAnswer {
+  const info = lowerer.classes.get(className);
+  if (!info) return "unknown";
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    // `decl === null` marks the runtime-provided roots (%Error and the
+    // families below): their members come from the runtime, not a
+    // declaration this can read.
+    if (
+      c.decl === null ||
+      c.builtinError ||
+      c.builtinEmitter ||
+      c.builtinStream ||
+      c.builtinEventTarget ||
+      c.extendsDate ||
+      c.extendsArray
+    )
+      return "unknown";
+    if (declaresIndexSignature(c)) return "unknown";
+  }
+  if (declaresInstanceMember(lowerer, info, key)) return true;
+  if (subclassDeclares(info, key, armNames)) return "below";
+  return false;
+}
+
 /** `"key" in v` — the key-presence test. Three lowered receivers:
  * process.env (getenv(3) presence — Node-exact, an empty value still
  * counts as present), and monomorphic record shapes, where the answer is
@@ -2037,6 +2139,52 @@ export function lowerInExpression(
         `'in' with the key '${key}' on Error receivers (code answers from the error's code slot; message and name are always present)`,
       );
     }
+    // A plain compiled class (no Error root): every instance carries its
+    // declared fields and prototype members, so membership answers from the
+    // declaration (classInstanceIn). A receiver that is not a stable read
+    // still evaluates for its effects.
+    const classVerdict = classInstanceIn(lowerer, recv.type.className, key, null);
+    if (classVerdict === true || classVerdict === false) {
+      const answer: IrExpr = { kind: "boolLit", value: classVerdict, type: BOOL, loc };
+      return isSafeToDiscard(recv)
+        ? answer
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: recv, loc }],
+            result: answer,
+            type: BOOL,
+            loc,
+          };
+    }
+    // The declaration lacks the key, but a subclass may declare it (the
+    // static type is the base): the declaring subclasses answer through
+    // class tests, exactly the Error case above. The receiver evaluates
+    // once, so it is stabilized when it is not a plain read.
+    if (classVerdict === "below") {
+      const info = lowerer.classes.get(recv.type.className)!;
+      const declarers = declaringSubclasses(info, key);
+      const stable =
+        recv.kind === "varRef" || recv.kind === "caughtNarrow"
+          ? null
+          : lowerer.declareHiddenLocal("%inRecv", recv.type);
+      const ref = (): IrExpr => (stable ? varRef(stable.id, recv.type, loc) : recv);
+      let answer = declarers.reduce<IrExpr | null>((acc, className) => {
+        const test: IrExpr = { kind: "instanceOf", value: ref(), className, type: BOOL, loc };
+        return acc === null
+          ? test
+          : { kind: "logical", op: "||", left: acc, right: test, type: BOOL, loc };
+      }, null) ?? { kind: "boolLit", value: false, type: BOOL, loc };
+      if (stable) {
+        answer = {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
+          result: answer,
+          type: BOOL,
+          loc,
+        };
+      }
+      return answer;
+    }
   }
   // A dyn receiver (`"portless" in pkg` after the `typeof pkg ===
   // "object"` guard): own-member presence on the checked-dynamic tree — tsc admits `in`
@@ -2056,6 +2204,9 @@ export function lowerInExpression(
     const unionId = recv.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms ?? [];
     const answers: { tag: number; has: boolean | "slot" | "unit" | "keyed"; arm: IrType }[] = [];
+    const armClasses = new Set(
+      arms.filter((arm) => arm.kind === "object").map((arm) => arm.className),
+    );
     let staticAnswers = arms.length > 0;
     for (const arm of arms) {
       const tag = lowerer.armTag(unionId, arm);
@@ -2067,6 +2218,18 @@ export function lowerInExpression(
       // erased assertion over an optional value still carries one.
       if (isUnitType(arm)) {
         answers.push({ tag, has: "unit", arm });
+        continue;
+      }
+      // A CLASS arm answers from its declaration too (classInstanceIn);
+      // a subclass that lands in this arm and declares the key keeps the
+      // per-value answer impossible, so the fence stays.
+      if (arm.kind === "object") {
+        const verdict = classInstanceIn(lowerer, arm.className, key, armClasses);
+        if (verdict === "below" || verdict === "unknown") {
+          staticAnswers = false;
+          break;
+        }
+        answers.push({ tag, has: verdict, arm });
         continue;
       }
       const shape = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
@@ -2212,7 +2375,7 @@ export function lowerInExpression(
     lowerer.unsupported(
       "SC1090",
       expr,
-      `'in' on '${lowerer.fmt(recv.type)}' receivers (only process.env, Error instances, record-typed values, and unions of fixed record shapes answer; ${NARROW_FIRST})`,
+      `'in' on '${lowerer.fmt(recv.type)}' receivers (only process.env, Error instances, class instances, record-typed values, and unions of fixed record shapes answer; ${NARROW_FIRST})`,
     );
   }
   const shape = lowerer.shapes.get(recv.type.shapeId);

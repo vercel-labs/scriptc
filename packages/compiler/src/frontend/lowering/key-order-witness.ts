@@ -81,7 +81,7 @@ import {
 import type { Lowerer } from "./lowerer.js";
 import * as ts from "../ts7/adapter.js";
 import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import { replaceChildExpr } from "../../ir/fields.generated.js";
+import { replaceThroughParents } from "../../ir/replace-children.js";
 import { InternalCompilerError } from "../../errors.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
 
@@ -1972,34 +1972,10 @@ function replacementsIn(
   return replacements;
 }
 
-/** Replaces each node of `replacements` in `fn` through the node that holds
- * it (replaceChildExpr), and the nodes under a replacement in turn. A node
- * is never rewritten into another kind in place: the compiler compiles this
- * file too, and a node it builds keeps its kind's fields. */
-function replaceThroughParents(fn: IrFunction, replacements: ReadonlyMap<IrExpr, IrExpr>): void {
-  if (replacements.size === 0) return;
-  let replaced = 0;
-  const children = (parent: IrExpr | IrStmt) => ({
-    expr: (child: IrExpr): boolean => {
-      const to = replacements.get(child);
-      if (to !== undefined && replaceChildExpr(parent, child, to)) replaced++;
-      visitExpr(to ?? child);
-      return true;
-    },
-    stmt: (child: IrStmt): boolean => {
-      visitStmt(child);
-      return true;
-    },
-  });
-  function visitExpr(node: IrExpr): void {
-    const { expr, stmt } = children(node);
-    everyExprChild(node, expr, stmt);
-  }
-  function visitStmt(node: IrStmt): void {
-    const { expr, stmt } = children(node);
-    everyStmtChild(node, expr, stmt);
-  }
-  for (const stmt of fn.body) visitStmt(stmt);
+/** Replaces each node of `replacements` in `fn` through its parent
+ * (replaceThroughParents); every kept site lies in its function's body. */
+function replaceKeptSites(fn: IrFunction, replacements: ReadonlyMap<IrExpr, IrExpr>): void {
+  const replaced = replaceThroughParents(fn.body, replacements);
   if (replaced !== replacements.size)
     throw new InternalCompilerError(
       `key-order-witness: ${replacements.size - replaced} kept site(s) not found in ${fn.name}`,
@@ -2194,7 +2170,7 @@ function keepSourceProbes(
     };
     replacementsIn(byFn, fn).set(node, replacement);
   }
-  for (const [fn, replacements] of byFn) replaceThroughParents(fn, replacements);
+  for (const [fn, replacements] of byFn) replaceKeptSites(fn, replacements);
 }
 
 /** Same-shape `{ ...r, k: v }` clones: Node's copy holds every own key of
@@ -2284,5 +2260,5 @@ function keepRecordClones(
     };
     replacementsIn(byFn, fn).set(node, replacement);
   }
-  for (const [fn, replacements] of byFn) replaceThroughParents(fn, replacements);
+  for (const [fn, replacements] of byFn) replaceKeptSites(fn, replacements);
 }

@@ -99,7 +99,11 @@ import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
-import { functionKeepsRecordSources } from "./record-sources.js";
+import {
+  finalizePendingSourceAnswers,
+  functionKeepsRecordSources,
+  type PendingSourceAnswer,
+} from "./record-sources.js";
 import { exprFunctionReference } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
@@ -185,6 +189,7 @@ import {
   checkedNarrowOperand,
   deferredReadHelper,
   widthNarrowHelper,
+  keepDroppedSourceKeys,
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
 import {
@@ -3524,11 +3529,18 @@ export class Lowerer {
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
   readonly shapeOrderHelperFinalizers: (() => void)[] = [];
-  /** Whether any lowered function converts a checked-dynamic value into a
-   * closed record, the only conversion that can leave a record holding
-   * undeclared source keys (record-sources.ts). Settled once lowering ends,
-   * before the shape helpers finalize their bodies. */
+  /** Whether the program can leave a record holding undeclared source keys
+   * (record-sources.ts): some lowered function converts a checked-dynamic
+   * value into a closed record, or a record-path merge drops keys and keeps
+   * them beside the narrower record. Settled once lowering ends, before the
+   * shape helpers finalize their bodies. */
   recordSourcesPossible = false;
+  /** Record questions (`in` over a record or a union of fixed record shapes)
+   * met before the fact above settled (record-sources.ts): each holds the
+   * static answer its site uses and how to build the source-aware one.
+   * finalizePendingSourceAnswers replaces the site when the program keeps a
+   * source and leaves every site untouched when it does not. */
+  readonly pendingSourceAnswers: PendingSourceAnswer[] = [];
   /** Construction witnesses that choose each shape's enumeration order
    * once lowering settles (key-order-witness.ts). */
   readonly keyOrder = new KeyOrderNotes();
@@ -4054,6 +4066,11 @@ export class Lowerer {
    * the scr_js_buffers views registry in %main. */
   buffersMutable = false;
   readonly liftedFns: IrFunction[] = [];
+  /** While a lifted helper's body is built at this site
+   * (keepDroppedSourceKeys), hidden locals belong to that helper instead of
+   * the function whose body requested it: the builder installs its own
+   * `locals` list here. Null everywhere else. */
+  localSink: IrLocal[] | null = null;
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
    * own generators there on the typed path). Local ids repeat across
@@ -4772,6 +4789,12 @@ export class Lowerer {
     // Settled from every lowered function once lowering ends, before the
     // shape helpers finalize (record-sources.ts).
     "recordSourcesPossible",
+    // Record questions met before the fact settled, and the static answer
+    // each site keeps (record-sources.ts). Entries hold the nodes of the unit
+    // that lowered them, so a unit that lowers again records its own; an
+    // entry whose unit was replayed points at a discarded node and its
+    // helper stays unreferenced.
+    "pendingSourceAnswers",
     "slotOriginMemo",
     "recordOriginMemo",
     "boundaryCastOrder",
@@ -4801,6 +4824,9 @@ export class Lowerer {
     "genericClassDemandPriority",
     "unitEvents",
     // scratch of the lowering in progress, and memos keyed by nodes
+    // (`localSink` is installed and restored inside one conversion, so it is
+    // null whenever a unit ends)
+    "localSink",
     "islandInstanceofHandled",
     "nullishBindings",
     "implicitLocalFns",
@@ -11080,17 +11106,25 @@ export class Lowerer {
     // consult one keep their static copy (record-sources.ts). Decided before
     // the key-order pass, which reads the fact (a same-shape copy of a kept
     // record keeps its keys; the `"k" in r` sites answer through the view).
-    const sourceScan = { memo: new Map<string, boolean>(), visiting: new Set<string>() };
-    for (const fn of keyOrderFunctions) {
-      if (!functionKeepsRecordSources(this, fn, sourceScan)) continue;
-      this.recordSourcesPossible = true;
-      break;
+    // A pass that presets the fact was lowered after one settled it and
+    // knows already.
+    if (!this.recordSourcesPossible) {
+      const sourceScan = { memo: new Map<string, boolean>(), visiting: new Set<string>() };
+      for (const fn of keyOrderFunctions) {
+        if (!functionKeepsRecordSources(this, fn, sourceScan)) continue;
+        this.recordSourcesPossible = true;
+        break;
+      }
     }
     applyKeyOrderWitnesses(this, keyOrderFunctions);
     // A kept width spread builds a record that holds undeclared keys, so the
     // captures that consult a kept source must be active for it too.
     if (this.keyOrder.keptWidthSpreads > 0) this.recordSourcesPossible = true;
     observeRecordLiteralRebuilds(null);
+    // The fact is settled: answer the record questions lowering deferred
+    // (record-sources.ts). A program that keeps no source keeps each site's
+    // static answer.
+    finalizePendingSourceAnswers(this, keyOrderFunctions);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     this.settleSharedHelperLocations([
       ...orderedUnits,
@@ -13934,7 +13968,13 @@ export class Lowerer {
         ) {
           const values = literalValues(this.checker.getTypeOfSymbol(property));
           const arm = values && this.literalUnionArm(def.id, values);
-          if (arm) expr = this.coerceInto(node, expr, arm);
+          // The arm's conversion copies the literal into the arm's layout;
+          // keys the arm does not declare stay with the value (record-
+          // sources.ts keepDroppedSourceKeys), as Node's spread keeps them.
+          if (arm)
+            expr = keepDroppedSourceKeys(this, expr, arm, expr.loc, (source) =>
+              this.coerceInto(node, source, arm),
+            );
         }
       }
     }
@@ -15852,7 +15892,9 @@ export class Lowerer {
    * defaulted parameter (the parameter's symbol binds to the separately-
    * declared body local; nothing in the source can name this one). */
   declareHiddenLocal(name: string, type: IrType): IrLocal {
-    return declareContextLocal(this.ctx, name, type, false, undefined, undefined);
+    const local = declareContextLocal(this.ctx, name, type, false, undefined, undefined);
+    this.localSink?.push(local);
+    return local;
   }
 
   /** The body binding of a fixed-tuple rest parameter: one native slot per

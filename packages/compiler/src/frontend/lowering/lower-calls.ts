@@ -2169,12 +2169,27 @@ export function lowerCallThroughValue(
   callee: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  const result = lowerCallThroughValueRaw(lowerer, expr, callee, loc);
-  // A value of an OVERLOADED type holds the set's erased function (mapType's
-  // overload-value rule): its result converts to the resolved overload's
-  // type, as a call through an overloaded record member does. Only a callee
-  // whose IR type IS that erased function converts, so a class method or a
-  // declared function called through its own implementation is unchanged.
+  return overloadValueResult(
+    lowerer,
+    expr,
+    callee,
+    lowerCallThroughValueRaw(lowerer, expr, callee, loc),
+  );
+}
+
+/** A call through a VALUE of an OVERLOADED type: the value holds the set's
+ * erased function (mapType's overload-value rule), so its result converts to
+ * the resolved overload's type, as a call through an overloaded record
+ * member does. Only a callee whose IR type IS that erased function converts,
+ * so a class method or a declared function called through its own
+ * implementation is unchanged. Shared with the optional chain's own call
+ * step (`f?.(x)`, `a.m?.(x)`), which builds its callValue directly. */
+export function overloadValueResult(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  callee: IrExpr,
+  result: IrExpr,
+): IrExpr {
   if (result.kind !== "callValue" || callee.type.kind !== "func") return result;
   const calleeTs = lowerer.checker.getNonNullableType(lowerer.typeOf(expr.expression));
   if (!isOverloadedCallableMemberType(calleeTs, lowerer.checker)) return result;

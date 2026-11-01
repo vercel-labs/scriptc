@@ -65,3 +65,45 @@ console.log("survived");
     );
   },
 );
+
+test.skipIf(process.platform === "win32")(
+  "an optional call through an overload set converts the resolved overload's result",
+  async () => {
+    const result = await run(`
+type Parse = { (text: string): number; (value: number): string };
+const parse: Parse = (input: any): any => (typeof input === "string" ? input.length : \`#\${input}\`);
+function lengths(p: Parse | undefined): void {
+  const n = p?.("four");
+  const s = p?.(7);
+  console.log(n, s);
+}
+lengths(parse);
+lengths(undefined);
+interface Picker {
+  pick(kind: "s"): string;
+  pick(kind: "n"): number;
+}
+const picker: Picker = { pick(kind: "s" | "n"): any { return kind === "s" ? "str" : 41; } };
+const maybe: Picker | undefined = picker;
+console.log(maybe?.pick?.("s"), maybe?.pick?.("n"));
+function none(p: Picker | undefined): string { return String(p?.pick?.("s")); }
+console.log(none(undefined));
+// The converted result is still checked, inside the guard: a lying
+// implementation behind the optional call throws where the resolved
+// overload promises another scalar.
+const lying = ((input: any) => input) as unknown as Parse;
+try {
+  const n: number = lying?.("five") ?? 0;
+  console.log("returned", n);
+} catch (err) {
+  console.log("threw", (err as Error).name);
+}
+console.log("survived");
+`);
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout.toString()).toBe(
+      "4 #7\nundefined undefined\nstr 41\nundefined\nthrew TypeError\nsurvived\n",
+    );
+  },
+);

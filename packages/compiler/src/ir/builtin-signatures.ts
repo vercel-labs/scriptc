@@ -2371,6 +2371,11 @@ function buildLibFnSignatures() {
     "http.clientSignal": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     /** options.signal checked before the request is built (ERR_INVALID_ARG_TYPE). */
     "http.clientSignalCheck": { argTypes: [DYN], result: VOID },
+    /** options.protocol checked before the request is built: the declared
+     * scheme against the agent's (the calling module's when the options
+     * carry no Agent value). MAY THROW ERR_INVALID_PROTOCOL. */
+    "http.clientProtocolCheck": { argTypes: [DYN, BOOL], result: VOID },
+    "http.clientProtocolCheckAgent": { argTypes: [DYN, BOOL, DYN], result: VOID },
     /** https.request's servername option, stored for the construction call
      * that follows: the TLS name sent and verified, and part of the pooled
      * socket key. The "https." prefix keeps the TLS unit linked. */
@@ -2415,6 +2420,13 @@ function buildLibFnSignatures() {
     "http.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     "https.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
     "https.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    /** request/get with a URL and an options record: Node's
+     * `{...urlToHttpOptions(new URL(url)), ...options}` merge at run time,
+     * then the walk above. Args (url, options, autoEnd[, cb]). MAY THROW. */
+    "http.requestUrlDyn": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "http.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDyn": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     /** The paused-mode demux surface (portless's first-byte TLS peek:
      * once('readable') + read(1) + unshift + emit('connection')).
      * sockOnReadable registers a zero-param listener (a consumer: arrived

@@ -304,6 +304,13 @@ void scr_http_client_max_header_size(ScrHttpClientReq *c, double value); /* see 
 /* http.request's `signal` option (borrowed), checked before the request
  * is built. May throw ERR_INVALID_ARG_TYPE. */
 void scr_http_client_signal_check(const ScrDyn *signal);
+/* http.request's `protocol` option (borrowed) checked against the
+ * agent's scheme (the calling module's when there is no Agent value):
+ * throws ERR_INVALID_PROTOCOL on a mismatch, before any dial. The agent
+ * form reads the Agent VALUE option's own scheme. */
+void scr_http_client_protocol_check(const ScrDyn *protocol, bool secure);
+void scr_http_client_protocol_check_agent(const ScrDyn *protocol, bool secure,
+                                          const ScrDyn *agent);
 /* http.request's `signal` option (borrowed); `add` is
  * events.addAbortListener. May throw ERR_INVALID_ARG_TYPE. */
 void scr_http_client_add_abort_signal(ScrHttpClientReq *c, ScrDyn *signal,
@@ -344,10 +351,11 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
                                         ScrHttpRespFn fn); /* +1 */
 /* Its parse half, shared with scr_tls.c's https spelling: the scheme is
  * checked against `secure` (the calling module), so a mismatch is Node's
- * ERR_INVALID_PROTOCOL rather than an implicit scheme switch. false = the
- * exception is pending and no out-parameter was written. */
-bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, ScrStr **host_out /*+1*/,
-                         double *port_out, ScrStr **path_out /*+1*/);
+ * ERR_INVALID_PROTOCOL rather than an implicit scheme switch, and a URL
+ * carrying credentials fences (`api` names the caller in the message).
+ * false = the exception is pending and no out-parameter was written. */
+bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
+                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/);
 /* ── the http Agent (new http.Agent(opts) — option surface, getName, and
  * the maxSockets queue over one-dial-per-request connections; keep-alive
  * POOLING is not modeled: keepAlive: true fences at construction).
@@ -419,6 +427,22 @@ ScrHttpClientReq *scr_http_request_dyn(const ScrDyn *opts /*borrowed*/, bool aut
 ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool auto_end,
                                         ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
                                         ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)); /* +1 */
+/* The URL+options form (request(url, options[, cb])): the URL's fields as
+ * Node's urlToHttpOptions reads them, the options' own members replacing
+ * them (the spread's order), then the runtime options walk above. Both
+ * schemes share the merge; scr_tls.c's https spelling is the merged
+ * record through scr_https_request_dyn. cb MOVES (nullable); +1, or NULL
+ * with the exception pending. */
+ScrDyn *scr_http_url_req_options(ScrStr *url /*borrowed*/, const ScrDyn *opts /*borrowed*/,
+                                 const char *api); /* +1 */
+ScrHttpClientReq *scr_http_request_url_dyn(ScrStr *url /*borrowed*/,
+                                           const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                           ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                           ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)); /* +1 */
+ScrHttpClientReq *scr_https_request_url_dyn(ScrStr *url /*borrowed*/,
+                                            const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                            ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                            ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)); /* +1 */
 #ifdef SCR_RC_AUDIT
 long scr_http_live_count(void);
 #endif

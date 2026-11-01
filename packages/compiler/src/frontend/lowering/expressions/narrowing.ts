@@ -521,6 +521,15 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     }
     if (isJsSourceFile(ts.getSourceFileOfNode(node)) && ts.isIdentifier(node)) {
       const symbol = lowerer.resolveValueSymbol(node);
+      // Contextual parameter types describe callers, not the value JS
+      // received. Preserve unchecked reads unless control flow narrowed
+      // the symbol; typed consumers still validate their required type.
+      if (
+        symbol &&
+        symbol.declarations.some((decl) => ts.isParameter(decl) && decl.type === undefined) &&
+        lowerer.checker.getTypeOfSymbol(symbol) === lowerer.typeOf(node)
+      )
+        return expr;
       if (
         symbol &&
         symbol.declarations.some(

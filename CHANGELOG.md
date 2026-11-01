@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- JavaScript callback parameters preserve their received values when contextual declarations specify a narrower type. Explicit guards and typed consumers still check values.
+- Filesystem stat callbacks accept stored and aliased `StatOptions` bags, including changes to their `bigint` option before a call.
+- Bundled Node declarations infer promise payloads for rejection listeners, error origins for uncaught-exception listeners, and numeric or bigint snapshots for filesystem stat callbacks.
+
 <!-- release:start -->
 
 ## 0.4.7

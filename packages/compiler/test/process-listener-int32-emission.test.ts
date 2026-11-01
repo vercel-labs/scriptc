@@ -44,8 +44,6 @@ console.log(p.kind + p.pos);
   }
 }
 
-// uncaughtException listeners need @types/node, which this temporary
-// project lacks; the int32-slots unit test covers their helpers.
 test.for([
   [
     "signals",

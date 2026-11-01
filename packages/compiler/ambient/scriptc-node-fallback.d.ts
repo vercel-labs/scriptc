@@ -381,12 +381,20 @@ declare var process: {
    * removal see the same value. */
   on(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   on(event: "exit", listener: (code: number) => void): void;
+  on(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (error: Error, origin: "uncaughtException" | "unhandledRejection") => void,
+  ): void;
   /* prependListener — the same registration at the FRONT of the event's
    * listener list (Node's EventEmitter order), for the registries that
-   * own a prepend entry ('exit' and the signal family). prependOnceListener
+   * own a prepend entry (signals, 'exit', and uncaught exceptions). prependOnceListener
    * has no lowering. */
   prependListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   prependListener(event: "exit", listener: (code: number) => void): void;
+  prependListener(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (error: Error, origin: "uncaughtException" | "unhandledRejection") => void,
+  ): void;
   /* 'warning' — Node's process-warning channel: listeners receive the
    * warning Error (as a dyn value); emitWarning and the runtime's
    * deprecation sites dispatch synchronously (SEMANTICS.md). */
@@ -396,26 +404,47 @@ declare var process: {
    * suppressing the default report. 'rejectionHandled' — the sibling
    * event, fired once when a delivered promise later gains a handler
    * (promise payload, Node's shape). */
-  on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  on(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  on(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   once(event: "exit", listener: (code: number) => void): void;
-  once(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  once(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  once(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (error: Error, origin: "uncaughtException" | "unhandledRejection") => void,
+  ): void;
+  once(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  once(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   off(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   off(event: "exit", listener: (code: number) => void): void;
+  off(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (error: Error, origin: "uncaughtException" | "unhandledRejection") => void,
+  ): void;
   off(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
-  off(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  off(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  off(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  off(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   /* removeListener IS off — Node aliases them; both lower identically. */
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   removeListener(event: "exit", listener: (code: number) => void): void;
+  removeListener(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (error: Error, origin: "uncaughtException" | "unhandledRejection") => void,
+  ): void;
   removeListener(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   removeListener(
     event: "unhandledRejection",
-    listener: (reason: unknown, promise: unknown) => void,
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
   ): void;
-  removeListener(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  removeListener(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   /* emitWarning — Node's full grammar (string or Error warning; type/
    * ctor/options second; code/ctor third). */
   emitWarning(warning: string | Error, ...args: any[]): void;

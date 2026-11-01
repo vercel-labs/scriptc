@@ -331,7 +331,6 @@ export function effectiveRuntimeFeatures(
   const jsObjectModel = jsObjectModelFact(features);
   return {
     ...features,
-    fsBufferBrand: features.fsBufferBrand === true,
     workers: features.workers === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,

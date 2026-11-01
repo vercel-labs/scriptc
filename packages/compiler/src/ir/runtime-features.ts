@@ -974,9 +974,8 @@ export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
   return webcrypto && named;
 }
 
-/** The typed file reads that answer a ScrBytes: Node answers a Buffer, but
- * scr_lib.c brands it only in the SCR_FS_BUFFER_BRAND build, so a program
- * that can observe the difference links that build. */
+/** The typed file reads that answer a ScrBytes: Node answers a Buffer, and
+ * scr_lib.c's read entries brand it, so a typed read makes a Buffer value. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
@@ -984,130 +983,6 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fsp.readFileBytes",
   "fileHandle.readFileBytes",
 ]);
-
-/** The bytesIntrinsic searches whose runtime branch reads the brand: a
- * Buffer viewed as a Uint8Array searches bytes, a plain Uint8Array compares
- * element values (NaN and out-of-range needles differ). */
-const FS_BUFFER_SEARCH_METHODS: ReadonlySet<string> = new Set([
-  "indexOfElem",
-  "lastIndexOfElem",
-  "includesElem",
-]);
-
-/** Whether a type holds bytes without passing another declaration, collecting
- * the record and union declarations it references. A boxed function's call
- * thunk boxes its result, and a checked function's thunk boxes its
- * arguments, with no dynFrom in the IR. */
-function reachesBytesDirect(t: IrType, deps: string[]): boolean {
-  switch (t.kind) {
-    case "bytes":
-      return true;
-    case "array":
-    case "set":
-      return reachesBytesDirect(t.elem, deps);
-    case "map":
-      return reachesBytesDirect(t.key, deps) || reachesBytesDirect(t.value, deps);
-    case "promise":
-      return reachesBytesDirect(t.inner, deps);
-    case "func":
-      return reachesBytesDirect(t.ret, deps) || t.params.some((p) => reachesBytesDirect(p, deps));
-    case "record":
-      deps.push(`r:${t.shapeId}`);
-      return false;
-    case "union":
-      deps.push(`u:${t.unionId}`);
-      return false;
-    default:
-      return false;
-  }
-}
-
-/** The module's declarations that can hold bytes, resolved to a fixpoint: a
- * record or union that references another declaration holding bytes holds
- * bytes, and a recursive declaration resolves like a non-recursive one. The
- * closure answers each reference from one pass over the declarations instead
- * of walking the shape tree at every reference. */
-function bytesCarryingDecls(mod: IrModule): (t: IrType) => boolean {
-  const referrers = new Map<string, string[]>();
-  const carrying = new Set<string>();
-  const queue: string[] = [];
-  const direct = (id: string, t: IrType): void => {
-    const deps: string[] = [];
-    if (reachesBytesDirect(t, deps)) {
-      if (!carrying.has(id)) {
-        carrying.add(id);
-        queue.push(id);
-      }
-    }
-    for (const dep of deps) {
-      const list = referrers.get(dep);
-      if (list === undefined) referrers.set(dep, [id]);
-      else list.push(id);
-    }
-  };
-  for (const record of mod.records ?? []) {
-    for (const field of record.fields) direct(`r:${record.id}`, field.type);
-    if (record.indexValue !== undefined) direct(`r:${record.id}`, record.indexValue);
-  }
-  for (const union of mod.unions ?? []) {
-    for (const arm of union.arms) direct(`u:${union.id}`, arm);
-  }
-  for (let i = 0; i < queue.length; i++) {
-    for (const from of referrers.get(queue[i]!) ?? []) {
-      if (carrying.has(from)) continue;
-      carrying.add(from);
-      queue.push(from);
-    }
-  }
-  const deps: string[] = [];
-  const holdsBytes = (t: IrType): boolean => {
-    deps.length = 0;
-    if (reachesBytesDirect(t, deps)) return true;
-    for (const dep of deps) if (carrying.has(dep)) return true;
-    return false;
-  };
-  return holdsBytes;
-}
-
-/** fsBufferBrand's condition as a scan over the module: it reads file bytes
- * through a typed read and can observe their Buffer-ness. scr_lib.c's read
- * entries set is_buffer only under SCR_FS_BUFFER_BRAND, so this conjunction
- * selects that variant; a program that reads bytes without observing them
- * keeps the default object. */
-function fsBufferBrandScan(mod: IrModule): RuleScan {
-  let reads = false;
-  let observes = false;
-  let holdsBytes: ((t: IrType) => boolean) | undefined;
-  return {
-    expr: (node) => {
-      if (reads && observes) return;
-      if (node.kind === "libCall" && FS_READ_BYTES_FNS.has(node.fn)) {
-        reads = true;
-        return;
-      }
-      if (observes) return;
-      switch (node.kind) {
-        case "dynFrom":
-          observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.value.type);
-          return;
-        case "dynCheck":
-          if (node.type.kind === "func") {
-            observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.type);
-          }
-          return;
-        case "bytesIntrinsic":
-          observes = FS_BUFFER_SEARCH_METHODS.has(node.method);
-          return;
-        case "libCall":
-          observes = node.fn === "buffer.isBranded" || node.fn === "insp.bytes";
-          return;
-        default:
-          return;
-      }
-    },
-    result: () => reads && observes,
-  };
-}
 
 /** The entries that need the JavaScript object model build (t262-da §J):
  * the runtime code a JavaScript source reaches for builtin intrinsics,
@@ -1426,10 +1301,6 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
-  /** A typed fs read whose bytes value the program can observe as a Buffer:
-   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
-   * brand keep the default object. */
-  fsBufferBrand: rule({ scan: fsBufferBrandScan }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
@@ -1743,7 +1614,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
-    fsBufferBrand: false,
     fsFlags: false,
     fsWatch: false,
     fsWatchFile: false,

@@ -495,10 +495,6 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
-  // scr_lib.c's path stat and zero Stats for the fs.watchFile poll.
-  { define: "SCR_FS_WATCH_FILE", when: (opts) => opts.watchFile },
-  // scr_lib.c's file reads brand their bytes as Node's Buffer answers.
-  { define: "SCR_FS_BUFFER_BRAND", when: (opts) => opts.fsBufferBrand },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

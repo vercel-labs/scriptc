@@ -95,38 +95,61 @@ void scr_fs_write_file_flags(ScrStr *path, ScrStr *data, double mode, double exc
   scr_fs_write_file_open(path, data, (mode_t)mode, exclusive != 0 ? O_EXCL : 0);
 }
 
+/* One flag-name comparison: the whole name must match, so a name with an
+ * embedded NUL ("w\0invalid") is unknown instead of reading as the prefix
+ * "w" and truncating the target the way Node refuses to. */
+static bool scr_fs_write_flag_is(const char *s, size_t len, const char *want) {
+  size_t want_len = strlen(want);
+  return len == want_len && memcmp(s, want, want_len) == 0;
+}
+
 /* stringToFlags for the write options' flag names — the same table
  * openSync uses, spelled here because the two units build independently.
  * Answers open(2) bits, or -1 for a name Node rejects. */
-static int scr_fs_write_flag_bits(const char *s) {
-  if (!strcmp(s, "r")) return O_RDONLY;
-  if (!strcmp(s, "r+")) return O_RDWR;
-  if (!strcmp(s, "rs") || !strcmp(s, "sr")) return O_RDONLY | O_SYNC;
-  if (!strcmp(s, "rs+") || !strcmp(s, "sr+")) return O_RDWR | O_SYNC;
-  if (!strcmp(s, "w")) return O_WRONLY | O_CREAT | O_TRUNC;
-  if (!strcmp(s, "w+")) return O_RDWR | O_CREAT | O_TRUNC;
-  if (!strcmp(s, "wx") || !strcmp(s, "xw")) return O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
-  if (!strcmp(s, "wx+") || !strcmp(s, "xw+")) return O_RDWR | O_CREAT | O_TRUNC | O_EXCL;
-  if (!strcmp(s, "a")) return O_WRONLY | O_CREAT | O_APPEND;
-  if (!strcmp(s, "a+")) return O_RDWR | O_CREAT | O_APPEND;
-  if (!strcmp(s, "ax") || !strcmp(s, "xa")) return O_WRONLY | O_CREAT | O_APPEND | O_EXCL;
-  if (!strcmp(s, "ax+") || !strcmp(s, "xa+")) return O_RDWR | O_CREAT | O_APPEND | O_EXCL;
-  if (!strcmp(s, "as") || !strcmp(s, "sa")) return O_WRONLY | O_CREAT | O_APPEND | O_SYNC;
-  if (!strcmp(s, "as+") || !strcmp(s, "sa+")) return O_RDWR | O_CREAT | O_APPEND | O_SYNC;
+static int scr_fs_write_flag_bits(const char *s, size_t len) {
+  if (scr_fs_write_flag_is(s, len, "r")) return O_RDONLY;
+  if (scr_fs_write_flag_is(s, len, "r+")) return O_RDWR;
+  if (scr_fs_write_flag_is(s, len, "rs") || scr_fs_write_flag_is(s, len, "sr"))
+    return O_RDONLY | O_SYNC;
+  if (scr_fs_write_flag_is(s, len, "rs+") || scr_fs_write_flag_is(s, len, "sr+"))
+    return O_RDWR | O_SYNC;
+  if (scr_fs_write_flag_is(s, len, "w")) return O_WRONLY | O_CREAT | O_TRUNC;
+  if (scr_fs_write_flag_is(s, len, "w+")) return O_RDWR | O_CREAT | O_TRUNC;
+  if (scr_fs_write_flag_is(s, len, "wx") || scr_fs_write_flag_is(s, len, "xw"))
+    return O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
+  if (scr_fs_write_flag_is(s, len, "wx+") || scr_fs_write_flag_is(s, len, "xw+"))
+    return O_RDWR | O_CREAT | O_TRUNC | O_EXCL;
+  if (scr_fs_write_flag_is(s, len, "a")) return O_WRONLY | O_CREAT | O_APPEND;
+  if (scr_fs_write_flag_is(s, len, "a+")) return O_RDWR | O_CREAT | O_APPEND;
+  if (scr_fs_write_flag_is(s, len, "ax") || scr_fs_write_flag_is(s, len, "xa"))
+    return O_WRONLY | O_CREAT | O_APPEND | O_EXCL;
+  if (scr_fs_write_flag_is(s, len, "ax+") || scr_fs_write_flag_is(s, len, "xa+"))
+    return O_RDWR | O_CREAT | O_APPEND | O_EXCL;
+  if (scr_fs_write_flag_is(s, len, "as") || scr_fs_write_flag_is(s, len, "sa"))
+    return O_WRONLY | O_CREAT | O_APPEND | O_SYNC;
+  if (scr_fs_write_flag_is(s, len, "as+") || scr_fs_write_flag_is(s, len, "sa+"))
+    return O_RDWR | O_CREAT | O_APPEND | O_SYNC;
   return -1;
 }
 
 /* Node's flag check for the write options: an empty name is the form's own
  * default ("w" for writeFileSync, "a" for appendFileSync), and an unknown
- * one throws ERR_INVALID_ARG_VALUE before the path is opened. */
+ * one throws ERR_INVALID_ARG_VALUE before the path is opened. The received
+ * value is quoted the way util.inspect quotes it, so an embedded NUL shows
+ * as \x00 rather than cutting the message short. */
 static bool scr_fs_write_flags_ok(const ScrStr *flags, const char *dflt, int *bits) {
-  *bits = scr_fs_write_flag_bits(flags->len == 0 ? dflt : flags->data);
+  *bits = flags->len == 0 ? scr_fs_write_flag_bits(dflt, strlen(dflt))
+                          : scr_fs_write_flag_bits(flags->data, flags->len);
   if (*bits >= 0) return true;
-  char message[160];
-  int length = snprintf(message, sizeof message, "The argument 'flags' is invalid. Received '%s'",
-                        flags->data);
-  if (length > (int)sizeof message - 1) length = (int)sizeof message - 1;
-  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)length, "ERR_INVALID_ARG_VALUE");
+  ScrStr *shown = scr_str_inspect_quoted(flags, true);
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "The argument 'flags' is invalid. Received ");
+  scr_jb_put_str(&message, shown);
+  scr_str_release(shown);
+  ScrStr *text = scr_jb_finish(&message);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(text);
   return false;
 }
 

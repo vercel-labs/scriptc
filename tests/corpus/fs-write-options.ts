@@ -76,6 +76,17 @@ console.log("missing a", errorOf(() => fs.writeFileSync(missing, "x", { flag: "a
 // Unknown flag names throw before the file is touched.
 fs.writeFileSync(file, "keep");
 console.log("bad flag", errorOf(() => fs.writeFileSync(file, "x", { flag: "nope" })), hex(file));
+// A name with an embedded NUL is unknown, not the "w" it starts with.
+console.log(
+  "nul flag",
+  errorOf(() => fs.writeFileSync(file, "x", { flag: "w\u0000invalid" })),
+  hex(file),
+);
+console.log(
+  "nul append flag",
+  errorOf(() => fs.appendFileSync(file, "x", { flag: "a\u0000b" })),
+  hex(file),
+);
 // An empty flag name is the form's default, as in Node.
 console.log("empty flag", errorOf(() => fs.writeFileSync(file, "x", { flag: "" })), hex(file));
 

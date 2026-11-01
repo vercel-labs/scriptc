@@ -95,8 +95,28 @@ function kindIs(host: Host, d: string, kind: number, yes: string, no: string): v
  * they made the run 13% faster than one entry, and 26% faster without its
  * class instances; four were no faster than two. So a site tests entries
  * 0 and 1, own or prototype, and its probe does the rest. (0 makes every access probe: with a runtime
- * built with SCR_JS_VERIFY, that probes every access.) */
-const INLINE_WAYS: number = 2;
+ * built with SCR_JS_VERIFY, that probes every access.)
+ *
+ * SCRIPTC_DEBUG_JS_IC_WAYS=0|1|2 overrides the count for an attribution run,
+ * where every access should reach the probe so that the runtime entry points
+ * can count it; the value is read once, so one build is one way count. */
+const IC_WAYS_DEBUG: string | undefined = process.env["SCRIPTC_DEBUG_JS_IC_WAYS"];
+
+function inlineWays(): number {
+  if (IC_WAYS_DEBUG === undefined || IC_WAYS_DEBUG === "") return 2;
+  const ways = Number(IC_WAYS_DEBUG);
+  if (ways !== 0 && ways !== 1 && ways !== 2)
+    throw new Error(`SCRIPTC_DEBUG_JS_IC_WAYS must be 0, 1 or 2, got ${IC_WAYS_DEBUG}`);
+  return ways;
+}
+
+const INLINE_WAYS: number = inlineWays();
+
+/* An attribution run gives an object literal's member stores their own probe
+ * entry point, so a profile can split them from other stores. With the
+ * variable unset the emitted code calls scr_js_store_probe as before. */
+const LITERAL_PROBE: string =
+  IC_WAYS_DEBUG === undefined ? "scr_js_store_probe" : "scr_js_literal_probe";
 const INLINE_PROTO = true;
 
 /** The address of slot `slot` of layout-mode object `d`. */
@@ -1384,10 +1404,10 @@ function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
 export function emitJsIcLiteralMember(host: Host, obj: string, key: string, value: string): void {
   const B = host.B;
   const ic = host.jsIcSite();
-  host.declare(`declare zeroext i1 @scr_js_store_probe(ptr, ptr, ptr, ptr)`);
+  host.declare(`declare zeroext i1 @${LITERAL_PROBE}(ptr, ptr, ptr, ptr)`);
   const done = B.tmp();
   B.line(
-    `${done} = call zeroext i1 @scr_js_store_probe(ptr ${obj}, ptr ${key}, ptr ${value}, ptr ${ic})`,
+    `${done} = call zeroext i1 @${LITERAL_PROBE}(ptr ${obj}, ptr ${key}, ptr ${value}, ptr ${ic})`,
   );
   const slow = B.newLabel("icl.slow");
   const join = B.newLabel("icl.j");

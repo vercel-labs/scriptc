@@ -4672,6 +4672,10 @@ export class Lowerer {
     "stdioPatchSites",
     "requestInitPropMutatedSyms",
     "classProtocols",
+    // Whether the program has a JavaScript implementation file depends only on
+    // its modules, so the answer is a memo computed on first use and the
+    // census in handle-properties.ts reads it again when a unit replays.
+    "handleJsSources",
     // A file's name and library status do not change while the program
     // lowers, so the answer stays with the file that was asked about.
     "stdlibFiles",

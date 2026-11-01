@@ -9738,6 +9738,17 @@ static ScrDyn *scr_native_iterator_drain(const ScrDyn *src) {
 
 static ScrDyn *scr_builtin_iterator_checked(int kind) {
   ScrDyn *self = scr_dyn_this_get();
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The typed-array iterator factory re-validates its receiver (V8 labels
+   * it %TypedArray%.prototype.values, for Symbol.iterator too): a detached
+   * view throws rather than hand back an iterator that is already done. */
+  if (kind == SCR_DYN_BYTES && self->kind == SCR_DYN_BYTES &&
+      !scr_js_bytes_live(self->v.bytes)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.values");
+    scr_dyn_release(self);
+    return NULL;
+  }
+#endif
   ScrDyn *result = NULL;
   if (self->kind == kind || (kind == SCR_DYN_ARR && self->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(self)))
     result = scr_native_iterator_new(self);

@@ -107,7 +107,16 @@ function lowerBytesSortCall(
       helper = keyedHelperName(lowerer, `%bytes.${method}`, cacheKey);
       lowerer.arrHofHelpers.set(cacheKey, helper);
       lowerer.liftedFns.push(
-        buildBytesSortFn(helper, bytesT, arity, hasComparator, copyFirst, order, loc),
+        buildBytesSortFn(
+          helper,
+          bytesT,
+          arity,
+          hasComparator,
+          copyFirst,
+          order,
+          loc,
+          lowerer.buffersMutable ? method : null,
+        ),
       );
     }
     return helper;

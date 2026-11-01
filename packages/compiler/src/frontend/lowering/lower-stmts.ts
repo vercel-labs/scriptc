@@ -1,4 +1,5 @@
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
+import { requireLiveBytes } from "./buffers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import {
   keepsCheckedDynamicValue,
@@ -12322,6 +12323,17 @@ function lowerForOfBytes(
     kind: "block",
     body: [
       { kind: "varDecl", localId: source.id, init: iterable, loc },
+      // A for-of head calls %TypedArray%.prototype.values, which validates
+      // the receiver: a detached view throws before the loop starts.
+      ...(lowerer.buffersMutable && iterable.type.kind === "bytes"
+        ? [
+            requireLiveBytes(
+              { kind: "varRef", localId: source.id, type: iterable.type, loc },
+              "values",
+              loc,
+            ),
+          ]
+        : []),
       {
         kind: "varDecl",
         localId: index.id,

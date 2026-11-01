@@ -11,8 +11,12 @@
  *            as source-anchored diagnostics (SC0004), and the ECMAScript
  *            early errors the checker does not model: a duplicated or
  *            `var`-colliding lexical declaration in a block or switch
- *            statement list (SC0005/SC0006) and a declaration where the
- *            grammar admits only a Statement (SC0007)
+ *            statement list (SC0005/SC0006), a declaration where the
+ *            grammar admits only a Statement (SC0007), an ImportCall
+ *            argument list the grammar does not allow (SC0008), a private
+ *            name with no declaring enclosing class (SC0009), and an
+ *            assignment target that is not a variable or a property access
+ *            (SC0010)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected

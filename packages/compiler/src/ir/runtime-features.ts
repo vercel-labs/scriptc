@@ -1817,6 +1817,13 @@ function scanRuntimeFeatures(
   // scr_dyn_function_apply), so the fact links it: a JavaScript source can
   // read an intrinsic without dispatching anything of its own (t262-da A1).
   if (!features.dynInvoke && features.jsObjectModel) features.dynInvoke = true;
+  // The intrinsic graph answers String.prototype, Number.prototype and
+  // Boolean.prototype with the wrapper unit's objects: only that unit builds
+  // the [[PrimitiveValue]] slot, and they are the prototypes
+  // `new String/Number/Boolean(v)` instances inherit from, so one intrinsic
+  // has one object (t262-da A2). The graph links the unit in turn, whether or
+  // not the program names a wrapper, so the fact carries it.
+  if (!features.primitiveWrapper && features.jsObjectModel) features.primitiveWrapper = true;
   return features;
 }
 

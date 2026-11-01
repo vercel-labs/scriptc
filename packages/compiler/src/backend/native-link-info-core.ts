@@ -49,10 +49,9 @@ export interface NativeLinkFeatures {
   mutableBuffers?: boolean;
   /** The program reads a builtin intrinsic object (`X.prototype`, a builtin
    * constructor as a value) from a JavaScript source: links
-   * scr_js_intrinsics.c, the whole intrinsic graph, together with the
-   * Number/Boolean prototype builders whose objects the graph adopts. Split from jsObjectModel, which bigintBytes also selects, so a
-   * typed program that only constructs a BigInt typed array links none of
-   * the graph. */
+   * scr_js_intrinsics.c, the whole intrinsic graph (t262-da A1). Split from
+   * jsObjectModel, which bigintBytes also selects, so a typed program that
+   * only constructs a BigInt typed array links none of the graph. */
   intrinsicObjects?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
@@ -82,7 +81,9 @@ export interface NativeLinkFeatures {
    * scr_module_namespace_dyn.c; absent (false) otherwise. */
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
-   * otherwise. */
+   * otherwise. The intrinsic graph answers String.prototype, Number.prototype
+   * and Boolean.prototype with that unit's objects, so a program that reads
+   * intrinsics has the fact too (runtime-features.ts). */
   primitiveWrapper?: boolean;
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor link scr_js_promise_generic.c; absent (false) otherwise. */

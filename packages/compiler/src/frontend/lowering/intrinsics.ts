@@ -9,15 +9,12 @@
  * Error.prototype — filled in place rather than replaced.
  *
  * This module decides when a program reads one of those objects and lowers
- * the read to `dyn.intrinsic` with the table's id. `Number.prototype` and
- * `Boolean.prototype` keep their existing lowerings (the runtime units that
- * build them for the values of their kind); the graph adopts those same
- * objects, so the identity tests still agree. The fact is program-wide: a
- * program that reads any intrinsic reads all of them from the same graph,
- * so `Number.prototype === Object.getPrototypeOf(0)`-style identity tests
- * agree. Until a program reads one, every existing lowering
+ * the read to `dyn.intrinsic` with the table's id. The fact is
+ * program-wide: a program that reads any intrinsic read all of them from
+ * the same graph, so `Number.prototype === Object.getPrototypeOf(0)`-style
+ * identity tests agree. Until a program reads one, every existing lowering
  * (dyn.builtinPrototype, dyn.stdlibPrototype, dyn.arrayPrototype, ...) is
- * unchanged, and typed programs never reach here at all. */
+ * byte-for-byte what it was, and typed programs never reach here at all. */
 import * as ts from "../ts7/adapter.js";
 import { DYN, STRING, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import { INTRINSIC_IDS, INTRINSIC_PROTOTYPE_MEMBERS } from "./intrinsic-ids.generated.js";
@@ -92,27 +89,10 @@ export function isPrimitiveConstructorOwner(owner: string): boolean {
   return PRIMITIVE_CONSTRUCTOR_OWNERS.has(owner);
 }
 
-/** The two prototypes the runtime's own builders answer in a JavaScript
- * source: `Number.prototype` from `scr_dyn_builtin_prototype.c` and
- * `Boolean.prototype` from `scr_js_wrapper.c`, whose object is the one
- * `new Boolean(v)` instances inherit from and whose members accept a Boolean
- * wrapper receiver. The intrinsic table holds the same object (its graph
- * adopts the builder's), so identity with `Object.getPrototypeOf` agrees
- * either way; the reads keep the builder's members, which answer Node's brand
- * checks and messages. */
-const BUILDER_PROTOTYPE_OWNERS: ReadonlySet<string> = new Set(["Number", "Boolean"]);
-
-/** Whether `owner` is a standard library global whose `.prototype` a
- * JavaScript source reads as one of the runtime's intrinsic objects: the
- * table's id for it, or one of the builder-owned prototypes. */
-function isPrototypeReadOwner(owner: string): boolean {
-  return prototypeId(owner) !== null || BUILDER_PROTOTYPE_OWNERS.has(owner);
-}
-
 /** The intrinsic id `X.prototype` names when `owner` is the standard
- * library's `X` and the table itself builds it, or null. */
+ * library's `X`, or null. */
 function prototypeId(owner: string): string | null {
-  if (!PROTOTYPE_OWNERS.has(owner) || BUILDER_PROTOTYPE_OWNERS.has(owner)) return null;
+  if (!PROTOTYPE_OWNERS.has(owner)) return null;
   const id = `${owner}.prototype`;
   return INTRINSIC_IDS.has(id) ? id : null;
 }
@@ -142,7 +122,7 @@ export function programUsesIntrinsicObjects(lowerer: Lowerer): boolean {
         const name = node.name.text;
         if (name === "prototype") {
           const owner = stdlibGlobalNameOf(lowerer, node.expression);
-          if (owner !== null && isPrototypeReadOwner(owner)) {
+          if (owner !== null && prototypeId(owner) !== null) {
             found = true;
             return;
           }

@@ -229,13 +229,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Number/Boolean prototype objects as values: the dynamic tier's gated
   // units, whose work is JavaScript-only.
   unit((u) => u.opts.arrayLikeDispatch === true && u.opts.dynInvoke, "scr_dyn_array_like.c"),
-  // The intrinsic graph adopts this unit's Number.prototype when a program
-  // reads intrinsics (scr_js_builder_prototype), so a graph build carries
-  // the unit even without a plain `dyn.builtinPrototype` read.
   unit(
-    (u) =>
-      (u.opts.builtinPrototypeValue === true && u.opts.dynInvoke) ||
-      u.opts.intrinsicObjects === true,
+    (u) => u.opts.builtinPrototypeValue === true && u.opts.dynInvoke,
     "scr_dyn_builtin_prototype.c",
   ),
   // createRequire's computed require and require.resolve.
@@ -263,13 +258,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // A module namespace as the frozen null-prototype object typed code sees.
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
-  // The intrinsic graph adopts this unit's Boolean.prototype when a program
-  // reads intrinsics (scr_js_builder_prototype), so a graph build carries the
-  // unit even without a wrapper site.
-  unit(
-    (u) => u.opts.primitiveWrapper === true || u.opts.intrinsicObjects === true,
-    "scr_js_wrapper.c",
-  ),
+  unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||

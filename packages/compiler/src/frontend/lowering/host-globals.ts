@@ -65,11 +65,17 @@ export function hostGlobalNameOfIdentifier(lowerer: Lowerer, id: ts.Identifier):
   const name = id.text;
   if (!NODE_GLOBALS_WITHOUT_NATIVE.has(name)) return null;
   // `{ WebSocket }` reads the binding through the object literal's property:
-  // the identifier's own symbol is that property, so the value the shorthand
-  // copies is resolved here (resolveValueSymbol reads the checker's
-  // shorthand-value symbol).
-  const symbol = lowerer.resolveValueSymbol(id);
-  if (symbol === null) return name;
+  // the name's own symbol is that property, and the value the shorthand
+  // copies is the checker's shorthand-value symbol. Read it here rather than
+  // through resolveValueSymbol, which also follows import aliases — this is
+  // a classification probe, and an alias of the name is the program's own
+  // binding, whatever it resolves to.
+  const own = lowerer.checker.getSymbolAtLocation(id);
+  const symbol =
+    id.parent !== undefined && ts.isShorthandPropertyAssignment(id.parent) && id.parent.name === id
+      ? (lowerer.checker.getShorthandAssignmentValueSymbol(id.parent) ?? own)
+      : own;
+  if (symbol === undefined) return name;
   // An import (or require alias) of the same name is the program's binding
   // of somebody else's value, never the global.
   if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) return null;

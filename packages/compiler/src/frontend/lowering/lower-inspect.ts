@@ -3164,8 +3164,24 @@ function parseInspectOptions(
       (value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword)
     ) {
       options.customInspect = value.kind === ts.SyntaxKind.TrueKeyword;
-    } else if (key === "showHidden" && value.kind === ts.SyntaxKind.FalseKeyword) {
-      // util.inspect's default.
+    } else if (key === "showHidden") {
+      if (value.kind === ts.SyntaxKind.FalseKeyword) {
+        // util.inspect's default.
+      } else if (dir) {
+        // console.dir renders through its own entries — the static layout,
+        // or the runtime's dirDyn (custom inspection off) — and neither
+        // carries the option.
+        lowerer.noLowering(
+          "console.dir with the 'showHidden' option",
+          prop,
+          "console.dir's rendering has no showHidden form — use util.inspect with showHidden",
+        );
+      } else {
+        // The hidden entries (an array's [length], a typed array's extras,
+        // non-enumerable and symbol keys) render in the checked-dynamic
+        // walk, so the option takes the runtime reader.
+        options.runtime = true;
+      }
     } else if (dir && key === "customInspect") {
       // console.dir's own default; only that value is lowered.
       if (value.kind !== ts.SyntaxKind.FalseKeyword) {
@@ -3179,7 +3195,7 @@ function parseInspectOptions(
       lowerer.noLowering(
         `${surface} with the '${key}' option`,
         prop,
-        `the lowered options are depth (numeric literal or null), colors: false, showHidden: false, compact (false or a number), breakLength, maxArrayLength (a non-negative integer or null), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
+        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength (a non-negative integer or null), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
       );
     }
   }
@@ -3652,17 +3668,18 @@ function formatSValue(
 }
 
 /** %O (depth 2) / %o (showHidden, depth 4) — inspect with the spec's
- * option deltas. A checked-dynamic argument renders through the runtime's
- * showHidden walk; static %o fences over arrays and nested dynamic values
- * (showHidden adds an array's hidden [length] entry, which the static
- * rendering has no lowering for). */
+ * option deltas. A showHidden argument that the checked-dynamic tree can
+ * hold (arrays — whose hidden [length] entry the static rendering has no
+ * lowering for — records, maps, sets, typed arrays and nested dynamic
+ * values) renders through the runtime's showHidden walk; the static
+ * rendering covers the default %O. */
 function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
   const value = lowerer.lowerExpr(node);
-  if (depth === 4 && value.type.kind === "dyn") {
+  if (depth === 4 && (value.type.kind === "dyn" || lowerer.dynConvertible(value.type))) {
     return {
       kind: "libCall",
       fn: "insp.dynHidden",
-      args: [value, numLit(4, loc)],
+      args: [lowerer.coerceToExpected(value, DYN), numLit(4, loc)],
       type: STRING,
       loc,
     };
@@ -3690,6 +3707,8 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
     );
   }
   if (depth === 4 && typeTreeHasHidden(lowerer, value.type, new Set())) {
+    // The static rendering below has no showHidden entries; the tree is
+    // not one the checked-dynamic walk can hold.
     lowerer.noLowering(
       "util.format %o over arrays",
       node,
@@ -4376,7 +4395,9 @@ export function heldFormatArgs(
   return { stmts, args, specifies, format, joinable };
 }
 
-/** Arrays anywhere in the tree — the %o (showHidden) gate. */
+/** Arrays, byte views or checked-dynamic values anywhere in the tree — the
+ * static %o (showHidden) gate, for the types the checked-dynamic walk
+ * cannot hold. */
 function typeTreeHasHidden(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
   switch (t.kind) {
     case "array":

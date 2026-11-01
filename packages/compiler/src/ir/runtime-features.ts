@@ -1438,6 +1438,9 @@ const RUNTIME_FEATURE_RULES = {
   inspect: rule({
     fns: [
       "global.native",
+      // formatBigInt renders a bigint's digits in Node's form, and the
+      // numericSeparator groups they take are inspect state.
+      "bigint.inspect",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.

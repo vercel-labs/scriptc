@@ -1704,6 +1704,9 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name);
  * True (with the error pending) when `recv` is Array.prototype. */
 bool scr_dyn_array_prototype_element_fence(const ScrDyn *recv);
 bool scr_dyn_is_array_prototype(const ScrDyn *d);
+/* The builtin Object.prototype and Error.prototype singletons. */
+bool scr_dyn_is_object_prototype(const ScrDyn *d);
+bool scr_dyn_is_error_prototype(const ScrDyn *d);
 /* The checked-dynamic keyed WRITE (`h.k = v` on a dyn receiver): OBJ sets
  * the member (JS: later writes win, insertion order); undefined/null and
  * non-object kinds throw Node's catchable TypeErrors (strict-mode

@@ -29,12 +29,27 @@ import { isJsSourceFileName } from "./tsc-codes.js";
 /** The early-error codes. SC0005 and SC0006 are the Block/CaseBlock static
  * semantics (a statement list may not declare one lexical name twice, and a
  * lexical name may not be `var`-declared in the same list); SC0007 is a
- * declaration where the grammar admits only a Statement. */
-export const EARLY_ERROR_CODES = ["SC0005", "SC0006", "SC0007"] as const;
+ * declaration where the grammar admits only a Statement; SC0008 is the
+ * ImportCall grammar (a dynamic import takes one or two arguments, and
+ * `import.defer` and friends take exactly one); SC0009 is
+ * AllPrivateNamesValid (a `#name` may only be read where an enclosing class
+ * declares it); SC0010 is AssignmentTargetType (an assignment target must be
+ * a variable reference or a property access). */
+export const EARLY_ERROR_CODES = [
+  "SC0005",
+  "SC0006",
+  "SC0007",
+  "SC0008",
+  "SC0009",
+  "SC0010",
+] as const;
 
 const NO_DUPLICATE_LEXICAL = "SC0005";
 const LEXICAL_VAR_COLLISION = "SC0006";
 const NOT_A_STATEMENT = "SC0007";
+const IMPORT_CALL_FORM = "SC0008";
+const UNBOUND_PRIVATE_NAME = "SC0009";
+const INVALID_ASSIGNMENT_TARGET = "SC0010";
 
 /** Whether the code around a node is strict — the one input this pass needs
  * from outside: Node's own module classification (program.ts's
@@ -49,6 +64,8 @@ export function earlyErrorDiagnostics7(
 ): ScrDiagnostic[] {
   const diags: ScrDiagnostic[] = [];
   const isStrict: IsStrictCode = (sf, node) => isStrictCode(sf, node, isModuleCode);
+  // PrivateBoundNames per class, for this run only.
+  const privateNames = new Map<ts.ClassLikeDeclaration, Set<string>>();
   for (const sf of files) {
     if (!isJsSourceFileName(sf.fileName)) continue;
     // Iterative walk: a deeply nested program must not overflow the stack
@@ -58,6 +75,9 @@ export function earlyErrorDiagnostics7(
       const node = stack.pop()!;
       checkStatementListScope(sf, node, diags, isStrict);
       checkStatementSlot(node, diags, isStrict);
+      checkImportCallForm(node, diags);
+      checkPrivateNameUse(node, diags, privateNames);
+      checkAssignmentTarget(node, diags);
       ts.forEachChild(node, (child) => {
         stack.push(child);
         return undefined;
@@ -342,6 +362,275 @@ function labelledFunctionOf(stmt: ts.Statement): ts.FunctionDeclaration | null {
   let cur: ts.Statement = stmt;
   while (ts.isLabeledStatement(cur)) cur = cur.statement;
   return ts.isFunctionDeclaration(cur) ? cur : null;
+}
+
+/* ── SC0008: the ImportCall grammar ─────────────────────────────────────
+ *
+ *   ImportCall : import ( AssignmentExpression )
+ *                import ( AssignmentExpression , AssignmentExpression? )
+ *   ImportCall : import . defer ( AssignmentExpression )
+ *
+ * ImportCall is not extensible: no argument list is a SyntaxError, and a
+ * third argument is too. The checker reports TS1450 for these in its
+ * MESSAGE category ("Dynamic imports can only accept a module specifier and
+ * an optional set of attributes as arguments"), which the tsc gate keeps
+ * only for errors — so the program compiled and its parse-negative test
+ * ran. Node's own parser refuses every form below. */
+function checkImportCallForm(node: ts.Node, diags: ScrDiagnostic[]): void {
+  if (!ts.isCallExpression(node)) return;
+  const callee = node.expression;
+  const argc = node.arguments.nodes.length;
+  if (callee.kind === ts.SyntaxKind.ImportKeyword) {
+    if (argc < 1 || argc > 2)
+      report(
+        diags,
+        IMPORT_CALL_FORM,
+        node,
+        "import() takes a module specifier and an optional second argument; the argument list cannot be omitted or extended",
+      );
+    return;
+  }
+  // `import.defer` parses as a MetaProperty (the parser folds the member
+  // into one node) and as a property access in adapters that keep the two
+  // apart; both spell the same grammar production.
+  const deferName = ts.isMetaProperty(callee)
+    ? callee.keywordToken === ts.SyntaxKind.ImportKeyword
+      ? callee.name.text
+      : null
+    : ts.isPropertyAccessExpression(callee) &&
+        callee.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        !ts.isPrivateIdentifier(callee.name)
+      ? callee.name.text
+      : null;
+  if (deferName === null) return;
+  // import.defer(...) is the one form with a member name today; any other
+  // `import.<name>(...)` is module syntax the checker already refuses.
+  if (deferName === "defer" && argc !== 1)
+    report(diags, IMPORT_CALL_FORM, node, "import.defer() takes exactly one module specifier");
+}
+
+/* ── SC0009: AllPrivateNamesValid ───────────────────────────────────────
+ *
+ *   ScriptBody : StatementList
+ *     It is a Syntax Error if AllPrivateNamesValid of StatementList with an
+ *     empty List is false.
+ *   ClassBody : ClassElementList
+ *     newNames = PrivateBoundNames of ClassBody concatenated with names.
+ *
+ * A `.#name` read or a `#name in obj` check may only name a private
+ * declaration of an ENCLOSING class; the class heritage is the exception —
+ * it is evaluated in the outer private environment, so a class cannot name
+ * its own `#private` from `extends`. TypeScript reports the common case as
+ * TS2339 ("Property '#x' does not exist on type 'C'"), which is a relaxed
+ * JavaScript code because an ordinary member read of it is legal — but a
+ * private name never is, so the pass owns the rule. */
+function checkPrivateNameUse(
+  node: ts.Node,
+  diags: ScrDiagnostic[],
+  privateNames: Map<ts.ClassLikeDeclaration, Set<string>>,
+): void {
+  if (ts.isPropertyAccessExpression(node) && ts.isPrivateIdentifier(node.name)) {
+    if (node.expression.kind === ts.SyntaxKind.SuperKeyword) {
+      report(
+        diags,
+        UNBOUND_PRIVATE_NAME,
+        node,
+        `'super.${node.name.text}' is not a SuperProperty: a private name is only readable on 'this' or another object of a declaring class`,
+      );
+      return;
+    }
+    if (!privateNameVisible(node, node.name.text, privateNames))
+      report(
+        diags,
+        UNBOUND_PRIVATE_NAME,
+        node,
+        `the private name '${node.name.text}' is not declared in an enclosing class`,
+      );
+    return;
+  }
+  if (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+    ts.isPrivateIdentifier(node.left) &&
+    !privateNameVisible(node, node.left.text, privateNames)
+  )
+    report(
+      diags,
+      UNBOUND_PRIVATE_NAME,
+      node.left,
+      `the private name '${node.left.text}' is not declared in an enclosing class`,
+    );
+}
+
+/** Whether the private name `text` is in the environment of `node`: the
+ * PrivateBoundNames of every enclosing class body, save a heritage clause,
+ * which sees only the classes outside the one it belongs to. */
+function privateNameVisible(
+  node: ts.Node,
+  text: string,
+  privateNames: Map<ts.ClassLikeDeclaration, Set<string>>,
+): boolean {
+  let child: ts.Node = node;
+  for (let n: ts.Node | undefined = node.parent; n !== undefined; child = n, n = n.parent) {
+    if (!ts.isClassDeclaration(n) && !ts.isClassExpression(n)) continue;
+    if (ts.isHeritageClause(child)) continue;
+    if (privateBoundNamesOf(n, privateNames).has(text)) return true;
+  }
+  return false;
+}
+
+/** PrivateBoundNames of a ClassBody: every PrivateIdentifier that names an
+ * element. A class's own names are visible throughout its body, including
+ * the computed names of its elements, so the set is order-independent.
+ * `cache` is the pass run's own table, so nothing outlives the walk. */
+function privateBoundNamesOf(
+  classNode: ts.ClassLikeDeclaration,
+  cache: Map<ts.ClassLikeDeclaration, Set<string>>,
+): Set<string> {
+  let names = cache.get(classNode);
+  if (names !== undefined) return names;
+  names = new Set<string>();
+  for (const member of classNode.members.nodes) {
+    const name = member.name;
+    if (name !== undefined && ts.isPrivateIdentifier(name)) names.add(name.text);
+  }
+  cache.set(classNode, names);
+  return names;
+}
+
+/* ── SC0010: AssignmentTargetType ───────────────────────────────────────
+ *
+ *   AssignmentExpression : LeftHandSideExpression = AssignmentExpression
+ *     It is a Syntax Error if AssignmentTargetType of LeftHandSideExpression
+ *     is not simple.
+ *   ... and the compound-assignment, update and for-in/of productions.
+ *
+ * A "simple" target is an identifier or a property access (parentheses
+ * around one are transparent); a plain assignment additionally accepts a
+ * destructuring pattern. A call expression is never either — which is the
+ * case that reaches here, because the checker reports `import('') -= 1` as
+ * a TS2362 OPERATOR type error, and the JavaScript-any relaxation drops
+ * every 2362 whose message names 'any'. Every other invalid target
+ * (`f() = 1`, `f() += 1`, `[a] = b = c`) is the same static semantics;
+ * reporting it here costs nothing, since an accepted program never reaches
+ * this check as a failure. */
+function checkAssignmentTarget(node: ts.Node, diags: ScrDiagnostic[]): void {
+  if (ts.isBinaryExpression(node)) {
+    const kind = node.operatorToken.kind;
+    if (kind === ts.SyntaxKind.EqualsToken) {
+      checkTargetForm(node.left, true, node, diags);
+      return;
+    }
+    if (assignmentOperatorTokens.has(kind)) {
+      checkTargetForm(node.left, false, node, diags);
+      return;
+    }
+    return;
+  }
+  if (ts.isPrefixUnaryExpression(node) && isUpdateToken(node.operator)) {
+    checkTargetForm(node.operand, false, node, diags);
+    return;
+  }
+  if (ts.isPostfixUnaryExpression(node) && isUpdateToken(node.operator)) {
+    checkTargetForm(node.operand, false, node, diags);
+    return;
+  }
+  if (ts.isForInStatement(node) || ts.isForOfStatement(node)) {
+    const initializer = node.initializer;
+    if (!ts.isVariableDeclarationList(initializer)) checkTargetForm(initializer, true, node, diags);
+  }
+}
+
+const assignmentOperatorTokens: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.PlusEqualsToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
+
+function isUpdateToken(token: ts.SyntaxKind): boolean {
+  return token === ts.SyntaxKind.PlusPlusToken || token === ts.SyntaxKind.MinusMinusToken;
+}
+
+/** Reports `target` when it is not an assignment target of the given kind.
+ * `pattern` admits a destructuring pattern (a plain `=` and a for-in/of
+ * head) around simple targets; a compound assignment and an update take a
+ * simple target only. */
+function checkTargetForm(
+  target: ts.Node,
+  pattern: boolean,
+  at: ts.Node,
+  diags: ScrDiagnostic[],
+): void {
+  // Parentheses are transparent around a simple target only: a pattern is
+  // not a LeftHandSideExpression, so `([a]) = rows` is a Syntax Error and
+  // `((a)) = 1` is not.
+  if (ts.isParenthesizedExpression(target)) {
+    checkTargetForm(target.expression, false, at, diags);
+    return;
+  }
+  const node = target;
+  if (ts.isIdentifier(node)) return;
+  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) return;
+  // `new.target = 1` is caught by the checker; a meta property is never a
+  // reference and never a pattern, so it falls through.
+  if (pattern && ts.isArrayLiteralExpression(node)) {
+    for (const element of node.elements.nodes) {
+      if (ts.isOmittedExpression(element)) continue;
+      // A rest target and the target of a default admit a nested pattern
+      // (`[...[a]] = rows`, `[[a] = [1]] = rows`).
+      if (ts.isSpreadElement(element)) {
+        checkTargetForm(element.expression, true, at, diags);
+        continue;
+      }
+      if (
+        ts.isBinaryExpression(element) &&
+        element.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        checkTargetForm(element.left, true, at, diags);
+        continue;
+      }
+      checkTargetForm(element, true, at, diags);
+    }
+    return;
+  }
+  if (pattern && ts.isObjectLiteralExpression(node)) {
+    for (const property of node.properties.nodes) {
+      if (ts.isSpreadAssignment(property)) {
+        checkTargetForm(property.expression, false, at, diags);
+        continue;
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        if (property.objectAssignmentInitializer !== undefined) continue;
+        continue;
+      }
+      if (!ts.isPropertyAssignment(property)) continue;
+      const value = property.initializer;
+      if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        checkTargetForm(value.left, true, at, diags);
+        continue;
+      }
+      checkTargetForm(value, true, at, diags);
+    }
+    return;
+  }
+  report(
+    diags,
+    INVALID_ASSIGNMENT_TARGET,
+    at,
+    "the left-hand side of an assignment must be a variable reference or a property access",
+  );
 }
 
 /* ── strictness of the code around a node ───────────────────────────────

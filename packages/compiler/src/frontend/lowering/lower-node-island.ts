@@ -1265,7 +1265,11 @@ export function classConstructHelper(
   const info = lowerer.classes.get(className);
   if (info === undefined || info.def.runtime || info.localClass || info.generic) return null;
   for (let c: typeof info | null = info; c; c = c.base) if (c.def.baseValueGlobal) return null;
-  if (lowerer.inheritsBuiltinErrorCtor(info)) return null;
+  /* A ctor-less Error subclass keeps the builtin base's constructor
+   * parameters — the (message?, options?) checked-dynamic pair the
+   * synthesized constructor forwards — so its helper constructs exactly
+   * what native `new C(...)` does. Only an explicit constructor with
+   * another shape falls through the mode check below. */
   const shapes = info.ctorParams;
   if (shapes.some((s) => s.mode !== "required" && s.mode !== "omittable")) return null;
   const name = `%island.new:${className}`;

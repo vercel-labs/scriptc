@@ -2330,9 +2330,9 @@ console.log("unreachable");
 
 // The runtime formatter (format strings known only at run time, spread
 // arguments, options objects) throws a coded SC2020 error for renderings
-// it has no lowering for.
+// it has no lowering for, and %o of an object renders its hidden entries.
 describe("runtime format refusals", () => {
-  test("%s of a class instance with toString, %o of objects, colored errors and options", async () => {
+  test("%s of a class instance with toString, colored errors and options", async () => {
     const r = await compileAndRun(
       "format-runtime-refusals",
       `import * as util from "node:util";
@@ -2366,7 +2366,7 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
-        "Error SC2020 util.format %o of objects renders hidden properties, which have no lowering; use %O\n" +
+        "{ a: 1 }\n" +
         "Error SC2020 colored inspect output of Error values has no lowering\n" +
         "[ 1, ... 1 more item ]\n" +
         "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +

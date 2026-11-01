@@ -215,3 +215,50 @@ test("leaves a for loop whose initializer writes an advanced position as it is",
   const { f, loop } = cursors(init);
   expect(findLoopEntryVersions(f, analyzeIntegerRangeFacts(f)).has(loop)).toBe(false);
 });
+
+/** seed = unknown; i = 0;
+ * while (i < 300) { seed = (seed * 3877 + 29573) % 139968; ...extra; i++; }
+ * observe(seed) */
+function congruential(extra: IrStmt[] = []) {
+  const dividend = bin("+", bin("*", ref("seed"), num(3877)), num(29573));
+  const remainder = bin("%", dividend, num(139968));
+  const loop: IrStmt = {
+    loc,
+    kind: "while",
+    cond: condition("<", ref("i"), num(300)),
+    body: [set("seed", remainder), ...extra, bump("i")],
+  };
+  const f = fn(
+    [set("seed", ref("unknown")), set("i", num(0)), loop, observe(ref("seed"))],
+    ["seed", "i"],
+  );
+  return { f, loop, dividend };
+}
+
+test("assumes a local the loop writes only as a remainder by a literal in that remainder's range", () => {
+  const { f, loop, dividend } = congruential();
+  const facts = analyzeIntegerRangeFacts(f);
+  // The wide assumption leaves the product inexact.
+  expect(facts.ranges.get(dividend)).toBeFalsy();
+  const version = findLoopEntryVersions(f, facts).get(loop);
+  expect([...version!.entry]).toEqual([["seed", { min: 0, max: 139967 }]]);
+  expect(version!.ranges.get(dividend)).toEqual({ min: 29573, max: 139967 * 3877 + 29573 });
+});
+
+test("narrows an int32 local's fact to its remainder's range", () => {
+  const { f, loop, dividend } = congruential();
+  const slots = {
+    locals: (id: string) => (id === "seed" ? { min: 0, max: 2 ** 31 - 1 } : null),
+  };
+  const facts = analyzeIntegerRangeFacts(f, slots);
+  // Exact, but past int32.
+  expect(facts.ranges.get(dividend)).toEqual({ min: 29573, max: (2 ** 31 - 1) * 3877 + 29573 });
+  const version = findLoopEntryVersions(f, facts, slots).get(loop);
+  expect([...version!.entry]).toEqual([["seed", { min: 0, max: 139967 }]]);
+  expect(version!.ranges.get(dividend)).toEqual({ min: 29573, max: 139967 * 3877 + 29573 });
+});
+
+test("a local the loop also writes otherwise is not assumed in a remainder's range", () => {
+  const { f, loop } = congruential([bump("seed")]);
+  expect(findLoopEntryVersions(f, analyzeIntegerRangeFacts(f)).has(loop)).toBe(false);
+});

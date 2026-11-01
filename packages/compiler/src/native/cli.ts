@@ -168,6 +168,7 @@ async function main(): Promise<number> {
               regex: false,
               copying: false,
               textDecoderLegacy: false,
+              bigintBytes: false,
               fileHandle: false,
               zlib: false,
               assert: false,

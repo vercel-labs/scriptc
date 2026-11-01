@@ -12,7 +12,8 @@ import { resolveBareModule } from "../frontend/resolve.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "../frontend/workspace-registry.js";
 import { moduleSourceCandidates } from "../frontend/module-source-candidates.js";
-import { scanModule, type NodeIslandMarker } from "./detect.js";
+import { scanModuleFacts, type CjsRead, type GlobalRead, type NodeIslandMarker } from "./detect.js";
+import { stripProblem, type StripProblem } from "./type-strip.js";
 import { originOf, packageDirOf, type Origin } from "./origin.js";
 
 export interface ScannedModule {
@@ -22,6 +23,15 @@ export interface ScannedModule {
   packageDir: string | null;
   packageName: string | null;
   markers: NodeIslandMarker[];
+  /** Members the module reads through a builtin's CommonJS object (H3.4). */
+  cjsReads: CjsRead[];
+  /** Names the module reads that it declares nowhere and no builtin
+   * provides: each resolves on the global object at run time. */
+  globalReads: GlobalRead[];
+  /** A user TypeScript module the build may need to run in a Node island (a
+   * `builtin-patch` marker, or a read of a patched builtin member) that Node
+   * cannot run with type stripping only (H3.5): it stays native. */
+  stripProblem: StripProblem | null;
   /** True for a module of a package the drop-and-reload loop removed. */
   dropped: boolean;
 }
@@ -94,6 +104,44 @@ function specifiersOf(program: ts.Program, sf: ts.SourceFile): { spec: string; n
   return out;
 }
 
+/** The diagnostics of a construct that sloppy-mode Node accepts: the
+ * frontend compiles every file under the project's `strict` options (with
+ * `alwaysStrict`), so a `with`, an octal literal, or a strict-only reserved
+ * word reports here even though the file itself is a CommonJS script that
+ * Node runs sloppy. JavaScript grammar errors arrive in the bind pass
+ * (TS1101 among them), so both passes filter by this set. They cannot hide
+ * a real syntax error: they exist only for code the engine parses in sloppy
+ * mode. */
+const SLOPPY_LEGAL_CODES: ReadonlySet<number> = new Set([
+  1100, // invalid use of a strict-mode reserved word
+  1101, // 'with' statements are not allowed in strict mode
+  1102, // 'delete' of an identifier in strict mode
+  1121, // an octal literal
+  1487, // an octal escape sequence
+  1210, // a class body's strict-mode restriction
+  1212, // a strict-mode reserved word
+  1213, // a strict-mode reserved word in a class
+  1214, // a strict-mode reserved word in a module
+  1215, // invalid use of a strict-mode-only construct in a module
+]);
+
+/** Whether the file parses as the sloppy JavaScript the island would run:
+ * a file with a genuine syntax or early error cannot run in an island as
+ * written (Node refuses it too, at load), so its pre-scan markers must not
+ * put it there — a parse-negative test stays the compile refusal it is
+ * (decision S5: the markers narrow, never move, the native passes). */
+function sloppyParsable(program: ts.Program, sf: ts.SourceFile): boolean {
+  try {
+    const sloppyLegal = (d: ts.Diagnostic): boolean => SLOPPY_LEGAL_CODES.has(d.code);
+    return (
+      program.getSyntacticDiagnostics(sf).every(sloppyLegal) &&
+      program.getBindDiagnostics(sf).every(sloppyLegal)
+    );
+  } catch {
+    return true;
+  }
+}
+
 /** Scans `files`: markers for npm JavaScript (and for user JavaScript when
  * `userJs`), and package edges for every file when `edges` (a program with
  * no npm package has none to find). */
@@ -112,13 +160,31 @@ export function scanFiles(
     if (origin === "builtin" || origin === "shim") continue;
     const at = origin === "npm" ? packageDirOf(sf.fileName) : null;
     const js = isJsSourceFileName(sf.fileName);
-    const markers = js && (origin === "npm" || opts.userJs) ? scanModule(sf) : [];
+    // A user TypeScript module is scanned only for the builtin-patch marker
+    // (H3.2): its other markers are JavaScript semantics, and sloppy
+    // parsing is never required of TypeScript.
+    const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
+    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [], globalReads: [] };
+    if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
+    let markers = userTs
+      ? facts.markers.filter((marker) => marker.reason === "builtin-patch")
+      : facts.markers;
+    if (js && markers.length > 0 && !sloppyParsable(program, sf)) markers = [];
     modules.push({
       file: sf.fileName,
       origin,
       packageDir: at === null ? null : at.dir,
       packageName: at === null ? null : at.name,
       markers,
+      cjsReads: facts.cjsReads,
+      globalReads: facts.globalReads,
+      // A TypeScript module can island for a builtin patch (H3.2) and for a
+      // read of a member another island's patch changes (H3.4): both need
+      // Node to run the file with type stripping only.
+      stripProblem:
+        userTs && (markers.length > 0 || facts.cjsReads.length > 0)
+          ? stripProblem(program, sf)
+          : null,
       dropped: opts.dropped,
     });
     if (!opts.edges) continue;

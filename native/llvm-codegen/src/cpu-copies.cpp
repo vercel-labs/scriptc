@@ -142,6 +142,21 @@ bool ranLess(const Function &Base, const Function &Copy) {
   return !BaseRuns || BaseRuns->getCount() < Runs->getCount();
 }
 
+// Whether Base calls a function defined in the module for another CPU level,
+// which the optimizer cannot inline into Base.
+bool callsOtherLevel(const Function &Base) {
+  StringRef Cpu = Base.getFnAttribute("target-cpu").getValueAsString();
+  for (const BasicBlock &Block : Base)
+    for (const Instruction &I : Block) {
+      const auto *Call = dyn_cast<CallBase>(&I);
+      const Function *Callee = Call ? Call->getCalledFunction() : nullptr;
+      if (Callee && !Callee->isDeclaration() &&
+          Callee->getFnAttribute("target-cpu").getValueAsString() != Cpu)
+        return true;
+    }
+  return false;
+}
+
 } // namespace
 
 void useBaselineBodies(Module &M) {
@@ -171,7 +186,7 @@ void useBaselineBodies(Module &M) {
     Function *Base = It->second;
     if (Base->isDeclaration() || Base->hasAvailableExternallyLinkage() ||
         Base->getFunctionType() != F.getFunctionType() ||
-        ranLess(*Base, F) || !onlyNarrowVectors(F))
+        ranLess(*Base, F) || callsOtherLevel(*Base) || !onlyNarrowVectors(F))
       continue;
     Replaced.emplace_back(&F, Base);
   }

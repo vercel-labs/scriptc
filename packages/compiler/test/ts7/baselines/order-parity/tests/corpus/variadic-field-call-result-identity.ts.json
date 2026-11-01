@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/variadic-field-call-result-identity.ts"
+ ],
+ "diags": []
+}

@@ -28,6 +28,7 @@ import {
   arrayOf,
   canBoxFuncIntoDyn,
   funcOf,
+  isUnitType,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
 import { builtinFunctionValue } from "../lower-exprs.js";
@@ -188,7 +189,7 @@ export interface StdioPatchSite {
  * type maps to the process stream). Such a program routes its typed
  * stdout/stderr writes through the stream object, so the replacement sees
  * them with their arguments, as in Node. Cached per program; the first
- * site found is recorded for the executable planner's SC8020 check. */
+ * site found is recorded for the executable planner's SC8006 refusal. */
 export function programPatchesStdio(lowerer: Lowerer): boolean {
   if (lowerer.patchesStdio !== null) return lowerer.patchesStdio;
   let found = false;
@@ -241,7 +242,7 @@ export function programPatchesStdio(lowerer: Lowerer): boolean {
 /** The pinned Node release the runtime reports as process.versions.node
  * (packages/runtime/src/scr_lib.c SCR_NODE_COMPAT_VERSION, kept equal to
  * internal/compatibility/node-v24.json by test/node-pin.test.ts). */
-export const NODE_COMPAT_VERSION = "24.22.0";
+export const NODE_COMPAT_VERSION = "24.22.1";
 
 /** Method calls on first-class process-stream receivers (procStream —
  * a WritableStream-typed value like prefixStream's `output` param):
@@ -869,7 +870,16 @@ export function lowerProcessProperty(
     return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
   }
   if (member === "env") {
-    const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    let mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    // `(globalThis as { process?: { env?: E } }).process?.env`: the cast
+    // types env as optional, but Node always defines it. Snapshot into the
+    // record arm; the caller's coercion wraps it into the optional type.
+    if (mapped?.kind === "union") {
+      const arms = lowerer.unions.get(mapped.unionId)?.arms ?? [];
+      const records = arms.filter((arm) => arm.kind === "record");
+      if (records.length === 1 && arms.every((arm) => arm.kind === "record" || isUnitType(arm)))
+        mapped = records[0]!;
+    }
     if (mapped?.kind === "record") {
       const helper = envSnapshotHelper(lowerer, mapped.shapeId, loc);
       if (helper !== null) {

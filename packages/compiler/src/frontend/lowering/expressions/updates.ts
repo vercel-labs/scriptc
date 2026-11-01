@@ -23,6 +23,7 @@ import {
   deferredSlotOr,
   dynCompoundValue,
   lowerOptionalNumber,
+  lowerOperatorNumber,
   operatorUnsupported,
   runtimeOptionalStorageOperand,
   symbolFieldTarget,
@@ -46,7 +47,7 @@ import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
-import { staticFieldWriteTarget } from "../lower-classes.js";
+import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
 import { expandoWritableTarget } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
@@ -55,7 +56,7 @@ import { partialFieldWriteError } from "../partial-assertions.js";
 import { errorPropertyWrite } from "../error-methods.js";
 import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { declareContextLocal } from "../function-context.js";
 import { keyedFieldTarget, keyedFieldWrite, saveKeyedFieldKey } from "./keyed-field-targets.js";
 
@@ -171,7 +172,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
                     type: F64,
                     loc,
                   } satisfies IrExpr)
-                : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+                : lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
@@ -199,7 +200,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "date") return dateTimeValue(raw, loc);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
-      const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+      const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind === "f64") return operand;
       // `+process.argv[2]`: a `string | undefined` (or other primitive
       // union) converts as Number(value) does.
@@ -241,7 +242,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // protocol. This is the static `any`/JS-lane answer for idioms
       // such as `while (~index)`, where inference may have widened an
       // otherwise numeric slot to the checked-dynamic tree.
-      const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+      const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "~", [raw.type]);
       return { kind: "unary", op: "~", operand, type: F64, loc };
     }
@@ -1027,7 +1028,20 @@ export function lowerFieldCompoundValue(
     let probed = tryLowerExpression(lowerer, access.expression);
     const staticClass =
       probed?.type.kind === "classval" ? lowerer.classes.get(probed.type.className) : undefined;
-    if (probed && staticClass && hasRuntimeStatics(staticClass))
+    // A statically known member that the class value's table does not carry
+    // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+    // updates its own storage, as it would without the hook; a member the
+    // class does not declare at all is a property of the class object.
+    const staticMember =
+      staticClass && !ts.isPrivateIdentifier(access.name)
+        ? findStaticOn(lowerer, staticClass, access.name.text)
+        : undefined;
+    if (
+      probed &&
+      staticClass &&
+      hasRuntimeStatics(staticClass) &&
+      (!staticMember || runtimeStaticDefines(lowerer, staticClass, access.name.text))
+    )
       probed = lowerer.coerceToExpected(probed, DYN);
     // A private name is the field of its class (fieldTarget).
     if (probed?.type.kind === "dyn" && !ts.isPrivateIdentifier(access.name)) {
@@ -1043,8 +1057,20 @@ export function lowerFieldCompoundValue(
         "%compoundOld",
       );
       const cur: IrExpr = { kind: "dynCheck", value: read, type: F64, loc };
+      const rawRhs: IrExpr = rhsNode
+        ? lowerer.lowerExpr(rhsNode)
+        : { kind: "numLit", value: 1, type: F64, loc };
+      // A `null`/`undefined` literal right side has no value of its own to
+      // hold in the temporary. In a JavaScript source `+` is the abstract
+      // operation (ToNumber for arithmetic, ToString for a string left
+      // operand — `s += null` appends "null"), so the unit crosses as the
+      // dynamic null rather than as the number it would convert to.
       const rhs = save(
-        rhsNode ? lowerer.lowerExpr(rhsNode) : { kind: "numLit", value: 1, type: F64, loc },
+        rawRhs.kind === "unitLit"
+          ? isJsSourceFile(ts.getSourceFileOfNode(access))
+            ? lowerer.coerceToExpected(rawRhs, DYN)
+            : lowerOperatorNumber(lowerer, rawRhs, loc)
+          : rawRhs,
         "%compoundRhs",
       );
       if (isJsSourceFile(ts.getSourceFileOfNode(access)) && lowerer.dynConvertible(rhs.type)) {
@@ -1079,7 +1105,7 @@ export function lowerFieldCompoundValue(
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
-          : lowerOptionalNumber(lowerer, rhs, loc);
+          : lowerOperatorNumber(lowerer, rhs, loc);
       if (numericRhs.type.kind !== "f64")
         compoundUnsupported(lowerer, access, op, F64, numericRhs.type);
       const value = save(
@@ -1136,14 +1162,33 @@ export function lowerFieldCompoundValue(
   } else {
     read = save(fieldRead, "%compoundOld");
   }
+  // A `null`/`undefined` literal right side converts before it reaches the
+  // temporary: a local cannot hold a bare unit value. Every other right side
+  // keeps its own type in the temporary, as before.
+  const rawRhs: IrExpr = rhsNode
+    ? lowerer.lowerExpr(rhsNode)
+    : { kind: "numLit", value: 1, type: F64, loc };
+  // `s += null` on a STRING field appends "null": the abstract `+` converts
+  // the unit to its primitive and, with a string left operand, to a string.
+  // The unit has no value of its own to hold in the temporary, so it crosses
+  // as the dynamic null; every other compound operation converts it to a
+  // number (`n += null` adds 0).
+  const unitConcat =
+    rawRhs.kind === "unitLit" &&
+    read.type.kind === "string" &&
+    isJsSourceFile(ts.getSourceFileOfNode(access));
   const rhs = save(
-    rhsNode ? lowerer.lowerExpr(rhsNode) : { kind: "numLit", value: 1, type: F64, loc },
+    rawRhs.kind === "unitLit"
+      ? unitConcat
+        ? lowerer.coerceToExpected(rawRhs, DYN)
+        : lowerOperatorNumber(lowerer, rawRhs, loc)
+      : rawRhs,
     "%compoundRhs",
   );
   const numericRhs: IrExpr =
     rhs.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(access))
       ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
-      : lowerOptionalNumber(lowerer, rhs, loc);
+      : lowerOperatorNumber(lowerer, rhs, loc);
   let value: IrExpr;
   let appended: IrExpr | null = null;
   const numericRead = lowerOptionalNumber(lowerer, read, loc, access);

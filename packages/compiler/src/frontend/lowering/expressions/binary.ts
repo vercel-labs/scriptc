@@ -9,6 +9,8 @@ import {
 } from "../undefined-index.js";
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { recordStringCall } from "../record-links.js";
 import {
   BIGINT_T,
   BOOL,
@@ -39,7 +41,7 @@ import {
   lowerAbsenceProbe,
   lowerDynMemberAssignment,
   lowerDereferencedElementAssignment,
-  lowerOptionalNumber,
+  lowerOperatorNumber,
   lowerPresenceOperand,
   nullishBranches,
   operandPairs,
@@ -52,13 +54,18 @@ import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.
 import { lowerElementCompoundParts } from "./element-access.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { storedClassValueType } from "../lower-classes.js";
+import { findStaticOn, storedClassValueType } from "../lower-classes.js";
 import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
-import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
+import {
+  genericDeclarationBehindValue,
+  noteDynamicIdentityComparison,
+  notePinnedIdentityComparison,
+} from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
@@ -87,6 +94,7 @@ import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../s
 import { withUnitArm } from "../../type-mapper.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
+import { lowerEnvironmentIdentity } from "../builtins/environment.js";
 
 /** `v === undefined` / `v !== null` — the narrowing tests for unit-armed
  * unions. A union operand compared with a unit literal lowers to a
@@ -651,11 +659,26 @@ export function lowerNativeFunctionAssignment(
   const classType = storedClassValueType(lowerer, target.expression);
   const staticClass =
     classType?.kind === "classval" ? lowerer.classes.get(classType.className) : undefined;
-  if (
-    staticClass &&
+  // The member named by a statically known key: a class whose property
+  // table does not carry it (a class whose only runtime static is its
+  // `Symbol.hasInstance` hook) writes its own storage instead, exactly as
+  // it reads it. A member the class does not declare at all is a property
+  // of the class object, wherever the key comes from.
+  const staticName = ts.isPropertyAccessExpression(target)
+    ? ts.isPrivateIdentifier(target.name)
+      ? null
+      : target.name.text
+    : ts.isStringLiteral(target.argumentExpression)
+      ? target.argumentExpression.text
+      : undefined;
+  const writesThroughTable =
+    staticClass !== undefined &&
     hasRuntimeStatics(staticClass) &&
-    !(ts.isPropertyAccessExpression(target) && ts.isPrivateIdentifier(target.name))
-  ) {
+    staticName !== null &&
+    (staticName === undefined ||
+      findStaticOn(lowerer, staticClass, staticName) === null ||
+      runtimeStaticDefines(lowerer, staticClass, staticName));
+  if (writesThroughTable) {
     return lowerDynMemberAssignment(
       lowerer,
       expr,
@@ -922,6 +945,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
       // valueOf: ToPrimitive throws Node's TypeError.
       const nullProtoT = nullProtoRecordShape(lowerer, e.type);
       if (nullProtoT) return nullProtoToString(lowerer, e, nullProtoT);
+      // A linked copy or a record with a kept source converts as its
+      // source does (record-links.ts).
+      if (recordMayKeepSource(lowerer, e.type))
+        return recordStringCall(lowerer, e, "string", e.loc, "toString");
       return { kind: "toString", operand: e, type: STRING, loc: e.loc };
     }
   }
@@ -1005,8 +1032,8 @@ export function lowerCompoundValueToTarget(
     loc: locOf(expr.left),
   };
   const rhs = lowerer.lowerExpr(expr.right);
-  const numericRead = lowerOptionalNumber(lowerer, read, loc);
-  const numericRhs = lowerOptionalNumber(lowerer, rhs, loc);
+  const numericRead = lowerOperatorNumber(lowerer, read, loc);
+  const numericRhs = lowerOperatorNumber(lowerer, rhs, loc);
 
   if (
     compound === "+" &&
@@ -1495,6 +1522,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         : "compound assignment as an expression (write `x op= e` as a statement, or spell out `x = x op e`)",
     );
   }
+  // An identity comparison with process.env or a value held from it
+  // compares the one environment object, which no snapshot can stand for.
+  {
+    const identity = lowerEnvironmentIdentity(lowerer, expr, loc);
+    if (identity) return identity;
+  }
   if (op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
     const nullTest = lowerLooseNullCompare(lowerer, expr, loc);
     if (nullTest) return nullTest;
@@ -1699,6 +1732,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
             ? { liveRef: true as const }
             : {}),
         };
+        if (reference.kind === "func")
+          noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left: scalarSide === left ? boxed : left,
@@ -1754,6 +1789,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           // reference kinds by identity (scr_dyn_strict_eq).
           scalarSide.type.kind === "dyn")
       ) {
+        // A generic declaration read through `unknown` compares as the
+        // function object it names, which is one object in JavaScript but
+        // one closed instance per signature here: the whole-program check
+        // refuses it when the program holds the declaration at more than
+        // one signature.
+        noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left,
@@ -2038,7 +2079,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     );
   };
   const arithmeticNumber = (operand: IrExpr, node: ts.Expression): IrExpr =>
-    lowerOptionalNumber(lowerer, operand, loc, node);
+    lowerOperatorNumber(lowerer, operand, loc, node);
   const arithmeticLeft = strictEquality ? left : arithmeticNumber(left, expr.left);
   const arithmeticRight = strictEquality ? right : arithmeticNumber(right, expr.right);
   const bothNum = arithmeticLeft.type.kind === "f64" && arithmeticRight.type.kind === "f64";
@@ -2637,6 +2678,39 @@ export function lowerStrictEquality(
   // assignable to the other — a tuple-typed listeners() element
   // against a prefix-declared handler): the pointer answers it.
   if (idLeft.type.kind === "func" && idRight.type.kind === "func") {
+    // Two VALUE INSTANCES of one generic declaration are the SAME function
+    // object in JavaScript — the erased closure every unpinned value reads
+    // and each pinned signature's compiled closure are separate functions
+    // here, so the pointer would answer false against Node's true. The
+    // operands' declarations decide it, not their compiled instances.
+    const leftDecl = genericDeclarationBehindValue(lowerer, leftNode, true);
+    if (leftDecl !== null && leftDecl === genericDeclarationBehindValue(lowerer, rightNode, true)) {
+      // JavaScript evaluates both operands, left first, before it compares
+      // them — and a read of a binding still in its temporal dead zone
+      // throws there. The declaration decides the answer, but the reads
+      // keep their place, in that order.
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: idLeft, loc },
+          { kind: "exprStmt", expr: idRight, loc },
+        ],
+        result: boolLit(!negated, loc),
+        type: BOOL,
+        loc,
+      };
+    }
+    // Two pins of ONE generic declaration at different signatures are
+    // different compiled closures; the whole-program check refuses the
+    // compare (checkGenericIdentityPins).
+    notePinnedIdentityComparison(
+      lowerer,
+      node,
+      leftNode,
+      rightNode,
+      idLeft.kind === "closure" ? idLeft.fnName : undefined,
+      idRight.kind === "closure" ? idRight.fnName : undefined,
+    );
     return {
       kind: "bin",
       op: negated ? "!==" : "===",
@@ -2715,6 +2789,11 @@ export function lowerStrictEquality(
     };
   }
   if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
+    // A generic declaration read through `unknown` compares as the function
+    // object it names, which is one object in JavaScript but one closed
+    // instance per signature here: the whole-program check refuses it when
+    // the program holds the declaration at more than one signature.
+    noteDynamicIdentityComparison(lowerer, node, leftNode, rightNode);
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),

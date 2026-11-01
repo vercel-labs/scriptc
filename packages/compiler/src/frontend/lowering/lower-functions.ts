@@ -37,9 +37,15 @@ import {
   appendImplicitUndefinedReturn,
   blockBodyOf,
 } from "./function-returns.js";
-import { generatorMeta, isThisParameter, type ParamShape } from "./call-signatures.js";
+import {
+  generatorMeta,
+  generatorParamsBindAtCall,
+  isThisParameter,
+  type ParamShape,
+} from "./call-signatures.js";
 import { isStrictCode } from "./strict-mode.js";
 import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
+import { noteObjectMethodName } from "./function-names.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -522,7 +528,17 @@ export function lowerLambda(
       fnCtx.returnType = bodyReturn;
     }
     dropUnreadReceiver(fnCtx, prologue, receiver);
-    body = [...prologue, ...body];
+    // Generator parameters bind at the CALL (FunctionDeclarationInstantiation
+    // runs before GeneratorStart) exactly when that is observable: a
+    // destructuring or rest pattern, a default that evaluates anything, or a
+    // body that reads `arguments`. An identifier-only list — even with
+    // literal defaults — binds nothing observable, so it keeps the lowering
+    // that binds on the first resume and compiles byte-identically.
+    const bindsAtCall =
+      isGenerator && prologue.some((stmt) => stmt !== receiver) && generatorParamsBindAtCall(node);
+    body = bindsAtCall
+      ? [...prologue, { kind: "genBindBarrier" as const, loc }, ...body]
+      : [...prologue, ...body];
     // Bare-expression bodies never pass through lowerStmts, so the
     // lib-boundary chokepoint runs here (idempotent for block bodies,
     // whose statements were already walked). A fence poisons the
@@ -548,8 +564,11 @@ export function lowerLambda(
       loc,
     };
     if (isAsync) lifted.async = true;
-    if (fnCtx.generator) lifted.generator = fnCtx.generator;
+    if (fnCtx.generator) {
+      lifted.generator = bindsAtCall ? { ...fnCtx.generator, bindAtCall: true } : fnCtx.generator;
+    }
     lowerer.liftedFns.push(lifted);
+    noteObjectMethodName(lowerer, node, fnName);
     return { kind: "closure", fnName, captures: ctx.captureSources, type: funcType, loc };
   } catch (e) {
     // JS sources defer LAMBDA poisons like function declarations
@@ -648,7 +667,17 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       ? lowerUndefinedResultBody(lowerer, decl, undefinedResult, lowerBody)
       : lowerBody();
     dropUnreadReceiver(ctx, prologue, receiver);
-    const body = [...prologue, ...statements];
+    // See lowerLambda: a generator binds its parameters at the CALL exactly
+    // when that is observable. The receiver read and the arity bookkeeping
+    // are the call machinery, not parameter binding, and keep the
+    // unbarriered shape.
+    const bindsAtCall =
+      sig.generator !== undefined &&
+      prologue.some((stmt) => stmt !== receiver && !argumentCount.includes(stmt)) &&
+      generatorParamsBindAtCall(decl);
+    const body = bindsAtCall
+      ? [...prologue, { kind: "genBindBarrier" as const, loc: locOf(decl) }, ...statements]
+      : [...prologue, ...statements];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(decl));
     const fn: IrFunction = {
       name: sig.name,
@@ -661,7 +690,8 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       loc: locOf(decl),
     };
     if (sig.isAsync) fn.async = true;
-    if (sig.generator !== undefined) fn.generator = sig.generator;
+    if (sig.generator !== undefined)
+      fn.generator = bindsAtCall ? { ...sig.generator, bindAtCall: true } : sig.generator;
     return fn;
   } catch (e) {
     // A poison OUTSIDE the per-statement catches (a parameter DEFAULT

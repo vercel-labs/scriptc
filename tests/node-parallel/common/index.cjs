@@ -8,6 +8,7 @@ const os = require("os");
 const { inspect } = require("util");
 
 const hasIntl = true;
+const enoughTestMem = os.totalmem() > 0x70000000; /* 1.75 Gb */
 const isDebug = false;
 const isWindows = process.platform === "win32";
 const isAIX = os.type() === "AIX";
@@ -79,6 +80,11 @@ function skip(msg) {
   process.exit(0);
 }
 
+function skipIf32Bits() {
+  if (process.arch !== "x64" && process.arch !== "arm64")
+    skip("The tested feature is not available in 32bit builds");
+}
+
 function expectWarning(name, expected, code) {
   if (typeof expected === "string") expected = [[expected, code]];
   else if (expected.length !== 0 && !Array.isArray(expected[0]))
@@ -109,6 +115,10 @@ function expectsError(validator, exact) {
   }, exact);
 }
 
+function printSkipMessage(msg) {
+  console.log(`1..0 # Skipped: ${msg}`);
+}
+
 function platformTimeout(ms) {
   if (isAIX || isIBMi) return (typeof ms === "bigint" ? 2n : 2) * ms;
   return ms;
@@ -127,11 +137,37 @@ function invalidArgTypeHelper(input) {
   return ` Received type ${typeof input} (${inspected})`;
 }
 
-function spawnPromisified(...args) {
+function getArrayBufferViews(buf) {
+  const { buffer, byteOffset, byteLength } = buf;
+  const out = [];
+  const arrayBufferViews = [
+    Int8Array,
+    Uint8Array,
+    Uint8ClampedArray,
+    Int16Array,
+    Uint16Array,
+    Int32Array,
+    Uint32Array,
+    Float16Array,
+    Float32Array,
+    Float64Array,
+    BigInt64Array,
+    BigUint64Array,
+    DataView,
+  ];
+  for (const type of arrayBufferViews) {
+    const { BYTES_PER_ELEMENT = 1 } = type;
+    if (byteLength % BYTES_PER_ELEMENT === 0)
+      out.push(new type(buffer, byteOffset, byteLength / BYTES_PER_ELEMENT));
+  }
+  return out;
+}
+
+function spawnPromisified(command, args, options) {
   const { spawn } = require("child_process");
   let stderr = "";
   let stdout = "";
-  const child = spawn(...args);
+  const child = spawn(command, args, options);
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (data) => {
     stderr += data;
@@ -147,6 +183,7 @@ function spawnPromisified(...args) {
 }
 
 module.exports = {
+  enoughTestMem,
   hasCrypto,
   hasIntl,
   isAIX,
@@ -159,10 +196,13 @@ module.exports = {
   mustNotCall,
   mustSucceed,
   skip,
+  skipIf32Bits,
   expectWarning,
+  getArrayBufferViews,
   expectsError,
   invalidArgTypeHelper,
   platformTimeout,
+  printSkipMessage,
   spawnPromisified,
   get hasIPv6() {
     const re = isWindows ? /Loopback Pseudo-Interface/ : isIBMi ? /\*LOOPBACK/ : /lo/;

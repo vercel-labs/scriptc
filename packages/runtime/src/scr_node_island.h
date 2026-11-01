@@ -121,6 +121,38 @@ ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
 ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
+/* The operations scr_json.c's dynamic paths route to an island handle
+ * (typeof, calls, ToPrimitive, `in`, delete, Object.keys and the rest).
+ * scr_node_island_handle.c installs them from a constructor, so they are
+ * set in every program that can hold an island handle, and scr_json.c
+ * builds one object whether or not a program links the island units. */
+typedef struct ScrNiDynOps {
+  ScrDyn *(*get)(ScrDyn *obj, ScrDyn *key);
+  ScrDyn *(*get_str)(ScrDyn *obj, const char *key, size_t len);
+  int (*has)(ScrDyn *obj, ScrDyn *key);
+  int (*delete_key)(ScrDyn *obj, ScrDyn *key);
+  ScrDyn *(*own_keys)(ScrDyn *obj, int mode);
+  ScrDyn *(*call)(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);
+  ScrDyn *(*construct)(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
+  ScrStr *(*type_of)(ScrDyn *value);
+  bool (*util_type_is)(const ScrDyn *value, const ScrStr *probe);
+  int (*instance_of)(ScrDyn *value, ScrDyn *ctor);
+  ScrDyn *(*to_primitive)(const ScrDyn *self, int hint);
+  bool (*is_function)(const ScrDyn *value);
+  /* The `constructor` of an error island code threw, answered by V8 (+1 in
+   * *out): an error keeps its realm's constructor, so a native
+   * `e.constructor === TypeError` holds with the island's TypeError. 1 for
+   * an island error, 0 for any other. */
+  int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+} ScrNiDynOps;
+extern const ScrNiDynOps *scr_ni_dyn_ops;
+
+/* scr_ni_is_handle for units that also build into programs without the
+ * island units. */
+static inline bool scr_ni_dyn_handle(const ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_NODE_ISLAND;
+}
+
 /* Between the two island units. */
 struct ScrNodeValue;
 const struct ScrNodeBridge *scr_ni_bridge(void);        /* loads Node */

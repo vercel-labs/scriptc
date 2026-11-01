@@ -6,7 +6,7 @@ import { emitTlsLibCall } from "./lib-tls.js";
 import { emitHttp2LibCall } from "./lib-http2.js";
 import { emitDatagramLibCall } from "./lib-datagram.js";
 import { emitTestLibCall } from "./lib-test.js";
-import { FN_ATTRS, arrNewCall, traceArg, vAdapters } from "./shapes.js";
+import { FN_ATTRS, arrNewCall, releaseSym, traceArg, vAdapters } from "./shapes.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 
@@ -24,10 +24,12 @@ import {
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
+import { CLASS_KEY_LEN_MIX } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
 import { registerReplay } from "./emit-journal.js";
+import { RECORD_SOURCES_GATE } from "./alloc.js";
 
 /** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
 const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
@@ -274,6 +276,28 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${out} = call ptr @scr_promise_payload_ref(ptr ${promise.name}) ; +1`);
     return host.own({ name: out, type: e.type });
   }
+  if (e.fn === "record.sourceHas") {
+    // A module whose conversions keep no record sources has none to find:
+    // the gate constant folds the test, and the source-reading branches
+    // with it (alloc.ts RECORD_SOURCES_GATE).
+    const record = host.emitReadReceiver(e.args[0]!);
+    const gate = B.tmp(),
+      join = B.newLabel("rsrc.done"),
+      probe = B.newLabel("rsrc.probe"),
+      from = B.currentLabel();
+    B.line(`${gate} = load i1, ptr ${host.shapeHost.recordSourcesGate ?? RECORD_SOURCES_GATE}`);
+    B.condBr(gate, probe, join);
+    B.startBlock(probe);
+    host.declare(`declare zeroext i1 @scr_record_source_has(ptr)`);
+    const has = B.tmp();
+    B.line(`${has} = call zeroext i1 @scr_record_source_has(ptr ${record.name})`);
+    const probed = B.currentLabel();
+    B.br(join);
+    B.startBlock(join);
+    const t = B.tmp();
+    B.line(`${t} = phi i1 [ false, %${from} ], [ ${has}, %${probed} ]`);
+    return { name: t, type: e.type };
+  }
   if (e.fn === "record.sourceSpread") {
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);
@@ -281,6 +305,59 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (type.kind !== "record")
       throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.sourceShare") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const value = host.emitReadReceiver(e.args[1]!);
+    host.dyn.keepsRecordSources = true;
+    host.declare(`declare void @scr_record_source_share(ptr, ptr)`);
+    B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.link") {
+    // The link owns a reference to the source, released with the copy.
+    const copy = host.emitReadReceiver(e.args[0]!);
+    const source = host.emitReadReceiver(e.args[1]!);
+    const pair = e.args[2]!;
+    if (pair.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: record.link pair is not a literal");
+    const retained = host.retainFrame(source.name, e.args[1]!.type);
+    const release = releaseSym(host.shapeHost, e.args[1]!.type);
+    host.declare(`declare void @scr_record_link(ptr, ptr, ptr, i32)`);
+    B.line(
+      `call void @scr_record_link(ptr ${copy.name}, ptr ${retained}, ptr ${release}, i32 ${pair.value})`,
+    );
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.linkIs" || e.fn === "record.linkSource") {
+    const copy = host.emitReadReceiver(e.args[0]!);
+    const pair = e.args[1]!;
+    if (pair.kind !== "numLit")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} pair is not a literal`);
+    if (e.fn === "record.linkSource") {
+      host.declare(`declare ptr @scr_record_link_source(ptr)`);
+      const source = B.tmp();
+      B.line(`${source} = call ptr @scr_record_link_source(ptr ${copy.name})`);
+      return host.own({ name: host.retainFrame(source, e.type), type: e.type });
+    }
+    // A module links copies only of its recordLinks pairs, so the test
+    // reads the table only after the gate (alloc.ts RECORD_SOURCES_GATE,
+    // true whenever the module has links).
+    host.declare(`declare i32 @scr_record_link_pair(ptr)`);
+    const found = B.tmp(),
+      t = B.tmp();
+    B.line(`${found} = call i32 @scr_record_link_pair(ptr ${copy.name})`);
+    B.line(`${t} = icmp eq i32 ${found}, ${pair.value}`);
+    return { name: t, type: e.type };
+  }
+  if (e.fn === "record.sourceNote") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const keys = emitBorrowedInput(host, e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceNote of a non-record");
+    host.dyn.emitRecordSourceNote(B, built.name, keys.name, type.shapeId);
     return { name: "", type: e.type };
   }
   if (e.fn === "array.speciesCreate") {
@@ -486,6 +563,85 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const result = B.tmp();
     B.line(`${result} = load i1, ptr ${slot}`);
     return { name: result, type: e.type };
+  }
+  if (e.fn === "dyn.classHash") {
+    // A generated class table's discriminant: the switch dispatches on the
+    // length and last four bytes of the capsule's class key, the fields a
+    // class branch's own key test compares, so the table's branches (each
+    // still guarded by its own key test) are reached without walking the
+    // chain. A value that is not a capsule, a capsule without a key, and a
+    // key shorter than the four bytes this reads answer -1, which no case
+    // matches, and the switch's fallthrough takes the statements after it;
+    // no branch of the table can match such a value either.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i32`);
+    B.line(`store i32 -1, ptr ${slot}`);
+    const present = B.tmp();
+    const inspect = B.newLabel("class.hash.inspect");
+    const hashed = B.newLabel("class.hash.hashed");
+    const done = B.newLabel("class.hash.done");
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const kind = host.dynKind(value.name);
+    const keySlot = B.tmp(),
+      keyPtr = B.tmp();
+    B.line(
+      `${keySlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+    );
+    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    const lenSlot = B.tmp(),
+      lenWord = B.tmp(),
+      len = B.tmp();
+    B.line(
+      `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
+    );
+    B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
+    B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
+    const typed = B.tmp(),
+      hasKey = B.tmp(),
+      long = B.tmp(),
+      isCapsule = B.tmp(),
+      hashable = B.tmp();
+    B.line(`${typed} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
+    B.line(`${hasKey} = icmp ne ptr ${keyPtr}, null`);
+    B.line(`${long} = icmp sge i32 ${len}, 4`);
+    B.line(`${isCapsule} = and i1 ${typed}, ${hasKey}`);
+    B.line(`${hashable} = and i1 ${isCapsule}, ${long}`);
+    B.condBr(hashable, hashed, done);
+    B.startBlock(hashed);
+    const tailAt = B.tmp(),
+      tailStart = B.tmp(),
+      tailPtr = B.tmp(),
+      tail = B.tmp(),
+      folded = B.tmp(),
+      sum = B.tmp(),
+      masked = B.tmp();
+    B.line(`${tailAt} = sub i32 ${len}, 4`);
+    B.line(`${tailStart} = sext i32 ${tailAt} to i64`);
+    B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, i64 ${tailStart}`);
+    B.line(`${tail} = load i32, ptr ${tailPtr}, align 1`);
+    B.line(`${folded} = mul i32 ${len}, ${CLASS_KEY_LEN_MIX}`);
+    B.line(`${sum} = add i32 ${folded}, ${tail}`);
+    B.line(`${masked} = and i32 ${sum}, 2147483647`);
+    B.line(`store i32 ${masked}, ptr ${slot}`);
+    B.br(done);
+    B.startBlock(done);
+    const selector = B.tmp();
+    B.line(`${selector} = load i32, ptr ${slot}`);
+    const out = B.tmp();
+    B.line(`${out} = sitofp i32 ${selector} to double`);
+    return {
+      name: out,
+      type: e.type,
+      integer: {
+        name: selector,
+        type: "i32",
+        signed: true,
+        range: { min: -1, max: 2147483647 },
+      },
+    };
   }
   if (e.fn === "crypto.randomFillCb" || e.fn === "crypto.randomFillCbDyn") {
     host.usesTimers = true;
@@ -1020,6 +1176,9 @@ function emitTypedRegexReplace(host: LlvmEmitterContext, e: LibCallExpr): LlValu
 
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
+  // A Promise static with a foreign constructor creates promises whose
+  // jobs and unhandled-rejection accounting need the event loop.
+  if (e.fn === "promise.genericStatic") host.usesPromises = true;
   if (e.fn === "regex.replaceCallback") {
     const typed = emitTypedRegexReplace(host, e);
     if (typed) return typed;

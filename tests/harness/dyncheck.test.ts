@@ -209,6 +209,40 @@ console.log("unreachable", c.host);
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $.port, got string");
   });
 
+  test("a record cast from unknown to a dictionary throws at its mismatched read", async () => {
+    // An element of an `unknown[]` keeps the record's identity, as an
+    // `unknown` binding does: the write lands, and only the read of a
+    // field the dictionary's value type does not admit throws.
+    const r = await compileAndRun(
+      "dictionary-view-mismatch",
+      `type Stats = { hits: number; name: string };
+const stats: Stats[] = [{ hits: 1, name: "a" }, { hits: 1, name: "b" }];
+function attempt(label: string, view: Record<string, number>): void {
+  view["hits"] = view["hits"]! + 1;
+  try {
+    console.log(label, view["name"]);
+  } catch (error) {
+    console.log(label, (error as Error).name, (error as Error).message);
+  }
+}
+const mapped: unknown[] = stats.map((s) => s as unknown);
+attempt("mapped", mapped[0] as Record<string, number>);
+const listed: unknown[] = [stats[1]];
+attempt("listed", listed[0] as Record<string, number>);
+console.log(stats[0]!.hits, stats[1]!.hits);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "mapped TypeError expected number at $, got string",
+        "listed TypeError expected number at $, got string",
+        "2 2",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("schema-directed JSON.parse declines to the checked route with identical errors", async () => {
     // `JSON.parse(text) as T` for plain record/array targets parses in one
     // pass and reruns the checked-dynamic route whenever it declines, so
@@ -1123,6 +1157,40 @@ console.log("recovered");
     expect(r.stdout).toBe("TypeError true\nscalar: TypeError\nrecovered\n");
   });
 
+  test("a union spread merge's checked-dynamic object refuses a single-arm reinterpretation catchably", async () => {
+    // Where the per-arm distribution cannot pick one arm, a spread merge
+    // over union sources builds the object Node builds — the checked-
+    // dynamic copy — and the union's checked conversion validates it at
+    // every typed slot. Node keeps the merged keys through a narrower
+    // `as`; scriptc refuses to reinterpret them silently and throws the
+    // catchable TypeError instead. That makes this path scriptc-only:
+    // corpus union-spread-merge.ts pins the accepting paths differentially.
+    const r = await compileAndRun(
+      "union-spread-merge-dyn",
+      `interface OpenAiCompat { supportsStore?: boolean }
+interface AnthropicCompat { supportsLongCacheRetention?: boolean }
+type Compat = OpenAiCompat | AnthropicCompat;
+function mergeCompat(base: Compat, override: Compat): Compat {
+  return { ...base, ...override } as Compat;
+}
+const merged = mergeCompat({ supportsStore: true }, { supportsLongCacheRetention: true });
+console.log(JSON.stringify(merged));
+try {
+  const single = merged as OpenAiCompat;
+  console.log("unreachable", JSON.stringify(single));
+} catch (e) {
+  console.log((e as Error).name, (e as Error).message.includes("not representable in the target union"));
+}
+console.log("recovered");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"supportsStore":true,"supportsLongCacheRetention":true}\nTypeError true\nrecovered\n',
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("a unit smuggled into a PLAIN non-nullable slot throws the stranded trap catchably", async () => {
     // The stranded-UNIT trap without a union in sight: `null!` / `null as
     // any as T` into a plain typed slot (string, array, class, function).
@@ -1791,14 +1859,16 @@ try {
   });
 
   test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
-    // Node's showHidden adds a function's length/name/prototype, an
-    // error's stack and a typed array's byte fields; %o throws the 'not
-    // supported yet' Error for them instead of printing without them.
+    // Node's showHidden adds a function's length/name/prototype and an
+    // error's enumerable properties; %o throws the 'not supported yet'
+    // Error for them instead of printing without them. A typed array's
+    // byte fields do render; a SharedArrayBuffer's own accessors do not.
     const r = await compileAndRun(
       "format-o-hidden-refusals",
       `import { format } from "node:util";
 function f(): void {}
-const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]]];
+const sab = new SharedArrayBuffer(1);
+const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]], ["sab", sab], ["sabView", new Uint8Array(sab)]];
 for (const [label, value] of values) {
   try {
     console.log(label, format("%o", value));
@@ -1813,8 +1883,92 @@ for (const [label, value] of values) {
       [
         "fn util.format %o of function values is not supported yet",
         "err util.format %o of Error values is not supported yet",
-        "u8 util.format %o of typed array values is not supported yet",
+        "u8 Uint8Array(1) [",
+        "  0,",
+        "  [BYTES_PER_ELEMENT]: 1,",
+        "  [length]: 1,",
+        "  [byteLength]: 1,",
+        "  [byteOffset]: 0,",
+        "  [buffer]: ArrayBuffer { [byteLength]: 1 }",
+        "]",
         "arr [ 1, [length]: 1 ]",
+        "sab util.format %o of SharedArrayBuffer values is not supported yet",
+        "sabView util.format %o of SharedArrayBuffer values is not supported yet",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("console.dir renders showHidden through the checked-dynamic walk and refuses the kinds it has no hidden view of", async () => {
+    // dir is inspect with customInspect: false, so the hidden entries come
+    // from the walk's showHidden state; the kinds without a hidden view
+    // keep their refusal, naming console.dir.
+    const r = await compileAndRun(
+      "console-dir-show-hidden",
+      `const arr: any = [1, 2];
+arr.extra = 3;
+Object.defineProperty(arr, "hidden", { value: 4, enumerable: false });
+console.dir(arr, { showHidden: true });
+console.dir(arr);
+function f(): void {}
+try {
+  console.dir(f, { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+const sab = new SharedArrayBuffer(1);
+try {
+  console.dir(new Uint8Array(sab), { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "[ 1, 2, [length]: 2, extra: 3, [hidden]: 4 ]",
+        "[ 1, 2, extra: 3 ]",
+        "console.dir with showHidden of function values is not supported yet",
+        "console.dir with showHidden of SharedArrayBuffer values is not supported yet",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("showHidden refuses the renders that would expose a SharedArrayBuffer's byte accessors", async () => {
+    // Node lists a SharedArrayBuffer's own byteLength, maxByteLength and
+    // growable accessors and its toStringTag symbol under showHidden, which
+    // this inspector does not model: the render throws SC2020 instead of
+    // printing without them, for a view's [buffer] as much as the buffer
+    // itself. Without showHidden the buffer and its views print.
+    const r = await compileAndRun(
+      "inspect-shared-array-buffer-hidden",
+      `import { inspect } from "node:util";
+const sab = new SharedArrayBuffer(4);
+const renders: [string, () => string][] = [
+  ["sab", () => inspect(sab, { showHidden: true })],
+  ["view", () => inspect(new Uint8Array(sab, 1, 2), { showHidden: true })],
+  ["dataView", () => inspect(new DataView(sab, 1, 2), { showHidden: true })],
+];
+for (const [label, render] of renders) {
+  try {
+    console.log(label, render());
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    console.log(label, err.code, err.message);
+  }
+}
+console.log(inspect(sab));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "sab SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "view SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "dataView SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "SharedArrayBuffer { [Uint8Contents]: <00 00 00 00>, [byteLength]: 4 }",
         "",
       ].join("\n"),
     );

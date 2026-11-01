@@ -20,6 +20,7 @@ import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
 import { type TargetCpu, cpuDispatchKeyParts, targetCpuKeyParts } from "../backend/target-cpu.js";
+import { nativeProgramPartitions } from "../backend/native-codegen-core.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -59,12 +60,15 @@ export interface EarlyExecutableNativeFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
-  recordViewPartial?: boolean;
+  jsObjectModel?: boolean;
+  /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
+  mutableBuffers: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;
@@ -88,9 +92,12 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynIntegrityQueries?: boolean;
+  genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
@@ -105,11 +112,21 @@ export interface EarlyExecutableNativeFeatures {
   bigint: boolean;
   /** BigIntStats member reads: scr_stats_bigint.c. Absent (false) otherwise. */
   bigstats?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source: scr_dyn_stdlib_prototype.c. */
+  stdlibPrototypeValue?: boolean;
+  /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
+  promiseGeneric?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** Array.prototype methods over array-like receivers: scr_dyn_array_like.c. */
+  arrayLikeDispatch?: boolean;
+  /** Number.prototype and Boolean.prototype as values:
+   * scr_dyn_builtin_prototype.c. */
+  builtinPrototypeValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -151,11 +168,19 @@ interface EarlyExecutableCacheStamp {
   native: EarlyExecutableNativeFeatures;
   /** The build's performance warnings (SC61xx), which a cache hit repeats. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, which a cache hit reports again. */
+  islands?: { packages: string[]; modules: string[] };
   /** Programs that call into Node.js: the libnode pack identity the build
    * recorded (EarlyExecutableCacheOptions.libnodeIdentity). */
   libnode?: string;
   /** How a --profile-use build's profile matched, which a cache hit reports. */
   profileMatch?: NativeProfileMatch;
+  /** The partitions the executable was linked from (native-codegen-core.ts
+   * nativeProgramPartitions; one for a module small enough to stay whole, and
+   * left out of a link of a single native object). Part of the entry rather
+   * than of the key: the count follows from the cached translation unit, so a
+   * hit can derive it again. */
+  partitions?: number;
   integrity: string;
 }
 
@@ -266,12 +291,27 @@ export interface EarlyExecutableCacheHit {
   frontend: FrontendInputSnapshot;
   /** The performance warnings the build reported (SC61xx), repeated on a hit. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, repeated on a hit. */
+  islands?: { packages: string[]; modules: string[] };
   /** How a --profile-use build's profile matched, reported again on a hit. */
   profileMatch?: NativeProfileMatch;
 }
 
 export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   nativeDependencies?: NativeArtifactDependency[];
+  /** The partitions the native helper compiled, when the build divided the
+   * module; omitted when it linked one object. */
+  partitions?: number;
+}
+
+function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
+  if (typeof value !== "object" || value === null) return false;
+  const islands = value as Record<string, unknown>;
+  return (
+    Array.isArray(islands.packages) &&
+    Array.isArray(islands.modules) &&
+    [...islands.packages, ...islands.modules].every((item) => typeof item === "string")
+  );
 }
 
 function isProfileMatch(value: unknown): value is NativeProfileMatch {
@@ -287,6 +327,8 @@ const BOOLEAN_NATIVE_KEYS = [
   "regex",
   "copying",
   "textDecoderLegacy",
+  "bigintBytes",
+  "mutableBuffers",
   "fileHandle",
   "fetch",
   "zlib",
@@ -627,6 +669,8 @@ async function readExecutableCache(
           (stamp.files.debugSymbols !== undefined)) ||
       (stamp.files.executable === null) !== (stamp.nativeDependencies === null) ||
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
+      (stamp.partitions !== undefined &&
+        (!Number.isInteger(stamp.partitions) || stamp.partitions < 1)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
       (stamp.native.nodeIsland === true &&
@@ -669,6 +713,18 @@ async function readExecutableCache(
       (stamp.files.ir !== null && ir === null) ||
       (stamp.files.executable !== null && executable === null) ||
       (stamp.files.debugSymbols !== undefined && debugSymbols === null)
+    )
+      return null;
+    // A module's partition count follows from its text and, above the size
+    // that keeps it whole, the host's thread count (nativeProgramPartitions),
+    // and the executable is linked from those partitions: one built for
+    // another count is not the executable this host builds, so it is a miss.
+    // A module small enough to stay one partition gets that count on every
+    // host and keeps hitting.
+    if (
+      stamp.partitions !== undefined &&
+      stamp.partitions !==
+        nativeProgramPartitions(translationUnit.length, options.optimization === "dev")
     )
       return null;
 
@@ -756,6 +812,7 @@ async function readExecutableCache(
       ...(Array.isArray(stamp.performance) && stamp.performance.length > 0
         ? { performance: stamp.performance }
         : {}),
+      ...(isIslands(stamp.islands) ? { islands: stamp.islands } : {}),
       ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
       ...(ir === null ? {} : { irPath: paths.irPath }),
       ...(llvmSourcePath === undefined ? {} : { llvmSourcePath }),
@@ -944,9 +1001,13 @@ export async function publishEarlyExecutableCache(
       },
       nativeDependencies: executable === null ? null : result.nativeDependencies!,
       native: result.native,
+      ...(executable !== null && result.partitions !== undefined
+        ? { partitions: result.partitions }
+        : {}),
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),
+      ...(result.islands === undefined ? {} : { islands: result.islands }),
       ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
       ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),
     };

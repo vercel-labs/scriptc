@@ -22,6 +22,10 @@ export interface NativeLinkFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** A BigInt typed-array constructor is read as a value: its element kinds
+   * live in the JavaScript object model build (t262-da §J), which
+   * jsObjectModelFact ORs this fact into. */
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
@@ -31,10 +35,17 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
-  /** The program asserts a record literal to a wider record type (a partial
-   * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
-   * Absent for every program without one, so their objects stay identical. */
-  recordViewPartial?: boolean;
+  /** The program uses a runtime feature only a JavaScript source reaches:
+   * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
+   * (t262-da §J). Absent for every other program, so their objects stay
+   * identical. */
+  jsObjectModel?: boolean;
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
+   * registry those operations maintain. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
+  mutableBuffers?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
@@ -65,6 +76,9 @@ export interface NativeLinkFeatures {
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
    * otherwise. */
   primitiveWrapper?: boolean;
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
+  promiseGeneric?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
@@ -85,11 +99,21 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
+   * Absent (false) otherwise. */
+  childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically:
+   * scr_dyn_integrity.c. Absent (false) for programs without it. */
+  dynIntegrityQueries?: boolean;
+  /** A generator that binds its parameters at the call: scr_gen_bind.c.
+   * Absent (false) for programs without one. */
+  genBind?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
@@ -112,6 +136,10 @@ export interface NativeLinkFeatures {
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
+   * (false) otherwise, so other programs keep their exact link line. */
+  stdlibPrototypeValue?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;
@@ -128,6 +156,13 @@ export interface NativeLinkFeatures {
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** An Array.prototype method runs over an array-like receiver:
+   * scr_dyn_array_like.c. Absent (false) otherwise, so programs that never
+   * call one over an array-like keep their exact link line. */
+  arrayLikeDispatch?: boolean;
+  /** Number.prototype or Boolean.prototype read as a value:
+   * scr_dyn_builtin_prototype.c. Absent (false) otherwise. */
+  builtinPrototypeValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;

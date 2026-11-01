@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/nan-coded-guarded-updates.ts"
+ ],
+ "diags": []
+}

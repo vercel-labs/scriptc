@@ -86,6 +86,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sharedArrayBuffer.new": "scr_shared_array_buffer_new",
   "sharedArrayBuffer.is": "scr_shared_array_buffer_is",
   "arrayBuffer.new": "scr_array_buffer_new",
+  "arrayBuffer.newResizable": "scr_js_buffer_new_resizable",
+  "sharedArrayBuffer.newGrowable": "scr_js_buffer_new_growable",
+  "arrayBuffer.armMutable": "scr_js_buffers_arm",
   "ffi.argument": "scr_ffi_argument",
   "ffi.memoryModule": "scr_ffi_memory_module",
   "arrayBuffer.is": "scr_array_buffer_is",
@@ -303,8 +306,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.clear": "scr_console_clear",
   "console.table": "scr_console_table",
   "console.dirDyn": "scr_console_dir_dyn",
+  "console.dirHidden": "scr_console_dir_hidden",
   "global.native": "scr_global_native",
   "global.installValues": "scr_global_values_install",
+  "dyn.installBuiltinStatics": "scr_builtin_statics_install",
   "global.forInObject": "scr_global_for_in_object",
   "navigator.object": "scr_navigator_object",
   "navigator.language": "scr_navigator_language",
@@ -324,6 +329,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "wrapper.guardList": "scr_js_wrapper_guard_list",
   "wrapper.isStringMethod": "scr_js_wrapper_is_string_method",
   "wrapper.thisString": "scr_js_wrapper_this_string",
+  "wrapper.booleanPrototype": "scr_js_wrapper_boolean_prototype",
   "fs.callbackValue": "scr_fs_callback_value",
   "fs.callbackCall": "scr_fs_callback_call",
   "process.hrtimeValue": "scr_process_hrtime_value",
@@ -552,6 +558,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",
   "buffer.byteLenValue": "scr_buffer_byte_length_value",
   "buffer.byteLenStr": "scr_bytes_byte_length_str",
+  "buffer.normalizeEncoding": "scr_bytes_normalize_encoding",
+  "buffer.normalizeEncodingEmptyUtf8": "scr_bytes_normalize_encoding_empty_utf8",
+  "buffer.normalizeEncodingOrUtf8": "scr_bytes_normalize_encoding_or_utf8",
+  "buffer.writeStrDyn": "scr_bytes_write_str_dyn",
+  "buffer.writeStrDynLen": "scr_bytes_write_str_dyn_len",
   "buffer.isEncoding": "scr_bytes_is_encoding",
   // The checked-dynamic compare/equals validators (scr_bytes_io.c):
   // Node's argument ladders throw catchably (MAY_THROW_LIB_FNS).
@@ -578,6 +589,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.installValue": "scr_buffer_install_value",
   "buffer.staticValue": "scr_buffer_static_value",
   "buffer.prototypeMember": "scr_buffer_prototype_member",
+  "buffer.prototypeObject": "scr_buffer_prototype_object",
+  "buffer.slowBuffer": "scr_buffer_slow",
   "fs.toUnixTimestamp": "scr_fs_to_unix_timestamp",
   "fs.existsChk": "scr_fs_exists_async",
   "fs.mkdtempSyncChk": "scr_fs_mkdtemp_sync_chk",
@@ -627,6 +640,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "strdec.next": "scr_strdec_next",
   "strdec.end": "scr_strdec_end",
   "strdec.encoding": "scr_strdec_encoding",
+  "strdec.encodingValue": "scr_strdec_encoding_value",
   "stats.isFile": "scr_stats_is_file",
   "stats.isDirectory": "scr_stats_is_dir",
   "stats.isSymbolicLink": "scr_stats_is_symlink",
@@ -683,6 +697,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bigstats.birthtime": "scr_stats_big_birthtime",
   "text.decode": "scr_text_decode",
   "bytes.bufferSource": "scr_bytes_buffer_source",
+  "text.decoderInput": "scr_text_decoder_input",
+  "text.decoderFlag": "scr_text_decoder_flag",
+  "text.decodeStreamOption": "scr_text_decode_stream_option",
+  "text.decoderEncodingOptions": "scr_text_decoder_encoding_options",
   "bytes.copyBrand": "scr_bytes_copy_brand",
   "text.decodeBufferSource": "scr_text_decode_buffer_source",
   "text.decodeOptions": "scr_text_decode_options",
@@ -797,6 +815,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.errorCause": "scr_insp_error_cause",
   "insp.begin": "scr_insp_begin",
   "insp.layout": "scr_insp_layout",
+  "insp.maxArrayLength": "scr_insp_max_array_length",
+  "insp.maxStringLength": "scr_insp_max_string_length",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
@@ -815,6 +835,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
   "record.sourceSpread": "scr_record_source_spread",
+  "record.sourceShare": "scr_record_source_share",
+  "record.sourceNote": "scr_record_source_note",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -888,8 +910,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // codec unit. qs.parse is special-cased in emitLibCall (the result
   // dictionary's construction).
   "qs.escape": "scr_qs_escape",
+  "qs.escapeValue": "scr_qs_escape_value",
   "qs.unescape": "scr_qs_unescape",
   "qs.stringify": "scr_qs_stringify",
+  "qs.stringifyCustom": "scr_qs_stringify_custom",
+  "qs.separator": "scr_qs_separator",
+  "qs.unescapeBuffer": "scr_qs_unescape_buffer",
   // Timer handle bookkeeping (never throws; the comma-shaped chaining
   // forms are special-cased in emitLibCall).
   "timers.hasRef": "scr_timer_has_ref",
@@ -912,6 +938,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
   "cp.spawnSyncEnv": "scr_spawn_sync_env",
+  "cp.spawnSyncExt": "scr_spawn_sync_ext",
+  "cp.spawnSyncExtEnv": "scr_spawn_sync_ext_env",
   "cp.execSync": "scr_exec_sync",
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",
@@ -1011,6 +1039,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sym.for": "scr_sym_for",
   "sym.wellKnown": "scr_sym_well_known",
   "sym.toString": "scr_sym_to_string",
+  "sym.keyForDyn": "scr_dyn_symbol_key_for",
   "bigint.parse": "scr_bigint_parse",
   "bigint.fromF64": "scr_bigint_from_f64",
   "bigint.neg": "scr_bigint_neg",
@@ -1150,6 +1179,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.keySetComputed": "scr_dyn_key_set_computed",
   "dyn.keyDelete": "scr_dyn_key_delete",
   "dyn.keyDeleteComputed": "scr_dyn_key_delete_computed",
+  "dyn.primitiveDelete": "scr_dyn_primitive_delete",
   "dyn.reflectDeleteProperty": "scr_dyn_reflect_delete_property",
   "dyn.reflectHasTarget": "scr_dyn_reflect_has_target",
   "dyn.hasKeyComputed": "scr_dyn_has_key_computed",
@@ -1183,12 +1213,22 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.in": "scr_dyn_in",
   "dyn.defineProps": "scr_dyn_define_props",
   "dyn.defineProperty": "scr_dyn_define_property",
+  // A descriptor built by an expression: entry points whose
+  // ToPropertyDescriptor accepts any object and reads inherited fields
+  // (scr_dyn_descriptor_snapshot). Only programs that call them link them.
+  "dyn.definePropsShapes": "scr_dyn_define_props_shapes",
+  "dyn.definePropertyShapes": "scr_dyn_define_property_shapes",
+  "dyn.objCreateWithPropertiesShapes": "scr_dyn_obj_create_with_properties_shapes",
   "dyn.getOwnPropertyDescriptor": "scr_dyn_get_own_property_descriptor",
   "dyn.arrayProtoCall": "scr_dyn_array_proto_call",
+  "dyn.arrayLikeProtoCall": "scr_dyn_array_like_call",
+  "dyn.builtinPrototype": "scr_dyn_builtin_prototype",
   "dyn.promiseAll": "scr_dyn_promise_all",
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
   "dyn.promiseResolve": "scr_dyn_promise_resolve",
+  // Promise statics with a foreign `this` (scr_js_promise_generic.c).
+  "promise.genericStatic": "scr_js_promise_generic_call",
   "child.propsInstall": "scr_dyn_handle_props_install",
   "child.propsDefine": "scr_dyn_define_property_hp",
   "child.propsDescriptor": "scr_dyn_get_own_property_descriptor_hp",
@@ -1488,6 +1528,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // the client request forms have non-generic shapes — special-cased.
   "net.serverPort": "scr_net_server_port",
   "net.serverListening": "scr_net_server_listening",
+  "net.listenPortDyn": "scr_net_listen_port_dyn",
   "net.sockSetRef": "scr_net_sock_set_ref",
   "net.serverSetRef": "scr_net_server_set_ref",
   "net.serverOff": "scr_net_server_off",
@@ -1555,6 +1596,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqHttpVersionMajor": "scr_http_req_http_version_major",
   "http.reqHttpVersionMinor": "scr_http_req_http_version_minor",
   "http.reqAborted": "scr_http_req_aborted_flag",
+  "http.reqDestroyed": "scr_http_req_destroyed_flag",
+  "http.resDestroyed": "scr_http_res_destroyed_flag",
   "http.reqComplete": "scr_http_req_complete",
   "http.reqSocket": "scr_http_req_socket",
   "http.reqRawHeaders": "scr_http_req_raw_headers",
@@ -1800,6 +1843,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",
+  "dyn.stdlibPrototype": "scr_dyn_stdlib_prototype",
   "dyn.classPrototype": "scr_dyn_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
@@ -1825,8 +1869,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.getOwnPropertyDescriptors": "scr_dyn_get_own_property_descriptors",
   "dyn.preventExtensions": "scr_dyn_prevent_extensions",
   "dyn.isExtensible": "scr_dyn_is_extensible",
+  "dyn.isExtensibleQuery": "scr_dyn_is_extensible_query",
   "dyn.seal": "scr_dyn_seal",
   "dyn.isSealed": "scr_dyn_is_sealed",
+  "dyn.isSealedQuery": "scr_dyn_is_sealed_query",
   "dyn.objValues": "scr_dyn_obj_values",
   "dyn.objValueList": "scr_dyn_obj_value_list",
   "dyn.objEntries": "scr_dyn_obj_entries",
@@ -1855,6 +1901,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.queueMicrotaskDyn": "scr_queue_microtask_dyn",
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
+  "timers.userDelay": "scr_timer_user_delay",
+  "timers.thisCallback": "scr_timer_this_callback",
 };
 
 /** The mock-aware entry points (scr_test.c) that the timer calls of a
@@ -1919,8 +1967,10 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "url.legacyParse",
   "url.legacyFormat",
   "url.legacyResolve",
-  // The deprecated Buffer constructor reports DEP0005 on the next tick.
+  // The deprecated Buffer constructor reports DEP0005, and SlowBuffer
+  // DEP0030, on the next tick.
   "buffer.deprecation",
+  "buffer.slowBuffer",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.isArrayDeprecated",

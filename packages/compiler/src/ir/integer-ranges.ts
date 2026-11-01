@@ -1011,7 +1011,7 @@ export function analyzeIntegerRangeFacts(
           if (s.init) body([s.init], facts);
           // The initializer writes none of the assumed locals.
           const assumed = entries?.get(s);
-          if (assumed) for (const [id, range] of assumed) if (!facts.has(id)) set(facts, id, range);
+          if (assumed) assume(facts, assumed);
           const counter = induction(s, facts);
           const bounded = boundedIntegerLoopFacts(s, loopLocals, facts);
           const loop = new Map(facts);
@@ -1092,7 +1092,7 @@ export function analyzeIntegerRangeFacts(
         case "while":
         case "doWhile": {
           const assumed = entries?.get(s);
-          if (assumed) for (const [id, range] of assumed) if (!facts.has(id)) set(facts, id, range);
+          if (assumed) assume(facts, assumed);
           // Counters the condition bounds keep their range at every read
           // inside and after the loop.
           const guarded =
@@ -1171,6 +1171,19 @@ export function analyzeIntegerRangeFacts(
             },
           );
           break;
+      }
+    }
+  }
+  /** A loop's entry assumptions, which its entry test proves: each assumed
+   * local holds its range, within any fact it already has. */
+  function assume(facts: Facts, assumed: ReadonlyMap<string, IntegerRange>): void {
+    for (const [id, range] of assumed) {
+      const known = facts.get(id);
+      if (!known) set(facts, id, range);
+      else {
+        const min = Math.max(known.min, range.min),
+          max = Math.min(known.max, range.max);
+        if (min <= max) set(facts, id, { min, max });
       }
     }
   }

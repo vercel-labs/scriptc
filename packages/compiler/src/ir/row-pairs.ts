@@ -7,14 +7,11 @@ import {
   type IrModule,
   type IrStmt,
 } from "./ir.js";
-import {
-  everyExpr,
-  everyExprChild,
-  everyStmtList,
-  mapExprChildren,
-  transformStmtList,
-} from "./traverse.js";
+import { everyExpr, everyExprChild, mapExprChildren, transformStmtList } from "./traverse.js";
 import { PRODUCT_COUNTER_BOUND } from "./integer-loops.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind, lacksKinds } from "./node-index.js";
+
+const FOR_KINDS: readonly IrNodeKind[] = ["for"];
 
 /** Inner-loop expressions above this many nodes keep the loop as written. */
 const MAX_TERM_NODES = 64;
@@ -506,20 +503,19 @@ function pairRows(
  * bounds must also be int32 (so `column < to - 1` is `column + 1 < to`).
  * Neighboring rows and columns share counter sums (`row + 1 + column` and
  * `row + (column + 1)`), and the step's divisions have no dependence
- * between them. */
-export function pairRowSums(mod: IrModule): IrModule {
+ * between them. `nodes`, an index of `mod`, gives each function's `for`
+ * loops without walking its body. */
+export function pairRowSums(mod: IrModule, nodes?: IrNodeIndex): IrModule {
+  const loops = nodes?.scan(FOR_KINDS);
   let changed = false;
   const functions = mod.functions.map((fn): IrFunction => {
-    if (fn.async || fn.generator) return fn;
+    if (fn.async || fn.generator || lacksKinds(fn, loops)) return fn;
     const locals = new Map(fn.locals.map((local) => [local.id, local]));
     // Most bodies hold no row sum: find one before copying the body.
     let found = false;
-    everyStmtList(fn.body, {
-      expr: () => !found,
-      stmt: (s) => {
-        if (s.kind === "for" && matchRowSum(s, locals) !== null) found = true;
-        return !found;
-      },
+    eachNodeOfKinds(fn, loops, (node) => {
+      if (node.kind === "for" && matchRowSum(node, locals) !== null) found = true;
+      return !found;
     });
     if (!found) return fn;
     const added: IrLocal[] = [];

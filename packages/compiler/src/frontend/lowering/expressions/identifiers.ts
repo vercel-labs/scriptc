@@ -1,14 +1,18 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
+import { hostGlobalCallTarget, hostGlobalNameOfIdentifier } from "../host-globals.js";
+import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
+import { globalFunctionValue } from "../global-function-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
+  BIGINT_BYTES_NAMES,
   BOOL,
   BYTES_ELEMENT_NAME,
   DATE_T,
@@ -96,6 +100,33 @@ import { fenceEnumObjectValue } from "../lower-enums.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
+import { envSnapshotHelper, heldEnvValueType } from "../builtins/environment.js";
+
+/** Whether this identifier is the RECEIVER of a member access — the dotted
+ * or bracketed `held.X` / `held[k]`, read or written, through any erasure
+ * wrapper. Those uses answer through the live environment table themselves
+ * (heldEnvValueType); every other use of a held value is a bare one and
+ * reads the environment as it is at that site. */
+function memberReceiverUse(expr: ts.Identifier): boolean {
+  let node: ts.Node = expr;
+  for (;;) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isSatisfiesExpression(parent)
+    ) {
+      node = parent;
+      continue;
+    }
+    return (
+      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+      parent.expression === node
+    );
+  }
+}
 
 /** A JavaScript binding with checked-dynamic storage because the program
  * stores values outside its declared type (analyzeJsWidenedBindings): the
@@ -136,6 +167,19 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         expr,
         "'arguments' in a function expression whose value is not asserted to one fixed-arity signature (assert it, as in `function () { … } as F`, and the function lowers against that signature)",
       );
+    }
+  }
+  // A read of a Node 24 global the native runtime does not implement
+  // (WebSocket, FormData, …) answers the constructor Node has
+  // (host-global-values.ts); constructing or calling it is the use that
+  // refuses (SC2020, host-global). Imports, locals and program
+  // declarations of the same name are the program's own bindings and
+  // never reach here.
+  {
+    const hostGlobal = hostGlobalNameOfIdentifier(lowerer, expr);
+    if (hostGlobal !== null) {
+      if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
+      return hostGlobalValue(lowerer, hostGlobal, expr);
     }
   }
   // A compiler-projected adapter as a VALUE: the adapter has no
@@ -193,6 +237,24 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
   const local = lowerer.resolveLocal(expr);
+  // A BARE use of a value HELD from process.env (`{ ...env }`, Object.keys,
+  // an argument, a return) reads the environment as it is HERE: Node's hold
+  // IS the environment object, so its contents at use time are the live
+  // table's. Member accesses (`env.X`, `env[k]`, their writes) reroute to
+  // getenv/setenv directly (heldEnvValueType) and never come through a bare
+  // read, so they materialize no snapshot; every other use takes a fresh
+  // one at this site instead of the copy the hold was given.
+  {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (
+      mapped?.kind === "record" &&
+      !memberReceiverUse(expr) &&
+      heldEnvValueType(lowerer, expr) !== null
+    ) {
+      const helper = envSnapshotHelper(lowerer, mapped.shapeId, loc);
+      if (helper !== null) return { kind: "call", callee: helper, args: [], type: mapped, loc };
+    }
+  }
   {
     const slot = local ?? lowerer.globalOf(expr);
     const closureRead = slot ? closureDynRead(lowerer, expr, slot.id, slot.type, loc) : null;
@@ -709,6 +771,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     );
   }
   if (lowerer.stdlibGlobalFnOf(expr)) {
+    // JavaScript reads the global functions with values as those values
+    // (global-function-values.ts).
+    const canonical = stdlibGlobalNameOf(lowerer, expr);
+    const value =
+      canonical !== null && isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? globalFunctionValue(lowerer, canonical, loc)
+        : null;
+    if (value !== null) return value;
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -770,7 +840,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.isStdlibGlobal(expr, "Array"))
     return { kind: "libCall", fn: "dyn.arrayConstructor", args: [], type: DYN, loc };
   if (
-    Object.values(BYTES_ELEMENT_NAME).includes(expr.text) &&
+    (Object.values(BYTES_ELEMENT_NAME).includes(expr.text) || BIGINT_BYTES_NAMES.has(expr.text)) &&
     lowerer.isStdlibGlobal(expr, expr.text)
   ) {
     return {

@@ -63,6 +63,16 @@ bool isNameChar(char C) {
 
 bool isDigit(char C) { return C >= '0' && C <= '9'; }
 
+// Whether a definition header carries the "scriptc-fallback" attribute: a
+// body the emitter moved out of the function it stands in for, such as the
+// original body of a function versioned for int32 loop bounds
+// (FALLBACK_PLACEMENT_ATTR in emit-function.ts).
+bool isPlacedByName(StringRef Header) {
+  SmallVector<StringRef, 16> Tokens;
+  Header.split(Tokens, ' ', -1, /*KeepEmpty=*/false);
+  return llvm::is_contained(Tokens, "\"scriptc-fallback\"");
+}
+
 // Length of the unquoted symbol name starting at Text[Start], or 0.
 size_t nameLength(StringRef Text, size_t Start) {
   size_t End = Start;
@@ -771,7 +781,10 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
   std::vector<unsigned> Referrer(Symbols.size(), NoPartition);
   // Whether a definition may follow its first referrer: it is not a
   // function, or the referrer calls it or is a constant global, or its body
-  // is under AddressOnlyBytes.
+  // is under AddressOnlyBytes. A fallback body (isPlacedByName) is never
+  // inlined, so it is placed by its own name: following its caller would add
+  // its body to the partition that holds the code it stands in for, which is
+  // often the largest.
   std::vector<char> MayFollow(Symbols.size(), 0);
   for (unsigned I = 0; I < Symbols.size(); ++I) {
     const Symbol &S = Symbols[I];
@@ -785,9 +798,10 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
         MayFollow[Ref] =
             Symbols[Ref].Kind != SymbolKind::Function ||
             Symbols[Ref].Body.size() < AddressOnlyBytes ||
-            (S.Kind == SymbolKind::Function
-                 ? std::binary_search(S.Calls.begin(), S.Calls.end(), Ref)
-                 : S.Constant);
+            (!isPlacedByName(Symbols[Ref].Header) &&
+             (S.Kind == SymbolKind::Function
+                  ? std::binary_search(S.Calls.begin(), S.Calls.end(), Ref)
+                  : S.Constant));
       } else {
         Referrer[Ref] = Shared;
       }
@@ -825,7 +839,7 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
       Root = I;
     Roots[I] = Root;
   }
-  // The x86-64-v3 copy of a --cpu-dispatch build's function (`<name>.v3`),
+  // The x86-64-v3 copy of a function with CPU copies (`<name>.v3`),
   // with the chain that ends at it, is placed with the chain of its baseline
   // copy (`<name>.base`), so that the helper can compare the two copies
   // after optimization (cpu-copies.h).

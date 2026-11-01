@@ -307,6 +307,8 @@ struct ScrDyn *scr_error_accessor_get(ScrError *e, const ScrStr *key);
 void scr_error_accessor_set(ScrError *e, const ScrStr *key, struct ScrDyn *value);
 bool scr_error_has_code(ScrError *e);
 const char *scr_error_message_code(const ScrStr *msg);
+const char *scr_error_event_code(const ScrStr *msg);
+ScrError *scr_error_from_event_message(ScrStr *msg);
 ScrStr *scr_error_code(ScrError *e);
 SCR_COLD void scr_throw_error_msg_code(int kind, const char *message, size_t len, const char *code);
 /* The compiler-resolved Node-parity throw (error.nodeThrow): builtin

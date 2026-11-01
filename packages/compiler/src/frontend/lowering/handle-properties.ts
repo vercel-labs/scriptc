@@ -284,6 +284,17 @@ const DENIED_HANDLE_MEMBERS: ReadonlySet<string> = new Set([
   "__lookupSetter__",
 ]);
 
+/** Member names a grant never opens for one class, because a builtin
+ * algorithm reads them from the native object in a way the wrapper cannot
+ * route: Set and Map composition methods read the argument's `has` and
+ * `keys` through GetSetRecord, and Date.prototype.toJSON reads
+ * `toISOString` from its receiver. A denied grant keeps the H1 refusal. */
+const DENIED_HANDLE_MEMBERS_BY_CLASS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["Date", new Set(["toISOString"])],
+  ["Map", new Set(["has", "keys"])],
+  ["Set", new Set(["has", "keys"])],
+]);
+
 /** Classes whose implicit conversions reach an own property: the runtime's
  * ToPrimitive path calls the tag's ops, which the wrapper routes to the
  * table. Anywhere else an implicit reader would still read the native
@@ -296,6 +307,7 @@ const GRANTABLE_IMPLICIT_MEMBERS: ReadonlyMap<string, ReadonlySet<string>> = new
 /** Whether an own property may shadow member `name` of `cls`. */
 function handleMemberGrantable(cls: string, name: string): boolean {
   if (DENIED_HANDLE_MEMBERS.has(name)) return false;
+  if (DENIED_HANDLE_MEMBERS_BY_CLASS.get(cls)?.has(name) === true) return false;
   if (name === "toString" || name === "valueOf" || name === "toLocaleString")
     return GRANTABLE_IMPLICIT_MEMBERS.get(cls)?.has(name) ?? false;
   return true;
@@ -620,7 +632,11 @@ export function lowerHandleMemberCall(
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   elementName?: string,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  if (call.questionDotToken) return null;
+  // `d?.getTime()`: the chain lowering re-dispatches a member call whose
+  // receiver it proved never nullish with the member marked handled, and
+  // then the guard cannot short-circuit: the step is the plain call.
+  if (access.questionDotToken && !lowerer.chainHandled.has(access)) return null;
   if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
   // Only a program with a JavaScript file can shadow a member; every other
   // program's call stays with its typed lowering.
@@ -648,6 +664,20 @@ export function lowerHandleMemberCall(
     type: DYN,
     loc,
   };
+}
+
+/** Whether `access` names a member the program's JavaScript shadows on a
+ * handle (`d?.getTime` in `d?.getTime()`). The optional-chain lowering
+ * consults it before it guards a member call whose receiver it proved never
+ * nullish: the guarded step is then the plain shadowed call. */
+export function shadowedHandleMember(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): boolean {
+  if (!programHasJsSource(lowerer)) return false;
+  if (handleClassOf(lowerer, access.expression) === null) return false;
+  const name = ts.isPropertyAccessExpression(access) ? access.name.text : literalKeyOf(access);
+  return name !== null && memberGranted(lowerer, access.expression, name);
 }
 
 /** Whether the program's JavaScript writes or defines `name` onto a handle

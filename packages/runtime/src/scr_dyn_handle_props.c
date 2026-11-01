@@ -346,8 +346,10 @@ static ScrDyn *hp_table_of(const ScrDyn *handle) { return hp_find(handle->v.hand
  * the Object.prototype probes have lowerings of their own, and ToPrimitive
  * reads toString/valueOf implicitly — that one reaches the table only for
  * Date and RegExp, whose string and number conversions call the tag's
- * ops->invoke, which the wrapper routes to the own property. A denied grant
- * keeps the H1 refusal (loud) instead of diverging silently. */
+ * ops->invoke, which the wrapper routes to the own property. Two reads are
+ * per class: Map and Set composition methods read the argument's has and
+ * keys, and Date.prototype.toJSON reads toISOString. A denied grant keeps
+ * the H1 refusal (loud) instead of diverging silently. */
 static bool hp_denied_member(const char *name, size_t len, ScrDynHandleTag tag) {
   static const char *const denied[] = {
     "constructor", "then", "exec", "lastIndex", "flags", "global", "source",
@@ -365,6 +367,15 @@ static bool hp_denied_member(const char *name, size_t len, ScrDynHandleTag tag) 
                      (len == 14 && memcmp("toLocaleString", name, 14) == 0);
   if (string_hint) return tag != SCR_DYNH_DATE && tag != SCR_DYNH_REGEXP;
   if (len == 7 && memcmp("valueOf", name, 7) == 0) return tag != SCR_DYNH_DATE;
+  /* Set and Map composition methods read the argument's has and keys
+   * (GetSetRecord reads both, and iterates the keys it got), and
+   * Date.prototype.toJSON reads toISOString from its receiver; those
+   * reads cannot see the table, so the grant stays closed. */
+  if (tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) {
+    if ((len == 3 && memcmp("has", name, 3) == 0) || (len == 4 && memcmp("keys", name, 4) == 0))
+      return true;
+  }
+  if (tag == SCR_DYNH_DATE && len == 11 && memcmp("toISOString", name, 11) == 0) return true;
   return false;
 }
 

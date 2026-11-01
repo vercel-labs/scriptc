@@ -256,6 +256,13 @@ function lowerDateToJson(
   const loc = locOf(call);
   if (call.arguments.nodes.length > 1 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
     lowerer.noLowering(`Date.prototype.toJSON with ${call.arguments.nodes.length} arguments`, call);
+  // Node's Date.prototype.toJSON is ToPrimitive(this, number) followed by
+  // this.toISOString(): it reads the own valueOf (and toString when valueOf
+  // answers an object), which the native lowering would skip. An own
+  // toISOString is a denied grant (handle-properties.ts), so this is the
+  // remaining silent reader.
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "valueOf", "toJSON conversion");
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "toString", "toJSON conversion");
   const raw = lowerer.lowerExpr(access.expression);
   const receiver: IrExpr =
     raw.type.kind === "dyn"

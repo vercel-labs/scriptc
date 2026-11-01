@@ -82,6 +82,67 @@ console.log(m.get(1));
   expect(stderr).toBe("");
 });
 
+test("an optional call of a shadowed member reads the own property", async () => {
+  const { stdout, stderr } = await run(`"use strict";
+const d = new Date(0);
+d.getTime = () => 42;
+console.log("call", d?.getTime(), d.getTime?.());
+const m = new Map([[1, "one"]]);
+m.get = (key) => "own " + key;
+console.log("map", m?.get(1));
+const none = null;
+console.log("nullish", none?.getTime());
+`);
+  expect(stdout).toBe("call 42 42\nmap own 1\nnullish undefined\n");
+  expect(stderr).toBe("");
+});
+
+test("members a builtin reads from the native object stay refused per class", async () => {
+  const { stdout, stderr } = await run(`"use strict";
+function attempt(label, run) {
+  try { run(); process.stdout.write(label + " no error\\n"); }
+  catch (error) { process.stdout.write(label + " " + error.message.replace(/ \\[SC\\d+ at [^\\]]*\\]$/, "") + "\\n"); }
+}
+attempt("set has", () => { const s = new Set([1]); s.has = () => true; });
+attempt("map keys", () => { const m = new Map(); m.keys = () => []; });
+attempt("date toISOString", () => { const d = new Date(0); d.toISOString = () => "own"; });
+attempt("set add", () => { const s = new Set([1]); s.add = (value) => "own " + value; console.log("add", s.add(2), s.has(2)); });
+`);
+  expect(stdout).toBe(
+    "set has assignment to non-variables are not supported yet\n" +
+      "map keys assignment to non-variables are not supported yet\n" +
+      "date toISOString setting 'toISOString' on a dynamic Date is not supported yet\n" +
+      "add own 2 false\n" +
+      "set add no error\n",
+  );
+  expect(stderr).toBe("");
+});
+
+test("a Date toJSON refuses the conversion members Node reads through it", async () => {
+  const refused = async (shadow: string, member: string) => {
+    const { stdout, stderr } = await run(`"use strict";
+const d = new Date(0);
+${shadow}
+try { console.log(d.toJSON()); }
+catch (error) { console.log(error.message.replace(/ \\[SC\\d+ at [^\\]]*\\]$/, "")); }
+`);
+    expect(stderr).toBe("");
+    expect(stdout).toBe(
+      `toJSON conversion of a Date whose ${member} the program replaces (read the property itself, or delete it first) are not supported yet\n`,
+    );
+  };
+  await refused("d.valueOf = () => 5;", "valueOf");
+  await refused('d.toString = () => "own";', "toString");
+  // An own property that is not a conversion member leaves toJSON native.
+  const { stdout, stderr } = await run(`"use strict";
+const d = new Date(0);
+d.label = "x";
+console.log("plain", d.toJSON());
+`);
+  expect(stdout).toBe("plain 1970-01-01T00:00:00.000Z\n");
+  expect(stderr).toBe("");
+});
+
 test("implicit conversions of a shadowed Date method read the own property", async () => {
   const { stdout, stderr } = await run(`"use strict";
 const d = new Date(0);

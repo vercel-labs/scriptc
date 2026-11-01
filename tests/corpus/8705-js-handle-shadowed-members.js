@@ -12,13 +12,13 @@ Object.defineProperty(d, "toString", {
 });
 console.log("call", d.toString(), callVia(d, "toString"));
 d.getTime = function () { return 42; };
-console.log("getTime", d.getTime(), callVia(d, "getTime"), d.valueOf());
+console.log("getTime", d.getTime(), callVia(d, "getTime"), d?.getTime(), d.valueOf());
 delete d.getTime;
-console.log("restored", d.getTime(), getVia(d, "tag"));
+console.log("restored", d.getTime(), getVia(d, "tag"), d?.getTime());
 
 const m = new Map([[1, "one"]]);
 m.get = function (key) { return "patched " + key; };
-console.log("map", m.get(1), m.has(1), m.size);
+console.log("map", m.get(1), m?.get(1), m.has(1), m.size);
 delete m.get;
 console.log("map restored", m.get(1));
 
@@ -29,7 +29,7 @@ delete r.test;
 console.log("regexp restored", r.test("a"), r.lastIndex);
 
 const s = new Set([1]);
-s.has = function () { return "own has"; };
-console.log("set", s.has(1), s.size);
-delete s.has;
-console.log("set restored", s.has(1));
+s.add = function (value) { return "own add " + value; };
+console.log("set", s.add(2), s?.add(2), s.has(2), s.size);
+delete s.add;
+console.log("set restored", s.add(2), s.has(2), s.size);

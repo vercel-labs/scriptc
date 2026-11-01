@@ -2153,6 +2153,15 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
   return ctor;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The object model build answers a DataView's `constructor` through this hook
+ * (scr_json.c). A program that never reads a global constructor as a value
+ * does not link this unit, and the read keeps its named refusal there. */
+__attribute__((constructor)) static void dyn_global_constructor_hook_install(void) {
+  scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
+}
+#endif
+
 /* Object.prototype.toString's tag: errors answer "[object Error]" (the
  * shared tag walk in scr_json.c answers "[object Object]" for them). */
 ScrStr *scr_dyn_object_tag_of(const ScrDyn *d) {

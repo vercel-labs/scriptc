@@ -73,6 +73,13 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+/* Set by scr_dyn_invoke.c when the object model build links it, so a
+ * DataView's `constructor` is the global's own interned value. A program that
+ * only needs the object model (a .js program that never reads a global
+ * constructor as a value) keeps this NULL and its named refusal. */
+ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
+#endif
 
 /* Live dyn-node count for the RC audit lane (-DSCR_RC_AUDIT); same contract
  * as scr_str_live_count in scr_string.c. */
@@ -7054,19 +7061,21 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
     /* A DataView has no length or indexed elements. Its constructor is the
      * interned DataView function value — the same one a JavaScript source
      * reads from the global — so `dv.constructor === DataView` is exact
-     * (t262-dc C3). Only the object model build has that table's users, and
-     * the default build keeps its named refusal. */
+     * (t262-dc C3). Only the object model build answers it, and only when the
+     * program links the unit that holds the interned table; every other build
+     * keeps the named refusal. */
     if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
 #ifdef SCR_JS_OBJECT_MODEL
-      ScrStr *name = scr_str_new("DataView", sizeof "DataView" - 1);
-      ScrDyn *ctor = scr_dyn_global_constructor(name);
-      scr_str_release(name);
-      return ctor;
-#else
+      if (scr_dyn_global_constructor_hook) {
+        ScrStr *name = scr_str_new("DataView", sizeof "DataView" - 1);
+        ScrDyn *ctor = scr_dyn_global_constructor_hook(name);
+        scr_str_release(name);
+        return ctor;
+      }
+#endif
       static const char message[] = "DataView's constructor through unknown is not supported yet";
       scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
       return NULL;
-#endif
     }
     return scr_dyn_retain(scr_dyn_undefined());
   }

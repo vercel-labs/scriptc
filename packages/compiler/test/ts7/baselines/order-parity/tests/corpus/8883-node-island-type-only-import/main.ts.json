@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8883-node-island-type-only-import/patch.ts",
+  "<repo>/tests/corpus/8883-node-island-type-only-import/read.ts",
+  "<repo>/tests/corpus/8883-node-island-type-only-import/main.ts"
+ ],
+ "diags": []
+}

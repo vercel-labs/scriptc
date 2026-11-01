@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/equivalent-overload-signatures/main.ts"
+ ],
+ "diags": []
+}

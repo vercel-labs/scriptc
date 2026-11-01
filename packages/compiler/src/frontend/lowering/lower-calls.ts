@@ -9787,6 +9787,18 @@ function lowerObjectStaticCall(
         }
         return null;
       };
+      // A field whose own type is a union (`ColorValue` = `string | number`)
+      // flows into a result element union that may be wider: `Object.entries`
+      // over a record with optional fields yields `string | number |
+      // undefined` for every key. That is the same conversion an assignment
+      // of the value to such a slot performs, so it re-tags at runtime
+      // through the interned helper; an arm the destination cannot take
+      // still refuses with the flat story.
+      const retagInto = (from: IrType & { kind: "union" }): IrExpr | null => {
+        if (!valueT || valueT.kind !== "union") return null;
+        const helper = lowerer.unionRetagHelper(from.unionId, valueT.unionId, loc);
+        return helper ? { kind: "call", callee: helper, args: [raw], type: valueT, loc } : null;
+      };
       // Undefined-armed fields: the push is guarded by the field's
       // presence; a narrowed push re-tags the non-undefined arm.
       let guardUndefTag: number | null = null;
@@ -9823,10 +9835,18 @@ function lowerObjectStaticCall(
                   loc,
                 };
           } else {
-            return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
+            const retagged = retagInto(f.type);
+            if (!retagged)
+              return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
+            value = retagged;
+            vt = valueT!;
           }
         } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
-          return `field '${f.name}' is a union that cannot re-tag into the result element type`;
+          const retagged = retagInto(f.type);
+          if (!retagged)
+            return `field '${f.name}' is a union that cannot re-tag into the result element type`;
+          value = retagged;
+          vt = valueT!;
         }
       }
       const coerced = elemOf(value, vt);

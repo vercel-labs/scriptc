@@ -1470,15 +1470,28 @@ export function lowerAsExpression(
     // retains primitive values and native class identity before validating
     // the requested shape; an assertion does not bypass runtime checks.
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    const narrowedFlags = lowerer.typeOf(expr.expression).flags;
     const bridged =
       (narrowed &&
         (narrowed.kind === "f64" ||
           narrowed.kind === "bool" ||
           narrowed.kind === "string" ||
           narrowed.kind === "object" ||
-          narrowed.kind === "dyn")) ||
+          narrowed.kind === "dyn" ||
+          // A control-flow test (`typeof e === "object" && "code" in e`)
+          // or a structural predicate narrowed the binding to the shape
+          // the assertion names. caughtRead crosses those as a
+          // checked-dynamic value — the same read an unnarrowed binding
+          // takes — so the assertion's own checked bridge validates it.
+          narrowed.kind === "record" ||
+          narrowed.kind === "union")) ||
       // `catch (e: any)`: the binding reads as its checked-dynamic value.
-      (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
+      // An intersection (`object & Record<"code", unknown>`) or an
+      // unmapped object shape has no IR type either; caughtRead crosses
+      // it the same way.
+      (narrowed === null &&
+        (narrowedFlags & (ts.TypeFlags.Any | ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !==
+          0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
   // `{ ...message, content } as T`: the program claimed the literal's shape,

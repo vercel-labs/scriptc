@@ -7426,18 +7426,11 @@ export function lowerPromiseMethodCall(
   if (param && (!ts.isIdentifier(param.name) || param.dotDotDotToken || param.initializer)) {
     lowerer.unsupported("SC1062", param);
   }
-  if (
-    param?.type &&
-    param.type.kind !== ts.SyntaxKind.AnyKeyword &&
-    param.type.kind !== ts.SyntaxKind.UnknownKeyword
-  ) {
-    lowerer.unsupported(
-      "SC1090",
-      param,
-      "catch handlers with a typed parameter (the reject payload can be any thrown " +
-        "value — take `(e)` or `(e: unknown)` and narrow with instanceof)",
-    );
-  }
+  // A typed parameter (`(error: Error) => …`) annotates the payload the
+  // handler EXPECTS; the rejection can carry any thrown value. The binding
+  // still lowers as the CAUGHT local, so every read is the checked
+  // extraction of that annotation — a payload outside it throws a catchable
+  // TypeError instead of being read through the annotation's layout.
   const resultT = callResultType();
   if (resultT?.kind !== "promise") {
     lowerer.noLowering(

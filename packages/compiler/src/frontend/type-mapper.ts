@@ -4537,13 +4537,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       typeKey(a) < typeKey(b) ? -1 : 1,
     );
     const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
-    if (!optStr || !optNum || !optBool) return null;
+    // `env?: NodeJS.ProcessEnv` — the same record the inline literal builds
+    // its [k,v,...] pairs from. A runtime record can carry a replacement
+    // environment, so the member maps rather than staying literal-only.
+    const envProp = ctx.checker.getPropertyOfType(type, "env");
+    const env = envProp ? mapType(ctx.checker.getTypeOfSymbol(envProp), ctx) : null;
+    if (!optStr || !optNum || !optBool || !env || env.kind !== "union") return null;
     return {
       kind: "record",
       shapeId: ctx.shapes.intern(
         [
           { name: "cwd", type: optStr },
           { name: "encoding", type: STRING },
+          { name: "env", type: env },
           { name: "input", type: optStr },
           { name: "shell", type: optBool },
           { name: "stdio", type: stdio },
@@ -4552,7 +4558,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ],
         false,
         undefined,
-        ["encoding", "cwd", "input", "timeout", "shell", "stdio", "windowsHide"],
+        ["encoding", "cwd", "env", "input", "timeout", "shell", "stdio", "windowsHide"],
       ),
     };
   }

@@ -1,5 +1,5 @@
 import { recordToEnvPairs } from "./environment.js";
-import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import { boolLit, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { keyedHelperName } from "../stable-names.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { resolve } from "node:path";
@@ -167,9 +167,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     if (!ts.isObjectLiteralExpression(optsNode)) {
       const runtime = lowerSpawnSyncRuntimeOptions(lowerer, optsNode, expr.arguments.nodes[1], loc);
       if (runtime) {
-        return {
+        const call = (fn: "cp.spawnSyncExt" | "cp.spawnSyncExtEnv", extra: IrExpr[]): IrExpr => ({
           kind: "libCall",
-          fn: "cp.spawnSyncExt",
+          fn,
           args: [
             cmd,
             argv,
@@ -182,15 +182,30 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
             runtime.input,
             runtime.hasInput,
             runtime.shell,
+            ...extra,
           ],
           type: SPAWNRES_T,
           loc,
-        };
+        });
+        // An absent `env` inherits our environment; a present one replaces
+        // it. The two entry points differ only in that argument, so the
+        // member's presence test picks one at the call.
+        if (runtime.hasEnv !== null && runtime.envPairs !== null) {
+          return {
+            kind: "ternary",
+            cond: runtime.hasEnv,
+            then: call("cp.spawnSyncExtEnv", [runtime.envPairs]),
+            else_: call("cp.spawnSyncExt", []),
+            type: SPAWNRES_T,
+            loc,
+          };
+        }
+        return call("cp.spawnSyncExt", []);
       }
       lowerer.noLowering(
         "spawnSync with a non-literal options argument",
         optsNode,
-        "pass the options inline so each member can be checked, or give them the SpawnSyncOptionsWithStringEncoding type (env and killSignal stay literal)",
+        "pass the options inline so each member can be checked, or give them the SpawnSyncOptionsWithStringEncoding type (killSignal stays literal)",
       );
     }
     const applyStdio = (node: ts.Expression): void => {
@@ -531,13 +546,17 @@ function lowerSpawnSyncRuntimeOptions(
   inMode: IrExpr;
   outMode: IrExpr;
   errMode: IrExpr;
+  /** The `env` member's presence test, null when the record has no such
+   * member; the pairs ride only the present branch. */
+  hasEnv: IrExpr | null;
+  envPairs: IrExpr | null;
 } | null {
   const opts = lowerer.lowerExpr(optsNode);
   if (opts.type.kind !== "record") return null;
   const shapeId = opts.type.shapeId;
   const shape = lowerer.shapes.get(shapeId);
   const names = shape?.fields.map((f) => f.name).join(",");
-  if (names !== "cwd,encoding,input,shell,stdio,timeout,windowsHide") return null;
+  if (names !== "cwd,encoding,env,input,shell,stdio,timeout,windowsHide") return null;
   if (opts.kind !== "varRef" && opts.kind !== "recordGet" && opts.kind !== "fieldGet") {
     lowerer.noLowering(
       "spawnSync with a computed options argument",
@@ -609,6 +628,66 @@ function lowerSpawnSyncRuntimeOptions(
           loc,
         }
       : boolLit(true, loc);
+  // The `env` member replaces the child's environment. Presence rides
+  // apart from the value (an absent option inherits ours): only the
+  // present branch converts the record to pairs.
+  const envField = shape!.fields.find((f) => f.name === "env");
+  let hasEnv: IrExpr | null = null;
+  let envPairs: IrExpr | null = null;
+  if (envField) {
+    const ft = envField.type;
+    const readEnv: IrExpr = { kind: "recordGet", obj: opts, shapeId, field: "env", type: ft, loc };
+    const pairsOf = (rec: IrType, value: IrExpr): IrExpr | null => {
+      if (rec.kind !== "record") return null;
+      const helper = lowerer.envToPairsHelper(rec.shapeId, loc);
+      return helper === null
+        ? null
+        : { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+    };
+    if (ft.kind === "union") {
+      const arms = lowerer.unions.get(ft.unionId)?.arms ?? [];
+      let rec: IrType | null = null;
+      for (const arm of arms) {
+        if (arm.kind === "record") {
+          rec = arm;
+          break;
+        }
+      }
+      const uTag = lowerer.armTag(ft.unionId, UNDEFINED_T);
+      if (rec !== null && uTag >= 0) {
+        hasEnv = {
+          kind: "unionIsTag",
+          unionId: ft.unionId,
+          tag: uTag,
+          negated: true,
+          value: readEnv,
+          type: BOOL,
+          loc,
+        };
+        envPairs = pairsOf(rec, {
+          kind: "unionNarrow",
+          unionId: ft.unionId,
+          tag: lowerer.armTag(ft.unionId, rec),
+          value: readEnv,
+          type: rec,
+          loc,
+        });
+      }
+    } else if (ft.kind === "record") {
+      hasEnv = boolLit(true, loc);
+      envPairs = pairsOf(ft, readEnv);
+    }
+    // A member that exists but cannot convert must not fall back to the
+    // inheriting entry point: that would silently run the child WITHOUT
+    // the environment the caller asked for.
+    if (hasEnv === null || envPairs === null) {
+      lowerer.noLowering(
+        "spawnSync with an unsupported `env` record",
+        optsNode,
+        "every env value must be a string or `string | undefined` — the replacement environment converts to [key, value] pairs",
+      );
+    }
+  }
   return {
     cwd: readOpt("cwd", emptyStr, STRING),
     input: readOpt("input", emptyStr, STRING),
@@ -632,6 +711,8 @@ function lowerSpawnSyncRuntimeOptions(
     inMode,
     outMode: modeCall(1),
     errMode: modeCall(2),
+    hasEnv,
+    envPairs,
   };
 }
 
@@ -816,20 +897,86 @@ function spawnSyncStdioModeHelper(
   return name;
 }
 
+/** A runtime stdio SLOT expression whose TYPE is a union of the supported
+ * literals (`useStdin ? "pipe" : "ignore"`): the expression evaluates once
+ * into a hidden local, and a strEq chain maps the value to its mode (0
+ * ignore, 1 inherit, 3 pipe). The type proves the value is one of them; a
+ * lying assertion lands on the runtime TypeError Node raises for an
+ * invalid stdio value. Null for anything else — the literal and fd paths,
+ * and the fences, stay where they are. */
+function stdioModeExpr(
+  lowerer: Lowerer,
+  el: ts.Expression,
+  t: ts.Type,
+  which: 0 | 1 | 2,
+): IrExpr | null {
+  const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
+  if (parts.length < 2) return null;
+  let hasPipe = false;
+  let hasInherit = false;
+  let hasIgnore = false;
+  for (const part of parts) {
+    if (!part.isStringLiteralType()) return null;
+    const literal = part.value;
+    if (literal === "pipe") hasPipe = true;
+    else if (literal === "inherit") hasInherit = true;
+    else if (literal === "ignore") hasIgnore = true;
+    else return null;
+  }
+  const slotLoc = locOf(el);
+  const value = lowerer.lowerExprExpecting(el, STRING);
+  const local = lowerer.declareHiddenLocal(`stdio${which}`, STRING);
+  local.mutable = true;
+  const read = (): IrExpr => varRef(local.id, STRING, slotLoc);
+  const withMode = (name: string, m: number, next: IrExpr): IrExpr => ({
+    kind: "ternary",
+    cond: {
+      kind: "strEq",
+      negated: false,
+      left: read(),
+      right: strLit(name, slotLoc),
+      type: BOOL,
+      loc: slotLoc,
+    },
+    then: numLit(m, slotLoc),
+    else_: next,
+    type: F64,
+    loc: slotLoc,
+  });
+  let mode: IrExpr = nodeThrowExpr(
+    1,
+    "ERR_INVALID_ARG_VALUE",
+    'spawn stdio must be "pipe", "ignore", or "inherit"',
+    F64,
+    slotLoc,
+  );
+  if (hasPipe) mode = withMode("pipe", 3, mode);
+  if (hasInherit) mode = withMode("inherit", 1, mode);
+  if (hasIgnore) mode = withMode("ignore", 0, mode);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "assign", localId: local.id, value, loc: slotLoc }],
+    result: mode,
+    type: F64,
+    loc: slotLoc,
+  };
+}
+
 /** `spawn(command, args?, options)` → one cp.spawn / cp.spawnOpts
  * libCall. Computed options use native runtime normalization. Inline
- * stdio accepts "ignore", "inherit", or "pipe" as the scalar,
- * or the 3-tuple whose stdin pipe becomes child.stdin, stdout/stderr
- * pipes become child.stdout/child.stderr, and output slots may also be
- * number fds. Omitting stdio uses Node's default: all three piped. The
- * other lowered
- * members: `detached` (a boolean literal, inline or carried by the
- * conditional spread `...(c ? { detached: true } : {})` in either
+ * stdio accepts "ignore", "inherit", or "pipe" as the scalar, or the
+ * 3-tuple whose stdin pipe becomes child.stdin, stdout/stderr pipes
+ * become child.stdout/child.stderr, and output slots may also be number
+ * fds; a 3-tuple slot whose type is a union of those literals
+ * (`useStdin ? "pipe" : "ignore"`) evaluates once and maps to its mode
+ * at the call. Omitting stdio uses Node's default: all three piped. The
+ * other lowered members: `detached` (a boolean literal, inline or carried
+ * by the conditional spread `...(c ? { detached: true } : {})` in either
  * orientation — POSIX_SPAWN_SETSID, the child gets its own session and
- * process group like Node's), `env` (a
- * REPLACEMENT environment, the exec-core pairs machinery), `cwd`, and
- * `windowsHide` (a POSIX no-op). The bare `{ stdio: "ignore" }` shape
- * keeps its historical cp.spawn lowering. */
+ * process group like Node's), `env` (a REPLACEMENT environment, the
+ * exec-core pairs machinery), `cwd`, and `windowsHide` (a POSIX no-op).
+ * The bare `{ stdio: "ignore" }` shape keeps its historical cp.spawn
+ * lowering. */
 export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
@@ -875,9 +1022,11 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   // the out/err fd expressions for mode 2 (the daemon-log idiom:
   // stdio: ["ignore", logFd, logFd]).
   let sawStdio = false;
-  let inMode = 0,
-    outMode = 0,
-    errMode = 0;
+  // A slot may be a runtime expression (a union of the three literals), so
+  // each mode is an IrExpr: a literal here, the mapped expression there.
+  let inMode: IrExpr = numLit(0, loc);
+  let outMode: IrExpr = numLit(0, loc);
+  let errMode: IrExpr = numLit(0, loc);
   let outFd: IrExpr = numLit(0, loc);
   let errFd: IrExpr = numLit(0, loc);
   let detached: IrExpr = boolLit(false, loc);
@@ -944,6 +1093,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           // The 3-tuple form: every slot accepts a literal, including
           // "pipe" (child.stdin/stdout/stderr); stdout/stderr also accept
           // a number-typed fd (an openSync result — dup2'd into the child).
+          // A slot EXPRESSION whose type is a union of the three literals
+          // (`useStdin ? "pipe" : "ignore"`) evaluates once into a hidden
+          // local and maps to its mode at the call.
           if (ts.isArrayLiteralExpression(m.value) && m.value.elements.nodes.length === 3) {
             const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
               const t = lowerer.typeOf(el);
@@ -955,11 +1107,19 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                     '"ignore", "inherit", "pipe", and number output fds are the supported stdio slots',
                   );
                 }
-                const mode = t.value === "inherit" ? 1 : t.value === "pipe" ? 3 : 0;
+                const mode = numLit(t.value === "inherit" ? 1 : t.value === "pipe" ? 3 : 0, loc);
                 if (which === 0) inMode = mode;
                 else if (which === 1) outMode = mode;
                 else errMode = mode;
                 if (t.value === "pipe") plain = false;
+                return;
+              }
+              const runtimeMode = stdioModeExpr(lowerer, el, t, which);
+              if (runtimeMode) {
+                if (which === 0) inMode = runtimeMode;
+                else if (which === 1) outMode = runtimeMode;
+                else errMode = runtimeMode;
+                plain = false;
                 return;
               }
               if (which === 0) {
@@ -978,10 +1138,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
               }
               const fd = lowerer.lowerExprExpecting(el, F64);
               if (which === 1) {
-                outMode = 2;
+                outMode = numLit(2, loc);
                 outFd = fd;
               } else {
-                errMode = 2;
+                errMode = numLit(2, loc);
                 errFd = fd;
               }
             };
@@ -1000,7 +1160,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                 "(or a 3-tuple of those and number output fds)",
             );
           }
-          const mode = v === "inherit" ? 1 : v === "pipe" ? 3 : 0;
+          const mode = numLit(v === "inherit" ? 1 : v === "pipe" ? 3 : 0, loc);
           inMode = outMode = errMode = mode;
           sawStdio = true;
           if (v !== "ignore") plain = false;
@@ -1058,7 +1218,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     }
   }
   if (!sawStdio) {
-    inMode = outMode = errMode = 3;
+    inMode = outMode = errMode = numLit(3, loc);
     plain = false;
   }
   // Node joins [command, ...args] with single spaces for the shell form, and
@@ -1083,9 +1243,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     args: [
       cmd,
       argv,
-      numLit(inMode, loc),
-      numLit(outMode, loc),
-      numLit(errMode, loc),
+      inMode,
+      outMode,
+      errMode,
       outFd,
       errFd,
       detached,

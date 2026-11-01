@@ -516,25 +516,6 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     // decides that at the call instead: mode 0 is the only stdin mode that
     // honors `input` (the test the typed-options helper makes).
     const ignoreInput = !stdinPiped;
-    const hasInputArg: IrExpr = stdinModeRuntime
-      ? {
-          kind: "logical",
-          op: "&&",
-          left: hasInput,
-          right: {
-            kind: "bin",
-            op: "===",
-            left: inMode,
-            right: numLit(0, loc),
-            type: BOOL,
-            loc,
-          },
-          type: BOOL,
-          loc,
-        }
-      : ignoreInput
-        ? boolLit(false, loc)
-        : hasInput;
     // The call's prelude evaluates the command, the arguments and the
     // options in source order, each into a hidden local the call reads, so
     // an earlier option that changes a later one's value (a getter, a call)
@@ -564,6 +545,35 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         else inputArg = bind("%spawnSyncInput", input);
       }
     }
+    // An `input` option makes the call read the stdin slot's runtime mode
+    // twice: once as the mode argument, once in the `has_input` test. The
+    // slot's expression can have side effects (a getter, a call), and two
+    // reads can answer differently — a second "ignore" would drop the input
+    // the first "pipe" asked to pipe. One read lands in the hidden local both
+    // uses share. With no `input`, the false `has_input` short-circuits the
+    // test, so the mode argument is the only read.
+    const noInput = hasInput.kind === "boolLit" && !hasInput.value;
+    const stdinModeArg =
+      stdinModeRuntime && !noInput ? bind("%spawnSyncStdinMode", inMode) : inMode;
+    const hasInputArg: IrExpr = stdinModeRuntime
+      ? {
+          kind: "logical",
+          op: "&&",
+          left: hasInput,
+          right: {
+            kind: "bin",
+            op: "===",
+            left: stdinModeArg,
+            right: numLit(0, loc),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        }
+      : ignoreInput
+        ? boolLit(false, loc)
+        : hasInput;
     const call: IrExpr = {
       kind: "libCall",
       fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
@@ -572,7 +582,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         argvArg,
         timeoutArg,
         killSignal,
-        inMode,
+        stdinModeArg,
         outMode,
         errMode,
         cwdArg,

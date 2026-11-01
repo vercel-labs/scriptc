@@ -277,6 +277,11 @@ function buildLibFnSignatures() {
      * whose fallback handles every other value. The key is a literal. */
     "dyn.typedRefKeyIs": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.classIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** A generated class table's indexed dispatch: the receiver's class key
+     * folded to the case it selects, or -1 for a value that is not a capsule
+     * or whose key is shorter than four bytes. The table switches on it and
+     * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
+    "dyn.classHash": { argTypes: [DYN], result: F64 },
     /** Destructuring pack over a dyn source — `const [a, b] = d`, a
      * destructured dyn callback param (args: the source and the STATIC
      * TypeError spelling, "" when the source has none — both borrowed;

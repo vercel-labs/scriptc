@@ -372,6 +372,33 @@ const text = (obj: IrExpr): IrExpr => ({
   loc: receiverLoc,
 });
 
+test("class dispatch indexes on the key's last four bytes inline", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const hash: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.classHash",
+    args: [ref(dyn)],
+    type: F64,
+    loc: receiverLoc,
+  };
+  const llvm = work(hash, dyn);
+  // The selector is the word at the end of the key plus the key's length
+  // times an odd constant: the two fields a class branch's guards read, one
+  // subtract, one load, one multiply, no runtime call.
+  expect(llvm).toContain("; ->v.typed_ref.type_key");
+  expect(llvm).toContain("; ->v.typed_ref.type_key_len");
+  expect(llvm).toMatch(/load i32, ptr %t\d+, align 1/);
+  expect(llvm).toContain("mul i32 %t");
+  expect(llvm).toContain(", -1640531535");
+  expect(llvm).toContain("and i32 %t");
+  expect(llvm).toContain(", 2147483647");
+  // A value that is not a capsule answers the -1 sentinel, which no case
+  // matches.
+  expect(llvm).toContain("store i32 -1, ptr");
+  expect(llvm).not.toContain("@scr_dyn_class_hash");
+  expect(llvm).not.toContain("call ptr @scr_dyn_retain_v(");
+});
+
 function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): string {
   const module: IrModule = {
     irVersion: 17,

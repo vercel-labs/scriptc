@@ -1290,6 +1290,9 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
 
 function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefined): boolean {
   if (init === undefined) return true;
+  // An object literal has checked-object storage even when one inferred
+  // field (for example any[]) prevents mapping the enclosing record.
+  if (ts.isObjectLiteralExpression(init)) return true;
   if (isNativeProxyInitializer(lowerer, init)) return true;
   let e: ts.Expression = init;
   while (ts.isParenthesizedExpression(e)) e = e.expression;

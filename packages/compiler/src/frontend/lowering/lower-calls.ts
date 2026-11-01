@@ -10601,6 +10601,46 @@ export function lowerRecordFieldCall(
   // instance value itself: the conversions that would copy are refused
   // here too.
   refuseCopyingErasureInstanceCall(lowerer, call, callee);
+  // A rest-marked field value hides one synthetic trailing dyn array in
+  // its lifted signature (filled by the boxed call thunk) — the checked
+  // variadic ABI a JS rest closure has, and the one a generic member's
+  // erased instance keeps when its erased signature cannot pin the tail
+  // (`...args: EventArguments<…>`, a conditional tuple over the member's
+  // own type parameters). A native `callValue` cannot spell that hidden
+  // slot, so the call rides the thunk, exactly like a call through such a
+  // value itself (lowerCallThroughValueRaw's dyn-rest lane).
+  if (
+    init === null &&
+    receiver === undefined &&
+    callee.type.rest === true &&
+    callee.type.restAbi === undefined &&
+    !call.arguments.nodes.some(ts.isSpreadElement) &&
+    canBoxFuncIntoDyn(
+      callee.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
+    let boxedResult: IrExpr = {
+      kind: "dynCall",
+      callee: boxed,
+      calleeName: v8CalleeText(call.expression),
+      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      type: DYN,
+      loc,
+    };
+    // The resolved result converts back exactly like the fixed-arity lane
+    // below; a void result needs no conversion (the checked call's own
+    // value is discarded, as an `unknown` has no void spelling).
+    const resolved = lowerer.irTypeOf(call);
+    if (
+      resolved.kind !== "void" &&
+      isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker)
+    )
+      boxedResult = lowerer.coerceInto(call, boxedResult, resolved);
+    return boxedResult;
+  }
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {
     kind: "callValue",

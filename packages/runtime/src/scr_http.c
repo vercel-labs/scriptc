@@ -2703,6 +2703,7 @@ typedef struct ScrHttpConn {
   struct ScrHttpAgent *pool_agent; /* client mode: the agent whose free list holds
                                     * this idle socket (borrowed), or NULL */
   bool header_overflow; /* client mode: the response head exceeded a bound */
+  bool client_errored; /* server: 'clientError' listeners took a parse error; later bytes drop */
   bool res_close_deferred; /* the response finished inside the pump while
                             * the request body was still arriving */
   bool client_mode; /* RESPONSE parsing: status line, EOF bodies */
@@ -3173,6 +3174,7 @@ typedef struct ScrHttpSrvCtx {
   ScrNetLs check_expectation_ls; /* 'checkExpectation' (req, res) */
   ScrNetLs upgrade_ls;
   ScrNetLs connect_ls; /* HTTP CONNECT — the upgrade machinery's twin */
+  ScrNetLs client_error_ls; /* 'clientError' (err, socket) */
   bool join_dup; /* createServer({ joinDuplicateHeaders: true }) */
   size_t max_header_size; /* createServer({ maxHeaderSize }); 0 = the default */
   bool require_host_header; /* HTTP/1.1 Host is required by default */
@@ -3190,6 +3192,7 @@ static void scr_http_srv_ctx_release(ScrHttpSrvCtx *ctx) {
   scr_net_ls_drop(&ctx->check_expectation_ls);
   scr_net_ls_drop(&ctx->upgrade_ls);
   scr_net_ls_drop(&ctx->connect_ls);
+  scr_net_ls_drop(&ctx->client_error_ls);
   free(ctx);
 }
 
@@ -3207,6 +3210,7 @@ static void scr_http_srv_ctx_settle(void *p) {
   scr_net_ls_drop(&ctx->check_expectation_ls);
   scr_net_ls_drop(&ctx->upgrade_ls);
   scr_net_ls_drop(&ctx->connect_ls);
+  scr_net_ls_drop(&ctx->client_error_ls);
 }
 
 /* Combined HTTP/2 allowHTTP1 servers retain the HTTP/1 parser ctx behind
@@ -3397,12 +3401,45 @@ static void scr_http_conn_reject(ScrHttpConn *conn, const char *response, size_t
   scr_http_conn_drop_request(conn, false);
 }
 
+/* A parse error with 'clientError' listeners: they get the error (code,
+ * "Parse Error: <reason>") and the socket instead of the default answer,
+ * and the connection reads nothing more, as Node's parser stays failed.
+ * False without a listener. */
+static bool scr_http_conn_client_error(ScrHttpConn *conn, const char *code, const char *reason) {
+  if (conn->client_mode || conn->srv == NULL || !scr_net_ls_has_live(&conn->srv->client_error_ls))
+    return false;
+  char text[160];
+  int n = snprintf(text, sizeof text, "Parse Error: %s", reason);
+  ScrStr *msg = scr_str_new(text, (size_t)n);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_error_set_code(e, code);
+  conn->len = 0;
+  conn->client_errored = true;
+  scr_http_conn_drop_request(conn, false);
+  ScrNetL *snap;
+  size_t count = scr_net_ls_snapshot(&conn->srv->client_error_ls, &snap);
+  scr_dyn_this_push(scr_net_sock_server(conn->sock), SCR_DYNH_NET_SERVER);
+  for (size_t i = 0; i < count; i++) {
+    if (!scr_exc_pending()) {
+      ((ScrHttpClientErrorFn)snap[i].fn)(snap[i].cb, scr_error_retain(e), scr_net_sock_retain(conn->sock));
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  free(snap);
+  scr_error_release(e);
+  return true;
+}
+
 static void scr_http_conn_bad_request(ScrHttpConn *conn) {
+  if (scr_http_conn_client_error(conn, "HPE_INVALID_CONSTANT", "Invalid request")) return;
   static const char bad[] = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
   scr_http_conn_reject(conn, bad, sizeof bad - 1);
 }
 
 static void scr_http_conn_header_overflow(ScrHttpConn *conn) {
+  if (scr_http_conn_client_error(conn, "HPE_HEADER_OVERFLOW", "Header overflow")) return;
   static const char overflow[] =
       "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n";
   scr_http_conn_reject(conn, overflow, sizeof overflow - 1);
@@ -3413,6 +3450,8 @@ static void scr_http_conn_header_overflow(ScrHttpConn *conn) {
 static void scr_http_conn_parse_failed(ScrHttpConn *conn, const ScrHttpParseError *err) {
   if (conn->client_mode) {
     scr_http_client_parse_error(conn, err);
+  } else if (scr_http_conn_client_error(conn, err->code, err->reason)) {
+    /* the listeners answer it */
   } else if (strcmp(err->code, "HPE_CHUNK_EXTENSIONS_OVERFLOW") == 0) {
     static const char large[] = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n";
     scr_http_conn_reject(conn, large, sizeof large - 1);
@@ -3535,7 +3574,10 @@ static bool scr_http_expects_continue(const ScrStr *value) {
 /* Parses one complete request HEAD sitting at buf[0..head_len). Returns
  * false on malformed input, with *overflow set when the head carries more
  * fields than the parser accepts. */
-static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *overflow) {
+static void scr_http_conn_abort_incoming(ScrHttpConn *conn);
+
+static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *overflow,
+                                     ScrHttpParseError *err) {
   const char *buf = conn->buf;
   const char *line_end = memchr(buf, '\r', head_len);
   if (!line_end || line_end + 1 >= buf + head_len || line_end[1] != '\n') return false;
@@ -3609,12 +3651,20 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
    * them (a failed check is the 400) */
   bool chunked = false;
   long long content_length = 0;
-  ScrHttpParseError framing = {NULL, NULL};
+  /* llhttp reports a request Transfer-Encoding that does not end in
+   * chunked once the head is complete: 'request' fires, then the error */
+  ScrHttpParseError late = {NULL, NULL};
   if (!scr_http_framing_check(req->hnames, req->hvalues, req->nheaders, true, &chunked,
-                              &content_length, &framing)) {
-    *overflow = false;
-    scr_http_req_release(req);
-    return false;
+                              &content_length, err)) {
+    if (strcmp(err->reason, "Request has invalid `Transfer-Encoding`") != 0) {
+      *overflow = false;
+      scr_http_req_release(req);
+      return false;
+    }
+    late = *err;
+    err->code = err->reason = NULL;
+    chunked = false;
+    content_length = 0;
   }
   if (content_length < 0) content_length = 0;
   bool req_keep_alive = !http10;
@@ -3797,6 +3847,11 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
     free(snap);
   }
   if (scr_exc_pending()) return true; /* the loop surfaces it */
+  if (late.code != NULL) {
+    scr_http_conn_abort_incoming(conn);
+    scr_http_conn_parse_failed(conn, &late);
+    return true;
+  }
   if (!chunked && content_length == 0) {
     /* headless body: 'end' delivers to the listeners the handler attached */
     scr_http_conn_body_done(conn);
@@ -3858,8 +3913,10 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       if (conn->res != NULL && !conn->res->finished) return;
       if (conn->res != NULL) scr_http_conn_drop_request(conn, false);
       bool overflow = false;
-      if (!scr_http_conn_parse_head(conn, head_len, &overflow)) {
+      ScrHttpParseError head_err = {NULL, NULL};
+      if (!scr_http_conn_parse_head(conn, head_len, &overflow, &head_err)) {
         if (overflow) scr_http_conn_header_overflow(conn);
+        else if (head_err.code != NULL) scr_http_conn_parse_failed(conn, &head_err);
         else scr_http_conn_bad_request(conn);
         return;
       }
@@ -4026,6 +4083,7 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
 
 static void scr_http_conn_data(void *ctx, const char *buf, size_t n) {
   ScrHttpConn *conn = (ScrHttpConn *)ctx;
+  if (conn->client_errored) return;
   if (conn->pool_agent != NULL) {
     /* Data on an idle pooled socket: the agent destroys the socket, as
      * Node's free-socket read guard does, so the bytes are never read as
@@ -4445,6 +4503,32 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
     return;
   }
   scr_net_ls_add(&ctx->connect_ls, cb, (void *)h1_fn, once);
+}
+
+void scr_http_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                     ScrHttpClientErrorFn fn, bool once) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) {
+    /* no HTTP/1 parser on this server: the event never fires */
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&ctx->client_error_ls, cb, (void *)fn, once);
+}
+
+/* The clientError adapters: (err, socket) and its prefixes. Both arrive
+ * +1; unused ones release here. */
+void scr_http_client_error_thunk2(ScrClosure *cb, ScrError *err, ScrNetSocket *sock) {
+  ((void (*)(ScrClosure *, ScrError *, ScrNetSocket *))cb->fn)(cb, err, sock);
+}
+void scr_http_client_error_thunk1(ScrClosure *cb, ScrError *err, ScrNetSocket *sock) {
+  scr_net_sock_release(sock);
+  ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, err);
+}
+void scr_http_client_error_thunk0(ScrClosure *cb, ScrError *err, ScrNetSocket *sock) {
+  scr_error_release(err);
+  scr_net_sock_release(sock);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
 }
 
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn,

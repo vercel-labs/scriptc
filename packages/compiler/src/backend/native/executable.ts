@@ -158,6 +158,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_mailbox.c",
     "scr_message.c",
   ),
+  // A generator that binds its parameters at the call (scr_gen_bind.c).
+  unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
@@ -462,9 +464,6 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
-  // scr_json.c's SCR_JS_TIER build exports the dynamic tier's cache primitives; only
-  // programs with dynamic-tier code select it.
-  { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   // scr_json.c's view slot answers NULL for a field a partial record view
   // does not have; only a program with a partial assertion selects it.
@@ -477,14 +476,17 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_child.c's spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+  // entries.
+  { define: "SCR_CHILD_CP_OPTIONS", when: (opts) => opts.childOptionExt },
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
   // scr_events.c's typed process output write slot.
   { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,
-  // scr_json.c's and scr_dyn_builtin_class.c's instanceof over its classes,
-  // and scr_fetch.c's bodies of its streams.
+  // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
+  // bodies of its streams.
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },

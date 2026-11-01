@@ -57,9 +57,10 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import { hasGlobalFunctionValue } from "../global-function-values.js";
 import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
-import { NARROW_FIRST, sideEffectFreeOptionValue } from "../surfaces.js";
+import { NARROW_FIRST, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import {
@@ -691,6 +692,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         "SC1090",
         expr,
         "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
+      );
+    }
+    // A builtin global function value read off the global (`parseInt`,
+    // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
+    // no prototype to test against, so the test keeps the refusal the
+    // global's identity token answered.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      hasGlobalFunctionValue(stdlibGlobalNameOf(lowerer, expr.right) ?? "")
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr.right,
+        "'instanceof' right-hand sides other than classes declared in the program",
       );
     }
     // A checked-dynamic right-hand side (a constructor read from a table, a

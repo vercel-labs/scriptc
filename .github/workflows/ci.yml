@@ -400,6 +400,52 @@ jobs:
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm test tests/harness/three.test.ts -t "'nodes' runs statically through LLVM on 'native'"
 
+  # The sanitized self-hosting native-frontend builds alone. Each of these
+  # three files compiles the whole frontend under ASan in beforeAll, which
+  # takes 10.5 GB of clang beside a 3.8 GB compile in Node; beside a shard's
+  # corpus workers the kernel killed it intermittently at 670-740 s (SIGKILL,
+  # empty stderr, every test skipped). One file per job, one worker, no
+  # corpus. The plain suite and the macOS shards keep them in the shard side
+  # queue (scripts/ci-test-plan.mjs).
+  native_frontend_san:
+    needs: [validation_scope, lanes, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    name: test (Linux, san, native frontend ${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: programs
+            file: tests/harness/self-hosting-native-frontend-programs.test.ts
+          - suite: checks
+            file: tests/harness/self-hosting-native-frontend-checks.test.ts
+          - suite: frontend
+            file: tests/harness/self-hosting-native-frontend.test.ts
+    env:
+      SCRIPTC_SAN: "1"
+      SCRIPTC_TEST_WORKERS: "1"
+      ASAN_OPTIONS: detect_leaks=0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - name: Tests (${{ matrix.file }})
+        run: pnpm test ${{ matrix.file }}
+
   # Shape inference's overlay (opt-in, SCRIPTC_SHAPE_OVERLAY=1) over the
   # suites of real packages: nightly and on manual runs only (scope
   # shape_overlay runs it alone), outside the `test` roll-up. Every case
@@ -1183,6 +1229,7 @@ jobs:
         native_linux,
         effects,
         three_nodes_san,
+        native_frontend_san,
         bootstrap_seed,
         bootstrap,
         linux_host_clang,
@@ -1219,6 +1266,7 @@ jobs:
               lane native_linux "${{ needs.native_linux.result }}" "${{ needs.lanes.outputs.linux }}"
               lane effects "${{ needs.effects.result }}" "${{ needs.lanes.outputs.effects }}"
               lane three_nodes_san "${{ needs.three_nodes_san.result }}" "${{ needs.lanes.outputs.linux }}"
+              lane native_frontend_san "${{ needs.native_frontend_san.result }}" "${{ needs.lanes.outputs.linux }}"
               lane bootstrap_seed "${{ needs.bootstrap_seed.result }}" "${{ needs.lanes.outputs.bootstrap }}"
               lane bootstrap "${{ needs.bootstrap.result }}" "${{ needs.lanes.outputs.bootstrap }}"
               lane linux_host_clang "${{ needs.linux_host_clang.result }}" "${{ needs.lanes.outputs.linux }}"

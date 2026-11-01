@@ -1192,10 +1192,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
     for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
-    out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
+    // A metadata table for a large program holds more lines than one call
+    // can take as arguments: append each table's lines one at a time.
+    for (const line of functionAttributes(emitter, hasNoInlineRecordClone)) out.push(line);
     out.push(``);
-    out.push(...emitter.fieldAliasMetadata());
-    out.push(...loopUnrollMetadata(out));
+    for (const line of emitter.fieldAliasMetadata()) out.push(line);
+    for (const line of loopUnrollMetadata(out)) out.push(line);
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
   }
@@ -1350,13 +1352,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ``,
   );
   for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
-  out.push(
-    // The sanitized lane's -fsanitize=address link instruments the
-    // functions marked sanitize_address (the runtime TUs get theirs from
-    // clang).
-    ...functionAttributes(emitter, hasNoInlineRecordClone),
-    ``,
-  );
+  // The sanitized lane's -fsanitize=address link instruments the functions
+  // marked sanitize_address (the runtime TUs get theirs from clang).
+  for (const line of functionAttributes(emitter, hasNoInlineRecordClone)) out.push(line);
+  out.push(``);
   if (emitter.mod.workers) {
     out.push(
       `declare void @scr_context_cleanup()`,
@@ -1379,8 +1378,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       `}`,
     );
   }
-  out.push(...emitter.fieldAliasMetadata());
-  out.push(...loopUnrollMetadata(out));
+  for (const line of emitter.fieldAliasMetadata()) out.push(line);
+  for (const line of loopUnrollMetadata(out)) out.push(line);
   if (emitter.debug !== null) out.push(emitter.debug.render());
   return out;
 }

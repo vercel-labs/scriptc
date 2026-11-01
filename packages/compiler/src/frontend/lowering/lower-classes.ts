@@ -104,6 +104,7 @@ import {
   checkedJsDocumentedParameter,
   documentedParameter,
   generatorMeta,
+  generatorParamsBindAtCall,
   type ParamShape,
 } from "./call-signatures.js";
 import { omittedArgFor } from "./call-arguments.js";
@@ -8991,7 +8992,17 @@ function lowerClassMethodBody(
       params.push({ localId: local.id, name, type: shape.type });
       if (shape.mode === "arguments") fnCtx.argumentsLocal = local;
     }
-    const body = [...declared.prologue, ...lowerer.lowerStmts(fnLike.body.statements.nodes)];
+    // See lowerFunction: a generator binds its parameters at the CALL
+    // (FunctionDeclarationInstantiation runs before GeneratorStart) exactly
+    // when that is observable — a destructuring or rest pattern, a default
+    // that evaluates anything, or a body that reads `arguments`.
+    const bindsAtCall =
+      genCh !== null && declared.prologue.length > 0 && generatorParamsBindAtCall(fnLike);
+    const body = [
+      ...declared.prologue,
+      ...(bindsAtCall ? [{ kind: "genBindBarrier" as const, loc: locOf(fnLike) }] : []),
+      ...lowerer.lowerStmts(fnLike.body.statements.nodes),
+    ];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(fnLike));
     const fn: IrFunction = {
       name: fnName,
@@ -9003,7 +9014,7 @@ function lowerClassMethodBody(
       loc: locOf(fnLike),
     };
     if (isAsync) fn.async = true;
-    if (genCh !== null) fn.generator = genCh;
+    if (genCh !== null) fn.generator = bindsAtCall ? { ...genCh, bindAtCall: true } : genCh;
     return fn;
   } finally {
     lowerer.fnStack.pop();
@@ -9059,7 +9070,15 @@ export function lowerStaticMethod(
       declared.params.push({ localId: local.id, name: "%arguments", type: DYN });
       fnCtx.argumentsLocal = local;
     }
-    const body = [...declared.prologue, ...lowerer.lowerStmts(entry.member.body.statements.nodes)];
+    // See lowerFunction: a generator binds its parameters at the CALL
+    // exactly when that is observable.
+    const bindsAtCall =
+      genCh !== null && declared.prologue.length > 0 && generatorParamsBindAtCall(entry.member);
+    const body = [
+      ...declared.prologue,
+      ...(bindsAtCall ? [{ kind: "genBindBarrier" as const, loc: locOf(entry.member) }] : []),
+      ...lowerer.lowerStmts(entry.member.body.statements.nodes),
+    ];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(entry.member));
     const fn: IrFunction = {
       name: `%${info.def.name}.static:${name}`,
@@ -9070,7 +9089,7 @@ export function lowerStaticMethod(
       loc: locOf(entry.member),
     };
     if (isAsync) fn.async = true;
-    if (genCh !== null) fn.generator = genCh;
+    if (genCh !== null) fn.generator = bindsAtCall ? { ...genCh, bindAtCall: true } : genCh;
     return fn;
   } catch (e) {
     // A poison OUTSIDE the per-statement catches (the this/super fence,

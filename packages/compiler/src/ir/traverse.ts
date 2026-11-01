@@ -462,6 +462,8 @@ export function everyStmtChild(
       return expr(node.value);
     case "runtimeFence":
       return true;
+    case "genBindBarrier":
+      return true;
     case "rethrow":
       return true;
     case "tryCatch":
@@ -845,6 +847,8 @@ export function mapStmtChildren(
     case "throw":
       return { ...node, value: expr(node.value) };
     case "runtimeFence":
+      return node;
+    case "genBindBarrier":
       return node;
     case "rethrow":
       return node;

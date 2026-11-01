@@ -403,22 +403,229 @@ describe.skipIf(skip)("Node islands in-process", () => {
       expect(notes[0]!.message).toContain("Node island");
     }, 300_000);
 
-    test("a native read of the patched member is SC8020", async () => {
+    test("a user module that reads a patched member joins the island set", async () => {
+      // The pi shape (provider-env.ts): a user module reads a patched member
+      // through the builtin's CommonJS object. It joins the island set like
+      // an npm reader, so the read sees the patch exactly as in Node.
       const dir = copyCorpus(
-        "read",
-        `import fs from "node:fs";
-import { loadPayload } from "./loader.ts";
-const result = await loadPayload();
-console.log(result.text, fs.readFileSync("payload.txt", "utf8"));
+        "user-reader",
+        `import { installPatch } from "./patch.ts";
+import { readProbe } from "./read.ts";
+installPatch();
+console.log(readProbe());
 `,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched payload") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+          "read.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+export function readProbe(): string {
+  const { readFileSync } = require("fs") as {
+    readFileSync(path: string, encoding: BufferEncoding): string;
+  };
+  return readFileSync("/scriptc/does/not/exist", "utf-8");
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect((result.islands?.modules ?? []).map((file) => basename(file)).sort()).toEqual([
+        "patch.ts",
+        "read.ts",
+      ]);
+      const reader = (result.warnings ?? []).find(
+        (d) => d.code === "SC8001" && d.message.includes("read.ts"),
+      );
+      expect(reader?.message).toContain("it reads 'fs.readFileSync'");
+      expect(reader?.message).toContain("patch.ts");
+      // The island sources are cached under XDG_CACHE_HOME and Node strips
+      // their types when it requires them: a cache below the repository's
+      // node_modules is refused (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING).
+      const islandCache = mkdtempSync(join(tmpdir(), "scriptc-user-reader-cache-"));
+      expect(
+        await run(join(dir, "main"), [], { ...process.env, XDG_CACHE_HOME: islandCache }),
+      ).toEqual({
+        stdout: "patched payload\n",
+        stderr: "",
+        code: 0,
+      });
+    }, 300_000);
+
+    test("a reader whose island subgraph loads a module by a computed specifier is SC8006", async () => {
+      // The pi shape past the reader rule (provider-env.ts): an islanded user
+      // module statically imports a program module that loads by a computed
+      // specifier. The island tree cannot ship that module, so the build
+      // reports SC8006 — it used to throw the collection's PoisonError
+      // through the driver instead, a stack trace and no diagnostic.
+      const dir = copyCorpus(
+        "reader-computed-import",
+        `import { installPatch } from "./patch.ts";
+import { readProbe } from "./read.ts";
+installPatch();
+console.log(readProbe());
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched payload") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+          "read.ts": `import { loadByName } from "./helper.ts";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+export function readProbe(): string {
+  void loadByName;
+  const { readFileSync } = require("fs") as {
+    readFileSync(path: string, encoding: BufferEncoding): string;
+  };
+  return readFileSync("/scriptc/does/not/exist", "utf-8");
+}
+`,
+          "helper.ts": `export function loadByName(name: string): Promise<unknown> {
+  return import(name);
+}
+`,
+        },
       );
       const result = await buildDir(dir, "main");
       expect(result.ok).toBe(false);
-      const list = messages(result);
-      const read = list.find((m) => m.startsWith("SC8020:"));
-      expect(read).toBeDefined();
-      expect(read).toContain("fs.readFileSync");
-      expect(read).toContain("loader.ts");
+      if (result.ok) return;
+      const problem = result.diagnostics.find((d) => d.code === "SC8006");
+      expect(problem?.message).toContain("helper.ts");
+      expect(problem?.message).toContain("import() with a computed specifier");
+    }, 300_000);
+
+    test("the entry module reading a patched member is SC8006", async () => {
+      const dir = copyCorpus(
+        "entry-reader",
+        `import { createRequire } from "node:module";
+import { installPatch } from "./patch.ts";
+const require = createRequire(import.meta.url);
+installPatch();
+const { readFileSync } = require("fs") as {
+  readFileSync(path: string, encoding: BufferEncoding): string;
+};
+console.log(readFileSync("/scriptc/does/not/exist", "utf-8"));
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const entry = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("the entry module reads 'fs.readFileSync'"),
+      );
+      expect(entry).toBeDefined();
+      expect(entry).toContain("patch.ts");
+    }, 300_000);
+
+    test("a TypeScript reader Node cannot strip is SC8006", async () => {
+      const dir = copyCorpus(
+        "reader-enum",
+        `import { installPatch } from "./patch.ts";
+import { readProbe } from "./readenum.ts";
+installPatch();
+console.log(readProbe());
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+          "readenum.ts": `import { createRequire } from "node:module";
+enum Kind {
+  A,
+}
+const require = createRequire(import.meta.url);
+export function readProbe(): string {
+  const { readFileSync } = require("fs") as {
+    readFileSync(path: string, encoding: BufferEncoding): string;
+  };
+  return readFileSync("/scriptc/does/not/exist", "utf-8") + Kind.A;
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const stripped = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("Node cannot strip its types"),
+      );
+      expect(stripped).toBeDefined();
+      expect(stripped).toContain("readenum.ts");
+      expect(stripped).toContain("fs.readFileSync");
+      expect(stripped).toContain("enum");
+    }, 300_000);
+
+    test("replacing process.stdout.write beside an island is an SC8006 error", async () => {
+      // The planner refuses the combination (the island's process.stdout is
+      // its own object), so it is an error. It used to be SC8020, which the
+      // renderer prints as a warning and the planner still failed the build
+      // on: a diagnostic is a warning or an error, never both.
+      const dir = copyCorpus(
+        "stdio-patch",
+        `import { installPatch } from "./patch.ts";
+installPatch();
+process.stdout.write = (() => true) as unknown as typeof process.stdout.write;
+console.log("ok");
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const refusal = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("process.stdout.write"),
+      );
+      expect(refusal).toBeDefined();
+      expect(messages(result).filter((m) => m.startsWith("SC8020:"))).toEqual([]);
     }, 300_000);
 
     test("--node-islands=off makes the patch a native refusal again", async () => {

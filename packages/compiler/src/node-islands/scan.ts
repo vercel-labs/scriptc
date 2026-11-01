@@ -25,7 +25,8 @@ export interface ScannedModule {
   markers: NodeIslandMarker[];
   /** Members the module reads through a builtin's CommonJS object (H3.4). */
   cjsReads: CjsRead[];
-  /** A user TypeScript module with a `builtin-patch` marker that Node
+  /** A user TypeScript module the build may need to run in a Node island (a
+   * `builtin-patch` marker, or a read of a patched builtin member) that Node
    * cannot run with type stripping only (H3.5): it stays native. */
   stripProblem: StripProblem | null;
   /** True for a module of a package the drop-and-reload loop removed. */
@@ -173,7 +174,13 @@ export function scanFiles(
       packageName: at === null ? null : at.name,
       markers,
       cjsReads: facts.cjsReads,
-      stripProblem: userTs && markers.length > 0 ? stripProblem(program, sf) : null,
+      // A TypeScript module can island for a builtin patch (H3.2) and for a
+      // read of a member another island's patch changes (H3.4): both need
+      // Node to run the file with type stripping only.
+      stripProblem:
+        userTs && (markers.length > 0 || facts.cjsReads.length > 0)
+          ? stripProblem(program, sf)
+          : null,
       dropped: opts.dropped,
     });
     if (!opts.edges) continue;

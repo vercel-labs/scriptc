@@ -57,6 +57,28 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
   });
 
+  test("gates the call-time parameter bind unit on a barriered generator", () => {
+    const mod = module();
+    const generator = (bindAtCall: boolean): IrModule["functions"][number] => ({
+      name: bindAtCall ? "pick" : "plain",
+      params: [],
+      locals: [],
+      returnType: VOID,
+      body: [],
+      loc,
+      generator: {
+        yieldT: STRING,
+        nextT: VOID,
+        resultType: { kind: "record", shapeId: "gen-result" },
+        ...(bindAtCall ? { bindAtCall: true as const } : {}),
+      },
+    });
+    mod.functions.push(generator(false));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(false);
+    mod.functions.push(generator(true));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(true);
+  });
+
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("http2.streamNoop"));
@@ -189,6 +211,28 @@ describe("runtime feature snapshots", () => {
       mod.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(mod).dynInvoke).toBe(true);
     }
+  });
+
+  test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
+    const reads = (key: string): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "dynKeyGet",
+          value: { kind: "varRef", localId: "value", type: DYN, loc },
+          key: { kind: "strLit", value: key, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+      });
+      return mod;
+    };
+    for (const key of ["toString", "slice", "map", "findLastIndex"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(true);
+    for (const key of ["length", "name", "nope"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
   });
 
   test("gates the fs read's Buffer brand on a typed read plus an observable brand", () => {

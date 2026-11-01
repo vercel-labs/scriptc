@@ -882,6 +882,55 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     expect(where.get("matcher")).not.toBe(where.get("step9"));
   });
 
+  test("a fallback body that its referrer calls is placed by its own name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-cold-"));
+    dirs.push(dir);
+    const body = (name: string, attrs: string) => [
+      `define internal void @${name}(i64 %value) ${attrs} {`,
+      ...Array.from(
+        { length: 40 },
+        (_, index) => `  %v${index} = add i64 ${index === 0 ? "%value" : `%v${index - 1}`}, 1`,
+      ),
+      "  call void @bump(i64 0)",
+      "  ret void",
+      "}",
+    ];
+    // step7 calls two fallback bodies, one of them unoptimized, and a cold
+    // function without the marker; only the last follows it.
+    const source = program()
+      .split("\n")
+      .flatMap((line) => {
+        if (line === "define internal void @step7(i64 %value) noinline {")
+          return [
+            ...body("fallback", 'noinline cold "scriptc-fallback"'),
+            ...body("plainFallback", 'noinline optnone cold "scriptc-fallback"'),
+            ...body("missPath", "noinline cold"),
+            line,
+            "  call void @fallback(i64 1)",
+            "  call void @plainFallback(i64 1)",
+            "  call void @missPath(i64 1)",
+          ];
+        return [line];
+      })
+      .join("\n");
+    const objects = await emit(dir, source, { outputs: 4, optLevel: "0", name: "cold" });
+    expect(await exitCode(dir, objects, "cold")).toBe(expectedExit());
+    const where = new Map<string, number>();
+    for (const [index, object] of objects.entries()) {
+      const { stdout } = await execFileAsync("nm", [object]);
+      for (const line of stdout.split("\n")) {
+        const defined = /^[0-9a-fA-F]+ [A-Za-z] _?(step7|fallback|plainFallback|missPath)$/.exec(
+          line.trim(),
+        );
+        if (defined !== null) where.set(defined[1]!, index);
+      }
+    }
+    expect(where.size).toBe(4);
+    expect(where.get("missPath")).toBe(where.get("step7"));
+    expect(where.get("fallback")).not.toBe(where.get("step7"));
+    expect(where.get("plainFallback")).not.toBe(where.get("step7"));
+  });
+
   test("functions are balanced over a few partitions, and a small edit keeps their places", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-balance-"));
     dirs.push(dir);

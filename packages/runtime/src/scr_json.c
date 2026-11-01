@@ -78,15 +78,22 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 }
 
 #ifdef SCR_JS_OBJECT_MODEL
-/* A write, delete or redefinition of a member an intrinsic was built with:
- * typed code calls the native entry point and would never see the change, so
- * it refuses (t262-da §2.5, decision DA-2). A key the table does not name —
- * including one the program adds — is an ordinary property of an extensible
- * object. The fill itself defines the table's members, so a fill in progress
- * is exempt. */
+/* Object.prototype and Error.prototype refuse every mutation outside this
+ * build, and the fill keeps that boundary: it makes the two objects ordinary
+ * readers of the table without turning a refused write into a silent one
+ * above a native entry point. A key the table does not name is an ordinary
+ * property of the now extensible object.
+ *
+ * Every other intrinsic accepts a write of its own members exactly as before
+ * this table existed, so a program that writes `Array.prototype.join = f`
+ * and reads it back does not change behaviour. Refusing those too is the
+ * DA-2 decision, which is still open: it costs 110 Test262 variants that
+ * pass today (90 in Array, 20 in Object) because propertyHelper's attribute
+ * checks write and restore the member they prove. */
 static bool scr_dyn_intrinsic_member_fence(const ScrDyn *object, const ScrDyn *key) {
   if (scr_js_intrinsic_filling()) return false;
-  if (!key || !scr_js_intrinsic_filled(object)) return false;
+  if (!object || !key || !scr_js_intrinsic_filled(object)) return false;
+  if (object != scr_builtin_object_prototype && object != scr_builtin_error_prototype) return false;
   if (!scr_js_intrinsic_has_builtin_member(object, key)) return false;
   static const char message[] = "replacing a builtin prototype or constructor member is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");

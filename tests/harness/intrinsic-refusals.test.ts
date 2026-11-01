@@ -8,12 +8,14 @@ import { compile } from "@scriptc/compiler";
 
 const execFileAsync = promisify(execFile);
 
-// A builtin prototype's existing member belongs to the runtime (t262-da §2.5,
-// decision DA-2): typed code calls the native entry point and would never
-// observe `Array.prototype.join = f`, so a write, delete or redefinition of
-// one refuses with SC1090. A key the table does not name is an ordinary
-// property of the extensible objects.
-test("replacing or deleting a builtin intrinsic member refuses", async () => {
+// Object.prototype and Error.prototype refuse mutation outside the object
+// model build, and the intrinsic fill keeps that boundary: their existing
+// members still refuse a write, delete or redefinition with SC1090, and a key
+// the table does not name is an ordinary property of the now extensible
+// object. Every other intrinsic takes the write as before this table existed
+// (t262-da §4.3 item 5, narrowed; refusing those as well is the open DA-2
+// decision).
+test("the filled Object.prototype and Error.prototype keep their mutation fence", async () => {
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-intrinsic-refusals-"));
   const entry = join(outDir, "main.cjs");
   writeFileSync(
@@ -22,13 +24,15 @@ test("replacing or deleting a builtin intrinsic member refuses", async () => {
 function attempt(label, run) {
   try { console.log(label, run()); } catch (error) { console.log(label, error.name, error.code, error.message); }
 }
-attempt("write", () => { Array.prototype.join = function () { return "x"; }; return "wrote"; });
-attempt("delete", () => { delete Map.prototype.get; return "deleted"; });
-attempt("define", () => { Object.defineProperty(Map.prototype, "size", { value: 1 }); return "defined"; });
-attempt("symbol", () => { delete Map.prototype[Symbol.iterator]; return "deleted-symbol"; });
-attempt("new-key", () => { Array.prototype.added = 7; return Array.prototype.added; });
-console.log("new-own", Object.hasOwn(Array.prototype, "added"));
-console.log("members-intact", [1, 2].join("-"), typeof [].join, new Map().get === Map.prototype.get);
+attempt("object-write", () => { Object.prototype.hasOwnProperty = function () { return "x"; }; return "wrote"; });
+attempt("object-delete", () => { delete Object.prototype.isPrototypeOf; return "deleted"; });
+attempt("object-define", () => { Object.defineProperty(Object.prototype, "toString", { value: 1 }); return "defined"; });
+attempt("error-delete", () => { delete Error.prototype.toString; return "deleted"; });
+attempt("new-key", () => { Object.prototype.added = 7; return Object.prototype.added; });
+attempt("array-write", () => { Array.prototype.join = function () { return "x"; }; return "wrote"; });
+console.log("new-own", Object.hasOwn(Object.prototype, "added"));
+console.log("array-member", typeof Array.prototype.join, Array.prototype.join());
+console.log("members-intact", [1, 2].join("-"), typeof [].join, Object.prototype.hasOwnProperty.call([1], "0"));
 `,
   );
   const result = await compile(entry, {
@@ -42,17 +46,22 @@ console.log("members-intact", [1, 2].join("-"), typeof [].join, new Map().get ==
   const { stdout, stderr } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
   const refused = (label: string): string =>
     `${label} Error SC1090 replacing a builtin prototype or constructor member is not supported yet`;
-  expect(stdout).toBe(
-    [
-      refused("write"),
-      refused("delete"),
-      refused("define"),
-      refused("symbol"),
-      "new-key 7",
-      "new-own true",
-      "members-intact 1-2 function true",
-      "",
-    ].join("\n"),
+  const lines = stdout.trimEnd().split("\n");
+  expect(lines.slice(0, 3)).toEqual([
+    refused("object-write"),
+    refused("object-delete"),
+    refused("object-define"),
+  ]);
+  // Error.prototype keeps the refusal its own lowering gives it.
+  expect(lines[3]).toMatch(
+    /^error-delete Error SC1090 prototype data on .* are not supported yet \[SC1090 at /,
   );
+  expect(lines.slice(4)).toEqual([
+    "new-key 7",
+    "array-write wrote",
+    "new-own true",
+    "array-member function x",
+    "members-intact 1-2 function true",
+  ]);
   expect(stderr).toBe("");
 });

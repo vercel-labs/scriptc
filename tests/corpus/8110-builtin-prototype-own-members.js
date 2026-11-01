@@ -66,11 +66,8 @@ class Point {
 const samples = [{}, { a: 1 }, JSON.parse("{}"), Object.create(null), [], new Point(), new Error("e"), { constructor: 5 }, { constructor: undefined }, "s", 1, null];
 console.log(samples.map((sample) => isPlainObject(sample)).join(","));
 
-// An own member stored on Array.prototype stays one own name, after the
-// table's members. Replacing a member the intrinsic table has —
-// `Array.prototype.constructor`, say — refuses (t262-da §2.5, decision
-// DA-2), so the program's member is a key the table does not name.
+// A constructor stored on Array.prototype stays one own name, after length.
 function Replacement() {}
-Array.prototype.replacement = Replacement;
+Array.prototype.constructor = Replacement;
 const replacedNames = Object.getOwnPropertyNames(Array.prototype);
-console.log(replacedNames.slice(0, 2).join(","), replacedNames.filter((name) => name === "replacement").length, has(Array.prototype, "replacement"));
+console.log(replacedNames.slice(0, 2).join(","), replacedNames.filter((name) => name === "constructor").length, has(Array.prototype, "constructor"));

@@ -303,12 +303,82 @@ static size_t insp_entry_len(const ScrStr *s) {
 
 /* ── number rendering ────────────────────────────────────────────────── */
 
-/* formatNumber: JS ToString EXCEPT -0 renders as '-0'. */
+/* ctx.numericSeparator: digits group in threes (formatNumber). Set for the
+ * length of an inspect render, by the static layout wrapper the lowered
+ * calls run in or by the runtime reader; the setters answer the previous
+ * value so a wrapper can restore it. */
+static SCR_TL bool g_numeric_separator;
+
+bool scr_insp_numeric_separator(bool enabled) {
+  bool previous = g_numeric_separator;
+  g_numeric_separator = enabled;
+  return previous;
+}
+
+/* addNumericSeparator: three-digit groups from the right, the leading
+ * minus outside them; fewer than four digits stay as they are. */
+static void insp_group_int_into(InspBuf *b, const char *digits, size_t len) {
+  size_t lead = len % 3 ? len % 3 : 3;
+  for (size_t i = 0; i < len; i++) {
+    if (i >= lead && (i - lead) % 3 == 0) ib_char(b, '_');
+    ib_char(b, digits[i]);
+  }
+}
+
+/* addNumericSeparatorEnd: three-digit groups from the left; the last
+ * group may be shorter. */
+static void insp_group_frac_into(InspBuf *b, const char *digits, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (i > 0 && i % 3 == 0) ib_char(b, '_');
+    ib_char(b, digits[i]);
+  }
+}
+
+/* formatNumber: JS ToString EXCEPT -0 renders as '-0'. Under the render's
+ * numericSeparator, finite numbers whose text has no exponent group their
+ * digits: the integer part from the right and the fractional part from
+ * the left (Infinity, NaN and the exponent forms stay as ToString gives
+ * them). */
 ScrStr *scr_insp_f64(double x) {
   if (x == 0.0 && signbit(x)) return scr_str_new("-0", 2);
   char buf[40];
   size_t n = scr_f64_to_str(x, buf);
-  return scr_str_new(buf, n);
+  if (!g_numeric_separator || !isfinite(x) || memchr(buf, 'e', n) != NULL)
+    return scr_str_new(buf, n);
+  size_t start = buf[0] == '-' ? 1 : 0;
+  size_t dot = n;
+  if (trunc(x) != x) {
+    for (size_t i = start; i < n; i++) {
+      if (buf[i] == '.') {
+        dot = i;
+        break;
+      }
+    }
+  }
+  InspBuf out = {0};
+  ib_bytes(&out, buf, start);
+  insp_group_int_into(&out, buf + start, dot - start);
+  if (dot < n) {
+    ib_char(&out, '.');
+    insp_group_frac_into(&out, buf + dot + 1, n - dot - 1);
+  }
+  return ib_take(&out);
+}
+
+/* formatBigInt: the decimal digits group like formatNumber's integers.
+ * The renders that are not inspect's (assert messages) keep the plain
+ * scr_bigint_inspect. */
+ScrStr *scr_insp_bigint(ScrBigInt *v) {
+  ScrStr *text = scr_bigint_inspect(v);
+  size_t digits = text->len ? text->len - 1 : 0; /* the trailing 'n' */
+  if (!g_numeric_separator || digits == 0) return text;
+  size_t start = text->data[0] == '-' ? 1 : 0;
+  InspBuf out = {0};
+  ib_bytes(&out, text->data, start);
+  insp_group_int_into(&out, text->data + start, digits - start);
+  ib_char(&out, 'n');
+  scr_str_release(text);
+  return ib_take(&out);
 }
 
 /* ── string quoting (strEscape) ──────────────────────────────────────── */
@@ -2386,7 +2456,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
  * n suffix (no color; the caller styles it). */
 static ScrStr *insp_bytes_bigint(const ScrBytes *b, size_t i) {
   ScrDyn *element = scr_bytes_get_bigint(b, (double)i);
-  ScrStr *text = scr_bigint_inspect(element->v.bigint);
+  ScrStr *text = scr_insp_bigint(element->v.bigint);
   scr_dyn_release(element);
   return text;
 }
@@ -2545,6 +2615,7 @@ typedef struct {
   bool custom_inspect;
   bool sorted;
   bool no_break;
+  bool numeric_separator;
   int depth_kind;
   double depth_number;
   double break_length;
@@ -2591,6 +2662,7 @@ double scr_insp_custom_call_begin(void) {
   sv->custom_inspect = g_custom_inspect;
   sv->sorted = g_sorted;
   sv->no_break = g_no_break;
+  sv->numeric_separator = g_numeric_separator;
   sv->depth_kind = g_depth_kind;
   sv->depth_number = g_depth_number;
   sv->break_length = g_break_length;
@@ -2601,6 +2673,7 @@ double scr_insp_custom_call_begin(void) {
   g_show_hidden = false;
   g_custom_inspect = true;
   g_no_break = false;
+  g_numeric_separator = false;
   g_depth_kind = 1;
   g_depth_number = 0;
   g_user_options = NULL;
@@ -2618,6 +2691,7 @@ static InspCallSaved *insp_call_options_restore(size_t depth) {
   g_show_hidden = sv->show_hidden;
   g_custom_inspect = sv->custom_inspect;
   g_no_break = sv->no_break;
+  g_numeric_separator = sv->numeric_separator;
   g_depth_kind = sv->depth_kind;
   g_depth_number = sv->depth_number;
   g_user_options = sv->user_options;
@@ -2785,7 +2859,7 @@ static ScrDyn *insp_user_options(double depth) {
   insp_opt_set(options, "compact", g_compact < 0 ? scr_dyn_new_bool(false) : scr_dyn_new_num(g_compact));
   insp_opt_set(options, "sorted", scr_dyn_new_bool(g_sorted));
   insp_opt_set(options, "getters", scr_dyn_new_bool(false));
-  insp_opt_set(options, "numericSeparator", scr_dyn_new_bool(false));
+  insp_opt_set(options, "numericSeparator", scr_dyn_new_bool(g_numeric_separator));
   if (g_user_options && g_user_options->kind == SCR_DYN_OBJ) {
     for (size_t i = 0; i < scr_dyn_obj_count(g_user_options); i++) {
       ScrDynProp ent = scr_dyn_obj_prop_at(g_user_options, i);
@@ -3172,7 +3246,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_BOOL:
       return d->v.b ? insp_styled_lit("true", 4, INSP_BOOLEAN) : insp_styled_lit("false", 5, INSP_BOOLEAN);
     case SCR_DYN_BIGINT:
-      return insp_styled(scr_bigint_inspect(d->v.bigint), INSP_BIGINT);
+      return insp_styled(scr_insp_bigint(d->v.bigint), INSP_BIGINT);
     case SCR_DYN_SYMBOL:
       return insp_styled(d->v.symbol.render(d->v.symbol.value), INSP_SYMBOL);
     case SCR_DYN_NUM:
@@ -3649,17 +3723,19 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
   o->compact = 3;
   o->sorted = false;
   o->max_array_length = 100;
+  o->numeric_separator = false;
   o->user_options = NULL;
 }
 
 /* inspect(value, options) at the given depth, compact and colors, with
- * the options' breakLength and sorted; the previous layout returns
- * afterwards. +1, or NULL with the exception pending. */
+ * the options' breakLength, sorted and numericSeparator; the previous
+ * layout returns afterwards. +1, or NULL with the exception pending. */
 static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, double depth,
                                 double compact, bool colors) {
   double break_length = g_break_length, saved_compact = g_compact;
   double saved_max_array_length = g_max_array_length;
   bool sorted = g_sorted, saved_colors = g_colors, saved_custom = g_custom_inspect;
+  bool saved_separator = g_numeric_separator;
   bool saved_hidden = g_show_hidden;
   const char *saved_hidden_surface = g_hidden_surface;
   bool saved_hidden_spec = g_hidden_spec;
@@ -3675,7 +3751,9 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
   g_depth_kind = o->depth_kind;
   g_depth_number = o->depth_number;
   g_user_options = o->user_options;
+  g_numeric_separator = o->numeric_separator;
   ScrStr *text = scr_insp_dyn(value, 0, depth);
+  g_numeric_separator = saved_separator;
   g_colors = saved_colors;
   g_custom_inspect = saved_custom;
   g_show_hidden = saved_hidden;
@@ -3715,7 +3793,7 @@ static int insp_fmt_custom_to_string(const ScrDyn *value) {
 static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
   if (value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
   if (value->kind == SCR_DYN_NUM) return scr_insp_f64(value->v.num);
-  if (value->kind == SCR_DYN_BIGINT) return scr_bigint_inspect(value->v.bigint);
+  if (value->kind == SCR_DYN_BIGINT) return scr_insp_bigint(value->v.bigint);
   if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_MIME_TYPE || value->v.handle.tag == SCR_DYNH_MIME_PARAMS))
     return scr_dyn_string_coerce_js(value);
   if (value->kind == SCR_DYN_FUNC) {
@@ -3741,7 +3819,7 @@ static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
 }
 
 static ScrStr *insp_fmt_number(ScrDyn *value, int spec) {
-  if (value->kind == SCR_DYN_BIGINT && spec != 'f') return scr_bigint_inspect(value->v.bigint);
+  if (value->kind == SCR_DYN_BIGINT && spec != 'f') return scr_insp_bigint(value->v.bigint);
   if (value->kind == SCR_DYN_SYMBOL) return scr_str_new("NaN", 3);
   double number;
   if (spec == 'd') {
@@ -3849,6 +3927,18 @@ static ScrStr *insp_fmt_inspect_full(ScrDyn *value, const ScrInspFormatOptions *
   return insp_fmt_inspect(value, o, depth, o->compact, o->colors);
 }
 
+/* The conversions run with the options' numericSeparator, which format's
+ * %s, %d, %i and %f and the joined arguments take (formatNumber,
+ * formatBigInt); the previous value returns afterwards. */
+static ScrStr *insp_format_run(ScrDyn *const *args, size_t argc, const ScrInspFormatOptions *o,
+                               const InspFmtOps *ops) {
+  bool saved = g_numeric_separator;
+  g_numeric_separator = o->numeric_separator;
+  ScrStr *out = insp_format_loop(args, argc, o, ops);
+  g_numeric_separator = saved;
+  return out;
+}
+
 /* The conversion tables are filled where they run: a constant table is a
  * global, and sanitized builds keep instrumented globals (and the
  * conversions they point at) through --gc-sections. */
@@ -3858,7 +3948,7 @@ ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOpt
   ops.j = scr_util_format_j;
   ops.number = insp_fmt_number;
   ops.inspect = insp_fmt_inspect_full;
-  return insp_format_loop(args, argc, o, &ops);
+  return insp_format_run(args, argc, o, &ops);
 }
 
 /* new StringDecoder(encoding) with an encoding that may not be a string:
@@ -3994,7 +4084,7 @@ ScrStr *scr_insp_format_primitives(ScrArr *list) {
   ops.j = insp_prim_j;
   ops.number = insp_prim_number;
   ops.inspect = insp_prim_inspect;
-  ScrStr *out = insp_format_loop(pack->v.arr.items, pack->v.arr.len, &o, &ops);
+  ScrStr *out = insp_format_run(pack->v.arr.items, pack->v.arr.len, &o, &ops);
   scr_dyn_release(pack);
   return out;
 }
@@ -4127,14 +4217,15 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
       goto done;
     }
   }
+  INSP_OPT("numericSeparator");
+  if (present) o->numeric_separator = scr_dyn_truthy(value);
   /* The options whose non-default values change renderings this runtime
    * does not produce. */
   static const struct {
     const char *key;
     int kind; /* 0: falsy, 1: true, 2: the number 10000 */
   } fixed[] = {
-      {"showProxy", 0},  {"maxStringLength", 2}, {"getters", 0},
-      {"numericSeparator", 0}, {"stylize", 0},
+      {"showProxy", 0}, {"maxStringLength", 2}, {"getters", 0}, {"stylize", 0},
   };
   for (size_t i = 0; i < sizeof fixed / sizeof *fixed; i++) {
     INSP_OPT(fixed[i].key);

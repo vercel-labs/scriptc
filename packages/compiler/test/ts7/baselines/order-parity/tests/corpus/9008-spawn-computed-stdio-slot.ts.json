@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9008-spawn-computed-stdio-slot.ts"
+ ],
+ "diags": []
+}

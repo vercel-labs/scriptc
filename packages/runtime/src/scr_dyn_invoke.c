@@ -1555,8 +1555,7 @@ static ScrDyn *scr_dyn_invoke_impl(
       if (len == 0) return scr_dyn_retain(scr_dyn_undefined());
       ScrDyn *result = scr_dyn_arr_at(recv, (double)(len - 1));
       if (!result) return NULL;
-      scr_dyn_arr_set_len(recv, len - 1);
-      scr_dyn_release(recv->v.arr.items[len - 1]);
+      scr_dyn_release(recv->v.arr.items[scr_dyn_arr_dec_len(recv)]);
       return result;
     }
     if ((mid == DYN_M_shift)) {

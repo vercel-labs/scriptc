@@ -2396,6 +2396,13 @@ ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
  * resolve job, a throwing `then` read rejects, and any other value
  * fulfills. */
 void scr_dyn_promise_resolve_with(ScrPromise *target, ScrDyn *value);
+/* The `then` of a dyn value when it is a thenable (its `then` is a
+ * function), +1, and NULL otherwise or when the read threw (the exception
+ * stays pending). The stance is the resolution procedure's: an object, a
+ * function, a proxy or a typed reference capsule (read through its
+ * materialized view, or through `reader` for a program class instance)
+ * qualifies; every other kind does not. */
+ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);

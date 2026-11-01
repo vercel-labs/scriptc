@@ -1,4 +1,4 @@
-/* node:crypto introspection tables — Node v24.22.0 answers, generated with
+/* node:crypto introspection tables — Node v24.22.1 answers, generated with
  *   node -p "require('crypto').constants"   (and getCiphers/getHashes/getCurves)
  * crypto.constants bakes as literals at every access site (the http2.constants
  * precedent — the object itself never materializes at runtime); the three name
@@ -6,7 +6,7 @@
  * and defaultCoreCipherList are strings; every other member is a number. */
 
 export const CRYPTO_CONSTANTS: Record<string, number | string> = {
-  "OPENSSL_VERSION_NUMBER": 810549376,
+  "OPENSSL_VERSION_NUMBER": 810549392,
   "SSL_OP_ALL": 2147485776,
   "SSL_OP_ALLOW_NO_DHE_KEX": 1024,
   "SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION": 262144,
@@ -67,7 +67,7 @@ export const CRYPTO_CONSTANTS: Record<string, number | string> = {
     "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
 };
 
-/** crypto.getCiphers() — Node v24.22.0 (OpenSSL 3.x) cipher names, sorted like Node answers them. */
+/** crypto.getCiphers() — Node v24.22.1 (OpenSSL 3.x) cipher names, sorted like Node answers them. */
 export const CRYPTO_CIPHERS: readonly string[] = [
   "aes-128-cbc",
   "aes-128-cbc-cts",
@@ -236,7 +236,7 @@ export const CRYPTO_CIPHERS: readonly string[] = [
   "sm4-xts",
 ];
 
-/** crypto.getHashes() — Node v24.22.0 digest names. */
+/** crypto.getHashes() — Node v24.22.1 digest names. */
 export const CRYPTO_HASHES: readonly string[] = [
   "RSA-MD5",
   "RSA-RIPEMD160",
@@ -321,7 +321,7 @@ export const CRYPTO_HASHES: readonly string[] = [
   "ssl3-sha1",
 ];
 
-/** crypto.getCurves() — Node v24.22.0 EC curve names. */
+/** crypto.getCurves() — Node v24.22.1 EC curve names. */
 export const CRYPTO_CURVES: readonly string[] = [
   "Oakley-EC2N-3",
   "Oakley-EC2N-4",

@@ -242,7 +242,7 @@ export function programPatchesStdio(lowerer: Lowerer): boolean {
 /** The pinned Node release the runtime reports as process.versions.node
  * (packages/runtime/src/scr_lib.c SCR_NODE_COMPAT_VERSION, kept equal to
  * internal/compatibility/node-v24.json by test/node-pin.test.ts). */
-export const NODE_COMPAT_VERSION = "24.22.0";
+export const NODE_COMPAT_VERSION = "24.22.1";
 
 /** Method calls on first-class process-stream receivers (procStream —
  * a WritableStream-typed value like prefixStream's `output` param):

@@ -1,12 +1,12 @@
 /** The pinned QuickJS, mbedTLS, zlib, and brotli inputs used by native recipes. */
 export const QJS_COMMIT = "3c8f3d68953955950074c41c6e4d999562ae82a7";
 export const MBEDTLS_VERSION = "3.6.7";
-/** The zlib Node v24.22.0 bundles (`process.versions.zlib` there), the
+/** The zlib Node v24.22.1 bundles (`process.versions.zlib` there), the
  * Chromium fork in Node's deps/zlib (packages/runtime/vendor/zlib). */
 export const ZLIB_VERSION = "1.3.2.1-motley-285e94b";
-/** The brotli release Node v24.22.0 bundles (packages/runtime/vendor/brotli). */
+/** The brotli release Node v24.22.1 bundles (packages/runtime/vendor/brotli). */
 export const BROTLI_VERSION = "1.2.0";
-/** ICU4C release 78.3 — the exact version Node v24.22.0 bundles
+/** ICU4C release 78.3 — the exact version Node v24.22.1 bundles
  * (`process.versions.icu` there), from the `release-78.3` tag. ICU is not
  * vendored: the build fetches the release's own source tarball and data zip
  * from unicode-org/icu's GitHub release, pinning each by version and sha256,

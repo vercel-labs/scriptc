@@ -1,5 +1,5 @@
 /* node:zlib's Brotli codec over the vendored brotli 1.2.0 (the version Node
- * v24.22.0 bundles, so compressed bytes match Node's). Node's
+ * v24.22.1 bundles, so compressed bytes match Node's). Node's
  * BrotliEncoderContext and BrotliDecoderContext (src/node_zlib.cc) plug into
  * scr_zlib.c's engine as a codec, so the one-shot, callback, promise and
  * stream forms run exactly as their zlib counterparts do. The option ladder

@@ -24,6 +24,23 @@ const repoRoot = join(import.meta.dirname, "../..");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
+test("util.getCallSites value refuses capture when called, not when read", async () => {
+  const r = await compileAndRun(
+    "util-callsites-value-call",
+    `const util = require('node:util');
+const capture = util.getCallSites;
+console.log('loaded', typeof capture);
+capture();
+console.log('unreachable');
+`,
+    "cjs",
+  );
+  expect(r.stdout).toBe("loaded function\n");
+  expect(r.exitCode).toBe(1);
+  expect(r.stderr).toContain("util.getCallSites runtime stack capture");
+  expect(r.stderr).toContain("SC2020");
+});
+
 interface RunResult {
   stdout: string;
   stderr: string;

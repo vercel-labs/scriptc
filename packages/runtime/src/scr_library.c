@@ -216,27 +216,35 @@ void scr_library_heap_note_alloc(void *p) {
   if (scr_library_heap_place(scr_library_heap_encode(p))) scr_library_heap_live++;
 }
 
+/* Frees the table itself. Empty, it is bookkeeping with nothing left to
+ * name — and in a thread-instanced instance the thread is its only owner,
+ * so a table left behind is an unreachable chunk that LeakSanitizer
+ * reports once that thread is gone. */
+static void scr_library_heap_release(void) {
+  free(scr_library_heap_slots);
+  scr_library_heap_slots = NULL;
+  scr_library_heap_cap = 0;
+  scr_library_heap_live = 0;
+}
+
 void scr_library_heap_note_free(void *p) {
   if (p == NULL || scr_library_heap_cap == 0) return;
   size_t i = scr_library_heap_find(scr_library_heap_encode(p));
   if (i == SIZE_MAX) return; /* untracked: an interior or foreign pointer */
   scr_library_heap_remove(i);
-  scr_library_heap_live--;
+  if (--scr_library_heap_live == 0) scr_library_heap_release();
 }
 
 /* The trap fired: the entry will never run its epilogue, so every block
  * still held is unreachable by definition. Name each a deliberate root
- * before the message goes out, then empty the table. */
+ * before the message goes out, then hand the empty table back. */
 static void scr_library_heap_abandon(void) {
   for (size_t i = 0; i < scr_library_heap_cap; i++) {
     if (scr_library_heap_slots[i] != NULL) {
       scr_lsan_immortal(scr_library_heap_decode(scr_library_heap_slots[i]));
     }
   }
-  if (scr_library_heap_cap != 0) {
-    memset(scr_library_heap_slots, 0, scr_library_heap_cap * sizeof *scr_library_heap_slots);
-  }
-  scr_library_heap_live = 0;
+  scr_library_heap_release();
 }
 #endif /* SCR_RC_AUDIT */
 

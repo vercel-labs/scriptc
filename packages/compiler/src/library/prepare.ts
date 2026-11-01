@@ -26,8 +26,11 @@ import {
   checkLibraryIntegerSlots,
   classSeed,
   hasIntSlots,
+  join,
   numberCarrierKind,
+  type AbsVal,
   type FnIntSlots,
+  type IntClass,
   type IntSlotConfig,
 } from "./int-infer.js";
 import { profileRemediation, profileTeaching, type LibraryProfile } from "./library-profile.js";
@@ -303,19 +306,67 @@ function libraryIntSlotConfig(
     // lives in its declaring module's unit); the paths name the profile's
     // own export key, which is what a teaching or diagnostic quotes.
     const fnName = libExportUnits.get(e.export) ?? e.export;
-    const slots: FnIntSlots = {
+    const existing = cfg.fns.get(fnName);
+    const slots: FnIntSlots = existing ?? {
       fnName,
-      params,
-      paramPaths: e.params.map((c, i) =>
-        c === "i64" || c === "u64" ? `exports.${e.export}.params[${i}]` : null,
-      ),
-      ret,
-      retPath: ret !== null ? `exports.${e.export}.return` : null,
-      paramSeeds,
+      params: e.params.map(() => null),
+      paramPaths: e.params.map(() => null),
+      ret: null,
+      retPath: null,
+      paramSeeds: e.params.map(() => null),
     };
-    cfg.fns.set(fnName, slots);
+    if (existing === undefined) cfg.fns.set(fnName, slots);
+    // Two profile exports may alias one compiled unit, and that unit has
+    // ONE parameter binding and ONE return value; their declarations
+    // COALESCE rather than replace each other. The call-site obligation is
+    // the stricter class (u64's range is inside i64's, so proving u64
+    // discharges both), the parameter seed is the hull of every inbound
+    // shape (a value can arrive through any alias), and a path follows the
+    // declaration that set the class, so a refusal quotes a class that
+    // declaration actually made. Nothing an earlier export declared is
+    // dropped by a later one.
+    params.forEach((cls, i) => {
+      if (cls === null) return;
+      mergeDeclaredClass(slots, i, cls, `exports.${e.export}.params[${i}]`);
+      mergeDeclaredSeed(slots, i, classSeed(cls));
+    });
+    paramSeeds.forEach((seed, i) => {
+      if (seed !== null) mergeDeclaredSeed(slots, i, seed);
+    });
+    if (ret !== null) mergeDeclaredReturn(slots, ret, `exports.${e.export}.return`);
   }
   return cfg;
+}
+
+/** Fold one declared parameter class onto a shared slot: keep the stricter
+ * obligation (and the path that declared it). */
+function mergeDeclaredClass(slots: FnIntSlots, index: number, cls: IntClass, path: string): void {
+  while (slots.params.length <= index) {
+    slots.params.push(null);
+    slots.paramPaths.push(null);
+    slots.paramSeeds.push(null);
+  }
+  const current = slots.params[index] ?? null;
+  if (current === null || (current === "i64" && cls === "u64")) {
+    slots.params[index] = cls;
+    slots.paramPaths[index] = path;
+  }
+}
+
+/** Fold one declared return class onto a shared slot, same rule. */
+function mergeDeclaredReturn(slots: FnIntSlots, cls: IntClass, path: string): void {
+  if (slots.ret === null || (slots.ret === "i64" && cls === "u64")) {
+    slots.ret = cls;
+    slots.retPath = path;
+  }
+}
+
+/** Fold one inbound shape onto a shared slot's seed: the binding may hold
+ * any alias's value, so the seed is the hull (least upper bound), never a
+ * replacement. */
+function mergeDeclaredSeed(slots: FnIntSlots, index: number, seed: AbsVal): void {
+  const current = slots.paramSeeds[index] ?? null;
+  slots.paramSeeds[index] = current === null ? { ...seed } : join(current, seed);
 }
 
 /** Match the sidecar syntax's exact structural type projection against the
@@ -425,18 +476,13 @@ function mergeSidecarIntSlots(
       };
       cfg.fns.set(h.fnName, slots);
     }
+    // A sidecar helper may name a unit an export map (or another helper
+    // fact) already obliged, so these fold onto the slot instead of
+    // replacing it.
     if (h.kind === "param") {
-      const i = h.index!;
-      while (slots.params.length <= i) {
-        slots.params.push(null);
-        slots.paramPaths.push(null);
-        slots.paramSeeds.push(null);
-      }
-      slots.params[i] = h.cls;
-      slots.paramPaths[i] = h.path;
+      mergeDeclaredClass(slots, h.index!, h.cls, h.path);
     } else {
-      slots.ret = h.cls;
-      slots.retPath = h.path;
+      mergeDeclaredReturn(slots, h.cls, h.path);
     }
   }
   for (const r of facts.records) {

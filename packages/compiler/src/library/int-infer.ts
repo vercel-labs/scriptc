@@ -130,8 +130,10 @@ function constVal(value: number, spelling?: string): AbsVal {
 }
 
 /** Least upper bound: interval hull, wholeness/NaN pessimism, spelling
- * kept only when both sides carry the same one. */
-function join(a: AbsVal, b: AbsVal): AbsVal {
+ * kept only when both sides carry the same one. Exported for the slot
+ * config, where an aliased unit's parameter seed is the hull of every
+ * inbound shape its exports prove. */
+export function join(a: AbsVal, b: AbsVal): AbsVal {
   if (isBottom(a)) return b;
   if (isBottom(b)) return a;
   const numA = hasNumeric(a);
@@ -905,7 +907,14 @@ class FnAnalyzer {
       if (!this.bindingCarriesNumber(p.localId)) return;
       const declared = slots?.params[i] ?? null;
       const seed = slots?.paramSeeds[i] ?? null;
-      if (declared !== null) env.set(p.localId, classSeed(declared));
+      // Two exports may land on one unit, so the slot's declared class is
+      // the STRICTER of theirs (u64's range sits inside i64's) while the
+      // seed is the hull of every inbound shape they prove: a value can
+      // arrive through any of the aliases, and the internal call edge only
+      // has to meet the stricter class. The seed therefore bounds arrivals
+      // rather than refining the class; with one declaration the two agree.
+      if (declared !== null)
+        env.set(p.localId, seed !== null ? join(classSeed(declared), seed) : classSeed(declared));
       else if (seed !== null) env.set(p.localId, { ...seed });
       else env.set(p.localId, { ...TOP });
     });

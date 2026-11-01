@@ -4,7 +4,10 @@
 // `content?.type === "toolCall"`. The write mutates the value the program
 // holds (JS identity), copies a source field only when it is present, and
 // answers the target. Both operand positions, a predicate's narrowing, and
-// an index-signature field are pinned here.
+// an index-signature field are pinned here. Every operand is read WITHOUT a
+// non-null assertion, so the lowered value still carries the declared union
+// and the call reaches the narrowed-arm path rather than a record-typed
+// local.
 interface Args {
   [key: string]: string;
 }
@@ -20,25 +23,33 @@ interface TextPart {
   text: string;
 }
 type Part = TextPart | ToolCall;
-
-const events: Part[] = [
-  { type: "toolCall", id: "a", name: "first", args: { k: "v" }, note: "keep" },
-  { type: "toolCall", id: "b", name: "second", args: {} },
-  { type: "text", text: "hello" },
-];
-
-// TARGET narrowed by an optional-chain discriminant, SOURCE a plain
-// record whose omitted optional field must not erase the target's own.
-const target = events[0]!;
-const source: ToolCall = { type: "toolCall", id: "a2", name: "third", args: { k: "v2" } };
-if (target?.type === "toolCall") {
-  const returned = Object.assign(target, source);
-  console.log("target:", JSON.stringify(events[0]));
-  console.log("answers the target:", returned === target);
+interface Message {
+  content: Part[];
 }
 
+const messages: Message[] = [
+  {
+    content: [
+      { type: "toolCall", id: "a", name: "first", args: { k: "v" }, note: "keep" },
+      { type: "text", text: "hello" },
+    ],
+  },
+  { content: [{ type: "toolCall", id: "b", name: "second", args: {} }] },
+];
+
+// TARGET narrowed by an optional-chain discriminant. The source omits its
+// optional field, so the target keeps its own.
+const source: ToolCall = { type: "toolCall", id: "a2", name: "third", args: { k: "v2" } };
+const element = messages[0]?.content[0];
+if (element?.type === "toolCall") {
+  const returned = Object.assign(element, source);
+  console.log("target:", JSON.stringify(element));
+  console.log("answers the target:", returned === element);
+}
+console.log("same value in the array:", JSON.stringify(messages[0]?.content[0]));
+
 // SOURCE narrowed: an array element read typed as the union.
-for (const part of events) {
+for (const part of messages[1]!.content) {
   if (part.type === "toolCall") {
     const fresh: ToolCall = { type: "toolCall", id: "z", name: "z", args: {} };
     Object.assign(fresh, part);
@@ -47,29 +58,32 @@ for (const part of events) {
 }
 
 // BOTH operands narrowed through a predicate call.
-function isCall(part: Part): part is ToolCall {
-  return part.type === "toolCall";
+function isCall(part: Part | undefined): part is ToolCall {
+  return part !== undefined && part.type === "toolCall";
 }
-const first = events[0]!;
-const second = events[1]!;
-if (isCall(first) && isCall(second)) {
-  const returned = Object.assign(second, first);
-  console.log("both:", JSON.stringify(second), returned === second);
+const first = messages[0]?.content[0];
+const second = messages[0]?.content[1];
+if (isCall(first) && !isCall(second)) console.log("predicate narrowed the second:", second.type);
+if (isCall(first)) {
+  const patch: ToolCall = { type: "toolCall", id: "p0", name: "patched", args: {} };
+  const returned = Object.assign(first, patch);
+  console.log("both:", JSON.stringify(first), returned === first);
 }
 
 // An explicit `undefined` is an own key in Node and copies; only an
 // ABSENT source field leaves the target's value alone.
 const explicit: ToolCall = { type: "toolCall", id: "e", name: "e", args: {}, note: undefined };
-if (target.type === "toolCall") {
-  Object.assign(target, explicit);
-  console.log("explicit undefined:", JSON.stringify(events[0]));
+const third = messages[0]?.content[0];
+if (isCall(third)) {
+  Object.assign(third, explicit);
+  console.log("explicit undefined:", JSON.stringify(third));
 }
 
 // The narrowed arm survives a loop body and a re-read through the array.
-for (let i = 0; i < events.length; i++) {
-  const part = events[i]!;
-  if (part.type !== "toolCall") continue;
-  const patch: ToolCall = { type: "toolCall", id: "p", name: "patched", args: { i: "1" } };
+for (let i = 0; i < messages.length; i += 1) {
+  const part = messages[i]?.content[0];
+  if (part?.type !== "toolCall") continue;
+  const patch: ToolCall = { type: "toolCall", id: "loop", name: "looped", args: { i: String(i) } };
   Object.assign(part, patch);
 }
-console.log("loop:", JSON.stringify(events));
+console.log("loop:", JSON.stringify(messages));

@@ -73,25 +73,16 @@ test("web streams and Node islands select an async build that defines both", () 
   ).toEqual([]);
 });
 
-test("a file read whose bytes the program can observe selects the branded build", () => {
-  const plain = { workers: false, watchFile: false, fsBufferBrand: false };
-  // Alone, the brand selects its own build.
-  expect(selected("scr_lib.c", { ...plain, fsBufferBrand: true }).defines).toEqual([
-    "SCR_FS_BUFFER_BRAND",
-  ]);
-  // Beside the poll it keeps both units' entry points.
-  expect(selected("scr_lib.c", { ...plain, watchFile: true, fsBufferBrand: true }).defines).toEqual(
-    ["SCR_FS_WATCH_FILE", "SCR_FS_BUFFER_BRAND"],
-  );
-  expect(selected("scr_lib.c", { ...plain, workers: true, fsBufferBrand: true }).defines).toEqual([
-    "SCR_FS_BUFFER_BRAND",
-    "SCR_WORKERS",
-  ]);
-  // A program that reads bytes without observing the brand keeps the default
-  // object, byte for byte.
+test("scr_lib.c builds once per flavor, whatever the program's features", () => {
+  // A file read brands its bytes and fs.watchFile's stat entry points are
+  // always defined, so neither a read nor a poll selects a second build.
+  const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_lib.c");
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  const plain = { workers: false, watchFile: false };
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
-  expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([
-    "SCR_FS_WATCH_FILE",
+  expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([]);
+  expect(selected("scr_lib.c", { ...plain, workers: true, watchFile: true }).defines).toEqual([
+    "SCR_WORKERS",
   ]);
 });
 

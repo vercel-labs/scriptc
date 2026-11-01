@@ -801,6 +801,7 @@ import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { partialAssertionFields } from "./partial-assertions.js";
+import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import { lowerTernary } from "./lower-exprs.js";
 import {
@@ -5524,6 +5525,61 @@ export class Lowerer {
         (part) => isEcdhType(this, part) || isDiffieHellmanType(this, part),
       )
     );
+  }
+
+  /** The instance field initializer whose expression is lowering right now
+   * (set by fieldInitStmts and restored after it): a membership test on
+   * `this` inside it answers from the fields defined so far. */
+  fieldInitializer: { info: ClassInfo; index: number; initializer: ts.Expression } | null = null;
+
+  /** familyFieldLayoutFixed answers, by family root. */
+  private readonly fixedFieldFamilies = new Map<ClassInfo, boolean>();
+  private familyDeletedNames: Set<string> | null | undefined;
+
+  /** Whether every own field of every class in `info`'s family exists from
+   * construction and no field can be deleted, the same decision
+   * ClassDynamicDispatch makes when it decides whether a class tracks its
+   * own fields (js-class-fields' fixedFieldFamily), available while
+   * membership tests lower. */
+  familyFieldLayoutFixed(info: ClassInfo): boolean {
+    let root = info;
+    while (root.base && !root.base.def.runtime) root = root.base;
+    // Runtime-owned roots keep their dedicated property contracts, which
+    // membership answers before this question is asked.
+    if (root.base?.def.runtime) return true;
+    const cached = this.fixedFieldFamilies.get(root);
+    if (cached !== undefined) return cached;
+    this.familyDeletedNames ??= deletedPropertyNames(this.moduleOrder);
+    const fixed = fixedFieldFamily(root, this.familyDeletedNames);
+    this.fixedFieldFamilies.set(root, fixed);
+    return fixed;
+  }
+
+  /** familyAnswersFromInstance answers, by family root. */
+  private readonly familyInstanceAnswers = new Map<ClassInfo, boolean>();
+
+  /** Whether what an instance of `info`'s family actually has can differ
+   * from what the family declares: a JavaScript class in it creates its own
+   * fields by assignment, so a constructor branch that did not run, or a
+   * property added later, is missing from the declaration. */
+  familyAnswersFromInstance(info: ClassInfo): boolean {
+    let root = info;
+    while (root.base && !root.base.def.runtime) root = root.base;
+    // Runtime-owned roots answer membership from their own contracts.
+    if (root.base?.def.runtime) return false;
+    const cached = this.familyInstanceAnswers.get(root);
+    if (cached !== undefined) return cached;
+    let answer = false;
+    if (!this.familyFieldLayoutFixed(root)) {
+      const pending = [root];
+      while (pending.length > 0 && !answer) {
+        const c = pending.pop()!;
+        if (c.decl !== null && isJsSourceFile(ts.getSourceFileOfNode(c.decl))) answer = true;
+        pending.push(...c.subclasses);
+      }
+    }
+    this.familyInstanceAnswers.set(root, answer);
+    return answer;
   }
 
   /** A stdlib WeakMap or WeakSet, alone or in a union with `null`/`undefined`

@@ -1052,6 +1052,19 @@ export function lowerPropertyAccessExpr(
     // read to the assigned value's bare type, but the stored undefined
     // arm is real (`obj.n = bytes[i]; obj.n` is undefined in Node).
     if (runtimeOptionalClassField(lowerer, handled, expr)) return handled;
+    // An erased `declare` field reads the instance (lowerFieldRead): the
+    // declaration keeps the checker's type but no storage, and Node answers
+    // undefined, so the read passes on unvalidated rather than failing a
+    // conversion into that type.
+    {
+      const receiver = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+      if (
+        handled.type.kind === "dyn" &&
+        receiver?.kind === "object" &&
+        erasedDeclareField(lowerer, receiver.className, expr.name.text)
+      )
+        return handled;
+    }
     return iteratorResultValueRead(lowerer, handled, expr) ?? lowerer.maybeNarrow(handled, expr);
   }
   // `globalThis.crypto` is the WebCrypto object the bare `crypto` answers.
@@ -3603,6 +3616,29 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   // very arm the probe exists to detect. Leave the read to the per-arm
   // answer in lowerPropertyAccessExpr (asserted-receiver.ts).
   if (deferredProbeReadAccess(lowerer, expr)) return null;
+  // A `declare` field is erased, so the only value under its name is one
+  // an assignment put on the instance. Read the instance rather than a
+  // slot: an unassigned name answers undefined, as it does in Node, and
+  // a consumer that needs the declared type converts the read value.
+  {
+    const receiver = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    if (
+      receiver?.kind === "object" &&
+      erasedDeclareField(lowerer, receiver.className, expr.name.text)
+    ) {
+      const value = lowerer.lowerExpr(expr.expression);
+      return {
+        kind: "dynKeyGet",
+        value: value.type.kind === "dyn" ? value : lowerer.coerceInto(expr.expression, value, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+        ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression, lowerer)
+          ? { optional: true as const }
+          : {}),
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
+  }
   const target = lowerer.fieldTarget(expr);
   if (target) return lowerer.fieldGetExpr(target, locOf(expr), expr);
   if (expr.questionDotToken) return null;
@@ -4716,6 +4752,19 @@ function readOnlyAccess(access: ts.PropertyAccessExpression): boolean {
     (parent.operator !== ts.SyntaxKind.PlusPlusToken &&
       parent.operator !== ts.SyntaxKind.MinusMinusToken)
   );
+}
+
+/** Whether `className` or a base carries `field` only as a `declare`
+ * member (ClassInfo.erasedFields): JavaScript emits no field for it, so
+ * the name is an own property only when something assigned one, and a
+ * real field of the same name anywhere on the chain owns the storage. */
+function erasedDeclareField(lowerer: Lowerer, className: string, field: string): boolean {
+  const start = lowerer.classes.get(className) ?? lowerer.flushDeferredClass(className);
+  for (let info = start ?? null; info; info = info.base) {
+    if (info.fields.has(field)) return false;
+    if (info.erasedFields?.has(field) === true) return true;
+  }
+  return false;
 }
 
 /** The receiver a member WRITE addresses through a type assertion:

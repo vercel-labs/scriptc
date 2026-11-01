@@ -1064,6 +1064,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (
       name === "String" &&
       (arg.type.kind === "dyn" ||
+        arg.type.kind === "symbol" ||
         (arg.type.kind === "union" &&
           lowerer.unions.get(arg.type.unionId)?.arms.some((arm) => arm.kind === "symbol") &&
           lowerer.dynConvertible(arg.type)))

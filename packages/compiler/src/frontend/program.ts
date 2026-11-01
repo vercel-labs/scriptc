@@ -1542,6 +1542,19 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
     // converts it with ToPrimitive, as for any object.
     return text.includes("'any'") || /'(Number|String|Boolean)'/.test(text);
   }
+  // A symbol operand of `+` or `+=` (`"" + sym`): Node throws its own
+  // TypeError from the ToString the operator performs, which the lowered
+  // conversion raises (ensureString on a symbol lowers to dyn.toStringCoerce).
+  // 2469 is the single-operand operator error, so its message names the
+  // operator: the other operators that raise it (`~sym`, `-sym`) stay
+  // fenced, since their lowered form would throw a different message.
+  if (d.code === 2469) {
+    const text = ts.flattenDiagnosticMessageText(d, "\n");
+    return (
+      (text.includes("The '+' operator") || text.includes("The '+=' operator")) &&
+      text.includes("'symbol'")
+    );
+  }
   // An index write on a String wrapper (`new String("ab")[5] = "q"`): Node
   // adds the property past the end and ignores writes to the read-only
   // index properties (sloppy) or throws (strict), as the object does.

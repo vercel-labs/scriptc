@@ -1043,14 +1043,26 @@ export function lowerFsWriteOptionsCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
-  promiseWriteOptions: boolean,
+  form: { promise: boolean; append: boolean },
 ): IrExpr {
   const optsNode = expr.arguments.nodes[2]!;
-  const operation = promiseWriteOptions ? "fs.promises.writeFile" : "writeFileSync";
-  const plainFn: IrLibFn = promiseWriteOptions ? "fsp.writeFile" : "fs.writeFileSync";
+  const { promise: promiseWriteOptions, append } = form;
+  const operation = append
+    ? "fs.appendFileSync"
+    : promiseWriteOptions
+      ? "fs.promises.writeFile"
+      : "writeFileSync";
+  const plainFn: IrLibFn = append
+    ? "fs.appendFileSync"
+    : promiseWriteOptions
+      ? "fsp.writeFile"
+      : "fs.writeFileSync";
   const modeFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileMode" : "fs.writeFileModeSync";
   const flagsFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileFlags" : "fs.writeFileFlagsSync";
   const resultType: IrType = promiseWriteOptions ? { kind: "promise", inner: VOID } : VOID;
+  const supportedHint = append
+    ? 'the supported options are { encoding: "utf8", flag: "a" }'
+    : 'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" }';
   type WriteOptionValue = { kind: "effect" | "mode"; value: IrExpr };
   /** `flag: "w"` is the plain truncate-or-create write; `flag: "wx"` is
    * open(2)'s O_EXCL (EEXIST when the path exists). Both are literals, so
@@ -1148,6 +1160,16 @@ export function lowerFsWriteOptionsCall(
         break;
       }
       if (m.name === "mode") {
+        // The append runtime opens the file itself, with the process
+        // umask default as the creation mode; Node applies `mode` at
+        // O_CREAT wherever the byte lands, so the override fences.
+        if (append) {
+          lowerer.noLowering(
+            `${operation} with the mode option`,
+            p,
+            "the append lowering creates the file with the process umask default; create it first (writeFileSync with mode) when its creation mode matters",
+          );
+        }
         optionValues.push({ kind: "mode", value: lowerer.lowerExprExpecting(m.value, F64) });
       } else if (m.name === "encoding") {
         const t = lowerer.typeOf(m.value);
@@ -1160,8 +1182,21 @@ export function lowerFsWriteOptionsCall(
         // Node's disposition flag changes whether an existing file is
         // truncated: "w" is the default write, "wx" the exclusive create.
         // Every other flag (append "a"/"as", synchronous "ws", ...) writes
-        // different bytes and keeps the fence by name.
+        // different bytes and keeps the fence by name. The append runtime
+        // already opens with "a", so there the default is the one the
+        // lowering reproduces, and "ax"/"as"/... still fence.
         const t = lowerer.typeOf(m.value);
+        if (append) {
+          if (!t.isStringLiteralType() || t.value !== "a") {
+            lowerer.noLowering(
+              `${operation} with the flag option`,
+              p,
+              'the append lowering opens with "a" — the default — so "a" is the only flag it accepts; "ax" (EEXIST when the path exists) and "as" write differently or fail',
+            );
+          }
+          optionValues.push({ kind: "effect", value: lowerer.lowerExprExpecting(m.value, STRING) });
+          continue;
+        }
         if (!t.isStringLiteralType() || (t.value !== "w" && t.value !== "wx")) {
           lowerer.noLowering(
             `${operation} with the flag option`,
@@ -1181,7 +1216,7 @@ export function lowerFsWriteOptionsCall(
           m.name,
           operation,
           FS_WRITE_FILE_DOCUMENTED_OPTIONS,
-          'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" }',
+          supportedHint,
         );
       }
     }
@@ -1190,7 +1225,7 @@ export function lowerFsWriteOptionsCall(
     lowerer.noLowering(
       `${operation} with 3 arguments`,
       optsNode,
-      'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" } over string data',
+      `${supportedHint} over string data`,
     );
   }
   return finishWrite(optionValues);

@@ -409,26 +409,17 @@ export function lowerBuiltinModuleCall(
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
   }
-  // writeFileSync(p, data, options) / appendFileSync(p, data, options) /
-  // fs.promises.writeFile(p, data, options): the lowered options are a
-  // literal `{ mode?: <number>, encoding?: "utf8", flag?: string }` — the
-  // mode is open(2)'s O_CREAT argument (creation only; an existing file
-  // keeps its permissions, exactly Node), and the encoding may only spell
-  // the utf8 the runtime writes anyway. The write keeps Node's "w"/"wx"
-  // dispositions; the append runtime already opens with "a", so that is
-  // append's only accepted flag. String data only — Buffer options remain
-  // outside the static surface.
+  // writeFileSync(p, data, options) / fs.promises.writeFile(p, data,
+  // options): the lowered options are a literal
+  // `{ mode?: <number>, encoding?: "utf8" }` — the mode is open(2)'s
+  // O_CREAT argument (creation only; an existing file keeps its
+  // permissions, exactly Node), and the encoding may only spell the
+  // utf8 the runtime writes anyway. String data only — Buffer options
+  // remain outside the static surface.
   const syncWriteOptions = bi.module === "fs" && bi.member === "writeFileSync";
-  const syncAppendOptions = bi.module === "fs" && bi.member === "appendFileSync";
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
-  if (
-    (syncWriteOptions || syncAppendOptions || promiseWriteOptions) &&
-    expr.arguments.nodes.length === 3
-  ) {
-    return lowerFsWriteOptionsCall(lowerer, expr, loc, {
-      promise: promiseWriteOptions,
-      append: syncAppendOptions,
-    });
+  if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
+    return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
   }
   if (fn.variadicPack) {
     // join(...parts) forwards the array itself; mixing spread and plain

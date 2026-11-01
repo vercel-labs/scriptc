@@ -49,27 +49,6 @@ declare module "node:fs" {
    * the write lands at the descriptor's current offset). */
   export function writeFileSync(fd: number, data: string): void;
   export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
-  /* Appending stays utf8-only, and the runtime opens the file with "a"
-   * itself — so the options record may spell the encoding it already
-   * writes and the disposition flag it already opens with ("a"). `mode` is
-   * applied at CREATION, and the append runtime creates with the process
-   * umask default, so a mode fences by name. */
-  export function appendFileSync(
-    path: string | URL,
-    data: string,
-    options?: {
-      mode?: number;
-      encoding?: "utf8" | "utf-8";
-      flag?: string;
-      [option: string]: unknown;
-    },
-  ): void;
-  /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function appendFileSync(
-    path: string | URL,
-    data: string,
-    encoding: "utf8" | "utf-8",
-  ): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
   export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;

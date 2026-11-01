@@ -390,13 +390,18 @@ export function lowerTernary(
     // at run time (`flag ? empty.a : empty.b`): an unchecked key or element
     // read whose storage carries the undefined arm. The join keeps that
     // arm, so the ternary's result represents the missing value instead of
-    // coercing it into the checker's narrower type.
+    // coercing it into the checker's narrower type. The absent-capable
+    // origin is part of the test: an arm holding a declared optional that
+    // the ternary's own guard proved present (`h.via === undefined ? "-" :
+    // h.via`) is not an unchecked read, and its narrowed join stands.
     const admitsUndefined = (t: IrType): boolean =>
       t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
     if (
       !admitsUndefined(type) &&
-      (lowerer.runtimeOptionalWidening(thenRaw.type, type) !== null ||
-        lowerer.runtimeOptionalWidening(elseRaw.type, type) !== null)
+      ((lowerer.isRuntimeOptionalOrigin(expr.whenTrue) &&
+        lowerer.runtimeOptionalWidening(thenRaw.type, type) !== null) ||
+        (lowerer.isRuntimeOptionalOrigin(expr.whenFalse) &&
+          lowerer.runtimeOptionalWidening(elseRaw.type, type) !== null))
     ) {
       const widened = lowerer.runtimeOptionalType(type);
       if (admitsUndefined(widened)) type = widened;

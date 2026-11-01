@@ -4728,6 +4728,13 @@ export class Lowerer {
     "stdioPatchSites",
     "requestInitPropMutatedSyms",
     "classProtocols",
+    // familyFieldLayoutFixed and familyAnswersFromInstance answer from the
+    // class declarations and the module order, which do not change while a
+    // program lowers: the same questions ClassDynamicDispatch asks once when
+    // it starts.
+    "fixedFieldFamilies",
+    "familyDeletedNames",
+    "familyInstanceAnswers",
     // A file's name and library status do not change while the program
     // lowers, so the answer stays with the file that was asked about.
     "stdlibFiles",
@@ -4786,6 +4793,9 @@ export class Lowerer {
     "fallibleFsCalls",
     "failureTouches",
     "partialHits",
+    // Set by fieldInitStmts and restored after it, so the lowering that runs
+    // between two units finds it null.
+    "fieldInitializer",
     // sized by journalTables, indexes over journaled tables, and state that
     // applying a unit's events rebuilds
     "deferredModuleInitializers",

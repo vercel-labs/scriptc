@@ -227,6 +227,15 @@ function webReadablePlan(lowerer: Lowerer, expression: ts.Expression): WebReadab
   };
 }
 
+/** `stream.values(...)` or `stream[Symbol.asyncIterator](...)` on a web
+ * ReadableStream — the view `lowerWebReadable` consumes directly. Its TYPE
+ * is AsyncIterableIterator<T>, which the type mapper lowers like any other
+ * async iteration protocol, so the loop checks this first: the stream view
+ * takes its own lowering, not the async-generator one. */
+export function isWebReadableIteratorSource(lowerer: Lowerer, expression: ts.Expression): boolean {
+  return webReadablePlan(lowerer, expression) !== null;
+}
+
 function classAsyncIteratorPlan(
   lowerer: Lowerer,
   expression: ts.Expression,

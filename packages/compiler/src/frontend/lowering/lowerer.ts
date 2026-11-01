@@ -17853,6 +17853,38 @@ export class Lowerer {
       return lowerUtilTypeValue(this, bi.member, loc);
     if (bi.module === "util" && bi.member === "getSystemErrorMap")
       return lowerSystemErrorMapValue(this, loc);
+    // Reading the function does not observe a stack. Keep the refusal in
+    // its body so imports and dormant transport configuration can load.
+    if (bi.module === "util" && bi.member === "getCallSites") {
+      const name = "%builtin.util.getCallSites";
+      if (!this.liftedFns.some((fn) => fn.name === name)) {
+        const diag = noLoweringDiag("util.getCallSites runtime stack capture", loc);
+        this.builtinCallableValueNames.set(name, "getCallSites");
+        this.builtinCallableValueLengths.set(name, 0);
+        this.liftedFns.push({
+          name,
+          params: [],
+          locals: [],
+          returnType: DYN,
+          body: [
+            {
+              kind: "runtimeFence",
+              code: diag.code,
+              message: `${diag.message} [${diag.code}]`,
+              loc,
+            },
+          ],
+          loc,
+        });
+      }
+      return {
+        kind: "closure",
+        fnName: name,
+        captures: [],
+        type: { kind: "func", params: [], ret: DYN },
+        loc,
+      };
+    }
     if (
       bi.module === "fs" &&
       builtinModuleFnOf(this, bi.module, bi.member)?.fn === "fs.callbackCall"

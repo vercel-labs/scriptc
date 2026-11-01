@@ -635,6 +635,79 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
+  // The type-only reachability and reexport walks count ANY call with a
+  // leading string literal as a module edge (over-counting only keeps files
+  // in the graph). That heuristic must not decide a package's fate: a
+  // registry-style `hl.registerLanguage("dual", …)` inside an opted-in
+  // package's own JS resolves the literal "dual" through the package's
+  // REQUIRE condition, and when the program holds the package's ESM build
+  // (the importer is a `"type": "module"` file) that require entry never
+  // joined the program — marking the whole PACKAGE an offender and refusing
+  // every use site with SC2013. highlight.js/lib/index.js's
+  // `registerLanguage("diff", …)` did exactly that to `diff`. Only a real
+  // import edge decides a package's fate.
+  test("a call with a string literal never classifies another package", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-npm-static-literal-"));
+    try {
+      const dual = join(dir, "node_modules/dual");
+      mkdirSync(join(dual, "libesm"), { recursive: true });
+      mkdirSync(join(dual, "libcjs"), { recursive: true });
+      writeFileSync(
+        join(dual, "package.json"),
+        JSON.stringify({
+          name: "dual",
+          exports: {
+            ".": {
+              import: { types: "./libesm/index.d.ts", default: "./libesm/index.js" },
+              require: { types: "./libcjs/index.d.ts", default: "./libcjs/index.js" },
+            },
+          },
+        }),
+      );
+      for (const build of ["libesm", "libcjs"]) {
+        writeFileSync(
+          join(dual, build, "index.d.ts"),
+          "export declare function diffLines(a: string, b: string): number;\n",
+        );
+        writeFileSync(
+          join(dual, build, "index.js"),
+          "export function diffLines(a, b) { return a.length + b.length; }\n",
+        );
+      }
+      const registry = join(dir, "node_modules/registry");
+      mkdirSync(registry, { recursive: true });
+      writeFileSync(
+        join(registry, "package.json"),
+        JSON.stringify({ name: "registry", main: "./index.js" }),
+      );
+      writeFileSync(
+        join(registry, "index.js"),
+        "module.exports = { core: function () { return { registerLanguage: function (name, language) { return name + language; } }; } };\n",
+      );
+      // The erased edge is what makes the reachability walk run at all.
+      writeFileSync(join(dir, "types.ts"), 'export type Marker = { readonly kind: "marker" };\n');
+      writeFileSync(join(dir, "package.json"), '{"type":"module"}\n');
+      writeFileSync(
+        join(dir, "main.ts"),
+        'import type { Marker } from "./types.js";\n' +
+          'import registry from "registry";\n' +
+          'import { diffLines } from "dual";\n' +
+          "const marker: Marker | null = null;\n" +
+          'console.log(registry.core().registerLanguage("dual", 1), diffLines("a", "b"), marker);\n',
+      );
+      const { coverage } = analyze(join(dir, "main.ts"), {
+        npmStatic: ["dual", "registry"],
+      });
+      expect(coverage.diagnostics.filter((d) => d.code === "SC2013")).toHaveLength(0);
+      expect(coverage.npmStatic).toEqual([
+        { package: "dual", status: "static" },
+        { package: "registry", status: "static" },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // The package builds its word segmenter at module load. Word segmentation
   // lowers to ICU now, so nothing fences: the package compiles into the
   // program itself (no Node island) and splits words as Node does. The ICU

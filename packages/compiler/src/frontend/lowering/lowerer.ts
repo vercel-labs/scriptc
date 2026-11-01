@@ -6314,7 +6314,8 @@ export class Lowerer {
     const splitDecl = sym?.declarations.find(ts.isVariableDeclaration);
     const split = splitDecl === undefined ? null : splitRequireBindingOf(this, splitDecl);
     if (split !== null) return cjsNamespaceModule(this, split.dep);
-    if (this.localModuleBindingDepOf(expr) === null) return false;
+    const dep = this.localModuleBindingDepOf(expr);
+    if (dep === null) return false;
     if (this.createRequireWholeExportSymbolOf(expr) !== null) return false;
     // SINGLE-VALUE exporters (`module.exports = Countdown` / `= double` /
     // `= 42`): the requirer's binding IS the exported value, not a
@@ -6356,7 +6357,12 @@ export class Lowerer {
         if (scalar) return false;
       }
     }
-    return true;
+    // The module's own retained `module.exports = <value>` is the last word:
+    // a single-value export (`module.exports = highlight`, where `highlight`
+    // is a local the statement names) binds the importer to that VALUE, so
+    // its members read as properties of the export, not as export-table
+    // entries. Only a table-exporting module is a namespace over the table.
+    return cjsNamespaceModule(this, dep);
   }
 
   /** Assignment-target resolution: a function local (possibly captured) or

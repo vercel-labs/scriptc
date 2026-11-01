@@ -24,6 +24,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     mutableBuffers: features.mutableBuffers,
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),

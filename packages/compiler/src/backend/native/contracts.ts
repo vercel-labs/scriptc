@@ -215,6 +215,9 @@ export interface CcOptions {
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
    * (scr_fs_flags.c and that build of scr_fs_cp.c). */
   fsFlags?: boolean;
+  /** fs.existsSync over a path value that may not be a string: compiles
+   * scr_fs_exists_dyn.c. */
+  fsExistsValue?: boolean;
   /** string_decoder's checked-dynamic chunk forms: compiles
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;

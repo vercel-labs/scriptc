@@ -67,6 +67,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
   // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
   ["scr_fs_flags.c", "fsFlags"],
+  // existsSync over a path value that may not be a string (the DEP0187
+  // fallback), apart from scr_lib.c's typed form.
+  ["scr_fs_exists_dyn.c", "fsExistsValue"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
   // typed twins so a typed program keeps that object byte for byte.
   ["scr_bytes_strdec_dyn.c", "strdecDyn"],

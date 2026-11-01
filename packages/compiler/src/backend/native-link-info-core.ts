@@ -52,6 +52,9 @@ export interface NativeLinkFeatures {
   /** writeFile's `flag` disposition or copyFile's mode argument:
    * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
   fsFlags?: boolean;
+  /** existsSync over a path value that is not statically a string:
+   * scr_fs_exists_dyn.c. */
+  fsExistsValue?: boolean;
   /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** process.prependListener, stdin.isRaw or server.off: the

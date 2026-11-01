@@ -213,15 +213,19 @@ static bool scr_ee_is_error_monitor(const ScrStr *name) { return name == SCR_EE_
 
 ScrStr *scr_emitter_symbol_name(ScrSym *sym) { return scr_str_symbol_key(sym); }
 
-/* An untyped event name as the registry key: a symbol is its identity key
- * (Node's listener table holds the symbol itself), and every other value
- * joins the string form ToPropertyKey gives it. +1. */
+/* An untyped event name as the registry key: ToPropertyKey, which is the
+ * symbol itself (Node's listener table holds the symbol), and otherwise
+ * the value's string form. An object reaches that form through its own or
+ * inherited toString/valueOf, so those run here: their throw propagates,
+ * and an object that answers no primitive throws the spec's TypeError. A
+ * typed reference converts through its string view. +1, or NULL with the
+ * exception pending. */
 ScrStr *scr_emitter_name_dyn(const ScrDyn *name) {
   if (name->kind == SCR_DYN_SYMBOL) {
     if (!scr_sym_event_ops) scr_trap("scriptc: symbol event names need the symbol runtime unit\n");
     return scr_str_symbol_key(name->v.symbol.value);
   }
-  return scr_dyn_string_coerce(name);
+  return scr_dyn_string_coerce_js(name);
 }
 
 /* The bucket of a STRING event name (the errorMonitor and symbol-key
@@ -503,6 +507,137 @@ static void scr_ee_emit_meta(ScrEmitter *em, const char *meta, ScrStr *name, con
 
 static ScrDyn *scr_ee_name_value(const ScrEeBucket *b);
 
+/* ── the warning's emitter value ──────────────────────────────────────── */
+
+/* The leak warning's `emitter` property is a live typed reference over the
+ * runtime emitter. Its view is the checked-dynamic property bag an emitter
+ * carries — empty here, since only compiled emitters have one (the
+ * compiler's own boxing of an EventEmitter materializes an empty object
+ * the same way) — so reading a member answers undefined instead of failing
+ * as a class view that cannot be built. */
+static ScrDyn *scr_ee_warning_materialize(void *ptr) {
+  (void)ptr;
+  return scr_dyn_new_obj();
+}
+
+static bool scr_ee_warning_capsule(const ScrDyn *d) {
+  return d && d->kind == SCR_DYN_TYPED_REF &&
+         d->v.typed_ref.materialize == &scr_ee_warning_materialize;
+}
+
+/* EventEmitter's own instance members through that capsule, answered over
+ * the native registry with the entries the compiler's untyped-emitter
+ * dispatch uses (its introspection and registration families). A member a
+ * compiled subclass declares itself is not part of this surface: the
+ * capsule is built by the runtime, which holds no name-to-class dispatch
+ * the program's call site would accept for it. */
+static bool scr_ee_ref_invoke(ScrDyn *d, const char *method, ScrDyn *const *args, size_t argc,
+                              const char *what, ScrDyn **out) {
+  (void)what;
+  if (!scr_ee_warning_capsule(d)) return false;
+  ScrEmitter *em = d->v.typed_ref.ptr;
+  /* The name-taking members key the value the way the table does. */
+  const bool registering = strcmp(method, "on") == 0 || strcmp(method, "addListener") == 0 ||
+                           strcmp(method, "once") == 0 ||
+                           strcmp(method, "prependListener") == 0 ||
+                           strcmp(method, "prependOnceListener") == 0;
+  const bool removing = strcmp(method, "off") == 0 || strcmp(method, "removeListener") == 0;
+  if (registering || removing) {
+    /* The listener argument is checked before the name converts, as the
+     * registry's own entries do: a missing listener is the undefined the
+     * source omitted, and its TypeError wins over a name that would throw. */
+    ScrDyn *listener = argc >= 2 ? args[1] : scr_dyn_undefined();
+    scr_emitter_check_listener(listener);
+    if (argc < 2 || scr_exc_pending()) {
+      *out = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    ScrStr *name = scr_emitter_name_dyn(args[0]);
+    if (!name) {
+      *out = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    ScrEmitter *result =
+        registering ? scr_emitter_on_any(em, name, listener,
+                                         strcmp(method, "once") == 0 ||
+                                             strcmp(method, "prependOnceListener") == 0,
+                                         strncmp(method, "prepend", 7) == 0)
+                    : scr_emitter_off_dyn(em, name, listener);
+    scr_str_release(name);
+    scr_emitter_release(result);
+    /* `return this`: the value the member was called on. */
+    *out = scr_dyn_retain(d);
+    return true;
+  }
+  if (strcmp(method, "emit") == 0) {
+    /* An omitted name is the key "undefined", as Node's table has it. */
+    ScrStr *name = argc >= 1 ? scr_emitter_name_dyn(args[0]) : scr_str_new("undefined", 9);
+    if (!name) {
+      *out = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    bool fired = scr_emitter_emit_any(em, name, argc >= 1 ? args + 1 : args,
+                                      argc >= 1 ? argc - 1 : (size_t)0);
+    scr_str_release(name);
+    *out = scr_dyn_new_bool(fired);
+    return true;
+  }
+  if (strcmp(method, "eventNames") == 0) {
+    *out = scr_emitter_event_names(em);
+    return true;
+  }
+  if (strcmp(method, "getMaxListeners") == 0) {
+    *out = scr_dyn_new_num(scr_emitter_get_max(em));
+    return true;
+  }
+  if (strcmp(method, "setMaxListeners") == 0) {
+    ScrEmitter *result = scr_emitter_set_max_chk(em, argc >= 1 ? args[0] : scr_dyn_undefined());
+    scr_emitter_release(result);
+    *out = scr_dyn_retain(d);
+    return true;
+  }
+  if (strcmp(method, "removeAllListeners") == 0) {
+    ScrEmitter *result;
+    if (argc >= 1) {
+      ScrStr *name = scr_emitter_name_dyn(args[0]);
+      if (!name) {
+        *out = scr_dyn_retain(scr_dyn_undefined());
+        return true;
+      }
+      result = scr_emitter_remove_all(em, name, false);
+      scr_str_release(name);
+    } else {
+      ScrStr *all = scr_str_new("", 0);
+      result = scr_emitter_remove_all(em, all, true);
+      scr_str_release(all);
+    }
+    scr_emitter_release(result);
+    *out = scr_dyn_retain(d);
+    return true;
+  }
+  if (strcmp(method, "listeners") == 0 || strcmp(method, "rawListeners") == 0 ||
+      strcmp(method, "listenerCount") == 0) {
+    /* An omitted name is the key "undefined", as Node's table has it. */
+    ScrStr *name = argc >= 1 ? scr_emitter_name_dyn(args[0]) : scr_str_new("undefined", 9);
+    if (!name) {
+      *out = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    if (strcmp(method, "listenerCount") != 0) {
+      *out = scr_emitter_listeners_dyn(em, name);
+    } else {
+      double count = argc >= 2 ? scr_emitter_listener_count_dyn(em, name, args[1])
+                               : scr_emitter_listener_count(em, name);
+      *out = scr_dyn_new_num(count);
+    }
+    scr_str_release(name);
+    return true;
+  }
+  return false;
+}
+
+static const ScrEmitterRefHooks scr_ee_ref_hooks = { .invoke = scr_ee_ref_invoke };
+
 /* process.emitWarning's next-tick delivery of the leak warning: to the
  * 'warning' listeners and the default report when the process-warning
  * unit is linked, otherwise the default report alone. */
@@ -515,11 +650,15 @@ static void scr_ee_warn_tick(ScrClosure *self) {
     /* The warning carries the emitter itself, so it crosses as an
      * identity-bearing value: a typed reference over the emitter object
      * answers the same address the program's own boxing of the emitter
-     * does. The key names the base class the value reports; capsules for
-     * one emitter are interned, so every delivery sees one value. */
-    static const char key[] = "EventEmitter";
+     * does. The key names the base class the value reports, which is what
+     * `instanceof EventEmitter` and the base-class dispatch test; the
+     * member dispatch above serves the value's own EventEmitter surface.
+     * Capsules for one emitter are interned, so every delivery sees one
+     * value. */
+    static const char key[] = "object:%EventEmitter";
+    scr_emitter_ref_hooks = &scr_ee_ref_hooks;
     ScrDyn *view = scr_dyn_new_typed_ref(em, scr_emitter_retain_v, scr_emitter_release_v, key,
-                                         sizeof key - 1, scr_dyn_class_view_unavailable, NULL);
+                                         sizeof key - 1, scr_ee_warning_materialize, NULL);
     scr_warning_leak_hook(type, count, view, message);
     scr_dyn_release(view);
   } else if (scr_warning_emit_hook) {

@@ -2,7 +2,8 @@
 // The leak warning is Node's MaxListenersExceededWarning error with its own
 // `emitter`, `type` and `count` properties: the emitter the listeners were
 // added to (the same object, for a compiled subclass, a bare EventEmitter
-// and an emitter built through an untyped constructor), the event name
+// and an emitter built through an untyped constructor, and one that answers
+// `instanceof EventEmitter`), the event name
 // ARGUMENT (`on(null)` warns with `type: null`, though the table keys it
 // as "null"; a symbol stays the same symbol) and the listener count at the
 // crossing add. The message and the stderr report are unchanged.
@@ -43,6 +44,7 @@ process.on("warning", (warning) => {
   else if (warning.emitter === nullName) which = "null";
   else if (warning.emitter === numberName) which = "number";
   console.log("emitter", which);
+  console.log("instanceof", warning.emitter instanceof EventEmitter);
   if (warning.type === shared) console.log("symbol type identity", which === "named");
 });
 

@@ -219,6 +219,20 @@ ScrStr *scr_emitter_error_monitor(void);
  * symbol. */
 ScrStr *scr_emitter_symbol_name(ScrSym *sym);
 ScrStr *scr_emitter_name_dyn(const ScrDyn *name); /* +1 name key of an untyped name */
+/* The checked-dynamic member dispatch of the capsule this unit creates over
+ * an emitter (the leak warning's `emitter` value): EventEmitter's own
+ * instance members, answered over the registry with the entries the
+ * compiler's untyped-emitter dispatch uses. invoke answers whether it
+ * handled the member, with *out a +1 value — or with the exception pending
+ * when the member threw. Installed beside the capsule's creation, so it is
+ * NULL in programs that never build one; the variable lives in the
+ * always-linked dyn core so emitter-free binaries link no more than
+ * before. */
+typedef struct ScrEmitterRefHooks {
+  bool (*invoke)(ScrDyn *d, const char *method, ScrDyn *const *args, size_t argc,
+                 const char *what, ScrDyn **out);
+} ScrEmitterRefHooks;
+extern SCR_TL const ScrEmitterRefHooks *scr_emitter_ref_hooks;
 /* Pre-create a name's eventNames() rank with no listener (Node's stream
  * classes pre-create their known _events keys; empty = absent for every
  * other read). The stream constructors call this. */

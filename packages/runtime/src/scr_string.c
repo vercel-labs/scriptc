@@ -478,7 +478,7 @@ ScrStr *scr_str_symbol_key(ScrSym *sym) {
   s->len = SIZE_MAX;
   s->cap = 0;
   s->ascii = 1; /* no char index to purge: the bytes are a pointer */
-#ifdef SCR_STR_HASH_CACHE
+#if SCR_STR_HASH_CACHE
   s->hash = 0;
 #endif
   memcpy(s->data, &sym, sizeof sym);

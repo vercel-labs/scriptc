@@ -4561,8 +4561,9 @@ function buildLibFnSignatures() {
     /** A symbol event name's registry key (the scr_str_symbol_key of
      * scr_string.h): Node's listener table is keyed by property keys, so a
      * symbol name matches by identity and never by bytes. No receiver.
-     * emitter.nameDyn is the same conversion for an untyped name — a
-     * symbol's key, or any other value's ToString. */
+     * emitter.nameDyn is the same conversion for an untyped name —
+     * ToPropertyKey: a symbol's key, or ToString of every other value,
+     * which runs an object name's own toString/valueOf and may throw. */
     "emitter.symName": { argTypes: [SYMBOL_T], result: STRING },
     "emitter.nameDyn": { argTypes: [DYN], result: STRING },
     // node:stream: receivers are stream-hierarchy objects and several

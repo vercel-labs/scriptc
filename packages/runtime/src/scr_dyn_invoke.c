@@ -1105,6 +1105,9 @@ static ScrDyn *scr_dyn_invoke_impl(
     if (scr_event_ref_hooks &&
         scr_event_ref_hooks->invoke(recv, method, args, argc, what, &fast))
       return fast;
+    if (scr_emitter_ref_hooks &&
+        scr_emitter_ref_hooks->invoke(recv, method, args, argc, what, &fast))
+      return fast;
     /* An inherited Date method of an instance of a class declared `extends
      * Date`. */
     ScrDyn *date_method = scr_dyn_date_class_member(recv, method, strlen(method));

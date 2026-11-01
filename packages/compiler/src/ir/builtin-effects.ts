@@ -348,6 +348,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.onData",
   "emitter.onDataDyn",
   "emitter.emitData",
+  // The event name's ToPropertyKey conversion runs an object name's own
+  // toString/valueOf (user code, which may throw), and an object that
+  // answers no primitive throws the spec's TypeError.
+  "emitter.nameDyn",
   "readable.nextChunk",
   "readable.nextChunkDyn",
   // The checked-dynamic chunk forms throw Node's ERR_INVALID_ARG_TYPE

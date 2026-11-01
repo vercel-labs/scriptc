@@ -5296,7 +5296,11 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
     ...info.staticFields
       .filter(
         (f) =>
-          !(info.runtimeStatics && f.name.startsWith("#") && runtimeStaticDefines(info, f.name)),
+          !(
+            info.runtimeStatics &&
+            f.name.startsWith("#") &&
+            runtimeStaticDefines(lowerer, info, f.name)
+          ),
       )
       .map((f): Item => ({
         pos: ts.tokenStartOfNode(f.initializer),
@@ -6014,7 +6018,7 @@ export function lowerClassStaticRead(
     hasRuntimeStatics(info) &&
     !found?.field &&
     !name.startsWith("#") &&
-    (!found || runtimeStaticDefines(info, name))
+    (!found || runtimeStaticDefines(lowerer, info, name))
   )
     return {
       kind: "dynKeyGet",
@@ -6922,7 +6926,7 @@ function staticCallOn(
     (hasRuntimeStatics(info) &&
       !access.name.text.startsWith("#") &&
       !staticMember?.field &&
-      (!staticMember || runtimeStaticDefines(info, access.name.text))) ||
+      (!staticMember || runtimeStaticDefines(lowerer, info, access.name.text))) ||
     (info.callableBase && !staticMember && !findGenericStaticOn(lowerer, info, access.name.text))
   )
     return {
@@ -7167,12 +7171,12 @@ function directRuntimeStaticCall(
       c.genericStatics?.has(name) === true
     )
       return null;
-    const runtime = c.runtimeStatics?.find(
-      (element) =>
-        (element as { name?: ts.PropertyName }).name !== undefined &&
-        ts.isIdentifier((element as { name: ts.PropertyName }).name) &&
-        (element as { name: ts.Identifier }).name.text === name,
-    );
+    // A computed name defines the key it folds to, so `static ['m']` in
+    // this class answers for `m` and hides the inherited method.
+    const runtime = c.runtimeStatics?.find((element) => {
+      const elementName = (element as { name?: ts.PropertyName }).name;
+      return elementName !== undefined && classMemberNameOf(lowerer, elementName) === name;
+    });
     if (runtime) {
       if (!ts.isMethodDeclaration(runtime) || !runtime.body) return null;
       declarer = c;
@@ -7382,7 +7386,7 @@ export function lowerClassValueProperty(
     ((hasRuntimeStatics(info) &&
       !member.startsWith("#") &&
       !storedMember?.field &&
-      (!storedMember || runtimeStaticDefines(info, member))) ||
+      (!storedMember || runtimeStaticDefines(lowerer, info, member))) ||
       (info.callableBase && !storedMember))
   )
     return {

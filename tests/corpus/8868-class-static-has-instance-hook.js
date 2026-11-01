@@ -70,3 +70,48 @@ function caughtHeld() {
   }
 }
 console.log("caught:", caught(), caughtHeld());
+
+// A static whose name is computed defines the key it folds to, so it
+// overrides an inherited static exactly like a spelled name does: the class
+// value's table answers `m` on the derived class, and the base keeps its own.
+class Named {
+  static m() {
+    return "named";
+  }
+  static [Symbol.hasInstance](value) {
+    return value === "named";
+  }
+}
+class Renamed extends Named {
+  static ["m"]() {
+    return "renamed";
+  }
+}
+console.log("computed:", Renamed.m(), Named.m(), "named" instanceof Renamed);
+
+// A class value held by a parameter answers the same call through its table.
+function callStatic(C) {
+  return C.m();
+}
+console.log("computed-param:", callStatic(Renamed), callStatic(Named));
+
+// A static accessor keeps the class's statics in the same table, so a
+// computed-name override still hides the inherited static.
+class Tagged {
+  static m() {
+    return "tagged";
+  }
+  static get tag() {
+    return 1;
+  }
+}
+class Retagged extends Tagged {
+  static ["m"]() {
+    return "retagged";
+  }
+}
+console.log("computed-accessor:", Retagged.m(), Tagged.m(), Retagged.tag);
+
+// The override is inherited further down the chain.
+class Deeper extends Renamed {}
+console.log("computed-derived:", Deeper.m(), callStatic(Deeper));

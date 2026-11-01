@@ -1040,7 +1040,7 @@ export function lowerFieldCompoundValue(
       probed &&
       staticClass &&
       hasRuntimeStatics(staticClass) &&
-      (!staticMember || runtimeStaticDefines(staticClass, access.name.text))
+      (!staticMember || runtimeStaticDefines(lowerer, staticClass, access.name.text))
     )
       probed = lowerer.coerceToExpected(probed, DYN);
     // A private name is the field of its class (fieldTarget).

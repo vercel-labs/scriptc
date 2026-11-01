@@ -676,7 +676,7 @@ export function lowerNativeFunctionAssignment(
     staticName !== null &&
     (staticName === undefined ||
       findStaticOn(lowerer, staticClass, staticName) === null ||
-      runtimeStaticDefines(staticClass, staticName));
+      runtimeStaticDefines(lowerer, staticClass, staticName));
   if (writesThroughTable) {
     return lowerDynMemberAssignment(
       lowerer,

@@ -1,8 +1,8 @@
-host-global-globalthis-cast.ts:4:14 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+host-global-globalthis-cast.ts:4:20 - error SC2020: 'WebSocket' is a Node global that native code does not provide
 
-  3 | // host-global) — the module belongs in a Node island instead.
-  4 | const ctor = (globalThis as { WebSocket?: unknown }).WebSocket;
-    |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  5 | console.log(typeof ctor);
+  3 | // callee (SC2020, host-global) — the module belongs in a Node island instead.
+  4 | const socket = new (globalThis as unknown as { WebSocket: new (url: string) => unknown }).WebSocket(
+    |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 |   "ws://localhost:8080",
 
-  hint: the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use

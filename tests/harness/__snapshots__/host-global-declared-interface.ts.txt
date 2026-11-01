@@ -1,8 +1,0 @@
-host-global-declared-interface.ts:8:12 - error SC2020: 'WebSocket' is a Node global that native code does not provide
-
-  7 | }
-  8 | if (typeof WebSocket === "function") console.log("has WebSocket");
-    |            ^~~~~~~~~
-  9 | else console.log("no WebSocket");
-
-  hint: the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global

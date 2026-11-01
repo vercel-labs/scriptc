@@ -1195,17 +1195,19 @@ export function noLoweringDiag(
   };
 }
 
-/** A read of a Node 24 global the native runtime does not implement
- * (host-globals.ts). Node has the value, so the read has an exact answer
- * native code cannot give; answering `undefined` would silently diverge.
- * The reason id lets a Node island run the module instead. */
+/** A use of a Node 24 global the native runtime does not implement
+ * (host-globals.ts): constructing or calling its constructor value, or
+ * reading one of its members. A bare read compiles and answers the
+ * constructor (host-global-values.ts). Node has the class and its surface,
+ * so answering undefined or refusing to build the module would both
+ * diverge; the reason id lets a Node island run the module instead. */
 export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC2020",
     message: `'${name}' is a Node global that native code does not provide`,
     loc,
     milestone: "later",
-    hint: "the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global",
+    hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
     reason: "host-global",
   };
 }

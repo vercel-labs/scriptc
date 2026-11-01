@@ -1,0 +1,6 @@
+client client-default authorized true error null error-type object
+client client-noreject authorized true error null error-type object
+client client-empty-ca failure Error CERT_REVOKED certificate revoked
+client client-verified-unrelated authorized true error null error-type object
+server server-noreject authorized true error null
+server server-reject authorized true error null

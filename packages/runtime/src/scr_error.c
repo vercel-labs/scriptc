@@ -420,6 +420,7 @@ const char *scr_error_message_code(const ScrStr *msg) {
       "ECONNRESET" },
     { "Parse Error: Header overflow", true, "HPE_HEADER_OVERFLOW" },
     { "certificate has expired", true, "CERT_HAS_EXPIRED" },
+    { "certificate revoked", true, "CERT_REVOKED" },
     { "self-signed certificate in certificate chain", true, "SELF_SIGNED_CERT_IN_CHAIN" },
     { "self-signed certificate", false, "DEPTH_ZERO_SELF_SIGNED_CERT" },
     { "unable to verify the first certificate", false, "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },

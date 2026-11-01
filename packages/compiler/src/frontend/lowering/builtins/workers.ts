@@ -2,6 +2,7 @@ import * as ts from "../../ts7/adapter.js";
 import { locOf } from "../../program.js";
 import { resolve } from "node:path";
 import { isWorkerConstructor, workerModulePath, workerSourcePath } from "../../worker-target.js";
+import { staticForkString } from "../../fork-target.js";
 import { tsgoPath } from "../../dts-paths.js";
 import {
   BOOL,
@@ -50,15 +51,31 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
   }
   const filename = args[0]!;
   const path = workerModulePath(lowerer.program, filename);
-  const root =
-    path === null
-      ? undefined
-      : lowerer.workerTargetIdByPath.get(tsgoPath(resolve(workerSourcePath(path))));
+  // Three different refusals, named apart: a specifier only known at run
+  // time, a statically known path that Node resolves against the process's
+  // working directory (no build-time graph), and a path that resolves but
+  // to a file the program compiles no worker from (a declaration file, a
+  // file excluded from the program).
+  if (path === null) {
+    if (staticForkString(lowerer.program, filename) !== null) {
+      lowerer.noLowering(
+        "this Worker entry point (a path relative to the invocation's working directory)",
+        filename,
+        "fix the entry at compile time instead — new URL('./entry.ts', import.meta.url), a file: URL, an absolute path, or __filename — so it resolves to a statically compiled source file",
+      );
+    }
+    lowerer.noLowering(
+      "this Worker entry point (the specifier is a runtime value)",
+      filename,
+      "the worker entry must resolve to a statically compiled source file, so the entry has to be a static module path — a relative path literal, a template of literals, or new URL('./entry.ts', import.meta.url)",
+    );
+  }
+  const root = lowerer.workerTargetIdByPath.get(tsgoPath(resolve(workerSourcePath(path))));
   if (root === undefined) {
     lowerer.noLowering(
-      "this Worker entry point",
+      `this Worker entry point (it resolves to '${workerSourcePath(path)}', which no compiled worker implements)`,
       filename,
-      "the worker entry must resolve to a statically compiled source file",
+      `${workerSourcePath(path)}: the entry must resolve to a statically compiled source file of this program — use new URL('./worker.ts', import.meta.url), a file: URL, an absolute path, or __filename naming a TypeScript module the program compiles`,
     );
   }
   if (lowerer.targetPlatform === "wasi") {

@@ -63,7 +63,11 @@ import {
   classJsName,
   classValueAbiEquals,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
+import {
+  jsObjectModelFact,
+  moduleRuntimeFeatures,
+  type RuntimeFeatures,
+} from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
@@ -2539,6 +2543,7 @@ export class LlEmitter {
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
+      jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),

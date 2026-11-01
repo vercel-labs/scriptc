@@ -181,6 +181,14 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "dyn") {
         return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [raw], type: F64, loc };
       }
+      // `+sym`: ToNumber of a Symbol throws "Cannot convert a Symbol value
+      // to a number", which the runtime's checked conversion raises. Only a
+      // JavaScript source reaches this, since the checker's own operator
+      // error still fences the TypeScript form.
+      if (raw.type.kind === "symbol") {
+        const boxed: IrExpr = { kind: "dynFrom", value: raw, type: DYN, loc };
+        return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [boxed], type: F64, loc };
+      }
       // A union of primitives (`+match[1]` over `string | undefined`): ToNumber
       // over the boxed value, as for a checked-dynamic operand.
       if (coercedUnion(lowerer, raw.type)) {

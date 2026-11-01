@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
+import { DYN, STRING, VOID, arrayOf, type IrExpr, type IrModule, type IrLibFn } from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
   moduleRuntimeFeatures,
@@ -284,6 +284,118 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
       expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);
     }
+  });
+
+  test("selects the JavaScript object model build for writes that spell a sparse index", () => {
+    // t262 W7: only a write the source spells an index past the dense
+    // prefix's materialization limit (1000000 elements, scr_json.c) selects
+    // the build, and a keyed write evaluates its key into a hidden local
+    // first, so the literal reaches the write through that local's
+    // definition. A key computed at run time cannot be proven sparse and
+    // keeps its SC2020 refusal: selecting the build for it would rebuild
+    // every program with a computed write.
+    const boxed = (value: IrExpr): IrExpr => ({ kind: "dynFrom", value, type: DYN, loc });
+    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: DYN, loc });
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const value = boxed(str("v"));
+    const writes = (fn: IrLibFn, key: IrExpr, written: IrExpr = value): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push(
+        { kind: "varDecl", localId: "%key", init: key, loc },
+        {
+          kind: "exprStmt",
+          loc,
+          expr: {
+            kind: "libCall",
+            fn,
+            args: [boxed(str("o")), { kind: "varRef", localId: "%key", type: DYN, loc }, written],
+            type: VOID,
+            loc,
+          },
+        },
+      );
+      return mod;
+    };
+    const selects = (fn: IrLibFn, key: IrExpr, written?: IrExpr): boolean =>
+      moduleRuntimeFeatures(writes(fn, key, written)).sparseArrays;
+    expect(selects("dyn.keySetComputed", boxed(num(2147483648)))).toBe(true);
+    expect(selects("dyn.keySet", str("987654321"))).toBe(true);
+    expect(selects("dyn.keySetComputed", boxed(num(7)))).toBe(false);
+    expect(selects("dyn.keySet", str("012"))).toBe(false);
+    expect(selects("dyn.keySetComputed", boxed(str("name")))).toBe(false);
+    // A key computed at run time is not a proven index.
+    expect(selects("dyn.keySetComputed", { kind: "varRef", localId: "k", type: DYN, loc })).toBe(
+      false,
+    );
+    // A live view of a native array keeps its far slots out of line already
+    // (the ScrArr ext), so a spelled far write through it selects nothing.
+    const view = module();
+    const native = arrayOf(DYN);
+    view.functions[0]!.locals.push({ id: "%typed", name: "typed", mutable: false, type: native });
+    view.functions[0]!.body.push(
+      {
+        kind: "varDecl",
+        localId: "%view",
+        init: boxed({ kind: "varRef", localId: "%typed", type: native, loc }),
+        loc,
+      },
+      { kind: "varDecl", localId: "%key", init: boxed(num(3000001)), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySetComputed",
+          args: [
+            { kind: "varRef", localId: "%view", type: DYN, loc },
+            { kind: "varRef", localId: "%key", type: DYN, loc },
+            value,
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(view).sparseArrays).toBe(false);
+    // A module-level `const view: any = typed` initializes its global with an
+    // assign, and is the same live view.
+    const globalView = module();
+    globalView.functions[0]!.locals.push({
+      id: "%typed",
+      name: "typed",
+      mutable: false,
+      type: native,
+    });
+    globalView.functions[0]!.body.push(
+      {
+        kind: "assign",
+        localId: "%view",
+        value: boxed({ kind: "varRef", localId: "%typed", type: native, loc }),
+        initializes: true,
+        loc,
+      },
+      { kind: "varDecl", localId: "%key", init: boxed(num(3000001)), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySetComputed",
+          args: [
+            { kind: "varRef", localId: "%view", type: DYN, loc },
+            { kind: "varRef", localId: "%key", type: DYN, loc },
+            value,
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(globalView).sparseArrays).toBe(false);
+    // `length` moves where the prefix ends, so the spelled value decides.
+    expect(selects("dyn.keySet", str("length"), boxed(num(5000000)))).toBe(true);
+    expect(selects("dyn.keySet", str("length"), boxed(num(8)))).toBe(false);
+    expect(selects("dyn.keyDelete" as IrLibFn, str("987654321"))).toBe(false);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {

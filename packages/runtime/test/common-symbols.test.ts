@@ -2,6 +2,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
 
@@ -10,6 +11,19 @@ const testDir = import.meta.dirname;
 const srcDir = join(testDir, "../src");
 const vendorDir = join(testDir, "../vendor");
 const buildDir = join(testDir, "build", "common-symbols");
+const repoRoot = join(testDir, "../../..");
+
+/** scr_intl.c includes ICU's C API headers from the fetched ICU release, as
+ * the runtime pack build compiles it (runtime-pack-common's icu-data.mjs). */
+async function icuIncludeFlags(): Promise<string[]> {
+  const { ensureIcuSources } = (await import(
+    pathToFileURL(join(repoRoot, "packages/runtime-pack-common/scripts/icu-data.mjs")).href
+  )) as { ensureIcuSources: (cacheDir: string) => Promise<string> };
+  const root = await ensureIcuSources(
+    join(repoRoot, "node_modules", ".cache", "scriptc-icu-sources"),
+  );
+  return ["-I", join(root, "source", "common"), "-I", join(root, "source", "i18n")];
+}
 
 /** COMMON globals in every runtime source compiled with `compiler`, in the
  * plain and worker configurations, as "file (defines): symbol" lines. */
@@ -22,6 +36,7 @@ async function commonSymbols(label: string, compiler: string[]): Promise<string[
   const jobs = sources.flatMap((name) =>
     [[], ["-DSCR_WORKERS"]].map((defines) => ({ name, defines })),
   );
+  const icu = await icuIncludeFlags();
   const common: string[] = [];
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -39,6 +54,7 @@ async function commonSymbols(label: string, compiler: string[]): Promise<string[
         `-I${join(vendorDir, "quickjs-ng")}`,
         `-I${join(vendorDir, "mbedtls", "include")}`,
         `-I${join(vendorDir, "brotli", "c", "include")}`,
+        ...(name === "scr_intl.c" ? icu : []),
         "-o",
         output,
         join(srcDir, name),

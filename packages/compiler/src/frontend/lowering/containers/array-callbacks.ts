@@ -69,7 +69,7 @@ import {
 } from "./array-iteration.js";
 import { dynamicReceiverThrows } from "./dynamic-receivers.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
-import { checkedFilterNarrowing } from "./filter-predicates.js";
+import { checkedFilterNarrowing, supersetGuardFields } from "./filter-predicates.js";
 import { omittableTrailingParam } from "../coercions/function-adapters.js";
 
 /** `a.map(fn)` / `a.filter(fn)` / `a.forEach(fn)` desugar to a direct
@@ -100,6 +100,7 @@ export function lowerArrayHofCall(
     lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(argNode) ?? undefined);
   const present = !booleanFilter && presentElements(lowerer, call, elem);
   const valueT = callbackValueType(lowerer, elem, present);
+  const thisArg = hofThisArg(lowerer, call);
   if (booleanFilter) {
     if (valueT.kind === "union") lowerer.requireTruthyUnion(valueT.unionId, argNode);
     // Checked-dynamic elements (`anyText.split("\n").map(...).filter(Boolean)`)
@@ -155,7 +156,11 @@ export function lowerArrayHofCall(
   // A filter that re-tags its elements keeps the single union-typed visit.
   // A callback that never reads its element has no use for a typed one.
   const fast =
-    present || booleanFilter || unread || (method === "filter" && !typeEquals(outElem, elem))
+    present ||
+    booleanFilter ||
+    unread ||
+    thisArg !== null ||
+    (method === "filter" && !typeEquals(outElem, elem))
       ? null
       : lowerFastCallback(lowerer, argNode, [valueT], 0, elem, arrayOf(elem), callback);
   const helper = arrayHofHelper(
@@ -170,12 +175,13 @@ export function lowerArrayHofCall(
     fast?.type ?? null,
     present,
     unread,
+    thisArg !== null,
   );
   const resultType: IrType = method === "map" || method === "filter" ? arrayOf(outElem) : VOID;
   const result: IrExpr = {
     kind: "call",
     callee: helper,
-    args: [receiver, fnArg, ...(fast ? [fast] : [])],
+    args: [receiver, fnArg, ...(fast ? [fast] : []), ...(thisArg ? [thisArg] : [])],
     type: resultType,
     loc,
   };
@@ -188,6 +194,24 @@ export function lowerArrayHofCall(
     type: arrayOf(narrowing.elem),
     loc,
   };
+}
+
+/** The thisArg of a callback HOF call (`a.map(f, thisArg)`), lowered as the
+ * checked-dynamic value the helper hands the callback as its call-site
+ * receiver. Null when the call has no second argument, in which case the
+ * helper keeps the two-slot frame and the callback's `this` is the ambient
+ * one, exactly as before. */
+function hofThisArg(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const node = call.arguments.nodes[1];
+  if (node === undefined) return null;
+  if (call.arguments.nodes.length > 2) {
+    lowerer.noLowering(
+      `.${ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : ""} with ${call.arguments.nodes.length} arguments`,
+      call,
+      "the supported form takes the callback and an optional thisArg",
+    );
+  }
+  return lowerer.lowerExprExpecting(node, DYN);
 }
 
 /** The element a filter keeps, and the checked conversion of the result
@@ -262,6 +286,19 @@ function filterKeptElem(
     "keep the receiver's element type instead — annotate the callback's return ': boolean' " +
     "(the checker then skips the predicate) or annotate the result with the receiver's own " +
     "element type — and narrow the elements after";
+  // A record target that declares fields the receiver's record element has no
+  // slot for: the elements were narrowed when they were stored, so those
+  // fields no longer exist at runtime and no per-field check can recover them.
+  const widened = supersetGuardFields(lowerer, elem, outElem);
+  const missingFields =
+    widened === null
+      ? ""
+      : ` (the receiver's element type has no slot for ${widened
+          .slice(0, 4)
+          .map((field) => `'${field}'`)
+          .join(", ")}${widened.length > 4 ? ` and ${widened.length - 4} more` : ""} — each ` +
+        `element was narrowed when it was stored, so those fields do not exist at runtime and ` +
+        `the predicate cannot make them real)`;
   const written =
     !booleanFilter &&
     ((!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) ||
@@ -278,14 +315,14 @@ function filterKeptElem(
         "SC1090",
         argNode,
         `narrowing '.filter' to '${lowerer.fmt(outElem)}' through a callback VALUE (no checked ` +
-          `conversion from '${lowerer.fmt(elem)}' — ${annotateEscape})`,
+          `conversion from '${lowerer.fmt(elem)}'${missingFields} — ${annotateEscape})`,
       );
     }
     lowerer.unsupported(
       "SC1090",
       argNode,
       `narrowing '.filter' to '${lowerer.fmt(outElem)}' with a hand-written type predicate (no ` +
-        `checked conversion from '${lowerer.fmt(elem)}' — ${annotateEscape})`,
+        `checked conversion from '${lowerer.fmt(elem)}'${missingFields} — ${annotateEscape})`,
     );
   }
   const classRefinement =
@@ -594,8 +631,9 @@ function arrayHofHelper(
   fastT: CallbackType | null = null,
   present = false,
   unread = false,
+  withThis = false,
 ): string {
-  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}:${typeKey(outElem)}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}${unread ? ":unread" : ""}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}:${typeKey(outElem)}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}${unread ? ":unread" : ""}${withThis ? ":this" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
@@ -622,6 +660,7 @@ function arrayHofHelper(
     fastT,
     present,
     unread,
+    withThis,
   );
   lowerer.liftedFns.push(fastT ? withFastCallback(fn, fastT, elem) : fn);
   return name;
@@ -919,14 +958,16 @@ function buildArrayHofFn(
   fastT: CallbackType | null = null,
   present = false,
   unread = false,
+  withThis = false,
 ): IrFunction {
   const arrT = arrayOf(elem);
   const valueT = callbackValueType(lowerer, elem, present);
   const fnT = funcOf([valueT, F64, arrT].slice(0, arity), fnRet);
 
-  const locals = arrayCallbackLocals(arrT, fnT);
-  const params = arrayCallbackParams(arrT, fnT);
-  const callF = (arg: IrExpr): IrExpr => callArrayCallback(arrT, fnT, fnRet, arity, arg, loc);
+  const locals = arrayCallbackLocals(arrT, fnT, withThis);
+  const params = arrayCallbackParams(arrT, fnT, withThis);
+  const callF = (arg: IrExpr): IrExpr =>
+    callArrayCallback(arrT, fnT, fnRet, arity, arg, loc, withThis);
   const getElem = callbackValueRead(
     lowerer,
     varRef("a.0", arrT, loc),
@@ -1261,6 +1302,7 @@ export function lowerArrayFindLikeCall(
   const arrT = arrayOf(elem);
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
+  const thisArg = hofThisArg(lowerer, call);
   // find's result must be reachable from the element itself; a predicate
   // that narrows to another layout keeps the optional element visit.
   const present =
@@ -1293,7 +1335,7 @@ export function lowerArrayFindLikeCall(
     method === "findLastIndex"
   ) {
     const fast =
-      present || unread
+      present || unread || thisArg !== null
         ? null
         : lowerFastCallback(
             lowerer,
@@ -1319,6 +1361,7 @@ export function lowerArrayFindLikeCall(
             fastT,
             present,
             unread,
+            thisArg !== null,
           )
         : someEveryHelper(
             lowerer,
@@ -1331,11 +1374,12 @@ export function lowerArrayFindLikeCall(
             fastT,
             present,
             unread,
+            thisArg !== null,
           );
     return {
       kind: "call",
       callee: helper,
-      args: [receiver, fnArg, ...(fast ? [fast] : [])],
+      args: [receiver, fnArg, ...(fast ? [fast] : []), ...(thisArg ? [thisArg] : [])],
       type: method === "findIndex" || method === "findLastIndex" ? F64 : BOOL,
       loc,
     };
@@ -1369,8 +1413,15 @@ export function lowerArrayFindLikeCall(
     callbackSite(fnArg),
     present,
     unread,
+    thisArg !== null,
   );
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: resultT, loc };
+  return {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg, ...(thisArg ? [thisArg] : [])],
+    type: resultT,
+    loc,
+  };
 }
 
 /** The retag helper that converts a found element into find's result union,
@@ -1463,9 +1514,10 @@ function findHelper(
   site = "",
   present = false,
   unread = false,
+  withThis = false,
 ): string {
   const method = last ? "findLast" : "find";
-  const key = `${method}:${typeKey(elem)}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}${site}${present ? ":present" : ""}${unread ? ":unread" : ""}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}${site}${present ? ":present" : ""}${unread ? ":unread" : ""}${withThis ? ":this" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
@@ -1517,7 +1569,7 @@ function findHelper(
         {
           kind: "if",
           cond: predicateToBoolean(
-            callArrayCallback(arrT, fnT, fnRet, arity, placeholder ?? v, loc),
+            callArrayCallback(arrT, fnT, fnRet, arity, placeholder ?? v, loc, withThis),
           ),
           then: [
             {
@@ -1534,7 +1586,7 @@ function findHelper(
         read,
         {
           kind: "if",
-          cond: predicateToBoolean(callArrayCallback(arrT, fnT, fnRet, arity, v, loc)),
+          cond: predicateToBoolean(callArrayCallback(arrT, fnT, fnRet, arity, v, loc, withThis)),
           then: [{ kind: "return", value: found, loc }],
           else_: null,
           loc,
@@ -1551,10 +1603,10 @@ function findHelper(
   ];
   lowerer.liftedFns.push({
     name,
-    params: arrayCallbackParams(arrT, fnT),
+    params: arrayCallbackParams(arrT, fnT, withThis),
     returnType: resultT,
     locals: [
-      ...arrayCallbackLocals(arrT, fnT),
+      ...arrayCallbackLocals(arrT, fnT, withThis),
       { id: "v.0", name: "v", type: valueT, mutable: false },
       ...(ignored
         ? slotSnapshotLocals(lowerer, elem, FILTER_SNAPSHOT).filter((l) => l.id !== "v.0")
@@ -1601,9 +1653,10 @@ function findIndexHelper(
   fastT: CallbackType | null = null,
   present = false,
   unread = false,
+  withThis = false,
 ): string {
   const method = last ? "findLastIndex" : "findIndex";
-  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}${unread ? ":unread" : ""}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}${unread ? ":unread" : ""}${withThis ? ":this" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
@@ -1641,6 +1694,7 @@ function findIndexHelper(
             unread,
           ),
           loc,
+          withThis,
         ),
       ),
       then: [{ kind: "return", value: varRef("i.0", F64, loc), loc }],
@@ -1660,9 +1714,9 @@ function findIndexHelper(
     withFastCallback(
       {
         name,
-        params: arrayCallbackParams(arrT, fnT),
+        params: arrayCallbackParams(arrT, fnT, withThis),
         returnType: F64,
-        locals: [...arrayCallbackLocals(arrT, fnT)],
+        locals: [...arrayCallbackLocals(arrT, fnT, withThis)],
         body,
         loc,
       },
@@ -1689,8 +1743,9 @@ function someEveryHelper(
   fastT: CallbackType | null = null,
   present = false,
   unread = false,
+  withThis = false,
 ): string {
-  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}${unread ? ":unread" : ""}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}${unread ? ":unread" : ""}${withThis ? ":this" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
@@ -1723,6 +1778,7 @@ function someEveryHelper(
         unread,
       ),
       loc,
+      withThis,
     ),
   );
   const body: IrStmt[] = [
@@ -1753,9 +1809,9 @@ function someEveryHelper(
     withFastCallback(
       {
         name,
-        params: arrayCallbackParams(arrT, fnT),
+        params: arrayCallbackParams(arrT, fnT, withThis),
         returnType: BOOL,
-        locals: [...arrayCallbackLocals(arrT, fnT)],
+        locals: [...arrayCallbackLocals(arrT, fnT, withThis)],
         body,
         loc,
       },
@@ -1783,6 +1839,7 @@ export function lowerArrayFlatMapCall(
   const arrT = arrayOf(elem);
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
+  const thisArg = hofThisArg(lowerer, call);
   const present = presentElements(lowerer, call, elem);
   const lowered = lowerArrayCallback(
     lowerer,
@@ -1804,7 +1861,7 @@ export function lowerArrayFlatMapCall(
       recv: { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc },
       method: "flatMap",
       calleeName: ts.getTextOfNode(access),
-      args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }],
+      args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }, ...(thisArg ? [thisArg] : [])],
       type: DYN,
       loc,
     };
@@ -1815,11 +1872,20 @@ export function lowerArrayFlatMapCall(
       ? flatMapUnionPlan(lowerer, call, argNode, fnRet)
       : null;
     if (plan) {
-      const helper = flatMapUnionHelper(lowerer, elem, fnRet, arity, plan, loc, present);
+      const helper = flatMapUnionHelper(
+        lowerer,
+        elem,
+        fnRet,
+        arity,
+        plan,
+        loc,
+        present,
+        thisArg !== null,
+      );
       return {
         kind: "call",
         callee: helper,
-        args: [receiver, fnArg],
+        args: [receiver, fnArg, ...(thisArg ? [thisArg] : [])],
         type: arrayOf(plan.outElem),
         loc,
       };
@@ -1839,7 +1905,7 @@ export function lowerArrayFlatMapCall(
     requireProducedArrayElement(lowerer, call, "'.flatMap()'", fnRet);
     const outElem = callbackArrayElement(lowerer, call, fnRet);
     const fast =
-      present || unread
+      present || unread || thisArg !== null
         ? null
         : lowerFastCallback(lowerer, argNode, [arrayValueType(lowerer, elem)], 0, elem, arrT, {
             fnArg,
@@ -1857,17 +1923,18 @@ export function lowerArrayFlatMapCall(
       fast?.type ?? null,
       present,
       unread,
+      thisArg !== null,
     );
     return {
       kind: "call",
       callee: helper,
-      args: [receiver, fnArg, ...(fast ? [fast] : [])],
+      args: [receiver, fnArg, ...(fast ? [fast] : []), ...(thisArg ? [thisArg] : [])],
       type: arrayOf(outElem),
       loc,
     };
   }
   const fast =
-    present || unread
+    present || unread || thisArg !== null
       ? null
       : lowerFastCallback(lowerer, argNode, [arrayValueType(lowerer, elem)], 0, elem, arrT, {
           fnArg,
@@ -1883,11 +1950,12 @@ export function lowerArrayFlatMapCall(
     fast?.type ?? null,
     present,
     unread,
+    thisArg !== null,
   );
   return {
     kind: "call",
     callee: helper,
-    args: [receiver, fnArg, ...(fast ? [fast] : [])],
+    args: [receiver, fnArg, ...(fast ? [fast] : []), ...(thisArg ? [thisArg] : [])],
     type: fnRet,
     loc,
   };
@@ -1970,10 +2038,11 @@ function flatMapUnionHelper(
   plan: FlatMapUnionPlan,
   loc: SrcLoc,
   present: boolean,
+  withThis = false,
 ): string {
   // The plan is part of the key: one union result type can carry an empty
   // `never[]` arm in one callback and a populated array arm in another.
-  const key = `flatMapUnion:${typeKey(elem)}:${typeKey(fnRet)}:${typeKey(plan.outElem)}:${plan.arms.join(",")}:${arity}${present ? ":present" : ""}`;
+  const key = `flatMapUnion:${typeKey(elem)}:${typeKey(fnRet)}:${typeKey(plan.outElem)}:${plan.arms.join(",")}:${arity}${present ? ":present" : ""}${withThis ? ":this" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.flatMap.${lowerer.arrHofHelpers.size}`;
@@ -1993,7 +2062,7 @@ function flatMapUnionHelper(
     loc,
   });
   const locals: IrLocal[] = [
-    ...arrayCallbackLocals(arrT, fnT),
+    ...arrayCallbackLocals(arrT, fnT, withThis),
     { id: "out.0", name: "out", type: outT, mutable: false },
     { id: "r.0", name: "r", type: fnRet, mutable: false },
   ];
@@ -2178,6 +2247,7 @@ function flatMapUnionHelper(
                 loc,
               ),
               loc,
+              withThis,
             ),
             loc,
           },
@@ -2191,7 +2261,7 @@ function flatMapUnionHelper(
   ];
   lowerer.liftedFns.push({
     name,
-    params: arrayCallbackParams(arrT, fnT),
+    params: arrayCallbackParams(arrT, fnT, withThis),
     returnType: outT,
     locals,
     body,
@@ -2219,8 +2289,9 @@ function flatMapHelper(
   fastT: CallbackType | null = null,
   present = false,
   unread = false,
+  withThis = false,
 ): string {
-  const key = `flatMap:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}${unread ? ":unread" : ""}`;
+  const key = `flatMap:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}${unread ? ":unread" : ""}${withThis ? ":this" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%arr.flatMap", key);
@@ -2333,6 +2404,7 @@ function flatMapHelper(
                 unread,
               ),
               loc,
+              withThis,
             ),
             loc,
           },
@@ -2361,10 +2433,10 @@ function flatMapHelper(
     withFastCallback(
       {
         name,
-        params: arrayCallbackParams(arrT, fnT),
+        params: arrayCallbackParams(arrT, fnT, withThis),
         returnType: fnRet,
         locals: [
-          ...arrayCallbackLocals(arrT, fnT),
+          ...arrayCallbackLocals(arrT, fnT, withThis),
           { id: "out.0", name: "out", type: fnRet, mutable: false },
           { id: "r.0", name: "r", type: fnRet, mutable: false },
           { id: "m.0", name: "m", type: F64, mutable: false },
@@ -2399,42 +2471,77 @@ export function lowerArrayReduceCall(
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const hasInit = call.arguments.nodes.length === 2;
-  const accT =
-    lowerer.runtimeOptionalReduceTypes.get(call) ??
-    (hasInit ? lowerer.irTypeOf(call) : arrayValueType(lowerer, elem));
-  if (accT.kind === "void" || accT.kind === "func") lowerer.badType(call, lowerer.typeOf(call));
+  const overrideT = lowerer.runtimeOptionalReduceTypes.get(call) ?? null;
+  const staticAccT =
+    overrideT ?? (hasInit ? lowerer.irTypeOf(call) : arrayValueType(lowerer, elem));
+  if (staticAccT.kind === "void" || staticAccT.kind === "func")
+    lowerer.badType(call, lowerer.typeOf(call));
   const lowered = lowerArrayCallback(
     lowerer,
     argNode,
-    [accT, arrayValueType(lowerer, elem)],
+    [staticAccT, arrayValueType(lowerer, elem)],
     arrT,
     false,
-    accT,
+    staticAccT,
   );
   const { fnArg, arity } = lowered;
+  // A JavaScript function with NO declared parameters whose body reads
+  // `arguments` has that hidden slot as its whole ABI, which the synthetic
+  // loop cannot fill: `callValue` passes exactly the declared parameters
+  // (none), so the callback would see an empty `arguments` where JavaScript
+  // passes (accumulator, element, index, array). Name the parameters
+  // instead; that is the same value with a checkable type. Read the
+  // callback's OWN type: the slot adaptation above (a dyn function boundary)
+  // erases the hidden slot from `fnArg.type`. A callback that names its
+  // parameters keeps working — `arguments` is built from the call's
+  // arguments there, not from a hidden slot.
+  if (
+    lowered.rawType.kind === "func" &&
+    lowered.rawType.params.length === 0 &&
+    lowered.rawType.rest === true &&
+    lowered.rawType.restAbi === undefined
+  )
+    lowerer.unsupported(
+      "SC1090",
+      argNode,
+      "a reduce callback that reads 'arguments' (name the parameters the callback uses)",
+    );
+  // The callback's own answer is what the accumulator receives. An inline
+  // lambda is contextually typed by the call (its returns coerce inside its
+  // own lowering), but a function DECLARATION keeps its declared return. When
+  // the checker's accumulator type cannot hold that value — `xs.reduce(function
+  // () { count++ }, 1)` answers undefined, a program the checker already
+  // diagnosed — the accumulator is the checked-dynamic value JavaScript
+  // produces instead of a miscast (the untyped-reduce shape; see
+  // accumulatorAdmitsAnswer).
+  const accT: IrType =
+    overrideT !== null || accumulatorAdmitsAnswer(lowerer, staticAccT, fnArg.type.ret)
+      ? staticAccT
+      : DYN;
   // Only an array that can hold elements outside its element type needs to
-  // leave an element its callback ignores unread.
+  // leave an element its callback ignores unread. A dynamic accumulator is
+  // the untyped shape; it keeps the single visit and the callback's own ABI.
   const unread = lowered.unread && elementMayBeForeign(lowerer, elem);
-  const fast = unread
-    ? null
-    : lowerFastCallback(
-        lowerer,
-        argNode,
-        [accT, arrayValueType(lowerer, elem)],
-        1,
-        elem,
-        arrT,
-        { fnArg, arity },
-        false,
-        accT,
-      );
+  const fast =
+    unread || accT.kind === "dyn"
+      ? null
+      : lowerFastCallback(
+          lowerer,
+          argNode,
+          [accT, arrayValueType(lowerer, elem)],
+          1,
+          elem,
+          arrT,
+          { fnArg, arity },
+          false,
+          accT,
+        );
   const helper = reduceHelper(
     lowerer,
     method,
     elem,
     accT,
-    fnArg.type.ret,
-    arity,
+    fnArg.type,
     hasInit,
     loc,
     callbackSite(fast ?? fnArg),
@@ -2447,6 +2554,39 @@ export function lowerArrayReduceCall(
   // effect, so the initial value still evaluates right after the callback.
   if (fast) args.push(fast);
   return { kind: "call", callee: helper, args, type: accT, loc };
+}
+
+/** The accumulator's value as the callback's first parameter declares it.
+ * Equal types pass the local straight through; a dynamic accumulator handed
+ * to a typed parameter converts at the call (the callback is lowered first,
+ * so its ABI is a fact and a value of another kind throws — "types don't
+ * lie"). */
+function accumulatorArgument(
+  lowerer: Lowerer,
+  param: IrType | undefined,
+  accT: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const value = varRef("acc.0", accT, loc);
+  return param === undefined || typeEquals(param, accT)
+    ? value
+    : lowerer.coerceToExpected(value, param);
+}
+
+/** Whether the checker's accumulator type stores the callback's answer
+ * itself. A scalar accumulator holds only its own scalar, and a void answer
+ * (a callback with no return statement) is `undefined`; both leave the
+ * checker's type unable to carry the value (a program the checker already
+ * diagnosed), which the reduction accumulates dynamically instead of
+ * miscasting. Every other pair keeps `coerceToExpected`'s static plan. */
+function accumulatorAdmitsAnswer(lowerer: Lowerer, accT: IrType, fnRet: IrType): boolean {
+  if (lowerer.coercibleValue(fnRet, accT)) return true;
+  if (fnRet.kind === "void" || isUnitType(fnRet)) return false;
+  return !(scalarKind(accT) && scalarKind(fnRet));
+}
+
+function scalarKind(t: IrType): boolean {
+  return t.kind === "f64" || t.kind === "string" || t.kind === "bool";
 }
 
 /** The reduce/reduceRight loops, from existing IR nodes:
@@ -2464,20 +2604,28 @@ function reduceHelper(
   method: "reduce" | "reduceRight",
   elem: IrType,
   accT: IrType,
-  fnRet: IrType,
-  arity: number,
+  fnArg: CallbackType,
   hasInit: boolean,
   loc: SrcLoc,
   site = "",
   fastT: CallbackType | null = null,
   unread = false,
 ): string {
+  // The callback's own ABI decides the helper's `f` slot: a dynamic
+  // accumulator (accT) is coerced at the call and the store, so the closure
+  // keeps the parameter types its lowering produced.
+  const fnT = fnArg;
+  const fnRet = fnT.ret;
+  const arity = fnT.params.length;
   const key = `${method}:${typeKey(elem)}:${typeKey(accT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : "seed"}${site}${fastT ? ":split" : ""}${unread ? ":unread" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
-  if (method === "reduce")
+  // A dynamic accumulator stays out of the pipeline registry: the fused
+  // loops type their accumulator from the checker's view (arrHofInfo), which
+  // this shape contradicts.
+  if (method === "reduce" && accT.kind !== "dyn")
     lowerer.arrHofInfo.set(name, {
       method,
       elem,
@@ -2490,7 +2638,6 @@ function reduceHelper(
       unread,
     });
   const arrT = arrayOf(elem);
-  const fnT = funcOf([accT, arrayValueType(lowerer, elem), F64, arrT].slice(0, arity), fnRet);
 
   const n = varRef("n.0", F64, loc);
   const i = varRef("i.0", F64, loc);
@@ -2610,10 +2757,12 @@ function reduceHelper(
               {
                 kind: "callValue",
                 callee: varRef("f.0", fnT, loc),
-                args: [varRef("acc.0", accT, loc), visited(), i, varRef("a.0", arrT, loc)].slice(
-                  0,
-                  arity,
-                ),
+                args: [
+                  accumulatorArgument(lowerer, fnT.params[0], accT, loc),
+                  visited(),
+                  i,
+                  varRef("a.0", arrT, loc),
+                ].slice(0, arity),
                 type: fnRet,
                 loc,
               },

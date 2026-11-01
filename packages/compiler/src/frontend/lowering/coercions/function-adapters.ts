@@ -143,6 +143,8 @@ export function cleanFuncAdaptable(
 ): boolean {
   if (restPackingAdapterFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
+  // In checked mode (a method field's adapter, WidthLift funcAdaptChecked)
+  // the width conversions below include checked retags.
   // Recursive function types (`type Handler = (h: Handler) => void`) reach
   // the same pair again one parameter down: assume it converts, the same
   // coinductive answer recordWidthPlan gives its own back-edges.
@@ -222,6 +224,16 @@ export function funcSlotAdaptable(
   }
   if (dst.ret.kind === "void") return true;
   if (lowerer.coercibleValue(src.ret, dst.ret)) return true;
+  // The result conversions funcCoerceAdapter performs without stranding: a
+  // Promise whose payload widens (`Promise<string>` into `Promise<string |
+  // undefined>`) and a record the slot's result is a structural width of.
+  if (
+    src.ret.kind === "promise" &&
+    dst.ret.kind === "promise" &&
+    lowerer.promisePayloadWidens(src.ret, dst.ret)
+  )
+    return true;
+  if (lowerer.widthLiftPlan(src.ret, dst.ret)) return true;
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
 }
 

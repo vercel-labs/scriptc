@@ -190,6 +190,12 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                  ScrHttpUpgradeFn h1_fn, ScrHttpConnectH2Fn h2_fn,
                                  bool once);
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
+typedef void (*ScrHttpClientErrorFn)(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
+void scr_http_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                     ScrHttpClientErrorFn fn, bool once);
+void scr_http_client_error_thunk0(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
+void scr_http_client_error_thunk1(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
+void scr_http_client_error_thunk2(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
 /* server.on('checkContinue' | 'checkExpectation', listener). */
 void scr_http_server_on_check(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
                               bool expectation);

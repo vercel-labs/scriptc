@@ -58,6 +58,12 @@ export function isIntegerBytesElem(elem: IrBytesElem): boolean {
   return elem !== "f16" && elem !== "f32" && elem !== "f64";
 }
 
+/** Typed-array constructors whose element kind is a BigInt. The typed IR has
+ * no BigInt element kind, so these exist only in the checked-dynamic tier:
+ * their value is the bytes.constructor libCall naming them, and every element
+ * they hold is a checked-dynamic BigInt. */
+export const BIGINT_BYTES_NAMES: ReadonlySet<string> = new Set(["BigInt64Array", "BigUint64Array"]);
+
 export const BYTES_ELEMENT_NAME: Record<IrBytesElem, string> = {
   u8: "Uint8Array",
   u8c: "Uint8ClampedArray",
@@ -1114,10 +1120,25 @@ export interface IrModule {
    * hold elements outside their element type (SCR_ARR_FOREIGN), stored
    * through dynamic views; "*" for every array. Absent when none can. */
   foreignElementKeys?: string[];
+  /** The narrowing conversions that link a record copy to its source
+   * (record.link): a conversion from record type `from` into the narrower
+   * record type `to`, whose source has properties `to` does not declare.
+   * `compose(copy, source)` answers a record of type `from` with the
+   * copy's values for the fields both declare and the source's for the
+   * others: what the copy's reflective surfaces answer from. `pair` is
+   * the nonzero number the link stores. Absent when there are none. */
+  recordLinks?: IrRecordLink[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** A JavaScript source may resize, grow or detach an ArrayBuffer
+   * (frontend/lowering/buffers.ts `mutableBuffers`): a view's ScrBytes header
+   * is no longer fixed at construction, so bytes header loads keep their
+   * alias tag but lose `!invariant.load`, and typed-array loop versioning
+   * (bytes-loop-versions.ts) is off for this program. Absent in every other
+   * program, whose IR and LLVM are unchanged. */
+  bytesHeadersMutable?: true;
   /** typeKeys of the array types whose values the program may freeze
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
@@ -1543,6 +1564,14 @@ export interface IrLibIdentity {
   abiVersion: number;
 }
 
+/** One narrowing conversion that links copies to sources (IrModule.recordLinks). */
+export interface IrRecordLink {
+  pair: number;
+  from: string;
+  to: string;
+  compose: string;
+}
+
 export interface IrClassDef {
   name: string;
   /** Present for a class evaluated inside a function. Each evaluation owns
@@ -1966,6 +1995,10 @@ export interface IrFunction {
   name: string;
   /** Source function name for native error stack frames. */
   sourceName?: string;
+  /** The function's JavaScript `name` when it differs from sourceName: an
+   * object literal's method. Present only in modules that box function
+   * values into checked values (function-names.ts). */
+  displayName?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
   params: IrParam[];
@@ -2004,10 +2037,10 @@ export interface IrFunction {
    * `index`: a computed read `(value, key)` whose callers pass a number
    * converted to a string as the key. */
   fastRead?: "index";
-  /** The body of a function whose parameter version takes its calls with
-   * int32 arguments (parameter-versions.ts). It runs for other arguments
-   * only, so the backend emits each of its loops once, as in the copy a
-   * failed version guard runs. */
+  /** The original body of a function versioned for int32 loop bounds, moved
+   * to `<fn>.int32Fallback` (parameter-versions.ts). It runs for arguments
+   * the version does not take, so the backend emits each of its loops once,
+   * as in the copy a failed version guard runs. */
   plainLoops?: true;
   /** Async: the body runs on a fiber; `returnType` is the INNER type T (a
    * `return v` fulfills with v) while ordinary call sites receive
@@ -2041,6 +2074,13 @@ export interface IrFunction {
     /** The first parameter is a generator this one adapts: it prints with
      * that generator's tag. */
     inheritsTag?: true;
+    /** The parameter prologue ends in a `genBindBarrier`: the body binds its
+     * parameters at the CALL (FunctionDeclarationInstantiation runs before
+     * GeneratorStart), so the spawn wrapper enters the suspended body once,
+     * runs to the barrier, and returns the generator with the bindings
+     * already made. Absent when the parameters bind nothing (identifiers
+     * only), in which case nothing runs before the first resume. */
+    bindAtCall?: true;
   };
   /** Async module initializers only: a module-global Promise<T> slot where
    * the spawn wrapper caches its first evaluation promise. Every later
@@ -2221,6 +2261,15 @@ export type IrStmt =
    * it has no operand (`return;`). The request settles as the body
    * completes instead of one microtask turn later. */
   | { kind: "return"; value: IrExpr | null; awaited?: true; loc: SrcLoc }
+  /** The end of a generator's parameter prologue (fn.generator.bindAtCall).
+   * Parameters bind at the CALL — before GeneratorStart — so the spawn
+   * wrapper enters the suspended body once and runs to this statement. The
+   * barrier itself suspends invisibly: no OUT value is produced and no IN
+   * value is taken, and it carries the ordinary resumption check so
+   * `.return()`/`.throw()` before the first `.next()` still skip the body.
+   * Only a generator body may contain it, at most once, before its first
+   * yield. */
+  | { kind: "genBindBarrier"; loc: SrcLoc }
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
    * of a refcounted new value MOVES into the object. `sloppy` marks a write
@@ -3526,6 +3575,10 @@ export type IrExpr =
       loc: SrcLoc;
       liveRef?: true;
       fnName?: string;
+      /** The callable answers `fnName` on the main thread and the empty
+       * string on a worker thread (Node's main-thread wrapper for
+       * `process.cwd`). */
+      fnNameMainThreadOnly?: true;
       /** A boxed function's `length` when it differs from its parameter
        * count (builtin function values). */
       fnLength?: number;
@@ -4074,6 +4127,12 @@ export type IrExpr =
        * evaluated; the AssertionError constructor consumes them, and a
        * call that passes clears them. */
       assertOptions?: { diff?: "full"; skipPrototype?: true };
+      /** An `emitter.on` or `emitter.onData` registration whose listener
+       * can read `this`: each call of the listener binds the receiver as
+       * `this`, as Node does. The checked-dynamic registrations
+       * (`emitter.onDyn`, `emitter.onDataDyn`, `emitter.onFlex`,
+       * `emitter.onAny`) always bind it. */
+      bindsThis?: true;
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,
@@ -4153,6 +4212,11 @@ export type IrExpr =
        * compiler analysis bug and reports itself as one. */
       inferredSite?: string;
       origin?: number;
+      /** The element position of an array literal whose store checks this
+       * value: a failure inside the check reports that position in its
+       * path (`$[0]`), where a standalone check names only the root
+       * (`$`). */
+      pathIndex?: number;
       type: IrType;
       loc: SrcLoc;
     };

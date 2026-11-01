@@ -41,6 +41,7 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Set: ["add", "has", "delete", "clear", "keys", "values", "entries", "forEach"],
   WeakMap: ["get", "set", "has", "delete"],
   WeakSet: ["add", "has", "delete"],
+  Boolean: ["valueOf", "toString"],
   String: [
     "split",
     "startsWith",
@@ -67,7 +68,13 @@ export function builtinPrototypeMethod(
   const prototype = expr.expression;
   if (!ts.isPropertyAccessExpression(prototype) || prototype.name.text !== "prototype") return null;
   const owner = stdlibGlobalNameOf(lowerer, prototype.expression);
-  return owner && PROTOTYPE_METHODS[owner]?.includes(expr.name.text) ? owner : null;
+  if (owner === null || !PROTOTYPE_METHODS[owner]?.includes(expr.name.text)) return null;
+  // The Boolean pair has a value form only in a JavaScript source (the
+  // brand-check tests call it on a foreign receiver); a typed source keeps
+  // the SC2020 member fence, since the runtime has no Boolean receiver
+  // branch and `Boolean.prototype.valueOf.call(true)` would be wrong.
+  if (owner === "Boolean" && !isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  return owner;
 }
 
 /** These native callables own their argument checks. Unannotated JS aliases
@@ -821,7 +828,11 @@ export function checkedNativeCallableValue(
   if (!fnName) {
     fnName = keyedHelperName(lowerer, `%builtin.value.${callee}`, key);
     lowerer.builtinCallableValueFns.set(key, fnName);
-    lowerer.builtinCallableValueNames.set(fnName, display.slice(display.lastIndexOf(".") + 1));
+    lowerer.builtinCallableValueNames.set(
+      fnName,
+      fn.valueName ?? display.slice(display.lastIndexOf(".") + 1),
+    );
+    if (fn.valueNameMainThreadOnly) lowerer.builtinCallableValueMainThreadNames.add(fnName);
     const params = valueParams.map((_, index) => ({
       localId: `arg.${index}`,
       name: `arg${index}`,
@@ -914,6 +925,7 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
   const names = lowerer.builtinCallableValueNames;
   if (names.size === 0) return;
   const lengths = lowerer.builtinCallableValueLengths;
+  const mainThreadNames = lowerer.builtinCallableValueMainThreadNames;
   const builtin = (expr: IrExpr | null): expr is Extract<IrExpr, { kind: "closure" }> =>
     expr !== null &&
     expr.kind === "closure" &&
@@ -984,11 +996,16 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
           expr.fnLength ??
           lengths.get(source.fnName) ??
           (value.kind === "closure" ? lengths.get(value.fnName) : undefined);
+        const nameMainThreadOnly =
+          expr.fnNameMainThreadOnly === true ||
+          mainThreadNames.has(source.fnName) ||
+          (value.kind === "closure" && mainThreadNames.has(value.fnName));
         const boxed: IrExpr = {
           ...expr,
           value,
           ...(fnName !== undefined ? { fnName } : {}),
           ...(fnLength !== undefined ? { fnLength } : {}),
+          ...(nameMainThreadOnly ? { fnNameMainThreadOnly: true as const } : {}),
         };
         if (!read) return boxed;
         return {

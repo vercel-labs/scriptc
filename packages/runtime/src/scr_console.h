@@ -60,6 +60,7 @@ void scr_console_group(double delta);
 void scr_console_clear(void);
 void scr_console_table(ScrDyn *data, ScrDyn *properties);
 ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);
+ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth);
 /* console.table's cell rendering (scr_inspect.c): Node's _inspect — depth
  * 0 (-1 for objects with more than two keys), maxArrayLength 3, breakLength
  * Infinity. +1. */

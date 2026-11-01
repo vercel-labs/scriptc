@@ -1,0 +1,17 @@
+record-link-shadowed-methods.ts:16:13 - error SC1090: 'valueOf()' on a record converted from an object with its own 'valueOf' property is not supported yet
+
+  15 | const plain: Plain = wide;
+  16 | console.log(plain.valueOf() === plain, plain.isPrototypeOf({}));
+     |             ^~~~~~~~~~~~~~~
+  17 | 
+
+  hint: call the source object's 'valueOf' through its own type
+
+record-link-shadowed-methods.ts:16:40 - error SC1090: 'isPrototypeOf()' on a record converted from an object with its own 'isPrototypeOf' property is not supported yet
+
+  15 | const plain: Plain = wide;
+  16 | console.log(plain.valueOf() === plain, plain.isPrototypeOf({}));
+     |                                        ^~~~~~~~~~~~~~~~~~~~~~~
+  17 | 
+
+  hint: call the source object's 'isPrototypeOf' through its own type

@@ -1,0 +1,17 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6897-node-island-builtin-patch/loader.ts",
+  "<repo>/tests/corpus/6897-node-island-builtin-patch/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'payload-reader'. '<repo>/tests/corpus/6897-node-island-builtin-patch/node_modules/payload-reader/index.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/payload-reader` if it exists or add a new declaration (.d.ts) file containing `declare module 'payload-reader';`",
+   "loc": {
+    "file": "<repo>/tests/corpus/6897-node-island-builtin-patch/loader.ts",
+    "start": 1175,
+    "end": 1191
+   }
+  }
+ ]
+}

@@ -91,7 +91,7 @@ export function analyzeFinalFields(
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
   const finals = new FinalFields(classes);
   if (mod.lib) return finals;
-  const dynamic = stores ?? dynamicFieldStores(mod);
+  const dynamic = stores ?? dynamicFieldStores(mod, undefined, undefined, nodes);
   if (dynamic.all) return finals;
 
   const genericFamilies = new Set<string>();

@@ -120,6 +120,16 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     }
     for (size_t i = 0; i < d->v.bytes->len; i++) {
       if (i > 0) scr_jb_putc(b, ',');
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_bytes_elem_is_bigint(d->v.bytes->elem)) {
+        ScrDyn *element = scr_bytes_get_bigint(d->v.bytes, (double)i);
+        ScrStr *n = scr_bigint_to_string(element->v.bigint, 10);
+        scr_dyn_release(element);
+        scr_jb_write(b, n->data, n->len);
+        scr_str_release(n);
+        continue;
+      }
+#endif
       ScrStr *n = scr_f64_to_scrstr(scr_bytes_get(d->v.bytes, (double)i));
       scr_jb_write(b, n->data, n->len);
       scr_str_release(n);
@@ -289,6 +299,10 @@ static ScrDyn *dyn_borrow_get(ScrDyn *recv, const ScrStr *key) {
       return scr_dyn_arr_named_get(recv, key);
     if (recv->kind == SCR_DYN_ARR) return scr_dyn_arr_at(recv, (double)index);
     if (recv->kind == SCR_DYN_BYTES) {
+#ifdef SCR_JS_OBJECT_MODEL
+      if (index < recv->v.bytes->len && scr_bytes_elem_is_bigint(recv->v.bytes->elem))
+        return scr_bytes_get_bigint(recv->v.bytes, (double)index);
+#endif
       return index < recv->v.bytes->len
         ? scr_dyn_new_num(scr_bytes_get(recv->v.bytes, (double)index))
         : scr_dyn_retain(scr_dyn_undefined());
@@ -1959,7 +1973,9 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
  * answer `.constructor` on the matching dynamic values, so
  * `o.constructor === Object` and `a.constructor === b.constructor` are
  * exact identity tests. `Object(v)` works through the stored value; calling
- * the others through it is fenced. */
+ * the others through it is fenced. SharedArrayBuffer, DataView,
+ * BigInt64Array, BigUint64Array and Proxy are interned the same way;
+ * calling one throws Node's "Constructor X requires 'new'" TypeError. */
 /* String constants live in named arrays in their own section rather than
  * in the unit's merged string pool (the explicit section also keeps the
  * compiler from folding the unit's existing literals into them), so
@@ -2012,11 +2028,23 @@ static const char dyn_s38[] SCR_DYN_COMPAT_STR = "structuredClone";
 static const char dyn_s39[] SCR_DYN_COMPAT_STR = "The \"input\" argument must be specified";
 static const char dyn_s40[] SCR_DYN_COMPAT_STR = "The \"The value argument must be specified\" argument must be specified";
 static const char dyn_s41[] SCR_DYN_COMPAT_STR = "ERR_MISSING_ARGS";
+static const char dyn_s42[] SCR_DYN_COMPAT_STR = "SharedArrayBuffer";
+static const char dyn_s43[] SCR_DYN_COMPAT_STR = "DataView";
+static const char dyn_s44[] SCR_DYN_COMPAT_STR = "BigInt64Array";
+static const char dyn_s45[] SCR_DYN_COMPAT_STR = "BigUint64Array";
+static const char dyn_s46[] SCR_DYN_COMPAT_STR = "Proxy";
+static const char dyn_s47[] SCR_DYN_COMPAT_STR = "Constructor %s requires 'new'";
 
 static const char *const dyn_global_ctor_names[] = {
   dyn_s26, dyn_s29, dyn_s25, dyn_s30, dyn_s31, dyn_s21, dyn_s22, dyn_s24, dyn_s35,
+  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46,
 };
 #define DYN_GLOBAL_CTORS (sizeof dyn_global_ctor_names / sizeof dyn_global_ctor_names[0])
+/* Each constructor's own length, indexed like dyn_global_ctor_names. */
+static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2};
+/* The first of the constructors that only `new` builds
+ * (SharedArrayBuffer onward): calling one throws Node's TypeError. */
+#define DYN_GLOBAL_NEW_ONLY 9
 static SCR_TL ScrDyn *dyn_global_ctors[DYN_GLOBAL_CTORS];
 static SCR_TL bool dyn_global_ctors_registered;
 
@@ -2029,6 +2057,13 @@ static void dyn_global_ctors_cleanup(void) {
 
 static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const char *name = closure->fn;
+  for (size_t i = DYN_GLOBAL_NEW_ONLY; i < DYN_GLOBAL_CTORS; i++) {
+    if (name != dyn_global_ctor_names[i]) continue;
+    char message[64];
+    int length = snprintf(message, sizeof message, dyn_s47, name);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
+    return NULL;
+  }
   bool object = strcmp(name, dyn_s26) == 0;
   if (object) {
     const ScrDyn *value = argc ? args[0] : scr_dyn_undefined();
@@ -2046,8 +2081,8 @@ static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, si
 }
 
 /* `new C(...args)` through a stored Object, Date, Map, Set, WeakMap or
- * WeakSet builds what the `new` expression builds. RegExp, Promise, and
- * Object over a primitive (a wrapper object) are fenced. */
+ * WeakSet builds what the `new` expression builds. The other constructors,
+ * and Object over a primitive (a wrapper object), are fenced. */
 static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) {
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != dyn_global_ctor_call) return false;
   const char *name = callee->v.fn.clo->fn;
@@ -2083,11 +2118,8 @@ static ScrDyn *dyn_global_ctor(const char *name) {
       scr_dyn_global_construct_fn = dyn_global_construct;
     }
     if (!dyn_global_ctors[i]) {
-      /* Each constructor's own length: Object 1, Date 7, RegExp 2, Promise 1,
-       * the collections 0, FinalizationRegistry 1. */
-      uint32_t length = i == 0 || i == 5 || i == 8 ? 1 : i == 1 ? 7 : i == 2 ? 2 : 0;
       dyn_global_ctors[i] = scr_dyn_new_func(scr_closure_new((void *)dyn_global_ctor_names[i], 0),
-                                             dyn_global_ctor_call, length, dyn_s6,
+                                             dyn_global_ctor_call, dyn_global_ctor_lengths[i], dyn_s6,
                                              dyn_global_ctor_names[i]);
       /* `o.constructor.prototype` of a plain object is Object.prototype
        * (zod's isPlainObject). The other prototypes are not modeled. */
@@ -2145,6 +2177,32 @@ static ScrDyn *dyn_inherited_from(const char *ctor, int methods, const ScrStr *k
   return method;
 }
 
+/* The methods Array.prototype installs, in the order the prototype object
+ * defines them. `arity` is the ECMAScript `length` of the function the name
+ * holds. */
+static const struct {
+  const char *name;
+  size_t arity;
+} dyn_array_prototype_methods[] = {
+  {"at", 1}, {"concat", 1}, {"copyWithin", 2}, {"fill", 1}, {"find", 1}, {"findIndex", 1},
+  {"findLast", 1}, {"findLastIndex", 1}, {"lastIndexOf", 1}, {"pop", 0}, {"push", 1},
+  {"reverse", 0}, {"shift", 0}, {"unshift", 1}, {"slice", 2}, {"sort", 1}, {"splice", 2},
+  {"includes", 1}, {"indexOf", 1}, {"join", 1}, {"keys", 0}, {"entries", 0}, {"values", 0},
+  {"forEach", 1}, {"filter", 1}, {"flat", 0}, {"flatMap", 1}, {"map", 1}, {"every", 1},
+  {"some", 1}, {"reduce", 1}, {"reduceRight", 1}, {"toReversed", 0}, {"toSorted", 1},
+  {"toSpliced", 2}, {"with", 2}, {"toLocaleString", 0}, {"toString", 0},
+};
+
+/* Whether `key` names one of the methods Array.prototype installs. */
+static bool dyn_array_prototype_defines(const ScrStr *key) {
+  for (size_t i = 0; i < sizeof dyn_array_prototype_methods / sizeof dyn_array_prototype_methods[0];
+       i++) {
+    const char *name = dyn_array_prototype_methods[i].name;
+    if (strlen(name) == key->len && memcmp(name, key->data, key->len) == 0) return true;
+  }
+  return false;
+}
+
 /* The inherited member `key` of `d` when its own chain does not define it,
  * or NULL (the read's undefined stands). */
 static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
@@ -2176,8 +2234,22 @@ static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
     return dyn_inherited_from(dyn_s26, DYN_INHERIT_ALL, key);
   }
   case SCR_DYN_ARR:
-    /* Array.prototype defines toString and answers constructor itself. */
+    /* Array.prototype answers constructor itself. */
     if (d->null_proto || d->prototype || scr_dyn_has_own(d, key)) return NULL;
+    /* An array literal's implicit prototype is the object Array.prototype
+     * installs its methods on, so reading `[].slice` answers the function
+     * `Array.prototype.slice` reads as. The read that reached here already
+     * went through that prototype, so a name it carries — a program's own
+     * definition, a getter included — has already run once with the array
+     * as its receiver: the undefined read stands instead of a second read
+     * running the getter again. Otherwise the table installs on first use,
+     * exactly as a read of Array.prototype does. */
+    if (dyn_array_prototype_defines(key)) {
+      if (scr_dyn_array_prototype_owns(key)) return NULL;
+      ScrDyn *prototype = scr_dyn_array_prototype();
+      scr_dyn_release(prototype);
+      return scr_dyn_arr_named_get(d, key);
+    }
     return dyn_inherited_from(NULL, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
   case SCR_DYN_FUNC:
     /* Function.prototype defines toString and answers constructor itself. */
@@ -2319,10 +2391,29 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
   ScrDyn *result = NULL;
   bool timeout = strcmp(name->data, dyn_s16) == 0;
   if (timeout || strcmp(name->data, dyn_s15) == 0) {
-    double ms = 0;
-    if (dyn_builtin_fn_callback(args, argc) && (argc < 2 || scr_dyn_number_coerce_js(args[1], &ms))) {
-      ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
-      result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+    /* Node validates the callback, then its Timeout constructor takes an
+     * undefined delay as the default 1ms, converts another as `after *= 1`
+     * does (a BigInt throws its TypeError) and warns when it sets the
+     * delay to 1. */
+    if (dyn_builtin_fn_callback(args, argc)) {
+      double ms = NAN;
+      bool converted = true;
+      if (argc >= 2 && args[1]->kind != SCR_DYN_UNDEF) {
+        ScrDyn *one = scr_dyn_new_num(1);
+        ScrStr *times = scr_str_new("*", 1);
+        ScrDyn *product = scr_dyn_arithmetic(args[1], one, times);
+        scr_str_release(times);
+        scr_dyn_release(one);
+        converted = product != NULL;
+        if (product) {
+          ms = scr_timer_user_delay(product->v.num, timeout ? 0 : 1);
+          scr_dyn_release(product);
+        }
+      }
+      if (converted) {
+        ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
+        result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+      }
     }
   } else if (strcmp(name->data, dyn_s13) == 0) {
     if (dyn_builtin_fn_callback(args, argc))
@@ -2407,25 +2498,28 @@ ScrDyn *scr_dyn_array_prototype(void) {
   ScrDyn *prototype = scr_dyn_array_prototype_base();
   if (initialized) return prototype;
   initialized = true;
-  static const struct { const char *name; size_t arity; } methods[] = {
-    {"at", 1}, {"concat", 1}, {"copyWithin", 2}, {"fill", 1}, {"find", 1}, {"findIndex", 1},
-    {"findLast", 1}, {"findLastIndex", 1}, {"lastIndexOf", 1}, {"pop", 0}, {"push", 1},
-    {"reverse", 0}, {"shift", 0}, {"unshift", 1}, {"slice", 2}, {"sort", 1}, {"splice", 2},
-    {"includes", 1}, {"indexOf", 1}, {"join", 1}, {"keys", 0}, {"entries", 0}, {"values", 0},
-    {"forEach", 1}, {"filter", 1}, {"flat", 0}, {"flatMap", 1}, {"map", 1}, {"every", 1},
-    {"some", 1}, {"reduce", 1}, {"reduceRight", 1}, {"toReversed", 0}, {"toSorted", 1},
-    {"toSpliced", 2}, {"with", 2}, {"toLocaleString", 0}, {"toString", 0},
-  };
-  for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {
-    ScrStr *name = scr_str_new(methods[i].name, strlen(methods[i].name));
+  for (size_t i = 0; i < sizeof dyn_array_prototype_methods / sizeof dyn_array_prototype_methods[0];
+       i++) {
+    ScrStr *name = scr_str_new(dyn_array_prototype_methods[i].name,
+                               strlen(dyn_array_prototype_methods[i].name));
+    /* A name the program already installed on Array.prototype keeps the
+     * program's descriptor. A JavaScript prototype carries its methods
+     * before the program runs, so a program's definition replaces one; the
+     * lazily installed table must not replace the program's definition. */
+    if (scr_dyn_has_own(prototype, name)) {
+      scr_str_release(name);
+      continue;
+    }
     ScrDyn *method;
-    if (!strcmp(methods[i].name, "values")) method = scr_dyn_array_values_function();
+    if (!strcmp(dyn_array_prototype_methods[i].name, "values"))
+      method = scr_dyn_array_values_function();
     else {
       ScrClosure *closure = scr_closure_new(NULL, 1);
       closure->caps[0] = scr_box_new(SCR_BOX_STR);
       scr_box_set_ref(closure->caps[0], scr_str_retain(name));
-      method = scr_dyn_new_func(closure, dyn_array_method_value_call, methods[i].arity,
-        "native:Array.prototype", methods[i].name);
+      method = scr_dyn_new_func(closure, dyn_array_method_value_call,
+        dyn_array_prototype_methods[i].arity, "native:Array.prototype",
+        dyn_array_prototype_methods[i].name);
     }
     ScrDyn *descriptor = scr_dyn_new_obj();
     scr_dyn_obj_set(descriptor, "value", 5, method);
@@ -2441,8 +2535,12 @@ ScrDyn *scr_dyn_array_prototype(void) {
   return prototype;
 }
 
-/* Object.defineProperties over dyn values (see scr_runtime.h). */
-static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
+/* Object.defineProperties over dyn values (see scr_runtime.h). With a
+ * `read_any` (scr_dyn_descriptor_snapshot), each descriptor may be any
+ * object; otherwise it must be a plain object. Only the entry point that
+ * passes it references the reader, so other programs do not link it. */
+static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys,
+                                             ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
   /* Island-held operands ARE objects to Node — the non-object TypeError
    * below would be a wrong claim. They are fenced with a "not supported
    * yet" error instead (lane dyn-routing-ops). */
@@ -2469,6 +2567,12 @@ static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrD
     if (!scr_dyn_obj_enumerable(descs, name->data, name->len)) continue;
     ScrDyn *descriptor = scr_dyn_obj_read(descs, name->data, name->len);
     if (!descriptor) goto fail;
+    if (read_any) {
+      ScrDyn *snapshot = read_any(descriptor);
+      scr_dyn_release(descriptor);
+      if (!snapshot) goto fail;
+      descriptor = snapshot;
+    }
     if (descriptor->kind != SCR_DYN_OBJ) {
       ScrJsonBuf b;
       scr_jb_init(&b);
@@ -2541,11 +2645,15 @@ fail:
 }
 
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs) {
-  return scr_dyn_define_props_internal(target, descs, NULL);
+  return scr_dyn_define_props_internal(target, descs, NULL, NULL);
+}
+
+ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs) {
+  return scr_dyn_define_props_internal(target, descs, NULL, scr_dyn_descriptor_snapshot);
 }
 
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys) {
-  return scr_dyn_define_props_internal(target, descs, protected_keys);
+  return scr_dyn_define_props_internal(target, descs, protected_keys, NULL);
 }
 
 ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptors) {
@@ -2553,6 +2661,16 @@ ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptor
   if (!object) return NULL;
   if (descriptors->kind == SCR_DYN_UNDEF) return object;
   ScrDyn *defined = scr_dyn_define_props(object, descriptors);
+  if (!defined) { scr_dyn_release(object); return NULL; }
+  scr_dyn_release(defined);
+  return object;
+}
+
+ScrDyn *scr_dyn_obj_create_with_properties_shapes(ScrDyn *prototype, ScrDyn *descriptors) {
+  ScrDyn *object = scr_dyn_obj_create(prototype);
+  if (!object) return NULL;
+  if (descriptors->kind == SCR_DYN_UNDEF) return object;
+  ScrDyn *defined = scr_dyn_define_props_shapes(object, descriptors);
   if (!defined) { scr_dyn_release(object); return NULL; }
   scr_dyn_release(defined);
   return object;

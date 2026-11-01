@@ -1,0 +1,6 @@
+generic-identity-pinned-signatures.ts:20:13 - error SC1090: comparing two values of the generic function 'ident' pinned at different signatures by identity (each pinned signature is a separate compiled function object; JavaScript has one) — hold 'ident' at a single signature, or compare values pinned to the same signature is not supported yet
+
+  19 | }
+  20 | console.log(num === new Pins().held);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~
+  21 | 

@@ -1,6 +1,10 @@
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
-import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
+import {
+  keepsCheckedDynamicValue,
+  keepsInitializerLayout,
+  notePreservedLayout,
+} from "./structural-instances.js";
 import { partialFieldRead } from "./partial-assertions.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
@@ -21,6 +25,7 @@ import {
 } from "./indexed-unions.js";
 import {
   declaredMemberOf,
+  fenceDatePrototypeWrite,
   isPromisePrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
@@ -34,7 +39,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
-import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
+import { literalFieldKeys, runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -54,11 +59,12 @@ import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/
 import * as ts from "../ts7/adapter.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
+import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
-import { lowerConstructorReturn } from "./constructor-returns.js";
+import { clearPendingPrimitiveReturn, lowerConstructorReturn } from "./constructor-returns.js";
 import type { DynamicSlot, Lowerer } from "./lowerer.js";
 import type { ScrDiagnostic, TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
@@ -128,6 +134,7 @@ import {
   staticImportNamespaceType,
 } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
+import { lowerPrimitiveBaseDelete, isPrimitiveValueType } from "./primitive-throws.js";
 import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
@@ -181,6 +188,7 @@ import {
   bindingGenericFnAliasInfoOf,
   bindingGenericFnInfoOf,
   bindingGenericFnNodeOf,
+  genericAliasPresenceStore,
   genericBindingPresenceStore,
   genericBindingStoredValue,
   implicitLocalFnInfoOf,
@@ -1126,6 +1134,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
       lowerer.dynConvertible(type)
     )
       type = DYN;
+    // An island handle binding holds a checked-dynamic value whatever its
+    // declared type says: its own declaration lowers as one, and so must
+    // the slot a closure captured first.
+    if (islandHandleBinding(lowerer, decl.name)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     const name = decl.name.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
@@ -1263,7 +1275,9 @@ function hostVariableDeclarationOf(name: ts.Identifier): ts.VariableDeclaration 
   while (ts.isBindingElement(n) || ts.isArrayBindingPattern(n) || ts.isObjectBindingPattern(n)) {
     n = n.parent;
   }
-  return ts.isVariableDeclaration(n) ? n : null;
+  // A catch parameter is a VariableDeclaration of the CatchClause: its
+  // bindings are scoped to the clause, and each execution makes new ones.
+  return ts.isVariableDeclaration(n) && !ts.isCatchClause(n.parent) ? n : null;
 }
 
 /** `for (var x of ...)` loop variables: the ONE function-scoped binding
@@ -2014,13 +2028,43 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // observed empty returns even when JSDoc omits undefined. Any remaining
     // incompatible boundary keeps the ordinary per-statement refusal.
     let value: IrExpr | null = null;
+    // A derived constructor that can record a pending TypeError on a
+    // primitive return drops it when a return of its own completes: a
+    // `finally` block's `return;`, `return undefined` or `return this`
+    // replaces the earlier completion instead of leaving it pending. The
+    // drop follows the operand, which may throw — an operand that throws
+    // never completes the return, so a `finally` that catches it and then
+    // finishes resumes the earlier primitive return (and its TypeError).
+    const withClearedPending = (ret: IrStmt): IrStmt => {
+      const clear = clearPendingPrimitiveReturn(lowerer, stmt);
+      if (clear.length === 0) return ret;
+      const loc = locOf(stmt);
+      const body = ret.kind === "block" ? ret.body : [ret];
+      const last = body.at(-1);
+      if (last?.kind !== "return") return { kind: "block", body: [...clear, ret], loc };
+      const before = body.slice(0, -1);
+      if (last.value === null) return { kind: "block", body: [...before, ...clear, last], loc };
+      // A constructor returns void, so a valued operand only evaluates for
+      // effect — ahead of the drop, since a `return this.fail()` inside a
+      // `finally` that catches the throw never completes.
+      return {
+        kind: "block",
+        body: [
+          ...before,
+          { kind: "exprStmt", expr: last.value, loc },
+          ...clear,
+          { kind: "return", value: null, loc },
+        ],
+        loc,
+      };
+    };
     if (stmt.expression) {
       // A constructor's returned object replaces the constructed `this`.
       if (lowerer.currentClass?.ctor) {
         const constructorReturn = lowerConstructorReturn(lowerer, stmt);
         if (constructorReturn !== null) return constructorReturn;
       }
-      return lowerer.lowerReturnStmt(stmt.expression, locOf(stmt));
+      return withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
     } else if (lowerer.ctx.returnType.kind === "union") {
       value = lowerer.wrappedUndefined(lowerer.ctx.returnType, locOf(stmt));
       if (value === null) {
@@ -2041,8 +2085,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     }
     // An async generator's bare return has no operand to await.
     if (lowerer.ctx.isAsync === true && lowerer.ctx.generator)
-      return { kind: "return", value, awaited: true, loc: locOf(stmt) };
-    return { kind: "return", value, loc: locOf(stmt) };
+      return withClearedPending({ kind: "return", value, awaited: true, loc: locOf(stmt) });
+    return withClearedPending({ kind: "return", value, loc: locOf(stmt) });
   }
   if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {
     const kw = ts.isBreakStatement(stmt) ? ("break" as const) : ("continue" as const);
@@ -5774,13 +5818,13 @@ export function lowerVarDeclList(
   const out: IrStmt[] = [];
   for (const decl of list.declarations.nodes) {
     if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
-      // Destructuring produces nested initialization blocks; copying
-      // their captured bindings still needs a distinct head-scope plan.
-      lowerer.unsupported(
-        "SC1031",
-        decl.name,
-        "let/const destructuring in for-loop initializers (declare the pattern before the loop, or use var)",
-      );
+      // The pattern desugars to a flat statement list whose bindings are
+      // ordinary head declarations (`for (let [a, b] = xs; ...)`: `%destr`
+      // plus `a`, `b`), so the loop emitter finds them as head lets and
+      // freshens the captured ones per iteration like any other
+      // declarator (emit-statements: capturedLets).
+      out.push(...lowerer.lowerDestructuringDecl(decl, isLet));
+      continue;
     }
     const lowered = lowerer.lowerVarDecl(decl, isLet);
     if (!lowered)
@@ -6171,6 +6215,10 @@ export function lowerVarDecl(
     }
   }
   if (!ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
+  // A binding that holds `process.env` under any type but the env record
+  // is a snapshot copy whose reads would drift from Node's live table
+  // (refuseHeldEnvCopyHold); refuse it here, at the hold itself.
+  refuseHeldEnvCopyHold(lowerer, decl.name, decl);
   {
     const alias = lowerTupleAliasDecl(lowerer, decl);
     if (alias) return alias;
@@ -6331,10 +6379,10 @@ export function lowerVarDecl(
 
   // `const h = id` — an ALIAS of a generic function: the alias's symbol
   // registers the target's info (calls and pinned values resolve like
-  // the target's own name), the binding has no runtime value, and the
-  // statement emits nothing (collectGlobals skipped module-scope
-  // globals by the same test; block-scoped aliases register here).
-  if (bindingGenericFnAliasInfoOf(lowerer, decl)) return null;
+  // the target's own name) and the binding has no runtime value, so the
+  // statement emits nothing but the flag of a module-scope alias whose
+  // reads can run before it (genericAliasPresenceStore).
+  if (bindingGenericFnAliasInfoOf(lowerer, decl)) return genericAliasPresenceStore(lowerer, decl);
 
   // `const stored = overloadedDeclaration`: no runtime slot is needed;
   // calls project onto the declaration's implementation ABI and value
@@ -6464,6 +6512,12 @@ export function lowerVarDecl(
       raw.type.kind === "dyn" &&
       (g.type.kind === "record" ||
         g.type.kind === "object" ||
+        // `const p = Promise.all.call(C, xs)` in JavaScript: the call runs
+        // the specification's algorithm with `C`'s capability and returns
+        // whatever `C` constructed, a foreign instance the checker still
+        // calls `Promise<T>`. The binding holds that value as dyn; a
+        // native-promise check would reject it (t262-db B3).
+        (g.type.kind === "promise" && isJsPromiseStaticCall(raw)) ||
         (ts.isIdentifier(decl.name) &&
           jsBindingKeepsCheckedObject(lowerer, decl.name, g.type) &&
           (existingValueForm(decl.initializer) || jsHoldsDynObject(lowerer, decl.initializer))))
@@ -6480,6 +6534,11 @@ export function lowerVarDecl(
       g.type = raw.type;
       notePreservedLayout(lowerer, decl);
     }
+    if (
+      !isVarDeclared(decl) &&
+      keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
+    )
+      g.type = raw.type;
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -6670,6 +6729,11 @@ export function lowerVarDecl(
     type = init.type;
     notePreservedLayout(lowerer, decl);
   }
+  // An index-signature binding whose assertion of an existing value lowered
+  // to that value (narrowing.ts keeps it instead of answering a copy whose
+  // keys live in a map of its own) keeps the value too: converting it here
+  // would take every write through the binding with it.
+  if (keepsCheckedDynamicValue(lowerer, decl.initializer, init.type, type)) type = init.type;
   // A JavaScript binding assigned values outside its declared type
   // (analyzeJsWidenedBindings in lowerer.ts) holds them as checked-dynamic.
   {
@@ -6734,10 +6798,20 @@ export function lowerVarDecl(
     init.type.kind === "dyn" &&
     !decl.type &&
     keptIdentityAssertion(lowerer, decl.initializer) !== undefined;
+  // `const p = Promise.all.call(C, xs)` in JavaScript: the checked-dynamic
+  // promise-static call returns whatever `C` constructed — a foreign
+  // instance, not the `Promise<T>` the checker infers from the signature —
+  // so the binding holds it as dyn (t262-db B3).
+  const keepsPromiseStaticValue =
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isJsPromiseStaticCall(init);
   if (
     expandsObject ||
     preservesObjectIdentity ||
     keepsAssertedObject ||
+    keepsPromiseStaticValue ||
     (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       isNativeBuiltinValueInitializer(lowerer, decl.initializer))
@@ -7156,6 +7230,17 @@ function inferredOptionalRecordType(
   )
     return declared;
   return actual;
+}
+
+/** Whether a lowered initializer is the checked-dynamic `Promise.<static>.call(C, …)`
+ * call (lower-calls.ts, JavaScript sources only). Its result is whatever `C`
+ * constructed, so a binding the checker typed `Promise<T>` holds it as dyn. */
+function isJsPromiseStaticCall(value: IrExpr): boolean {
+  // Surplus arguments evaluate as statements before the call, so the
+  // initializer is a sequence expression whose result is the call.
+  let result = value;
+  while (result.kind === "seqExpr") result = result.result;
+  return result.kind === "libCall" && result.fn === "promise.genericStatic";
 }
 
 function lowerVariableInitializer(
@@ -7876,10 +7961,15 @@ function lowerBranchSwitch(
  *   === "string"/"number"/"boolean"`), reads under a proven narrow
  *   (caughtRead bridges them with caughtNarrow, verified at run time like
  *   unionNarrow), and rethrow (`throw e`). Unsupported raw uses and
- *   assignments are fenced (SC1063 and friends); destructuring patterns
- *   are SC1062. Captures retain the snapshot beyond the catch scope.
- *   The `: any` / `: unknown` annotations tsc admits both
- *   lower the same way (tsc narrows either through the tests).
+ *   assignments are fenced (SC1063 and friends). The `: any` /
+ *   `: unknown` annotations tsc admits both lower the same way (tsc
+ *   narrows either through the tests). Captures retain the snapshot
+ *   beyond the catch scope.
+ * - `catch ([a])` / `catch ({ p })` binds the thrown value through a
+ *   destructuring pattern: the exception cell keeps its hidden CAUGHT
+ *   local, and the pattern reads its checked-dynamic view
+ *   (caughtToDyn), so a JS catch parameter that destructures lowers the
+ *   way the same pattern does over an `any` source.
  * - `finally` runs on normal completion, exception paths, and every
  *   abrupt completion that crosses it. Return values are snapshotted
  *   before cleanup; an abrupt completion inside the finally replaces the
@@ -7892,9 +7982,6 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   let catchLocalId: string | null = null;
   if (stmt.catchClause) {
     const vd = stmt.catchClause.variableDeclaration;
-    if (vd && !ts.isIdentifier(vd.name)) {
-      lowerer.unsupported("SC1062", vd);
-    }
     if (vd && ts.isIdentifier(vd.name)) {
       lowerer.scopes.push(new Map());
       try {
@@ -7905,7 +7992,62 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
         lowerer.scopes.pop();
       }
     } else {
-      catchBody = lowerer.lowerScopedBlock(stmt.catchClause.block);
+      lowerer.scopes.push(new Map());
+      try {
+        if (vd) {
+          // `catch ([a])` / `catch ({ a })`: the thrown value crosses into
+          // the checked-dynamic tree and the pattern binds through the same
+          // per-read fences a dyn source takes — GetIterator for an array
+          // pattern (positions past the end bind undefined, an iterator
+          // with values left closes) and RequireObjectCoercible plus keyed
+          // reads for an object pattern. The hidden CAUGHT local is the
+          // exception cell every other catch path binds; the dyn conversion
+          // is its identity-preserving view (caughtToDyn).
+          const loc = locOf(vd);
+          const local = lowerer.declareHiddenLocal("%caught", CAUGHT);
+          catchLocalId = local.id;
+          const tmp = lowerer.declareHiddenLocal("%destr", DYN);
+          const out: IrStmt[] = [
+            {
+              kind: "varDecl",
+              localId: tmp.id,
+              init: { kind: "caughtToDyn", value: varRef(local.id, CAUGHT, loc), type: DYN, loc },
+              loc,
+            },
+          ];
+          // V8 spells the catch parameter's source '.catch' in the
+          // RequireObjectCoercible TypeError ("Cannot destructure property
+          // 'a' of '.catch' as it is null."), except when the first element
+          // has a default: V8 reads that key first, so a nullish source
+          // throws the read's TypeError, which the pattern's own first read
+          // throws.
+          if (ts.isObjectBindingPattern(vd.name) && !firstReadsWithDefault(vd.name))
+            out.push({
+              kind: "exprStmt",
+              expr: {
+                kind: "dynDestrCheck",
+                value: varRef(tmp.id, DYN, loc),
+                spelling: ".catch",
+                ...firstPatternProp(lowerer, vd.name),
+                type: DYN,
+                loc,
+              },
+              loc,
+            });
+          lowerer.lowerBindingPattern(
+            vd.name as ts.ArrayBindingPattern | ts.ObjectBindingPattern,
+            () => varRef(tmp.id, DYN, loc),
+            DYN,
+            true, // catch bindings are mutable
+            out,
+          );
+          catchBody = [...out, ...lowerer.lowerScopedBlock(stmt.catchClause.block)];
+        } else {
+          catchBody = lowerer.lowerScopedBlock(stmt.catchClause.block);
+        }
+      } finally {
+        lowerer.scopes.pop();
+      }
     }
   }
   const finallyBody = stmt.finallyBlock ? lowerer.lowerScopedBlock(stmt.finallyBlock) : null;
@@ -7919,13 +8061,71 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   };
 }
 
+/** The refusal for `delete` of an optional `unknown`/`any` field, whose
+ * slot is the checked-dynamic one and so has no ABSENT state to write. */
+const OPTIONAL_CHECKED_DYN_DELETE =
+  "'delete' of optional 'unknown'/'any' fields (the checked-dynamic slot has no absent state yet — an omitted such field already reads as present)";
+
+/** TypeScript's declaration marks property `name` of `receiver` optional
+ * (`?:`), in every union constituent. A mapped IR type cannot tell an
+ * optional `unknown`/`any` field from a required one — both ride the
+ * checked-dynamic slot — so a refused `delete`'s real reason comes from
+ * the declaration. */
+function declaredOptionalProperty(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  name: string,
+): boolean {
+  const receiverType = lowerer.typeOf(receiver);
+  const parts =
+    receiverType.flags & ts.TypeFlags.Union ? constituentTypes(receiverType) : [receiverType];
+  return parts.every((part) => {
+    const property = lowerer.checker.getPropertyOfType(part, name);
+    return property !== undefined && (property.flags & ts.SymbolFlags.Optional) !== 0;
+  });
+}
+
+/** `type` — a record or a union whose every arm is a non-tuple record —
+ * declares `name` in the checked-dynamic slot, which has no ABSENT state:
+ * an optional such field cannot be removed by a `delete`. */
+function declaresCheckedDynField(lowerer: Lowerer, type: IrType, name: string): boolean {
+  if (type.kind === "record") {
+    const shape = lowerer.shapes.get(type.shapeId);
+    if (!shape || shape.tuple) return false;
+    return shape.fields.find((f) => f.name === name)?.type.kind === "dyn";
+  }
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  return arms.length > 0 && arms.every((arm) => declaresCheckedDynField(lowerer, arm, name));
+}
+
+/** The constant property key of a `delete` target: the name of a dot
+ * access, or the one key of a bracket access spelled as a literal or
+ * proved by a literal-typed binding (`const key = "a"`). A key of several
+ * literals folds to nothing — deleting it would need per-key dispatch, so
+ * the record branch refuses and names the keys. Consistent with keyed
+ * record reads/writes (literalFieldKeys), the key expression is not
+ * evaluated: only a literal or an identifier folds, and an identifier
+ * read is pure. */
+function constantDeleteKey(lowerer: Lowerer, target: ts.Expression): string | null {
+  if (ts.isPropertyAccessExpression(target)) return target.name.text;
+  if (!ts.isElementAccessExpression(target)) return null;
+  const keyNode = target.argumentExpression;
+  if (ts.isStringLiteralLike(keyNode)) return keyNode.text;
+  if (!ts.isIdentifier(keyNode)) return null;
+  const keys = literalFieldKeys(lowerer, keyNode);
+  return keys?.length === 1 ? keys[0]! : null;
+}
+
 /** Statement-position `delete`: process.env keys → process.envUnset
  * (unsetenv), pure `Record<string, T>` keys → recordKeyDelete (the
  * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
  * state (the slot reads undefined and no longer counts as an own
  * property). Everything else
- * fences with the honest reason — a required field is a struct slot no
- * runtime can remove. */
+ * fences with the honest reason — a required record field is a struct slot
+ * with no ABSENT state, a class field is part of the instance's fixed
+ * layout, and an optional `unknown`/`any` field maps to the
+ * checked-dynamic slot, which has no ABSENT state yet. */
 function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrStmt {
   const loc = locOf(expr);
   let target: ts.Expression = expr.expression;
@@ -7933,6 +8133,9 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   if (!ts.isElementAccessExpression(target) && !ts.isPropertyAccessExpression(target)) {
     lowerer.unsupported("SC1090", expr, "'delete' of non-property expressions");
   }
+  // Deleting a member of `Date.prototype` is a write through the read-only
+  // prototype value (property-access.ts's fence).
+  fenceDatePrototypeWrite(lowerer, target);
   fenceNodeModuleMutation(lowerer, target, "delete");
   if (ts.isPropertyAccessExpression(target) && target.name.text === "cause") {
     const field = lowerer.fieldTarget(target);
@@ -7958,9 +8161,11 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       return { kind: "strLit", value: target.name.text, type: STRING, loc: locOf(target.name) };
     }
     const keyNode = (target as ts.ElementAccessExpression).argumentExpression;
-    let key = lowerer.isProcessEnv(target.expression)
-      ? lowerEnvironmentKey(lowerer, keyNode)
-      : lowerer.lowerExpr(keyNode);
+    let key =
+      lowerer.isProcessEnv(target.expression) ||
+      heldEnvValueType(lowerer, target.expression) !== null
+        ? lowerEnvironmentKey(lowerer, keyNode)
+        : lowerer.lowerExpr(keyNode);
     if (key.type.kind === "dyn") {
       key = { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
     }
@@ -7976,7 +8181,10 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     }
     return key;
   };
-  if (lowerer.isProcessEnv(target.expression)) {
+  if (
+    lowerer.isProcessEnv(target.expression) ||
+    heldEnvValueType(lowerer, target.expression) !== null
+  ) {
     return {
       kind: "exprStmt",
       expr: { kind: "libCall", fn: "process.envUnset", args: [lowerKey()], type: VOID, loc },
@@ -7992,6 +8200,18 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     if (unionDelete) return unionDelete;
   }
   let obj = lowerer.lowerExpr(target.expression);
+  // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key,
+  // and the base's type decides the answer — null and undefined throw
+  // Node's TypeError, `?.` on a nullish base short-circuits to `true`
+  // without evaluating the key, and every other primitive deletes from its
+  // ToObject wrapper (a String's indexes and `length` refuse the delete).
+  if (isPrimitiveValueType(obj.type)) {
+    return {
+      kind: "exprStmt",
+      expr: lowerPrimitiveBaseDelete(lowerer, expr, target, obj, VOID),
+      loc,
+    };
+  }
   // `delete this.stack` in an Error subclass that declares a `stack`
   // accessor (quickjs-wasi's JSException): V8 gives each error an own
   // `stack` that shadows the accessor, and the delete removes it so reads
@@ -8069,6 +8289,20 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       loc,
     };
   }
+  // The constant property key of the target: dot access, a literal
+  // bracket, or an element access whose key is a literal-typed binding
+  // (`const key = "a"; delete r[key]`) — the same stance a keyed record
+  // read/write takes (literalFieldKeys): identifier evaluation is pure, so
+  // skipping it matches JavaScript.
+  const constantKey = constantDeleteKey(lowerer, target);
+  // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
+  // which has no ABSENT state yet (an omitted such field already reads as
+  // present), so it cannot delete. Name that reason instead of calling
+  // the field required or blaming the receiver.
+  const optionalCheckedDynDelete =
+    constantKey !== null &&
+    declaresCheckedDynField(lowerer, obj.type, constantKey) &&
+    declaredOptionalProperty(lowerer, target.expression, constantKey);
   if (obj.type.kind === "record") {
     const shape = lowerer.shapes.get(obj.type.shapeId);
     if (shape?.indexValue && shape.fields.length === 0 && !shape.tuple) {
@@ -8085,14 +8319,9 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     // while a later write makes it present again. Constant keys only
     // (dot access or a literal bracket); required fields keep the honest
     // fence below.
-    const fieldName = ts.isPropertyAccessExpression(target)
-      ? target.name.text
-      : ts.isStringLiteral(target.argumentExpression)
-        ? target.argumentExpression.text
-        : null;
     const field =
-      fieldName !== null && !shape?.tuple
-        ? shape?.fields.find((f) => f.name === fieldName)
+      constantKey !== null && !shape?.tuple
+        ? shape?.fields.find((f) => f.name === constantKey)
         : undefined;
     if (field) {
       const absent = lowerer.absentFieldValue(field.type, loc);
@@ -8119,16 +8348,50 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
         "'delete' of hybrid index-signature keys (declared struct slots and overflow entries answer differently — model deletable dynamic keys with a pure Record<string, T>)",
       );
     }
+    if (optionalCheckedDynDelete) {
+      lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
+    }
+    // A key of SEVERAL literals names no single slot: say that instead of
+    // blaming a field the caller never named.
+    const keyNames =
+      constantKey === null && ts.isElementAccessExpression(target)
+        ? literalFieldKeys(lowerer, target.argumentExpression)
+        : null;
+    if (keyNames !== null && keyNames.length > 1) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'delete' through keys of ${keyNames.length} literals (${keyNames.map((k) => `'${k}'`).join(", ")}; delete one constant key at a time, or switch over the key)`,
+      );
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
-      "'delete' of required record fields (a monomorphic shape cannot remove its slot — only optional fields delete, becoming the undefined arm)",
+      "'delete' of required record fields (the shape's slot cannot be removed — only an optional field (`f?: T`) has an absent state, which Object.keys, 'in', and JSON.stringify follow; make the field optional if the program must remove it)",
+    );
+  }
+  if (optionalCheckedDynDelete) {
+    lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
+  }
+  // A class field lives in the instance's fixed layout: there is no
+  // per-field presence state for a delete to write, so Object.keys,
+  // `in`, and JSON.stringify would keep reporting the field where Node
+  // drops it. Name that reason instead of the generic receiver fence.
+  if (
+    obj.type.kind === "object" &&
+    constantKey !== null &&
+    lowerer.classes.get(obj.type.className)?.fields.has(constantKey)
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "'delete' of class fields (an instance's fields are its fixed layout — there is no per-field presence state, so Object.keys, 'in', and JSON.stringify would still report a deleted field; only optional record fields (`f?: T`) and Record<string, T> keys delete)",
     );
   }
   lowerer.unsupported(
     "SC1090",
     expr,
-    `'delete' on '${lowerer.fmt(obj.type)}' receivers (process.env keys and pure Record<string, T> keys delete)`,
+    `'delete' on '${lowerer.fmt(obj.type)}' receivers (process.env keys, pure Record<string, T> keys, and optional record fields delete)`,
   );
 }
 
@@ -8858,6 +9121,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (urlWrite) return { kind: "exprStmt", expr: urlWrite, loc: locOf(expr) };
     }
     if (opKind === ts.SyntaxKind.EqualsToken) {
+      // A write through `Date.prototype` or one of its members keeps its
+      // fence: the prototype value is a read surface (property-access.ts).
+      if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left))
+        fenceDatePrototypeWrite(lowerer, expr.left);
       const staticPrivateWrite = lowerStaticPrivateAssignment(lowerer, expr);
       if (staticPrivateWrite)
         return { kind: "exprStmt", expr: staticPrivateWrite, loc: locOf(expr) };
@@ -8907,7 +9174,14 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // (Node stringifies everything; a non-string RHS fences instead
         // of diverging from Node). The computed-key form lands in
         // lowerElementWrite.
-        if (lowerer.isProcessEnv(expr.left.expression) && !expr.left.questionDotToken) {
+        // The same setenv for a value HELD from process.env (`const env =
+        // process.env; env.X = v`): the hold aliases the live table, as
+        // Node's does.
+        if (
+          !expr.left.questionDotToken &&
+          (lowerer.isProcessEnv(expr.left.expression) ||
+            heldEnvValueType(lowerer, expr.left.expression) !== null)
+        ) {
           const loc = locOf(expr);
           const key: IrExpr = {
             kind: "strLit",
@@ -9530,6 +9804,8 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     const compound = COMPOUND_ASSIGN_OPS[opKind];
     if (compound !== undefined) {
       // Desugar `x op= e` to `x = x op e` — reads x before e, like JS.
+      if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left))
+        fenceDatePrototypeWrite(lowerer, expr.left);
       if (ts.isElementAccessExpression(expr.left)) {
         // `this[kLimit] += v` — a declared symbol-keyed class field is
         // the dotted compound in element spelling. Array and byte-view
@@ -9576,6 +9852,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       expr.operator === ts.SyntaxKind.MinusMinusToken)
   ) {
     if (ts.isPropertyAccessExpression(expr.operand) || ts.isElementAccessExpression(expr.operand)) {
+      fenceDatePrototypeWrite(lowerer, expr.operand);
       // Statement and value positions share ToNumeric and reference order.
       // Namespace/expando globals retain their direct binding path below.
       const binding = ts.isPropertyAccessExpression(expr.operand)
@@ -10047,8 +10324,8 @@ function destructuringAssignInto(
       ts.isBinaryExpression(rhsInner) &&
       rhsInner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       (ts.isObjectLiteralExpression(rhsInner.left) || ts.isArrayLiteralExpression(rhsInner.left));
-    if (!checkedByInner) {
-      const spelling = rhs === null ? null : destrSpellingOf(rhs);
+    if (!checkedByInner && rhs !== null) {
+      const spelling = destrSpellingOf(rhs);
       if (spelling === null) {
         lowerer.unsupported(
           "SC1031",
@@ -10081,19 +10358,56 @@ function destructuringAssignInto(
     }
     for (const prop of target.properties.nodes) {
       const piece = destructAssignPiece(lowerer, prop);
-      const read: IrExpr = {
+      const propLoc = locOf(prop);
+      let read: IrExpr = {
         kind: "dynKeyGet",
-        key: { kind: "strLit", value: piece.field, type: STRING, loc: locOf(prop) },
+        key: { kind: "strLit", value: piece.field, type: STRING, loc: propLoc },
         value: tmpRef(),
         type: DYN,
-        loc: locOf(prop),
+        loc: propLoc,
       };
+      if (piece.dflt !== undefined) {
+        // `{ x = 1 }` / `{ x: y = 1 }`: the default fires on the undefined
+        // read and is evaluated lazily, exactly the declaration path's
+        // checked-dynamic default.
+        const readTmp = lowerer.declareHiddenLocal("%destr", DYN);
+        out.push({ kind: "varDecl", localId: readTmp.id, init: read, loc: propLoc });
+        const readRef: IrExpr = { kind: "varRef", localId: readTmp.id, type: DYN, loc: propLoc };
+        read = {
+          kind: "ternary",
+          cond: { kind: "dynTest", test: "undefined", value: readRef, type: BOOL, loc: propLoc },
+          then: lowerer.coerceInto(piece.dflt, lowerer.lowerExpr(piece.dflt), DYN),
+          else_: readRef,
+          type: DYN,
+          loc: propLoc,
+        };
+      }
       out.push({
         kind: "assign",
         localId: piece.target.id,
         value: lowerer.coerceInto(prop, read, piece.target.type),
-        loc: locOf(prop),
+        loc: propLoc,
       });
+    }
+    if (rhs === null && target.properties.nodes.length === 0) {
+      // A pattern with no reads still owes the source's own coercion, and a
+      // PRE-LOWERED source (`for ({} of …)`) has no source text: V8 reads
+      // the value instead of spelling it ("Cannot read properties of null").
+      for (const unit of ["null", "undefined"] as const) {
+        out.push({
+          kind: "if",
+          cond: { kind: "dynTest", test: unit, value: tmpRef(), type: BOOL, loc },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: nodeThrowExpr(1, "", `Cannot read properties of ${unit}`, VOID, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
     }
     return { stmts: out, value };
   }
@@ -10666,17 +10980,14 @@ function lowerAssignTargetInto(
 function destructAssignPiece(
   lowerer: Lowerer,
   prop: ts.ObjectLiteralElementLike,
-): { field: string; target: { id: string; type: IrType } } {
+): { field: string; target: { id: string; type: IrType }; dflt?: ts.Expression } {
   let fieldName: string;
   let bindTo: ts.Expression;
+  let dflt: ts.Expression | undefined;
   if (ts.isShorthandPropertyAssignment(prop)) {
-    if (prop.objectAssignmentInitializer) {
-      lowerer.unsupported(
-        "SC1031",
-        prop,
-        "destructuring assignment with defaults (assign, then apply the default)",
-      );
-    }
+    // `{ x = 1 }`: the shorthand's default (the checker's name resolution
+    // still answers the outer binding through the shorthand).
+    dflt = prop.objectAssignmentInitializer;
     fieldName = (prop.name as ts.Identifier).text;
     bindTo = prop.name as ts.Identifier;
   } else if (ts.isPropertyAssignment(prop)) {
@@ -10690,7 +11001,12 @@ function destructAssignPiece(
       );
     }
     fieldName = folded ?? "";
+    // `{ x: y = 1 }`: a defaulted target, the AssignmentPattern spelling.
     bindTo = prop.initializer;
+    if (ts.isBinaryExpression(bindTo) && bindTo.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      dflt = bindTo.right;
+      bindTo = bindTo.left;
+    }
   } else {
     lowerer.unsupported("SC1031", prop, "destructuring assignment with rest or spread properties");
   }
@@ -10716,7 +11032,7 @@ function destructAssignPiece(
       `assignment to '${bindTo.text}' (not a writable local or module global)`,
     );
   }
-  return { field: fieldName, target };
+  return { field: fieldName, target, ...(dflt !== undefined ? { dflt } : {}) };
 }
 
 /** The ARRAY half of destructuring assignment: element assigns from a

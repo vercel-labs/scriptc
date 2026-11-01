@@ -655,7 +655,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           s.value,
           null,
         );
-        emitter.emitNullableFieldStore(obj.name, s.className, s.field, nullable, s.value);
+        emitter.emitNullableFieldStore(
+          obj.name,
+          s.className,
+          s.field,
+          nullable,
+          s.value,
+          emitter.freshFieldStores.has(s),
+        );
         break;
       }
       if (s.kind === "fieldSet" && emitter.int32Slots.isField(s.className, s.field)) {
@@ -690,8 +697,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         s.kind === "fieldSet"
           ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
           : emitter.recordFieldPtr(obj.name, s.shapeId, s.field);
-      // A result-slot entry fills zeroed caller storage, each field once.
-      if (resultSlotStore(emitter.currentFunctionName, s)) emitter.initField(ptr, type, inline, v);
+      // A result-slot entry fills zeroed caller storage, each field once; a
+      // constructor's first store to its own field fills the slot `new` left.
+      if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+        emitter.initField(ptr, type, inline, v);
       else emitter.replaceField(ptr, type, inline, v);
       if (
         s.kind === "fieldSet" &&
@@ -1875,6 +1884,28 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
       );
       emitter.emitUnwind();
+      break;
+    }
+    case "genBindBarrier": {
+      // The end of a generator's parameter prologue (fn.generator.bindAtCall):
+      // suspend invisibly so the spawn wrapper can run the prologue at the
+      // call. No OUT value is produced and no IN value is taken — the first
+      // `.next(v)` argument stays unread, exactly as a suspendedStart
+      // generator discards it — but the resumption may carry an injected
+      // throw or the `.return()` sentinel, so it checks like a yield.
+      if (emitter.currentGenerator === null)
+        throw new InternalCompilerError(
+          "llvm emitter bug: genBindBarrier outside a generator body",
+        );
+      if (emitter.currentCoro !== null) {
+        emitter.emitCoroSuspendPrepared();
+      } else {
+        // A fiber body parks no OUT value and switches back to the resumer:
+        // the valueless yield form the runtime already offers.
+        emitter.declare(`declare void @scr_gen_yield_ref(ptr, ptr)`);
+        B.line(`call void @scr_gen_yield_ref(ptr null, ptr null)`);
+      }
+      emitter.emitPendingCheck();
       break;
     }
     case "tryCatch":

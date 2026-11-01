@@ -1,4 +1,15 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -425,23 +436,41 @@ test("sanitized native artifacts fail before helper resolution", async () => {
   ).rejects.toMatchObject({ diagnosticCode: "SC3002", detailCode: "sanitize_unsupported" });
 });
 
-test("program partitions depend only on module size", () => {
+test("program partitions follow module size and the host's threads", () => {
   const kilobyte = 1024;
   const megabyte = 1024 * kilobyte;
-  expect(nativeProgramPartitions(128 * kilobyte)).toBe(1);
-  expect(nativeProgramPartitions(128 * kilobyte + 1)).toBe(8);
-  expect(nativeProgramPartitions(32 * megabyte)).toBe(8);
+  const sixteen = 16;
+  expect(nativeProgramPartitions(128 * kilobyte, false, sixteen)).toBe(1);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, false, sixteen)).toBe(8);
+  // Two partitions per thread, up to the most an executable uses, while the
+  // module has MIN_PARTITION_BYTES of text for each.
+  expect(nativeProgramPartitions(megabyte, false, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(20 * megabyte, false, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(100 * megabyte, false, sixteen)).toBe(32);
+  // A module the threads cannot divide finely still keeps its 4 MiB
+  // partitions, so a host with few threads divides it as before.
+  expect(nativeProgramPartitions(1024 * megabyte, false, sixteen)).toBe(64);
   // Powers of two keep every function in its partition across small edits.
-  expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
-  expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
-  expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
+  expect(nativeProgramPartitions(512 * kilobyte, false, sixteen)).toBe(16);
+  expect(nativeProgramPartitions(256 * kilobyte, false, sixteen)).toBe(8);
+  // A module too small to fill the host's threads at MIN_PARTITION_BYTES each
+  // gets the partitions its text pays for, and a host with few threads keeps
+  // the smallest divided programs at eight.
+  expect(nativeProgramPartitions(256 * kilobyte, false, 64)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, false, 64)).toBe(32);
+  expect(nativeProgramPartitions(20 * megabyte, false, 64)).toBe(64);
+  expect(nativeProgramPartitions(20 * megabyte, false, 4)).toBe(8);
+  expect(nativeProgramPartitions(200 * megabyte, false, 4)).toBe(64);
+  expect(nativeProgramPartitions(200 * megabyte, false, 2)).toBe(64);
+  expect(nativeProgramPartitions(megabyte, false, 1)).toBe(8);
   // Unoptimized (dev) programs are divided from 64 KiB.
-  expect(nativeProgramPartitions(64 * kilobyte, true)).toBe(1);
-  expect(nativeProgramPartitions(64 * kilobyte + 1, true)).toBe(4);
-  expect(nativeProgramPartitions(128 * kilobyte, true)).toBe(4);
-  expect(nativeProgramPartitions(128 * kilobyte + 1, true)).toBe(8);
-  expect(nativeProgramPartitions(megabyte, true)).toBe(8);
-  expect(nativeProgramPartitions(32 * megabyte + 1, true)).toBe(16);
+  expect(nativeProgramPartitions(64 * kilobyte, true, sixteen)).toBe(1);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true, sixteen)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte, true, sixteen)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, true, sixteen)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, true, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(32 * megabyte + 1, true, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true, 4)).toBe(4);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
     "/build.d/program.o",
     "/build.d/program.part1.o",
@@ -510,3 +539,100 @@ test("LLVM text parts are written as one file and the helper reads a private cop
   expect(await readFile(output, "utf8")).toBe(parts.join(""));
   await expect(stat(input)).rejects.toThrow();
 });
+
+/** Every object the native cache family holds for this package. */
+async function cachedObjects(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.name.endsWith(".o")) files.push(path);
+    }
+  };
+  await walk(join(root, "cache", "native-codegen-v1"));
+  return files.sort();
+}
+
+function identityRecordPath(root: string): string {
+  return join(root, ".scriptc", "identity.json");
+}
+
+function digestOf(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+test("uses the recorded helper identity and keys the cache exactly as hashing does", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "recorded.o");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const recorded = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(recorded.digest).toBe(digestOf(await readFile(pkg.bin)));
+  const hashedKeys = await cachedObjects(pkg.root);
+  expect(hashedKeys).toHaveLength(1);
+
+  // The same build without a record hashes the binary and finds the same entry.
+  await rm(join(pkg.root, ".scriptc"), { recursive: true, force: true });
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  expect(await cachedObjects(pkg.root)).toEqual(hashedKeys);
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  expect(JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8")).digest).toBe(
+    recorded.digest,
+  );
+});
+
+test("a recorded digest keys the cache, and a stale digest is rehashed", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "recorded.o");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const record = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  const realKeys = await cachedObjects(pkg.root);
+
+  // A valid record whose digest is not the binary's own can only reach the
+  // cache key if the build took the digest from the record.
+  await writeFile(
+    identityRecordPath(pkg.root),
+    `${JSON.stringify({ ...record, digest: "0".repeat(64) })}\n`,
+  );
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const recordedKeys = await cachedObjects(pkg.root);
+  expect(recordedKeys).toHaveLength(realKeys.length + 1);
+  expect(await readFile(identityRecordPath(pkg.root), "utf8")).toContain("0".repeat(64));
+
+  // A record the installed files no longer match costs one hash and is replaced.
+  await utimes(pkg.bin, new Date(2020, 0, 1), new Date(2020, 0, 1));
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "touched.o")));
+  const rewritten = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(rewritten.digest).toBe(record.digest);
+  expect(rewritten.dependencies).not.toEqual(record.dependencies);
+});
+
+test("a replaced helper is rehashed and a corrupt record falls back to hashing", async () => {
+  const pkg = await fakePackage();
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "first.o")));
+  const first = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+
+  await writeFile(pkg.bin, `${await readFile(pkg.bin, "utf8")}# replaced\n`);
+  await chmod(pkg.bin, 0o755);
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "second.o")));
+  const replaced = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(replaced.digest).toBe(digestOf(await readFile(pkg.bin)));
+  expect(replaced.digest).not.toBe(first.digest);
+
+  await writeFile(identityRecordPath(pkg.root), "{ not a record\n");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "third.o")));
+  expect(JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8")).digest).toBe(
+    replaced.digest,
+  );
+});
+
+test.skipIf(process.platform === "win32")(
+  "an install that cannot hold the record still builds",
+  async () => {
+    const pkg = await fakePackage();
+    await writeFile(join(pkg.root, ".scriptc"), "not a directory\n");
+    const output = join(pkg.root, "read-only.o");
+    await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+    expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+  },
+);

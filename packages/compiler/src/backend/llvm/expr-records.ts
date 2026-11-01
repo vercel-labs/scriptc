@@ -745,10 +745,13 @@ export function keyedRecordReadInto(
   const B = host.B;
   const shape = host.recordShape(shapeId);
   if (resultType.kind === "dyn") {
-    // A dyn JOIN (the C helper's `surface` dyn arm): declared hits
-    // convert through the per-type toDyn walker (borrowed read → fresh
-    // +1 tree), a dyn-valued overflow hit passes through (+1 from the
-    // map get), and a miss is JS's undefined — the dyn singleton.
+    // A dyn JOIN (the C helper's `surface` dyn arm): a declared hit of a
+    // record, an array or a union holding one boxes as a LIVE capsule of
+    // the field (+1), as `dynFrom` with `liveRef` boxes the same value, so
+    // a write through the result reaches the field it came from; every
+    // other hit converts through the per-type toDyn walker, a dyn-valued
+    // overflow hit passes through (+1 from the map get), and a miss is
+    // JS's undefined — the dyn singleton.
     for (const f of overflowOnly ? [] : shape.fields) {
       const hit = B.tmp();
       B.line(
@@ -766,10 +769,7 @@ export function keyedRecordReadInto(
         B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${v})`);
         B.line(`store ptr ${r}, ptr ${slot}`);
       } else {
-        const conv = host.dyn.toDynHelper(type);
-        const vTy = host.llType(type);
-        const r = B.tmp();
-        B.line(`${r} = call ptr @${conv}(${vTy} ${v})`);
+        const r = host.dyn.liveReadToDyn(B, type, v);
         B.line(`store ptr ${r}, ptr ${slot}`);
       }
       B.br(join);

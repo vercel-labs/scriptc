@@ -305,6 +305,32 @@ test("emitted loops version the body and tag typed-array memory", () => {
   expect(body).not.toMatch(/(load double|store double)[^\n]*invariant\.load/);
 });
 
+test("a mutable-buffers program keeps one checked loop and reloads headers", () => {
+  // for (let i = 0; i < n; i++) out[i] = src[i] * 2 (t262-dc): a call in the
+  // body may resize or detach either buffer, so no length the loop read
+  // before its body bounds the body, and no header stays invariant.
+  const loop = counted([
+    set(ref("out", f64s), ref("i"), bin("*", get(ref("src", f64s), ref("i")), num(2))),
+  ]);
+  const kernel = fn([loop]);
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "__main",
+    bytesHeadersMutable: true,
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      kernel,
+    ],
+  };
+  const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  expect(body).not.toContain("bytes.version");
+  expect(body).not.toContain("!invariant.load");
+  expect(body).toContain("bytes.index.invalid");
+  // Each element access reloads its own header inside the body.
+  expect(body).toMatch(/load ptr, ptr [^\n]*!tbaa !\d+$/m);
+});
+
 test("loops to a typed array's length version the other typed arrays they index", () => {
   const length = (receiver: IrExpr): IrExpr => ({
     kind: "bytesIntrinsic",

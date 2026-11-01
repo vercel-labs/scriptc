@@ -24,6 +24,18 @@ import { lowerAbsenceProbe } from "../lower-exprs.js";
 import { bodyReadsArguments } from "../../arguments-usage.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
 import { voidizedCallback } from "../lower-server.js";
+
+/** Side-effect-free read shapes — identifiers and (optional) property
+ * access chains over them (`options?.input`) — the shapes a lowering may
+ * evaluate more than once (the readOpt re-read discipline). */
+export function isPureReadShape(e: ts.Expression): boolean {
+  if (ts.isIdentifier(e) || e.kind === ts.SyntaxKind.ThisKeyword) return true;
+  if (ts.isPropertyAccessExpression(e)) return isPureReadShape(e.expression);
+  if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e))
+    return isPureReadShape(e.expression);
+  return false;
+}
+
 export function optionalStringTags(
   lowerer: Lowerer,
   type: IrType,

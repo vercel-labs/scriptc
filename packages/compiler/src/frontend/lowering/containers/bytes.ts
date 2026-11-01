@@ -330,10 +330,14 @@ function bytesCallbackHelper(
     type: F64,
     loc,
   });
+  // A mutable-buffers program's receiver length can shrink inside the
+  // callback (the buffer resizes or detaches), while Node's visit captures
+  // %TypedArrayLength once: the loop bound is the captured `n` there.
+  const bound = (): IrExpr => (lowerer.buffersMutable ? n() : length());
   const inRange = (): IrExpr =>
     backward
       ? { kind: "bin", op: ">=", left: i(), right: numLit(0, loc), type: BOOL, loc }
-      : { kind: "bin", op: "<", left: i(), right: length(), type: BOOL, loc };
+      : { kind: "bin", op: "<", left: i(), right: bound(), type: BOOL, loc };
   const advance = (): IrStmt => ({
     kind: "assign",
     localId: "i.0",
@@ -373,7 +377,27 @@ function bytesCallbackHelper(
     { localId: "f.0", name: "f", type: fnT },
     ...(hasInit ? [{ localId: "z.0", name: "z", type: resultT }] : []),
   ];
-  const visit: IrStmt[] = [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
+  // A mutable-buffers program's visit runs to the captured length even after
+  // the buffer shrinks under it, where Node's element Get answers undefined.
+  // The typed model has no undefined in an element slot, so an out-of-view
+  // index reads as NaN, which is what every numeric use of undefined converts
+  // to. The callback still runs, and the result array is independent of the
+  // source, so its element Set always stores.
+  const inView = (): IrExpr =>
+    lowerer.buffersMutable
+      ? { kind: "bin", op: "<", left: i(), right: length(), type: BOOL, loc }
+      : boolLit(true, loc);
+  const visit: IrStmt[] = lowerer.buffersMutable
+    ? [
+        {
+          kind: "if",
+          cond: inView(),
+          then: [{ kind: "assign", localId: "v.0", value: at(i()), loc }],
+          else_: [{ kind: "assign", localId: "v.0", value: numLit(NaN, loc), loc }],
+          loc,
+        },
+      ]
+    : [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
   let seeded = false;
   const prologue: IrStmt[] = [];
   let epilogue: IrStmt[];
@@ -389,13 +413,8 @@ function bytesCallbackHelper(
         init: { kind: "bytesNew", source: n(), type: bytesT, loc },
         loc,
       });
-      visit.push({
-        kind: "bytesSet",
-        arr: acc(),
-        index: i(),
-        value: lowerer.coerceToExpected(callback(), F64),
-        loc,
-      });
+      const mapped = lowerer.coerceToExpected(callback(), F64);
+      visit.push({ kind: "bytesSet", arr: acc(), index: i(), value: mapped, loc });
       if (bytesT.elem === "u8") prologue.push(copyBrand(acc()));
       epilogue = [ret(acc())];
       break;
@@ -618,7 +637,16 @@ export function lowerBytesNew(
     lowerer.isStdlibSymbol(symbol)
   ) {
     const args = expr.arguments?.nodes ?? [];
-    if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    // `new ArrayBuffer(len, { maxByteLength })` is a resizable, growable or
+    // detachable buffer (t262-dc C2). Only a JavaScript source may build
+    // one: the TypeScript surface keeps the fixed-length refusal.
+    const options =
+      args.length === 2 &&
+      !args.some(ts.isSpreadElement) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? args[1]
+        : undefined;
+    if (args.length > (options ? 2 : 1) || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         "resizable ArrayBuffer construction",
         expr,
@@ -628,10 +656,22 @@ export function lowerBytesNew(
     const length = args[0]
       ? lowerer.coerceInto(args[0], lowerer.lowerExpr(args[0]), DYN)
       : dynUndefinedExpr(locOf(expr));
+    const shared = ts.symbolName(symbol) === "SharedArrayBuffer";
+    if (options) {
+      // A resizable or growable construction is the mutableBuffers fact by
+      // itself: the buffer it builds can change length later.
+      lowerer.buffersMutable = true;
+      return {
+        kind: "libCall",
+        fn: shared ? "sharedArrayBuffer.newGrowable" : "arrayBuffer.newResizable",
+        args: [length, lowerer.coerceInto(options, lowerer.lowerExpr(options), DYN)],
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
     return {
       kind: "libCall",
-      fn:
-        ts.symbolName(symbol) === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
+      fn: shared ? "sharedArrayBuffer.new" : "arrayBuffer.new",
       args: [length],
       type: DYN,
       loc: locOf(expr),
@@ -1162,6 +1202,39 @@ export function lowerBytesMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const loc = locOf(call);
   const nArgs = call.arguments.nodes.length;
+  // In JavaScript, copy, toString, slice and subarray called with an offset
+  // that is not statically a number (`b.copy(c, '0')`, `buf.slice('2')`), or
+  // toString with an encoding that is not statically a string, run as the
+  // checked-dynamic Buffer method, which converts them as Node does; the
+  // result returns to the method's static type.
+  const coerced = own(JS_COERCED_OFFSET_SLOTS, name);
+  if (
+    coerced !== undefined &&
+    receiverIr.elem === "u8" &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    !call.arguments.nodes.some(ts.isSpreadElement) &&
+    call.arguments.nodes.some(
+      (a, i) =>
+        (coerced.slots.includes(i) && !kindOrUndefinedArgument(lowerer, a, "f64")) ||
+        (coerced.encoding === i && !kindOrUndefinedArgument(lowerer, a, "string")),
+    )
+  ) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
+    return {
+      kind: "dynCheck",
+      value: {
+        kind: "dynInvoke",
+        recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+        method: name,
+        calleeName: ts.getTextOfNode(access),
+        args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+        type: DYN,
+        loc,
+      },
+      type: coerced.result,
+      loc,
+    };
+  }
   // Encoded stream callbacks can receive strings even when JavaScript's
   // contextual inference still describes their parameter as a Buffer.
   if (name === "toString" && nArgs <= 1 && isJsSourceFile(ts.getSourceFileOfNode(call))) {
@@ -1684,6 +1757,174 @@ export function bufEncoding(lowerer: Lowerer, what: string, encNode: ts.Expressi
   return v;
 }
 
+/** A literal encoding argument's canonical name: a string literal node — a
+ * JavaScript argument outside the parameter's type widens to `string` — or
+ * a string literal type, in any letter case Node accepts. Undefined for a
+ * run-time value and for a spelling Node does not know. */
+function literalBufEncoding(lowerer: Lowerer, encNode: ts.Expression): string | undefined {
+  if (ts.isStringLiteralLike(encNode)) return knownBufEncoding(encNode.text);
+  const t = lowerer.typeOf(encNode);
+  return t.isStringLiteralType() ? knownBufEncoding(t.value) : undefined;
+}
+
+/** Whether an encoding argument's checker type is a string or a unit type
+ * Node reads as "no encoding". Node's methods disagree on other values
+ * (fill throws ERR_INVALID_ARG_TYPE; getEncodingOps coerces with `+ ''`),
+ * so those keep the refusal. */
+function stringOrUnitEncodingType(lowerer: Lowerer, encNode: ts.Expression): boolean {
+  const t = lowerer.typeOf(encNode);
+  const arms = t.flags & ts.TypeFlags.Union ? constituentTypes(t) : [t];
+  return arms.every(
+    (arm) =>
+      (arm.flags &
+        (ts.TypeFlags.StringLike |
+          ts.TypeFlags.Undefined |
+          ts.TypeFlags.Null |
+          ts.TypeFlags.Void)) !==
+      0,
+  );
+}
+
+/** A Buffer encoding argument: a canonical literal name (with any effects
+ * of an explicitly `undefined` argument), or the lowered run-time value and
+ * the normalization Node's method applies to it. */
+type BufEncodingArg =
+  | { readonly literal: string; readonly effects?: IrExpr }
+  | { readonly raw: IrExpr; readonly mode: BufEncodingMode };
+
+/** Which names a run-time encoding accepts. `strict` is Node's
+ * getEncodingOps: an empty or unknown name throws ERR_UNKNOWN_ENCODING
+ * (Buffer.from, fill, write and the string-needle searches).
+ * `emptyUtf8` is Node's normalizeEncoding, which reads an empty name as
+ * utf8. `utf8Fallback` never throws: Buffer.byteLength and a Buffer
+ * needle's search alignment read an unknown name as utf8. */
+type BufEncodingMode = "strict" | "emptyUtf8" | "utf8Fallback";
+
+const BUF_ENCODING_NORMALIZERS: Record<BufEncodingMode, IrLibFn> = {
+  strict: "buffer.normalizeEncoding",
+  emptyUtf8: "buffer.normalizeEncodingEmptyUtf8",
+  utf8Fallback: "buffer.normalizeEncodingOrUtf8",
+};
+
+/** The encoding argument of a Buffer surface: a canonical literal, or the
+ * run-time value normalized as `mode` names. Node throws inside the method
+ * for the names `mode` rejects; the normalization runs where Node's does,
+ * after the other arguments evaluate. */
+function bufEncodingArgument(
+  lowerer: Lowerer,
+  what: string,
+  encNode: ts.Expression,
+  mode: BufEncodingMode,
+  loc: SrcLoc,
+): BufEncodingArg {
+  const literal = literalBufEncoding(lowerer, encNode);
+  if (literal !== undefined) return { literal };
+  const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, encNode);
+  if (undefinedArg) return { literal: "utf8", effects: undefinedArg };
+  if (!stringOrUnitEncodingType(lowerer, encNode)) {
+    lowerer.noLowering(
+      `${what} with this encoding`,
+      encNode,
+      'a literal "utf8", "hex", "base64", "base64url", "latin1", "binary", "ascii", "utf16le", or "ucs2" spelling, or a string value, is the lowered encoding surface',
+    );
+  }
+  const raw = lowerOptionalArgument(lowerer, encNode, STRING, {
+    kind: "strLit",
+    value: "utf8",
+    type: STRING,
+    loc,
+  });
+  return { raw, mode };
+}
+
+/** The run-time normalization Node's method applies to an encoding. */
+function normalizeBufEncoding(
+  enc: { readonly raw: IrExpr; readonly mode: BufEncodingMode },
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "libCall",
+    fn: BUF_ENCODING_NORMALIZERS[enc.mode],
+    args: [enc.raw],
+    type: STRING,
+    loc,
+  };
+}
+
+/** Bind the arguments a Buffer surface evaluates before its encoding (`prior`,
+ * in source order) and then the normalized encoding to hidden locals, so the
+ * normalization (which can throw) runs once, after every argument, and the
+ * name can be read more than once. `passRaw` hands the value over unnormalized
+ * instead, for a surface whose runtime entry reads the name after its own
+ * checks. A literal encoding keeps the call shape unchanged and evaluates
+ * `prior` in place, except that an explicitly undefined argument with
+ * effects binds `prior` and then runs those effects, as JavaScript does. */
+function withBufEncoding(
+  lowerer: Lowerer,
+  enc: BufEncodingArg,
+  loc: SrcLoc,
+  prior: readonly IrExpr[],
+  build: (args: readonly IrExpr[], encoding: IrExpr) => IrExpr,
+  passRaw = false,
+): IrExpr {
+  if ("literal" in enc) {
+    const encoding: IrExpr = { kind: "strLit", value: enc.literal, type: STRING, loc };
+    if (!enc.effects || isSafeToDiscard(enc.effects)) return build(prior, encoding);
+    // An explicitly undefined argument that still has effects runs where
+    // JavaScript evaluates it — after the receiver and the preceding
+    // arguments, before the call — so bind those first.
+    const stmts: IrStmt[] = [];
+    const args = prior.map((expr) => {
+      const local = lowerer.declareHiddenLocal("%bufferArgument", expr.type);
+      stmts.push({ kind: "varDecl", localId: local.id, init: expr, loc });
+      return varRef(local.id, expr.type, loc);
+    });
+    stmts.push({ kind: "exprStmt", expr: enc.effects, loc });
+    const result = build(args, encoding);
+    return { kind: "seqExpr", stmts, result, type: result.type, loc };
+  }
+  const stmts: IrStmt[] = [];
+  const args = prior.map((expr) => {
+    const local = lowerer.declareHiddenLocal("%bufferArgument", expr.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: expr, loc });
+    return varRef(local.id, expr.type, loc);
+  });
+  let encoding = enc.raw;
+  if (!passRaw) {
+    const nameLocal = lowerer.declareHiddenLocal("%bufferEncoding", STRING);
+    stmts.push({
+      kind: "varDecl",
+      localId: nameLocal.id,
+      init: normalizeBufEncoding(enc, loc),
+      loc,
+    });
+    encoding = varRef(nameLocal.id, STRING, loc);
+  }
+  const result = build(args, encoding);
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
+/** The search's unit: Buffer compares whole 2-byte units under utf16le and
+ * searches byte by byte under every other encoding. */
+function bufEncodingAlign(enc: BufEncodingArg, encoding: IrExpr, loc: SrcLoc): IrExpr {
+  if ("literal" in enc) return numLit(enc.literal === "utf16le" ? 2 : 1, loc);
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "strEq",
+      negated: false,
+      left: encoding,
+      right: { kind: "strLit", value: "utf16le", type: STRING, loc },
+      type: BOOL,
+      loc,
+    },
+    then: numLit(2, loc),
+    else_: numLit(1, loc),
+    type: F64,
+    loc,
+  };
+}
+
 const BUF_BIGINT_METHODS: Record<string, { sign: boolean; le: boolean } | undefined> = {
   readBigInt64BE: { sign: true, le: false },
   readBigInt64LE: { sign: true, le: true },
@@ -1698,6 +1939,29 @@ const BUF_BIGINT_METHODS: Record<string, { sign: boolean; le: boolean } | undefi
   writeBigUint64BE: { sign: false, le: false },
   writeBigUint64LE: { sign: false, le: true },
 };
+
+/** The Buffer methods whose arguments JavaScript may pass as other values
+ * (Node converts them): the offset positions, the encoding position, and the
+ * static type of the result. */
+const JS_COERCED_OFFSET_SLOTS: Record<
+  string,
+  { slots: readonly number[]; encoding?: number; result: IrType } | undefined
+> = {
+  copy: { slots: [1, 2, 3], result: F64 },
+  toString: { slots: [1, 2], encoding: 0, result: STRING },
+  slice: { slots: [0, 1], result: BYTES_U8 },
+  subarray: { slots: [0, 1], result: BYTES_U8 },
+};
+
+/** Whether an argument is statically of `kind` or undefined. */
+function kindOrUndefinedArgument(
+  lowerer: Lowerer,
+  arg: ts.Expression,
+  kind: "f64" | "string",
+): boolean {
+  const t = lowerer.mapTypeOf(lowerer.typeOf(arg));
+  return t?.kind === kind || (t !== undefined && t !== null && isUnitType(t));
+}
 
 /** Whether every argument of a numeric read/write is statically a number. */
 function numericArguments(lowerer: Lowerer, call: ts.CallExpression): boolean {
@@ -1765,8 +2029,18 @@ function lowerBufferInstanceMethod(
   const args = call.arguments.nodes;
   const nArgs = args.length;
   if (args.some(ts.isSpreadElement)) return null;
-  const isStringArg = (i: number): boolean =>
-    lowerer.mapTypeOf(lowerer.typeOf(args[i]!))?.kind === "string";
+  // A trailing argument Node reads as the encoding: a string, or a string
+  // that a caller may leave undefined (`enc?: BufferEncoding`). Node treats
+  // an undefined encoding as utf8 and an undefined position as the default,
+  // so the two readings agree.
+  const isEncodingArg = (i: number): boolean => {
+    const t = lowerer.typeOf(args[i]!);
+    const arms = t.flags & ts.TypeFlags.Union ? constituentTypes(t) : [t];
+    return arms.every(
+      (arm) =>
+        (arm.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+    );
+  };
   const u8Arg = (i: number): IrExpr => {
     const v = lowerer.lowerExpr(args[i]!);
     if (!(v.type.kind === "bytes" && v.type.elem === "u8")) {
@@ -1848,63 +2122,128 @@ function lowerBufferInstanceMethod(
     if (nArgs < 1 || nArgs > 3) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     // The overloads: (v), (v, byteOffset), (v, encoding), (v, byteOffset,
     // encoding) — a trailing string-typed arg is the encoding.
-    let encName = "utf8";
+    let encNode: ts.Expression | undefined;
     let offNode: ts.Expression | undefined;
     if (nArgs === 3) {
       offNode = args[1]!;
-      encName = bufEncoding(lowerer, `.${name}`, args[2]!);
+      encNode = args[2]!;
     } else if (nArgs === 2) {
-      if (isStringArg(1)) encName = bufEncoding(lowerer, `.${name}`, args[1]!);
+      if (isEncodingArg(1)) encNode = args[1]!;
       else offNode = args[1]!;
     }
     const resultT = name === "includes" ? BOOL : F64;
     const vT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
     const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
+    const off = offNode ? lowerer.lowerExprExpecting(offNode, F64) : undefined;
     if (vT?.kind === "f64") {
-      // A number needle wraps & 0xFF at runtime (Buffer semantics; the
-      // encoding is irrelevant, like Node).
+      // A number needle wraps & 0xFF at runtime (Buffer semantics). Node
+      // reads the encoding only for string and Buffer needles, but the
+      // argument itself still evaluates.
       const v = lowerer.lowerExprExpecting(args[0]!, F64);
-      const numArgs = [v, ...(offNode ? [lowerer.lowerExprExpecting(offNode, F64)] : [])];
+      const numArgs = [v, ...(off ? [off] : [])];
       const method =
         name === "indexOf"
           ? "indexOfNum"
           : name === "lastIndexOf"
             ? "lastIndexOfNum"
             : "includesNum";
-      return { kind: "bytesIntrinsic", method, receiver, args: numArgs, type: resultT, loc };
+      const result: IrExpr = {
+        kind: "bytesIntrinsic",
+        method,
+        receiver,
+        args: numArgs,
+        type: resultT,
+        loc,
+      };
+      if (encNode === undefined) return result;
+      // The encoding does not name anything for a number needle; only its
+      // expression runs, after the other arguments.
+      const extra = lowerer.lowerExpr(encNode);
+      if (isSafeToDiscard(extra)) return result;
+      const stmts: IrStmt[] = [];
+      const bound = [receiver, ...numArgs].map((expr) => {
+        const local = lowerer.declareHiddenLocal("%bufferArgument", expr.type);
+        stmts.push({ kind: "varDecl", localId: local.id, init: expr, loc });
+        return varRef(local.id, expr.type, loc);
+      });
+      stmts.push({ kind: "exprStmt", expr: extra, loc });
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: {
+          kind: "bytesIntrinsic",
+          method,
+          receiver: bound[0]!,
+          args: bound.slice(1),
+          type: resultT,
+          loc,
+        },
+        type: resultT,
+        loc,
+      };
     }
-    let needle: IrExpr;
-    let align = 1;
     if (vT?.kind === "string") {
+      // Buffer compares the encoded needle. A run-time encoding is
+      // normalized after every argument, so an unknown name throws Node's
+      // ERR_UNKNOWN_ENCODING before the search.
+      const enc = encNode
+        ? bufEncodingArgument(lowerer, `.${name}`, encNode, "strict", loc)
+        : { literal: "utf8" };
       const s = lowerer.lowerExprExpecting(args[0]!, STRING);
-      const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
-      needle = { kind: "libCall", fn: "buffer.fromStr", args: [s, enc], type: BYTES_U8, loc };
-      if (encName === "utf16le") align = 2;
-    } else if (vT?.kind === "bytes" && vT.elem === "u8") {
-      needle = lowerer.lowerExpr(args[0]!);
-      // A Buffer needle under utf16le also searches whole 2-byte units.
-      if (encName === "utf16le") align = 2;
-    } else {
-      lowerer.noLowering(
-        `.${name} of '${lowerer.checker.typeToString(lowerer.typeOf(args[0]!))}' values`,
-        args[0]!,
-        "string, number, and Buffer/Uint8Array needles search (narrow unions first)",
+      return withBufEncoding(
+        lowerer,
+        enc,
+        loc,
+        [receiver, s, ...(off ? [off] : [])],
+        ([recv, sRef, offRef], encoding) => ({
+          kind: "bytesIntrinsic",
+          method: name,
+          receiver: recv!,
+          args: [
+            { kind: "libCall", fn: "buffer.fromStr", args: [sRef!, encoding], type: BYTES_U8, loc },
+            bufEncodingAlign(enc, encoding, loc),
+            ...(offRef ? [offRef] : []),
+          ],
+          type: resultT,
+          loc,
+        }),
       );
     }
-    const alignLit: IrExpr = { kind: "numLit", value: align, type: F64, loc };
-    const searchArgs = [
-      needle,
-      alignLit,
-      ...(offNode ? [lowerer.lowerExprExpecting(offNode, F64)] : []),
-    ];
-    return { kind: "bytesIntrinsic", method: name, receiver, args: searchArgs, type: resultT, loc };
+    if (vT?.kind === "bytes" && vT.elem === "u8") {
+      // A Buffer needle searches byte by byte; only utf16le searches whole
+      // 2-byte units. Node reads an unknown name as utf8 here, without
+      // throwing.
+      const enc = encNode
+        ? bufEncodingArgument(lowerer, `.${name}`, encNode, "utf8Fallback", loc)
+        : { literal: "utf8" };
+      const needle = lowerer.lowerExpr(args[0]!);
+      return withBufEncoding(
+        lowerer,
+        enc,
+        loc,
+        [receiver, needle, ...(off ? [off] : [])],
+        ([recv, needleRef, offRef], encoding) => ({
+          kind: "bytesIntrinsic",
+          method: name,
+          receiver: recv!,
+          args: [needleRef!, bufEncodingAlign(enc, encoding, loc), ...(offRef ? [offRef] : [])],
+          type: resultT,
+          loc,
+        }),
+      );
+    }
+    lowerer.noLowering(
+      `.${name} of '${lowerer.checker.typeToString(lowerer.typeOf(args[0]!))}' values`,
+      args[0]!,
+      "string, number, and Buffer/Uint8Array needles search (narrow unions first)",
+    );
   }
   if (name === "fill") {
     if (nArgs < 1 || nArgs > 4) lowerer.noLowering(`.fill with ${nArgs} arguments`, call);
     // A trailing string-typed arg past the value is the encoding.
     let encNode: ts.Expression | undefined;
     let idxNodes = call.arguments.nodes.slice(1);
-    if (idxNodes.length > 0 && isStringArg(nArgs - 1)) {
+    if (idxNodes.length > 0 && isEncodingArg(nArgs - 1)) {
       encNode = idxNodes[idxNodes.length - 1];
       idxNodes = idxNodes.slice(0, -1);
     }
@@ -1916,17 +2255,26 @@ function lowerBufferInstanceMethod(
     const vT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
     const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
     if (vT?.kind === "string") {
-      const encName = encNode ? bufEncoding(lowerer, ".fill", encNode) : "utf8";
+      // fill's normalization reads an empty encoding as utf8; an unknown
+      // one throws before the range validates, as in Node.
+      const enc = encNode
+        ? bufEncodingArgument(lowerer, ".fill", encNode, "emptyUtf8", loc)
+        : { literal: "utf8" };
       const s = lowerer.lowerExprExpecting(args[0]!, STRING);
-      const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
-      return {
-        kind: "bytesIntrinsic",
-        method: "fillStr",
-        receiver,
-        args: [s, enc, ...idx],
-        type: BYTES_U8,
+      return withBufEncoding(
+        lowerer,
+        enc,
         loc,
-      };
+        [receiver, s, ...idx],
+        ([recv, sRef, ...idxRefs], encoding) => ({
+          kind: "bytesIntrinsic",
+          method: "fillStr",
+          receiver: recv!,
+          args: [sRef!, encoding, ...idxRefs],
+          type: BYTES_U8,
+          loc,
+        }),
+      );
     }
     if (encNode) lowerer.noLowering(".fill with an encoding on a non-string value", encNode);
     if (vT?.kind === "f64") {
@@ -1952,6 +2300,28 @@ function lowerBufferInstanceMethod(
   }
   if (name === "copy") {
     if (nArgs < 1 || nArgs > 4) lowerer.noLowering(`.copy with ${nArgs} arguments`, call);
+    // Node's copyImpl accepts any ArrayBuffer view as the target and
+    // measures every offset in bytes over it, so a target of another
+    // element type runs as the checked-dynamic method, which re-views it
+    // over its bytes before the copy.
+    const targetIr = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    if (targetIr?.kind === "bytes" && targetIr.elem !== "u8") {
+      const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
+      return {
+        kind: "dynCheck",
+        value: {
+          kind: "dynInvoke",
+          recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+          method: name,
+          calleeName: ts.getTextOfNode(access),
+          args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+          type: DYN,
+          loc,
+        },
+        type: F64,
+        loc,
+      };
+    }
     const target = u8Arg(0);
     const idx = call.arguments.nodes.slice(1).map((a) => lowerer.lowerExprExpecting(a, F64));
     const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
@@ -1975,32 +2345,48 @@ function lowerBufferInstanceMethod(
     // (str, offset, length), (str, offset, length, enc).
     let encNode: ts.Expression | undefined;
     let idxNodes = call.arguments.nodes.slice(1);
-    if (idxNodes.length > 0 && isStringArg(nArgs - 1)) {
+    if (idxNodes.length > 0 && isEncodingArg(nArgs - 1)) {
       encNode = idxNodes[idxNodes.length - 1];
       idxNodes = idxNodes.slice(0, -1);
     }
     if (idxNodes.length > 2) lowerer.noLowering(`.write with ${nArgs} arguments`, call);
-    const encName = encNode ? bufEncoding(lowerer, "Buffer.write", encNode) : "utf8";
+    // write reads an empty encoding as utf8 and throws on any other name
+    // Node does not know, after the offset and length validate.
+    const enc = encNode
+      ? bufEncodingArgument(lowerer, "Buffer.write", encNode, "emptyUtf8", loc)
+      : { literal: "utf8" };
     const s = lowerer.lowerExprExpecting(args[0]!, STRING);
-    const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
     const offset: IrExpr = idxNodes[0]
       ? lowerer.lowerExprExpecting(idxNodes[0], F64)
       : { kind: "numLit", value: 0, type: F64, loc };
-    const writeArgs = [
-      s,
-      enc,
-      offset,
-      ...(idxNodes[1] ? [lowerer.lowerExprExpecting(idxNodes[1], F64)] : []),
-    ];
     const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
-    return {
-      kind: "bytesIntrinsic",
-      method: "writeStr",
-      receiver,
-      args: writeArgs,
-      type: F64,
+    const length = idxNodes[1] ? lowerer.lowerExprExpecting(idxNodes[1], F64) : undefined;
+    // A run-time name stays raw: Node reports a bad offset or length before
+    // it looks the name up, so the runtime entry normalizes it afterwards.
+    return withBufEncoding(
+      lowerer,
+      enc,
       loc,
-    };
+      [receiver, s, offset, ...(length ? [length] : [])],
+      ([recv, sRef, offsetRef, lengthRef], encoding) =>
+        "literal" in enc
+          ? {
+              kind: "bytesIntrinsic",
+              method: "writeStr",
+              receiver: recv!,
+              args: [sRef!, encoding, offsetRef!, ...(lengthRef ? [lengthRef] : [])],
+              type: F64,
+              loc,
+            }
+          : {
+              kind: "libCall",
+              fn: length ? "buffer.writeStrDynLen" : "buffer.writeStrDyn",
+              args: [recv!, sRef!, encoding, offsetRef!, ...(lengthRef ? [lengthRef] : [])],
+              type: F64,
+              loc,
+            },
+      !("literal" in enc),
+    );
   }
   return null;
 }
@@ -2353,6 +2739,9 @@ function lowerBufferStaticValue(
   const member = access.name.text;
   const loc = locOf(call);
   const args = call.arguments.nodes;
+  // Buffer.of(...items): Node's own `of`, a new unpooled Buffer of the items
+  // converted in order, as Uint8Array.of converts them.
+  if (member === "of") return lowerBytesOf(lowerer, call, "u8");
   if (member === "from") {
     if (
       args.length >= 1 &&
@@ -2550,14 +2939,54 @@ function lowerBufferStaticValue(
     // the fresh buffer is the receiver of a whole-range fill.
     const fillT = lowerer.mapTypeOf(lowerer.typeOf(args[1]!));
     if (fillT?.kind === "string") {
-      const encName = args[2] ? bufEncoding(lowerer, "Buffer.alloc", args[2]) : "utf8";
+      const enc = args[2]
+        ? bufEncodingArgument(lowerer, "Buffer.alloc", args[2], "emptyUtf8", loc)
+        : { literal: "utf8" as const };
       const s = lowerer.lowerExprExpecting(args[1]!, STRING);
-      const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
+      if ("literal" in enc) {
+        return withBufEncoding(lowerer, enc, loc, [size, s], ([sizeExpr, fillExpr], encoding) => ({
+          kind: "bytesIntrinsic",
+          method: "fillStr",
+          receiver: { kind: "libCall", fn, args: [sizeExpr!], type: BYTES_U8, loc },
+          args: [fillExpr!, encoding],
+          type: BYTES_U8,
+          loc,
+        }));
+      }
+      // Node allocates before _fill resolves the name, and runs no fill at
+      // all when the size is zero, so the normalization and its throw are
+      // inside the size > 0 branch.
+      const sizeLocal = lowerer.declareHiddenLocal("%allocSize", F64);
+      const fillLocal = lowerer.declareHiddenLocal("%allocFill", STRING);
+      const encLocal = lowerer.declareHiddenLocal("%bufferEncoding", STRING);
+      const sizeRef = varRef(sizeLocal.id, F64, loc);
+      const alloc = (): IrExpr => ({ kind: "libCall", fn, args: [sizeRef], type: BYTES_U8, loc });
+      const result: IrExpr = {
+        kind: "ternary",
+        cond: { kind: "bin", op: ">", left: sizeRef, right: numLit(0, loc), type: BOOL, loc },
+        then: {
+          kind: "bytesIntrinsic",
+          method: "fillStr",
+          receiver: alloc(),
+          args: [
+            varRef(fillLocal.id, STRING, loc),
+            normalizeBufEncoding({ raw: varRef(encLocal.id, STRING, loc), mode: enc.mode }, loc),
+          ],
+          type: BYTES_U8,
+          loc,
+        },
+        else_: alloc(),
+        type: BYTES_U8,
+        loc,
+      };
       return {
-        kind: "bytesIntrinsic",
-        method: "fillStr",
-        receiver: fresh,
-        args: [s, enc],
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: sizeLocal.id, init: size, loc },
+          { kind: "varDecl", localId: fillLocal.id, init: s, loc },
+          { kind: "varDecl", localId: encLocal.id, init: enc.raw, loc },
+        ],
+        result,
         type: BYTES_U8,
         loc,
       };
@@ -2755,28 +3184,31 @@ function lowerBufferStaticValue(
     if (args.length >= 1 && args.length <= 2 && !ts.isSpreadElement(args[0]!)) {
       const srcIr = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
       if (srcIr?.kind === "string") {
-        const encName = args[1] ? bufEncoding(lowerer, "Buffer.byteLength", args[1]) : "utf8";
+        // Node reads an unknown or empty name as utf8 here, without throwing.
+        const enc = args[1]
+          ? bufEncodingArgument(lowerer, "Buffer.byteLength", args[1], "utf8Fallback", loc)
+          : { literal: "utf8" as const };
         const s = lowerer.lowerExprExpecting(args[0]!, STRING);
-        const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
-        return { kind: "libCall", fn: "buffer.byteLenStr", args: [s, enc], type: F64, loc };
-      }
-      if (
-        (srcIr === null || srcIr.kind === "dyn") &&
-        (!args[1] || ts.isStringLiteralLike(args[1]))
-      ) {
-        const encoding: IrExpr = {
-          kind: "strLit",
-          value: args[1] ? bufEncoding(lowerer, "Buffer.byteLength", args[1]) : "utf8",
-          type: STRING,
-          loc,
-        };
-        return {
+        return withBufEncoding(lowerer, enc, loc, [s], ([sRef], encoding) => ({
           kind: "libCall",
-          fn: "buffer.byteLenDyn",
-          args: [lowerer.lowerExprExpecting(args[0]!, DYN), encoding],
+          fn: "buffer.byteLenStr",
+          args: [sRef!, encoding],
           type: F64,
           loc,
-        };
+        }));
+      }
+      if (srcIr === null || srcIr.kind === "dyn") {
+        const enc = args[1]
+          ? bufEncodingArgument(lowerer, "Buffer.byteLength", args[1], "utf8Fallback", loc)
+          : { literal: "utf8" as const };
+        const source = lowerer.lowerExprExpecting(args[0]!, DYN);
+        return withBufEncoding(lowerer, enc, loc, [source], ([srcRef], encoding) => ({
+          kind: "libCall",
+          fn: "buffer.byteLenDyn",
+          args: [srcRef!, encoding],
+          type: F64,
+          loc,
+        }));
       }
       if (srcIr?.kind === "bytes" && args.length === 1) {
         const receiver = lowerer.lowerExpr(args[0]!);
@@ -2869,10 +3301,30 @@ export function lowerBufferPrototypeMember(
   return { kind: "libCall", fn: "buffer.prototypeMember", args: [key], type: DYN, loc };
 }
 
+/** `Buffer.prototype` read as a value in JavaScript (`const p =
+ * Buffer.prototype; p[\`write${name}\`]`, Object.getOwnPropertyNames over it):
+ * the object scr_buffer_prototype_object answers. Null for other
+ * expressions, and for `Buffer.prototype.<name>` and
+ * `Buffer.prototype[key]`, which lowerBufferPrototypeMember answers. */
+export function lowerBufferPrototypeObject(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (
+    expr.questionDotToken ||
+    expr.name.text !== "prototype" ||
+    !isJsSourceFile(expr.getSourceFile()) ||
+    stdlibGlobalNameOf(lowerer, expr.expression) !== "Buffer"
+  )
+    return null;
+  return { kind: "libCall", fn: "buffer.prototypeObject", args: [], type: DYN, loc: locOf(expr) };
+}
+
 const BUFFER_VALUE_FNS: ReadonlySet<string> = new Set([
   "buffer.constructor",
   "buffer.staticValue",
   "buffer.prototypeMember",
+  "buffer.prototypeObject",
 ]);
 
 /** A program that reads the Buffer function's value installs it in %main,

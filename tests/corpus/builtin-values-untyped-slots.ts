@@ -51,3 +51,14 @@ console.log(
   Object.keys(math).length,
   Object.getOwnPropertyNames(json).join(","),
 );
+
+const views: any = { intl: Intl, proxy: Proxy, view: DataView, shared: SharedArrayBuffer };
+console.log(typeof views.intl, Object.getOwnPropertyNames(views.intl).length);
+console.log(Object.prototype.toString.call(views.intl), views.intl.Locale.length);
+console.log(views.proxy.name, views.proxy.length, views.view.name, views.shared.length);
+try {
+  views.proxy();
+} catch (error) {
+  console.log((error as Error).message);
+}
+console.log(views);

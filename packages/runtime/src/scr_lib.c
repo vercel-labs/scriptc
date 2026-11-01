@@ -682,7 +682,7 @@ ScrStr *scr_process_arch(void) {
  * is no Node under a compiled binary; this is the version whose semantics
  * SEMANTICS.md verifies the runtime against (divergence 60, the execPath
  * stance: answer for the world that actually exists). */
-#define SCR_NODE_COMPAT_VERSION "24.22.0"
+#define SCR_NODE_COMPAT_VERSION "24.22.1"
 ScrStr *scr_process_versions_node(void) {
   if (!scr_versions_node_str) {
     scr_versions_node_str =
@@ -701,7 +701,7 @@ ScrStr *scr_process_versions_node(void) {
  * sites). Reading undefined here made every hasCrypto test self-skip —
  * measuring nothing (SEMANTICS.md; the divergence entry documents that
  * the string names the compat target's OpenSSL, not a linked library). */
-#define SCR_OPENSSL_COMPAT_VERSION "3.5.8"
+#define SCR_OPENSSL_COMPAT_VERSION "3.5.9"
 ScrStr *scr_process_versions_openssl(void) {
   if (!scr_versions_openssl_str) {
     scr_versions_openssl_str =
@@ -1673,10 +1673,11 @@ static bool scr_os_slurp(const char *path, char *buf, size_t cap) {
   return true;
 }
 
-/* libuv's uv__get_constrained_cpu (1.51): the CPU quota of the process's
+/* libuv's uv__get_constrained_cpu (1.52): the CPU quota of the process's
  * cgroup in whole CPUs. For cgroup v2 it walks cpu.max from the process's
  * cgroup up to the root; like libuv, the last level with a numeric limit
- * (the outermost) decides. Returns false when there is no answer. */
+ * (the outermost) decides, and a limit below one CPU counts as one. For
+ * cgroup v1 there is no such floor. Returns false when there is no answer. */
 static bool scr_os_cgroup_cpu_quota(long long *quota) {
   char cgroup[1024];
   if (!scr_os_slurp("/proc/self/cgroup", cgroup, sizeof cgroup)) return false;
@@ -1684,7 +1685,7 @@ static bool scr_os_cgroup_cpu_quota(long long *quota) {
     static const char mount[] = "/sys/fs/cgroup";
     const char *trimmed = cgroup + 4;
     int size = (int)strcspn(trimmed, "\n");
-    char path[256], file[256], buf[1024], value[16];
+    char path[256], file[sizeof path + sizeof "/cpu.max"], buf[1024], value[16];
     snprintf(path, sizeof path, "%s/%.*s/cgroup.controllers", mount, size, trimmed);
     if (!scr_os_slurp(path, buf, sizeof buf)) return false;
     snprintf(path, sizeof path, "%s/%.*s", mount, size, trimmed);
@@ -1692,8 +1693,12 @@ static bool scr_os_cgroup_cpu_quota(long long *quota) {
       long long limit, period;
       snprintf(file, sizeof file, "%s/cpu.max", path);
       if (scr_os_slurp(file, value, sizeof value) && strncmp(value, "max", 3) != 0 &&
-          sscanf(value, "%lld %lld", &limit, &period) == 2 && period != 0)
+          sscanf(value, "%lld %lld", &limit, &period) == 2 && period != 0) {
         *quota = limit / period;
+        /* A limit below one whole CPU is one CPU, not none: a container
+         * holding a fraction of a CPU still runs on one processor. */
+        if (*quota == 0) *quota = 1;
+      }
       char *slash = strrchr(path, '/');
       if (slash == NULL || strcmp(path, mount) == 0) break;
       *slash = '\0';
@@ -1704,7 +1709,7 @@ static bool scr_os_cgroup_cpu_quota(long long *quota) {
   if (cpu == NULL) return false;
   cpu += sizeof ":cpu," - 1;
   int size = (int)strcspn(cpu, "\n");
-  char path[256], buf[64];
+  char path[256], buf[1024];
   long long per_period, period;
   snprintf(path, sizeof path, "/sys/fs/cgroup/%.*s/cpu.cfs_quota_us", size, cpu);
   if (!scr_os_slurp(path, buf, sizeof buf) || sscanf(buf, "%lld", &per_period) != 1) return false;
@@ -1717,7 +1722,7 @@ static bool scr_os_cgroup_cpu_quota(long long *quota) {
 #endif
 
 double scr_os_available_parallelism(void) {
-  /* uv_available_parallelism (libuv 1.51, Node's os.availableParallelism):
+  /* uv_available_parallelism (libuv 1.52, Node's os.availableParallelism):
    * the CPUs this process may run on (Linux: its affinity mask, then any
    * smaller cgroup CPU quota; Darwin: hw.activecpu, hw.logicalcpu, hw.ncpu),
    * else the online processors; at least 1. */
@@ -1739,9 +1744,10 @@ double scr_os_available_parallelism(void) {
 #endif
   if (rc < 0) rc = sysconf(_SC_NPROCESSORS_ONLN);
 #if defined(__linux__)
-  /* A quota below one CPU truncates to 0 and is ignored, not clamped to 1:
-   * libuv (1.51 through 1.52) applies only `quota > 0 && quota < rc`, so
-   * Node then answers the affinity count. */
+  /* The quota replaces the affinity count only when it is smaller and
+   * positive, as in libuv; the cgroup v2 walk has already raised a sub-CPU
+   * limit to 1, while a cgroup v1 limit below one CPU truncates to 0 and is
+   * ignored here. */
   long long quota = 0;
   if (scr_os_cgroup_cpu_quota(&quota) && quota > 0 && quota < rc) rc = (long)quota;
 #endif
@@ -3466,7 +3472,11 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
   int error = scr_file_read_all(f, -1, false, &out);
   fclose(f);
   if (error) { scr_fs_throw(error, "read", path); return NULL; }
-  return scr_bytes_take_data(out.bytes, out.len);
+  /* Node answers a Buffer: the brand is observable (Buffer.isBuffer,
+   * .constructor, instanceof, inspect), so the read's bytes carry it. */
+  ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
 }
 
 /* readFileSync(path, "utf8") and fs.promises.readFile(path, "utf8"): the
@@ -5299,7 +5309,11 @@ ScrBytes *scr_fs_read_fd_bytes(double fd) {
   ScrFileRead out;
   int error = scr_file_read_all(NULL, (int)fd, false, &out);
   if (error) { scr_fs_throw_nopath(error, "read"); return NULL; }
-  return scr_bytes_take_data(out.bytes, out.len);
+  /* Node answers a Buffer here too (the fd form of readFileSync and
+   * FileHandle#readFile). */
+  ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
 }
 
 /* ── the tty probes ──────────────────────────────────────────────────── */
@@ -6281,7 +6295,6 @@ ScrStats *scr_fs_fstat(double fd) {
   return s;
 }
 
-#ifdef SCR_FS_WATCH_FILE
 /* fs.watchFile's poll (scr_watch_file.c calls this): stat(2) following
  * symlinks, libuv's uv_fs_stat — NULL with *error = errno on failure,
  * never throwing, because a failed poll IS a reportable event. +1. */
@@ -6308,7 +6321,6 @@ ScrStats *scr_stats_poll_path(ScrStr *path, int *error) {
  * field 0, so isFile()/isDirectory() and the size/date reads all answer
  * zero/false. +1. */
 ScrStats *scr_stats_zero(void) { return scr_stats_new(); }
-#endif /* SCR_FS_WATCH_FILE */
 
 /* ── Stats objects ───────────────────────────────────────────────────
  * Node's Stats and BigIntStats over a snapshot. The integers and the *Ms

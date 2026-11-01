@@ -269,8 +269,14 @@ static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 
 /* Registry of descriptors by id (copies, so a header reaches its entry
  * points in one step); ids are assigned on first allocation and shared by
- * every thread. */
+ * every thread. The table is static, so memory-constrained builds can shrink
+ * it with -DSCR_CYC_MAX_TYPES=<n>; registration traps once a program needs
+ * more. Headers store the id in 16 bits. */
+#ifndef SCR_CYC_MAX_TYPES
 #define SCR_CYC_MAX_TYPES ((uint32_t)1 << 15)
+#endif
+_Static_assert(SCR_CYC_MAX_TYPES >= 2 && SCR_CYC_MAX_TYPES <= 65536,
+               "SCR_CYC_MAX_TYPES must leave id 0 unused and fit a 16-bit header id");
 extern ScrCycType scr_cyc_types[SCR_CYC_MAX_TYPES];
 uint32_t scr_cyc_register(ScrCycType *type);
 static inline uint32_t scr_cyc_type_id(ScrCycType *type) {
@@ -725,6 +731,12 @@ static inline void scr_cyc_released(void *obj) {
 static inline void scr_cyc_dead(void *obj) {
   if (scr_cyc_is_buffered(scr_cyc_hdr(obj))) scr_cyc_on_dead(obj);
 }
+
+/* Runs at the start of every collector pass, before the candidate buffers
+ * are drained: the runtime's caches that hold references the collector
+ * cannot trace release them here (scr_json.c's parked capsules). NULL
+ * until such a cache first holds one. */
+extern SCR_TL void (*scr_cyc_pass_hook)(void);
 
 /* Full sweep: trial-deletion passes over EVERY generation, to a fixpoint.
  * This is the exit / session-reset entry point (the RC audit runs straight

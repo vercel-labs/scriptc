@@ -23,10 +23,12 @@ ScrStr *scr_child_signal_code(ScrChild *c) {
 }
 
 /* child.off()/removeListener(): remove the most recently registered
- * listener that IS this closure (EventEmitter's identity semantics). The
- * argument is BORROWED — compared, never retained; a value the registry
- * does not hold (a fresh inline arrow, an adapter closure) removes
- * nothing, exactly Node's answer. Removing does not change what the loop
+ * listener that is this function (EventEmitter's identity semantics). A
+ * registered adapter, such as the one that discards a listener's return
+ * value, is the function it adapts (scr_closure_identity_equal). The
+ * argument is BORROWED — compared, never retained; a function the
+ * registry does not hold (a fresh inline arrow) removes nothing, exactly
+ * Node's answer. Removing does not change what the loop
  * watches: a child with no listeners is still reaped.
  *
  * Emit snapshot: Node copies a listener array when the event is emitted,
@@ -46,7 +48,7 @@ ScrStr *scr_child_signal_code(ScrChild *c) {
  * listeners, so removal during it already finds an empty registry. */
 void scr_child_off_spawn(ScrChild *c, ScrClosure *cb) {
   for (size_t i = c->n_spawn; i > 0; i--) {
-    if (c->spawn_cbs[i - 1] != cb) continue;
+    if (!scr_closure_identity_equal(c->spawn_cbs[i - 1], cb)) continue;
     scr_closure_release(c->spawn_cbs[i - 1]);
     memmove(c->spawn_cbs + i - 1, c->spawn_cbs + i, (c->n_spawn - i) * sizeof *c->spawn_cbs);
     c->n_spawn--;
@@ -57,7 +59,7 @@ void scr_child_off_spawn(ScrChild *c, ScrClosure *cb) {
 void scr_child_off_exit(ScrChild *c, ScrClosure *cb) {
   if (c->settled) return; /* the 'exit' emit is in flight (or done) */
   for (size_t i = c->n_exit; i > 0; i--) {
-    if (c->exit_cbs[i - 1].cb != cb) continue;
+    if (!scr_closure_identity_equal(c->exit_cbs[i - 1].cb, cb)) continue;
     scr_closure_release(c->exit_cbs[i - 1].cb);
     memmove(c->exit_cbs + i - 1, c->exit_cbs + i, (c->n_exit - i) * sizeof *c->exit_cbs);
     c->n_exit--;
@@ -68,7 +70,7 @@ void scr_child_off_exit(ScrChild *c, ScrClosure *cb) {
 void scr_child_off_close(ScrChild *c, ScrClosure *cb) {
   if (c->close_done) return; /* the 'close' emit is in flight (or done) */
   for (size_t i = c->n_close; i > 0; i--) {
-    if (c->close_cbs[i - 1].cb != cb) continue;
+    if (!scr_closure_identity_equal(c->close_cbs[i - 1].cb, cb)) continue;
     scr_closure_release(c->close_cbs[i - 1].cb);
     memmove(c->close_cbs + i - 1, c->close_cbs + i, (c->n_close - i) * sizeof *c->close_cbs);
     c->n_close--;
@@ -79,7 +81,7 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb) {
 void scr_child_off_error(ScrChild *c, ScrClosure *cb) {
   if (c->settled) return; /* the 'error' emit is in flight (or done) */
   for (size_t i = c->n_err; i > 0; i--) {
-    if (c->err_cbs[i - 1].cb != cb) continue;
+    if (!scr_closure_identity_equal(c->err_cbs[i - 1].cb, cb)) continue;
     scr_closure_release(c->err_cbs[i - 1].cb);
     memmove(c->err_cbs + i - 1, c->err_cbs + i, (c->n_err - i) * sizeof *c->err_cbs);
     c->n_err--;

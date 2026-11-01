@@ -334,7 +334,6 @@ const BOOLEAN_NATIVE_KEYS = [
   "utilPromisify",
   "dynBuiltinClass",
   "dynBuiltinStream",
-  "promiseGeneric",
   "parseArgs",
   "stream",
   "net",

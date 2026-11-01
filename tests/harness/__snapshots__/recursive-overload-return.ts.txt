@@ -1,0 +1,17 @@
+recursive-overload-return.ts:14:22 - error SC2007: values of type '{ (x: number): typeof f; (x: string): typeof f; }' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
+
+  13 | 
+  14 | export function take(v: typeof f): number {
+     |                      ^
+  15 | 	void v;
+
+  hint: annotate the slot with the ONE signature the program actually calls (e.g. '(x: number) => string'), or wrap the overloaded function in a single-signature arrow
+
+recursive-overload-return.ts:19:13 - error SC2004: uses of 'take' inherit the blocker on its declaration
+
+  18 | 
+  19 | console.log(take);
+     |             ^~~~
+  20 | 
+
+  hint: the declaration of 'take' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/entries-union-field-widening.ts"
+ ],
+ "diags": []
+}

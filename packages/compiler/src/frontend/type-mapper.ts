@@ -1635,6 +1635,15 @@ function genChannels(
  * fallback for it. */
 const MAP_TYPE_MAX_DEPTH = 64;
 let mapTypeDepth = 0;
+/** The overload sets whose signatures the equal-modulo-union-order arm is
+ * mapping, outermost first. Mapping a signature maps its parameter and return
+ * types, which can name the set again — `interface R { (x: number): R; (x:
+ * string): R }` declared in a package, which isOverloadedCallableMemberType
+ * does not claim. Each level would map every signature again, so a recursive
+ * set expands exponentially until MAP_TYPE_MAX_DEPTH cuts every branch off. A
+ * set already being expanded is refused instead (null, as every other
+ * unmappable type), and the slot reports the overload diagnostic. */
+const overloadExpansion: (ts.Symbol | ts.Type)[] = [];
 /** Bumped whenever mapType resolves a type through CONTEXT-SENSITIVE or
  * collection-sensitive hooks (a generic body's type parameter, a mixin
  * instantiation, a generic class instance) — mappings that can make the same
@@ -5217,6 +5226,31 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // stream's replaceable method slot, so it is the checked-dynamic function
   // the stream object hands out (scr_events.c ProcessStream).
   if (callSigs.length > 1 && isStdlibStreamWriteOverloads(callSigs, ctx)) return DYN;
+  // An overload set whose signatures are the SAME once union members are
+  // read as a set is one signature: `typeof fetch` merges lib.dom's
+  // `(input: URL | RequestInfo, ...)` with undici's `(input: string |
+  // Request | URL, ...)`, which spell the same members in a different
+  // order. Union interning keeps arm order, so the two mapped signatures
+  // differ by unionId alone; a set whose signatures genuinely differ (a
+  // rest parameter elsewhere, another result type) keeps its fence.
+  // Erasable sets (isOverloadedCallableMemberType) already have their one
+  // compiled signature and keep it: this arm is for the sets no erasure
+  // reaches, such as a merged library declaration.
+  // The signatures are mapped LAZILY, and only while the set is not already
+  // being mapped higher up the stack: mapping a signature maps its parameter
+  // and return types, so a recursive result type (`interface R { (x: number):
+  // R; (x: string): R }` in a package declaration) re-enters the set and
+  // would otherwise map every signature again at every level — exponential
+  // until MAP_TYPE_MAX_DEPTH cuts each branch, stalling the build instead of
+  // reporting the refusal (see overloadSetBeingExpanded).
+  if (
+    callSigs.length > 1 &&
+    !isOverloadedCallableMemberType(widened, checker) &&
+    !overloadSetBeingExpanded(widened)
+  ) {
+    const agreed = mapAgreeingOverloadSignature(callSigs, widened, ctx);
+    if (agreed !== null) return agreed;
+  }
   if (callSigs.length === 1) return mapCallSignature(callSigs[0]!, ctx);
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -5659,6 +5693,96 @@ function isStdlibStreamWriteOverloads(
       ctx.isStdlibFile(ts.getSourceFileOfNode(decl))
     );
   });
+}
+
+/** An overloaded set's identity for the expansion guard. A generic set
+ * re-enters under a FRESH type object at each level (`interface R<T> { (x:
+ * T): R<T[]> }`), so the declaration a type instantiation names stands in for
+ * the type; an anonymous type literal is interned by the checker, so the type
+ * itself is its own identity. */
+function overloadSetKey(type: ts.Type): ts.Symbol | ts.Type {
+  return type.getAliasSymbol() ?? type.getSymbol() ?? type;
+}
+
+/** True when `type` is already being expanded, or a chain of sets is
+ * expanding that led back to it: mapping the set again can only repeat the
+ * mapping that is already in progress, so the set has no single compiled
+ * signature (see overloadExpansion). */
+function overloadSetBeingExpanded(type: ts.Type): boolean {
+  return overloadExpansion.includes(overloadSetKey(type));
+}
+
+/** The one signature `sigs` agree on, or null when they disagree or any of
+ * them does not map. Signatures are mapped lazily — a set whose first two
+ * signatures disagree costs two mappings — and the set stays on the expansion
+ * stack throughout, so a signature naming the set again refuses it. */
+function mapAgreeingOverloadSignature(
+  sigs: readonly ts.Signature[],
+  set: ts.Type,
+  ctx: TypeMapperCtx,
+): IrType | null {
+  overloadExpansion.push(overloadSetKey(set));
+  try {
+    const first = mapCallSignature(sigs[0]!, ctx);
+    if (first === null) return null;
+    for (let i = 1; i < sigs.length; i++) {
+      const next = mapCallSignature(sigs[i]!, ctx);
+      if (next === null || !sameTypeUpToUnionOrder(first, next, ctx, 0)) return null;
+    }
+    return first;
+  } finally {
+    overloadExpansion.pop();
+  }
+}
+
+/** Two mapped types that agree once every union's arms are read as a SET.
+ * `URL | RequestInfo` and `string | Request | URL` name the same members
+ * but intern as different unions (arm order is part of a union's identity),
+ * so the overload dedupe below cannot use typeKey or typeEquals. Records and
+ * handles compare by identity; the composite forms recurse. */
+function sameTypeUpToUnionOrder(a: IrType, b: IrType, ctx: TypeMapperCtx, depth: number): boolean {
+  if (typeKey(a) === typeKey(b)) return true;
+  if (depth > 16) return false;
+  if (a.kind === "union" && b.kind === "union") {
+    const armsA = ctx.unions.get(a.unionId)?.arms ?? [];
+    const armsB = ctx.unions.get(b.unionId)?.arms ?? [];
+    if (armsA.length !== armsB.length) return false;
+    const rest = [...armsB];
+    for (const arm of armsA) {
+      const at = rest.findIndex((candidate) =>
+        sameTypeUpToUnionOrder(arm, candidate, ctx, depth + 1),
+      );
+      if (at < 0) return false;
+      rest.splice(at, 1);
+    }
+    return true;
+  }
+  switch (a.kind) {
+    case "array":
+      return b.kind === "array" && sameTypeUpToUnionOrder(a.elem, b.elem, ctx, depth + 1);
+    case "promise":
+      return b.kind === "promise" && sameTypeUpToUnionOrder(a.inner, b.inner, ctx, depth + 1);
+    case "map":
+      return (
+        b.kind === "map" &&
+        sameTypeUpToUnionOrder(a.key, b.key, ctx, depth + 1) &&
+        sameTypeUpToUnionOrder(a.value, b.value, ctx, depth + 1)
+      );
+    case "set":
+      return b.kind === "set" && sameTypeUpToUnionOrder(a.elem, b.elem, ctx, depth + 1);
+    case "func":
+      return (
+        b.kind === "func" &&
+        a.params.length === b.params.length &&
+        (a.rest ?? false) === (b.rest ?? false) &&
+        (a.restAbi ?? null) === (b.restAbi ?? null) &&
+        (a.argumentsAll ?? false) === (b.argumentsAll ?? false) &&
+        a.params.every((p, i) => sameTypeUpToUnionOrder(p, b.params[i]!, ctx, depth + 1)) &&
+        sameTypeUpToUnionOrder(a.ret, b.ret, ctx, depth + 1)
+      );
+    default:
+      return false;
+  }
 }
 
 function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null {
@@ -8129,8 +8253,17 @@ export function erasedOverloadMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType
 /** Why an overloaded member's set has no erased type
  * (erasedOverloadMemberType): the first overload, and within it the first
  * parameter or result, that does not map; otherwise the join itself. A
- * message tail after "its member 'name'". */
-function describeOverloadSetBlocker(t: ts.Type, ctx: TypeMapperCtx): string {
+ * message tail after "its member 'name'". `depth` and `seen` continue the
+ * enclosing description's walk: an overload whose parameter or result
+ * names the record being described (`interface Chain { attach(next:
+ * Chain): Chain }`) must answer from that walk, not restart it, or each
+ * overload tail would describe the same set again without end. */
+function describeOverloadSetBlocker(
+  t: ts.Type,
+  ctx: TypeMapperCtx,
+  depth: number,
+  seen: Set<ts.Type>,
+): string {
   const { checker } = ctx;
   for (const sig of checker.getCallSignatures(t)) {
     const own = new Set<ts.Type>(sig.getTypeParameters());
@@ -8153,10 +8286,10 @@ function describeOverloadSetBlocker(t: ts.Type, ctx: TypeMapperCtx): string {
     for (const param of sig.getParameters()) {
       const paramTs = checker.getTypeOfSymbol(param);
       if (!mapType(paramTs, sigCtx))
-        return `is an overload set, and its ${which} has parameter '${ts.symbolName(param)}' of type '${checker.typeToString(paramTs)}', which does not compile`;
+        return `is an overload set, and its ${which} has parameter '${ts.symbolName(param)}' of type '${checker.typeToString(paramTs)}', which does not compile${slotReason(paramTs, ctx, depth + 1, seen)}`;
     }
     const retTs = checker.getReturnTypeOfSignature(sig);
-    return `is an overload set, and its ${which} returns '${checker.typeToString(retTs)}', which does not compile`;
+    return `is an overload set, and its ${which} returns '${checker.typeToString(retTs)}', which does not compile${slotReason(retTs, ctx, depth + 1, seen)}`;
   }
   return "is an overload set whose signatures do not join into one stored function (a void result beside a value result, or positions whose differing types do not cross the checked-dynamic boundary)";
 }
@@ -9201,14 +9334,48 @@ function armHasUnionHome(arm: IrType): boolean {
   }
 }
 
+/** The deeper story of why an ABI slot (a container argument, union arm,
+ * array/tuple element, function parameter or return type) does not compile,
+ * as a tail for its "... does not compile" sentence: the record member or
+ * nested component actually at fault. Empty when the slot's own type is the
+ * blocker, which keeps the flat message. Naming the member matters for the
+ * shapes a real program passes around — a 33-member `ExtensionAPI` is not a
+ * useful answer. `depth` bounds the recursion over self-referential shapes
+ * (`type F = (f: F) => void`); `innerBlockedMember`'s own `seen` set cannot
+ * see across the describeComponentBlocker call. */
+function slotReason(
+  t: ts.Type,
+  ctx: TypeMapperCtx,
+  depth: number,
+  seen: Set<ts.Type> = new Set<ts.Type>(),
+): string {
+  // A self-referential shape (`type F = () => F`) reaches the same type
+  // again at every step: saying the same sentence twice adds nothing.
+  if (depth >= 3 || seen.has(t)) return "";
+  seen.add(t);
+  const why =
+    describeRecordMemberBlocker(t, ctx, depth, seen) ??
+    describeComponentBlocker(t, ctx, depth + 1, seen);
+  return why === null ? "" : `: ${why}`;
+}
+
 /** When an unmapped type is a SUPPORTED container/composite whose failure
  * lives in a component, answer a message tail naming the component (the
  * SC2009 story); null when the shape itself is the blocker (the caller
  * falls through to the other fences). Stdlib container heads (Map, Set,
  * Promise, generators) ALWAYS answer — their shapes have lowerings, so a
  * later "no lowering" claim about them would be false. */
-export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): string | null {
+export function describeComponentBlocker(
+  widened: ts.Type,
+  ctx: TypeMapperCtx,
+  depth = 0,
+  inherited?: Set<ts.Type>,
+): string | null {
   const { checker } = ctx;
+  // The type under description is already spoken for: a component that
+  // leads back to it (`type F = () => F`) has nothing to add.
+  const seen = inherited ?? new Set<ts.Type>();
+  seen.add(widened);
   const text = (t: ts.Type): string => checker.typeToString(t);
 
   // Stdlib container references (provenance, not the name — a user's own
@@ -9230,7 +9397,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
       const role = spec.role(i);
       const mapped = mapType(arg, ctx);
       if (!mapped) {
-        return `the ${container} shape is supported, but its ${role} type '${text(arg)}' does not compile`;
+        return `the ${container} shape is supported, but its ${role} type '${text(arg)}' does not compile${slotReason(arg, ctx, depth, seen)}`;
       }
       if (
         (container === "Map" || container === "ReadonlyMap") &&
@@ -9272,7 +9439,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     if (elemTs === undefined) return null;
     const elem = mapType(elemTs, ctx);
     if (!elem) {
-      return `the array shape is supported, but its element type '${text(elemTs)}' does not compile`;
+      return `the array shape is supported, but its element type '${text(elemTs)}' does not compile${slotReason(elemTs, ctx, depth, seen)}`;
     }
     return `the array shape is supported, but '${text(elemTs)}' elements have no array representation yet`;
   }
@@ -9285,7 +9452,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
       const et = mapType(arg, ctx);
       if (et?.kind === "void" && isUnitOnlyTsType(arg, ctx.resolveTypeParam)) continue;
       if (!et || et.kind === "void") {
-        return `the tuple shape is supported, but its element type '${text(arg)}' does not compile`;
+        return `the tuple shape is supported, but its element type '${text(arg)}' does not compile${slotReason(arg, ctx, depth, seen)}`;
       }
     }
     return null;
@@ -9318,7 +9485,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     for (const { p: part, mapped } of mappedArms) {
       if (!mapped) {
-        return `the union shape is supported, but its arm '${text(part)}' does not compile`;
+        return `the union shape is supported, but its arm '${text(part)}' does not compile${slotReason(part, ctx, depth, seen)}`;
       }
       if (!armHasUnionHome(mapped)) {
         return `the union shape is supported, but '${text(part)}' arms have no home in a compiled union yet (no runtime narrowing test exists against sibling arms)`;
@@ -9362,12 +9529,12 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     for (const p of sig.getParameters()) {
       const pTs = checker.getTypeOfSymbol(p);
       if (!mapType(pTs, ctx)) {
-        return `the function shape is supported, but its parameter '${ts.symbolName(p)}' has type '${text(pTs)}', which does not compile`;
+        return `the function shape is supported, but its parameter '${ts.symbolName(p)}' has type '${text(pTs)}', which does not compile${slotReason(pTs, ctx, depth, seen)}`;
       }
     }
     const retTs = checker.getReturnTypeOfSignature(sig);
     if ((retTs.flags & ts.TypeFlags.Never) === 0 && !mapType(retTs, ctx)) {
-      return `the function shape is supported, but its return type '${text(retTs)}' does not compile`;
+      return `the function shape is supported, but its return type '${text(retTs)}' does not compile${slotReason(retTs, ctx, depth, seen)}`;
     }
     return null;
   }
@@ -9380,8 +9547,15 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
  * signature routing, so what reaches it is a plain data shape; a null
  * answer (no member pinpointed — provenance fences, accessor rules, shape
  * knots) keeps the residual SC2001 story. */
-export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx): string | null {
+export function describeRecordMemberBlocker(
+  widened: ts.Type,
+  ctx: TypeMapperCtx,
+  depth = 0,
+  inherited?: Set<ts.Type>,
+): string | null {
   const { checker } = ctx;
+  const seen = inherited ?? new Set<ts.Type>();
+  seen.add(widened);
   if ((widened.flags & ts.TypeFlags.Object) === 0) return null;
   if (checker.getCallSignatures(widened).length > 0) return null;
   if (checker.getConstructSignatures(widened).length > 0) return null;
@@ -9410,7 +9584,7 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
     const fieldTs = checker.getTypeOfSymbol(p);
     if (isOverloadedCallableMemberType(fieldTs, checker)) {
       if (erasedOverloadMemberType(fieldTs, ctx) !== undefined) continue;
-      return `the record shape is supported, but its member '${ts.symbolName(p)}' ${describeOverloadSetBlocker(fieldTs, ctx)}`;
+      return `the record shape is supported, but its member '${ts.symbolName(p)}' ${describeOverloadSetBlocker(fieldTs, ctx, depth, seen)}`;
     }
     if (memberMaps(fieldTs, ctx, p)) continue;
     // Name the deepest member the failure comes from (`order.deployment.
@@ -9418,7 +9592,7 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
     // its outermost member.
     const inner = innerBlockedMember(fieldTs, ctx, new Set());
     if (inner !== null && inner.path !== "") {
-      return `the record shape is supported, but its member '${ts.symbolName(p)}${inner.path}' has type '${checker.typeToString(inner.type)}', which does not compile`;
+      return `the record shape is supported, but its member '${ts.symbolName(p)}${inner.path}' has type '${checker.typeToString(inner.type)}', which does not compile${slotReason(inner.type, ctx, depth + 1, seen)}`;
     }
     return `the record shape is supported, but its member '${ts.symbolName(p)}' has type '${checker.typeToString(fieldTs)}', which does not compile`;
   }
@@ -9463,8 +9637,8 @@ function memberMaps(fieldTs: ts.Type, ctx: TypeMapperCtx, member?: ts.Symbol): b
 
 /** The member path inside the unmapped type `t` that its failure comes
  * from, and that member's type: `.name` steps into record members, `[]`
- * into array elements, `()` into a function's return; union arms and
- * promise payloads are transparent. The empty path means `t` itself is
+ * into array elements, `(param)` into a function parameter, `()` into a
+ * function's return; union arms and promise payloads are transparent. The empty path means `t` itself is
  * the blocker; null means `t` maps (or is `any`). */
 function innerBlockedMember(
   t: ts.Type,
@@ -9507,8 +9681,13 @@ function innerBlockedMember(
   if (calls.length === 1) {
     const sig = calls[0]!;
     if (sig.getTypeParameters().length > 0) return here;
-    if (sig.getParameters().some((p) => mapType(checker.getTypeOfSymbol(p), ctx) === null))
-      return here;
+    // A parameter carries the failure as often as the result does (an
+    // event handler's `ctx`, a factory's `theme`): name that parameter's
+    // slot instead of stopping at the function.
+    for (const param of sig.getParameters()) {
+      const paramTs = checker.getTypeOfSymbol(param);
+      if (mapType(paramTs, ctx) === null) return step(`(${ts.symbolName(param)})`, paramTs);
+    }
     return step("()", checker.getReturnTypeOfSignature(sig));
   }
   if (

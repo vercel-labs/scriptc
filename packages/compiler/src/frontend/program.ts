@@ -5402,12 +5402,17 @@ function resolveImport7(
   from: ts.SourceFile,
   specifier: string,
   resolutionKind: "import" | "require" = "import",
+  /** False for the graph passes that over-approximate edges (see
+   * `resolveRuntimeEdge`): they resolve specifiers Node may never load, so
+   * a miss there is no evidence about the package's entry and must not
+   * classify it. The walks that model real loads pass the default. */
+  reportMiss = true,
 ): ts.SourceFile | null {
   const resolved = resolveProjectModule(from.fileName, specifier);
   if (resolved !== null) return program.getSourceFile(resolved) ?? null;
   const npm = resolveNpmImport7(from.fileName, specifier, resolutionKind);
   return npm && isNpmStaticPackage(npm.packageName)
-    ? npmStaticProgramDep(program, npm.packageName, npm.typesFile)
+    ? npmStaticProgramDep(program, npm.packageName, npm.typesFile, reportMiss)
     : null;
 }
 
@@ -5484,20 +5489,23 @@ function npmStaticProgramDep(
   program: ts.Program,
   packageName: string,
   resolvedFile: string,
+  reportMiss = true,
 ): ts.SourceFile | null {
   if (!isJsSourceFileName(resolvedFile)) {
-    reportNpmStaticOffender(
-      packageName,
-      `its import resolves to '${resolvedFile}', not to runtime JavaScript`,
-    );
+    if (reportMiss)
+      reportNpmStaticOffender(
+        packageName,
+        `its import resolves to '${resolvedFile}', not to runtime JavaScript`,
+      );
     return null;
   }
   const dep = npmStaticProgramFile(program, resolvedFile);
   if (dep === null) {
-    reportNpmStaticOffender(
-      packageName,
-      `its entry '${resolvedFile}' did not join the type-checked program`,
-    );
+    if (reportMiss)
+      reportNpmStaticOffender(
+        packageName,
+        `its entry '${resolvedFile}' did not join the type-checked program`,
+      );
     return null;
   }
   return dep;
@@ -5867,12 +5875,26 @@ function preflight7(load: LoadResult): {
   // Files reached only through `import type` / `export type … from` are
   // checker input, never program modules: Node does not load them, so
   // their imports and syntax must not fence the program.
+  //
+  // Reachability over-approximates: `callReferencesOf` and the reexport
+  // planner count EVERY call with a leading string literal as a loading
+  // edge, so a bare specifier that merely names a package — a model id
+  // passed to a catalog helper, a settings key passed to `markModified` —
+  // reaches npm resolution here. Whether this walk runs at all depends on
+  // the program it is handed (it early-returns unless an erased reference
+  // resolves, and the island rounds change the program), so classifying a
+  // miss from it made package selection depend on program composition: the
+  // same build could refuse a static package's entry as "did not join the
+  // type-checked program" or compile it, run to run. Report nothing from
+  // these edges; the walks that model real loads (import/export
+  // declarations and `require()`/`import()` calls) own the offender
+  // classification.
   const resolveRuntimeEdge = (
     sf: ts.SourceFile,
     spec: string,
     resolutionKind?: "import" | "require",
   ): ts.SourceFile | null =>
-    resolveImport7(program, sf, spec, resolutionKind) ??
+    resolveImport7(program, sf, spec, resolutionKind, false) ??
     npmStaticDepSf7(program, sf, spec, resolutionKind);
   const typeOnlyFiles = typeOnlyReachedFiles(
     program,

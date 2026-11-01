@@ -1395,6 +1395,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.countFn": "scr_emitter_listener_count_fn",
   "emitter.countDyn": "scr_emitter_listener_count_dyn",
   "emitter.names": "scr_emitter_event_names",
+  "emitter.symName": "scr_emitter_symbol_name",
+  "emitter.nameDyn": "scr_emitter_name_dyn",
   "emitter.listeners": "scr_emitter_listeners",
   "emitter.listenersDyn": "scr_emitter_listeners_dyn",
   "emitter.hasTyped": "scr_emitter_has_typed",

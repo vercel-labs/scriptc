@@ -950,15 +950,18 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       return out;
     }
   }
-  if (e.fn === "emitter.on") {
+  if (e.fn === "emitter.on" || e.fn === "emitter.onNamed") {
     // (recv, name, cb /moves — the identity/, once, prepend): the
     // listener registers through scr_emitter_on_via with an emitted
     // fixed-arity adapter closure (what emit invokes) and the runtime's
     // matching va_list shim across the runtime ABI. May-throw ('newListener' meta
-    // listeners run inside).
-    const cbT = e.args[2]!.type;
+    // listeners run inside). onNamed inserts the name's own value (the
+    // leak warning's `type`) before the cb.
+    const named = e.fn === "emitter.onNamed";
+    const cbIndex = named ? 3 : 2;
+    const cbT = e.args[cbIndex]!.type;
     if (cbT.kind !== "func")
-      throw new InternalCompilerError("llvm emitter bug: emitter.on listener not a func");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
     // A registration past the emitter's maxListeners queues the leak
     // warning for the next tick (scr_events_emitter.c), which the loop
     // delivers before the process exits.
@@ -969,20 +972,28 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     // frame's +1 moves in as the entry's identity (orig).
     host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
     const cbr = B.tmp();
-    B.line(`${cbr} = call ptr @scr_closure_retain_v(ptr ${args[2]!.name})`);
+    B.line(`${cbr} = call ptr @scr_closure_retain_v(ptr ${args[cbIndex]!.name})`);
     const wrapped = host.wrapEmitterListener(cbr, adapterFn);
-    host.toHeap(args[2]!);
+    host.toHeap(args[cbIndex]!);
     // A listener that reads `this` registers with the receiver's recipe.
     const recv = listenerThisRecipe(host, e);
-    const sym = recv ? "scr_emitter_on_via_this" : "scr_emitter_on_via";
+    const sym = recv
+      ? named
+        ? "scr_emitter_on_via_this_named"
+        : "scr_emitter_on_via_this"
+      : named
+        ? "scr_emitter_on_via_named"
+        : "scr_emitter_on_via";
     host.declare(
-      `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recv ? ", ptr" : ""})`,
+      `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recv ? ", ptr" : ""}${
+        named ? ", ptr" : ""
+      })`,
     );
     const t = B.tmp();
     B.line(
       `${t} = call ptr @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-        `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @${shim}, i1 ${args[3]!.name}, i1 ${args[4]!.name}` +
-        `${recv ? `, ptr ${recv}` : ""})`,
+        `ptr ${args[cbIndex]!.name}, ptr ${wrapped}, ptr @${shim}, i1 ${args[cbIndex + 1]!.name}, ` +
+        `i1 ${args[cbIndex + 2]!.name}${recv ? `, ptr ${recv}` : ""}${named ? `, ptr ${args[2]!.name}` : ""})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();

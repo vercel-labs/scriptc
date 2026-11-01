@@ -473,6 +473,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.staticValue",
   "buffer.prototypeMember",
   "buffer.prototypeObject",
+  // A symbol event name's registry key (scr_str_symbol_key lives in the
+  // string unit, but the emitter registry holds the symbol itself).
+  "emitter.symName",
 ]);
 
 /** Entry points that link the querystring unit. */

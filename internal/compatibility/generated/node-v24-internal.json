@@ -42075,7 +42075,8 @@
           "tests/corpus/5248-event-target-subclass-warnings.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
           "tests/corpus/5847-events-cjs-default-max.cjs",
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -43380,7 +43381,8 @@
         "evidence": "compiler-dedicated:EventEmitter",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43430,7 +43432,8 @@
         "evidence": "compiler-dedicated:emitter.addListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43457,7 +43460,8 @@
         "evidence": "compiler-dedicated:emitter.emit",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43484,7 +43488,8 @@
         "evidence": "compiler-dedicated:emitter.eventNames",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43511,7 +43516,8 @@
         "evidence": "compiler-dedicated:emitter.getMaxListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43538,7 +43544,8 @@
         "evidence": "compiler-dedicated:emitter.listenerCount",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43565,7 +43572,8 @@
         "evidence": "compiler-dedicated:emitter.listeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43592,7 +43600,8 @@
         "evidence": "compiler-dedicated:emitter.off",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43619,7 +43628,8 @@
         "evidence": "compiler-dedicated:emitter.on",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43646,7 +43656,8 @@
         "evidence": "compiler-dedicated:emitter.once",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43673,7 +43684,8 @@
         "evidence": "compiler-dedicated:emitter.prependListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43700,7 +43712,8 @@
         "evidence": "compiler-dedicated:emitter.prependOnceListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43727,7 +43740,8 @@
         "evidence": "compiler-dedicated:emitter.removeAllListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43754,7 +43768,8 @@
         "evidence": "compiler-dedicated:emitter.removeListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43781,7 +43796,8 @@
         "evidence": "compiler-dedicated:emitter.setMaxListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43808,7 +43824,8 @@
         "evidence": "compiler-dedicated:emitter.rawListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44052,7 +44069,8 @@
         "evidence": "compiler-dedicated:events.once",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts"
         ]
       },
       "anchorSource": "exact"

@@ -61,6 +61,27 @@ static void scr_ee_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
+/* The symbol unit's half of symbol event names (scr_symbol.h). It installs
+ * the table from a constructor, and a symbol-keyed bucket exists only in a
+ * program that linked the unit: the NULL arm is a compiler link bug, never
+ * a program state. */
+static ScrSym *scr_ee_sym_retain(ScrSym *sym) {
+  if (!scr_sym_event_ops) scr_trap("scriptc: symbol event names need the symbol runtime unit\n");
+  return scr_sym_event_ops->retain(sym);
+}
+
+static void scr_ee_sym_release(ScrSym *sym) {
+  if (!sym) return; /* a string-keyed bucket */
+  if (!scr_sym_event_ops) scr_trap("scriptc: symbol event names need the symbol runtime unit\n");
+  scr_sym_event_ops->release(sym);
+}
+
+/* "Symbol(desc)" as Node interpolates an event name (+1). */
+static ScrStr *scr_ee_sym_text(ScrSym *sym) {
+  if (!scr_sym_event_ops) scr_trap("scriptc: symbol event names need the symbol runtime unit\n");
+  return scr_sym_event_ops->to_string(sym);
+}
+
 /* One registered listener. Shared between the live list and emit
  * snapshots via `refs` (never the closure's own rc: the node owns ONE cb
  * reference, released when the last holder lets go). */
@@ -97,7 +118,11 @@ typedef struct ScrEeEntry {
 } ScrEeEntry;
 
 typedef struct ScrEeBucket {
-  ScrStr *name; /* owned */
+  ScrStr *name; /* owned; a scr_str_symbol_key for a symbol event name */
+  /* The symbol a key name stands for (owned), NULL for every string name
+   * and for the errorMonitor key: the key's bytes point at it, so the
+   * bucket is what keeps the symbol alive while it is registered. */
+  ScrSym *sym;
   ScrEeEntry **ls;
   size_t n, cap;
   bool warned; /* leak warning printed for this name already */
@@ -186,22 +211,48 @@ ScrStr *scr_emitter_error_monitor(void) { return SCR_EE_ERROR_MONITOR; }
 
 static bool scr_ee_is_error_monitor(const ScrStr *name) { return name == SCR_EE_ERROR_MONITOR; }
 
-/* The bucket of a STRING event name (the errorMonitor bucket never
- * matches). */
+ScrStr *scr_emitter_symbol_name(ScrSym *sym) { return scr_str_symbol_key(sym); }
+
+/* An untyped event name as the registry key: ToPropertyKey, which is the
+ * symbol itself (Node's listener table holds the symbol), and otherwise
+ * the value's string form. An object reaches that form through its own or
+ * inherited toString/valueOf, so those run here: their throw propagates,
+ * and an object that answers no primitive throws the spec's TypeError. A
+ * typed reference converts through its string view. +1, or NULL with the
+ * exception pending. */
+ScrStr *scr_emitter_name_dyn(const ScrDyn *name) {
+  if (name->kind == SCR_DYN_SYMBOL) {
+    if (!scr_sym_event_ops) scr_trap("scriptc: symbol event names need the symbol runtime unit\n");
+    return scr_str_symbol_key(name->v.symbol.value);
+  }
+  return scr_dyn_string_coerce_js(name);
+}
+
+/* The bucket of a STRING event name (the errorMonitor and symbol-key
+ * buckets never match: their lengths are not a string's). */
 static ScrEeBucket *scr_ee_bucket_find(ScrEeReg *reg, const char *name, size_t len) {
   if (!reg) return NULL;
   for (ScrEeBucket *b = reg->head; b; b = b->next) {
-    if (b->name->len == len && !scr_ee_is_error_monitor(b->name) &&
+    if (b->name->len == len && !scr_ee_is_error_monitor(b->name) && !scr_str_is_symbol_key(b->name) &&
         memcmp(b->name->data, name, len) == 0)
       return b;
   }
   return NULL;
 }
 
-/* The bucket of a registry key: a string name or the errorMonitor key. */
+/* The bucket of a registry key: a string name, the errorMonitor key, or a
+ * symbol's key (which matches any key of the SAME symbol — Node's property
+ * key identity). */
 static ScrEeBucket *scr_ee_bucket_of(ScrEeReg *reg, const ScrStr *name) {
-  if (!scr_ee_is_error_monitor(name)) return scr_ee_bucket_find(reg, name->data, name->len);
   if (!reg) return NULL;
+  if (scr_str_is_symbol_key(name)) {
+    ScrSym *sym = scr_str_symbol_key_sym(name);
+    for (ScrEeBucket *b = reg->head; b; b = b->next) {
+      if (b->sym == sym) return b;
+    }
+    return NULL;
+  }
+  if (!scr_ee_is_error_monitor(name)) return scr_ee_bucket_find(reg, name->data, name->len);
   for (ScrEeBucket *b = reg->head; b; b = b->next) {
     if (b->name == name) return b;
   }
@@ -214,6 +265,7 @@ static ScrEeBucket *scr_ee_bucket_ensure(ScrEeReg *reg, ScrStr *name) {
   b = calloc(1, sizeof *b);
   if (!b) scr_ee_oom();
   b->name = scr_str_retain(name);
+  if (scr_str_is_symbol_key(name)) b->sym = scr_ee_sym_retain(scr_str_symbol_key_sym(name));
   /* Append: bucket order IS eventNames() order. */
   ScrEeBucket **link = &reg->head;
   while (*link) link = &(*link)->next;
@@ -243,6 +295,7 @@ static void scr_ee_bucket_drop(ScrEeReg *reg, ScrEeBucket *b) {
   while (*link != b) link = &(*link)->next;
   *link = b->next;
   scr_str_release(b->name);
+  scr_ee_sym_release(b->sym);
   free(b->ls);
   free(b);
 }
@@ -264,6 +317,7 @@ void scr_emitter_reg_drop(ScrEeReg *reg) {
     ScrEeBucket *next = b->next;
     for (size_t i = 0; i < b->n; i++) scr_ee_entry_unref(b->ls[i]);
     scr_str_release(b->name);
+    scr_ee_sym_release(b->sym);
     free(b->ls);
     free(b);
     b = next;
@@ -297,6 +351,7 @@ void scr_emitter_reg_gcfree(ScrEeReg *reg) {
       if (--e->refs == 0) free(e);
     }
     scr_str_release(b->name);
+    scr_ee_sym_release(b->sym);
     free(b->ls);
     free(b);
     b = next;
@@ -376,8 +431,7 @@ static bool scr_ee_emit_mixed_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *ar
 
 static void scr_ee_symbol_name_fence(const char *what) {
   char message[160];
-  snprintf(message, sizeof message, "%s with an events.errorMonitor listener is not supported yet",
-           what);
+  snprintf(message, sizeof message, "%s with a symbol event name is not supported yet", what);
   scr_throw_error(SCR_ERR_ERROR, scr_str_new(message, strlen(message)));
 }
 
@@ -438,8 +492,9 @@ SCR_TL const ScrEeDynOps *scr_ee_dyn = NULL;
  * when it was itself registered dynamically (`fn`, borrowed, may be NULL). */
 static void scr_ee_emit_meta(ScrEmitter *em, const char *meta, ScrStr *name, const ScrDyn *fn) {
   if (!scr_ee_has(em->reg, meta)) return;
-  /* Node passes the symbol itself, which the string tuple cannot carry. */
-  if (scr_ee_is_error_monitor(name)) {
+  /* Node passes the affected event's name VALUE, and a symbol-keyed event's
+   * name is a symbol — which the typed one-string tuple cannot carry. */
+  if (scr_ee_is_error_monitor(name) || scr_str_is_symbol_key(name)) {
     scr_ee_symbol_name_fence(meta);
     return;
   }
@@ -450,12 +505,163 @@ static void scr_ee_emit_meta(ScrEmitter *em, const char *meta, ScrStr *name, con
 
 /* ── add / remove ─────────────────────────────────────────────────────── */
 
+static ScrDyn *scr_ee_name_value(const ScrEeBucket *b);
+
+/* ── the warning's emitter value ──────────────────────────────────────── */
+
+/* The leak warning's `emitter` property is a live typed reference over the
+ * runtime emitter. Its view is the checked-dynamic property bag an emitter
+ * carries — empty here, since only compiled emitters have one (the
+ * compiler's own boxing of an EventEmitter materializes an empty object
+ * the same way) — so reading a member answers undefined instead of failing
+ * as a class view that cannot be built. */
+static ScrDyn *scr_ee_warning_materialize(void *ptr) {
+  (void)ptr;
+  return scr_dyn_new_obj();
+}
+
+static bool scr_ee_warning_capsule(const ScrDyn *d) {
+  return d && d->kind == SCR_DYN_TYPED_REF &&
+         d->v.typed_ref.materialize == &scr_ee_warning_materialize;
+}
+
+/* EventEmitter's own instance members through that capsule, answered over
+ * the native registry with the entries the compiler's untyped-emitter
+ * dispatch uses (its introspection and registration families). A member a
+ * compiled subclass declares itself is not part of this surface: the
+ * capsule is built by the runtime, which holds no name-to-class dispatch
+ * the program's call site would accept for it. */
+static bool scr_ee_ref_invoke(ScrDyn *d, const char *method, ScrDyn *const *args, size_t argc,
+                              const char *what, ScrDyn **out) {
+  (void)what;
+  if (!scr_ee_warning_capsule(d)) return false;
+  ScrEmitter *em = d->v.typed_ref.ptr;
+  /* The name-taking members key the value the way the table does. */
+  const bool registering = strcmp(method, "on") == 0 || strcmp(method, "addListener") == 0 ||
+                           strcmp(method, "once") == 0 ||
+                           strcmp(method, "prependListener") == 0 ||
+                           strcmp(method, "prependOnceListener") == 0;
+  const bool removing = strcmp(method, "off") == 0 || strcmp(method, "removeListener") == 0;
+  if (registering || removing) {
+    /* The listener argument is checked before the name converts, as the
+     * registry's own entries do: a missing listener is the undefined the
+     * source omitted, and its TypeError wins over a name that would throw. */
+    ScrDyn *listener = argc >= 2 ? args[1] : scr_dyn_undefined();
+    scr_emitter_check_listener(listener);
+    if (argc < 2 || scr_exc_pending()) {
+      *out = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    ScrStr *name = scr_emitter_name_dyn(args[0]);
+    if (!name) {
+      *out = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    ScrEmitter *result =
+        registering ? scr_emitter_on_any(em, name, listener,
+                                         strcmp(method, "once") == 0 ||
+                                             strcmp(method, "prependOnceListener") == 0,
+                                         strncmp(method, "prepend", 7) == 0)
+                    : scr_emitter_off_dyn(em, name, listener);
+    scr_str_release(name);
+    scr_emitter_release(result);
+    /* `return this`: the value the member was called on. */
+    *out = scr_dyn_retain(d);
+    return true;
+  }
+  if (strcmp(method, "emit") == 0) {
+    /* An omitted name is the key "undefined", as Node's table has it. */
+    ScrStr *name = argc >= 1 ? scr_emitter_name_dyn(args[0]) : scr_str_new("undefined", 9);
+    if (!name) {
+      *out = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    bool fired = scr_emitter_emit_any(em, name, argc >= 1 ? args + 1 : args,
+                                      argc >= 1 ? argc - 1 : (size_t)0);
+    scr_str_release(name);
+    *out = scr_dyn_new_bool(fired);
+    return true;
+  }
+  if (strcmp(method, "eventNames") == 0) {
+    *out = scr_emitter_event_names(em);
+    return true;
+  }
+  if (strcmp(method, "getMaxListeners") == 0) {
+    *out = scr_dyn_new_num(scr_emitter_get_max(em));
+    return true;
+  }
+  if (strcmp(method, "setMaxListeners") == 0) {
+    ScrEmitter *result = scr_emitter_set_max_chk(em, argc >= 1 ? args[0] : scr_dyn_undefined());
+    scr_emitter_release(result);
+    *out = scr_dyn_retain(d);
+    return true;
+  }
+  if (strcmp(method, "removeAllListeners") == 0) {
+    ScrEmitter *result;
+    if (argc >= 1) {
+      ScrStr *name = scr_emitter_name_dyn(args[0]);
+      if (!name) {
+        *out = scr_dyn_retain(scr_dyn_undefined());
+        return true;
+      }
+      result = scr_emitter_remove_all(em, name, false);
+      scr_str_release(name);
+    } else {
+      ScrStr *all = scr_str_new("", 0);
+      result = scr_emitter_remove_all(em, all, true);
+      scr_str_release(all);
+    }
+    scr_emitter_release(result);
+    *out = scr_dyn_retain(d);
+    return true;
+  }
+  if (strcmp(method, "listeners") == 0 || strcmp(method, "rawListeners") == 0 ||
+      strcmp(method, "listenerCount") == 0) {
+    /* An omitted name is the key "undefined", as Node's table has it. */
+    ScrStr *name = argc >= 1 ? scr_emitter_name_dyn(args[0]) : scr_str_new("undefined", 9);
+    if (!name) {
+      *out = scr_dyn_retain(scr_dyn_undefined());
+      return true;
+    }
+    if (strcmp(method, "listenerCount") != 0) {
+      *out = scr_emitter_listeners_dyn(em, name);
+    } else {
+      double count = argc >= 2 ? scr_emitter_listener_count_dyn(em, name, args[1])
+                               : scr_emitter_listener_count(em, name);
+      *out = scr_dyn_new_num(count);
+    }
+    scr_str_release(name);
+    return true;
+  }
+  return false;
+}
+
+static const ScrEmitterRefHooks scr_ee_ref_hooks = { .invoke = scr_ee_ref_invoke };
+
 /* process.emitWarning's next-tick delivery of the leak warning: to the
  * 'warning' listeners and the default report when the process-warning
  * unit is linked, otherwise the default report alone. */
 static void scr_ee_warn_tick(ScrClosure *self) {
   ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[0]);
-  if (scr_warning_emit_hook) {
+  ScrDyn *type = (ScrDyn *)scr_box_get_ref(self->caps[1]);
+  double count = scr_box_get_f64(self->caps[2]);
+  ScrEmitter *em = (ScrEmitter *)scr_box_get_ref(self->caps[3]);
+  if (scr_warning_leak_hook) {
+    /* The warning carries the emitter itself, so it crosses as an
+     * identity-bearing value: a typed reference over the emitter object
+     * answers the same address the program's own boxing of the emitter
+     * does. The key names the base class the value reports, which is what
+     * `instanceof EventEmitter` and the base-class dispatch test; the
+     * member dispatch above serves the value's own EventEmitter surface.
+     * Capsules for one emitter are interned, so every delivery sees one
+     * value. */
+    static const char key[] = "object:%EventEmitter";
+    scr_emitter_ref_hooks = &scr_ee_ref_hooks;
+    ScrDyn *view = scr_dyn_new_typed_ref(em, scr_emitter_retain_v, scr_emitter_release_v, key,
+                                         sizeof key - 1, scr_ee_warning_materialize, NULL);
+    scr_warning_leak_hook(type, count, view, message);
+    scr_dyn_release(view);
+  } else if (scr_warning_emit_hook) {
     scr_warning_emit_hook("MaxListenersExceededWarning", NULL, message);
   } else {
     fflush(stdout);
@@ -467,9 +673,24 @@ static void scr_ee_warn_tick(ScrClosure *self) {
     }
   }
   scr_str_release(message);
+  scr_dyn_release(type);
+  scr_emitter_release(em);
 }
 
-static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b) {
+/* An event name as Node interpolates it in a message: the name's bytes, or
+ * "Symbol(desc)" for a symbol key (a symbol key's len is SIZE_MAX, so its
+ * bytes never print). */
+static void scr_ee_jb_put_name(ScrJsonBuf *text, const ScrStr *name) {
+  if (!scr_str_is_symbol_key(name)) {
+    scr_jb_write(text, name->data, name->len);
+    return;
+  }
+  ScrStr *shown = scr_ee_sym_text(scr_str_symbol_key_sym(name));
+  scr_jb_write(text, shown->data, shown->len);
+  scr_str_release(shown);
+}
+
+static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b, const ScrDyn *name_value) {
   ScrEeReg *reg = em->reg;
   double max = reg->max >= 0 ? reg->max : scr_emitter_default_max;
   if (b->warned || max <= 0 || (double)b->n <= max) return;
@@ -485,16 +706,31 @@ static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b) {
   scr_jb_puts(&text, "Possible EventEmitter memory leak detected. ");
   scr_jb_puts(&text, count);
   scr_jb_putc(&text, ' ');
-  scr_jb_write(&text, b->name->data, b->name->len);
+  /* Node interpolates the event name: a symbol prints as Symbol(desc). */
+  scr_ee_jb_put_name(&text, b->name);
   scr_jb_puts(&text, " listeners added to [");
   scr_jb_puts(&text, em->cls);
   scr_jb_puts(&text, "]. MaxListeners is ");
   scr_jb_puts(&text, limit);
   scr_jb_puts(&text, ". Use emitter.setMaxListeners() to increase limit");
-  ScrClosure *tick = scr_closure_new((void *)&scr_ee_warn_tick, 1);
+  /* The tick carries the report's message, the event name VALUE (the
+   * warning's `type`), the count and the emitter, which it keeps alive
+   * until delivery. */
+  ScrClosure *tick = scr_closure_new((void *)&scr_ee_warn_tick, 4);
   ScrBox *box = scr_box_new(SCR_BOX_STR);
   scr_box_set_ref(box, scr_jb_finish(&text));
   tick->caps[0] = box;
+  ScrBox *type = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  /* Node's warning carries the name ARGUMENT: `on(null)` warns with
+   * `type: null` although the registry key is the string "null". */
+  scr_box_set_ref(type, name_value ? scr_dyn_retain((ScrDyn *)name_value) : scr_ee_name_value(b));
+  tick->caps[1] = type;
+  ScrBox *tally = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(tally, (double)b->n);
+  tick->caps[2] = tally;
+  ScrBox *owner = scr_box_new_obj(scr_emitter_retain_v, scr_emitter_release_v, &scr_emitter_trace);
+  scr_box_set_ref(owner, scr_emitter_retain(em)); /* set_ref adopts */
+  tick->caps[3] = owner;
   scr_next_tick(tick);
 }
 
@@ -506,7 +742,8 @@ static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b) {
 static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                               ScrClosure *orig /*moves; may be NULL*/,
                               ScrEeInvoke inv, const ScrDyn *dyn /*borrowed; may be NULL*/,
-                              bool once, bool prepend, const ScrDynTypedRefRecipe *recv) {
+                              bool once, bool prepend, const ScrDynTypedRefRecipe *recv,
+                              const ScrDyn *name_value /*borrowed; may be NULL*/) {
   scr_ee_reg_ensure(em);
   scr_ee_emit_meta(em, "newListener", name, dyn);
   ScrEeBucket *b = scr_ee_bucket_ensure(em->reg, name);
@@ -539,14 +776,14 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
   }
   b->n++;
   if (b->n == 1) scr_ee_observe(em, name, true);
-  scr_ee_warn_maybe(em, b);
+  scr_ee_warn_maybe(em, b, name_value);
   if (scr_emitter_on_hook != NULL) scr_emitter_on_hook(em, name);
   return scr_emitter_retain(em);
 }
 
 ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                             ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, cb, NULL, inv, NULL, once, prepend, NULL);
+  return scr_ee_add(em, name, cb, NULL, inv, NULL, once, prepend, NULL, NULL);
 }
 
 /* events.once(emitter, name): a pending promise of the event's arguments
@@ -629,7 +866,7 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
    * listener it announced is never added (the event's listener stays when
    * only the 'error' announcement throws). */
   ScrCaught *thrown = NULL;
-  scr_emitter_release(scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, true, false, NULL));
+  scr_emitter_release(scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, true, false, NULL, NULL));
   if (scr_exc_pending()) {
     thrown = scr_exc_take();
     scr_ee_unadd(em, name, st->event_cb);
@@ -637,7 +874,7 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
     st->event_cb = st->error_cb = NULL;
   } else if (st->error_cb != NULL) {
     ScrStr *error = scr_str_new("error", 5);
-    scr_emitter_release(scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, true, false, NULL));
+    scr_emitter_release(scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, true, false, NULL, NULL));
     if (scr_exc_pending()) {
       thrown = scr_exc_take();
       scr_ee_unadd(em, error, st->error_cb);
@@ -699,7 +936,7 @@ ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *
                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
                                     bool prepend, const ScrDynTypedRefRecipe *recv) {
   return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv,
-                    cb->kind == SCR_DYN_FUNC ? cb : NULL, once, prepend, recv);
+                    cb->kind == SCR_DYN_FUNC ? cb : NULL, once, prepend, recv, NULL);
 }
 
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
@@ -751,7 +988,7 @@ ScrEmitter *scr_emitter_on_flex_this(ScrEmitter *em, ScrStr *name, const ScrDyn 
     scr_dyn_check_listener(cb, "listener");
     return scr_emitter_retain(em);
   }
-  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend, recv);
+  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend, recv, NULL);
 }
 
 ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
@@ -779,9 +1016,9 @@ ScrEmitter *scr_emitter_on_any_this(ScrEmitter *em, ScrStr *name, const ScrDyn *
   if (fire) {
     return scr_ee_add(em, name, scr_ee_dyn_adapter(cb, fire),
                       scr_closure_retain(cb->v.fn.clo), &scr_ee_inv_fixed1, cb, once, prepend,
-                      recv);
+                      recv, NULL);
   }
-  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend, recv);
+  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend, recv, NULL);
 }
 
 ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
@@ -795,14 +1032,31 @@ ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, NULL);
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, NULL, NULL);
 }
 
 /* scr_emitter_on_via for a listener that can read `this` (scr_events_emitter.h). */
 ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
                                     bool prepend, const ScrDynTypedRefRecipe *recv) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, recv);
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, recv, NULL);
+}
+
+/* scr_emitter_on_via and _this for a name whose argument VALUE is not its
+ * registry key (scr_events_emitter.h). */
+ScrEmitter *scr_emitter_on_via_named(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
+                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
+                                     bool prepend, const ScrDyn *name_value /*borrowed*/) {
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, NULL, name_value);
+}
+
+ScrEmitter *scr_emitter_on_via_this_named(ScrEmitter *em, ScrStr *name,
+                                          ScrClosure *orig /*moves*/,
+                                          ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                          bool once, bool prepend,
+                                          const ScrDynTypedRefRecipe *recv,
+                                          const ScrDyn *name_value /*borrowed*/) {
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, recv, name_value);
 }
 
 /* ── fixed-arity invoke shims (scr_runtime.h's contract) ──────────────
@@ -1066,11 +1320,11 @@ SCR_COLD static void scr_ee_listener_mismatch(const ScrStr *name, bool typed_emi
   scr_jb_init(&text);
   if (typed_emit) {
     scr_jb_puts(&text, "emitting '");
-    scr_jb_write(&text, name->data, name->len);
+    scr_ee_jb_put_name(&text, name);
     scr_jb_puts(&text, "' with typed arguments to a listener registered through an untyped value is not supported yet");
   } else {
     scr_jb_puts(&text, "The '");
-    scr_jb_write(&text, name->data, name->len);
+    scr_ee_jb_put_name(&text, name);
     scr_jb_puts(&text, "' listener has typed parameters the arguments of this untyped emit do not convert to");
   }
   ScrStr *message = scr_jb_finish(&text);
@@ -1440,31 +1694,47 @@ double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn
     : 0;
 }
 
-/* eventNames(): +1 string[] of the bucket names in Node's _events key
- * order. _events is an object, so array-index names ('0', '1', ...) come
- * first in ascending order, then the other names in first-registration
- * order. Reserved-but-empty buckets (the stream pre-created keys) are
- * invisible until a listener lands. */
-ScrArr *scr_emitter_event_names(ScrEmitter *em) {
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+/* One eventNames() element: the symbol itself for a symbol-keyed bucket,
+ * the name's bytes otherwise. The array slot owns the +1. */
+static ScrDyn *scr_ee_name_value(const ScrEeBucket *b) {
+  if (!b->sym) return scr_dyn_new_str(b->name);
+  if (!scr_sym_event_ops) scr_trap("scriptc: symbol event names need the symbol runtime unit\n");
+  return scr_sym_event_ops->box(b->sym);
+}
+
+/* eventNames(): +1 checked-dynamic array of the bucket keys in Node's
+ * _events property order — integer-index string names ('0', '1', ...)
+ * ascending, then the other string names, then the symbols, each group in
+ * first-registration order (undefined and symbols sort after every
+ * string key in an object's own key order). Reserved-but-empty buckets
+ * (the stream pre-created keys) are invisible until a listener lands. */
+ScrDyn *scr_emitter_event_names(ScrEmitter *em) {
+  ScrDyn *out = scr_dyn_new_arr();
   if (!em->reg) return out;
-  size_t count = 0;
+  size_t count = 0, syms = 0;
   for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
     if (b->n == 0) continue;
-    /* Node lists the errorMonitor symbol, which a string[] cannot hold. */
+    /* Node lists the errorMonitor symbol; it is a registry key here, never
+     * a symbol value, so the array cannot carry it. */
     if (scr_ee_is_error_monitor(b->name)) {
-      scr_arr_release(out);
+      scr_dyn_release(out);
       scr_ee_symbol_name_fence("eventNames()");
-      return scr_arr_new(SCR_ELEM_STR, 0);
+      return scr_dyn_new_arr();
     }
-    count++;
+    if (b->sym) syms++;
+    else count++;
   }
   ScrEeBucket **live = count ? malloc(count * sizeof *live) : NULL;
   ScrKeyIndex *indexed = count ? malloc(count * sizeof *indexed) : NULL;
-  if (count && (!live || !indexed)) scr_ee_oom();
-  size_t n = 0, k = 0;
+  ScrEeBucket **symbols = syms ? malloc(syms * sizeof *symbols) : NULL;
+  if ((count && (!live || !indexed)) || (syms && !symbols)) scr_ee_oom();
+  size_t n = 0, k = 0, m = 0;
   for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
     if (b->n == 0) continue;
+    if (b->sym) {
+      symbols[m++] = b;
+      continue;
+    }
     uint32_t index;
     if (scr_key_array_index(b->name->data, b->name->len, &index)) {
       indexed[k].index = index;
@@ -1474,14 +1744,17 @@ ScrArr *scr_emitter_event_names(ScrEmitter *em) {
     live[n++] = b;
   }
   if (k > 1) qsort(indexed, k, sizeof *indexed, scr_key_index_compare);
-  for (size_t i = 0; i < k; i++) scr_arr_push_ref(out, scr_str_retain(live[indexed[i].entry]->name));
+  for (size_t i = 0; i < k; i++)
+    scr_dyn_arr_push(out, scr_ee_name_value(live[indexed[i].entry]));
   for (size_t i = 0; i < n; i++) {
     uint32_t index;
     if (!scr_key_array_index(live[i]->name->data, live[i]->name->len, &index))
-      scr_arr_push_ref(out, scr_str_retain(live[i]->name));
+      scr_dyn_arr_push(out, scr_ee_name_value(live[i]));
   }
+  for (size_t i = 0; i < m; i++) scr_dyn_arr_push(out, scr_ee_name_value(symbols[i]));
   free(indexed);
   free(live);
+  free(symbols);
   return out;
 }
 

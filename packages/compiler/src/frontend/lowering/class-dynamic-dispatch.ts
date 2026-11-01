@@ -6763,10 +6763,11 @@ export class ClassDynamicDispatch {
       loc,
     });
     // Node indexes _events with the argument itself: an omitted name is
-    // the key "undefined".
+    // the key "undefined", and a symbol argument keys by its identity (the
+    // checked-dynamic name conversion, not a string coercion).
     const eventName = (): IrExpr =>
       incoming.length
-        ? lowerer.coerceToExpected(incoming[0]!, STRING)
+        ? { kind: "libCall", fn: "emitter.nameDyn", args: [incoming[0]!], type: STRING, loc }
         : { kind: "strLit", value: "undefined", type: STRING, loc };
     switch (method) {
       case "listenerCount":
@@ -6776,7 +6777,7 @@ export class ClassDynamicDispatch {
             : call("emitter.count", [eventName()], F64),
         );
       case "eventNames":
-        return ret(call("emitter.names", [], { kind: "array", elem: STRING }));
+        return ret(call("emitter.names", [], DYN));
       case "removeAllListeners":
         return ret(
           incoming.length
@@ -6847,9 +6848,16 @@ export class ClassDynamicDispatch {
       const ret = (value: IrExpr): IrStmt[] => [
         { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
       ];
+      // The event name keys Node's table: a symbol by its identity, any
+      // other value by its property key. A stream keeps the string-only
+      // coercion (its fixed events carry typed payload ABIs).
+      const eventKey = (value: IrExpr): IrExpr =>
+        streamRooted(info)
+          ? lowerer.coerceToExpected(value, STRING)
+          : { kind: "libCall", fn: "emitter.nameDyn", args: [value], type: STRING, loc };
       if (method === "emit") {
         if (!incoming.length) return fence();
-        const event = lowerer.coerceToExpected(incoming[0]!, STRING);
+        const event = eventKey(incoming[0]!);
         const bridged = streamRooted(info)
           ? null
           : lowerDynamicEmitterEmit(lowerer, receiver, event, incoming.slice(1), loc);
@@ -6865,7 +6873,7 @@ export class ClassDynamicDispatch {
       }
       if (registering || removing) {
         if (incoming.length < 2) return fence();
-        const event = lowerer.coerceToExpected(incoming[0]!, STRING);
+        const event = eventKey(incoming[0]!);
         const cb = incoming[1]!;
         const bridged =
           registering && !streamRooted(info)

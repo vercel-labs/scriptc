@@ -32,9 +32,10 @@ declare module "events" {
      * these calls for events whose argument tuple is empty — a listener
      * pulled from the array is then safely callable too. Events with
      * arguments fence (their element type would lie). */
-    listeners(eventName: string): Array<() => void>;
-    rawListeners(eventName: string): Array<() => void>;
-    eventNames(): string[];
+    listeners(eventName: string | symbol): Array<() => void>;
+    rawListeners(eventName: string | symbol): Array<() => void>;
+    /* The registered keys, symbols included (Node's `(string | symbol)[]`). */
+    eventNames(): (string | symbol)[];
     setMaxListeners(n: number): this;
     getMaxListeners(): number;
   }
@@ -54,7 +55,10 @@ declare module "events" {
     export function listenerCount(emitter: EventEmitter, eventName: string | symbol): number;
     export function getMaxListeners(emitter: EventEmitter): number;
     export function setMaxListeners(n?: number, ...eventTargets: EventEmitter[]): void;
-    export function getEventListeners(emitter: EventEmitter, name: string): Array<() => void>;
+    export function getEventListeners(
+      emitter: EventEmitter,
+      name: string | symbol,
+    ): Array<() => void>;
   }
   export = EventEmitter;
 }

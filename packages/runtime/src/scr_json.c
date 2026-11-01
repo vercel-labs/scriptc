@@ -5187,6 +5187,7 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
 }
 
 SCR_TL const ScrEventRefHooks *scr_event_ref_hooks = NULL;
+SCR_TL const ScrEmitterRefHooks *scr_emitter_ref_hooks = NULL;
 
 /* d[index] for a numeric index without forming the key string (see the
  * header): dyn arrays answer in-range elements, and live array capsules

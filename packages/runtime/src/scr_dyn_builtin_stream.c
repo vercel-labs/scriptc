@@ -711,16 +711,7 @@ static ScrDyn *bcs_emit(ScrStream *s, ScrDyn *const *args, size_t argc) {
 }
 
 static ScrDyn *bcs_event_names(ScrStream *s) {
-  ScrArr *names = scr_emitter_event_names((ScrEmitter *)s);
-  ScrDyn *result = scr_dyn_new_arr();
-  double length = scr_arr_len(names);
-  for (double i = 0; i < length; i++) {
-    ScrStr *name = scr_arr_get_ref(names, i);
-    scr_dyn_arr_push(result, scr_dyn_new_str(name));
-    scr_str_release(name);
-  }
-  scr_arr_release(names);
-  return result;
+  return scr_emitter_event_names((ScrEmitter *)s);
 }
 
 /* EventEmitter.prototype's methods on a constructor-function stream

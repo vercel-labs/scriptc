@@ -301,6 +301,14 @@ void scr_buffer_deprecation(void);
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
 extern SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message);
+/* The EventEmitter leak warning with its `emitter`, `count` and `type` own
+ * properties (scr_lib.c; set by the 'warning'-listener registration beside
+ * scr_warning_emit_hook). A raising unit owns the values it passes: `type`
+ * is the event name value, `emitter` an identity-bearing value of the
+ * emitter, `message` the report's text; all are borrowed. Units that
+ * cannot link the dyn-async unit test this hook first and fall back to
+ * scr_warning_emit_hook, then to the default report. */
+extern SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message);
 /* Node's traceWarningHelperShown: the "(Use `node --trace-warnings ...`"
  * hint follows only the first warning report of the process, whichever
  * unit prints it (scr_lib.c). */

@@ -4,7 +4,10 @@
   Other names reach an EventEmitter as through an untyped value: a name computed at run time converts with `String(name)`, then the name is matched against the program's literal event names when the call runs.
   The name expression is evaluated before it converts; a name whose static type is a string or number literal is a compile-time key only when reading it runs no program code (a literal, a `null`, `undefined`, `true` or `false` keyword, a binding read, a stored field or record entry read), and a call or an accessor lowers as a run-time name.
   On streams, those names and names that may reach internal events are unsupported.
-  Symbol names other than `events.errorMonitor` are unsupported.
+  Symbol event names are supported: a symbol keys the registry by identity, so two `Symbol("s")` names are different events and a `Symbol.for()` name is one event at every call site.
+  `eventNames()` lists symbol names after every string name, and the max-listeners warning renders a symbol name as `Symbol(description)`.
+  Registering or removing a listener under a symbol name while a `newListener` or `removeListener` listener is registered is unsupported, as is `eventNames()` on an emitter with a registered `errorMonitor` listener.
+  A stream's event names are strings: a symbol name is a type error at a typed call site and throws through an untyped value.
   Once the program registers a listener under an unrestricted name, typed `listeners()`/`rawListeners()` results are unsupported for events that literal names register with typed listeners.
   An emitter reached through an untyped value shares one listener list with its typed uses, so untyped registrations and emits reach typed listeners and typed emits reach untyped listeners.
   An untyped `emit` of an event that has a listener with typed parameters converts its arguments to the event's typed tuple before any listener runs, and throws a `TypeError` when they do not convert.

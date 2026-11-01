@@ -174,11 +174,11 @@ interface EarlyExecutableCacheStamp {
   libnode?: string;
   /** How a --profile-use build's profile matched, which a cache hit reports. */
   profileMatch?: NativeProfileMatch;
-  /** The partitions the executable was linked from, when the build divided
-   * the module (native-codegen-core.ts nativeProgramPartitions; a single
-   * native object leaves it out). Part of the entry rather than of the key:
-   * only a module whose count the host's thread count changes can differ,
-   * and the count follows from the cached translation unit. */
+  /** The partitions the executable was linked from (native-codegen-core.ts
+   * nativeProgramPartitions; one for a module small enough to stay whole, and
+   * left out of a link of a single native object). Part of the entry rather
+   * than of the key: the count follows from the cached translation unit, so a
+   * hit can derive it again. */
   partitions?: number;
   integrity: string;
 }
@@ -668,7 +668,7 @@ async function readExecutableCache(
       (stamp.files.executable === null) !== (stamp.nativeDependencies === null) ||
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
       (stamp.partitions !== undefined &&
-        (!Number.isInteger(stamp.partitions) || stamp.partitions < 2)) ||
+        (!Number.isInteger(stamp.partitions) || stamp.partitions < 1)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
       (stamp.native.nodeIsland === true &&
@@ -713,10 +713,12 @@ async function readExecutableCache(
       (stamp.files.debugSymbols !== undefined && debugSymbols === null)
     )
       return null;
-    // A divided module's partition count follows from its text and the host's
-    // thread count (nativeProgramPartitions), and the executable is linked
-    // from those partitions: one built for another count is not the
-    // executable this host builds, so it is a miss.
+    // A module's partition count follows from its text and, above the size
+    // that keeps it whole, the host's thread count (nativeProgramPartitions),
+    // and the executable is linked from those partitions: one built for
+    // another count is not the executable this host builds, so it is a miss.
+    // A module small enough to stay one partition gets that count on every
+    // host and keeps hitting.
     if (
       stamp.partitions !== undefined &&
       stamp.partitions !==

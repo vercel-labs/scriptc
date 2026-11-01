@@ -7,6 +7,7 @@ import {
   trackedFileExists,
   trackedReadFile,
 } from "../frontend/input-tracker.js";
+import { nativeProgramPartitions } from "../backend/native-codegen-core.js";
 import {
   nativeArtifactDependenciesStillMatch,
   snapshotNativeArtifactDependencies,
@@ -403,6 +404,32 @@ test("an undivided module's executable cache entry ignores the host's threads", 
   });
   hostThreads.count = 1;
   expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+  hostThreads.count = 8;
+});
+
+test("a module small enough to stay whole records one partition and hits on every host", async () => {
+  const f = await fixture();
+  // What a runtime-pack build records for a module whose text stays one
+  // partition: the helper compiled a single partition, not a divided module.
+  const bytes = (await readFile(f.llvmPath)).length;
+  expect(nativeProgramPartitions(bytes, false)).toBe(1);
+  await writeFile(f.options.outPath, "native binary");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  hostThreads.count = 8;
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [],
+    frontend: tracker.snapshot(),
+    partitions: 1,
+  });
+  for (const threads of [1, 4, 8]) {
+    hostThreads.count = threads;
+    expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+  }
   hostThreads.count = 8;
 });
 

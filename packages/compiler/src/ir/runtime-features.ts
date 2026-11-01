@@ -1014,22 +1014,23 @@ function literalIndex(expr: IrExpr): number | undefined {
   return isIndexString(lit.value) ? Number(lit.value) : undefined;
 }
 
-/** The key and value one dynamic member write takes, or two undefined for
- * any other node. A write is a `dyn.keySet`/`dyn.keySetComputed` call or a
- * call into a class-dispatch stub that carries the stored value
+/** The receiver, key and value one dynamic member write takes, or three
+ * undefined for any other node. A write is a `dyn.keySet`/`dyn.keySetComputed`
+ * call or a call into a class-dispatch stub that carries the stored value
  * (class-dynamic-dispatch.ts `%dyn.class.computed.<n>`). */
-function writeArgs(node: IrExpr): [IrExpr | undefined, IrExpr | undefined] {
+function writeArgs(node: IrExpr): [IrExpr | undefined, IrExpr | undefined, IrExpr | undefined] {
+  const none: [undefined, undefined, undefined] = [undefined, undefined, undefined];
   if (node.kind === "libCall") {
-    if (node.fn !== "dyn.keySet" && node.fn !== "dyn.keySetComputed") return [undefined, undefined];
-    return [node.args[1], node.args[2]];
+    if (node.fn !== "dyn.keySet" && node.fn !== "dyn.keySetComputed") return none;
+    return [node.args[0], node.args[1], node.args[2]];
   }
   if (
     node.kind === "call" &&
     node.callee.startsWith("%dyn.class.computed.") &&
     node.args.length >= 3
   )
-    return [node.args[1], node.args[2]];
-  return [undefined, undefined];
+    return [node.args[0], node.args[1], node.args[2]];
+  return none;
 }
 
 /** Whether the module writes an array element at an index the source
@@ -1040,26 +1041,69 @@ function writeArgs(node: IrExpr): [IrExpr | undefined, IrExpr | undefined] {
  * the source spells back through that local's one definition. */
 function moduleWritesSparseIndex(mod: IrModule): boolean {
   const literals = new Map<string, LiteralNode>();
+  const definitions = new Map<string, IrExpr>();
+  /** The assigns a global takes. A module-level `const view = typed`
+   * initializes its global with an assign rather than a varDecl; a local
+   * assigned more than once could hold anything by the time of the write. */
+  const assigns = new Map<string, IrExpr[]>();
   everyModuleNode(mod, {
     expr: () => true,
     stmt: (node) => {
+      if (node.kind === "assign") {
+        const taken = assigns.get(node.localId);
+        if (taken === undefined) assigns.set(node.localId, [node.value]);
+        else taken.push(node.value);
+        return true;
+      }
       if (node.kind !== "varDecl" || node.init === null) return true;
+      definitions.set(node.localId, node.init);
       const literal = literalOf(node.init);
       if (literal !== undefined) literals.set(node.localId, literal);
       return true;
     },
     type: () => true,
   });
+  const reassigned = new Set<string>();
+  for (const [localId, values] of assigns) {
+    if (values.length === 1) definitions.set(localId, values[0]!);
+    else reassigned.add(localId);
+  }
   /** The literal behind a hidden local, or the node itself when the
    * lowering spelled it directly. */
   const resolve = (expr: IrExpr): LiteralNode | undefined =>
     expr.kind === "varRef" ? literals.get(expr.localId) : literalOf(expr);
+  /** Whether the value a local holds, followed through the locals and
+   * globals it is copied from, is a live view of a native array (`const
+   * view: any = typed`). Such an array already keeps the elements past its
+   * dense prefix in its own out-of-line storage (the ScrArr ext), so a far
+   * write through the view needs no part of the checked-dynamic array's
+   * sparse support: the typed path answers it, in the default build too. */
+  const holdsNativeView = (start: IrExpr): boolean => {
+    let expr = start;
+    for (let hop = 0; hop < 4; hop++) {
+      if (expr.kind === "dynFrom") {
+        if (expr.value.type.kind === "array") return true;
+        expr = expr.value;
+        continue;
+      }
+      if (expr.kind !== "varRef" || reassigned.has(expr.localId)) return false;
+      const next = definitions.get(expr.localId);
+      if (next === undefined) return false;
+      expr = next;
+    }
+    return false;
+  };
+  const writesNativeView = (receiver: IrExpr): boolean => {
+    const init = receiver.kind === "varRef" ? definitions.get(receiver.localId) : undefined;
+    return holdsNativeView(init ?? receiver);
+  };
   let sparse = false;
   everyModuleNode(mod, {
     expr: (node) => {
       if (sparse) return false;
-      const [rawKey, rawValue] = writeArgs(node);
-      if (rawKey === undefined || rawValue === undefined) return true;
+      const [receiver, rawKey, rawValue] = writeArgs(node);
+      if (receiver === undefined || rawKey === undefined || rawValue === undefined) return true;
+      if (writesNativeView(receiver)) return true;
       const key = resolve(rawKey);
       const index = key === undefined ? undefined : literalIndex(key);
       if (index !== undefined && index > SPARSE_INDEX_LIMIT) sparse = true;

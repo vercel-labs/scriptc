@@ -1930,6 +1930,13 @@ ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs);
+/* Object.defineProperties' read-and-convert half, for the entry points that
+ * define the properties themselves (the handle property table): an array of
+ * [key, descriptor] pairs (+1), every descriptor read and converted before
+ * any definition, or NULL with the exception pending. `read_any` admits
+ * descriptor objects of any shape (scr_dyn_descriptor_snapshot); NULL keeps
+ * the plain-object rule. */
+ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor));
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys);
 /* Boxes a closure as a callable dyn value. Ownership of `clo` MOVES in
  * (callers retain first when they keep their own reference); `sig`/`name`

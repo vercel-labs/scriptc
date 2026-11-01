@@ -46,6 +46,8 @@ function attempt(label, run) {
 attempt("member set", () => { const d = new Date(0); d.toString = () => "x"; });
 attempt("member define", () => { const m = new Map(); Object.defineProperty(m, "get", { value: 1 }); });
 attempt("inspect", () => { const d = new Date(0); d.x = 1; console.log(d); });
+attempt("diamond", () => { const d = new Date(0); d.x = 1; const g = { d }; g.left = g; g.right = g; console.log(g); });
+attempt("diamond list", () => { const d = new Date(0); d.x = 1; const g = { d }; g.left = g; g.right = g; console.log("a", g, g); });
 attempt("freeze", () => { const r = /a/; r.x = 1; Object.freeze(r); });
 `);
   expect(stdout).toBe(
@@ -53,6 +55,8 @@ attempt("freeze", () => { const r = /a/; r.x = 1; Object.freeze(r); });
       "member set setting 'toString' on a dynamic Date is not supported yet",
       "member define Object.defineProperty of the Map member 'get' is not supported yet",
       "inspect console.log/util.inspect of a Date, RegExp, Map, Set or buffer with added own properties is not supported yet",
+      "diamond console.log/util.inspect of a Date, RegExp, Map, Set or buffer with added own properties is not supported yet",
+      "diamond list console.log/util.inspect of a Date, RegExp, Map, Set or buffer with added own properties is not supported yet",
       "freeze Object.freeze of a RegExp is not supported yet",
       "",
     ].join("\n"),

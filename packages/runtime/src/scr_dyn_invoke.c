@@ -2535,28 +2535,14 @@ ScrDyn *scr_dyn_array_prototype(void) {
   return prototype;
 }
 
-/* Object.defineProperties over dyn values (see scr_runtime.h). With a
- * `read_any` (scr_dyn_descriptor_snapshot), each descriptor may be any
- * object; otherwise it must be a plain object. Only the entry point that
- * passes it references the reader, so other programs do not link it. */
-static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys,
-                                             ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
-  /* Island-held operands ARE objects to Node — the non-object TypeError
-   * below would be a wrong claim. They are fenced with a "not supported
-   * yet" error instead (lane dyn-routing-ops). */
-
-
-  if (scr_exc_pending()) return NULL;
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR) {
-    scr_throw_error_msg(SCR_ERR_TYPE, "Object.defineProperties called on non-object",
-                        strlen("Object.defineProperties called on non-object"));
-    return NULL;
-  }
-  if (descs->kind != SCR_DYN_OBJ) {
-    scr_throw_error_msg(SCR_ERR_TYPE, "Object.defineProperties called on non-object",
-                        strlen("Object.defineProperties called on non-object"));
-    return NULL;
-  }
+/* Object.defineProperties' read-and-convert half: every own enumerable
+ * string-keyed descriptor of the Properties argument is read and converted
+ * (ToPropertyDescriptor) before any property is defined, so a later invalid
+ * descriptor leaves the target untouched. `read_any`
+ * (scr_dyn_descriptor_snapshot) admits a descriptor built by an expression;
+ * NULL keeps the plain-object rule and its TypeError. Returns an array of
+ * [key, descriptor] pairs (+1), or NULL with the exception pending. */
+ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
   ScrDyn *keys = scr_dyn_obj_own_keys(descs);
   ScrDyn *pending = scr_dyn_new_arr();
   static const char *const names[] = {"enumerable", "configurable", "value", "writable", "get", "set"};
@@ -2616,6 +2602,37 @@ static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrD
     scr_dyn_arr_push(pending, pair);
   }
   scr_dyn_release(keys);
+  return pending;
+fail:
+  scr_dyn_release(keys);
+  scr_dyn_release(pending);
+  return NULL;
+}
+
+/* Object.defineProperties over dyn values (see scr_runtime.h). With a
+ * `read_any` (scr_dyn_descriptor_snapshot), each descriptor may be any
+ * object; otherwise it must be a plain object. Only the entry point that
+ * passes it references the reader, so other programs do not link it. */
+static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys,
+                                             ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
+  /* Island-held operands ARE objects to Node — the non-object TypeError
+   * below would be a wrong claim. They are fenced with a "not supported
+   * yet" error instead (lane dyn-routing-ops). */
+
+
+  if (scr_exc_pending()) return NULL;
+  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR) {
+    scr_throw_error_msg(SCR_ERR_TYPE, "Object.defineProperties called on non-object",
+                        strlen("Object.defineProperties called on non-object"));
+    return NULL;
+  }
+  if (descs->kind != SCR_DYN_OBJ) {
+    scr_throw_error_msg(SCR_ERR_TYPE, "Object.defineProperties called on non-object",
+                        strlen("Object.defineProperties called on non-object"));
+    return NULL;
+  }
+  ScrDyn *pending = scr_dyn_define_props_pending(descs, read_any);
+  if (!pending) return NULL;
   for (size_t i = 0; i < pending->v.arr.len; i++) {
     ScrDyn *pair = pending->v.arr.items[i];
     ScrDyn *key = pair->v.arr.items[0];
@@ -2638,10 +2655,6 @@ static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrD
   }
   scr_dyn_release(pending);
   return scr_dyn_retain(target);
-fail:
-  scr_dyn_release(keys);
-  scr_dyn_release(pending);
-  return NULL;
 }
 
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs) {

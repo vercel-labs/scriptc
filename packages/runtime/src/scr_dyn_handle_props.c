@@ -525,6 +525,17 @@ static bool hp_for_in_keys(const ScrDyn *handle, ScrDyn **out) {
   return true;
 }
 
+/* Whether the table still holds `key` as an enumerable own property. */
+static bool hp_key_enumerable(ScrDyn *props, const ScrStr *key) {
+  if (!props) return false;
+  ScrDyn *desc = scr_dyn_own_descriptor(props, key);
+  if (!desc) return false;
+  ScrDyn *flag = desc->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(desc, "enumerable", 10) : NULL;
+  bool enumerable = flag && scr_dyn_truthy(flag);
+  scr_dyn_release(desc);
+  return enumerable;
+}
+
 /* The ScrObjWalk modes scr_json.c passes (private to that unit). */
 enum { HP_WALK_KEYS = 0, HP_WALK_VALUES = 1, HP_WALK_ENTRIES = 2 };
 
@@ -538,6 +549,10 @@ static bool hp_objwalk(const ScrDyn *handle, int mode, ScrDyn **out) {
   ScrDyn *result = scr_dyn_new_arr();
   for (size_t i = 0; i < keys->v.arr.len; i++) {
     ScrStr *k = keys->v.arr.items[i]->v.str;
+    /* The key list is a snapshot, but an accessor run for an earlier key
+     * can delete or hide a later one; EnumerableOwnProperties reads each
+     * key's descriptor when it reaches it. */
+    if (!hp_key_enumerable(props, k)) continue;
     ScrDyn *value = hp_read(props, (ScrDyn *)handle, k->data, k->len);
     if (!value) { scr_dyn_release(result); scr_dyn_release(keys); *out = NULL; return true; }
     if (mode == HP_WALK_VALUES) {
@@ -697,27 +712,19 @@ ScrDyn *scr_dyn_get_own_property_descriptor_hp(ScrDyn *target, ScrDyn *key) {
 ScrDyn *scr_dyn_define_props_hp(ScrDyn *target, ScrDyn *descs) {
   if (target->kind != SCR_DYN_HANDLE || !hp_accepts(target->v.handle.tag) || descs->kind != SCR_DYN_OBJ)
     return scr_dyn_define_props(target, descs); /* its own errors and paths */
-  ScrDyn *keys = scr_dyn_obj_keys(descs); /* own enumerable string keys, in order */
-  if (!keys) return NULL;
-  size_t n = keys->v.arr.len;
-  ScrDyn **descriptors = calloc(n ? n : 1, sizeof *descriptors);
-  if (!descriptors) scr_trap("scriptc: out of memory\n");
+  /* Every descriptor is read and converted before any is defined, so a
+   * later invalid descriptor leaves the table untouched. */
+  ScrDyn *pending = scr_dyn_define_props_pending(descs, scr_dyn_descriptor_snapshot);
+  if (!pending) return NULL;
   bool ok = true;
-  /* ObjectDefineProperties reads every descriptor before defining any. */
-  for (size_t i = 0; i < n && ok; i++) {
-    ScrStr *k = keys->v.arr.items[i]->v.str;
-    descriptors[i] = scr_dyn_obj_read(descs, k->data, k->len);
-    ok = descriptors[i] != NULL;
-  }
-  for (size_t i = 0; i < n && ok; i++) {
+  for (size_t i = 0; i < pending->v.arr.len && ok; i++) {
+    ScrDyn *pair = pending->v.arr.items[i];
     ScrDyn *out = NULL;
-    hp_define(target, keys->v.arr.items[i], descriptors[i], &out);
+    hp_define(target, pair->v.arr.items[0], pair->v.arr.items[1], &out);
     if (!out) ok = false;
     else scr_dyn_release(out);
   }
-  for (size_t i = 0; i < n; i++) if (descriptors[i]) scr_dyn_release(descriptors[i]);
-  free(descriptors);
-  scr_dyn_release(keys);
+  scr_dyn_release(pending);
   return ok ? scr_dyn_retain(target) : NULL;
 }
 
@@ -756,22 +763,73 @@ void scr_child_on_dyn_hp(ScrChild *child, ScrStr *event, ScrDyn *listener) {
  * equality) cannot print or compare a handle's own properties: refuse a
  * value whose graph holds a handle with any. Mirrors scr_js_wrapper.c's
  * scr_js_wrapper_found; accessors are not called. */
-static bool hp_found(const ScrDyn *value, int depth) {
+
+/* The objects the walk has entered and the shallowest depth it reached
+ * each at: an object the graph reaches again would otherwise be walked
+ * down every path, and two self-references are 2^64 paths at the depth
+ * cap. A later, shallower arrival is still walked, because the depth cap
+ * left part of its subtree unsearched the first time. */
+#define HP_SEEN_INLINE 32
+typedef struct {
+  const ScrDyn *value;
+  int depth;
+} HpSeenItem;
+
+typedef struct {
+  HpSeenItem inline_items[HP_SEEN_INLINE];
+  HpSeenItem *items;
+  size_t len, cap;
+} HpSeen;
+
+static void hp_seen_init(HpSeen *seen) {
+  seen->items = seen->inline_items;
+  seen->len = 0;
+  seen->cap = HP_SEEN_INLINE;
+}
+
+static void hp_seen_free(HpSeen *seen) {
+  if (seen->items != seen->inline_items) free(seen->items);
+}
+
+/* Whether the walk should enter `value` at `depth`. */
+static bool hp_seen_add(HpSeen *seen, const ScrDyn *value, int depth) {
+  for (size_t i = 0; i < seen->len; i++) {
+    if (seen->items[i].value != value) continue;
+    if (seen->items[i].depth <= depth) return false;
+    seen->items[i].depth = depth;
+    return true;
+  }
+  if (seen->len == seen->cap) {
+    size_t cap = seen->cap * 2;
+    HpSeenItem *grown = malloc(cap * sizeof *grown);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    memcpy(grown, seen->items, seen->len * sizeof *grown);
+    hp_seen_free(seen);
+    seen->items = grown;
+    seen->cap = cap;
+  }
+  seen->items[seen->len].value = value;
+  seen->items[seen->len].depth = depth;
+  seen->len++;
+  return true;
+}
+
+static bool hp_found(const ScrDyn *value, int depth, HpSeen *seen) {
   if (!value || depth > 64) return false;
   if (value->kind == SCR_DYN_HANDLE) {
     ScrDyn *props = hp_find(value->v.handle.ptr);
     return props && scr_dyn_obj_count(props) > 0;
   }
+  if (value->kind != SCR_DYN_ARR && value->kind != SCR_DYN_OBJ) return false;
+  if (!hp_seen_add(seen, value, depth)) return false;
   if (value->kind == SCR_DYN_ARR) {
     for (size_t i = 0; i < value->v.arr.len; i++)
-      if (value->v.arr.items[i] && hp_found(value->v.arr.items[i], depth + 1)) return true;
+      if (hp_found(value->v.arr.items[i], depth + 1, seen)) return true;
     return false;
   }
-  if (value->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0, n = scr_dyn_obj_count(value); i < n; i++) {
-      ScrDynProp p = scr_dyn_obj_prop_at(value, i);
-      if (!p.accessor && hp_found(p.value, depth + 1)) return true;
-    }
+  for (size_t i = 0, n = scr_dyn_obj_count(value); i < n; i++) {
+    ScrDynProp p = scr_dyn_obj_prop_at(value, i);
+    if (!p.accessor && hp_found(p.value, depth + 1, seen)) return true;
   }
   return false;
 }
@@ -785,21 +843,33 @@ static void hp_refuse(const ScrStr *consumer) {
 }
 
 ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer) {
-  if (hp_found(value, 0)) { hp_refuse(consumer); return NULL; }
+  HpSeen seen;
+  hp_seen_init(&seen);
+  bool found = hp_found(value, 0, &seen);
+  hp_seen_free(&seen);
+  if (found) { hp_refuse(consumer); return NULL; }
   return scr_dyn_retain(value);
 }
 
 ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer) {
-  for (size_t i = 0; i < values->len; i++) {
+  HpSeen seen;
+  hp_seen_init(&seen);
+  bool found = false;
+  for (size_t i = 0; i < values->len && !found; i++) {
     ScrDyn *value = scr_arr_get_ref(values, (double)i);
-    bool found = hp_found(value, 0);
+    found = hp_found(value, 0, &seen);
     scr_dyn_release(value);
-    if (found) { hp_refuse(consumer); return NULL; }
   }
+  hp_seen_free(&seen);
+  if (found) { hp_refuse(consumer); return NULL; }
   return scr_arr_retain(values);
 }
 
 /* The same check for a typed handle argument, boxed only for the check. */
 void scr_dyn_handle_props_check(ScrDyn *value, ScrStr *consumer) {
-  if (hp_found(value, 0)) hp_refuse(consumer);
+  HpSeen seen;
+  hp_seen_init(&seen);
+  bool found = hp_found(value, 0, &seen);
+  hp_seen_free(&seen);
+  if (found) hp_refuse(consumer);
 }

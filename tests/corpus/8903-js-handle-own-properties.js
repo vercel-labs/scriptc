@@ -68,3 +68,31 @@ console.log(
 const wm = new WeakMap();
 wm.count = 3;
 console.log("weakmap", wm.count, Object.getOwnPropertyNames(wm).join(","));
+
+// A later descriptor that is not an object fails the call before any
+// property is defined, so the earlier valid descriptor never lands.
+const early = new Date(0);
+try {
+  Object.defineProperties(early, { first: { value: 1, enumerable: true }, second: 5 });
+} catch (e) {
+  console.log("defineProperties", e.constructor.name, Object.prototype.hasOwnProperty.call(early, "first"));
+}
+
+// An accessor reached for an earlier key can hide a later one; the walk
+// reads each key's descriptor when it reaches it, while Object.keys keeps
+// the keys it listed up front.
+const peek = new Map([[1, 2]]);
+Object.defineProperty(peek, "peek", {
+  get() {
+    Object.defineProperty(peek, "shade", { enumerable: false });
+    peek.added = 9;
+    return "peeked";
+  },
+  enumerable: true,
+  configurable: true,
+});
+Object.defineProperty(peek, "shade", { value: 2, enumerable: true, configurable: true });
+console.log("peek keys", JSON.stringify(Object.keys(peek)));
+console.log("peek values", JSON.stringify(Object.values(peek)));
+console.log("peek entries", JSON.stringify(Object.entries(peek)));
+console.log("peek again", JSON.stringify(Object.values(peek)), JSON.stringify(Object.keys(peek)));

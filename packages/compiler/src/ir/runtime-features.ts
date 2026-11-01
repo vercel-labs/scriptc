@@ -1568,13 +1568,18 @@ const RUNTIME_FEATURE_RULES = {
       "tls.sockGetCertificate",
     ],
   }),
-  /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode
-   * argument: scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c.
-   * Programs that never pass either keep both units' default objects. */
+  /** writeFile's options record (`encoding`, `mode`, `flag`), appendFile's
+   * three-argument form and copyFile's mode argument: scr_fs_flags.c and
+   * the SCR_FS_FLAGS build of scr_fs_cp.c. Programs that never pass them
+   * keep both units' default objects. */
   fsFlags: rule({
     fns: [
       "fs.copyFileFlagsSync",
       "fs.writeFileFlagsSync",
+      "fs.writeFileOptionsSync",
+      "fs.appendFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
+      "fs.appendFileBytesOptionsSync",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
     ],

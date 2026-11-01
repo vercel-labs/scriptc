@@ -1,13 +1,15 @@
 /// <reference path="./fs-promises.d.ts" />
 /// <reference path="./stream.d.ts" />
 
-/* The synchronous node:fs surface — utf8-only, no options objects, no
- * Buffers. Importing "node:fs" resolves here (preflight allowlists exactly
- * the ambient-declared node: modules); every function lowers to a `libCall`
- * with a scr_fs_* runtime implementation. Failures throw CATCHABLE string
- * values formatted like Node's error messages ("ENOENT: no such file or
- * directory, open 'x'"). `rmSync` removes FILES only (like Node without
- * `recursive`); empty directories go through `rmdirSync`. */
+/* The synchronous node:fs surface — the subset that compiles natively:
+ * utf8 path strings, string and Buffer data, and the documented option
+ * records that have a lowering. Importing "node:fs" resolves here
+ * (preflight allowlists exactly the ambient-declared node: modules); every
+ * function lowers to a `libCall` with a scr_fs_* runtime implementation.
+ * Failures throw CATCHABLE string values formatted like Node's error
+ * messages ("ENOENT: no such file or directory, open 'x'"). `rmSync`
+ * removes FILES only (like Node without `recursive`); empty directories go
+ * through `rmdirSync`. */
 declare module "node:fs" {
   import { Readable, Writable } from "stream";
   export function readFileSync(path: string | number | URL, encoding: BufferEncoding): string;
@@ -25,31 +27,46 @@ declare module "node:fs" {
     callback: (error: Error | null, data: string | Buffer) => void,
   ): void;
   /* The options form carries the mode (applied at CREATION only, like
-   * Node — an existing file keeps its permissions) and/or the utf8
-   * encoding spelling. */
+   * Node — an existing file keeps its permissions), the encoding the
+   * string data is written with, and/or the open(2) flag. */
   export function writeFileSync(
     path: string | URL,
     data: string,
     /* The options-record stance (see http.RequestOptions): an unsupported
      * flag fences by name at the call site; undocumented keys drop like
-     * Node. The lowered flags are "w" (truncate-or-create) and "wx"
-     * (exclusive create). */
+     * Node. The flag names are Node's ("w", "wx", "a", "as+", ...). */
     options?: {
       mode?: number;
-      encoding?: "utf8" | "utf-8";
+      encoding?: BufferEncoding;
       flag?: string;
       [option: string]: unknown;
     },
   ): void;
   /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
+  export function writeFileSync(path: string | URL, data: string, encoding: BufferEncoding): void;
   export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
+  /* Buffer and TypedArray data with the mode and/or flag options; the
+   * bytes are written as they are, and Node ignores an encoding key here. */
+  export function writeFileSync(
+    path: string | URL,
+    data: Uint8Array,
+    options: { mode?: number; encoding?: BufferEncoding; flag?: string; [option: string]: unknown },
+  ): void;
   /* The file-descriptor form: Node writes the whole data to an already
    * open descriptor and leaves it open (closeSync owns its lifetime, and
    * the write lands at the descriptor's current offset). */
   export function writeFileSync(fd: number, data: string): void;
   export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
+  /* appendFileSync opens with the "a" flag by default; the options record
+   * and the bare encoding replace the encoding and can name another flag
+   * (and the creation mode). */
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
+  export function appendFileSync(
+    path: string | URL,
+    data: string | Uint8Array,
+    options: { mode?: number; encoding?: BufferEncoding; flag?: string; [option: string]: unknown },
+  ): void;
+  export function appendFileSync(path: string | URL, data: string, encoding: BufferEncoding): void;
   export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(

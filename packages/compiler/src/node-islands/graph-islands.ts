@@ -51,6 +51,13 @@ export function outsideGraphIslands(
   for (const edge of scan.edges) {
     const dir = edge.toDir;
     if (edge.shim || dir === null || inGraph.has(dir)) continue;
+    // The graph proves only a package the importing module loads whenever it
+    // evaluates. A require() inside a function or under a condition, and a
+    // dynamic import(), load their package only when that code runs; islanding
+    // one that never runs would refuse a program that patches a process output
+    // stream (SC8020) for a package it never touches. Those stay with the
+    // lowering, which decides them where it compiles them.
+    if (!edge.loads) continue;
     const name = edge.to;
     if (grown.has(name) || known.has(name)) continue;
     if (policy.forcedNative.has(name) || policy.unloaded.has(name)) continue;

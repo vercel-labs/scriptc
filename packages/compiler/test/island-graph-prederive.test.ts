@@ -5,10 +5,11 @@
 // retry. Only the lowering can see the rest (a package the program holds
 // that refuses to compile), so the retry decision stays.
 //
-// The white-box tests pin the graph decision's rule; the last test compiles
-// corpus 6829's island fixture with the internal switch on and off and
-// requires one result from both.
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// The white-box tests pin the graph decision's rule; the corpus test compiles
+// 6829's island fixture with the internal switch on and off and requires one
+// result from both, and the last test compiles a program whose only use of an
+// installed package is a require() that never runs.
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -63,8 +64,9 @@ function edge(
   to: string,
   toDir: string | null,
   shim = false,
+  loads = true,
 ): PackageEdge {
-  return { fromDir, fromFile, to, toDir, shim, loc: { file: fromFile, start: 0, end: 0 } };
+  return { fromDir, fromFile, to, toDir, shim, loads, loc: { file: fromFile, start: 0, end: 0 } };
 }
 
 function scanOf(modules: ScannedModule[], edges: PackageEdge[]): NodeIslandScan {
@@ -95,6 +97,20 @@ test("the graph proves an island for an installed package the program does not h
   expect(island.reason).toBe(
     "SC2013: cannot compile npm package 'typed' statically: its implementation is not part of the compiled module graph",
   );
+});
+
+test("the decision proves nothing a lazy edge loads", () => {
+  // A require() inside a function or a dynamic import() loads its package only
+  // when that code runs: a program that never runs it must not get an island.
+  const scan = scanOf(
+    [userModule("/app/src/main.ts")],
+    [
+      edge("/app/src/main.ts", null, "lazy", "/app/node_modules/lazy", false, false),
+      edge("/app/src/main.ts", null, "loaded", "/app/node_modules/loaded"),
+    ],
+  );
+  const grown = outsideGraphIslands(policy, [], scan, new Map(), new Map());
+  expect(grown === null ? null : [...grown.keys()]).toEqual(["loaded"]);
 });
 
 test("the decision adds nothing an island loads, a round grew, or the policy pins", () => {
@@ -235,4 +251,72 @@ test("the graph decision compiles the discovery round's island one lowering earl
   expect(on.lowerings).toBeLessThanOrEqual(off.lowerings);
   expect(on.firstLoads).toBeLessThanOrEqual(off.firstLoads);
   expect(on.reloads).toBe(off.reloads);
+}, 600_000);
+
+// An installed package whose only use is a require() that never runs — a
+// shadowed binding, or a call inside a function nothing calls — is not a
+// package the program loads. Islanding it would refuse a program that
+// replaces process.stdout.write (SC8020) over a package it never touches.
+function writePackage(dir: string, name: string, js: string, dts: string): void {
+  const root = join(dir, "node_modules", name);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name, version: "1.0.0", main: "index.js", types: "index.d.ts" }),
+  );
+  writeFileSync(join(root, "index.js"), js);
+  writeFileSync(join(root, "index.d.ts"), dts);
+}
+
+function buildStdoutPatchProgram(lazyUse: string) {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-island-graph-lazy-"));
+  scratch.push(dir);
+  // A package the program compiles, so the scan collects package edges.
+  writePackage(
+    dir,
+    "okpkg",
+    "module.exports.add = function (a, b) { return a + b; };\n",
+    "export declare function add(a: number, b: number): number;\n",
+  );
+  // One the program only names in code that never runs.
+  writePackage(
+    dir,
+    "lazypkg",
+    "module.exports.thing = 1;\n",
+    "export declare const thing: number;\n",
+  );
+  writeFileSync(
+    join(dir, "main.ts"),
+    [
+      'import { add } from "okpkg";',
+      "const original = process.stdout.write.bind(process.stdout);",
+      "process.stdout.write = ((chunk: string) => {",
+      "  original(chunk);",
+      "  return true;",
+      "}) as typeof process.stdout.write;",
+      lazyUse,
+      "console.log(add(1, 2));",
+      "",
+    ].join("\n"),
+  );
+  const factory: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
+    runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+  return prepareExecutableModule(
+    join(dir, "main.ts"),
+    { outPath: join(dir, "main"), outDir: dir },
+    null,
+    process.platform,
+    factory,
+  );
+}
+
+test("a require() that never runs decides no island", () => {
+  const shadowed = buildStdoutPatchProgram(
+    "export function load(require: (spec: string) => unknown): unknown { return require('lazypkg'); }",
+  );
+  expect(shadowed.ok ? [] : shadowed.diagnostics.map((d) => d.code)).toEqual([]);
+  const uncalled = buildStdoutPatchProgram(
+    "export function loadAny(): unknown { return require('lazypkg'); }",
+  );
+  expect(uncalled.ok ? [] : uncalled.diagnostics.map((d) => d.code)).toEqual([]);
 }, 600_000);

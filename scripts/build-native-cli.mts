@@ -109,7 +109,7 @@ const cFlags = [
 const nativeSources = join(root, "packages/compiler/native");
 const functions: unknown[] = [];
 const libraries: string[] = [];
-for (const name of ["ts7-process", "host"]) {
+for (const name of ["ts7-process", "codegen-process", "host"]) {
   const object = join(seed, name + target.outputSuffixes.obj);
   execFileSync(
     compiler,

@@ -1,0 +1,10 @@
+{
+  "ffi_format": 6,
+  "functions": [
+    { "name": "codegenNativeAttach", "symbol": "scriptc_codegen_attach", "params": ["string", "string", "u32"], "returns": "u32" },
+    { "name": "codegenNativeRead", "symbol": "scriptc_codegen_read", "params": ["u32", "mutable-bytes", "u32", "u32"], "returns": "i32" },
+    { "name": "codegenNativeWrite", "symbol": "scriptc_codegen_write", "params": ["u32", "bytes", "u32", "u32"], "returns": "i32" },
+    { "name": "codegenNativeClose", "symbol": "scriptc_codegen_close", "params": ["u32"], "returns": "void" },
+    { "name": "codegenNativeError", "symbol": "scriptc_codegen_error", "params": ["mutable-bytes"], "returns": "i32" }
+  ]
+}

@@ -3,6 +3,7 @@ import type { NativeOptimization } from "./optimization.js";
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
+import { runOnCodegenServer } from "./codegen-server.js";
 import {
   nativePartitionPaths,
   validateNativeCodegenVersion,
@@ -30,6 +31,27 @@ export function runNativeTool(
   });
 }
 
+/** A build that has a shared code generation server sends the helper's
+ * commands to it, so that the helper's libraries and target stay registered
+ * between builds, and runs them as processes only when no server answers.
+ * The result is the helper's standard output, as runNativeTool returns it,
+ * and a failed command throws as a failed process would. */
+function runHelperTool(server: string | null, executable: string, args: string[]): string {
+  const result =
+    server === null ? null : runOnCodegenServer(server, executable, process.cwd(), args);
+  if (result === null) return runNativeTool(executable, args);
+  if (result.status !== 0) {
+    const error: Error & { status?: number; stdout?: string; stderr?: string } = new Error(
+      `Command failed: ${executable} ${args.join(" ")}\n${result.stderr}`,
+    );
+    error.status = result.status;
+    error.stdout = result.stdout;
+    error.stderr = result.stderr;
+    throw error;
+  }
+  return result.stdout;
+}
+
 export function requireNativeArtifact(path: string): void {
   const info = statSync(path);
   if (!info.isFile() || info.size === 0)
@@ -42,6 +64,8 @@ export function emitNativeObject(options: {
   compilerVersion: string;
   target: NativeTargetSpec;
   helper: NativeHelperSpec;
+  /** Shared code generation server (codegenServerName), when the build has one. */
+  server?: string | null;
   inputPath: string;
   outputPath: string;
   sourcePath: string;
@@ -57,7 +81,7 @@ export function emitNativeObject(options: {
 }): { outputs: string[]; profileMatch: NativeProfileMatch | null } {
   verifyNativeHelper(options);
   const outputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
-  const stdout = runNativeTool(options.executable, [
+  const stdout = runHelperTool(options.server ?? null, options.executable, [
     "emit",
     "--input",
     options.inputPath,
@@ -93,12 +117,14 @@ export function mergeNativeProfiles(options: {
   compilerVersion: string;
   target: NativeTargetSpec;
   helper: NativeHelperSpec;
+  /** Shared code generation server (codegenServerName), when the build has one. */
+  server?: string | null;
   outputPath: string;
   inputPaths: readonly string[];
   sparse: boolean;
 }): void {
   verifyNativeHelper(options);
-  runNativeTool(options.executable, [
+  runHelperTool(options.server ?? null, options.executable, [
     "merge-profiles",
     "--output",
     options.outputPath,
@@ -124,6 +150,8 @@ export function verifyNativeHelper(options: {
   compilerVersion: string;
   target: NativeTargetSpec;
   helper: NativeHelperSpec;
+  /** Shared code generation server (codegenServerName), when the build has one. */
+  server?: string | null;
   verified?: NativeHelperVerification;
 }): void {
   const identity = JSON.parse(readFileSync(options.packageRoot + "/package.json", "utf8")) as {
@@ -140,7 +168,7 @@ export function verifyNativeHelper(options: {
   }
   if (options.verified?.known() === true) return;
   const version = JSON.parse(
-    runNativeTool(options.executable, ["version", "--format=json"]),
+    runHelperTool(options.server ?? null, options.executable, ["version", "--format=json"]),
   ) as Record<string, unknown>;
   validateNativeCodegenVersion(version, options.target, options.helper, options.compilerVersion);
   options.verified?.remember();

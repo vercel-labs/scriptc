@@ -3748,6 +3748,61 @@ export function collectClassShapeInner(
               .map((p): ParamShape => ({ type: p.type, mode: "omittable" })),
           );
         }
+        // A TypeScript override may also declare FEWER parameters than the
+        // family's slot reserves. collectOverrideParamReservations padded
+        // the ancestor with a sibling's trailing omittable parameters, and
+        // a sibling declaring only the inherited prefix is legal TS and JS:
+        // the caller evaluates the extra arguments and this body drops them,
+        // exactly as in Node. Keep the reserved tail slots as ignored
+        // parameters rather than refusing the override.
+        {
+          // The reservation is recorded on the ancestor that ADDS the
+          // trailing parameter; this override may sit below an intermediate
+          // class that merely inherited the widened slot, so walk the chain.
+          let reservedWidth: number | undefined;
+          for (
+            let declarer = overridden?.declarer;
+            declarer;
+            declarer = declarer.base ?? undefined
+          ) {
+            const declaration = declarer.decl?.members?.nodes.find(
+              (candidate): candidate is ts.MethodDeclaration =>
+                ts.isMethodDeclaration(candidate) &&
+                candidate.body !== undefined &&
+                !candidate.asteriskToken &&
+                classMemberNameOf(lowerer, candidate.name) === mName,
+            );
+            const reservation = declaration && lowerer.overrideParamReservations.get(declaration);
+            if (reservation) {
+              reservedWidth = reservation.params.length;
+              break;
+            }
+          }
+          if (
+            overridden &&
+            // The inherited ABI is exactly the reserved slot, so the tail
+            // below belongs to the reservation and not to some other
+            // signature difference the fence must still report.
+            reservedWidth === overridden.sig.params.length &&
+            shapes.length < overridden.sig.params.length &&
+            !bodyReadsArguments(member) &&
+            shapes.every(
+              (p, i) =>
+                (p.mode === "required" || p.mode === "omittable") &&
+                typeEquals(p.type, overridden.sig.params[i]!.type),
+            ) &&
+            overridden.sig.params
+              .slice(shapes.length)
+              .every((p) => p.mode === "required" || p.mode === "omittable")
+          ) {
+            shapes.push(
+              ...overridden.sig.params
+                .slice(shapes.length)
+                .map((p): ParamShape => ({ type: p.type, mode: "omittable" })),
+            );
+            ft.params = shapes.map((shape) => shape.type);
+          }
+        }
         // A TypeScript override of a JavaScript method (`class T extends
         // Agent` over an npm-static package) keeps the base's checked-value
         // ABI: each untyped base slot stays dyn, and the override's typed

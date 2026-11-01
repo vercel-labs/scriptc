@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8755-import-namespace-promise-arms/main.ts"
+ ],
+ "diags": []
+}

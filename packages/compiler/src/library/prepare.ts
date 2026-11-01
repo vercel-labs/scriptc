@@ -26,8 +26,11 @@ import {
   checkLibraryIntegerSlots,
   classSeed,
   hasIntSlots,
+  join,
   numberCarrierKind,
+  type AbsVal,
   type FnIntSlots,
+  type IntClass,
   type IntSlotConfig,
 } from "./int-infer.js";
 import { profileRemediation, profileTeaching, type LibraryProfile } from "./library-profile.js";
@@ -43,7 +46,7 @@ import {
   type SidecarIrTypePattern,
 } from "./sidecar.js";
 import { validateSidecar } from "./sidecar-validate.js";
-import type { EntryExportInfo } from "../frontend/lib-exports.js";
+import type { EntryExport } from "../frontend/lib-exports.js";
 import type { ContractFacts } from "../frontend/lib-contract.js";
 import type { LowerResult } from "../frontend/lowering/lowerer.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
@@ -77,10 +80,14 @@ function libClassFits(cls: string, t: IrType): boolean {
 
 /** Resolve the profile's export map against the entry module — SC4002/
  * SC4004/SC4007 from the declaration facts, SC4003 from the lowered IR
- * signatures — and land the library section on the module. */
+ * signatures — and land the library section on the module. The facts come
+ * from the declaration the entry's export table names (directly, through an
+ * export list, or through a re-export facade), and `libExportUnits` names
+ * the unit that declaration lowered to. */
 function resolveLibrarySection(
   profile: LibraryProfile,
-  entryInfo: Map<string, EntryExportInfo>,
+  entryInfo: Map<string, EntryExport>,
+  libExportUnits: ReadonlyMap<string, string>,
   mod: IrModule,
   entryPath: string,
 ): { lib: IrLibSection } | { diagnostics: ScrDiagnostic[] } {
@@ -94,8 +101,18 @@ function resolveLibrarySection(
       diagnostics.push(
         libExportUnresolvedDiag(
           e.export,
-          "the entry module has no exported function declaration by that name",
+          "the entry module exports no value by that name",
           entryLoc,
+        ),
+      );
+      continue;
+    }
+    if (info.kind === "value") {
+      diagnostics.push(
+        libExportUnresolvedDiag(
+          e.export,
+          `the entry module exports it as ${info.what}, not a function declaration`,
+          info.loc,
         ),
       );
       continue;
@@ -108,7 +125,11 @@ function resolveLibrarySection(
       diagnostics.push(libAsyncExportDiag(e.export, info.async ? "async" : "generator", info.loc));
       continue;
     }
-    const fn = fnByName.get(e.export);
+    // The unit that supplies the export: the entry module's own function
+    // for a direct export, the declaring module's tagged unit when the
+    // entry re-exports it.
+    const fnName = libExportUnits.get(e.export) ?? e.export;
+    const fn = fnByName.get(fnName);
     if (fn === undefined) {
       diagnostics.push(
         libExportUnresolvedDiag(
@@ -160,7 +181,7 @@ function resolveLibrarySection(
     if (!bad) {
       const resolvedExport: IrLibSection["exports"][number] = {
         symbol: e.symbol,
-        fnName: e.export,
+        fnName,
         params: e.params,
         returns: e.returns,
       };
@@ -266,31 +287,93 @@ function resolveLibrarySection(
  * / `exports.<name>.return`; the u8/u32/i32 plumbing classes contribute
  * their proven inbound shapes as parameter seeds (the wrapper's coercion
  * contract), tightening the intraprocedural analysis at zero declaration
- * cost. Sidecar-declared slots (record fields, msg arms, helper params
- * and returns) merge into the same config at sidecar build. */
-function libraryIntSlotConfig(profile: LibraryProfile): IntSlotConfig {
+ * cost. An f64 parameter contributes the shape it actually admits — any
+ * double, NaN and fractions included — because the marshalled edge passes
+ * it through untouched: if the same unit is also reached through an
+ * integer entry, that entry's tighter assumption must not survive on the
+ * f64 entry's behalf. Sidecar-declared slots (record fields, msg arms,
+ * helper params and returns) merge into the same config at sidecar build. */
+function libraryIntSlotConfig(
+  profile: LibraryProfile,
+  libExportUnits: ReadonlyMap<string, string>,
+): IntSlotConfig {
   const cfg: IntSlotConfig = { fns: new Map(), records: new Map() };
   for (const e of profile.exports) {
     const params = e.params.map((c) => (c === "i64" || c === "u64" ? c : null));
     const ret = e.returns === "i64" || e.returns === "u64" ? e.returns : null;
+    // classSeed(f64) is the unrestricted shape: the analysis counts an
+    // unconstrained double as a legitimate arrival, not as "no fact".
     const paramSeeds = e.params.map((c) =>
-      c === "u8" || c === "u32" || c === "i32" ? classSeed(c) : null,
+      c === "f64" || c === "u8" || c === "u32" || c === "i32" ? classSeed(c) : null,
     );
     if (params.every((p) => p === null) && ret === null && paramSeeds.every((s) => s === null))
       continue;
-    const slots: FnIntSlots = {
-      fnName: e.export,
-      params,
-      paramPaths: e.params.map((c, i) =>
-        c === "i64" || c === "u64" ? `exports.${e.export}.params[${i}]` : null,
-      ),
-      ret,
-      retPath: ret !== null ? `exports.${e.export}.return` : null,
-      paramSeeds,
+    // The slot config is keyed by the compiled unit (a re-exported export
+    // lives in its declaring module's unit); the paths name the profile's
+    // own export key, which is what a teaching or diagnostic quotes.
+    const fnName = libExportUnits.get(e.export) ?? e.export;
+    const existing = cfg.fns.get(fnName);
+    const slots: FnIntSlots = existing ?? {
+      fnName,
+      params: e.params.map(() => null),
+      paramPaths: e.params.map(() => null),
+      ret: null,
+      retPath: null,
+      paramSeeds: e.params.map(() => null),
     };
-    cfg.fns.set(e.export, slots);
+    if (existing === undefined) cfg.fns.set(fnName, slots);
+    // Two profile exports may alias one compiled unit, and that unit has
+    // ONE parameter binding and ONE return value; their declarations
+    // COALESCE rather than replace each other. The call-site obligation is
+    // the stricter class (u64's range is inside i64's, so proving u64
+    // discharges both), the parameter seed is the hull of every inbound
+    // shape (a value can arrive through any alias; an f64 alias admits the
+    // unrestricted shape, so nothing a sibling entry proves may stand in
+    // for it), and a path follows the declaration that set the class, so a
+    // refusal quotes a class that declaration actually made. Nothing an
+    // earlier export declared is dropped by a later one.
+    params.forEach((cls, i) => {
+      if (cls === null) return;
+      mergeDeclaredClass(slots, i, cls, `exports.${e.export}.params[${i}]`);
+      mergeDeclaredSeed(slots, i, classSeed(cls));
+    });
+    paramSeeds.forEach((seed, i) => {
+      if (seed !== null) mergeDeclaredSeed(slots, i, seed);
+    });
+    if (ret !== null) mergeDeclaredReturn(slots, ret, `exports.${e.export}.return`);
   }
   return cfg;
+}
+
+/** Fold one declared parameter class onto a shared slot: keep the stricter
+ * obligation (and the path that declared it). */
+function mergeDeclaredClass(slots: FnIntSlots, index: number, cls: IntClass, path: string): void {
+  while (slots.params.length <= index) {
+    slots.params.push(null);
+    slots.paramPaths.push(null);
+    slots.paramSeeds.push(null);
+  }
+  const current = slots.params[index] ?? null;
+  if (current === null || (current === "i64" && cls === "u64")) {
+    slots.params[index] = cls;
+    slots.paramPaths[index] = path;
+  }
+}
+
+/** Fold one declared return class onto a shared slot, same rule. */
+function mergeDeclaredReturn(slots: FnIntSlots, cls: IntClass, path: string): void {
+  if (slots.ret === null || (slots.ret === "i64" && cls === "u64")) {
+    slots.ret = cls;
+    slots.retPath = path;
+  }
+}
+
+/** Fold one inbound shape onto a shared slot's seed: the binding may hold
+ * any alias's value, so the seed is the hull (least upper bound), never a
+ * replacement. */
+function mergeDeclaredSeed(slots: FnIntSlots, index: number, seed: AbsVal): void {
+  const current = slots.paramSeeds[index] ?? null;
+  slots.paramSeeds[index] = current === null ? { ...seed } : join(current, seed);
 }
 
 /** Match the sidecar syntax's exact structural type projection against the
@@ -400,18 +483,13 @@ function mergeSidecarIntSlots(
       };
       cfg.fns.set(h.fnName, slots);
     }
+    // A sidecar helper may name a unit an export map (or another helper
+    // fact) already obliged, so these fold onto the slot instead of
+    // replacing it.
     if (h.kind === "param") {
-      const i = h.index!;
-      while (slots.params.length <= i) {
-        slots.params.push(null);
-        slots.paramPaths.push(null);
-        slots.paramSeeds.push(null);
-      }
-      slots.params[i] = h.cls;
-      slots.paramPaths[i] = h.path;
+      mergeDeclaredClass(slots, h.index!, h.cls, h.path);
     } else {
-      slots.ret = h.cls;
-      slots.retPath = h.path;
+      mergeDeclaredReturn(slots, h.cls, h.path);
     }
   }
   for (const r of facts.records) {
@@ -474,7 +552,7 @@ export function prepareLibrary(
   });
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
-  let entryInfo: Map<string, EntryExportInfo>;
+  let entryInfo: Map<string, EntryExport>;
   let contractFacts: ContractFacts | null;
   try {
     // Every library refusal leaves through the ask-5 teaching decoration:
@@ -582,7 +660,7 @@ export function prepareLibrary(
       ]);
     }
     if (lowered.module === null) return fail(lowered.diagnostics);
-    entryInfo = fe.entryExports();
+    entryInfo = fe.entryExports(profile.exports.map((e) => e.export));
     sourceTexts = fe.sourceTexts();
   } finally {
     fe.dispose();
@@ -603,7 +681,13 @@ export function prepareLibrary(
   // then the profile's determinism fences (ask 5, SC4008) over the same
   // compiled graph the attestation scan reads: all refused before anything
   // is emitted, so the narrowed library link set below is structural fact.
-  const resolved = resolveLibrarySection(profile, entryInfo, mod, entryPath);
+  const resolved = resolveLibrarySection(
+    profile,
+    entryInfo,
+    lowered.libExportUnits ?? new Map(),
+    mod,
+    entryPath,
+  );
   if ("diagnostics" in resolved) return fail(resolved.diagnostics);
   const asyncSurface = moduleLibAsyncSurface(mod);
   if (asyncSurface !== null) {
@@ -629,7 +713,7 @@ export function prepareLibrary(
   // seed the config here; sidecar-declared slots (record fields, msg
   // arms, helper params/returns) merge in after the projection resolves
   // them below.
-  let intCfg = libraryIntSlotConfig(profile);
+  let intCfg = libraryIntSlotConfig(profile, lowered.libExportUnits ?? new Map());
 
   // The ask-2 contract sidecar rides the same invocation. Identity first
   // (schema §2's worked build_id definition over compiler version, profile

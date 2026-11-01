@@ -2,7 +2,8 @@
  * Node's stdout, successful stderr, and expected exit status. Any backend
  * refusal is a failure. SCRIPTC_SAN=1 instruments emitted code and runtime.
  * SCRIPTC_CPU_DISPATCH=1 builds with runtime CPU dispatch and runs each
- * executable at SCRIPTC_CPU_LEVEL=0 and 3, the baseline and x86-64-v3 copies. */
+ * executable at SCRIPTC_CPU_LEVEL=0 and 3, the baseline and x86-64-v3 copies.
+ * SCRIPTC_TARGET_CPU=<level> builds for that `--target-cpu` level. */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { globSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -15,6 +16,8 @@ import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+
+type TargetCpu = NonNullable<NonNullable<Parameters<typeof compile>[1]>["targetCpu"]>;
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -34,6 +37,7 @@ const files = corpusSelect(
 );
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 const cpuDispatch = process.env["SCRIPTC_CPU_DISPATCH"] === "1";
+const targetCpu = process.env["SCRIPTC_TARGET_CPU"] as TargetCpu | undefined;
 const cpuLevels: readonly (string | undefined)[] = cpuDispatch ? ["0", "3"] : [undefined];
 const requestedMode = process.env["SCRIPTC_LLVM_TEST_MODE"];
 if (requestedMode !== undefined && requestedMode !== "release" && requestedMode !== "dev") {
@@ -230,6 +234,7 @@ async function build(file: string, optimization: "release" | "dev") {
     .update(sanitize ? "san" : "plain")
     .update("llvm-" + optimization)
     .update(cpuDispatch ? "cpu-dispatch" : "")
+    .update(targetCpu === undefined ? "" : `target-cpu-${targetCpu}`)
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, key);
@@ -240,10 +245,11 @@ async function build(file: string, optimization: "release" | "dev") {
     sanitize,
     optimization,
     ...(cpuDispatch ? { cpuDispatch } : {}),
+    ...(targetCpu === undefined ? {} : { targetCpu }),
   });
 }
 
-describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${cpuDispatch ? ", CPU dispatch" : ""}${shardSuffix()})`, () => {
+describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${cpuDispatch ? ", CPU dispatch" : ""}${targetCpu === undefined ? "" : `, ${targetCpu}`}${shardSuffix()})`, () => {
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
     async ([rel, file], { skip }) => {

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -33,9 +33,17 @@ function fixture(platform: string, driver: string) {
   const bin = join(root, "bin");
   const helper = join(root, "helper");
   const runtime = join(root, "runtime");
-  for (const directory of [bin, helper, runtime]) mkdirSync(directory);
+  const libraries = join(root, "libraries");
+  for (const directory of [bin, helper, runtime, libraries]) mkdirSync(directory);
   const linker = join(bin, driver);
-  writeFileSync(linker, '#!/bin/sh\necho "$0"\n');
+  const library = join(libraries, "libSystem.tbd");
+  writeFileSync(library, "system library");
+  // Answer -print-prog-name with the driver alone, and a traced link with
+  // the driver and the library it links.
+  writeFileSync(
+    linker,
+    `#!/bin/sh\ncase "$*" in\n  *-print-prog-name=*) echo "$0" ;;\n  *) echo "$0"; echo "${library}" ;;\nesac\n`,
+  );
   chmodSync(linker, 0o755);
   writeFileSync(join(helper, "codegen"), "helper");
   writeFileSync(join(helper, "package.json"), "{}");
@@ -65,16 +73,22 @@ function fixture(platform: string, driver: string) {
         flavor: "release",
       }) as unknown as NativeRuntimeSelection,
   };
-  const open = () =>
+  const stage = join(root, "stage");
+  const restored = join(root, "restored");
+  mkdirSync(stage);
+  mkdirSync(restored);
+  const output = join(stage, "program");
+  const open = (partitions = 8) =>
     openNativeExecutableCache(
       new NativeCache(join(root, "cache")),
       toolchain,
+      partitions,
       () => "llvm digest",
       { outPath: join(root, "program"), outDir: root, optimization: "release" },
       null,
       pack,
     );
-  return { open };
+  return { open, stage, output, destination: join(restored, "program") };
 }
 
 test.skipIf(process.platform === "win32")(
@@ -89,5 +103,25 @@ test.skipIf(process.platform === "win32")(
     expect(fixture("darwin", "clang").open()).toBeNull();
     process.env["SCRIPTC_LLVM_HELPER"] = "/elsewhere/codegen";
     expect(fixture("linux", "clang").open()).toBeNull();
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "an executable cached for another host's partitioning is not reused",
+  () => {
+    const f = fixture("linux", "clang");
+    writeFileSync(f.output, "linked executable");
+    const traced = () => {
+      const entry = f.open(8)!;
+      expect(entry.trace(["-o", f.output], f.stage)).toBe(true);
+      return entry;
+    };
+    // Linux stores an executable from a key's second link on.
+    traced().recordOutput(f.output);
+    traced().publish(f.output);
+    expect(f.open(8)!.restore(f.destination)).toBe(true);
+    expect(readFileSync(f.destination, "utf8")).toBe("linked executable");
+    // A host with more threads gets more partitions, and its own entries.
+    expect(f.open(32)!.restore(f.destination)).toBe(false);
   },
 );

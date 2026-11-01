@@ -1,5 +1,5 @@
-/* node:zlib constants — the table Node v24.22.0 exposes as zlib.constants
- * (170 members: the Z_* flush, return-code and option values, the
+/* node:zlib constants — the table Node v24.22.1 exposes as zlib.constants
+ * (171 members: the Z_* flush, return-code and option values, the
  * node_zlib_mode numbers, and the BROTLI_* and ZSTD_* parameters), generated
  * with
  *   node -p "require('zlib').constants"
@@ -108,6 +108,7 @@ export const ZLIB_CONSTANTS: Record<string, number> = {
   "BROTLI_DECODER_ERROR_FORMAT_PADDING_1": -14,
   "BROTLI_DECODER_ERROR_FORMAT_PADDING_2": -15,
   "BROTLI_DECODER_ERROR_FORMAT_DISTANCE": -16,
+  "BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH": -17,
   "BROTLI_DECODER_ERROR_DICTIONARY_NOT_SET": -19,
   "BROTLI_DECODER_ERROR_INVALID_ARGUMENTS": -20,
   "BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MODES": -21,

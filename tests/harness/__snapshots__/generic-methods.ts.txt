@@ -25,21 +25,3 @@ generic-methods.ts:42:18 - error SC1090: references to 'this' in object literal 
   42 |     const self = this;
      |                  ^~~~
   43 |     return x;
-
-generic-methods.ts:56:7 - error SC2005: values of type '<T>(x: T) => T' cannot be compiled: the signature keeps its type parameters, and a compiled function is always one concrete signature (generic functions monomorphize per pinned signature — declarations, methods, and never-reassigned bindings holding a generic arrow/function expression, an alias of a registered generic function, or a function initializer under a generic-signature annotation)
-
-  55 | }
-  56 | const bound = new Inst().g;
-     |       ^~~~~
-  57 | const util = { id<T>(x: T): T { return x; } };
-
-  hint: annotate the destination with a concrete signature (e.g. '(x: number) => number'), instantiate explicitly ('f<number>'), or call the generic function directly
-
-generic-methods.ts:58:7 - error SC2005: values of type '<T>(x: T) => T' cannot be compiled: the signature keeps its type parameters, and a compiled function is always one concrete signature (generic functions monomorphize per pinned signature — declarations, methods, and never-reassigned bindings holding a generic arrow/function expression, an alias of a registered generic function, or a function initializer under a generic-signature annotation)
-
-  57 | const util = { id<T>(x: T): T { return x; } };
-  58 | const unpinned = util.id;
-     |       ^~~~~~~~
-  59 | 
-
-  hint: annotate the destination with a concrete signature (e.g. '(x: number) => number'), instantiate explicitly ('f<number>'), or call the generic function directly

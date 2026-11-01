@@ -1,6 +1,8 @@
 // Immutable aliases of overloaded DECLARATIONS project back onto the one
-// implementation and resolve each call per site. The structural overload
-// below remains SC2007: it has no declaration implementation to project.
+// implementation and resolve each call per site. An overloaded TYPE LITERAL
+// value whose overloads join is one stored function (tests/corpus/
+// 8937-overload-set-values); one whose overloads do not join (a void result
+// beside a value result) has no single compiled signature and stays fenced.
 
 function pick(x: "a"): string;
 function pick(x: "b"): number;
@@ -10,9 +12,9 @@ function pick(x: string): string | number {
 const stored = pick;
 console.log(stored("a"));
 
-// An overloaded TYPE LITERAL slot fences the same way. The value arrives
-// through a cast, not an ambient declare (a declare-rooted chain would
-// compile to Node's ReferenceError at the root instead).
-const on = ((() => {}) as unknown) as { (event: "exit", code: number): void; (event: "error", err: string): void };
-const listener = on;
-console.log(listener("exit", 0));
+// The value arrives through a cast, not an ambient declare (a declare-rooted
+// chain would compile to Node's ReferenceError at the root instead).
+function attach(on: { (event: "exit", code: number): void; (event: "data"): string }): void {
+  on("exit", 0);
+}
+attach(((() => "") as unknown) as { (event: "exit", code: number): void; (event: "data"): string });

@@ -111,6 +111,7 @@ import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import {
+  erasedOverloadMemberType,
   isGenericCallableMemberType,
   isOverloadedCallableMemberType,
   typeKey,
@@ -2163,6 +2164,26 @@ function callableInstanceStringCall(
 /** A call through an evaluated callee value: checked-dynamic callees,
  * function unions, typed-rest and runtime-arity closures. */
 export function lowerCallThroughValue(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const result = lowerCallThroughValueRaw(lowerer, expr, callee, loc);
+  // A value of an OVERLOADED type holds the set's erased function (mapType's
+  // overload-value rule): its result converts to the resolved overload's
+  // type, as a call through an overloaded record member does. Only a callee
+  // whose IR type IS that erased function converts, so a class method or a
+  // declared function called through its own implementation is unchanged.
+  if (result.kind !== "callValue" || callee.type.kind !== "func") return result;
+  const calleeTs = lowerer.checker.getNonNullableType(lowerer.typeOf(expr.expression));
+  if (!isOverloadedCallableMemberType(calleeTs, lowerer.checker)) return result;
+  const erased = erasedOverloadMemberType(calleeTs, lowerer.typeCtx);
+  if (erased === undefined || !typeEquals(erased, callee.type)) return result;
+  return lowerer.coerceInto(expr, result, resolvedOverloadResultType(lowerer, expr));
+}
+
+function lowerCallThroughValueRaw(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   callee: IrExpr,

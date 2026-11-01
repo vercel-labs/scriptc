@@ -44,6 +44,25 @@ fs.closeSync(numericFd);
 console.log("numeric mode:", fs.statSync(numeric).mode & 0o777);
 console.log("numeric data:", fs.readFileSync(numeric, "utf8"));
 
+// Node treats an undefined mode as an omitted one: the creation mode is the
+// 0o666 default, in both the string-flag and the numeric-flag forms.
+const unsetString = path.join(dir, "unset-string.txt");
+const unsetStringFd = fs.openSync(unsetString, "w", undefined);
+fs.writeSync(unsetStringFd, "unset");
+fs.closeSync(unsetStringFd);
+console.log("unset string mode:", fs.statSync(unsetString).mode & 0o777);
+console.log("unset string data:", fs.readFileSync(unsetString, "utf8"));
+
+const unsetNumeric = path.join(dir, "unset-numeric.txt");
+const unsetNumericFd = fs.openSync(
+  unsetNumeric,
+  fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+  undefined,
+);
+fs.writeSync(unsetNumericFd, "unset");
+fs.closeSync(unsetNumericFd);
+console.log("unset numeric mode:", fs.statSync(unsetNumeric).mode & 0o777);
+
 function logModeError(label: string, mode: number): void {
   const file = path.join(dir, `bad-${label}.txt`);
   try {

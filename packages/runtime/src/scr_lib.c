@@ -4720,6 +4720,28 @@ static int scr_fs_copy_bytes(int in, int out) {
   }
 }
 
+/* Whether two descriptors name the same file. POSIX compares the device
+ * and inode numbers. On Windows the CRT's struct stat carries a drive
+ * number and no file index, so distinct files on one drive compare
+ * equal; the handles' volume serial and file index identify the file
+ * there. */
+static bool scr_fs_same_file(int a, int b, const struct stat *sa, const struct stat *sb) {
+#if defined(_WIN32)
+  (void)sa;
+  (void)sb;
+  HANDLE ha = (HANDLE)_get_osfhandle(a);
+  HANDLE hb = (HANDLE)_get_osfhandle(b);
+  if (ha == INVALID_HANDLE_VALUE || hb == INVALID_HANDLE_VALUE) return false;
+  BY_HANDLE_FILE_INFORMATION fa;
+  BY_HANDLE_FILE_INFORMATION fb;
+  if (!GetFileInformationByHandle(ha, &fa) || !GetFileInformationByHandle(hb, &fb)) return false;
+  return fa.dwVolumeSerialNumber == fb.dwVolumeSerialNumber &&
+         fa.nFileIndexHigh == fb.nFileIndexHigh && fa.nFileIndexLow == fb.nFileIndexLow;
+#else
+  return sa->st_dev == sb->st_dev && sa->st_ino == sb->st_ino;
+#endif
+}
+
 /* copyFileSync(src, dest): contents copied into a created-or-truncated
  * destination carrying the SOURCE's permission bits — libuv's
  * uv_fs_copyfile behavior behind Node's copyFileSync. The destination is
@@ -4754,7 +4776,7 @@ void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
   struct stat dst;
   int err = 0;
   if (fstat(out, &dst) != 0) err = errno;
-  else if (dst.st_dev == st.st_dev && dst.st_ino == st.st_ino) {
+  else if (scr_fs_same_file(in, out, &st, &dst)) {
     close(in);
     close(out);
     return;

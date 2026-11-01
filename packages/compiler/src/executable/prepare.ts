@@ -36,6 +36,7 @@ import {
   type NodeIslandPolicy,
 } from "../node-islands/policy.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
+import { growEsmImporters, outsideGraphIslands } from "../node-islands/graph-islands.js";
 import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
 import {
   classifyDiagnostic,
@@ -82,6 +83,9 @@ interface RoundState {
   /** False only through the internal round options (the island-round
    * tests compare a compile with and without reuse). */
   reuseFirstLoad: boolean;
+  /** False only through the internal round options (the island-round
+   * tests compare a compile with and without the graph decision). */
+  preDeriveIslands: boolean;
 }
 
 /** Whether rounds may reuse the first load. Off with the shape overlay,
@@ -142,6 +146,9 @@ interface RoundRetry {
  * first-load reuse off to compare a compile with and without it. */
 export interface PrepareRoundOptions {
   reuseFirstLoad?: boolean;
+  /** Off compiles the discovery round the retry path would before deciding
+   * the islands the module graph proves, for tests that compare both. */
+  preDeriveIslands?: boolean;
 }
 
 /** Release the parser/checker before native object generation begins.
@@ -161,7 +168,11 @@ export function prepareExecutableModule(
   roundOptions: PrepareRoundOptions = {},
 ): PreparedExecutableModule | CompileFailure {
   return prepareRound(
-    { firstLoad: null, reuseFirstLoad: roundOptions.reuseFirstLoad !== false },
+    {
+      firstLoad: null,
+      reuseFirstLoad: roundOptions.reuseFirstLoad !== false,
+      preDeriveIslands: roundOptions.preDeriveIslands !== false,
+    },
     entryPath,
     opts,
     ffi,
@@ -199,7 +210,14 @@ function prepareRound(
   let islandDecision: ReturnType<typeof decideNodeIslands> =
     state.firstLoad === null
       ? null
-      : decideNodeIslands(entryPath, opts, state.firstLoad, lowerIslands, lowerModules);
+      : decideNodeIslands(
+          entryPath,
+          opts,
+          state.firstLoad,
+          lowerIslands,
+          lowerModules,
+          state.preDeriveIslands,
+        );
   if (state.firstLoad === null || islandDecision === null || islandDecision.errors.length > 0) {
     first = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
     timing("frontend-load");
@@ -213,6 +231,7 @@ function prepareRound(
       captured.inputs,
       lowerIslands,
       lowerModules,
+      state.preDeriveIslands,
     );
     captured.seal();
     if (state.firstLoad === null && firstLoadReusable(state)) state.firstLoad = captured.inputs;
@@ -226,6 +245,13 @@ function prepareRound(
     first!.dispose();
     return { ok: false, diagnostics, sourceTexts };
   }
+  // The island set this round starts from: the packages an earlier round
+  // grew, plus the ones the module graph proved before this lowering (they
+  // are decided islands, so every later decision counts them as known).
+  const islandBase =
+    islandDecision?.graph == null
+      ? lowerIslands
+      : new Map([...lowerIslands, ...islandDecision.graph]);
   let fe: Frontend;
   if (islandDecision !== null) {
     first?.dispose();
@@ -255,11 +281,11 @@ function prepareRound(
       opts,
       fe,
       result.diagnostics,
-      lowerIslands,
+      islandBase,
       fe.nodeIslandScan?.({ userJs: false }).edges,
     ),
     modules: loweringModules(entryPath, opts, result.diagnostics, lowerModules),
-    fences: retryFences ? fenceIslands(entryPath, opts, fe, result, lowerIslands, false) : null,
+    fences: retryFences ? fenceIslands(entryPath, opts, fe, result, islandBase, false) : null,
   });
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
@@ -293,7 +319,7 @@ function prepareRound(
       // An import of a natively compiled package that preflight refuses
       // in the importer (a CommonJS namespace import) is that package's
       // refusal: it runs in a Node island instead.
-      const grown = preflightIslands(entryPath, opts, fe, lowerIslands);
+      const grown = preflightIslands(entryPath, opts, fe, islandBase);
       if (grown !== null) {
         fe.dispose();
         frontendDisposed();
@@ -361,7 +387,7 @@ function prepareRound(
               opts,
               fe,
               lowered.diagnostics,
-              lowerIslands,
+              islandBase,
               fe.nodeIslandScan?.({ userJs: false }).edges,
             );
       // Sloppy user modules the lowering refused join the same retry
@@ -383,7 +409,7 @@ function prepareRound(
           buildPlatform,
           createFrontend,
           timing,
-          grown ?? lowerIslands,
+          grown ?? islandBase,
           retryFences,
           unitStore,
           grownModules ?? lowerModules,
@@ -399,7 +425,7 @@ function prepareRound(
       const marked = retryFences
         ? retried !== null
           ? retried.fences
-          : fenceIslands(entryPath, opts, fe, lowered, lowerIslands, false)
+          : fenceIslands(entryPath, opts, fe, lowered, islandBase, false)
         : null;
       if (marked !== null) {
         fe.dispose();
@@ -458,7 +484,7 @@ function prepareRound(
       contractWarnings = checked.warnings;
     }
     if (retryFences)
-      fenceGrown = fenceIslands(entryPath, opts, fe, lowered, lowerIslands, true, fenceSure);
+      fenceGrown = fenceIslands(entryPath, opts, fe, lowered, islandBase, true, fenceSure);
   } finally {
     if (!disposed) {
       fe.dispose();
@@ -498,9 +524,9 @@ function prepareRound(
   if (fenceGrown !== null) {
     const attempts = [fenceGrown];
     const sure = new Map(
-      [...fenceGrown].filter(([name]) => lowerIslands.has(name) || fenceSure.has(name)),
+      [...fenceGrown].filter(([name]) => islandBase.has(name) || fenceSure.has(name)),
     );
-    if (sure.size > lowerIslands.size && sure.size < fenceGrown.size) attempts.push(sure);
+    if (sure.size > islandBase.size && sure.size < fenceGrown.size) attempts.push(sure);
     let firstError: ScrDiagnostic | null = null;
     for (const islands of attempts) {
       const islanded = prepareRound(
@@ -520,7 +546,7 @@ function prepareRound(
       firstError ??= islanded.diagnostics[0] ?? null;
     }
     if (firstError !== null) {
-      const added = [...fenceGrown.keys()].filter((name) => !lowerIslands.has(name));
+      const added = [...fenceGrown.keys()].filter((name) => !islandBase.has(name));
       prepared.warnings.push(
         nodeIslandRetryFailedDiag(added, firstError, { file: entryPath, start: 0, end: 0 }),
       );
@@ -636,7 +662,16 @@ function decideNodeIslands(
   fe: IslandDecisionInputs,
   lowerIslands: ReadonlyMap<string, IslandPackage>,
   lowerModules: ReadonlyMap<string, IslandModule>,
-): (NodeIslandSet & { notes: ScrDiagnostic[]; errors: ScrDiagnostic[] }) | null {
+  preDeriveIslands = true,
+):
+  | (NodeIslandSet & {
+      notes: ScrDiagnostic[];
+      errors: ScrDiagnostic[];
+      /** The packages the module graph proved island (outsideGraphIslands); a
+       * later round carries them like a set the lowering grew. */
+      graph: Map<string, IslandPackage> | null;
+    })
+  | null {
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
   if (policy.mode === "off" || fe.nodeIslandScan === undefined) return null;
   // A package marked native stays refused: the build reports it rather
@@ -648,12 +683,25 @@ function decideNodeIslands(
           .map((e) => e.package)
       : [],
   );
-  for (const name of lowerIslands.keys()) refused.add(name);
   // The pre-scan's user-JavaScript markers exist only where a build may act
   // on them.
   const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
   const moduleDecision = moduleIslands(entryPath, policy, scan);
   const modules = moduleDecision.modules;
+  // The island packages this decision adds are the ones the lowering's
+  // refusals grew in an earlier round (a retry) plus the ones the module
+  // graph already proves before the first lowering runs: deciding the
+  // latter up front makes the first lowering the retry lowering.
+  let known = lowerIslands;
+  const pre = preDeriveIslands
+    ? outsideGraphIslands(policy, fe.npmStatic, scan, modules, lowerIslands)
+    : null;
+  if (pre !== null) {
+    const grown = new Map(lowerIslands);
+    for (const [name, island] of pre) grown.set(name, island);
+    known = grown;
+  }
+  for (const name of known.keys()) refused.add(name);
   // Modules the lowering refused keep their first reason (the reload no
   // longer compiles them).
   for (const [file, island] of lowerModules) if (!modules.has(file)) modules.set(file, island);
@@ -706,7 +754,8 @@ function decideNodeIslands(
       }
     }
   }
-  if (errors.length > 0) return { packages: new Map(), modules: new Map(), notes: [], errors };
+  if (errors.length > 0)
+    return { packages: new Map(), modules: new Map(), notes: [], errors, graph: null };
   if (
     refused.size === 0 &&
     policy.forcedNode.size === 0 &&
@@ -751,7 +800,7 @@ function decideNodeIslands(
   // before they joined the program): their directory from the runtime
   // entry Node resolves.
   for (const name of refused) {
-    if (packages.has(name) || lowerIslands.has(name)) continue;
+    if (packages.has(name) || known.has(name)) continue;
     const site = fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 };
     const js =
       resolveBareModule(site.file, name, "js-only") ??
@@ -772,7 +821,7 @@ function decideNodeIslands(
   }
   // Packages islanded by their lowering refusals keep their first reason
   // (the reload no longer compiles them, so the scan has no reason).
-  for (const [name, island] of lowerIslands) {
+  for (const [name, island] of known) {
     if (seen.has(name) && packages.has(name)) {
       const kept = packages.get(name)!;
       if (kept.reason === "" || kept.class === "") packages.set(name, island);
@@ -822,7 +871,9 @@ function decideNodeIslands(
         end: 0,
       }),
     );
-  return packages.size === 0 && modules.size === 0 ? null : { packages, modules, notes, errors };
+  return packages.size === 0 && modules.size === 0
+    ? null
+    : { packages, modules, notes, errors, graph: pre };
 }
 
 /** The builtin module a patched member belongs to ("fs" of
@@ -901,29 +952,7 @@ function loweringIslands(
   // its bindings from the module's exports object, where Node gives it the
   // namespace its CommonJS facade builds (the lexed names, module.exports
   // as the default): the importing package runs in the island too.
-  for (let added = edges !== undefined; added;) {
-    added = false;
-    for (const edge of edges!) {
-      const name = edge.to;
-      if (!grown.has(name) || edge.fromDir === null || edge.shim) continue;
-      const at = packageDirOf(edge.fromFile);
-      if (at === null || grown.has(at.name) || !compiled.has(at.name)) continue;
-      if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
-      if (!isEsmFile(edge.fromFile)) continue;
-      const target =
-        resolveBareModule(edge.fromFile, name, "js-only") ??
-        resolveBareModule(edge.fromFile, name, "js-only", "require");
-      if (target === null || isEsmFile(target.typesFile)) continue;
-      grown.set(at.name, {
-        name: at.name,
-        version: packageVersionOf(at.dir),
-        dir: at.dir,
-        class: "packaging",
-        reason: `an ES module of the package imports the CommonJS island package '${name}'`,
-      });
-      added = true;
-    }
-  }
+  growEsmImporters(policy, compiled, edges, grown);
   return grown.size === known.size ? null : grown;
 }
 

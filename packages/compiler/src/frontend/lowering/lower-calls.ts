@@ -147,7 +147,7 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import { isPrimitivePrototypeRead } from "./expressions/property-access.js";
+import { builtinGlobalValue, isPrimitivePrototypeRead } from "./expressions/property-access.js";
 import {
   lowerBufferConstruct,
   lowerBytesPrototypeSetCall,
@@ -10723,6 +10723,20 @@ function lowerArrowFunctionApply(
   return { kind: "seqExpr", stmts, result, type: DYN, loc };
 }
 
+/** The Promise statics whose generic algorithms depend only on the `this`
+ * constructor: NewPromiseCapability(C), GetPromiseResolve(C) and the
+ * iterator protocol. scr_js_promise_generic.c runs them for a `this` that
+ * is not %Promise%. `withResolvers` and `try` take no iterable and stay
+ * refused (their capability shapes have no dynamic representation yet). */
+const PROMISE_GENERIC_STATICS: ReadonlySet<string> = new Set([
+  "all",
+  "allSettled",
+  "any",
+  "race",
+  "resolve",
+  "reject",
+]);
+
 function lowerObjLitGenericMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -10730,6 +10744,68 @@ function lowerObjLitGenericMethodCall(
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   const name = access.name.text;
+  // The Promise statics through Function.prototype.call with ANY `this`
+  // (`Promise.all.call(NotPromise, iterable)`): the specification's
+  // algorithms over NewPromiseCapability(C), where %Promise% answers the
+  // ordinary implementation. A `.js` source only — the arm replaces the
+  // checked-value fence below, so no typed program changes shape. The
+  // runtime unit scr_js_promise_generic.c runs the generic steps; the
+  // builtin function's own thunk (dyn_builtin_fn_call) does not grow.
+  if (name === "call" && !call.questionDotToken && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+    const stat = ts.isPropertyAccessExpression(access.expression)
+      ? lowerer.stdlibGlobalMember(access.expression, "Promise")
+      : null;
+    if (
+      stat !== null &&
+      PROMISE_GENERIC_STATICS.has(stat) &&
+      !call.arguments.nodes.some(ts.isSpreadElement)
+    ) {
+      const loc = locOf(call);
+      const thisArg = call.arguments.nodes[0];
+      const value = call.arguments.nodes[1];
+      // `Promise.all.call(Promise, …)` is the ordinary call: the runtime
+      // recognizes %Promise% by identity and forwards to the native
+      // implementation. The global read yields the interned constructor
+      // value (`dyn.globalConstructor`) — exactly the identity compared —
+      // rather than the reflected-value fence a stdlib global read as a
+      // `.call` receiver otherwise reports.
+      let thisIr = !thisArg
+        ? dynUndefinedExpr(loc)
+        : stdlibGlobalNameOf(lowerer, thisArg) === "Promise"
+          ? (builtinGlobalValue("Promise", loc, true) ?? lowerer.lowerExprExpecting(thisArg, DYN))
+          : lowerer.lowerExprExpecting(thisArg, DYN);
+      let valueIr = value ? lowerer.lowerExprExpecting(value, DYN) : dynUndefinedExpr(loc);
+      const callOf = (receiver: IrExpr, iterable: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "promise.genericStatic",
+        args: [{ kind: "strLit", value: stat, type: STRING, loc }, receiver, iterable],
+        type: DYN,
+        loc,
+      });
+      // The algorithm reads only the first two arguments, but Node evaluates
+      // every argument of the call before it runs: the receiver and the
+      // iterable first, then each surplus argument, in source order. Hold the
+      // two the unit reads in hidden locals so the surplus arguments'
+      // effects and exceptions happen after them, and drop their values.
+      const surplus = call.arguments.nodes.slice(2);
+      if (surplus.length === 0) return callOf(thisIr, valueIr);
+      const holds: IrStmt[] = [];
+      // Both are lowered into the checked-dynamic slot, so each is a dyn value
+      // a hidden local can hold.
+      const hold = (expr: IrExpr, name: string): IrExpr => {
+        const local = lowerer.declareHiddenLocal(name, expr.type);
+        holds.push({ kind: "varDecl", localId: local.id, init: expr, loc });
+        return varRef(local.id, expr.type, loc);
+      };
+      thisIr = hold(thisIr, "%promiseStaticThis");
+      valueIr = hold(valueIr, "%promiseStaticIterable");
+      for (const arg of surplus) {
+        const argIr = lowerer.lowerExprExpecting(arg, DYN);
+        holds.push({ kind: "exprStmt", expr: argIr, loc: locOf(arg) });
+      }
+      return { kind: "seqExpr", stmts: holds, result: callOf(thisIr, valueIr), type: DYN, loc };
+    }
+  }
   // URLSearchParams method values through Function.prototype.call/apply
   // with a receiver that is provably NOT a URLSearchParams (the suite's
   // `params.append.call(undefined)` probes): the WHATWG brand check

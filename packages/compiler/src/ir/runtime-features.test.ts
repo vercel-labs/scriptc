@@ -224,6 +224,20 @@ describe("runtime feature snapshots", () => {
     }
   });
 
+  test("the generic Promise statics link the units their algorithms call", () => {
+    // The implementing unit calls C's resolve and the iterable's next/return
+    // through scr_dyn_invoke and builds and settles capability promises with
+    // scr_async_dyn: a program that makes only this call still links both, or
+    // the source build fails to link.
+    const mod = module();
+    mod.functions[0]!.body.push(call("promise.genericStatic"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({
+      promiseGeneric: true,
+      dynInvoke: true,
+      dynAsync: true,
+    });
+  });
+
   test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
     const reads = (key: string): IrModule => {
       const mod = module();

@@ -113,6 +113,8 @@ export interface EarlyExecutableNativeFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source: scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
+  promiseGeneric?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;

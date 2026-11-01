@@ -133,6 +133,12 @@ export interface CcOptions {
    * the IR): compiles the scr_js_* units (two-tier design I3). Programs
    * without them link no scr_js_ symbol. */
   dynTier?: boolean;
+  /** The program calls a Promise static with a foreign constructor
+   * (`Promise.all.call(C, …)`): compiles scr_js_promise_generic.c, the
+   * specification's algorithms over the checked-dynamic tier. Its values
+   * adopt through scr_async_dyn.c, so the unit needs dynAsync and
+   * dynInvoke too; programs without the call link none of it. */
+  promiseGeneric?: boolean;
   /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
    * compiles scr_stream_dyn.c. */
   streamDyn?: boolean;

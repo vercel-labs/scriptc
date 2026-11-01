@@ -282,7 +282,12 @@ describe("runtime feature snapshots", () => {
     for (const fn of JS_OBJECT_MODEL_LIB_FNS) {
       const armed = module();
       armed.functions[0]!.body.push(call(fn));
-      expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
+      const armedFeatures = moduleRuntimeFeatures(armed);
+      expect(armedFeatures.jsObjectModel, fn).toBe(true);
+      // The intrinsic graph is linked by this fact and defines its
+      // symbol-keyed members through scr_symbol.c, so the symbol unit must
+      // follow the whole fact, not only dyn.intrinsic.
+      expect(armedFeatures.symbol, fn).toBe(true);
     }
     const bufferFns = [
       "arrayBuffer.newResizable",

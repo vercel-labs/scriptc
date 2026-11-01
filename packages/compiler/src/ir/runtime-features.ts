@@ -1491,7 +1491,13 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_dyn_dirent_finish, defined in scr_symbol.c). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS],
+    // Every object-model program links the intrinsic graph, which defines its
+    // symbol-keyed members through scr_symbol.c (scr_js_intrinsics.c calls
+    // scr_sym_well_known, scr_dyn_new_symbol and scr_sym_release). The fact is
+    // the whole JS_OBJECT_MODEL_LIB_FNS set, not just dyn.intrinsic: a program
+    // whose JavaScript source only calls Object.getPrototypeOf on a value
+    // carries it too and would otherwise fail to link (t262-da A1).
+    fns: [...SYMBOL_LIB_FNS, ...JS_OBJECT_MODEL_LIB_FNS],
     prefixes: ["sym.", "disposable."],
     types: ["symbol"],
   }),

@@ -543,7 +543,17 @@ struct ScrDyn {
     ScrBigInt *bigint; /* owned (SCR_DYN_BIGINT) */
     /* Callbacks keep the optional symbol unit out of symbol-free binaries. */
     struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); } symbol;
-    struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; unsigned char *presence; struct ScrDynRegion *region; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
+    /* `len` is the DENSE prefix: items[0…len-1] are the values a direct
+     * items[i] read may touch, and every consumer of this payload is
+     * written against it. `length` is the array's own length, which
+     * exceeds len only when a write (or a length assignment) named an
+     * index far past the end: those elements live in `properties` under
+     * their index spelling, and reads reach them through the hole
+     * fallback (scr_dyn_arr_at → scr_dyn_arr_named_get). The field is last
+     * so no other payload offset moves, and only the SCR_JS_OBJECT_MODEL
+     * build reads or writes it (scr_dyn_arr_length inlines to len
+     * otherwise). */
+    struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; unsigned char *presence; struct ScrDynRegion *region; size_t length; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
     struct {
       size_t len; /* own string-keyed properties, in both modes */
       size_t cap; /* capacity of entries (dictionary mode) or slots (layout mode) */
@@ -660,6 +670,21 @@ _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.layout) == 80, "v.obj.layout offset");
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.slots) == 32, "v.obj.slots offset");
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.region) == 72, "v.obj.region offset");
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.arr.length) == 72, "v.arr.length offset");
+
+/* An array's own length. Equal to the dense prefix length `len` unless the
+ * JavaScript object model build stored an element past it (see the arr
+ * payload's comment). Without that build the field is never touched, and
+ * the helper inlines to the same read as before it existed. The emitted
+ * keyed read's `length` answer loads the field directly at its offset in
+ * that build, which the assert above pins. */
+static inline __attribute__((always_inline)) size_t scr_dyn_arr_length(const ScrDyn *d) {
+#ifdef SCR_JS_OBJECT_MODEL
+  return d->v.arr.length;
+#else
+  return d->v.arr.len;
+#endif
+}
 
 /* ── layouts ───────────────────────────────────────────────────────────
  * An ordinary object (SCR_DYN_OBJ) is in one of two modes.
@@ -1618,6 +1643,16 @@ void scr_weak_dispose(void *object);
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
+#ifdef SCR_JS_OBJECT_MODEL
+/* Writes canonical index `idx` past the array's dense prefix as an own
+ * property under its index spelling, growing the array's length to idx + 1.
+ * Borrows value. False with the exception pending when the array's
+ * attributes refuse the write. */
+bool scr_dyn_arr_sparse_put(ScrDyn *arr, size_t idx, ScrDyn *value);
+/* The canonical array index a property name spells (0…2^32-2, no leading
+ * zero), the same rule the index write applies. */
+bool scr_dyn_arr_index_key(const char *data, size_t len, size_t *out);
+#endif
 /* Whether the builtin Array.prototype object exists and carries `key`
  * before the method table installs; the inherited-read fallback leaves a
  * name it owns alone, since the read that reached it already answered. */

@@ -974,6 +974,108 @@ export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
   return webcrypto && named;
 }
 
+/** Whether a property name spells a canonical array index `String(i)` for
+ * an integer i below 2^32 - 1: digits only, and no leading zero unless the
+ * whole name is "0". */
+function isIndexString(name: string): boolean {
+  if (name.length === 0 || name.length > 10) return false;
+  if (name.length > 1 && name[0] === "0") return false;
+  let index = 0;
+  for (let i = 0; i < name.length; i++) {
+    const c = name.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+    index = index * 10 + (c - 48);
+  }
+  return index < 4294967295;
+}
+
+/** The index past which an array write cannot materialize its holes: the
+ * dense prefix scr_json.c is willing to fill (`+ 1000000`). */
+const SPARSE_INDEX_LIMIT = 1_000_000;
+
+/** The literal a value carries: a literal node, or the checked-dynamic
+ * boxing of one (`a[987654321] = v` boxes its key). */
+type LiteralNode = Extract<IrExpr, { kind: "numLit" } | { kind: "strLit" }>;
+
+function literalOf(expr: IrExpr): LiteralNode | undefined {
+  const raw = expr.kind === "dynFrom" ? expr.value : expr;
+  return raw.kind === "numLit" || raw.kind === "strLit" ? raw : undefined;
+}
+
+/** The canonical index a value spells: a number that is one, or a string
+ * that names one. */
+function literalIndex(expr: IrExpr): number | undefined {
+  const lit = literalOf(expr);
+  if (lit === undefined) return undefined;
+  if (lit.kind === "numLit")
+    return Number.isInteger(lit.value) && lit.value >= 0 && lit.value < 4294967295
+      ? lit.value
+      : undefined;
+  return isIndexString(lit.value) ? Number(lit.value) : undefined;
+}
+
+/** The key and value one dynamic member write takes, or two undefined for
+ * any other node. A write is a `dyn.keySet`/`dyn.keySetComputed` call or a
+ * call into a class-dispatch stub that carries the stored value
+ * (class-dynamic-dispatch.ts `%dyn.class.computed.<n>`). */
+function writeArgs(node: IrExpr): [IrExpr | undefined, IrExpr | undefined] {
+  if (node.kind === "libCall") {
+    if (node.fn !== "dyn.keySet" && node.fn !== "dyn.keySetComputed") return [undefined, undefined];
+    return [node.args[1], node.args[2]];
+  }
+  if (
+    node.kind === "call" &&
+    node.callee.startsWith("%dyn.class.computed.") &&
+    node.args.length >= 3
+  )
+    return [node.args[1], node.args[2]];
+  return [undefined, undefined];
+}
+
+/** Whether the module writes an array element at an index the source
+ * spells past SPARSE_INDEX_LIMIT, or sets `length` to a spelled value past
+ * it: the sparse writes a static fact can prove (see the sparseArrays
+ * rule). A keyed write evaluates its key into a hidden local first
+ * (lower-exprs.ts lowerDynMemberAssignment), so the write reads the literal
+ * the source spells back through that local's one definition. */
+function moduleWritesSparseIndex(mod: IrModule): boolean {
+  const literals = new Map<string, LiteralNode>();
+  everyModuleNode(mod, {
+    expr: () => true,
+    stmt: (node) => {
+      if (node.kind !== "varDecl" || node.init === null) return true;
+      const literal = literalOf(node.init);
+      if (literal !== undefined) literals.set(node.localId, literal);
+      return true;
+    },
+    type: () => true,
+  });
+  /** The literal behind a hidden local, or the node itself when the
+   * lowering spelled it directly. */
+  const resolve = (expr: IrExpr): LiteralNode | undefined =>
+    expr.kind === "varRef" ? literals.get(expr.localId) : literalOf(expr);
+  let sparse = false;
+  everyModuleNode(mod, {
+    expr: (node) => {
+      if (sparse) return false;
+      const [rawKey, rawValue] = writeArgs(node);
+      if (rawKey === undefined || rawValue === undefined) return true;
+      const key = resolve(rawKey);
+      const index = key === undefined ? undefined : literalIndex(key);
+      if (index !== undefined && index > SPARSE_INDEX_LIMIT) sparse = true;
+      else if (key?.kind === "strLit" && key.value === "length") {
+        const value = resolve(rawValue);
+        const length = value === undefined ? undefined : literalIndex(value);
+        if (length !== undefined && length > SPARSE_INDEX_LIMIT) sparse = true;
+      }
+      return !sparse;
+    },
+    stmt: () => !sparse,
+    type: () => true,
+  });
+  return sparse;
+}
+
 /** The typed file reads that answer a ScrBytes: Node answers a Buffer, and
  * scr_lib.c's read entries brand it, so a typed read makes a Buffer value. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
@@ -1000,8 +1102,13 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  sparseArrays?: boolean;
 }): boolean {
-  return features.jsObjectModel === true || features.bigintBytes === true;
+  return (
+    features.jsObjectModel === true ||
+    features.bigintBytes === true ||
+    features.sparseArrays === true
+  );
 }
 
 /** One rule per runtime feature, sorted by name. A new feature is an
@@ -1502,6 +1609,19 @@ const RUNTIME_FEATURE_RULES = {
       node.args[0]?.kind === "strLit" &&
       BIGINT_BYTES_NAMES.has(node.args[0].value),
   }),
+  /** Sparse arrays (t262 W7): an array whose length exceeds its dense
+   * prefix. Only a checked-dynamic member write can produce one, and only a
+   * write the source spells an index proves it: a key computed at run time
+   * (`a[k] = v`) may name any index, so proving sparseness from it would
+   * select this build for every program with a computed write. The elements
+   * past the prefix live in the JavaScript object model build (t262-da §J)
+   * of scr_json.c and scr_dyn_invoke.c, and that build's keyed read answers
+   * `length` from the array's own length instead of the prefix field. The
+   * fact ORs into jsObjectModel (jsObjectModelFact), so it selects no build
+   * column of its own. Every program that exists today keeps its build:
+   * a spelled index or `length` the runtime can place densely stays in the
+   * default objects, and a computed one keeps its SC2020 refusal. */
+  sparseArrays: rule({ initial: (mod) => moduleWritesSparseIndex(mod) }),
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
@@ -1672,6 +1792,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     warningReplace: false,
     recordViewPartial: false,
     bigintBytes: false,
+    sparseArrays: false,
     wasm: false,
     webcrypto: false,
     zlib: false,

@@ -34,6 +34,7 @@
  *                holder_layout, slot}; 168 bytes in all */
 import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
 import { jsIcMethodSites, type JsIcSite } from "../../ir/js-ic.js";
+import { jsObjectModelFact } from "../../ir/runtime-features.js";
 import { mangleBorrowedFunction } from "../mangle.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { classFieldBase, classFieldIndex } from "./classes.js";
@@ -75,6 +76,15 @@ function load(host: Host, type: string, base: string, offset: number): string {
   const v = host.B.tmp();
   host.B.line(`${v} = load ${type}, ptr ${offset === 0 ? base : gep(host, base, offset)}`);
   return v;
+}
+
+/** The offset of an array's own length in its ScrDyn payload: the
+ * JavaScript object model build keeps `v.arr.length` one field past
+ * `v.arr.region` (+72), because a far element write or a length assignment
+ * can move it past the dense prefix `v.arr.len` (+16). A program that does
+ * not link that build reads the prefix field, which is then the length. */
+function arrLengthOffset(host: Host): number {
+  return jsObjectModelFact(host.runtimeFeatures) ? 72 : 16;
 }
 
 /** Branches to `yes` when the dyn cell `d` has kind `kind`. */
@@ -887,7 +897,7 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
     const other = B.newLabel("icg.other");
     kindIs(host, receiver.name, DYN_KIND.ARR, array, other);
     B.startBlock(array);
-    const len = load(host, "i64", receiver.name, 16);
+    const len = load(host, "i64", receiver.name, arrLengthOffset(host));
     const count = B.tmp();
     B.line(`${count} = uitofp i64 ${len} to double`);
     incoming.push(`[ ${numberResult(host, count, e)}, %${B.currentLabel()} ]`);

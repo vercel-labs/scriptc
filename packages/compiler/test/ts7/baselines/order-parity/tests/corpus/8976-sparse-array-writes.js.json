@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8976-sparse-array-writes.js"
+ ],
+ "diags": []
+}

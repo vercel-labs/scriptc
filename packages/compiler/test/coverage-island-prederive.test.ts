@@ -164,6 +164,82 @@ test("the graph decision leaves --node-islands=off alone", () => {
   expect(counts.sets).toEqual([null]);
 }, 600_000);
 
+test("a require() a source binding shadows loads nothing", () => {
+  // A parameter or a variable the file declares under the name `require`
+  // shadows Node's loader: the call runs that value, so the package it names
+  // never loads. The analysis lowers every site, including the require() a
+  // build leaves to its retry, so an edge with loads:false from such a call
+  // reaches the deferred graph decision and islands an installed package the
+  // call never loads (node-islands/scan.ts).
+  const dir = pkgs({
+    outerpkg: [
+      "module.exports.double = function (n) { return n * 2; };\n",
+      "export declare function double(n: number): number;\n",
+    ],
+    shadowpkg: [
+      "module.exports.half = function (n) { return n / 2; };\n",
+      "export declare function half(n: number): number;\n",
+    ],
+  });
+  writeFileSync(
+    join(dir, "main.ts"),
+    'import { double } from "outerpkg";\nfunction load(require: (spec: string) => number): number {\n  return require("shadowpkg");\n}\nconsole.log(double(2) + load(() => 0));\n',
+  );
+  // The scan names no package for the shadowed call.
+  const fe = runFrontend(join(dir, "main.ts"), loadProgram, undefined, undefined, undefined, {
+    nodeIslands: true,
+  });
+  try {
+    expect(fe.nodeIslandScan).toBeDefined();
+    const scan = fe.nodeIslandScan!({ userJs: false });
+    expect(scan.edges.map((e) => e.to)).not.toContain("shadowpkg");
+  } finally {
+    fe.dispose();
+  }
+  // The analysis lowers once, with no island for it.
+  const counts = run(dir, { mode: "auto" }, null);
+  expect(counts.lowerings).toBe(1);
+  expect(counts.sets).toEqual([null]);
+}, 600_000);
+
+test("a createRequire() binding is a loader, at the top level and below it", () => {
+  // The binding is the file's own variable, but createRequire() made it a
+  // loader: `const up = require("upperpkg")` loads upperpkg whenever the
+  // module evaluates, and the same call in a function body loads it when
+  // that code runs. Only a binding no loader made (a parameter, a plain
+  // variable, an import) names nothing.
+  const dir = pkgs({
+    outerpkg: [
+      "module.exports.double = function (n) { return n * 2; };\n",
+      "export declare function double(n: number): number;\n",
+    ],
+    upperpkg: [
+      "module.exports.twice = function (n) { return n * 2; };\n",
+      "export declare function twice(n: number): number;\n",
+    ],
+    latepkg: [
+      "module.exports.half = function (n) { return n / 2; };\n",
+      "export declare function half(n: number): number;\n",
+    ],
+  });
+  writeFileSync(
+    join(dir, "main.mjs"),
+    'import { createRequire } from "node:module";\nimport { double } from "outerpkg";\nconst require = createRequire(import.meta.url);\nconst up = require("upperpkg");\nfunction later() { return require("latepkg"); }\nconsole.log(double(2) + up.twice(1) + later() * 0);\n',
+  );
+  const fe = runFrontend(join(dir, "main.mjs"), loadProgram, undefined, undefined, undefined, {
+    nodeIslands: true,
+  });
+  try {
+    expect(fe.nodeIslandScan).toBeDefined();
+    const scan = fe.nodeIslandScan!({ userJs: false });
+    const loads = new Map(scan.edges.map((e) => [e.to, e.loads]));
+    expect(loads.get("upperpkg")).toBe(true);
+    expect(loads.get("latepkg")).toBe(false);
+  } finally {
+    fe.dispose();
+  }
+}, 600_000);
+
 test("a top-level require() is a load, one inside a function is not", () => {
   // The graph proves a package only when the importing module loads it
   // whenever it evaluates: `const up = require("upperpkg")` at a module's

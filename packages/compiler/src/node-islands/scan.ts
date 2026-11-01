@@ -8,6 +8,7 @@ import * as ts from "../frontend/ts7/adapter.js";
 import { canonicalBuiltinModule, npmBuiltinAliasOf } from "../frontend/builtin-modules.js";
 import { erasedTypeOnlyImport } from "../frontend/type-only-imports.js";
 import { isShimmedImport } from "../frontend/package-shims.js";
+import { requireCallBindingKind } from "../frontend/program.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "../frontend/workspace-registry.js";
@@ -80,14 +81,6 @@ function locOfNode(node: ts.Node): SrcLoc {
   return { file: sf.fileName, start: ts.tokenStartOfNode(node), end: node.end };
 }
 
-/** True when `require` names the CommonJS loader Node provides. A binding the
- * file declares itself (a parameter, a variable, an import) shadows it and
- * loads nothing. */
-function isNodeRequire(program: ts.Program, identifier: ts.Identifier): boolean {
-  const symbol = program.getTypeChecker().getSymbolAtLocation(identifier);
-  return (symbol?.declarations ?? []).every((d) => ts.getSourceFileOfNode(d).isDeclarationFile);
-}
-
 /** True when a call runs whenever its module evaluates: every node between it
  * and the module's top level is an expression that always evaluates its
  * operands, or a top-level statement. A function body, a condition, a short
@@ -150,11 +143,14 @@ function specifiersOf(
       continue;
     }
     if (!ts.isIdentifier(call.expression) || call.expression.text !== "require") continue;
-    const loads = loadsWithModule(call);
-    // A top-level require() that a local binding shadows is not a load of the
-    // package; one below the top level never proved one anyway.
-    if (loads && !isNodeRequire(program, call.expression)) continue;
-    out.push({ spec: arg.text, node: call, loads });
+    // A require() call through a binding the file itself declares runs that
+    // value, not a loader, so the package it names never loads — wherever the
+    // call sits. The analysis lowers every site, so one below the top level
+    // counts too: its deferred graph decision islands what a deferred
+    // require() loads, and a shadowed call loads nothing. Node's ambient
+    // require and a createRequire() binding are loaders.
+    if (requireCallBindingKind(program, call) === "source") continue;
+    out.push({ spec: arg.text, node: call, loads: loadsWithModule(call) });
   }
   return out;
 }

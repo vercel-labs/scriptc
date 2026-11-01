@@ -34,6 +34,7 @@ async function fakePackage(
     protocol?: string;
     packageVersion?: string;
     emitFailure?: boolean;
+    emitSignal?: "TERM";
     emptyOutput?: boolean;
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
@@ -74,6 +75,7 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = --input ]; then input="$2"; shift 2; continue; fi
   shift
 done
+${options.emitSignal === undefined ? "" : `kill -${options.emitSignal} $$`}
 ${options.changePackageDuringEmit === true ? `printf '\\n' >> '${packageJson}'` : ""}
 ${
   options.emitFailure === true
@@ -391,10 +393,26 @@ test("translates structured helper failures and preserves an existing output", a
   ).rejects.toMatchObject({
     diagnosticCode: "SC3004",
     detailCode: "verification_failed",
-    message: expect.stringContaining("bad module"),
+    message: expect.stringContaining("(verification_failed) (exit 1): bad module"),
   });
   expect(await readFile(output, "utf8")).toBe("caller artifact\n");
 });
+
+test.skipIf(process.platform === "win32")(
+  "reports a helper termination signal without losing the caller's output",
+  async () => {
+    const pkg = await fakePackage({ emitSignal: "TERM" });
+    const output = join(pkg.root, "existing.o");
+    await writeFile(output, "caller artifact\n");
+    await expect(
+      emitNativeArtifact(request(pkg.root, pkg.packageJson, output)),
+    ).rejects.toMatchObject({
+      diagnosticCode: "SC3004",
+      message: expect.stringContaining("LLVM native helper failed (signal SIGTERM):"),
+    });
+    expect(await readFile(output, "utf8")).toBe("caller artifact\n");
+  },
+);
 
 test("rejects a successful helper that leaves an empty staged output", async () => {
   const pkg = await fakePackage({ emptyOutput: true });

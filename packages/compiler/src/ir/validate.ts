@@ -6168,6 +6168,12 @@ function validateFunction(
   }
 
   function checkLibEmitterCall(e: IrExpr & { kind: "libCall" }, result: IrType): boolean {
+    // The name-key conversions have no receiver: a symbol's registry key,
+    // and an untyped name's key (a symbol's identity or a ToString).
+    if (e.fn === "emitter.symName" || e.fn === "emitter.nameDyn") {
+      if (e.type.kind !== "string") err(`libCall ${e.fn} must return a string name key`, e.loc);
+      return true;
+    }
     if (
       (e.fn.startsWith("emitter.") || e.fn === "stream.onDyn") &&
       e.fn !== "emitter.setDefaultMax" &&
@@ -6203,6 +6209,7 @@ function validateFunction(
       // The chaining forms return the receiver's own static class.
       if (
         e.fn === "emitter.on" ||
+        e.fn === "emitter.onNamed" ||
         e.fn === "emitter.off" ||
         e.fn === "emitter.onDyn" ||
         e.fn === "emitter.onFlex" ||
@@ -6224,6 +6231,9 @@ function validateFunction(
           (e.fn === "emitter.on" || e.fn === "emitter.off" || e.fn === "emitter.onData") &&
           e.args[2]?.type.kind !== "func"
         ) {
+          err(`libCall ${e.fn} listener must be a func`, e.loc);
+        }
+        if (e.fn === "emitter.onNamed" && e.args[3]?.type.kind !== "func") {
           err(`libCall ${e.fn} listener must be a func`, e.loc);
         }
         if (
@@ -6254,8 +6264,7 @@ function validateFunction(
         return true;
       }
       if (e.fn === "emitter.names") {
-        const ok = e.type.kind === "array" && e.type.elem.kind === "string";
-        if (!ok) err(`libCall emitter.names must return string[]`, e.loc);
+        if (e.type.kind !== "dyn") err(`libCall emitter.names must return a dyn array`, e.loc);
         return true;
       }
       if (e.fn === "emitter.listeners") {

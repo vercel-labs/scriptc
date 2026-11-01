@@ -33,6 +33,18 @@ ScrSym *scr_sym_retain(ScrSym *s) {
   return s;
 }
 
+/* The emitter unit's symbol-side entry points (scr_string.h): installed
+ * from a constructor so scr_events_emitter.c holds no reference to this
+ * unit, and the pointer itself lives in the always-linked string unit, so
+ * a program with symbols but no emitters references nothing from the
+ * emitter. */
+static const ScrSymEventOps scr_sym_event_ops_table = {
+  &scr_sym_retain, &scr_sym_release, &scr_dyn_new_symbol, &scr_sym_to_string,
+};
+__attribute__((constructor)) static void scr_sym_event_install(void) {
+  scr_sym_event_ops = &scr_sym_event_ops_table;
+}
+
 void scr_sym_release(ScrSym *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {

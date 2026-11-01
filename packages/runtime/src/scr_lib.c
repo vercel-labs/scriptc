@@ -2037,6 +2037,7 @@ void scr_os_ifaddrs_free(ScrIfaddrs *s) {
  * event-free binaries and in the standalone runtime C tests). */
 SCR_TL void (*scr_process_exit_hook)(double code) = NULL;
 SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message) = NULL;
+SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message) = NULL;
 SCR_TL bool scr_warning_trace_hint_shown = false;
 SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 

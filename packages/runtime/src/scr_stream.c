@@ -8669,18 +8669,10 @@ static ScrDyn *scr_stream_dyn_unshift(ScrStream *stream, ScrDyn *const *args, si
   return scr_dyn_new_bool(more);
 }
 
-/* eventNames(): the stream's event names as a string array, +1. */
+/* eventNames(): the stream's event names as an array, +1 (symbol keys
+ * included: the emitter registry holds every key). */
 static ScrDyn *scr_stream_dyn_event_names(ScrStream *stream) {
-  ScrArr *names = scr_emitter_event_names((ScrEmitter *)stream);
-  ScrDyn *result = scr_dyn_new_arr();
-  double length = scr_arr_len(names);
-  for (double i = 0; i < length; i++) {
-    ScrStr *name = scr_arr_get_ref(names, i);
-    scr_dyn_arr_push(result, scr_dyn_new_str(name));
-    scr_str_release(name);
-  }
-  scr_arr_release(names);
-  return result;
+  return scr_emitter_event_names((ScrEmitter *)stream);
 }
 
 /* A checked-dynamic call of one of a native stream's members (borrowed

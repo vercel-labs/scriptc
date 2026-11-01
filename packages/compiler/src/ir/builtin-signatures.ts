@@ -4493,6 +4493,11 @@ function buildLibFnSignatures() {
     "emitter.className": { argTypes: [null], result: STRING },
     "emitter.ctor": { argTypes: [null], result: VOID },
     "emitter.on": { argTypes: [null, STRING, null, BOOL, BOOL], result: VOID },
+    /** emitter.on for a name whose ARGUMENT value is not the registry key
+     * it converts to (`on(null)` keys the table as "null" but warns with
+     * `type: null`): (recv, name key, name value dyn, cb /moves/, once,
+     * prepend). Only the leak warning reads the value. */
+    "emitter.onNamed": { argTypes: [null, STRING, DYN, null, BOOL, BOOL], result: VOID },
     "emitter.off": { argTypes: [null, STRING, null], result: VOID },
     // The dyn-adapted registration family (JS-lane checked-dynamic
     // listeners): checkListener has NO receiver (it validates the listener
@@ -4524,7 +4529,10 @@ function buildLibFnSignatures() {
     "emitter.count": { argTypes: [null, STRING], result: F64 },
     "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
     "emitter.countDyn": { argTypes: [null, STRING, DYN], result: F64 },
-    "emitter.names": { argTypes: [null], result: VOID },
+    /** eventNames(): the registered event keys as a checked-dynamic array —
+     * string names first in Node's _events property order, then symbols
+     * (which a string array cannot carry). */
+    "emitter.names": { argTypes: [null], result: DYN },
     "emitter.listeners": { argTypes: [null, STRING], result: VOID },
     /** listeners()/rawListeners() through an untyped value: a checked-
      * dynamic array (throws when a listener has typed parameters). */
@@ -4550,6 +4558,13 @@ function buildLibFnSignatures() {
     /** The events.errorMonitor event key: an immortal string the runtime
      * registry matches by identity, so no string event name reaches it. */
     "emitter.errorMonitor": { argTypes: [], result: STRING },
+    /** A symbol event name's registry key (the scr_str_symbol_key of
+     * scr_string.h): Node's listener table is keyed by property keys, so a
+     * symbol name matches by identity and never by bytes. No receiver.
+     * emitter.nameDyn is the same conversion for an untyped name — a
+     * symbol's key, or any other value's ToString. */
+    "emitter.symName": { argTypes: [SYMBOL_T], result: STRING },
+    "emitter.nameDyn": { argTypes: [DYN], result: STRING },
     // node:stream: receivers are stream-hierarchy objects and several
     // results are program-dependent (the receiver's class, unions) — the
     // libCall case owns those checks. The constructors and a few methods

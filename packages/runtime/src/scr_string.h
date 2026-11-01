@@ -195,6 +195,41 @@ static inline bool scr_str_is_scratch(const ScrStr *s) {
   return s->rc == SIZE_MAX && s->cap < s->len;
 }
 
+/* ── symbol registry keys (scr_events_emitter.c) ───────────────────────
+ * Node's listener table is keyed by property keys, so a symbol event name
+ * is a key too — one that matches by IDENTITY, never by bytes. Every
+ * emitter entry point takes a ScrStr name, so a symbol crosses that
+ * boundary as a ScrStr-SHAPED key: len is SIZE_MAX, which no string can
+ * have (SCR_STR_MAX_CAP bounds every real one), so byte comparisons never
+ * match it; data holds the ScrSym* the key stands for. The key is an
+ * ordinary refcounted allocation otherwise: retain and release treat it
+ * like any string, and ascii is set so release skips the character-index
+ * purge. The symbol it names is owned by the listener bucket that keeps
+ * the key, never by the key itself. */
+typedef struct ScrSym ScrSym;
+typedef struct ScrDyn ScrDyn; /* C11 repeat; full definition in scr_dyn.h */
+ScrStr *scr_str_symbol_key(ScrSym *sym); /* +1; borrows sym */
+/* The symbol unit's entry points for the emitter's symbol-keyed buckets
+ * (scr_symbol.c installs the table from a constructor): the emitter keeps
+ * the symbol alive for as long as it keys a bucket and lists it as a value
+ * in eventNames(). The pointer lives here, in the always-linked string
+ * unit, so neither the emitter nor a symbol-using program references the
+ * other unit's data: a program without symbols links scr_symbol.o and a
+ * program without emitters links no emitter object. */
+typedef struct ScrSymEventOps {
+  ScrSym *(*retain)(ScrSym *sym);
+  void (*release)(ScrSym *sym);
+  ScrDyn *(*box)(ScrSym *sym);       /* +1 checked-dynamic symbol value */
+  ScrStr *(*to_string)(ScrSym *sym); /* +1 "Symbol(desc)" */
+} ScrSymEventOps;
+extern const ScrSymEventOps *scr_sym_event_ops;
+static inline bool scr_str_is_symbol_key(const ScrStr *s) { return s->len == SIZE_MAX; }
+static inline ScrSym *scr_str_symbol_key_sym(const ScrStr *s) {
+  ScrSym *sym;
+  memcpy(&sym, s->data, sizeof sym);
+  return sym;
+}
+
 /* ── lone surrogates: canonical WTF-8 storage ─────────────────────────
  * String storage is UTF-8 extended to lone UTF-16 surrogates: an unpaired
  * surrogate is its generalized 3-byte encoding ED A0..BF 80..BF, while a

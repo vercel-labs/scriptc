@@ -285,7 +285,14 @@ static double bc_max_listeners(ScrDyn *self) {
 
 static void bc_warn_tick(ScrClosure *self) {
   ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[0]);
-  if (scr_warning_emit_hook) {
+  ScrDyn *type = (ScrDyn *)scr_box_get_ref(self->caps[1]);
+  double count = scr_box_get_f64(self->caps[2]);
+  ScrDyn *owner = (ScrDyn *)scr_box_get_ref(self->caps[3]);
+  if (scr_warning_leak_hook) {
+    /* The checked-dynamic emitter object IS the value the program holds,
+     * so it crosses as itself. */
+    scr_warning_leak_hook(type, count, owner, message);
+  } else if (scr_warning_emit_hook) {
     scr_warning_emit_hook("MaxListenersExceededWarning", NULL, message);
   } else {
     fflush(stdout);
@@ -297,6 +304,8 @@ static void bc_warn_tick(ScrClosure *self) {
     }
   }
   scr_str_release(message);
+  scr_dyn_release(type);
+  scr_dyn_release(owner);
 }
 
 /* The constructor name util.inspect prints at depth -1: `[Bus]`. */
@@ -336,10 +345,21 @@ static void bc_warn_leak(ScrDyn *self, ScrDyn *type, double count, double max) {
   scr_jb_puts(&text, ". Use emitter.setMaxListeners() to increase limit");
   scr_str_release(event);
   scr_str_release(cls);
-  ScrClosure *tick = scr_closure_new((void *)&bc_warn_tick, 1);
+  /* The tick carries the report's message, the event name VALUE (the
+   * warning's `type`), the count and the emitter. */
+  ScrClosure *tick = scr_closure_new((void *)&bc_warn_tick, 4);
   ScrBox *box = scr_box_new(SCR_BOX_STR);
   scr_box_set_ref(box, scr_jb_finish(&text));
   tick->caps[0] = box;
+  ScrBox *name = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(name, scr_dyn_retain(type)); /* set_ref adopts */
+  tick->caps[1] = name;
+  ScrBox *tally = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(tally, count);
+  tick->caps[2] = tally;
+  ScrBox *owner = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(owner, scr_dyn_retain(self)); /* set_ref adopts */
+  tick->caps[3] = owner;
   scr_next_tick(tick);
 }
 

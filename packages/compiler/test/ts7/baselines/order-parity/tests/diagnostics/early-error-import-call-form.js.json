@@ -1,0 +1,43 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/early-error-import-call-form.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0008",
+   "message": "import.defer() takes exactly one module specifier",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-import-call-form.js",
+    "start": 360,
+    "end": 388
+   }
+  },
+  {
+   "code": "SC0008",
+   "message": "import.defer() takes exactly one module specifier",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-import-call-form.js",
+    "start": 344,
+    "end": 358
+   }
+  },
+  {
+   "code": "SC0008",
+   "message": "import() takes a module specifier and an optional second argument; the argument list cannot be omitted or extended",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-import-call-form.js",
+    "start": 316,
+    "end": 342
+   }
+  },
+  {
+   "code": "SC0008",
+   "message": "import() takes a module specifier and an optional second argument; the argument list cannot be omitted or extended",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-import-call-form.js",
+    "start": 306,
+    "end": 314
+   }
+  }
+ ]
+}

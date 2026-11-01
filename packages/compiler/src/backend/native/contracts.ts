@@ -62,6 +62,13 @@ export interface CcOptions {
    * generated mapping tables live behind SCR_TEXT_DECODER_LEGACY so the
    * always-compiled bytes TU stays in the historical size class otherwise. */
   textDecoderLegacy?: boolean;
+  /** The program reads a BigInt typed-array constructor as a value
+   * (BigInt64Array, BigUint64Array): its element kinds, which no double
+   * represents, live in the JavaScript object model build (t262-da §J).
+   * The fact ORs into jsObjectModel (jsObjectModelFact), so every unit the
+   * program links names the same SCR_JS_OBJECT_MODEL builds; a program
+   * without it keeps the default objects byte for byte. */
+  bigintBytes?: boolean;
   /** The program uses fs/promises.open or a FileHandle value
    * (moduleUsesFileHandle on the IR): compiles scr_file_handle.c. Keeping
    * the descriptor object and promise adapters in their own unit preserves
@@ -126,6 +133,12 @@ export interface CcOptions {
    * the IR): compiles the scr_js_* units (two-tier design I3). Programs
    * without them link no scr_js_ symbol. */
   dynTier?: boolean;
+  /** The program calls a Promise static with a foreign constructor
+   * (`Promise.all.call(C, …)`): compiles scr_js_promise_generic.c, the
+   * specification's algorithms over the checked-dynamic tier. Its values
+   * adopt through scr_async_dyn.c, so the unit needs dynAsync and
+   * dynInvoke too; programs without the call link none of it. */
+  promiseGeneric?: boolean;
   /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
    * compiles scr_stream_dyn.c. */
   streamDyn?: boolean;
@@ -134,6 +147,9 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
+  childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
@@ -141,6 +157,9 @@ export interface CcOptions {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
+  /** A generator that binds its parameters at the call: compiles
+   * scr_gen_bind.c. */
+  genBind?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -183,9 +202,14 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
-  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
-   * NULL for a field a partial record view does not have. */
-  recordViewPartial?: boolean;
+  /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
+   * object model feature the program reaches (t262-da §J). */
+  jsObjectModel?: boolean;
+  /** The program resizes, grows or detaches an ArrayBuffer: compiles the
+   * buffer views registry, scr_js_buffers.c, whose arming call the program's
+   * %main emits. The fact ORs into jsObjectModel, so the unit's definition
+   * of the JavaScript object model build is already on. */
+  mutableBuffers?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
@@ -307,11 +331,6 @@ export interface CcOptions {
    * unit under the same precedent, so polling-free binaries keep their
    * exact link line. */
   watchFile?: boolean;
-  /** A typed fs read whose bytes value the program can observe as a Buffer
-   * (the fsBufferBrand feature on the IR): compiles scr_lib.c's
-   * SCR_FS_BUFFER_BRAND build, so programs that never see the brand keep the
-   * default object unchanged. */
-  fsBufferBrand?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */
@@ -443,6 +462,15 @@ export interface LibArchiveOptions {
   x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
+  /** See CcOptions.bigintBytes: the SameValueZero/element-value methods of a
+   * BigInt typed array, in the archive's bytes and json units. */
+  bigintBytes?: boolean;
+  /** See CcOptions.jsObjectModel: the archive's bytes and json units carry
+   * the JavaScript object model build. */
+  jsObjectModel?: boolean;
+  /** See CcOptions.mutableBuffers: the archive carries the buffer views
+   * registry, scr_js_buffers.c. */
+  mutableBuffers?: boolean;
 }
 
 export interface NativeArtifactDependency {

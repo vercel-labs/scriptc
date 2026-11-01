@@ -2836,8 +2836,19 @@ void *scr_mem_realloc(void *p, size_t n) {
   return q;
 }
 #else
-void *scr_mem_realloc(void *p, size_t n) { return realloc(p, n); }
-void *scr_mem_realloc_ref(void *p, size_t n) { return realloc(p, n); }
+void *scr_mem_realloc(void *p, size_t n) {
+  void *q = realloc(p, n);
+  /* Realloc moved (or ended) the block, and the library audit lane's
+   * registry follows it; a failed request leaves p live and registered. */
+  if (q != NULL || n == 0) {
+    SCR_LIBRARY_HEAP_FREE(p);
+    SCR_LIBRARY_HEAP_ALLOC(q);
+  }
+  return q;
+}
+/* Without the small object allocator every block is a reference block, so the
+ * reference twin shares the plain path, audit registry included. */
+void *scr_mem_realloc_ref(void *p, size_t n) { return scr_mem_realloc(p, n); }
 size_t scr_mem_block_size(const void *p) {
 #if defined(__GLIBC__)
   return malloc_usable_size((void *)p);

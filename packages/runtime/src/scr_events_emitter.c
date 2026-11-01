@@ -42,6 +42,7 @@
  * --trace-warnings hint line. The pid in "(node:pid)" is this process's
  * (it can never equal the oracle's). */
 #include "scr_runtime.h"
+#include "scr_key.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -1439,23 +1440,48 @@ double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn
     : 0;
 }
 
-/* eventNames(): +1 string[] of the bucket names in first-registration
- * order (exactly Node's _events key order). Reserved-but-empty buckets
- * (the stream pre-created keys) are invisible until a listener lands. */
+/* eventNames(): +1 string[] of the bucket names in Node's _events key
+ * order. _events is an object, so array-index names ('0', '1', ...) come
+ * first in ascending order, then the other names in first-registration
+ * order. Reserved-but-empty buckets (the stream pre-created keys) are
+ * invisible until a listener lands. */
 ScrArr *scr_emitter_event_names(ScrEmitter *em) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
-  if (em->reg) {
-    for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
-      if (b->n == 0) continue;
-      /* Node lists the errorMonitor symbol, which a string[] cannot hold. */
-      if (scr_ee_is_error_monitor(b->name)) {
-        scr_arr_release(out);
-        scr_ee_symbol_name_fence("eventNames()");
-        return scr_arr_new(SCR_ELEM_STR, 0);
-      }
-      scr_arr_push_ref(out, scr_str_retain(b->name));
+  if (!em->reg) return out;
+  size_t count = 0;
+  for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
+    if (b->n == 0) continue;
+    /* Node lists the errorMonitor symbol, which a string[] cannot hold. */
+    if (scr_ee_is_error_monitor(b->name)) {
+      scr_arr_release(out);
+      scr_ee_symbol_name_fence("eventNames()");
+      return scr_arr_new(SCR_ELEM_STR, 0);
     }
+    count++;
   }
+  ScrEeBucket **live = count ? malloc(count * sizeof *live) : NULL;
+  ScrKeyIndex *indexed = count ? malloc(count * sizeof *indexed) : NULL;
+  if (count && (!live || !indexed)) scr_ee_oom();
+  size_t n = 0, k = 0;
+  for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
+    if (b->n == 0) continue;
+    uint32_t index;
+    if (scr_key_array_index(b->name->data, b->name->len, &index)) {
+      indexed[k].index = index;
+      indexed[k].entry = n;
+      k++;
+    }
+    live[n++] = b;
+  }
+  if (k > 1) qsort(indexed, k, sizeof *indexed, scr_key_index_compare);
+  for (size_t i = 0; i < k; i++) scr_arr_push_ref(out, scr_str_retain(live[indexed[i].entry]->name));
+  for (size_t i = 0; i < n; i++) {
+    uint32_t index;
+    if (!scr_key_array_index(live[i]->name->data, live[i]->name->len, &index))
+      scr_arr_push_ref(out, scr_str_retain(live[i]->name));
+  }
+  free(indexed);
+  free(live);
   return out;
 }
 

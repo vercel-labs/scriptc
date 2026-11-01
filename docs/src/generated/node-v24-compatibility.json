@@ -1,18 +1,18 @@
 {
   "schemaVersion": 4,
-  "nodeVersion": "24.22.0",
-  "nodeTag": "v24.22.0",
-  "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
+  "nodeVersion": "24.22.1",
+  "nodeTag": "v24.22.1",
+  "nodeCommit": "d01285110044365f0ad4fec24482a585646640e2",
   "sources": {
     "allJson": {
-      "url": "https://nodejs.org/download/release/v24.22.0/docs/api/all.json",
-      "sha256": "2445f57511c86b2b8129b3fd8423811fd8b32d1eccc1e54d8c747e823f65be27"
+      "url": "https://nodejs.org/download/release/v24.22.1/docs/api/all.json",
+      "sha256": "3edf28696d913c7ef5f96b47f3f69ef70d641b28d560f9c76ffe7783a2234e9a"
     },
     "indexMarkdown": {
-      "url": "https://nodejs.org/docs/v24.22.0/api/index.md",
+      "url": "https://nodejs.org/docs/v24.22.1/api/index.md",
       "sha256": "c63ecaedc4a35de0823706cc72ce76cd10e712ce50eaca829bb2eefe1fc2ded2"
     },
-    "sourceBaseUrl": "https://github.com/nodejs/node/tree/f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93"
+    "sourceBaseUrl": "https://github.com/nodejs/node/tree/d01285110044365f0ad4fec24482a585646640e2"
   },
   "verificationBases": {
     "test-backed": {
@@ -2125,9 +2125,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2309,9 +2309,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {

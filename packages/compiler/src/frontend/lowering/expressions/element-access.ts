@@ -40,7 +40,17 @@ import { fenceNodeModuleMutation, lowerRequireCacheElement } from "../lower-node
 import { lowerModuleNamespaceElement } from "../module-namespace-elements.js";
 import { type CompoundOp, stdlibGlobalNameOf } from "../surfaces.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import {
+  HOST_GLOBAL_PROTOTYPE_MEMBERS,
+  HOST_GLOBAL_VALUE_MEMBERS,
+  hostGlobalCallTarget,
+  hostGlobalNameOfElement,
+  hostGlobalNameOfRead,
+  hostGlobalPrototypeOf,
+} from "../host-globals.js";
+import { hostGlobalValue } from "../host-global-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
 import { expandoMemberRead } from "../lower-expando.js";
 import {
@@ -103,6 +113,7 @@ import {
   lowerIndexedUnionWrite,
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 
 /** The per-arm answer for a presence probe of an element read through an
  * erased assertion (`typeof (u as R)["member"]`), or null when the read is
@@ -131,6 +142,12 @@ function assertedProbeElementRead(
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
  * typechecks against the lib's index signature; use .charAt) stay out. */
 export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpression): IrExpr {
+  // The bracket spelling of the mutableBuffers fact (`b["transfer"]()`,
+  // buffers.ts, t262-dc §2.4).
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const key = lowerer.foldedStringKeyOf(expr.argumentExpression);
+    if (key !== null && MUTABLE_BUFFER_MEMBERS.has(key)) lowerer.buffersMutable = true;
+  }
   if (isImportMeta(expr.expression)) {
     const name = lowerer.foldedStringKeyOf(expr.argumentExpression);
     if (name === null)
@@ -186,6 +203,39 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   lowerer.fenceStaticReadableStreamMember(expr, "read");
   // Computed global reads share the stored global object's custom
   // properties. Symbol keys retain their identity-indexed store.
+  // `globalThis["WebSocket"]` is the same read as `globalThis.WebSocket`
+  // and answers the constructor Node has (host-global-values.ts); the
+  // dynamic path below answers undefined for names it does not know.
+  // Checked before the receiver test because a cast receiver
+  // (`(globalThis as T)["X"]`) is not the bare global spelling that test
+  // resolves.
+  {
+    const hostGlobal = hostGlobalNameOfElement(lowerer, expr);
+    if (hostGlobal !== null) {
+      if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
+      return hostGlobalValue(lowerer, hostGlobal, expr);
+    }
+  }
+  // `globalThis.WebSocket["OPEN"]`, `globalThis.FormData["prototype"]["append"]`:
+  // a member read off the value, which carries the function intrinsics only,
+  // or off its prototype, which carries the constructor link (see
+  // HOST_GLOBAL_VALUE_MEMBERS and HOST_GLOBAL_PROTOTYPE_MEMBERS).
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    const key = expr.argumentExpression;
+    if (hostGlobal !== null) {
+      if (ts.isStringLiteralLike(key) && !HOST_GLOBAL_VALUE_MEMBERS.has(key.text))
+        lowerer.hostGlobalFence(hostGlobal, expr);
+    } else {
+      const prototypeOf = hostGlobalPrototypeOf(lowerer, expr.expression);
+      if (
+        prototypeOf !== null &&
+        ts.isStringLiteralLike(key) &&
+        !HOST_GLOBAL_PROTOTYPE_MEMBERS.has(key.text)
+      )
+        lowerer.hostGlobalFence(prototypeOf, expr);
+    }
+  }
   if (!expr.questionDotToken && stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis") {
     const symbol = globalSymbolKey(lowerer, expr.expression, expr.argumentExpression);
     if (symbol)
@@ -463,7 +513,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         key:
           index.type.kind === "f64"
             ? { kind: "toString", operand: index, type: STRING, loc: locOf(expr) }
-            : index,
+            : lowerer.coerceToExpected(index, DYN),
         type: DYN,
         loc: locOf(expr),
       };
@@ -852,6 +902,31 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         "string indexing with this index/result shape (expected a number index and a string or string | undefined result)",
       );
     }
+    // A NULLISH receiver (`(null)["k"]`): Node's RequireObjectCoercible
+    // TypeError at the read, after the key's own expression. The message
+    // needs only the key's spelling, which a runtime key cannot supply
+    // without V8's no-side-effect renderer, so that form keeps a written
+    // refusal instead of a runtime fence.
+    if (receiver && isUnitType(receiver.type)) {
+      const key = lowerer.foldedStringKeyOf(expr.argumentExpression);
+      if (key === null)
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "reading a member of a nullish value with a runtime key (Node throws before it converts the key)",
+        );
+      const unit = receiver.type.kind === "nullT" ? "null" : "undefined";
+      return throwAfterEach(
+        [receiver],
+        nullishReadTypeError(
+          unit,
+          key,
+          lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? F64,
+          locOf(expr),
+        ),
+        locOf(expr),
+      );
+    }
     lowerer.unsupported("SC1090", expr, "element access on non-array values");
   }
   let arr = lowerer.lowerExpr(expr.expression);
@@ -979,7 +1054,11 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(arr, DYN),
-      key: index,
+      // A non-f64 key (a JavaScript file's `arr[true]`, an `any` index) is a
+      // dynamic key: the property read below the IR is dynamic, and the
+      // class member dispatch helpers take a dynamic key — never the bool or
+      // record value the checker typed here.
+      key: lowerer.coerceToExpected(index, DYN),
       type: DYN,
       loc: locOf(expr),
     };
@@ -1626,6 +1705,17 @@ export function lowerRecordKeyRead(
     const read: IrExpr =
       stmts.length === 0 ? get : { kind: "seqExpr", stmts, result: get, type: get.type, loc };
     return includeUndefined ? read : lowerer.maybeNarrow(read, expr);
+  }
+  // A `keyof` read whose checker answer COLLAPSES to the checked-dynamic
+  // representation (the union of the field types carries an
+  // 'object'/'unknown'-flavored arm, so the union rule maps it to dyn):
+  // there is no typed join to dispatch into, exactly like the 'unknown'
+  // answer above, and each declared field still reads through its
+  // checked-dynamic slot. Dispatch per declared key and answer dyn.
+  if (!declared) {
+    const answer = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (answer?.kind === "dyn" && !shape.indexValue && recordKeyResultOk(lowerer, shape, DYN))
+      declared = DYN;
   }
   if (!declared) {
     lowerer.unsupported(

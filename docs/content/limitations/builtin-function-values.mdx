@@ -10,6 +10,10 @@ Some builtins can be stored and passed as functions:
 In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.
 Calls through these values bypass `node:test` mock timers.
 In JavaScript, `atob`, `btoa`, and `structuredClone` are function values the same way, and calls through them run what the direct calls run.
+In JavaScript, `parseInt` and `parseFloat` are the `Number.parseInt` and `Number.parseFloat` function values, `isNaN`, `isFinite`, and `Symbol` (with `Symbol.for`, `Symbol.keyFor`, and the well-known symbols) are function values whose calls run what the direct calls run, and `Atomics` is an object whose integer operations run.
+Calling `eval` through its value throws the `EvalError` its direct calls throw.
+`escape`, `unescape`, `WeakRef`, and `AsyncDisposableStack` have function values with Node's `name` and `length` that throw `SC2020` when called or constructed.
+`globalThis.require`, `module`, `exports`, `__dirname`, and `__filename` are `undefined`, as in Node.
 Other builtin globals stored in JavaScript remain opaque identity values.
 In JavaScript, `require("events")` and the `EventEmitter` class assigned to an untyped binding or stored in an object (`ReleaseEmitter = EventEmitter`) are the untyped `EventEmitter` constructor that constructor functions inherit from (see below): `new` through it builds such an emitter object, and identity and `instanceof` agree with the class.
 A class can extend `require("events")` directly.
@@ -38,7 +42,7 @@ Deprecation warnings are emitted on the next tick and follow assignments to `pro
 A stored `util.deprecate` reports a `length` of 4, where Node reports 3.
 In TypeScript, a `util.callbackify` result must reach a callback whose error parameter accepts `null`; the @types/node overloads that type it as non-null are refused.
 `util.debuglog` reads `NODE_DEBUG` as the process started.
-Its `%s` refuses functions and objects with symbol-keyed members, `%o` refuses objects, and object arguments are refused on a color terminal.
+Its `%s` refuses functions and objects with symbol-keyed members, and object arguments are refused on a color terminal.
 
 `util.isDeepStrictEqual` supports primitives, ordinary records and arrays, cycles, enumerable string and symbol properties, and byte views.
 Its optional third argument skips prototype and constructor comparisons.

@@ -4129,6 +4129,12 @@ function buildLibFnSignatures() {
     "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
+    /** Arms the runtime check for the Node globals the native runtime does not
+     * implement (host-globals.ts): the compiler's derived name table. */
+    "global.hostAbsent": { argTypes: [arrayOf(STRING)], result: VOID },
+    /** `key in globalThis`: the host-global check, then the global object's
+     * own presence answer (scr_global_host_absent.c). */
+    "dyn.globalHas": { argTypes: [STRING], result: BOOL },
     /** Installs the program's builtin-global lookup (global-values.ts). */
     "global.installValues": { argTypes: [DYN], result: VOID },
     /** Installs the program's static-member lookup for builtin constructor

@@ -581,6 +581,25 @@ static void scr_ds_put_value(ScrJsonBuf *b, const ScrDyn *value) {
   }
 }
 
+/* Symbol.keyFor called through a function value (+1): the registry key of
+ * a symbol from Symbol.for, undefined for another symbol, or NULL with
+ * V8's TypeError ("1 is not a symbol") pending for any other value. */
+ScrDyn *scr_dyn_symbol_key_for(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_SYMBOL || value->v.symbol.render != scr_sym_to_string) {
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_ds_put_value(&message, value);
+    scr_jb_puts(&message, " is not a symbol");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return NULL;
+  }
+  ScrStr *key = scr_sym_key_for((ScrSym *)value->v.symbol.value);
+  if (!key) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *out = scr_dyn_new_str(key);
+  scr_str_release(key);
+  return out;
+}
+
 static ScrDisposableStack *scr_ds_of(const ScrDyn *value) {
   return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK
     ? value->v.handle.ptr : NULL;

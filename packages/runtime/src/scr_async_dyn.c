@@ -1196,6 +1196,24 @@ void scr_punycode_warn(bool immediate, bool report) {
   scr_str_release(message);
 }
 
+static void scr_timer_this_fire(ScrClosure *self) {
+  ScrClosure *cb = scr_box_get_ref(self->caps[0]);
+  double handle = scr_timer_running_handle();
+  ScrDyn *receiver = handle != 0 ? scr_dyn_new_num(handle) : scr_dyn_undefined();
+  scr_dyn_this_push_dyn_once(receiver);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+  scr_dyn_this_pop();
+  scr_dyn_release(receiver);
+  scr_closure_release(cb);
+}
+
+ScrClosure *scr_timer_this_callback(ScrClosure *cb) {
+  ScrClosure *bound = scr_closure_new((void *)scr_timer_this_fire, 1);
+  bound->caps[0] = scr_box_new(SCR_BOX_FUNC);
+  scr_box_set_ref(bound->caps[0], scr_closure_retain(cb));
+  return bound;
+}
+
 void scr_buffer_deprecation(void) {
   /* Node's showFlaggedDeprecation: after 10000 calls the check stops. */
   if (scr_buffer_ctor_warned || ++scr_buffer_ctor_checks > 10000) return;

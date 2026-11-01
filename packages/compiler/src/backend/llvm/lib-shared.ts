@@ -325,6 +325,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "wrapper.guardList": "scr_js_wrapper_guard_list",
   "wrapper.isStringMethod": "scr_js_wrapper_is_string_method",
   "wrapper.thisString": "scr_js_wrapper_this_string",
+  "wrapper.booleanPrototype": "scr_js_wrapper_boolean_prototype",
   "fs.callbackValue": "scr_fs_callback_value",
   "fs.callbackCall": "scr_fs_callback_call",
   "process.hrtimeValue": "scr_process_hrtime_value",
@@ -803,6 +804,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.errorCause": "scr_insp_error_cause",
   "insp.begin": "scr_insp_begin",
   "insp.layout": "scr_insp_layout",
+  "insp.maxArrayLength": "scr_insp_max_array_length",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
@@ -924,6 +926,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
   "cp.spawnSyncEnv": "scr_spawn_sync_env",
+  "cp.spawnSyncExt": "scr_spawn_sync_ext",
+  "cp.spawnSyncExtEnv": "scr_spawn_sync_ext_env",
   "cp.execSync": "scr_exec_sync",
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",
@@ -1023,6 +1027,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sym.for": "scr_sym_for",
   "sym.wellKnown": "scr_sym_well_known",
   "sym.toString": "scr_sym_to_string",
+  "sym.keyForDyn": "scr_dyn_symbol_key_for",
   "bigint.parse": "scr_bigint_parse",
   "bigint.fromF64": "scr_bigint_from_f64",
   "bigint.neg": "scr_bigint_neg",
@@ -1882,6 +1887,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
   "timers.userDelay": "scr_timer_user_delay",
+  "timers.thisCallback": "scr_timer_this_callback",
 };
 
 /** The mock-aware entry points (scr_test.c) that the timer calls of a

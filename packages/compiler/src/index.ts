@@ -833,10 +833,12 @@ async function compileExecutableNative(
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
+    ...(features.childOptionExt ? { childOptionExt: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
+    ...(features.genBind ? { genBind: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
@@ -2196,11 +2198,13 @@ async function compileTracked(
           sourceTexts: new Map(),
         };
       }
-      if (ffi !== null && err instanceof CcCompileError) {
+      if (err instanceof CcCompileError) {
         return {
           ok: false,
           diagnostics: [
-            ffiNativeBuildDiag(ffiNativeBuildDetail(err), opts.ffiProfilePath ?? entryPath),
+            ffi !== null
+              ? ffiNativeBuildDiag(ffiNativeBuildDetail(err), opts.ffiProfilePath ?? entryPath)
+              : nativeCodegenDiag("SC3004", err.message, entryPath),
           ],
           sourceTexts: new Map(),
         };
@@ -2355,11 +2359,13 @@ async function compileTracked(
     if (err instanceof RuntimePackError) {
       return { ok: false, diagnostics: [runtimePackDiagnostic(err, entryPath)], sourceTexts };
     }
-    if (ffi !== null && err instanceof CcCompileError) {
+    if (err instanceof CcCompileError) {
       return {
         ok: false,
         diagnostics: [
-          ffiNativeBuildDiag(ffiNativeBuildDetail(err), opts.ffiProfilePath ?? entryPath),
+          ffi !== null
+            ? ffiNativeBuildDiag(ffiNativeBuildDetail(err), opts.ffiProfilePath ?? entryPath)
+            : nativeCodegenDiag("SC3004", err.message, entryPath),
         ],
         sourceTexts,
       };

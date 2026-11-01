@@ -5,6 +5,7 @@ import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
+import { globalFunctionValue } from "../global-function-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
@@ -754,6 +755,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     );
   }
   if (lowerer.stdlibGlobalFnOf(expr)) {
+    // JavaScript reads the global functions with values as those values
+    // (global-function-values.ts).
+    const canonical = stdlibGlobalNameOf(lowerer, expr);
+    const value =
+      canonical !== null && isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? globalFunctionValue(lowerer, canonical, loc)
+        : null;
+    if (value !== null) return value;
     lowerer.unsupported(
       "SC1090",
       expr,

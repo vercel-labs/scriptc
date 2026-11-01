@@ -23,6 +23,42 @@ attempt("spreadable", () => Array.prototype.concat.call(spreadable, "x", ["y"]))
 attempt("plain", () => Array.prototype.concat.call(plain, "x"));
 attempt("falsy", () => Array.prototype.concat.call(falsy));
 attempt("sparse", () => Array.prototype.concat.call(sparse));
+// A missing index is not created on the result: concat creates a property only
+// where HasProperty holds, so the hole stays absent and the methods that skip
+// holes skip it too.
+attempt("sparse-shape", () => {
+  const result = Array.prototype.concat.call(sparse, "z");
+  return [result.length, 0 in result, 1 in result, 2 in result, 3 in result, Object.keys(result)];
+});
+attempt("sparse-map", () => Array.prototype.concat.call(sparse).map((value, index) => `${index}:${value}`));
+attempt("sparse-filter", () => Array.prototype.concat.call(sparse).filter(() => true));
+// A Proxy receiver answers @@isConcatSpreadable through the handler's get
+// trap, which receives the symbol as the property key; the target answers
+// when the handler has no get trap.
+const trapped = [];
+const proxyTarget = { length: 2, 0: "p", 1: "q" };
+const plainProxy = new Proxy(proxyTarget, {
+  get(object, key) {
+    trapped.push(typeof key === "symbol" ? "symbol" : String(key));
+    return object[key];
+  },
+});
+attempt("proxy", () => {
+  const result = Array.prototype.concat.call(plainProxy, "r");
+  return [result.length, result[0] === plainProxy, trapped.join(",")];
+});
+const spreadTarget = { length: 2, 0: "p", 1: "q" };
+spreadTarget[Symbol.isConcatSpreadable] = true;
+const spreadProxy = new Proxy(spreadTarget, {
+  get(object, key) {
+    trapped.push(typeof key === "symbol" ? "symbol" : String(key));
+    return object[key];
+  },
+});
+attempt("proxy-spread", () => {
+  const result = Array.prototype.concat.call(spreadProxy, "r");
+  return [result.length, result.join(""), trapped.join(",")];
+});
 attempt("nothing", () => Array.prototype.concat.call(spreadable));
 attempt("broken", () => Array.prototype.concat.call(broken, "x"));
 attempt("broken-tostring", () => {

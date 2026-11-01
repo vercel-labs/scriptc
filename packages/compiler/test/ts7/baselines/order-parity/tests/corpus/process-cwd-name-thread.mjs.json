@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-cwd-name-thread.mjs"
+ ],
+ "diags": []
+}

@@ -105,7 +105,8 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary, v8CalleeText } from "./expressions/narrowing.js";
+import { lowerTernary, staleReadMessage } from "./expressions/narrowing.js";
+import { checkedArmExtraction } from "./coercions/unions.js";
 import {
   classFieldTarget,
   lowerPropertyAccessExpr,
@@ -462,11 +463,33 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
       if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
+        const unionId = inner.type.unionId;
+        const messages = assertedFailureMessages(lowerer, expr, unionId, target);
+        if (messages !== null && messages.size > 1) {
+          // Each failing arm throws the TypeError Node gives the operation
+          // that consumes the value (`x!.f` on null or on undefined).
+          const local = lowerer.declareHiddenLocal("%asserted", inner.type);
+          const extracted = checkedArmExtraction(
+            lowerer,
+            varRef(local.id, inner.type, loc),
+            lowerer.armTag(unionId, target),
+            target,
+            (found) => staleReadMessage(expr, found),
+          );
+          if (extracted)
+            return {
+              kind: "seqExpr",
+              stmts: [{ kind: "varDecl", localId: local.id, init: inner, loc }],
+              result: extracted,
+              type: target,
+              loc,
+            };
+        }
         const helper = lowerer.narrowedArmHelper(
-          inner.type.unionId,
+          unionId,
           target,
           loc,
-          assertedCalleeMessage(expr, target),
+          messages?.size === 1 ? [...messages][0] : undefined,
         );
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, loc);
@@ -1727,17 +1750,27 @@ const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
 
-/** The TypeError Node raises when an asserted callee (`t[k]!(…)`, `o.f!()`)
- * holds no function: `!` is erased, so the call itself throws "<callee> is
- * not a function" in V8's spelling of the callee. */
-function assertedCalleeMessage(expr: ts.NonNullExpression, target: IrType): string | undefined {
-  if (target.kind !== "func") return undefined;
-  let child: ts.Expression = expr;
-  while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
-  const call = child.parent;
-  if (!ts.isCallExpression(call) || call.expression !== child || call.questionDotToken)
-    return undefined;
-  return `${v8CalleeText(expr.expression)} is not a function`;
+/** The TypeErrors Node throws when the operation consuming `expr!` (a
+ * member read, a call) finds one of the union's other arms instead of
+ * `target`, or null when that operation does not throw for them (the
+ * stranded-value message applies). A call on a value of another arm throws
+ * "<callee> is not a function" in V8's spelling of the callee, because `!`
+ * is erased and the call itself throws. */
+function assertedFailureMessages(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  unionId: string,
+  target: IrType,
+): Set<string> | null {
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  const messages = new Set<string>();
+  for (const found of arms) {
+    if (typeEquals(found, target)) continue;
+    const message = staleReadMessage(expr, found);
+    if (message === null) return null;
+    messages.add(message);
+  }
+  return messages.size > 0 ? messages : null;
 }
 
 /** Whether the use of `t[i]!` tells undefined from NaN: a converting use
@@ -2650,10 +2683,17 @@ export function lowerDynMemberAssignment(
   const loc = locOf(expr);
   const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
   const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
-  const keyValue = ts.isElementAccessExpression(target)
+  const boxedKey = ts.isElementAccessExpression(target)
     ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
     : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
-  const key = lowerer.declareHiddenLocal("%setKey", DYN);
+  // A key that is a string before boxing is its own property key: the
+  // write takes it as a string, without boxing it and coercing it back.
+  const stringKey =
+    ts.isElementAccessExpression(target) &&
+    boxedKey.kind === "dynFrom" &&
+    boxedKey.value.type.kind === "string";
+  const keyValue = stringKey ? boxedKey.value : boxedKey;
+  const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2682,8 +2722,12 @@ export function lowerDynMemberAssignment(
         kind: "exprStmt",
         expr: {
           kind: "libCall",
-          fn: "dyn.keySetComputed",
-          args: [varRef(receiver.id, DYN, loc), varRef(key.id, DYN, loc), stored],
+          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+          args: [
+            varRef(receiver.id, DYN, loc),
+            varRef(key.id, stringKey ? STRING : DYN, loc),
+            stored,
+          ],
           type: VOID,
           loc,
         },

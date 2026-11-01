@@ -10,9 +10,12 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { dynamicFieldStores } from "../../ir/int32-slots.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 import { everyExpr, everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { InlineUnionFields } from "./inline-unions.js";
 import { RESULT_DST_ID, resultEntryName } from "../result-slots.js";
+
+const RECORD_WRITE_KINDS: readonly IrNodeKind[] = ["recordSet", "recordKeySet", "recordKeyDelete"];
 
 export { RESULT_DST_ID, RESULT_ENTRY_PREFIX, resultEntryName } from "../result-slots.js";
 
@@ -122,8 +125,10 @@ export function constructorInitializesFields(cls: IrClassDef, ctor: IrFunction):
  * producer's result (forwarding the slot), or return a parameter of a
  * record shape no store can change (copied into the slot). The original
  * function stays as it is; the backend calls the entry only where the
- * result is proven to be consumed by projections, passing frame storage. */
-export function addRecordResultEntries(mod: IrModule): IrModule {
+ * result is proven to be consumed by projections, passing frame storage.
+ * `nodes`, an index of `mod`, gives the record writes and dynamic stores
+ * without walking the bodies. */
+export function addRecordResultEntries(mod: IrModule, nodes?: IrNodeIndex): IrModule {
   const shapes = new Map((mod.records ?? []).map((shape) => [shape.id, shape]));
   // Scalar unions are always tagged boxes, so the full union table decides
   // inline fields exactly as the emitter's boxed table does.
@@ -149,20 +154,17 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
   // shared, since nothing can tell the copy from the original once `===`
   // and field writes are ruled out by the caller's projection proof.
   const written = new Set<string>();
+  const writes = nodes?.scan(RECORD_WRITE_KINDS);
   for (const fn of mod.functions)
-    everyStmtList(fn.body, {
-      expr: () => true,
-      stmt: (stmt) => {
-        if (
-          stmt.kind === "recordSet" ||
-          stmt.kind === "recordKeySet" ||
-          stmt.kind === "recordKeyDelete"
-        )
-          written.add(stmt.shapeId);
-        return true;
-      },
+    eachNodeOfKinds(fn, writes, (node) => {
+      if (
+        node.kind === "recordSet" ||
+        node.kind === "recordKeySet" ||
+        node.kind === "recordKeyDelete"
+      )
+        written.add(node.shapeId);
     });
-  const dynamicStores = dynamicFieldStores(mod);
+  const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodes);
   // Copies are limited to scalar shapes: a copy of a reference-owning
   // record would not carry the undeclared source keys a checked conversion
   // may keep beside the original (record-sources.ts).

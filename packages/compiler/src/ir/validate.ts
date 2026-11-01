@@ -5257,7 +5257,7 @@ function validateFunction(
   }
 
   function checkLibProcessCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "cp.execFile") {
+    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
       const cb = e.args[2]?.type;
       if (
         cb?.kind !== "func" ||
@@ -5266,7 +5266,7 @@ function validateFunction(
         cb.ret.kind !== "void"
       ) {
         err(
-          `libCall cp.execFile callback must be a non-rest void function with at most three parameters`,
+          `libCall ${e.fn} callback must be a non-rest void function with at most three parameters`,
           e.loc,
         );
       } else {
@@ -5279,16 +5279,16 @@ function validateFunction(
             !def.arms.some((arm) => arm.kind === "nullT") ||
             !def.arms.some((arm) => arm.kind === "object" && arm.className === "%Error")
           ) {
-            err(`libCall cp.execFile callback error parameter must be Error | null`, e.loc);
+            err(`libCall ${e.fn} callback error parameter must be Error | null`, e.loc);
           }
         }
         const stdout = cb.params[1];
         if (stdout !== undefined && stdout.kind !== "string") {
-          err(`libCall cp.execFile callback stdout parameter must be string`, e.loc);
+          err(`libCall ${e.fn} callback stdout parameter must be string`, e.loc);
         }
         const stderr = cb.params[2];
         if (stderr !== undefined && stderr.kind !== "string") {
-          err(`libCall cp.execFile callback stderr parameter must be string`, e.loc);
+          err(`libCall ${e.fn} callback stderr parameter must be string`, e.loc);
         }
       }
     }
@@ -6333,6 +6333,8 @@ function validateFunction(
           (!Number.isInteger(e.origin) || e.origin < 0 || e.origin >= declOriginCount)
         )
           err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
+        if (e.pathIndex !== undefined && (!Number.isInteger(e.pathIndex) || e.pathIndex < 0))
+          err(`dynCheck pathIndex ${e.pathIndex} is not an array position`, e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).
@@ -7017,6 +7019,12 @@ function validateFunction(
       case "runtimeFence":
         // The deferred JS compile fence: carries only its message/code.
         if (s.message.length === 0) err(`runtimeFence with an empty message`, s.loc);
+        break;
+      case "genBindBarrier":
+        // The generator bind barrier: a marker in a bindAtCall body only.
+        if (fn.generator?.bindAtCall !== true) {
+          err(`genBindBarrier in a body without generator.bindAtCall`, s.loc);
+        }
         break;
       case "rethrow": {
         // `throw e` of a catch binding: re-raises the saved snapshot.

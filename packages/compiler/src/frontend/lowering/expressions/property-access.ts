@@ -3,6 +3,7 @@ import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
+import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
   arrayClassReceiver,
@@ -131,7 +132,7 @@ import {
 } from "../lower-node-module.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
-import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   applyDeferredAssertion,
@@ -1031,8 +1032,10 @@ export function lowerPropertyAccessExpr(
     const canonical = stdlibGlobalNameOf(lowerer, expr);
     if (canonical !== null) {
       if (canonical === "globalThis") return lowerGlobalValue(lowerer, expr);
-      // Typed for the programs that name it, absent in Node 24.
-      if (canonical === TEMPORAL_GLOBAL) return dynUndefinedExpr(loc);
+      // Typed for the programs that name it, absent in Node 24, and the
+      // CommonJS module bindings, which the global object does not hold.
+      if (canonical === TEMPORAL_GLOBAL || COMMONJS_MODULE_BINDINGS.has(canonical))
+        return dynUndefinedExpr(loc);
       const value = jsSpecialGlobalValue(lowerer, canonical, loc);
       if (value) return value;
       return (
@@ -1220,15 +1223,19 @@ export function lowerPropertyAccessExpr(
       // by the property or function it reads. A builtin function value
       // keeps its length when that is not its adapter's parameter count
       // (`Math.max.length` is 2).
-      const fnName =
-        builtinValueNameOf(expr.expression, lowerer) ?? jsFuncNameOf(expr.expression, lowerer);
-      const fnLength = lowerer.builtinFunctionIdentity(probed).fnLength;
+      const builtinName = builtinValueNameOf(expr.expression, lowerer);
+      const fnName = builtinName ?? jsFuncNameOf(expr.expression, lowerer);
+      const identity = lowerer.builtinFunctionIdentity(probed);
+      const fnLength = identity.fnLength;
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: probed,
         type: DYN,
         ...(fnName !== null ? { fnName } : {}),
         ...(fnLength !== undefined ? { fnLength } : {}),
+        ...(builtinName !== null && identity.fnNameMainThreadOnly
+          ? { fnNameMainThreadOnly: true as const }
+          : {}),
         loc,
       };
       const key: IrExpr = {
@@ -4732,47 +4739,62 @@ export function fieldTarget(
       lowerer.lowerExpr(access.expression),
     );
   }
-  // A generic receiver's member the INSTANTIATION cannot store: the type
-  // parameter's constraint declares the member (so tsc admits the read),
-  // while the record the parameter was instantiated with has no such slot —
-  // a generic options bag read through its constraint (`options.sessionId`
-  // under an `"sessionId" in options` guard) at a call site whose options
-  // literal omits the optional member. Node reads the property off the
-  // object it actually has: undefined when the caller omitted it, the extra
-  // property when a JavaScript caller supplied one. So the read is the
-  // checked-dynamic keyed read of the stored record, entering the static
-  // code at the type the checker gave the read.
-  if (
-    !access.questionDotToken &&
-    readOnlyAccess(access) &&
-    typeParameterReceiver(lowerer.typeOf(access.expression))
-  ) {
+  // A member the checker ADMITS but the stored layout cannot hold. The
+  // constraint of a type parameter declares it (a generic options bag read
+  // through an `"sessionId" in options` guard), and so does a cast that
+  // intersects the member onto a record (`options as Omit<T, "k"> &
+  // ProviderRequestOptions<M>`), while the record the value was STORED as
+  // has no such slot: the call site omitted the optional member, the
+  // instantiation is a union of option shapes, or the cast added a member
+  // its source layout never declared. Node reads the property off the
+  // object it actually has — undefined when the object lacks it, the value
+  // when the value kept one — so the read is the checked-dynamic keyed read
+  // of the stored value, entering the static code at the type the checker
+  // gave the read (a failed conversion throws; it never diverges).
+  if (!access.questionDotToken && readOnlyAccess(access)) {
     const storedIr = stored ?? narrowed;
-    const arm = storedIr?.kind === "union" ? lowerer.stripUndefinedArm(storedIr) : storedIr;
-    const shape = arm?.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+    const present = storedIr?.kind === "union" ? lowerer.stripUndefinedArm(storedIr) : storedIr;
+    const arms =
+      present?.kind === "union"
+        ? (lowerer.unions.get(present.unionId)?.arms ?? [present])
+        : present
+          ? [present]
+          : [];
+    // Every arm is a plain record layout with no slot for the member.
+    const layoutMissing =
+      arms.length > 0 &&
+      arms.every((arm) => {
+        if (arm.kind !== "record") return false;
+        const shape = lowerer.shapes.get(arm.shapeId);
+        return (
+          shape !== undefined &&
+          !shape.tuple &&
+          !shape.indexValue &&
+          !shape.fields.some((f) => f.name === access.name.text)
+        );
+      });
     const admitted = lowerer.mapTypeOf(lowerer.typeOf(access));
-    if (
-      shape &&
-      !shape.tuple &&
-      !shape.indexValue &&
-      !shape.fields.some((f) => f.name === access.name.text) &&
-      admitted &&
-      admitted.kind !== "void"
-    ) {
+    const checkerHolds =
+      typeParameterReceiver(lowerer.typeOf(access.expression)) ||
+      narrowed === null ||
+      (narrowed.kind === "record" &&
+        (lowerer.shapes.get(narrowed.shapeId)?.fields.some((f) => f.name === access.name.text) ??
+          false));
+    if (layoutMissing && checkerHolds && admitted && admitted.kind !== "void") {
       let obj = lowerer.lowerExpr(access.expression);
       if (obj.type.kind === "union" && lowerer.armTag(obj.type.unionId, UNDEFINED_T) >= 0) {
-        const present = lowerer.stripUndefinedArm(obj.type);
+        const presentType = lowerer.stripUndefinedArm(obj.type);
         obj =
-          present.kind === "record"
+          presentType.kind === "record"
             ? (lowerer.runtimeOptionalPropertyReceiver(
                 access.expression,
                 obj,
-                present,
+                presentType,
                 access.name.text,
               ) ?? obj)
             : lowerer.maybeNarrow(obj, access.expression);
       }
-      if (obj.type.kind !== "record") return null;
+      if (!lowerer.dynConvertible(obj.type)) return null;
       return {
         container: "dynamic",
         obj: lowerer.coerceToExpected(obj, DYN),
@@ -5370,7 +5392,9 @@ export function builtinGlobalValueAt(
   const namespace = js ? builtinNamespaceValue(lowerer, canonical, loc) : null;
   if (namespace !== null) return namespace;
   if (readsBuiltinGlobalMembers(expr)) return null;
-  const value = builtinGlobalValue(canonical, loc, js);
+  const value =
+    builtinGlobalValue(canonical, loc, js) ??
+    (js ? globalFunctionValue(lowerer, canonical, loc) : null);
   if (value === null) return null;
   let node: ts.Node = expr;
   while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
@@ -5809,7 +5833,9 @@ function jsPrimitivePrototypeValue(
       { kind: "strLit", value: kind, type: STRING, loc },
       // The compiled constructor value the prototype belongs to: the unit
       // answers it as the constructor's `prototype` member, so
-      // `Object(1).constructor.prototype === Number.prototype`.
+      // `Object(1).constructor.prototype === Number.prototype`. The unit's
+      // object is the one wrapper instances inherit from, so its methods
+      // accept a primitive or a wrapper receiver.
       lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN),
     ],
     type: DYN,

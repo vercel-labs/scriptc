@@ -842,6 +842,10 @@ export interface BuiltinModuleFn {
   /** The function value's `name` when it is not the member's
    * (`process.cwd` is Node's `wrappedCwd`). */
   valueName?: string;
+  /** The function value carries `valueName` on the main thread only, and
+   * the empty string inside a Worker, where Node hands out the unwrapped
+   * function (`process.cwd`). */
+  valueNameMainThreadOnly?: true;
 }
 
 /** `name` is the argument name Node's validator reports
@@ -2030,13 +2034,16 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     process: {
       loadEnvFile: { fn: "process.loadEnvFile", params: [DYN], result: VOID },
       // Every spelling of process.cwd as a value is this one function, which
-      // reads the directory when it is called.
+      // reads the directory when it is called. Node's main thread wraps it
+      // under the name "wrappedCwd"; a worker sees the unwrapped function,
+      // whose name is "".
       cwd: {
         fn: "process.cwd",
         params: [],
         result: STRING,
         valueParams: [],
         valueName: "wrappedCwd",
+        valueNameMainThreadOnly: true,
       },
     },
     // node:string_decoder's surface is the StringDecoder CLASS — new/write/

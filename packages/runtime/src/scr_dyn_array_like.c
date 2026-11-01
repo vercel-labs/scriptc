@@ -383,9 +383,11 @@ ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args) {
      * when its @@isConcatSpreadable is true, and a spread receiver's length
      * is then read through ToLength — a throwing length throws here, as in
      * Node. The elements become the result's head, which the array dispatch
-     * then concatenates with the arguments. A receiver that does not spread
-     * is the result's first element (a primitive receiver's would be its
-     * wrapper object). */
+     * then concatenates with the arguments. An index the receiver does not
+     * carry stays a hole: concat creates a property only where HasProperty
+     * holds, so the result's missing indexes are absent too. A receiver that
+     * does not spread is the result's first element (a primitive receiver's
+     * would be its wrapper object). */
     if (al_primitive(recv)) { al_refuse_primitive(method); return NULL; }
     ScrDyn *head = scr_dyn_new_arr();
     if (al_concat_spreadable(recv)) {
@@ -393,9 +395,7 @@ ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args) {
       if (!al_length(recv, &len)) { scr_dyn_release(head); return NULL; }
       for (size_t i = 0; i < len; i++) {
         if (len > 1000000 && !al_iteration(i)) { scr_dyn_release(head); return NULL; }
-        ScrDyn *item = al_item(recv, i);
-        if (!item) { scr_dyn_release(head); return NULL; }
-        scr_dyn_arr_push(head, item);
+        if (!al_copy_item(head, recv, i)) { scr_dyn_release(head); return NULL; }
       }
     } else {
       if (scr_exc_pending()) { scr_dyn_release(head); return NULL; }

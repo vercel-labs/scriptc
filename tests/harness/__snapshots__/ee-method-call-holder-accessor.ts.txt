@@ -1,0 +1,6 @@
+ee-method-call-holder-accessor.ts:14:13 - error SC1090: Function.prototype.call on a function whose signature cannot cross the checked-value boundary (call 'holder.emitter.emit(...)' directly) is not supported yet
+
+  13 | ee.on("a", () => log.push("a"));
+  14 | console.log(holder.emitter.emit.call(ee, "a"));
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  15 | 

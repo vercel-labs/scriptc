@@ -1,6 +1,10 @@
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
-import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
+import {
+  keepsCheckedDynamicValue,
+  keepsInitializerLayout,
+  notePreservedLayout,
+} from "./structural-instances.js";
 import { partialFieldRead } from "./partial-assertions.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
@@ -6529,6 +6533,11 @@ export function lowerVarDecl(
       g.type = raw.type;
       notePreservedLayout(lowerer, decl);
     }
+    if (
+      !isVarDeclared(decl) &&
+      keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
+    )
+      g.type = raw.type;
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -6719,6 +6728,11 @@ export function lowerVarDecl(
     type = init.type;
     notePreservedLayout(lowerer, decl);
   }
+  // An index-signature binding whose assertion of an existing value lowered
+  // to that value (narrowing.ts keeps it instead of answering a copy whose
+  // keys live in a map of its own) keeps the value too: converting it here
+  // would take every write through the binding with it.
+  if (keepsCheckedDynamicValue(lowerer, decl.initializer, init.type, type)) type = init.type;
   // A JavaScript binding assigned values outside its declared type
   // (analyzeJsWidenedBindings in lowerer.ts) holds them as checked-dynamic.
   {

@@ -182,3 +182,76 @@ test("a read compiles and answers the constructor; construction refuses", async 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("instanceof answers for the value, and a constant holding it refuses", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-host-global-alias-"));
+  const compileSource = async (name: string, source: string) => {
+    await writeFile(join(dir, `${name}.ts`), source);
+    return compile(join(dir, `${name}.ts`), {
+      outDir: join(dir, ".scriptc"),
+      outPath: join(dir, ".scriptc", `${name}.ir.json`),
+      outputKind: "ir",
+    });
+  };
+  const declarations = [
+    "declare var FormData: { new (): unknown; (): unknown; readonly prototype: object };",
+    "declare var WebSocket: { new (url: string): unknown; readonly prototype: object; readonly OPEN: number };",
+  ].join("\n");
+  try {
+    // `instanceof` against the value is decided statically: an ordinary
+    // function's operand would otherwise ask the runtime for its
+    // [[Prototype]], which no native function carries, and the value itself
+    // is a Function instance as Node's class is.
+    const answers = await compileSource(
+      "answers",
+      [
+        declarations,
+        "function plain() {}",
+        "const Alias = FormData;",
+        "console.log(plain instanceof FormData, (() => 1) instanceof Alias);",
+        "console.log(FormData instanceof Function, FormData.prototype.constructor instanceof Function);",
+        "console.log(Alias instanceof Function, plain instanceof Alias);",
+        "",
+      ].join("\n"),
+    );
+    expect(answers.ok ? [] : answers.diagnostics.map((diag) => diag.code)).toEqual([]);
+
+    // A constant holding the value or its prototype is the same value: the
+    // members native code does not provide refuse through the alias, and
+    // the allowed reads keep working.
+    for (const [name, expression] of [
+      ["alias-static", "const Ctor = WebSocket;\nCtor.OPEN;"],
+      ["alias-static-element", 'const Ctor = WebSocket;\nCtor["OPEN"];'],
+      ["alias-chain-static", "const Ctor = WebSocket;\nconst Chain = Ctor;\nChain.OPEN;"],
+      ["alias-construct", "const Ctor = FormData;\nnew Ctor();"],
+      ["alias-call", "const Ctor = FormData;\nCtor();"],
+      ["prototype-alias", "const body = FormData.prototype;\n(body as any).append();"],
+      [
+        "prototype-alias-chain",
+        "const body = FormData.prototype;\nconst same = body;\n(same as any).append();",
+      ],
+    ] as const) {
+      const result = await compileSource(name, `${declarations}\n${expression}\n`);
+      expect(result.ok, name).toBe(false);
+      expect(
+        result.ok ? [] : result.diagnostics.map((diag) => [diag.code, diag.reason]),
+        name,
+      ).toEqual([["SC2020", "host-global"]]);
+    }
+
+    const allowed = await compileSource(
+      "allowed",
+      [
+        declarations,
+        "const Ctor = WebSocket;",
+        "const body = FormData.prototype;",
+        "console.log(Ctor.name, Ctor.length, typeof Ctor);",
+        "console.log(body.constructor === FormData, typeof body);",
+        "",
+      ].join("\n"),
+    );
+    expect(allowed.ok ? [] : allowed.diagnostics.map((diag) => diag.code)).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

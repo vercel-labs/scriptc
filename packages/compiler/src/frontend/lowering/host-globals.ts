@@ -226,18 +226,52 @@ export const HOST_GLOBAL_VALUE_MEMBERS: ReadonlySet<string> = new Set([
 export const HOST_GLOBAL_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set(["constructor"]);
 
 /** The listed global whose `prototype` object `node` reads — a member read's
- * receiver (`FormData.prototype.append`) or the `Object.setPrototypeOf`
- * target shape. Null for every other expression. */
+ * receiver (`FormData.prototype.append`), a `const` holding that object
+ * (`const proto = FormData.prototype; proto.append`), or the
+ * `Object.setPrototypeOf` target shape. Null for every other expression. */
 export function hostGlobalPrototypeOf(lowerer: Lowerer, node: ts.Expression): string | null {
+  return hostGlobalPrototypeOfSeen(lowerer, node, new Set());
+}
+
+function hostGlobalPrototypeOfSeen(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  seen: Set<ts.Symbol>,
+): string | null {
   const uncast = withoutTypeCasts(node);
+  // A constant holding the prototype object is the same object: member
+  // reads off it are as unsupported as off the read itself.
+  if (ts.isIdentifier(uncast)) {
+    const initializer = constAliasInitializer(lowerer, uncast, seen);
+    return initializer === null ? null : hostGlobalPrototypeOfSeen(lowerer, initializer, seen);
+  }
   if (ts.isPropertyAccessExpression(uncast) && uncast.name.text === "prototype")
-    return hostGlobalNameOfRead(lowerer, uncast.expression);
+    return hostGlobalNameOfReadSeen(lowerer, uncast.expression, seen);
   if (
     ts.isElementAccessExpression(uncast) &&
     ts.isStringLiteralLike(uncast.argumentExpression) &&
     uncast.argumentExpression.text === "prototype"
   )
-    return hostGlobalNameOfRead(lowerer, uncast.expression);
+    return hostGlobalNameOfReadSeen(lowerer, uncast.expression, seen);
+  return null;
+}
+
+/** The listed global whose constructor value `node` holds through the
+ * prototype object (`FormData.prototype.constructor`), which is the same
+ * value the read answers. Null for every other expression. */
+export function hostGlobalConstructorOfPrototype(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): string | null {
+  const uncast = withoutTypeCasts(node);
+  if (ts.isPropertyAccessExpression(uncast))
+    return uncast.name.text === "constructor"
+      ? hostGlobalPrototypeOf(lowerer, uncast.expression)
+      : null;
+  if (ts.isElementAccessExpression(uncast) && ts.isStringLiteralLike(uncast.argumentExpression))
+    return uncast.argumentExpression.text === "constructor"
+      ? hostGlobalPrototypeOf(lowerer, uncast.expression)
+      : null;
   return null;
 }
 
@@ -263,13 +297,49 @@ export function hostGlobalPrototypeMemberOf(
 }
 
 /** The listed global an operand reads, in any of the read forms — the
- * expression itself (`typeof X`, a `new` callee, a call callee). */
+ * expression itself (`typeof X`, a `new` callee, a call callee) — or the
+ * one a `const` holding the read answers (`const Ctor = WebSocket;
+ * Ctor.OPEN`). A `let` is not followed: it can be reassigned. */
 export function hostGlobalNameOfRead(lowerer: Lowerer, operand: ts.Expression): string | null {
+  return hostGlobalNameOfReadSeen(lowerer, operand, new Set());
+}
+
+function hostGlobalNameOfReadSeen(
+  lowerer: Lowerer,
+  operand: ts.Expression,
+  seen: Set<ts.Symbol>,
+): string | null {
   const unwrapped = withoutTypeCasts(operand);
-  if (ts.isIdentifier(unwrapped)) return hostGlobalNameOfIdentifier(lowerer, unwrapped);
+  if (ts.isIdentifier(unwrapped)) {
+    const global = hostGlobalNameOfIdentifier(lowerer, unwrapped);
+    if (global !== null) return global;
+    const initializer = constAliasInitializer(lowerer, unwrapped, seen);
+    return initializer === null ? null : hostGlobalNameOfReadSeen(lowerer, initializer, seen);
+  }
   if (ts.isPropertyAccessExpression(unwrapped)) return hostGlobalNameOfMember(lowerer, unwrapped);
   if (ts.isElementAccessExpression(unwrapped)) return hostGlobalNameOfElement(lowerer, unwrapped);
   return null;
+}
+
+/** The initializer of the `const` `id` names, when that constant is the
+ * program's own binding in a source file. Records the symbol in `seen` so a
+ * cycle between two constants ends the walk. */
+function constAliasInitializer(
+  lowerer: Lowerer,
+  id: ts.Identifier,
+  seen: Set<ts.Symbol>,
+): ts.Expression | null {
+  const symbol = lowerer.checker.getSymbolAtLocation(id);
+  if (symbol === undefined || seen.has(symbol)) return null;
+  const declarations = symbol.declarations ?? [];
+  if (declarations.length !== 1) return null;
+  const decl = declarations[0];
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return null;
+  if (decl.parent === undefined || (decl.parent.flags & ts.NodeFlags.Const) === 0) return null;
+  if (ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
+  seen.add(symbol);
+  return decl.initializer;
 }
 
 /** The listed global a `typeof` operand reads, in any of the read forms. */

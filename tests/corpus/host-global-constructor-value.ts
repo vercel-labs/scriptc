@@ -29,6 +29,21 @@ console.log(scope["FormData"] === FormData, (globalThis as any).FormData === For
 console.log({} instanceof FormData, [] instanceof WebSocket, eager instanceof FormData);
 console.log(new Map() instanceof FormData, (1 as any) instanceof FormData);
 console.log(("text" as any) instanceof FormData, (null as any) instanceof FormData);
+// An ordinary function is not one either, and a class value is not.
+function plain() {}
+console.log(plain instanceof FormData, (() => 1) instanceof WebSocket);
+console.log((class {}) instanceof FormData);
+// The value itself is a Function instance, as Node's class is.
+console.log(FormData instanceof Function, WebSocket instanceof Function);
+console.log(FormData.prototype.constructor instanceof Function);
+
+// A constant holding the value is the same constructor, in every answer.
+const Alias = FormData;
+const AliasChain = Alias;
+console.log(Alias === FormData, AliasChain === Alias, Alias.name, Alias.length);
+console.log(plain instanceof Alias, new Map() instanceof AliasChain);
+console.log(Alias instanceof Function, Alias instanceof FormData);
+console.log(Alias.prototype.constructor === Alias);
 
 // The prototype link both ways. The prototype carries the constructor and
 // nothing else: Node's class methods are surface native code does not have,

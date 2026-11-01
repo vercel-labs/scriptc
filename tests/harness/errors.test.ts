@@ -2637,10 +2637,10 @@ console.log("still running");
       "cjs",
     );
     // The binding holds the value the read answered, so constructing it
-    // through the binding throws the same fence — blamed at the read.
+    // through the binding throws the same fence, blamed at the construction.
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toMatch(
-      /^Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:1\]\nstill running\n$/,
+      /^Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:3\]\nstill running\n$/,
     );
     expect(r.stderr).toBe("");
   });
@@ -2680,6 +2680,44 @@ console.log("after");
     expect(r.stdout).toBe("function\nbefore\n");
     expect(r.stderr).toMatch(
       /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-member\.cjs:3\]\n$/,
+    );
+  });
+
+  test("a member read through a constant holding the value refuses at its own site", async () => {
+    const r = await compileAndRun(
+      "host-global-alias-member-read",
+      `const Ctor = globalThis.WebSocket;
+console.log(Ctor.name);
+console.log("before");
+console.log(Ctor.OPEN);
+console.log("after");
+`,
+      "cjs",
+    );
+    // The constant holds the value the read answered, so its static member
+    // is as unavailable as the direct read's.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("WebSocket\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-alias-member-read\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a method read through a constant holding the prototype refuses", async () => {
+    const r = await compileAndRun(
+      "host-global-prototype-alias",
+      `const body = globalThis.FormData.prototype;
+console.log(typeof body.constructor);
+console.log("before");
+console.log(body.append);
+console.log("after");
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("function\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-alias\.cjs:4\]\n$/,
     );
   });
 

@@ -357,7 +357,7 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
 
 static ScrStr *scr_str_alloc(size_t len, size_t cap) {
   if (len > cap || cap > SCR_STR_MAX_CAP) scr_oom();
-  ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + cap + 1);
+  ScrStr *s = scr_mem_alloc_ref(sizeof(ScrStr) + cap + 1);
   if (!s) scr_oom();
   s->rc = 1;
   s->len = len;
@@ -470,7 +470,7 @@ ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
   scr_short_forget(s);
   scr_str_hash_forget(s);
   scr_sidx_purge(s); /* realloc may move; the old address may be recycled */
-  ScrStr *r = scr_mem_realloc(s, sizeof(ScrStr) + newcap + 1);
+  ScrStr *r = scr_mem_realloc_ref(s, sizeof(ScrStr) + newcap + 1);
   if (!r) scr_oom();
   r->cap = newcap;
   return r;

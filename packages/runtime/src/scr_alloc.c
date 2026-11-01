@@ -11,6 +11,9 @@
  * first touch them. Only an exiting worker thread returns pages, those
  * holding nothing but free blocks (scr_sa_trim, Linux). */
 #include "scr_runtime.h"
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 /* Defined in every build: the emitted fast paths read it (see the layout
  * contract in scr_runtime.h); without the allocator it stays all-zero.
@@ -19,10 +22,32 @@
  * deliberately keeps global (abi.localize_runtime), leaking it from every
  * localized library archive. */
 #ifdef SCR_WORKERS
-_Thread_local ScrThreadHot scr_thread_hot = {{0}};
+_Thread_local ScrThreadHot scr_thread_hot = {{.tag = SCR_SA_TAG_NONE}};
 #else
-ScrSaState scr_sa = {0};
+ScrSaState scr_sa = {.tag = SCR_SA_TAG_NONE};
 #endif
+/* The chunk table and the chunk map (scr_rc.h), defined in every build for
+ * the same reason. */
+uint16_t scr_sa_chunks[SCR_SA_WINDOW_CHUNKS] = {0};
+uint16_t scr_sa_chunk_map[SCR_SA_MAP_CHUNKS] = {0};
+uintptr_t scr_sa_slice_span = 0; /* the classes' slices (scr_rc.h) */
+/* The map index of the window's first chunk, or SIZE_MAX while the window
+ * does not lie below SCR_SA_MAP_CHUNKS chunks (not reserved, or placed
+ * higher): the map then stays empty. */
+static size_t scr_sa_map_first = SIZE_MAX;
+
+/* Sets the entry of window chunk i in the chunk table and in the map. */
+static inline void scr_sa_chunk_set(size_t i, uint16_t v) {
+  __atomic_store_n(&scr_sa_chunks[i], v, __ATOMIC_RELAXED);
+  if (scr_sa_map_first != SIZE_MAX) __atomic_store_n(&scr_sa_chunk_map[scr_sa_map_first + i], v, __ATOMIC_RELAXED);
+}
+
+/* The calling thread holds no arena: an empty state, whose tag matches no
+ * chunk entry. */
+static inline void scr_sa_clear(void) {
+  memset(&scr_sa, 0, sizeof scr_sa);
+  scr_sa.tag = SCR_SA_TAG_NONE;
+}
 
 /* Counts a worker's large blocks (scr_sa_thread_large_note, below). */
 #if defined(SCR_WORKERS) && defined(__GLIBC__) && !defined(SCR_LIB)
@@ -33,18 +58,20 @@ static void scr_sa_thread_large_note(void);
 #endif
 
 #if SCR_SMALL_ALLOC
+#include <sched.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
-/* Page policy. Slice pages are committed by first touch, which on 4 KiB
+/* Page policy. Chunk pages are committed by first touch, which on 4 KiB
  * pages is one fault (and page clear) per 4 KiB the bump pointers cross.
  * Transparent huge pages fault 2 MiB at a time and shrink the TLB working
  * set, but make the whole 2 MiB page around a bump pointer resident at once,
- * so every class slice in use (per arena, in worker executables) would cost
- * up to 2 MiB more than it holds. A slice therefore starts on small pages
- * and moves the rest of its range to huge pages once it has carved
- * SCR_SA_HUGE_AFTER bytes: only slices that already hold that much pay the
- * partial last huge page. The reservation is huge-page aligned so the
- * switch point and every slice start on a huge-page boundary. */
+ * so every size class in use (per arena, in worker executables) would cost
+ * up to 2 MiB more than it holds. A class therefore starts on small pages,
+ * and the chunks it takes once it has carved SCR_SA_HUGE_AFTER bytes use
+ * huge pages: only classes that already hold that much pay the partial last
+ * huge page. The window is huge-page aligned, so every chunk starts on a
+ * huge-page boundary. */
 #if defined(__linux__) && defined(MADV_HUGEPAGE) && defined(MADV_NOHUGEPAGE)
 #define SCR_SA_THP 1
 #define SCR_SA_HUGE_PAGE ((size_t)2 << 20)
@@ -69,41 +96,41 @@ static char scr_sa_thp_mode(void) {
 }
 #endif
 
-/* Core dumps. The reservation is tens of GiB of address space, almost none
+/* Core dumps. The window is tens of GiB of address space, almost none
  * of it ever touched. A core written to a file skips untouched pages, but a
  * core piped to a handler (a kernel.core_pattern of "|...", such as apport
  * or systemd-coredump) carries every page of a dumped mapping, untouched
  * ones as zeros, and RLIMIT_CORE does not bound it: an aborting program
- * would take seconds to minutes to die. The reservation is therefore mapped
- * MADV_DONTDUMP, and whenever the slow path raises a slice's bump limit,
- * the slice up to that limit becomes dumpable again (scr_sa_dumpable), so a
+ * would take seconds to minutes to die. The window is therefore mapped
+ * MADV_DONTDUMP, and whenever the slow path raises a chunk's bump limit,
+ * the chunk up to that limit becomes dumpable again (scr_sa_dumpable), so a
  * core still holds every carved block. Without pre-faulting, limits advance
  * in bounded steps for this (SCR_SA_DUMP_STEP on small pages, one huge page
- * past the switch point). The dumpable part ends on a grid that coarsens as
- * the slice grows (scr_sa_dump_edge): its untouched tail is at most
- * SCR_SA_DUMP_GRAIN or a quarter of what the slice has carved, and a slice
- * makes a few madvise calls per doubling, not one per step (each takes the
+ * on huge ones). The dumpable part ends on a grid that coarsens as the
+ * chunk fills (scr_sa_dump_edge): its untouched tail is at most
+ * SCR_SA_DUMP_GRAIN or a quarter of what the chunk has carved, and a chunk
+ * takes a few madvise calls per doubling, not one per step (each takes the
  * mmap lock for writing, which would wait for the pre-fault helper). Grid
  * points are huge-page aligned: a mapping boundary inside a huge page would
  * split it.
  *
- * Every slice a thread opens costs one of those calls, and the threads of a
- * worker executable open hundreds of slices as they start. So they are only
+ * Every chunk a thread opens costs one of those calls, and the threads of a
+ * worker executable open hundreds of chunks as they start. So they are only
  * made when the kernel would write a core of the process: when
  * kernel.core_pattern starts with '|' or '@' (a handler or a socket, which
  * ignore RLIMIT_CORE), or when RLIMIT_CORE is above 0. Both are read when
- * the reservation is mapped. Otherwise the whole reservation stays
+ * the window is mapped. Otherwise the whole window stays
  * MADV_DONTDUMP: a core written after RLIMIT_CORE is raised for the running
- * process (prlimit), or one taken with gdb's gcore, leaves out the slices. */
+ * process (prlimit), or one taken with gdb's gcore, leaves out the chunks. */
 #if defined(__linux__) && defined(MADV_DONTDUMP)
 #define SCR_SA_DUMP 1
 #define SCR_SA_DUMP_STEP ((size_t)1 << 20)
 #define SCR_SA_DUMP_GRAIN ((size_t)2 << 20) /* a multiple of the page size */
 #include <stdio.h>
 #include <sys/resource.h>
-/* Whether carved slices are made dumpable; set before the reservation is
+/* Whether carved chunks are made dumpable; set before the window is
  * published. */
-static bool scr_sa_dump_slices;
+static bool scr_sa_dump_chunks;
 
 /* Whether the kernel would write a core of this process (see above); true
  * when a setting cannot be read. */
@@ -118,7 +145,7 @@ static bool scr_sa_cores_written(void) {
 }
 #endif
 
-/* Maps span bytes of address space for slices (huge-page aligned where the
+/* Maps span bytes of address space for the window (huge-page aligned where the
  * policy above applies), or NULL. */
 static void *scr_sa_map(size_t span) {
   int flags = MAP_PRIVATE | MAP_ANON;
@@ -141,13 +168,13 @@ static void *scr_sa_map(size_t span) {
 #endif
 #ifdef SCR_SA_DUMP
   (void)madvise(p, span, MADV_DONTDUMP);
-  scr_sa_dump_slices = scr_sa_cores_written();
+  scr_sa_dump_chunks = scr_sa_cores_written();
 #endif
   return p;
 }
 
 #ifdef SCR_SA_DUMP
-/* The end of the dumpable part of the class slice [start, end) whose
+/* The end of the dumpable part of the chunk [start, end) whose
  * limit is p: p rounded up to a multiple of SCR_SA_DUMP_GRAIN or of a
  * quarter of the largest power of two at or below p - start, whichever is
  * larger (see above). Monotonic in p. */
@@ -161,7 +188,7 @@ static char *scr_sa_dump_edge(char *start, char *end, char *p) {
   return off < (size_t)(end - start) ? start + off : end;
 }
 
-/* The slice [start, end) raised its bump limit from lim to next: makes
+/* The chunk [start, end) raised its bump limit from lim to next: makes
  * the memory up to next dumpable (see above). */
 static void scr_sa_dumpable(char *start, char *end, char *lim, char *next) {
   char *lo = scr_sa_dump_edge(start, end, lim), *hi = scr_sa_dump_edge(start, end, next);
@@ -169,7 +196,7 @@ static void scr_sa_dumpable(char *start, char *end, char *lim, char *next) {
 }
 #endif
 
-/* Pre-faulting (Linux executables). First touch of a fresh slice page costs
+/* Pre-faulting (Linux executables). First touch of a fresh chunk page costs
  * a fault and a page clear on the allocating thread. With pre-faulting the
  * bump limits advance in steps, and each step asks a helper thread to fault
  * in the memory just ahead of it (MADV_POPULATE_WRITE: the kernel commits
@@ -178,8 +205,8 @@ static void scr_sa_dumpable(char *start, char *end, char *lim, char *next) {
  * not reached; the fast paths are unchanged. Small-page prefixes advance in
  * SCR_SA_PF_STEP chunks and fault one chunk ahead; huge-page ranges advance
  * in half huge pages and fault the next huge page once the bump is in the
- * second half of the current one, so a slice keeps at most about one step
- * of untouched committed memory. Nothing is faulted ahead before a slice
+ * second half of the current one, so a class keeps at most about one step
+ * of untouched committed memory. Nothing is faulted ahead before a class
  * reaches SCR_SA_PF_START: a lightly used class commits nothing extra.
  *
  * Worker threads fault ahead only once they have shown sustained
@@ -455,7 +482,7 @@ static void scr_sa_prefault(char *lo, char *hi) {
 #ifdef SCR_WORKERS
 /* The workers' budget (see above): bytes faulted ahead of all workers
  * that their limits have not reached. Per thread: whether it is the main
- * thread (0 not known yet, 1 main, 2 worker), bytes its slice limits have
+ * thread (0 not known yet, 1 main, 2 worker), bytes its class limits have
  * advanced, its share of the budget, and each class's range in flight. */
 static _Atomic(size_t) scr_sa_pf_workers_ahead;
 static _Thread_local int scr_sa_pf_role;
@@ -511,60 +538,6 @@ static void scr_sa_prefault_ahead(unsigned c, char *lo, char *hi) {
 #define scr_sa_prefault_ahead(c, lo, hi) scr_sa_prefault(lo, hi)
 #endif
 #endif
-
-/* The next bump limit of class c's slice [start, end) whose limit is lim
- * (< end): its small-page prefix ends at SCR_SA_HUGE_AFTER, where the rest
- * of the slice switches to huge pages. Limits advance in steps: the
- * pre-fault steps (see above), or else the core-dump steps (SCR_SA_DUMP). */
-static char *scr_sa_extend(unsigned c, char *start, char *lim, char *end) {
-  (void)c;
-#ifdef SCR_SA_THP
-  char *sw = start + SCR_SA_HUGE_AFTER;
-  bool tiered = (size_t)(end - start) > SCR_SA_HUGE_AFTER;
-#ifdef SCR_SA_PREFAULT
-  if (scr_sa_pf_on()) {
-    if (!tiered) return end;
-    if (lim < sw) {
-      char *next = lim + SCR_SA_PF_STEP < sw ? lim + SCR_SA_PF_STEP : sw;
-      scr_sa_pf_advance(c, lim, next);
-      if (next == sw) {
-        /* The last small-page chunk: switch the rest now, so the first huge
-         * page can be faulted ahead like every later one. */
-        (void)madvise(sw, (size_t)(end - sw), MADV_HUGEPAGE);
-        scr_sa_prefault_ahead(c, sw, sw + SCR_SA_HUGE_PAGE < end ? sw + SCR_SA_HUGE_PAGE : end);
-      } else if ((size_t)(next - start) >= SCR_SA_PF_START) {
-        scr_sa_prefault_ahead(c, next, next + SCR_SA_PF_STEP < sw ? next + SCR_SA_PF_STEP : sw);
-      }
-      return next;
-    }
-    char *next = lim + SCR_SA_PF_HUGE_STEP < end ? lim + SCR_SA_PF_HUGE_STEP : end;
-    scr_sa_pf_advance(c, lim, next);
-    /* Entering the second half of a huge page: fault the next one. */
-    if (((uintptr_t)next & (SCR_SA_HUGE_PAGE - 1)) == 0 && next < end)
-      scr_sa_prefault_ahead(c, next, next + SCR_SA_HUGE_PAGE < end ? next + SCR_SA_HUGE_PAGE : end);
-    return next;
-  }
-#endif
-  if (tiered && lim < sw) {
-#ifdef SCR_SA_DUMP
-    if ((size_t)(sw - lim) > SCR_SA_DUMP_STEP) return lim + SCR_SA_DUMP_STEP;
-#endif
-    return sw;
-  }
-  if (tiered && lim == sw) (void)madvise(sw, (size_t)(end - sw), MADV_HUGEPAGE);
-#ifdef SCR_SA_DUMP
-  if (tiered && (size_t)(end - lim) > SCR_SA_HUGE_PAGE) return lim + SCR_SA_HUGE_PAGE;
-#endif
-#else
-  (void)start;
-#ifdef SCR_SA_DUMP
-  if ((size_t)(end - lim) > SCR_SA_DUMP_STEP) return lim + SCR_SA_DUMP_STEP;
-#else
-  (void)lim;
-#endif
-#endif
-  return end;
-}
 
 /* Blocks above SCR_SA_MAX (array storage, hash tables, link pages, large
  * strings) come from glibc, whose heap and per-block mappings use small
@@ -805,11 +778,670 @@ static void scr_sa_large_note(void *p, size_t n) {
 #define SCR_SA_LARGE_NOTE(p, n) ((void)0)
 #endif
 
+/* ── the window ─────────────────────────────────────────────────────────
+ * Every small block comes from one reservation, the window (scr_rc.h),
+ * handed out in chunks of SCR_SA_CHUNK bytes: each arena carves a size
+ * class from a chunk of its own until the chunk is full, then takes another.
+ * On Linux the window lies in [4 GiB, 32 GiB), clear of executables loaded
+ * low and their heaps, and also holds the program-lifetime region (below);
+ * elsewhere it lies anywhere. Chunks come from the window's top with one
+ * atomic add, or from the chunks that discarded workers returned whole
+ * (scr_sa_spare). A host that refuses the whole window (valgrind limits the
+ * address space) gets a smaller one, down to SCR_SA_WINDOW_MIN; an exhausted
+ * or refused window leaves small blocks to the system allocator. */
+#ifdef SCR_WORKERS
+#define SCR_SA_ARENAS 32u
+#else
+#define SCR_SA_ARENAS 1u
+#endif
+/* Exited workers return memory (Linux; see scr_sa_trim below). */
+#if defined(SCR_WORKERS) && defined(__linux__) && defined(MADV_DONTNEED)
+#define SCR_SA_TRIM 1
+#endif
+#ifdef SCR_SA_WINDOW_TEST_CHUNKS
+/* The allocator's own test (scr_alloc.test.c) exhausts a small window. */
+#define SCR_SA_WINDOW_WANT ((size_t)SCR_SA_WINDOW_TEST_CHUNKS << SCR_SA_CHUNK_SHIFT)
+#define SCR_SA_WINDOW_MIN SCR_SA_WINDOW_WANT
+#else
+#define SCR_SA_WINDOW_WANT ((size_t)SCR_SA_WINDOW_CHUNKS << SCR_SA_CHUNK_SHIFT)
+#define SCR_SA_WINDOW_MIN ((size_t)1 << 30)
+#endif
+/* The chunks the window keeps past the classes' slices (8 GiB): large
+ * blocks, runs, the program-lifetime region and the classes that outgrow
+ * their slices. */
+#define SCR_SA_SLICE_ROOM 2048u
+static char *scr_sa_window;        /* the window's start once reserved (atomic) */
+static size_t scr_sa_window_chunks; /* the chunks it holds, set before the start */
+static size_t scr_sa_window_top;    /* chunks handed out from the top (atomic) */
+static bool scr_sa_window_refused;
+static char scr_sa_window_lock; /* the reservation and the spare chunks */
+#ifdef SCR_SA_TRIM
+static uint16_t scr_sa_spare[SCR_SA_WINDOW_CHUNKS]; /* chunk indices returned whole */
+static size_t scr_sa_nspare;
+#endif
+
+/* Takes a lock that guards a few stores. A waiter yields its processor:
+ * the holder may be descheduled, and under valgrind, which runs one thread
+ * at a time, a waiter that only spins can keep the holder from running. */
+static void scr_sa_spin_take(char *lock) {
+  while (__atomic_test_and_set(lock, __ATOMIC_ACQUIRE)) sched_yield();
+}
+
+static void scr_sa_window_lock_take(void) { scr_sa_spin_take(&scr_sa_window_lock); }
+
+static void scr_sa_window_lock_drop(void) { __atomic_clear(&scr_sa_window_lock, __ATOMIC_RELEASE); }
+
+#ifdef __linux__
+/* Maps `size` bytes at `at` exactly, as scr_sa_map does anywhere; NULL if
+ * refused. */
+static char *scr_sa_map_at(void *at, size_t size) {
+  int flags = MAP_PRIVATE | MAP_ANON | MAP_NORESERVE;
+#ifdef MAP_FIXED_NOREPLACE
+  flags |= MAP_FIXED_NOREPLACE;
+#endif
+  char *p = mmap(at, size, PROT_READ | PROT_WRITE, flags, -1, 0);
+  if (p == MAP_FAILED) return NULL;
+  if (p != (char *)at) {
+    /* The system took `at` as a hint only (no MAP_FIXED_NOREPLACE). */
+    (void)munmap(p, size);
+    return NULL;
+  }
+#ifdef SCR_SA_THP
+  (void)madvise(p, size, MADV_NOHUGEPAGE);
+#endif
+#ifdef SCR_SA_DUMP
+  (void)madvise(p, size, MADV_DONTDUMP);
+  scr_sa_dump_chunks = scr_sa_cores_written();
+#endif
+  return p;
+}
+#endif
+
+/* Reserves the window once per process; whether it exists. */
+static bool scr_sa_window_reserve(void) {
+  if (__atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE)) return true;
+  scr_sa_window_lock_take();
+  if (!scr_sa_window && !scr_sa_window_refused) {
+    char *p = NULL;
+    size_t size = 0;
+#ifdef __linux__
+    for (size_t start = (size_t)4 << 30; !p && start <= (size_t)16 << 30; start *= 2) {
+      size = ((size_t)32 << 30) - start;
+      if (size > SCR_SA_WINDOW_WANT) size = SCR_SA_WINDOW_WANT;
+      while (size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map_at((void *)start, size))) size /= 2;
+    }
+#endif
+    if (!p)
+      for (size = SCR_SA_WINDOW_WANT; size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map(size));) size /= 2;
+    if (p) {
+      scr_sa_window_chunks = size >> SCR_SA_CHUNK_SHIFT;
+#ifndef SCR_WORKERS
+      /* The classes' slices come first, when they leave the rest of the
+       * window at least SCR_SA_SLICE_ROOM chunks. */
+      if (scr_sa_window_chunks >= (size_t)SCR_SA_NCLASS * SCR_SA_SLICE_CHUNKS + SCR_SA_SLICE_ROOM) {
+        scr_sa_window_top = (size_t)SCR_SA_NCLASS * SCR_SA_SLICE_CHUNKS;
+        scr_sa_slice_span = (uintptr_t)SCR_SA_NCLASS * SCR_SA_SLICE_CHUNKS << SCR_SA_CHUNK_SHIFT;
+      }
+#endif
+      if ((uintptr_t)p + size <= (uintptr_t)SCR_SA_MAP_CHUNKS << SCR_SA_CHUNK_SHIFT)
+        scr_sa_map_first = (uintptr_t)p >> SCR_SA_CHUNK_SHIFT;
+      __atomic_store_n(&scr_sa_window, p, __ATOMIC_RELEASE);
+    } else {
+      scr_sa_window_refused = true;
+    }
+  }
+  scr_sa_window_lock_drop();
+  return __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE) != NULL;
+}
+
+/* Takes n contiguous chunks for `owner` (their chunk-table entry); NULL
+ * when the window has no room left. */
+static char *scr_sa_chunk_take(size_t n, uint16_t owner) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  if (!w) return NULL;
+  size_t i = SIZE_MAX;
+#ifdef SCR_SA_TRIM
+  if (n == 1 && __atomic_load_n(&scr_sa_nspare, __ATOMIC_RELAXED)) {
+    scr_sa_window_lock_take();
+    if (scr_sa_nspare) i = scr_sa_spare[--scr_sa_nspare];
+    scr_sa_window_lock_drop();
+  }
+#endif
+  if (i == SIZE_MAX) {
+    i = __atomic_fetch_add(&scr_sa_window_top, n, __ATOMIC_RELAXED);
+    if (i >= scr_sa_window_chunks || n > scr_sa_window_chunks - i) return NULL;
+  }
+  for (size_t k = 0; k < n; k++) scr_sa_chunk_set(i + k, owner);
+  return w + (i << SCR_SA_CHUNK_SHIFT);
+}
+
+/* The next chunk of small class c: in a program without workers, the next
+ * chunk of the class's slice (scr_rc.h) while it has one, else a chunk from
+ * the window's top or the spare chunks. */
+#ifndef SCR_WORKERS
+static size_t scr_sa_slice_next[SCR_SA_NCLASS]; /* chunks taken from each slice */
+#endif
+static char *scr_sa_class_chunk_take(unsigned c) {
+#ifndef SCR_WORKERS
+  if (scr_sa_slice_span && scr_sa_slice_next[c] < SCR_SA_SLICE_CHUNKS) {
+    size_t i = (size_t)c * SCR_SA_SLICE_CHUNKS + scr_sa_slice_next[c]++;
+    scr_sa_chunk_set(i, (uint16_t)(scr_sa.tag | c));
+    return scr_sa_window + (i << SCR_SA_CHUNK_SHIFT);
+  }
+#endif
+  return scr_sa_chunk_take(1, (uint16_t)(scr_sa.tag | c));
+}
+
+#ifdef SCR_SA_TRIM
+/* Returns chunk p, whose pages went back already, for any owner to take.
+ * The spare list has room for every chunk of the window. */
+static void scr_sa_chunk_give(char *p) {
+  size_t i = (size_t)(p - scr_sa_window) >> SCR_SA_CHUNK_SHIFT;
+  scr_sa_chunk_set(i, 0);
+  scr_sa_window_lock_take();
+  scr_sa_spare[scr_sa_nspare] = (uint16_t)i;
+  __atomic_store_n(&scr_sa_nspare, scr_sa_nspare + 1, __ATOMIC_RELAXED);
+  scr_sa_window_lock_drop();
+}
+#endif
+
+#ifdef SCR_WORKERS
+/* The chunk-table entry of the chunk holding p: 0 outside the window and
+ * for chunks that hold no small blocks. */
+static inline unsigned scr_sa_owner(const void *p) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  uintptr_t off = (uintptr_t)p - (uintptr_t)w;
+  if (!w || off >= (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) return 0;
+  return scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
+}
+#endif
+
+/* The start of the chunk holding p, a pointer into the window. */
+static inline char *scr_sa_chunk_of(const void *p) {
+  return scr_sa_window + (((uintptr_t)p - (uintptr_t)scr_sa_window) & ~(uintptr_t)(SCR_SA_CHUNK - 1));
+}
+
+/* Whether p is a block of the window: small, large or run, of the calling
+ * thread's arena or another's. */
+static inline bool scr_sa_in_window(const void *p) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  uintptr_t off = (uintptr_t)p - (uintptr_t)w;
+  return w && off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT;
+}
+
+/* Per arena and class: the chunk the class carves now (NULL before its
+ * first), how many chunks it has taken, that one included, and the chunk it
+ * continues in, taken ahead while the current one fills so that the pre-fault
+ * helper faults its first pages before the class reaches them (NULL until
+ * then; see scr_sa_extend). */
+typedef struct {
+  char *start;
+  uint32_t chunks;
+  char *next;
+} ScrSaCarve;
+static ScrSaCarve scr_sa_carve[SCR_SA_ARENAS][SCR_SA_NCLASS];
+#ifdef SCR_WORKERS
+static _Thread_local int scr_sa_arena = -1; /* the calling thread's arena, or -1 */
+#define SCR_SA_ARENA_NOW ((unsigned)scr_sa_arena)
+#else
+#define SCR_SA_ARENA_NOW 0u
+#endif
+
+/* The bytes of a full chunk of blocks of `sz` bytes. */
+static inline size_t scr_sa_chunk_bytes(size_t sz) { return SCR_SA_CHUNK / sz * sz; }
+
+/* ── large blocks in the window ─────────────────────────────────────────
+ * Blocks above SCR_SA_MAX that a 32-bit reference may name (strings with
+ * their characters, class instances, records and closures; scr_mem_alloc_ref
+ * in scr_rc.h) come from the window too, so that every object an object
+ * field can point at lies below 32 GiB. Other large blocks (array element
+ * storage, hash tables) stay with the system allocator.
+ * - Up to SCR_SA_LARGE_MAX: SCR_SA_NLARGE classes, four per power of two
+ *   from 640 bytes, carved by each arena from chunks of its own like the
+ *   small classes. Their chunk-table entry is SCR_SA_LARGE_TAG | tag | class,
+ *   which no arena's tag xors to below 256, so the inline free leaves them
+ *   to scr_sa_free_foreign. A block freed by another thread goes to its
+ *   arena's remote list like a small block.
+ * - Larger: runs of whole chunks (entry SCR_SA_RUN_HEAD, then
+ *   SCR_SA_RUN_NEXT), which any thread returns to the window when it frees
+ *   the block.
+ * - A free large block keeps its first page; scr_sa_large_trim returns the
+ *   rest of its pages (the trim points of scr_sa_trim, scr_heap_trim). */
+#define SCR_SA_LARGE_MAX ((size_t)2 << 20)
+/* The size past which a growing block (scr_mem_realloc_ref) takes a run. */
+#define SCR_SA_GROW_RUN ((size_t)128 << 10)
+#define SCR_SA_NLARGE 48u
+#define SCR_SA_LARGE_TAG 0x8000u
+#define SCR_SA_RUN_HEAD 0xff00u
+#define SCR_SA_RUN_NEXT 0xff01u
+
+/* The block size of large class c: 512 * 2^(c / 4) * (1 + (c % 4 + 1) / 4). */
+static inline size_t scr_sa_large_size(unsigned c) {
+  size_t base = (size_t)SCR_SA_MAX << (c >> 2);
+  return base + (base >> 2) * ((c & 3) + 1);
+}
+
+/* The large class of a block of n bytes, SCR_SA_MAX < n <= SCR_SA_LARGE_MAX. */
+static inline unsigned scr_sa_large_class(size_t n) {
+  unsigned k = 0;
+  size_t base = SCR_SA_MAX;
+  while (base * 2 < n) {
+    base *= 2;
+    k++;
+  }
+  size_t step = base >> 2;
+  return k * 4 + (unsigned)((n - base + step - 1) / step) - 1;
+}
+
+/* Per arena and large class: free blocks whose pages are all present, free
+ * blocks whose pages past the first went back (scr_sa_large_trim), and the
+ * carve frontier in the class's current chunk. */
+typedef struct {
+  ScrSaBlock *free[SCR_SA_NLARGE], *trimmed[SCR_SA_NLARGE];
+  char *bump[SCR_SA_NLARGE], *lim[SCR_SA_NLARGE];
+  size_t carved; /* bytes carved, every class (scr_sa_carved) */
+} ScrSaLarge;
+static ScrSaLarge scr_sa_large[SCR_SA_ARENAS];
+
+/* Runs: the chunks of the run that starts at each head chunk, and the runs
+ * returned to the window, which later runs reuse first fit (under the window
+ * lock). Up to SCR_SA_RUN_KEEP chunks of freed runs keep their pages
+ * (`dirty`), so that a program that builds and drops large strings in turn
+ * reuses resident memory instead of faulting it in again, as the system
+ * allocator's heap does; the runs taken first are those. The pages of the
+ * others went back, so they read as zero; the trim points return the kept
+ * pages too (scr_sa_large_trim). */
+#define SCR_SA_RUN_KEEP 16u
+static uint16_t scr_sa_run_chunks[SCR_SA_WINDOW_CHUNKS];
+typedef struct {
+  uint16_t start, n;
+  bool dirty;
+} ScrSaFreeRun;
+static ScrSaFreeRun scr_sa_free_runs[SCR_SA_WINDOW_CHUNKS];
+static size_t scr_sa_nfree_runs;
+static size_t scr_sa_dirty_chunks; /* chunks of the dirty free runs */
+
+/* Returns the pages of [lo, hi) to the system; they read as zero again. */
+static void scr_sa_pages_return(char *lo, char *hi) {
+#if defined(__linux__) && defined(MADV_DONTNEED)
+  if (hi > lo) (void)madvise(lo, (size_t)(hi - lo), MADV_DONTNEED);
+#else
+  if (hi > lo) memset(lo, 0, (size_t)(hi - lo));
+#endif
+}
+
+/* A run of n chunks for a block of `bytes` bytes, zeroed when `zero`, from a
+ * returned run (a dirty one first) or the window's top; NULL when the window
+ * has no room. */
+static char *scr_sa_run_take(size_t n, size_t bytes, bool zero) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  if (!w || n > 0xffff) return NULL;
+  size_t i = SIZE_MAX, pick = SIZE_MAX;
+  bool dirty = false;
+  scr_sa_window_lock_take();
+  for (size_t k = 0; k < scr_sa_nfree_runs; k++)
+    if (scr_sa_free_runs[k].n >= n && (pick == SIZE_MAX || (scr_sa_free_runs[k].dirty && !dirty))) {
+      pick = k;
+      dirty = scr_sa_free_runs[k].dirty;
+      if (dirty) break;
+    }
+  if (pick != SIZE_MAX) {
+    ScrSaFreeRun *r = &scr_sa_free_runs[pick];
+    i = r->start;
+    r->start = (uint16_t)(i + n);
+    r->n = (uint16_t)(r->n - n);
+    if (dirty) scr_sa_dirty_chunks -= n;
+    if (!r->n) *r = scr_sa_free_runs[--scr_sa_nfree_runs];
+  }
+  scr_sa_window_lock_drop();
+  if (dirty && zero) memset(w + (i << SCR_SA_CHUNK_SHIFT), 0, bytes);
+  if (i == SIZE_MAX) {
+    i = __atomic_fetch_add(&scr_sa_window_top, n, __ATOMIC_RELAXED);
+    if (i >= scr_sa_window_chunks || n > scr_sa_window_chunks - i) return NULL;
+  }
+  scr_sa_run_chunks[i] = (uint16_t)n;
+  scr_sa_chunk_set(i, (uint16_t)SCR_SA_RUN_HEAD);
+  for (size_t k = 1; k < n; k++) scr_sa_chunk_set(i + k, (uint16_t)SCR_SA_RUN_NEXT);
+  return w + (i << SCR_SA_CHUNK_SHIFT);
+}
+
+/* Frees the block at the head of a run: its pages go back and the run
+ * returns to the window, merged with a returned run that ends where it
+ * starts or starts where it ends. */
+static void scr_sa_run_release(char *p, bool clean) {
+  size_t i = (size_t)(p - scr_sa_window) >> SCR_SA_CHUNK_SHIFT, n = scr_sa_run_chunks[i];
+  for (size_t k = 0; k < n; k++) scr_sa_chunk_set(i + k, 0);
+  scr_sa_window_lock_take();
+  bool dirty = !clean && scr_sa_dirty_chunks + n <= SCR_SA_RUN_KEEP;
+  if (dirty) scr_sa_dirty_chunks += n;
+  scr_sa_window_lock_drop();
+  if (!dirty && !clean) scr_sa_pages_return(p, p + (n << SCR_SA_CHUNK_SHIFT));
+  scr_sa_window_lock_take();
+  size_t at = SIZE_MAX;
+  for (size_t k = 0; k < scr_sa_nfree_runs; k++) {
+    ScrSaFreeRun *r = &scr_sa_free_runs[k];
+    if (r->dirty == dirty && ((size_t)r->start + r->n == i || i + n == r->start)) {
+      if (r->start > i) r->start = (uint16_t)i;
+      r->n = (uint16_t)(r->n + n);
+      at = k;
+      break;
+    }
+  }
+  if (at == SIZE_MAX) scr_sa_free_runs[scr_sa_nfree_runs++] = (ScrSaFreeRun){(uint16_t)i, (uint16_t)n, dirty};
+  scr_sa_window_lock_drop();
+}
+
+static void scr_sa_run_free(char *p) { scr_sa_run_release(p, false); }
+
+/* Returns the pages of the dirty free runs (under the window lock, so that
+ * no run is taken while its pages go back). */
+static void scr_sa_runs_trim(void) {
+  if (!__atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE)) return;
+  scr_sa_window_lock_take();
+  for (size_t k = 0; k < scr_sa_nfree_runs; k++) {
+    ScrSaFreeRun *r = &scr_sa_free_runs[k];
+    if (!r->dirty) continue;
+    char *lo = scr_sa_window + ((size_t)r->start << SCR_SA_CHUNK_SHIFT);
+    scr_sa_pages_return(lo, lo + ((size_t)r->n << SCR_SA_CHUNK_SHIFT));
+    r->dirty = false;
+  }
+  scr_sa_dirty_chunks = 0;
+  scr_sa_window_lock_drop();
+}
+
+/* The bytes of the window block p with chunk-table entry e (large class or
+ * run head), or 0 for any other entry. */
+static size_t scr_sa_large_bytes(const void *p, unsigned e) {
+  if (e == SCR_SA_RUN_HEAD)
+    return (size_t)scr_sa_run_chunks[((uintptr_t)p - (uintptr_t)scr_sa_window) >> SCR_SA_CHUNK_SHIFT]
+           << SCR_SA_CHUNK_SHIFT;
+  if ((e & SCR_SA_LARGE_TAG) && e < SCR_SA_RUN_HEAD) return scr_sa_large_size(e & 0xff);
+  return 0;
+}
+
+/* Puts large block b of class c on arena i's free list. The arena's owner
+ * only (or a drain of its remote list). */
+static inline void scr_sa_large_push(unsigned i, ScrSaBlock *b, unsigned c) {
+  b->next = scr_sa_large[i].free[c];
+  scr_sa_large[i].free[c] = b;
+}
+
+/* Returns the pages of the calling thread's free large blocks, past each
+ * block's first page (which keeps the free-list link). */
+static void scr_sa_runs_trim(void);
+static void scr_sa_large_trim(void) {
+#if defined(__linux__) && defined(MADV_DONTNEED)
+  scr_sa_runs_trim();
+  if (!scr_sa.span) return;
+  ScrSaLarge *l = &scr_sa_large[SCR_SA_ARENA_NOW];
+  long page = sysconf(_SC_PAGESIZE);
+  uintptr_t pg = page > 0 ? (uintptr_t)page : 4096;
+  for (unsigned c = 0; c < SCR_SA_NLARGE; c++) {
+    size_t sz = scr_sa_large_size(c);
+    if (sz < 2 * pg) {
+      continue;
+    }
+    while (l->free[c]) {
+      ScrSaBlock *b = l->free[c];
+      l->free[c] = b->next;
+      char *lo = (char *)(((uintptr_t)b + pg) & ~(pg - 1)), *hi = (char *)(((uintptr_t)b + sz) & ~(pg - 1));
+      scr_sa_pages_return(lo, hi);
+      b->next = l->trimmed[c];
+      l->trimmed[c] = b;
+    }
+  }
+#endif
+}
+
+/* The bytes class c of the calling thread's arena has carved, up to its
+ * frontier `top` in its current chunk. */
+static size_t scr_sa_class_carved(unsigned c, const char *top) {
+  const ScrSaCarve *k = &scr_sa_carve[SCR_SA_ARENA_NOW][c];
+  if (!k->start) return 0;
+  return (size_t)(k->chunks - 1) * scr_sa_chunk_bytes(scr_sa_class_size(c)) + (size_t)(top - k->start);
+}
+
+/* The chunks of class c of the calling thread's arena, in address order,
+ * into `out` (room for SCR_SA_WINDOW_CHUNKS); their count. */
+static size_t scr_sa_class_chunks(unsigned c, uint32_t *out) {
+  unsigned owner = scr_sa.tag | c;
+  size_t top = __atomic_load_n(&scr_sa_window_top, __ATOMIC_RELAXED), n = 0;
+  if (top > scr_sa_window_chunks) top = scr_sa_window_chunks;
+  for (size_t i = 0; i < top; i++)
+    if (__atomic_load_n(&scr_sa_chunks[i], __ATOMIC_RELAXED) == owner) out[n++] = (uint32_t)i;
+  return n;
+}
+
+#if defined(__linux__) && defined(MADV_DONTNEED)
+/* The free blocks of class c, marked in one bitmap per chunk of the class
+ * (`chunks`, in address order): a block's bit is word (slot * words + k / 64)
+ * for its index k in its chunk. Shared by the exit trim and scr_heap_trim. */
+typedef struct {
+  uint32_t *chunks;  /* chunk indices, in address order */
+  size_t n;          /* chunks */
+  size_t words;      /* bitmap words per chunk */
+  uint64_t *bits;
+  uint16_t *slot;    /* chunk index -> its position in `chunks` + 1 */
+} ScrSaMarks;
+
+/* Sets up `m` for class c of the calling thread's arena; false when it has
+ * no chunks or the bitmaps cannot be mapped. */
+static bool scr_sa_marks_open(ScrSaMarks *m, unsigned c) {
+  memset(m, 0, sizeof *m);
+  size_t sz = scr_sa_class_size(c);
+  size_t idx = SCR_SA_WINDOW_CHUNKS * sizeof *m->chunks, map = SCR_SA_WINDOW_CHUNKS * sizeof *m->slot;
+  char *meta = mmap(NULL, idx + map, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (meta == MAP_FAILED) return false;
+  m->chunks = (uint32_t *)meta;
+  m->slot = (uint16_t *)(meta + idx);
+  m->n = scr_sa_class_chunks(c, m->chunks);
+  m->words = (SCR_SA_CHUNK / sz + 63) / 64;
+  if (m->n) {
+    m->bits = mmap(NULL, m->n * m->words * 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (m->bits == MAP_FAILED) m->bits = NULL;
+  }
+  if (!m->bits) {
+    (void)munmap(meta, idx + map);
+    return false;
+  }
+  for (size_t j = 0; j < m->n; j++) m->slot[m->chunks[j]] = (uint16_t)(j + 1);
+  return true;
+}
+
+static void scr_sa_marks_close(ScrSaMarks *m) {
+  if (m->bits) (void)munmap(m->bits, m->n * m->words * 8);
+  (void)munmap(m->chunks, SCR_SA_WINDOW_CHUNKS * (sizeof *m->chunks + sizeof *m->slot));
+}
+
+/* The bit word and mask of block p of `sz` bytes, or NULL for a pointer
+ * outside the class's chunks. */
+static inline uint64_t *scr_sa_mark(const ScrSaMarks *m, const void *p, size_t sz, uint64_t *mask) {
+  size_t i = (size_t)((char *)p - scr_sa_window) >> SCR_SA_CHUNK_SHIFT;
+  if ((uintptr_t)((char *)p - scr_sa_window) >= (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT ||
+      !m->slot[i])
+    return NULL;
+  size_t k = (size_t)((char *)p - scr_sa_chunk_of(p)) / sz;
+  *mask = (uint64_t)1 << (k % 64);
+  return &m->bits[(size_t)(m->slot[i] - 1) * m->words + k / 64];
+}
+
+/* Relinks the marked blocks of class c into its free list, in address
+ * order. */
+static void scr_sa_marks_relink(const ScrSaMarks *m, unsigned c) {
+  size_t sz = scr_sa_class_size(c);
+  ScrSaBlock *head = NULL, **tail = &head;
+  for (size_t j = 0; j < m->n; j++) {
+    char *start = scr_sa_window + ((size_t)m->chunks[j] << SCR_SA_CHUNK_SHIFT);
+    const uint64_t *bits = &m->bits[j * m->words];
+    for (size_t w = 0; w < m->words; w++)
+      for (uint64_t x = bits[w]; x; x &= x - 1) {
+        ScrSaBlock *b = (ScrSaBlock *)(start + (w * 64 + (size_t)__builtin_ctzll(x)) * sz);
+        *tail = b;
+        tail = &b->next;
+      }
+  }
+  *tail = NULL;
+  scr_sa.free[c] = head;
+}
+
+/* For each chunk of the marks, returns (MADV_DONTNEED) the whole pages below
+ * its frontier whose blocks are all marked, and unmarks the blocks that
+ * overlap them; `top` is the class's frontier in its current chunk. Each run
+ * of returned pages goes to `found` (the lowest and highest whole block in
+ * it) when it is not NULL; the bytes returned are the result. */
+static size_t scr_sa_marks_return(ScrSaMarks *m, unsigned c, char *top, size_t page,
+                                  bool (*found)(void *, char *, char *), void *ctx) {
+  size_t sz = scr_sa_class_size(c), returned = 0;
+  char *current = scr_sa_carve[SCR_SA_ARENA_NOW][c].start;
+  for (size_t j = 0; j < m->n; j++) {
+    char *start = scr_sa_window + ((size_t)m->chunks[j] << SCR_SA_CHUNK_SHIFT);
+    char *ctop = start == current ? top : start + scr_sa_chunk_bytes(sz);
+    size_t nblocks = (size_t)(ctop - start) / sz;
+    if (!nblocks) continue;
+    uint64_t *bits = &m->bits[j * m->words];
+#define SCR_SA_BIT(k) ((bits[(k) / 64] >> ((k) % 64)) & 1)
+    uintptr_t first = ((uintptr_t)start + page - 1) & ~(uintptr_t)(page - 1);
+    uintptr_t last = (uintptr_t)ctop & ~(uintptr_t)(page - 1);
+    char *run = NULL;
+    for (uintptr_t pg = first; pg <= last; pg += page) {
+      bool empty = false;
+      if (pg < last) {
+        size_t k0 = (size_t)((char *)pg - start) / sz;
+        size_t k1 = (size_t)((char *)pg + page - 1 - start) / sz;
+        if (k1 >= nblocks) k1 = nblocks - 1;
+        empty = true;
+        for (size_t k = k0; k <= k1 && empty; k++) empty = SCR_SA_BIT(k);
+      }
+      if (empty && !run) run = (char *)pg;
+      if (!empty && run) {
+        (void)madvise(run, (size_t)((char *)pg - run), MADV_DONTNEED);
+        returned += (size_t)((char *)pg - run);
+        /* Blocks wholly inside the returned pages leave the free list. */
+        char *lo = start + ((size_t)(run - start) + sz - 1) / sz * sz;
+        char *hi = start + ((size_t)((char *)pg - start) / sz) * sz;
+        if (hi > lo && found) (void)found(ctx, lo, hi);
+        for (char *q = lo; q < hi; q += sz) {
+          size_t k = (size_t)(q - start) / sz;
+          bits[k / 64] &= ~((uint64_t)1 << (k % 64));
+        }
+        /* A block starting in the returned pages but ending on a kept one is
+         * dropped: relinking it would fault its page back in. */
+        if (hi < (char *)pg && hi >= run) {
+          size_t k = (size_t)(hi - start) / sz;
+          bits[k / 64] &= ~((uint64_t)1 << (k % 64));
+        }
+        run = NULL;
+      }
+    }
+#undef SCR_SA_BIT
+  }
+  return returned;
+}
+#endif
+
+/* The next bump limit of class c in its chunk [k->start, end), whose limit
+ * is lim (< end). A class's first SCR_SA_HUGE_AFTER bytes of chunks stay on
+ * small pages, and every later chunk is advised huge pages when the class
+ * opens it (scr_sa_open). Limits advance in steps: the pre-fault steps (see
+ * above), or else the core-dump steps (SCR_SA_DUMP). */
+#ifdef SCR_SA_TRIM
+typedef struct ScrSaKeep ScrSaKeep;
+static _Thread_local ScrSaKeep *scr_sa_keep; /* while the worker's memory is kept apart */
+static void scr_sa_keep_opened(ScrSaKeep *k, const char *chunk);
+#endif
+
+#if defined(SCR_SA_THP) && defined(SCR_SA_PREFAULT)
+/* Takes class c's next chunk ahead, when its current one is about to fill,
+ * and has the helper fault its first pages: the first huge page where the
+ * chunk will use huge pages, else the first pre-fault step. A worker that
+ * keeps its memory apart takes its chunks when it needs them, since it
+ * returns only the chunks it opened. */
+static void scr_sa_take_ahead(unsigned c, ScrSaCarve *k) {
+  if (k->next) return;
+#ifdef SCR_SA_TRIM
+  if (scr_sa_keep) return;
+#endif
+  char *chunk = scr_sa_class_chunk_take(c);
+  if (!chunk) return;
+  k->next = chunk;
+  if (k->chunks + 1 > SCR_SA_HUGE_AFTER / SCR_SA_CHUNK) {
+    (void)madvise(chunk, SCR_SA_CHUNK, MADV_HUGEPAGE);
+    scr_sa_prefault_ahead(c, chunk, chunk + SCR_SA_HUGE_PAGE);
+  } else if ((size_t)k->chunks * SCR_SA_CHUNK >= SCR_SA_PF_START) {
+    scr_sa_prefault_ahead(c, chunk, chunk + SCR_SA_PF_STEP);
+  }
+}
+#endif
+
+static char *scr_sa_extend(unsigned c, ScrSaCarve *k, char *lim, char *end) {
+  (void)c;
+#ifdef SCR_SA_THP
+  bool huge = k->chunks > SCR_SA_HUGE_AFTER / SCR_SA_CHUNK;
+#ifdef SCR_SA_PREFAULT
+  if (scr_sa_pf_on()) {
+    if (!huge) {
+      char *next = lim + SCR_SA_PF_STEP < end ? lim + SCR_SA_PF_STEP : end;
+      scr_sa_pf_advance(c, lim, next);
+      size_t carved = (size_t)(k->chunks - 1) * SCR_SA_CHUNK + (size_t)(next - k->start);
+      if (carved >= SCR_SA_PF_START && next < end)
+        scr_sa_prefault_ahead(c, next, next + SCR_SA_PF_STEP < end ? next + SCR_SA_PF_STEP : end);
+      /* The last step of the chunk: fault the next one's start. */
+      if (next == end) scr_sa_take_ahead(c, k);
+      return next;
+    }
+    char *next = lim + SCR_SA_PF_HUGE_STEP < end ? lim + SCR_SA_PF_HUGE_STEP : end;
+    scr_sa_pf_advance(c, lim, next);
+    /* Entering the second half of a huge page: fault the next one, in the
+     * next chunk at the end of this one. */
+    if (((uintptr_t)next & (SCR_SA_HUGE_PAGE - 1)) == 0) {
+      if (next < end) scr_sa_prefault_ahead(c, next, next + SCR_SA_HUGE_PAGE < end ? next + SCR_SA_HUGE_PAGE : end);
+    } else if (next + SCR_SA_PF_HUGE_STEP >= end) {
+      scr_sa_take_ahead(c, k);
+    }
+    return next;
+  }
+#endif
+#ifdef SCR_SA_DUMP
+  size_t step = huge ? SCR_SA_HUGE_PAGE : SCR_SA_DUMP_STEP;
+  if ((size_t)(end - lim) > step) return lim + step;
+#endif
+#else
+  (void)k;
+#ifdef SCR_SA_DUMP
+  if ((size_t)(end - lim) > SCR_SA_DUMP_STEP) return lim + SCR_SA_DUMP_STEP;
+#else
+  (void)lim;
+#endif
+#endif
+  return end;
+}
+
+/* Class c of the calling thread's arena continues in `chunk`, a new one:
+ * past the class's first SCR_SA_HUGE_AFTER bytes it is advised huge pages,
+ * and its first huge page is faulted ahead, unless the chunk was taken ahead
+ * (`ahead`), which did both already. */
+static void scr_sa_open(unsigned c, ScrSaCarve *k, char *chunk, bool ahead) {
+  (void)c;
+  k->start = chunk;
+  k->chunks++;
+#ifdef SCR_SA_THP
+  if (!ahead && k->chunks > SCR_SA_HUGE_AFTER / SCR_SA_CHUNK) {
+    (void)madvise(chunk, SCR_SA_CHUNK, MADV_HUGEPAGE);
+#ifdef SCR_SA_PREFAULT
+    if (scr_sa_pf_on()) scr_sa_prefault_ahead(c, chunk, chunk + SCR_SA_HUGE_PAGE);
+#endif
+  }
+#endif
+#ifdef SCR_SA_TRIM
+  if (scr_sa_keep) scr_sa_keep_opened(scr_sa_keep, chunk);
+#endif
+}
+
+
 #ifdef SCR_WORKERS
 #include <pthread.h>
 #include <stdatomic.h>
 #if defined(__linux__) && defined(MADV_DONTNEED)
-#define SCR_SA_TRIM 1
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
@@ -818,62 +1450,13 @@ static void scr_sa_large_note(void *p, size_t n) {
 #endif
 #endif
 
-/* Per-thread arenas (contract in scr_runtime.h). The region is reserved
- * once; arena i spans [region + i * arena_span, + arena_span) and is split
- * into class slices exactly like the single-threaded reservation. */
-#define SCR_SA_ARENAS 32u
-#define SCR_SA_MIN_ARENAS 4u /* the fewest arenas a limited host gets before smaller slices */
-static pthread_mutex_t scr_sa_region_lock = PTHREAD_MUTEX_INITIALIZER;
-static _Atomic(uintptr_t) scr_sa_region; /* 0 until reserved */
-static uintptr_t scr_sa_arena_span;
-static unsigned scr_sa_region_shift;
-static unsigned scr_sa_region_arenas; /* arenas the region holds, a power of two */
-static bool scr_sa_region_refused;
+/* Per-thread arenas (contract in scr_runtime.h): arena i is the chunks of
+ * the window whose table entry carries tag i + 1. */
 static _Atomic(uint32_t) scr_sa_claimed;              /* one bit per arena */
 static ScrSaState scr_sa_parked[SCR_SA_ARENAS];         /* unowned arenas */
 static _Atomic(ScrSaBlock *) scr_sa_remote[SCR_SA_ARENAS]; /* foreign frees */
-static _Thread_local int scr_sa_arena = -1;
 static _Thread_local bool scr_sa_refused; /* this thread got no arena */
 _Static_assert(SCR_SA_ARENAS <= 32, "one claim bit per arena");
-
-static bool scr_sa_reserve_region(void) {
-  pthread_mutex_lock(&scr_sa_region_lock);
-  if (!atomic_load_explicit(&scr_sa_region, memory_order_acquire) && !scr_sa_region_refused) {
-    /* Same per-class slice ladder as the single-threaded reservation, for
-     * every arena at once. A host that limits address space (valgrind maps
-     * at most 56 GiB) gets fewer arenas before smaller slices, down to
-     * SCR_SA_MIN_ARENAS, and fewer still only when no slice size fits that
-     * many. A slice that fills falls back to the system, so with smaller
-     * slices a program that keeps many objects of one class makes system
-     * allocations that a run with full slices does not, and a profile taken
-     * under the limit counts them. At least SCR_SA_MIN_ARENAS arenas are
-     * kept because threads claim them in the order they first allocate:
-     * the main thread keeps its arena, and a thread that starts later reuses
-     * one that another thread parked. Threads beyond the arenas reserved use
-     * the system allocator. */
-    for (unsigned least = SCR_SA_MIN_ARENAS; least >= 1 && !scr_sa_region_arenas; least /= 2) {
-      for (unsigned shift = 30; shift >= 22 && !scr_sa_region_arenas; shift -= 2) {
-        for (unsigned arenas = least == SCR_SA_MIN_ARENAS ? SCR_SA_ARENAS : least; arenas >= least;
-             arenas /= 2) {
-          size_t arena = (size_t)SCR_SA_NCLASS << shift;
-          void *p = scr_sa_map(arena * arenas);
-          if (!p) continue;
-          scr_sa_arena_span = arena;
-          scr_sa_region_shift = shift;
-          scr_sa_region_arenas = arenas;
-          /* The arenas that were not reserved stay claimed. */
-          if (arenas < SCR_SA_ARENAS)
-            atomic_fetch_or_explicit(&scr_sa_claimed, ~((1u << arenas) - 1u), memory_order_relaxed);
-          atomic_store_explicit(&scr_sa_region, (uintptr_t)p, memory_order_release);
-          break;
-        }
-      }
-    }
-    if (!atomic_load_explicit(&scr_sa_region, memory_order_relaxed)) scr_sa_region_refused = true;
-  }
-  pthread_mutex_unlock(&scr_sa_region_lock);
-  return atomic_load_explicit(&scr_sa_region, memory_order_acquire) != 0;
-}
 
 #ifdef SCR_SA_TRIM
 /* The arena's carved bytes when the current thread claimed it (see
@@ -881,12 +1464,12 @@ static bool scr_sa_reserve_region(void) {
 static size_t scr_sa_claim_carved[SCR_SA_ARENAS];
 static size_t scr_sa_carved(void);
 /* A worker thread's memory, discarded when it parks (see "Discarding a
- * worker's memory" below). */
-typedef struct ScrSaKeep ScrSaKeep;
+ * worker's memory" below; ScrSaKeep and scr_sa_keep are declared above). */
 static _Thread_local bool scr_sa_worker;    /* set by scr_sa_thread_starting */
-static _Thread_local ScrSaKeep *scr_sa_keep; /* while the worker's memory is kept apart */
 static void scr_sa_keep_begin(unsigned i);
 static void scr_sa_keep_drained(ScrSaKeep *k, ScrSaBlock *b, unsigned c);
+static void scr_sa_keep_drained_large(ScrSaKeep *k, const ScrSaBlock *b);
+static bool scr_sa_keep_remove(ScrSaKeep *k, const void *p);
 static bool scr_sa_drain(void);
 static bool scr_sa_drain_some(bool one);
 #endif
@@ -896,7 +1479,15 @@ static void scr_sa_drain_remote(void) {
   ScrSaBlock *b = atomic_exchange_explicit(&scr_sa_remote[scr_sa_arena], NULL, memory_order_acquire);
   while (b) {
     ScrSaBlock *next = b->next;
-    unsigned c = (unsigned)(((uintptr_t)b - scr_sa.base) >> scr_sa.shift);
+    unsigned e = scr_sa_chunks[((uintptr_t)b - scr_sa.base) >> SCR_SA_CHUNK_SHIFT], c = e & 0xff;
+    if (e & SCR_SA_LARGE_TAG) {
+#ifdef SCR_SA_TRIM
+      if (scr_sa_keep) scr_sa_keep_drained_large(scr_sa_keep, b);
+#endif
+      scr_sa_large_push((unsigned)scr_sa_arena, b, c);
+      b = next;
+      continue;
+    }
 #ifdef SCR_SA_TRIM
     if (scr_sa_keep) {
       scr_sa_keep_drained(scr_sa_keep, b, c);
@@ -913,11 +1504,10 @@ static void scr_sa_drain_remote(void) {
 /* Claims an arena for the calling thread: a parked one continues with its
  * free lists and bump pointers, a fresh one starts empty. */
 static bool scr_sa_reserve(void) {
-  if (!atomic_load_explicit(&scr_sa_region, memory_order_acquire) && !scr_sa_reserve_region()) {
+  if (!scr_sa_window_reserve()) {
     scr_sa_refused = true;
     return false;
   }
-  uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uint32_t claimed = atomic_load_explicit(&scr_sa_claimed, memory_order_relaxed);
   for (;;) {
     if (claimed == UINT32_MAX) {
@@ -939,10 +1529,10 @@ static bool scr_sa_reserve(void) {
       scr_sa_arena = (int)i;
       scr_sa = scr_sa_parked[i];
       if (!scr_sa.span) {
-        memset(&scr_sa, 0, sizeof scr_sa);
-        scr_sa.base = region + (uintptr_t)i * scr_sa_arena_span;
-        scr_sa.span = scr_sa_arena_span;
-        scr_sa.shift = scr_sa_region_shift;
+        scr_sa_clear();
+        scr_sa.base = (uintptr_t)scr_sa_window;
+        scr_sa.span = (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT;
+        scr_sa.tag = (i + 1) << 8;
       }
       scr_sa_drain_remote();
 #ifdef SCR_SA_TRIM
@@ -961,7 +1551,7 @@ static bool scr_sa_reserve(void) {
  * threads can use that memory while the arena is parked. The free blocks on
  * the kept pages are relinked in address order; the returned runs of pages
  * become zeroed carve regions (`ScrSaHoles`), which the next thread to claim
- * the arena carves before the slice's own frontier: the bump fast paths
+ * the arena carves before the class's own frontier: the bump fast paths
  * already rely on carved memory being zero. A thread that carved less than
  * SCR_SA_TRIM_MIN, or whose arena holds less than that in free blocks,
  * leaves the arena as it is. */
@@ -976,16 +1566,15 @@ typedef struct {
 } ScrSaHoles;
 static ScrSaHoles scr_sa_holes[SCR_SA_ARENAS][SCR_SA_NCLASS];
 
-/* Bytes carved from the calling thread's slices: up to each frontier. */
+/* Bytes carved from the calling thread's chunks: up to each frontier. */
 static size_t scr_sa_carved(void) {
   size_t carved = 0;
   for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
     if (!scr_sa.lim[c]) continue;
     const ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
-    char *top = h->lim ? h->bump : scr_sa.bump[c];
-    carved += (size_t)(top - ((char *)scr_sa.base + ((size_t)c << scr_sa.shift)));
+    carved += scr_sa_class_carved(c, h->lim ? h->bump : scr_sa.bump[c]);
   }
-  return carved;
+  return carved + scr_sa_large[scr_sa_arena].carved;
 }
 
 /* For the slow path of class c, whose bump room is below sz: moves the
@@ -1023,11 +1612,14 @@ static bool scr_sa_push_run(ScrSaHoles *h, char *lo, char *hi) {
 /* With SCR_SA_STATS=1: carved, free and returned bytes of the parking thread. */
 static _Thread_local size_t scr_sa_trim_stats[3];
 
+static bool scr_sa_hole_found(void *ctx, char *lo, char *hi) {
+  return scr_sa_push_run((ScrSaHoles *)ctx, lo, hi);
+}
+
 /* Returns the pages of class c that hold only free blocks (see above). */
 static void scr_sa_trim_class(unsigned c, size_t page) {
   ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
   size_t sz = scr_sa_class_size(c);
-  char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
   /* Close the region being carved: its rest is still zero. */
   if (h->lim) {
     char *lo = scr_sa.bump[c], *hi = scr_sa.lim[c];
@@ -1037,76 +1629,30 @@ static void scr_sa_trim_class(unsigned c, size_t page) {
     if ((size_t)(hi - lo) >= sz && !scr_sa_push_run(h, lo, hi)) return;
   }
   char *top = scr_sa.bump[c];
-  size_t nblocks = (size_t)(top - start) / sz;
-  if (!nblocks) return;
-  size_t words = (nblocks + 63) / 64;
-  uint64_t *bits = mmap(NULL, words * 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-  if (bits == MAP_FAILED) return;
+  if (!scr_sa_class_carved(c, top)) return;
+  ScrSaMarks m;
+  if (!scr_sa_marks_open(&m, c)) return;
   size_t nfree = 0;
+  uint64_t mask;
   for (ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) {
-    size_t k = (size_t)((char *)b - start) / sz;
-    bits[k / 64] |= (uint64_t)1 << (k % 64);
+    uint64_t *word = scr_sa_mark(&m, b, sz, &mask);
+    if (word) *word |= mask;
     nfree++;
   }
   /* Uncarved zeroed regions count as free; they are rebuilt below. */
   for (size_t r = 0; r < h->n; r++) {
     for (char *q = h->runs[r].lo; q + sz <= h->runs[r].hi; q += sz) {
-      size_t k = (size_t)(q - start) / sz;
-      bits[k / 64] |= (uint64_t)1 << (k % 64);
+      uint64_t *word = scr_sa_mark(&m, q, sz, &mask);
+      if (word) *word |= mask;
     }
   }
-  scr_sa_trim_stats[0] += nblocks * sz;
+  scr_sa_trim_stats[0] += scr_sa_class_carved(c, top);
   scr_sa_trim_stats[1] += nfree * sz;
-#define SCR_SA_BIT(k) ((bits[(k) / 64] >> ((k) % 64)) & 1)
-  /* Whole pages below the frontier whose blocks are all free. */
-  uintptr_t first = ((uintptr_t)start + page - 1) & ~(uintptr_t)(page - 1);
-  uintptr_t last = (uintptr_t)top & ~(uintptr_t)(page - 1);
   h->n = 0;
-  char *run = NULL;
-  for (uintptr_t pg = first; pg <= last; pg += page) {
-    bool empty = false;
-    if (pg < last) {
-      size_t k0 = (size_t)((char *)pg - start) / sz;
-      size_t k1 = (size_t)((char *)pg + page - 1 - start) / sz;
-      if (k1 >= nblocks) k1 = nblocks - 1;
-      empty = true;
-      for (size_t k = k0; k <= k1 && empty; k++) empty = SCR_SA_BIT(k);
-    }
-    if (empty && !run) run = (char *)pg;
-    if (!empty && run) {
-      (void)madvise(run, (size_t)((char *)pg - run), MADV_DONTNEED);
-      scr_sa_trim_stats[2] += (size_t)((char *)pg - run);
-      /* Blocks wholly inside the returned pages carve from it later. */
-      char *lo = start + ((size_t)(run - start) + sz - 1) / sz * sz;
-      char *hi = start + ((size_t)((char *)pg - start) / sz) * sz;
-      if (hi > lo) (void)scr_sa_push_run(h, lo, hi);
-      for (char *q = lo; q < hi; q += sz) {
-        size_t k = (size_t)(q - start) / sz;
-        bits[k / 64] &= ~((uint64_t)1 << (k % 64));
-      }
-      /* A block starting in the returned pages but ending on a kept one is
-       * dropped: relinking it would fault its page back in. */
-      if (hi < (char *)pg && hi >= run) {
-        size_t k = (size_t)(hi - start) / sz;
-        bits[k / 64] &= ~((uint64_t)1 << (k % 64));
-      }
-      run = NULL;
-    }
-  }
-#undef SCR_SA_BIT
+  scr_sa_trim_stats[2] += scr_sa_marks_return(&m, c, top, page, scr_sa_hole_found, h);
   /* The remaining free blocks, in address order. */
-  ScrSaBlock *head = NULL, **tail = &head;
-  for (size_t w = 0; w < words; w++) {
-    for (uint64_t m = bits[w]; m; m &= m - 1) {
-      size_t k = w * 64 + (size_t)__builtin_ctzll(m);
-      ScrSaBlock *b = (ScrSaBlock *)(start + k * sz);
-      *tail = b;
-      tail = &b->next;
-    }
-  }
-  *tail = NULL;
-  scr_sa.free[c] = head;
-  munmap(bits, words * 8);
+  scr_sa_marks_relink(&m, c);
+  scr_sa_marks_close(&m);
   /* The next owner carves the returned regions before the frontier. */
   if (h->n) {
     h->bump = scr_sa.bump[c];
@@ -1134,6 +1680,9 @@ static void scr_sa_trim(void) {
     free_bytes += n * sz;
     if (free_bytes >= SCR_SA_TRIM_MIN) break;
   }
+  for (unsigned c = 0; c < SCR_SA_NLARGE && free_bytes < SCR_SA_TRIM_MIN; c++)
+    for (ScrSaBlock *b = scr_sa_large[scr_sa_arena].free[c]; b && free_bytes < SCR_SA_TRIM_MIN; b = b->next)
+      free_bytes += scr_sa_large_size(c);
   const char *stats = getenv("SCR_SA_STATS");
   const char *off = getenv("SCR_SA_TRIM");
   bool trim = free_bytes >= SCR_SA_TRIM_MIN && !(off && off[0] == '0');
@@ -1142,8 +1691,7 @@ static void scr_sa_trim(void) {
     for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
       if (!scr_sa.lim[c]) continue;
       size_t sz = scr_sa_class_size(c);
-      char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
-      scr_sa_trim_stats[0] += (size_t)(scr_sa.bump[c] - start);
+      scr_sa_trim_stats[0] += scr_sa_class_carved(c, scr_sa.bump[c]);
       for (ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) scr_sa_trim_stats[1] += sz;
     }
   if (trim) {
@@ -1151,8 +1699,9 @@ static void scr_sa_trim(void) {
     for (unsigned c = 0; c < SCR_SA_NCLASS; c++)
       if (scr_sa.lim[c]) scr_sa_trim_class(c, page > 0 ? (size_t)page : 4096);
   }
+  /* Large blocks: the window's and the system allocator's free pages too. */
+  if (trim) scr_sa_large_trim();
 #if defined(__GLIBC__)
-  /* Large blocks: the system allocator's free pages too. */
   if (trim) (void)malloc_trim(0);
 #endif
   if (stats && stats[0] == '1')
@@ -1172,11 +1721,11 @@ static void scr_sa_trim(void) {
  * thread, and what it never freed (ProgramLifetime instances, published
  * module constants) is garbage. Such a thread's memory goes back whole:
  * - when a worker claims an arena, the arena's free lists and returned
- *   regions are set aside, and the worker carves only past each slice's
+ *   regions are set aside, and the worker carves only past each class's
  *   frontier, so its blocks of class c are [start[c], bump[c]), plus the
- *   blocks it takes from the free lists set aside once a slice has no bump
+ *   blocks it takes from the free lists set aside once a class has no bump
  *   room left, which it records;
- * - the system blocks it allocates (large blocks, an exhausted slice) are
+ * - the system blocks it allocates (large blocks, an exhausted window) are
  *   recorded until it frees them;
  * - a remote free into its blocks means another thread held one: the same
  *   as sharing;
@@ -1216,23 +1765,33 @@ struct ScrSaKeep {
   ScrSaBlock *free[SCR_SA_NCLASS];
   char *bump[SCR_SA_NCLASS], *lim[SCR_SA_NCLASS];
   ScrSaHoles holes[SCR_SA_NCLASS];
-  /* Each slice's frontier then (bump and limit, NULL limits for a slice not
-   * opened yet), and the first address the worker carves in it. */
+  /* Each class's frontier then (bump and limit, NULL limits for a class not
+   * opened yet), the first address the worker carves in that chunk (NULL
+   * for a class not opened), and the class's chunks then. */
   char *front_bump[SCR_SA_NCLASS], *front_lim[SCR_SA_NCLASS];
   char *start[SCR_SA_NCLASS];
+  ScrSaCarve carve[SCR_SA_NCLASS];
+  /* The chunks the worker opened, by window index. */
+  uint64_t mine[(SCR_SA_WINDOW_CHUNKS + 63) / 64];
   /* The worker's system blocks: an open-addressing set of `cap` slots (a
    * power of two, or 0), NULL for an empty slot and SCR_SA_SYS_GONE for a
    * removed entry; `used` counts both kinds of filled slots. */
   void **sys;
   size_t cap, used, live;
-  /* The blocks of the free lists set aside that the worker took once a slice
+  /* The blocks of the free lists set aside that the worker took once a class
    * had no bump room left, so that older free blocks are used before the
-   * slice grows; they go back to those lists with the worker's memory. */
+   * class grows; they go back to those lists with the worker's memory. */
   ScrSaBlock **taken;
   size_t ntaken, cap_taken;
   bool shared;
   bool poison;
 };
+
+/* Records a chunk the worker opened. */
+static void scr_sa_keep_opened(ScrSaKeep *k, const char *chunk) {
+  size_t i = (size_t)(chunk - scr_sa_window) >> SCR_SA_CHUNK_SHIFT;
+  k->mine[i / 64] |= (uint64_t)1 << (i % 64);
+}
 
 static _Thread_local bool scr_sa_discarded; /* this thread's memory went back */
 static ScrSaKeep *scr_sa_parked_keep[SCR_SA_ARENAS]; /* of discards that wait */
@@ -1259,16 +1818,26 @@ static void scr_sa_keep_begin(unsigned i) {
     k->holes[c] = *h;
     memset(h, 0, sizeof *h);
     scr_sa.free[c] = NULL;
-    /* While the slice carves a returned region, its frontier is kept apart. */
+    /* While the class carves a returned region, its frontier is kept apart. */
     if (k->holes[c].lim) {
       scr_sa.bump[c] = k->holes[c].bump;
       scr_sa.lim[c] = k->holes[c].lim;
     }
     k->front_bump[c] = scr_sa.bump[c];
     k->front_lim[c] = scr_sa.lim[c];
-    k->start[c] = scr_sa.lim[c] ? scr_sa.bump[c] : (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
+    k->start[c] = scr_sa.lim[c] ? scr_sa.bump[c] : NULL;
+    k->carve[c] = scr_sa_carve[i][c];
   }
   scr_sa_keep = k;
+}
+
+/* Whether block b of class c is one the worker carved: past the frontier it
+ * found in that chunk, or in a chunk it opened. */
+static bool scr_sa_keep_carved(const ScrSaKeep *k, const ScrSaBlock *b, unsigned c) {
+  size_t i = (size_t)((const char *)b - scr_sa_window) >> SCR_SA_CHUNK_SHIFT;
+  if ((k->mine[i / 64] >> (i % 64)) & 1) return true;
+  const char *start = k->start[c];
+  return start && scr_sa_chunk_of(start - 1) == scr_sa_chunk_of(b) && (const char *)b >= start;
 }
 
 /* A remote free of class c, drained while the worker keeps its memory
@@ -1276,7 +1845,7 @@ static void scr_sa_keep_begin(unsigned i) {
  * free lists set aside. Once the worker has taken blocks from those lists,
  * any older block might be one of them, so it shares as well. */
 static void scr_sa_keep_drained(ScrSaKeep *k, ScrSaBlock *b, unsigned c) {
-  if ((char *)b >= k->start[c] && (char *)b < scr_sa.bump[c]) {
+  if (scr_sa_keep_carved(k, b, c)) {
     k->shared = true;
     b->next = scr_sa.free[c];
     scr_sa.free[c] = b;
@@ -1287,8 +1856,14 @@ static void scr_sa_keep_drained(ScrSaKeep *k, ScrSaBlock *b, unsigned c) {
   }
 }
 
+/* A remote free of a large block, drained while the worker keeps its memory
+ * apart: one the worker recorded (scr_sa_slow_ref) makes it share. */
+static void scr_sa_keep_drained_large(ScrSaKeep *k, const ScrSaBlock *b) {
+  if (scr_sa_keep_remove(k, b)) k->shared = true;
+}
+
 /* A block of class c from the free lists set aside, for a worker whose
- * slice has no bump room left; NULL when there is none or it cannot be
+ * class has no bump room left; NULL when there is none or it cannot be
  * recorded. */
 static ScrSaBlock *scr_sa_keep_take(ScrSaKeep *k, unsigned c) {
   ScrSaBlock *b = k->free[c];
@@ -1396,26 +1971,55 @@ static void scr_sa_discard(ScrSaKeep *k) {
   for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
     char *lo = k->start[c], *top = scr_sa.bump[c], *lim = scr_sa.lim[c];
     char *bump = k->front_bump[c], *limit = k->front_lim[c];
-    if (lim && top > lo) {
+    ScrSaCarve *carve = &scr_sa_carve[scr_sa_arena][c];
+    /* The chunks the worker opened for the class go back whole, the highest
+     * first, so that they are taken again in address order. */
+    unsigned owner = scr_sa.tag | c;
+    bool opened = false;
+    for (size_t w = sizeof k->mine / sizeof k->mine[0]; w-- > 0;)
+      for (uint64_t x = k->mine[w]; x;) {
+        unsigned bit = 63 - (unsigned)__builtin_clzll(x);
+        x &= ~((uint64_t)1 << bit);
+        size_t i = w * 64 + bit;
+        if (scr_sa_chunks[i] != owner) continue;
+        char *chunk = scr_sa_window + (i << SCR_SA_CHUNK_SHIFT);
+        opened = true;
+        if (k->poison) {
+          (void)mprotect(chunk, SCR_SA_CHUNK, PROT_NONE);
+          scr_sa_chunk_set(i, 0);
+        } else {
+          scr_mem_release_ahead(chunk, chunk + SCR_SA_CHUNK);
+          returned += SCR_SA_CHUNK;
+          scr_sa_chunk_give(chunk);
+        }
+      }
+    /* In the chunk that held the frontier the worker found, what it carved
+     * past that frontier. */
+    char *fend = lo ? scr_sa_chunk_of(lo - 1) + SCR_SA_CHUNK : NULL;
+    char *ftop = opened ? fend : top;
+    if (lo && lim && ftop > lo) {
       char *first = (char *)(((uintptr_t)lo + page - 1) & ~(page - 1));
-      char *used = (char *)(((uintptr_t)top + page - 1) & ~(page - 1));
+      char *used = (char *)(((uintptr_t)ftop + page - 1) & ~(page - 1));
       /* The part of a page that may also hold older blocks. */
-      if (first > lo) memset(lo, 0, (size_t)((first < top ? first : top) - lo));
+      if (first > lo) memset(lo, 0, (size_t)((first < ftop ? first : ftop) - lo));
       if (k->poison) {
         if (used > first) (void)mprotect(first, (size_t)(used - first), PROT_NONE);
-        bump = used > first ? used : top;
-        limit = lim > bump ? lim : bump;
+        bump = used > first ? used : ftop;
+        if (bump > fend) bump = fend;
+        limit = !opened && lim > bump ? lim : bump;
       } else {
-        char *end = (char *)(((uintptr_t)lim + page - 1) & ~(page - 1));
+        char *end = opened ? fend : (char *)(((uintptr_t)lim + page - 1) & ~(page - 1));
+        if (end > fend) end = fend;
         if (end > first) {
           (void)madvise(first, (size_t)(end - first), MADV_DONTNEED);
           returned += (size_t)(end - first);
         }
       }
-    } else {
+    } else if (!opened) {
       bump = top;
       limit = lim;
     }
+    *carve = k->carve[c];
     scr_sa.free[c] = k->free[c];
     ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
     *h = k->holes[c];
@@ -1433,7 +2037,7 @@ static void scr_sa_discard(ScrSaKeep *k) {
   if (!k->poison)
     for (size_t t = 0; t < k->ntaken; t++) {
       ScrSaBlock *b = k->taken[t];
-      unsigned c = (unsigned)(((uintptr_t)b - scr_sa.base) >> scr_sa.shift);
+      unsigned c = scr_sa_chunks[((uintptr_t)b - scr_sa.base) >> SCR_SA_CHUNK_SHIFT] & 0xff;
       b->next = scr_sa.free[c];
       scr_sa.free[c] = b;
     }
@@ -1441,6 +2045,32 @@ static void scr_sa_discard(ScrSaKeep *k) {
     for (size_t s = 0; s < k->cap; s++) {
       void *p = k->sys[s];
       if (!p || p == SCR_SA_SYS_GONE) continue;
+      uintptr_t off = (uintptr_t)p - (uintptr_t)scr_sa_window;
+      if (off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
+        /* A window block: a run goes back to the window; a block of a large
+         * class becomes a trimmed free block of the arena. */
+        unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
+        if (e == SCR_SA_RUN_HEAD) {
+          returned += scr_sa_large_bytes(p, e);
+          scr_sa_run_free(p);
+        } else if ((e & SCR_SA_LARGE_TAG) && e < SCR_SA_RUN_HEAD) {
+          unsigned c = e & 0xff;
+          size_t sz = scr_sa_large_size(c);
+          char *lo = (char *)(((uintptr_t)p + page) & ~(page - 1)), *hi = (char *)(((uintptr_t)p + sz) & ~(page - 1));
+          ScrSaLarge *l = &scr_sa_large[scr_sa_arena];
+          ScrSaBlock *b = p;
+          if (hi > lo) {
+            scr_sa_pages_return(lo, hi);
+            returned += (size_t)(hi - lo);
+            b->next = l->trimmed[c];
+            l->trimmed[c] = b;
+          } else {
+            b->next = l->free[c];
+            l->free[c] = b;
+          }
+        }
+        continue;
+      }
 #if defined(__GLIBC__)
       sys_bytes += malloc_usable_size(p);
 #endif
@@ -1499,7 +2129,7 @@ static _Atomic(unsigned) scr_sa_trimming; /* helpers running */
 
 static void scr_sa_release(unsigned i) {
   scr_sa_parked[i] = scr_sa;
-  memset(&scr_sa, 0, sizeof scr_sa);
+  scr_sa_clear();
   scr_sa_arena = -1;
   scr_sa_refused = true;
   atomic_fetch_and_explicit(&scr_sa_claimed, ~(1u << i), memory_order_release);
@@ -1726,7 +2356,7 @@ void scr_sa_thread_park(void) {
 }
 
 #if defined(SCR_SA_TRIM) && defined(MADV_DONTNEED)
-/* Returns the pages past each slice's frontier that a parking thread leaves
+/* Returns the pages past each class's frontier that a parking thread leaves
  * faulted in but never carved: the rest of the huge page the frontier is in
  * (huge pages fault in whole) and the steps faulted ahead of it. The
  * thread's objects stay where they are; the next thread to claim the arena
@@ -1747,7 +2377,9 @@ static void scr_sa_release_frontiers(void) {
     const ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
     char *bump = h->lim ? h->bump : scr_sa.bump[c];
     char *lim = h->lim ? h->lim : scr_sa.lim[c];
-    char *end = (char *)scr_sa.base + ((size_t)(c + 1) << scr_sa.shift);
+    const ScrSaCarve *k = &scr_sa_carve[scr_sa_arena][c];
+    if (!k->start) continue;
+    char *end = k->start + SCR_SA_CHUNK;
     char *from = (char *)(((uintptr_t)bump + page - 1) & ~(page - 1));
     /* At most one step of `ahead` is faulted in past the limit. */
     char *to = (char *)((((uintptr_t)lim + ahead - 1) & ~(ahead - 1)) + ahead);
@@ -1772,7 +2404,7 @@ static void scr_sa_park_arena(void) {
      * and later frees on this thread are dropped. */
     scr_sa_discarded = true;
     scr_sa_defer_discard(i, k);
-    memset(&scr_sa, 0, sizeof scr_sa);
+    scr_sa_clear();
     scr_sa_arena = -1;
     scr_sa_refused = true;
     return;
@@ -1785,7 +2417,7 @@ static void scr_sa_park_arena(void) {
     if (scr_sa_start_helper(i)) {
       /* Later frees on this thread take the foreign path into the arena's
        * remote list; the helper releases the claim. */
-      memset(&scr_sa, 0, sizeof scr_sa);
+      scr_sa_clear();
       scr_sa_arena = -1;
       scr_sa_refused = true;
       return;
@@ -1796,29 +2428,46 @@ static void scr_sa_park_arena(void) {
   scr_sa_parked[i] = scr_sa;
   /* Later frees on this thread (thread-exit destructors) take the foreign
    * path into the parked arena's remote list. */
-  memset(&scr_sa, 0, sizeof scr_sa);
+  scr_sa_clear();
   scr_sa_arena = -1;
   scr_sa_refused = true;
   atomic_fetch_and_explicit(&scr_sa_claimed, ~(1u << i), memory_order_release);
 }
 
-/* The class size of a block in another thread's arena, or 0 outside the
- * region (a system block). */
+/* The class size of a block in another thread's arena, or 0 for one outside
+ * the allocator's chunks (a system block). */
 static size_t scr_sa_foreign_size(const void *p) {
-  uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
-  uintptr_t off = (uintptr_t)p - region;
-  if (!region || off >= scr_sa_arena_span * scr_sa_region_arenas) return 0;
-  return scr_sa_class_size((unsigned)((off % scr_sa_arena_span) >> scr_sa_region_shift));
+  unsigned e = scr_sa_owner(p);
+  if (e & SCR_SA_LARGE_TAG) return scr_sa_large_bytes(p, e);
+  return e ? scr_sa_class_size(e & 0xff) : 0;
 }
 
 void scr_sa_free_foreign(void *p) {
 #ifdef SCR_SA_TRIM
   if (scr_sa_discarded) return; /* the block went back with the thread's memory */
 #endif
-  uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
-  uintptr_t off = (uintptr_t)p - region;
-  if (region && off < scr_sa_arena_span * scr_sa_region_arenas) {
-    unsigned i = (unsigned)(off / scr_sa_arena_span);
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  uintptr_t off = (uintptr_t)p - (uintptr_t)w;
+  if (w && off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
+    unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
+    /* A chunk without small blocks: the block went back with a discarded
+     * worker's memory. */
+    if (!e) return;
+    if (e == SCR_SA_RUN_HEAD) {
+#ifdef SCR_SA_TRIM
+      if (scr_sa_keep) (void)scr_sa_keep_remove(scr_sa_keep, p);
+#endif
+      scr_sa_run_free(p);
+      return;
+    }
+    unsigned i = ((e & ~SCR_SA_LARGE_TAG) >> 8) - 1;
+    if ((e & SCR_SA_LARGE_TAG) && scr_sa.span && i == (unsigned)scr_sa_arena) {
+#ifdef SCR_SA_TRIM
+      if (scr_sa_keep) (void)scr_sa_keep_remove(scr_sa_keep, p);
+#endif
+      scr_sa_large_push(i, p, e & 0xff);
+      return;
+    }
     ScrSaBlock *b = p;
     ScrSaBlock *head = atomic_load_explicit(&scr_sa_remote[i], memory_order_relaxed);
     do b->next = head;
@@ -1834,24 +2483,68 @@ void scr_sa_free_foreign(void *p) {
 #else
 static bool scr_sa_refused;
 
-/* Reserve address space for every class slice at once; smaller slices are
- * tried when the host limits address space or overcommit. */
+/* The one arena: the window's chunks with tag 1. */
 static bool scr_sa_reserve(void) {
-  for (unsigned shift = 30; shift >= 24; shift -= 2) {
-    size_t span = (size_t)SCR_SA_NCLASS << shift;
-    void *p = scr_sa_map(span);
-    if (!p) continue;
-    scr_sa.base = (uintptr_t)p;
-    scr_sa.shift = shift;
-    scr_sa.span = span;
-    return true;
+  if (!scr_sa_window_reserve()) {
+    scr_sa_refused = true;
+    return false;
   }
-  scr_sa_refused = true;
-  return false;
+  scr_sa.base = (uintptr_t)scr_sa_window;
+  scr_sa.span = (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT;
+  scr_sa.tag = 1u << 8;
+  return true;
+}
+
+void scr_sa_free_foreign(void *p) {
+  /* Every chunk with small blocks is the arena's, so a block of the window
+   * is not the system's: a large block or run, a small block the inline
+   * free left here because the window lies above the chunk map's reach, or
+   * a program-lifetime block (entry 0), which is never freed. */
+  uintptr_t off = (uintptr_t)p - (uintptr_t)scr_sa_window;
+  if (scr_sa_window && off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
+    unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
+    if (e == SCR_SA_RUN_HEAD) scr_sa_run_free(p);
+    else if ((e & SCR_SA_LARGE_TAG) && e < SCR_SA_RUN_HEAD) scr_sa_large_push(0, p, e & 0xff);
+    else if (e && (e & 0xff00) == scr_sa.tag) {
+      ScrSaBlock *b = p;
+      b->next = scr_sa.free[e & 0xff];
+      scr_sa.free[e & 0xff] = b;
+    }
+    return;
+  }
+  free(p);
 }
 #endif /* SCR_WORKERS */
 
-/* Runs once per class (to reserve and open its slice) and then only for
+/* A program that stores references in 32-bit fields: every block a reference
+ * names must lie in the window, since the field keeps address >> 3 in 32
+ * bits. The compiler emits scr_sa_require_window at startup for a program
+ * whose compact classes have a field holding an array, a map, a set or a
+ * heap instance, before any thread allocates; worker contexts set it again
+ * (atomically: one may start while another allocates). Plain programs keep
+ * the system allocator's blocks past the window. */
+static bool scr_sa_win_required;
+
+void scr_sa_require_window(void) { __atomic_store_n(&scr_sa_win_required, true, __ATOMIC_RELAXED); }
+
+static inline bool scr_sa_window_required(void) {
+  return __atomic_load_n(&scr_sa_win_required, __ATOMIC_RELAXED);
+}
+
+/* For other parts of the runtime that allocate memory a reference can name
+ * (group arenas): they take it from the window when the program requires it. */
+bool scr_sa_refs_required(void) { return scr_sa_window_required(); }
+
+/* The window has no room left (for a reference block, or for the region of
+ * program-lifetime objects): ended as Node ends at its heap limit, with this
+ * message and an abort. */
+static _Noreturn void scr_sa_window_limit(void) {
+  static const char message[] =
+      "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n";
+  scr_trap(message);
+}
+
+/* Runs once per class (to reserve the window and open a chunk) and then only for
  * blocks the fast path does not serve. */
 __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
   if (n - 1 < SCR_SA_MAX && (scr_sa.span || (!scr_sa_refused && scr_sa_reserve()))) {
@@ -1869,7 +2562,7 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
     }
 #ifdef SCR_SA_TRIM
     /* A worker that keeps its memory apart uses the arena's older free
-     * blocks before its slice grows. */
+     * blocks before its class grows. */
     if (scr_sa_keep && (size_t)(scr_sa.lim[c] - scr_sa.bump[c]) < scr_sa_class_size(c) &&
         (b = scr_sa_keep_take(scr_sa_keep, c)) != NULL) {
       if (zero) memset(b, 0, n);
@@ -1877,23 +2570,38 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
     }
 #endif
 #endif
-    /* Carve from the slice, opening it or raising its limit as needed;
-     * fresh pages are zero. */
+    /* Carve from the class's chunk, raising its limit as needed, or from a
+     * new chunk once it is full; fresh pages are zero. */
     size_t sz = scr_sa_class_size(c);
 #ifdef SCR_SA_TRIM
     if (scr_sa.lim[c]) scr_sa_next_hole(c, sz);
 #endif
-    char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
-    char *end = start + ((size_t)1 << scr_sa.shift);
-    char *p = scr_sa.lim[c] ? scr_sa.bump[c] : start;
-    char *lim = scr_sa.lim[c] ? scr_sa.lim[c] : start;
+    ScrSaCarve *k = &scr_sa_carve[SCR_SA_ARENA_NOW][c];
+    char *p = scr_sa.bump[c], *lim = scr_sa.lim[c];
+    if (k->start) {
+      char *end = k->start + SCR_SA_CHUNK;
 #ifdef SCR_SA_DUMP
-    char *from = lim;
+      char *from = lim;
 #endif
-    while ((size_t)(lim - p) < sz && lim < end) lim = scr_sa_extend(c, start, lim, end);
+      while ((size_t)(lim - p) < sz && lim < end) lim = scr_sa_extend(c, k, lim, end);
 #ifdef SCR_SA_DUMP
-    if (lim > from && scr_sa_dump_slices) scr_sa_dumpable(start, end, from, lim);
+      if (lim > from && scr_sa_dump_chunks) scr_sa_dumpable(k->start, end, from, lim);
 #endif
+    }
+    if (!k->start || (size_t)(lim - p) < sz) {
+      char *chunk = k->next;
+      bool ahead = chunk != NULL;
+      k->next = NULL;
+      if (!chunk) chunk = scr_sa_class_chunk_take(c);
+      if (chunk) {
+        scr_sa_open(c, k, chunk, ahead);
+        p = lim = chunk;
+        while ((size_t)(lim - p) < sz) lim = scr_sa_extend(c, k, lim, chunk + SCR_SA_CHUNK);
+#ifdef SCR_SA_DUMP
+        if (scr_sa_dump_chunks) scr_sa_dumpable(chunk, chunk + SCR_SA_CHUNK, chunk, lim);
+#endif
+      }
+    }
     scr_sa.lim[c] = lim;
     if ((size_t)(lim - p) >= sz) {
       scr_sa.bump[c] = p + sz;
@@ -1901,7 +2609,7 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
     }
     scr_sa.bump[c] = p;
   }
-  /* Large or zero-sized, an exhausted slice, or no reservation. */
+  /* Large or zero-sized, an exhausted window, or no reservation. */
   void *q = zero ? calloc(1, n) : malloc(n);
   if (n > SCR_SA_MAX) {
     SCR_SA_LARGE_NOTE(q, n);
@@ -1913,14 +2621,199 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
   return q;
 }
 
+/* A window block above SCR_SA_MAX for scr_sa_slow_ref: from the calling
+ * thread's large classes, or a run of chunks; NULL when the window has no
+ * room. */
+static void *scr_sa_large_take(size_t n, bool zero) {
+  if (n > SCR_SA_LARGE_MAX) return scr_sa_run_take((n + SCR_SA_CHUNK - 1) >> SCR_SA_CHUNK_SHIFT, n, zero);
+#ifdef SCR_WORKERS
+  if (atomic_load_explicit(&scr_sa_remote[scr_sa_arena], memory_order_relaxed)) scr_sa_drain_remote();
+#endif
+  unsigned c = scr_sa_large_class(n);
+  ScrSaLarge *l = &scr_sa_large[SCR_SA_ARENA_NOW];
+  ScrSaBlock *b = l->free[c];
+  if (b) {
+    l->free[c] = b->next;
+    if (zero) memset(b, 0, n);
+    return b;
+  }
+#if defined(__linux__) && defined(MADV_DONTNEED)
+  if ((b = l->trimmed[c]) != NULL) {
+    /* The whole pages after the block's first page went back and read as
+     * zero (scr_sa_large_trim); the parts of its first and last pages kept
+     * their bytes. */
+    l->trimmed[c] = b->next;
+    if (zero) {
+      long page = sysconf(_SC_PAGESIZE);
+      uintptr_t pg = page > 0 ? (uintptr_t)page : 4096;
+      uintptr_t lo = ((uintptr_t)b + pg) & ~(pg - 1), end = (uintptr_t)b + n;
+      uintptr_t hi = ((uintptr_t)b + scr_sa_large_size(c)) & ~(pg - 1);
+      if (hi < lo) hi = lo;
+      memset(b, 0, (size_t)((lo < end ? lo : end) - (uintptr_t)b));
+      if (end > hi) memset((void *)hi, 0, (size_t)(end - hi));
+    }
+    return b;
+  }
+#endif
+  size_t sz = scr_sa_large_size(c);
+  char *q = l->bump[c];
+  if (!q || (size_t)(l->lim[c] - q) < sz) {
+    q = scr_sa_chunk_take(1, (uint16_t)(SCR_SA_LARGE_TAG | scr_sa.tag | c));
+    if (!q) return NULL;
+    l->lim[c] = q + scr_sa_chunk_bytes(sz);
+  }
+  /* Carved memory is fresh, and reads as zero. */
+  l->bump[c] = q + sz;
+  l->carved += sz;
+  return q;
+}
+
+/* A block a 32-bit reference may name (scr_mem_alloc_ref): above SCR_SA_MAX,
+ * a window block (scr_sa_large_take); the system allocator's when the window
+ * is exhausted or refused. A worker that keeps its memory apart records its
+ * window blocks, as it records its system blocks, so that they go back when
+ * it parks without having shared. */
+__attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
+  if (n - 1 < SCR_SA_MAX) {
+    void *p = scr_sa_slow(n, zero);
+    /* The window could not serve it (full, refused, or the thread has no
+     * arena): a program that stores references in 32-bit fields cannot keep
+     * the system address the field would truncate. */
+    if (scr_sa_window_required() && !scr_sa_in_window(p)) scr_sa_window_limit();
+    return p;
+  }
+  if (n > SIZE_MAX - SCR_SA_CHUNK || !(scr_sa.span || (!scr_sa_refused && scr_sa_reserve()))) {
+    if (scr_sa_window_required()) scr_sa_window_limit();
+    return scr_sa_slow(n, zero);
+  }
+  void *p = scr_sa_large_take(n, zero);
+  if (!p) {
+    if (scr_sa_window_required()) scr_sa_window_limit();
+    return scr_sa_slow(n, zero);
+  }
+#ifdef SCR_SA_TRIM
+  if (scr_sa_keep) scr_sa_keep_add(scr_sa_keep, p);
+#endif
+  return p;
+}
+
+#if defined(__linux__) && defined(MREMAP_FIXED)
+/* Grows the run p of `have` bytes to a run of n bytes (n > SCR_SA_LARGE_MAX)
+ * by moving its pages to a new run, as the system allocator grows a mapped
+ * block, instead of copying them; NULL when p is no run or the window has no
+ * room. The old range is mapped again, reads as zero, and returns to the
+ * window as a run whose pages are not resident. */
+static void *scr_sa_run_move(void *p, size_t have, size_t n) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  uintptr_t off = (uintptr_t)p - (uintptr_t)w;
+  if (!w || off >= (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT ||
+      scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT] != SCR_SA_RUN_HEAD)
+    return NULL;
+  char *q = scr_sa_run_take((n + SCR_SA_CHUNK - 1) >> SCR_SA_CHUNK_SHIFT, n, false);
+  if (!q) return NULL;
+  if (mremap(p, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, q) != q) {
+    memcpy(q, p, have);
+    scr_sa_run_free(p);
+    return q;
+  }
+  if (mmap(p, have, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != p)
+    scr_trap("scriptc: out of memory\n");
+#ifdef SCR_SA_THP
+  (void)madvise(p, have, MADV_NOHUGEPAGE);
+#endif
+#ifdef SCR_SA_DUMP
+  (void)madvise(p, have, MADV_DONTDUMP);
+#endif
+  scr_sa_run_release(p, true);
+#ifdef SCR_SA_TRIM
+  if (scr_sa_keep && scr_sa_keep_remove(scr_sa_keep, p)) scr_sa_keep_add(scr_sa_keep, q);
+#endif
+  return q;
+}
+#endif
+
+void *scr_mem_realloc_ref(void *p, size_t n) {
+  if (!p) return scr_mem_alloc_ref(n);
+  size_t have = scr_mem_block_size(p);
+  if (n && n <= have && (n % 16 || have % 16 == 0)) return p;
+#if defined(__linux__) && defined(MREMAP_FIXED)
+  if (n > SCR_SA_LARGE_MAX) {
+    void *moved = scr_sa_run_move(p, have, n);
+    if (moved) return moved;
+  }
+  /* A block that grows past SCR_SA_GROW_RUN becomes a run: it grows in place
+   * up to its last chunk and by moving its pages beyond, as the system
+   * allocator's mapped blocks grow, instead of being copied at every class.
+   * Only the pages it uses become resident. */
+  if (n > SCR_SA_GROW_RUN && n <= SCR_SA_LARGE_MAX && have >= SCR_SA_MAX) {
+    char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+    char *q = w ? scr_sa_run_take(1, n, false) : NULL;
+    if (q) {
+#ifdef SCR_SA_TRIM
+      if (scr_sa_keep) scr_sa_keep_add(scr_sa_keep, q);
+#endif
+      memcpy(q, p, have);
+      scr_mem_free(p);
+      return q;
+    }
+  }
+#endif
+  /* A block of the system allocator on a platform whose usable size this
+   * runtime cannot ask for (scr_mem_block_size: no malloc_usable_size): the
+   * system allocator holds the size, so it grows the block and keeps its
+   * contents, where a copy would take the zero bytes read. */
+  if (have == 0 && n) {
+#ifdef SCR_SA_TRIM
+    bool kept = scr_sa_keep && scr_sa_keep_remove(scr_sa_keep, p);
+#endif
+    void *q = realloc(p, n);
+    if (n > SCR_SA_MAX) SCR_SA_LARGE_NOTE(q, n);
+#ifdef SCR_SA_TRIM
+    if (kept) scr_sa_keep_note_system(q ? q : p); /* a failed realloc leaves p */
+#endif
+    return q;
+  }
+  void *q = scr_mem_alloc_ref(n ? n : 1);
+  if (!q) return NULL;
+  memcpy(q, p, have < n ? have : n);
+  scr_mem_free(p);
+  return q;
+}
+
+/* The usable bytes of the block p (non-NULL) of any of the allocators. */
+size_t scr_mem_block_size(const void *p) {
+  uintptr_t w = (uintptr_t)__atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE), off = (uintptr_t)p - w;
+  if (w && off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
+    unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
+    if (e & SCR_SA_LARGE_TAG) return scr_sa_large_bytes(p, e);
+    if (e) return scr_sa_class_size(e & 0xff);
+  }
+#if defined(__GLIBC__)
+  return malloc_usable_size((void *)p);
+#else
+  return 0;
+#endif
+}
+
 void *scr_mem_realloc(void *p, size_t n) {
   if (!p) return scr_mem_alloc(n);
+  /* A large window block stays in the window. */
+  uintptr_t w = (uintptr_t)scr_sa_window, woff = (uintptr_t)p - w;
+  if (w && woff < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT &&
+      (scr_sa_chunks[woff >> SCR_SA_CHUNK_SHIFT] & SCR_SA_LARGE_TAG))
+    return scr_mem_realloc_ref(p, n);
   uintptr_t off = (uintptr_t)p - scr_sa.base;
   size_t have;
-  if (off < scr_sa.span) have = scr_sa_class_size((unsigned)(off >> scr_sa.shift));
+  unsigned c = off < scr_sa.span ? scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT] ^ scr_sa.tag : 256;
+  if (c < 256)
+    have = scr_sa_class_size(c);
 #ifdef SCR_WORKERS
   else if ((have = scr_sa_foreign_size(p)) != 0) {
     /* Another arena's block: move it into this thread's allocator. */
+  } else if (scr_sa_window && (uintptr_t)p - (uintptr_t)scr_sa_window <
+                                  (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
+    /* A block that went back with a discarded worker's memory. */
+    have = 0;
   }
 #endif
   else {
@@ -1952,6 +2845,17 @@ void *scr_mem_realloc(void *p, size_t n) {
     SCR_LIBRARY_HEAP_ALLOC(q);
   }
   return q;
+}
+/* Without the small object allocator every block is a reference block, so the
+ * reference twin shares the plain path, audit registry included. */
+void *scr_mem_realloc_ref(void *p, size_t n) { return scr_mem_realloc(p, n); }
+size_t scr_mem_block_size(const void *p) {
+#if defined(__GLIBC__)
+  return malloc_usable_size((void *)p);
+#else
+  (void)p;
+  return 0;
+#endif
 }
 #ifdef SCR_WORKERS
 void scr_sa_thread_park(void) {}
@@ -2023,7 +2927,7 @@ void scr_sa_thread_starting(void) { SCR_SA_WORKER_STARTING(); }
 #endif
 #endif
 
-void *scr_rt_calloc(size_t n) { return scr_mem_calloc(n); }
+void *scr_rt_calloc(size_t n) { return scr_mem_calloc_ref(n); }
 void scr_rt_free(void *p) { scr_mem_free(p); }
 
 void scr_mem_prefault(void *lo, void *hi) {
@@ -2053,50 +2957,56 @@ void scr_mem_release_ahead(void *lo, void *hi) {
  * order within a page matters as much as across pages: blocks of a page
  * handed out in no particular order defeat the hardware prefetcher.
  *
- * The pointers are marked in a bitmap of block indices per class, over the
- * range of blocks they span, and read back from the highest block down.
- * That takes one bit per block in that range, at most one per block in
- * use, and reading the bitmaps back costs a step per word; a set spread so
- * thinly that they would take more than SCR_SA_ORDER_SPARSE words per
- * pointer is left as it is. Pointers outside the reservation, not at
+ * The pointers are marked in a bitmap of block indices per chunk, over the
+ * range of blocks they span, and read back from the highest block of the
+ * highest chunk down. That takes one bit per block in that range, at most
+ * one per block in use, and reading the bitmaps back costs a step per word;
+ * a set spread so thinly that they would take more than SCR_SA_ORDER_SPARSE
+ * words per pointer, or over more than SCR_SA_ORDER_CHUNKS chunks, is left
+ * as it is. Pointers that are not the calling thread's blocks, not at
  * `offset` in a block, or repeated, come first, in the order they had. */
 #define SCR_SA_ORDER_SPARSE 8
 
 #if SCR_SMALL_ALLOC
-/* The class and block index of a pointer `off` bytes past the reservation
- * base plus the block offset, if it is at that offset in a block. Slices
- * span at most 1 << 30 bytes, so an offset within one fits in 32 bits. */
-static inline bool scr_sa_order_block(uintptr_t off, uintptr_t span, unsigned shift,
-                                      const uint32_t *size, unsigned *c, uint32_t *idx) {
-  if (off >= span) return false;
-  *c = (unsigned)(off >> shift);
-  uint32_t in = (uint32_t)(off & (((uintptr_t)1 << shift) - 1));
-  *idx = in / size[*c];
-  return in == *idx * size[*c];
-}
+/* The chunks a set of pointers is ordered over at most: a set spread wider
+ * is left as it is. */
+#define SCR_SA_ORDER_CHUNKS 16
 #endif
 
 void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
 #if SCR_SMALL_ALLOC
   if (n < 2 || !scr_sa.span) return;
-  uintptr_t base = scr_sa.base + offset, span = scr_sa.span;
-  unsigned shift = scr_sa.shift, c;
-  uint32_t idx;
-  uint32_t size[SCR_SA_NCLASS], lo[SCR_SA_NCLASS], hi[SCR_SA_NCLASS];
-  size_t at[SCR_SA_NCLASS], words = 0;
-  for (c = 0; c < SCR_SA_NCLASS; c++) {
-    size[c] = (uint32_t)scr_sa_class_size(c);
-    lo[c] = UINT32_MAX;
-    hi[c] = 0;
-  }
+  /* The calling thread's chunks the pointers' blocks are in, with each one's
+   * class and the lowest and highest block index; a block's index in its
+   * chunk is below 2^19, the most 8-byte blocks a chunk holds. */
+  uint32_t chunk[SCR_SA_ORDER_CHUNKS], size[SCR_SA_ORDER_CHUNKS], lo[SCR_SA_ORDER_CHUNKS],
+      hi[SCR_SA_ORDER_CHUNKS];
+  size_t at[SCR_SA_ORDER_CHUNKS], nchunks = 0, words = 0;
+  uintptr_t base = scr_sa.base, span = scr_sa.span;
   for (size_t i = 0; i < n; i++) {
-    if (!scr_sa_order_block((uintptr_t)ptrs[i] - base, span, shift, size, &c, &idx)) continue;
-    if (idx < lo[c]) lo[c] = idx;
-    if (idx > hi[c]) hi[c] = idx;
+    uintptr_t off = (uintptr_t)ptrs[i] - offset - base;
+    if (off >= span) continue;
+    unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
+    if ((e & 0xff00) != scr_sa.tag) continue;
+    uint32_t ci = (uint32_t)(off >> SCR_SA_CHUNK_SHIFT), sz = (uint32_t)scr_sa_class_size(e & 0xff);
+    uint32_t in = (uint32_t)(off & (SCR_SA_CHUNK - 1)), idx = in / sz;
+    if (in != idx * sz) continue;
+    size_t j = 0;
+    while (j < nchunks && chunk[j] != ci) j++;
+    if (j == nchunks) {
+      if (nchunks == SCR_SA_ORDER_CHUNKS) return;
+      chunk[j] = ci;
+      size[j] = sz;
+      lo[j] = idx;
+      hi[j] = idx;
+      nchunks++;
+    }
+    if (idx < lo[j]) lo[j] = idx;
+    if (idx > hi[j]) hi[j] = idx;
   }
-  for (c = 0; c < SCR_SA_NCLASS; c++) {
-    at[c] = words;
-    if (lo[c] <= hi[c]) words += hi[c] / 64 - lo[c] / 64 + 1;
+  for (size_t j = 0; j < nchunks; j++) {
+    at[j] = words;
+    words += hi[j] / 64 - lo[j] / 64 + 1;
   }
   if (words == 0 || words / SCR_SA_ORDER_SPARSE > n) return;
   uint64_t *bits = calloc(words, sizeof *bits);
@@ -2104,26 +3014,38 @@ void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
   size_t k = 0;
   for (size_t i = 0; i < n; i++) {
     void *p = ptrs[i];
-    if (scr_sa_order_block((uintptr_t)p - base, span, shift, size, &c, &idx)) {
-      uint64_t *word = &bits[at[c] + idx / 64 - lo[c] / 64], bit = (uint64_t)1 << (idx % 64);
-      if (!(*word & bit)) {
-        *word |= bit;
-        continue;
+    uintptr_t off = (uintptr_t)p - offset - base;
+    if (off < span && (scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT] & 0xff00) == scr_sa.tag) {
+      uint32_t ci = (uint32_t)(off >> SCR_SA_CHUNK_SHIFT);
+      size_t j = 0;
+      while (j < nchunks && chunk[j] != ci) j++;
+      uint32_t in = (uint32_t)(off & (SCR_SA_CHUNK - 1)), idx = in / size[j];
+      if (in == idx * size[j]) {
+        uint64_t *word = &bits[at[j] + idx / 64 - lo[j] / 64], bit = (uint64_t)1 << (idx % 64);
+        if (!(*word & bit)) {
+          *word |= bit;
+          continue;
+        }
       }
     }
     ptrs[k++] = p;
   }
-  for (c = 0; c < SCR_SA_NCLASS; c++) {
-    if (lo[c] > hi[c]) continue;
-    char *first = (char *)base + ((uintptr_t)c << shift) + (size_t)(lo[c] / 64) * 64 * size[c];
-    for (size_t w = hi[c] / 64 - lo[c] / 64 + 1; w-- > 0;) {
-      uint64_t word = bits[at[c] + w];
+  /* Highest address first: chunks in descending order, then blocks. */
+  for (size_t done = 0; done < nchunks; done++) {
+    size_t j = 0;
+    for (size_t m = 1; m < nchunks; m++)
+      if (chunk[m] != UINT32_MAX && (chunk[j] == UINT32_MAX || chunk[m] > chunk[j])) j = m;
+    char *first = (char *)base + ((uintptr_t)chunk[j] << SCR_SA_CHUNK_SHIFT) + offset +
+                  (size_t)(lo[j] / 64) * 64 * size[j];
+    for (size_t w = hi[j] / 64 - lo[j] / 64 + 1; w-- > 0;) {
+      uint64_t word = bits[at[j] + w];
       while (word) {
         unsigned b = 63 - (unsigned)__builtin_clzll(word);
         word &= ~((uint64_t)1 << b);
-        ptrs[k++] = first + (w * 64 + b) * size[c];
+        ptrs[k++] = first + (w * 64 + b) * size[j];
       }
     }
+    chunk[j] = UINT32_MAX;
   }
   free(bits);
 #else
@@ -2154,7 +3076,7 @@ void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
 #endif
 
 /* process.memoryUsage's heap figures: the calling thread's small-object
- * slices (the bytes carved from them; in use is that less the blocks on
+ * chunks (the bytes carved from them; in use is that less the blocks on
  * their free lists and the zeroed holes left to carve) plus the system
  * allocator's own totals where the platform reports them (glibc's
  * mallinfo2, the Darwin malloc zones, the Windows CRT heap, or the
@@ -2170,7 +3092,6 @@ void scr_heap_stats(double *total, double *used) {
   for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
     if (!scr_sa.lim[c]) continue;
     size_t sz = scr_sa_class_size(c);
-    char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
     char *top = scr_sa.bump[c];
 #ifdef SCR_SA_TRIM
     const ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
@@ -2180,7 +3101,7 @@ void scr_heap_stats(double *total, double *used) {
     }
     for (size_t i = 0; i < h->n; i++) idle += (size_t)(h->runs[i].hi - h->runs[i].lo);
 #endif
-    held += (size_t)(top - start);
+    held += scr_sa_class_carved(c, top);
     for (const ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) idle += sz;
   }
 #endif
@@ -2227,7 +3148,7 @@ void scr_heap_stats(double *total, double *used) {
 
 /* scr_heap_trim: returns the heap pages that hold only freed memory to the
  * system after a phase's data died (scr_collect_cycles_phase). The
- * size-class slices keep freed blocks on their class's free list, which only
+ * size classes keep freed blocks on their class's free list, which only
  * later blocks of the same class reuse, so a program whose next phase
  * allocates other sizes would otherwise grow its resident memory on top of
  * the freed heap. */
@@ -2238,62 +3159,24 @@ void scr_heap_stats(double *total, double *used) {
 #include <sys/mman.h>
 #include <unistd.h>
 
-/* Returns the pages of class c's slice below its frontier that hold only
- * free blocks (MADV_DONTNEED), and relinks the class's other free blocks in
+/* Returns the pages of class c below its frontier that hold only free
+ * blocks (MADV_DONTNEED), and relinks the class's other free blocks in
  * address order. A block wholly inside a returned page leaves the free list:
- * the class carves new blocks past its frontier instead, and the slice's
- * reservation is far larger than what a program fills. */
+ * the class carves new blocks past its frontier instead. */
 static void scr_sa_return_free_pages(unsigned c, size_t page) {
   size_t sz = scr_sa_class_size(c);
-  char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
   char *top = scr_sa.bump[c];
-  size_t nblocks = (size_t)(top - start) / sz;
-  if (!nblocks || !scr_sa.free[c]) return;
-  size_t words = (nblocks + 63) / 64;
-  uint64_t *bits = mmap(NULL, words * 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-  if (bits == MAP_FAILED) return;
+  if (!scr_sa_class_carved(c, top) || !scr_sa.free[c]) return;
+  ScrSaMarks m;
+  if (!scr_sa_marks_open(&m, c)) return;
+  uint64_t mask;
   for (ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) {
-    size_t k = (size_t)((char *)b - start) / sz;
-    bits[k / 64] |= (uint64_t)1 << (k % 64);
+    uint64_t *word = scr_sa_mark(&m, b, sz, &mask);
+    if (word) *word |= mask;
   }
-#define SCR_SA_FREE_BIT(k) ((bits[(k) / 64] >> ((k) % 64)) & 1)
-  /* Mark the returned pages' blocks by clearing their bits after the
-   * madvise; a page is returned when every block overlapping it is free. */
-  uintptr_t first = ((uintptr_t)start + page - 1) & ~(uintptr_t)(page - 1);
-  uintptr_t last = (uintptr_t)top & ~(uintptr_t)(page - 1);
-  char *run = NULL;
-  for (uintptr_t pg = first; pg <= last; pg += page) {
-    bool empty = false;
-    if (pg < last) {
-      size_t k0 = (size_t)((char *)pg - start) / sz;
-      size_t k1 = (size_t)((char *)pg + page - 1 - start) / sz;
-      if (k1 >= nblocks) k1 = nblocks - 1;
-      empty = true;
-      for (size_t k = k0; k <= k1 && empty; k++) empty = SCR_SA_FREE_BIT(k);
-    }
-    if (empty && !run) run = (char *)pg;
-    if (!empty && run) {
-      (void)madvise(run, (size_t)((char *)pg - run), MADV_DONTNEED);
-      /* Blocks wholly inside the returned pages are dropped. */
-      size_t k0 = ((size_t)(run - start) + sz - 1) / sz;
-      size_t k1 = (size_t)((char *)pg - start) / sz;
-      for (size_t k = k0; k < k1 && (char *)start + (k + 1) * sz <= (char *)pg; k++)
-        bits[k / 64] &= ~((uint64_t)1 << (k % 64));
-      run = NULL;
-    }
-  }
-  /* The kept free blocks, in address order. */
-  ScrSaBlock *head = NULL, **tail = &head;
-  for (size_t w = 0; w < words; w++)
-    for (uint64_t m = bits[w]; m; m &= m - 1) {
-      ScrSaBlock *b = (ScrSaBlock *)(start + (w * 64 + (size_t)__builtin_ctzll(m)) * sz);
-      *tail = b;
-      tail = &b->next;
-    }
-  *tail = NULL;
-  scr_sa.free[c] = head;
-#undef SCR_SA_FREE_BIT
-  (void)munmap(bits, words * 8);
+  (void)scr_sa_marks_return(&m, c, top, page, NULL, NULL);
+  scr_sa_marks_relink(&m, c);
+  scr_sa_marks_close(&m);
 }
 #endif
 
@@ -2310,6 +3193,7 @@ void scr_heap_trim(void) {
     long page = sysconf(_SC_PAGESIZE);
     for (unsigned c = 0; c < SCR_SA_NCLASS; c++)
       if (scr_sa.lim[c]) scr_sa_return_free_pages(c, page > 0 ? (size_t)page : 4096);
+    scr_sa_large_trim();
   }
 #endif
 #if defined(__GLIBC__) && !defined(SCR_HEAP_SANITIZER)
@@ -2333,20 +3217,18 @@ void scr_heap_trim(void) {
 #include <sys/mman.h>
 
 #define SCR_PLR_CHUNK ((size_t)1 << 20)
-/* References are 32-bit addresses of 8-byte units, so the range ends by
- * SCR_PLR_END. It starts at 4 GiB or above, clear of executables loaded low
- * and their heaps; a refused size is halved down to SCR_PLR_MIN. */
-#define SCR_PLR_END ((size_t)32 << 30)
-#define SCR_PLR_MIN ((size_t)1 << 30)
-/* Past its first SCR_PLR_HUGE_AFTER bytes the range uses transparent huge
- * pages, as the allocator's slices do (SCR_SA_HUGE_AFTER): a large heap of
- * instances takes 512 times fewer page faults and TLB entries, and a small
- * program stays on small pages. */
-#define SCR_PLR_HUGE_AFTER ((size_t)8 << 20)
+/* References are 32-bit addresses of 8-byte units, so the region's chunks
+ * must end by SCR_PLR_END: they come from the window (scr_sa_window_reserve,
+ * which on Linux places it in [4 GiB, 32 GiB)), together with the small
+ * blocks. Past the region's first SCR_SA_HUGE_AFTER bytes its window chunks
+ * use transparent huge pages, as size classes do: a large heap of instances
+ * takes 512 times fewer page faults and TLB entries, and a small program
+ * stays on small pages. */
+#define SCR_PLR_END ((uintptr_t)32 << 30)
 
-static char *scr_plr_base; /* the range's start, once reserved */
-static size_t scr_plr_size;
-static size_t scr_plr_top; /* atomic */
+static size_t scr_plr_window_chunks; /* window chunks taken; under scr_plr_lock */
+static char *scr_plr_cur, *scr_plr_end; /* the rest of the last of them */
+static char scr_plr_lock;
 /* Bytes of the chunks threads hold, and of the tails they left unused when
  * they moved to a new chunk (scr_heap_stats); atomic. */
 static size_t scr_plr_held, scr_plr_waste;
@@ -2356,52 +3238,54 @@ _Thread_local ScrPlrChunk scr_plr_chunk = {NULL, NULL};
 ScrPlrChunk scr_plr_chunk = {NULL, NULL};
 #endif
 
-/* Reserves `size` bytes at `at` exactly; NULL if refused. */
-static char *scr_plr_map(void *at, size_t size) {
-  int flags = MAP_PRIVATE | MAP_ANON | MAP_NORESERVE;
-#ifdef MAP_FIXED_NOREPLACE
-  flags |= MAP_FIXED_NOREPLACE;
-#endif
-  char *p = mmap(at, size, PROT_READ | PROT_WRITE, flags, -1, 0);
-  if (p == MAP_FAILED) return NULL;
-  if (p != (char *)at) {
-    /* The system took `at` as a hint only (no MAP_FIXED_NOREPLACE). */
-    (void)munmap(p, size);
-    return NULL;
-  }
-  return p;
-}
+/* The heap limit: the window has no room left for the region. */
+static _Noreturn void scr_plr_out_of_memory(void) { scr_sa_window_limit(); }
 
 static __attribute__((noinline)) void scr_plr_reserve(void) {
-  static char lock;
-  while (__atomic_test_and_set(&lock, __ATOMIC_ACQUIRE)) {
-  }
-  if (!__atomic_load_n(&scr_plr_base, __ATOMIC_ACQUIRE)) {
-    char *p = NULL;
-    size_t size = 0;
-    for (size_t start = (size_t)4 << 30; !p && start <= (size_t)16 << 30; start *= 2) {
-      size = SCR_PLR_END - start;
-      while (size >= SCR_PLR_MIN && !(p = scr_plr_map((void *)start, size))) size /= 2;
-    }
-    if (p) {
-#ifdef MADV_HUGEPAGE
-      (void)madvise(p + SCR_PLR_HUGE_AFTER, size - SCR_PLR_HUGE_AFTER, MADV_HUGEPAGE);
-#endif
-      scr_plr_size = size;
-      /* The first chunk is never handed out, so every chunk is
-       * page-aligned. */
-      __atomic_store_n(&scr_plr_top, SCR_PLR_CHUNK, __ATOMIC_RELAXED);
-      __atomic_store_n(&scr_plr_base, p, __ATOMIC_RELEASE);
-    }
-  }
-  __atomic_clear(&lock, __ATOMIC_RELEASE);
   /* scr_trap is the runtime's failure path (scr_exception.c); the
    * allocator's standalone test defines its own (scr_alloc.test.c). */
-  if (!scr_plr_base) {
+  if (!scr_sa_window_reserve() ||
+      (uintptr_t)scr_sa_window + ((uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) > SCR_PLR_END) {
     static const char message[] =
         "scriptc: cannot reserve address space below 32 GiB for program-lifetime objects\n";
     scr_trap(message);
   }
+}
+
+/* `size` bytes (a multiple of SCR_PLR_CHUNK) from the window, or NULL when
+ * the window has no room left. */
+static char *scr_plr_take(size_t size) {
+  char *fresh = NULL; /* window chunks taken here, advised after the lock */
+  size_t n = 0;
+  bool huge = false;
+  scr_sa_spin_take(&scr_plr_lock);
+  if ((size_t)(scr_plr_end - scr_plr_cur) < size) {
+    n = (size + SCR_SA_CHUNK - 1) >> SCR_SA_CHUNK_SHIFT;
+    fresh = scr_sa_chunk_take(n, 0);
+    if (!fresh) {
+      __atomic_clear(&scr_plr_lock, __ATOMIC_RELEASE);
+      return NULL;
+    }
+    huge = scr_plr_window_chunks >= SCR_SA_HUGE_AFTER / SCR_SA_CHUNK;
+    scr_plr_window_chunks += n;
+    scr_plr_cur = fresh;
+    scr_plr_end = fresh + (n << SCR_SA_CHUNK_SHIFT);
+  }
+  char *p = scr_plr_cur;
+  scr_plr_cur += size;
+  __atomic_clear(&scr_plr_lock, __ATOMIC_RELEASE);
+  if (fresh) {
+#ifdef SCR_SA_DUMP
+    /* The window is left out of core dumps until carved; instances are in. */
+    if (scr_sa_dump_chunks) (void)madvise(fresh, n << SCR_SA_CHUNK_SHIFT, MADV_DODUMP);
+#endif
+#ifdef SCR_SA_THP
+    if (huge) (void)madvise(fresh, n << SCR_SA_CHUNK_SHIFT, MADV_HUGEPAGE);
+#else
+    (void)huge;
+#endif
+  }
+  return p;
 }
 
 #ifdef SCR_SA_TRIM
@@ -2487,7 +3371,7 @@ static char *scr_plr_reuse(void) {
 #endif
 
 static __attribute__((noinline)) void *scr_plr_refill(size_t n) {
-  if (!__atomic_load_n(&scr_plr_base, __ATOMIC_ACQUIRE)) scr_plr_reserve();
+  if (!__atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE)) scr_plr_reserve();
   size_t need = n + SCR_PLR_LINK;
   size_t chunk =
       need > SCR_PLR_CHUNK ? (need + SCR_PLR_CHUNK - 1) & ~(SCR_PLR_CHUNK - 1) : SCR_PLR_CHUNK;
@@ -2495,14 +3379,7 @@ static __attribute__((noinline)) void *scr_plr_refill(size_t n) {
 #ifdef SCR_SA_TRIM
   if (chunk == SCR_PLR_CHUNK) p = scr_plr_reuse();
 #endif
-  if (!p) {
-    size_t at = __atomic_fetch_add(&scr_plr_top, chunk, __ATOMIC_RELAXED);
-    if (at + chunk > scr_plr_size || at + chunk < at) {
-      static const char message[] = "scriptc: out of address space for program-lifetime objects\n";
-      scr_trap(message);
-    }
-    p = scr_plr_base + at;
-  }
+  if (!p && !(p = scr_plr_take(chunk))) scr_plr_out_of_memory();
 #ifdef SCR_SA_TRIM
   scr_plr_own(p, chunk);
 #endif
@@ -2524,7 +3401,7 @@ static __attribute__((noinline)) void *scr_plr_refill(size_t n) {
 /* Called before compiled code runs (emitted main), so the region exists
  * before any reference into it does. */
 void scr_plr_init(void) {
-  if (!__atomic_load_n(&scr_plr_base, __ATOMIC_ACQUIRE)) scr_plr_reserve();
+  if (!__atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE)) scr_plr_reserve();
 }
 
 static void scr_plr_heap_stats(size_t *held, size_t *used) {

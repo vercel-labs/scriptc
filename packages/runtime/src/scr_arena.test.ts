@@ -64,4 +64,41 @@ describe.skipIf(process.platform === "win32")("group arenas", () => {
     },
     300000,
   );
+
+  test("arena objects lie in the reference window (size-class, small window)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-arena-"));
+    try {
+      const bin = join(dir, "arena-window");
+      await exec("clang", [
+        "-std=c11",
+        "-O1",
+        "-pthread",
+        "-Wall",
+        "-Wextra",
+        "-Wno-deprecated-declarations",
+        ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
+        "-fsanitize=undefined",
+        "-DSCR_SA_WINDOW_TEST_CHUNKS=16",
+        ...["scr_arena_window.test.c", ...EXECUTABLE_RUNTIME_SOURCES].map((source) =>
+          join(import.meta.dirname, source),
+        ),
+        ...(process.platform === "linux" ? ["-lm"] : []),
+        "-o",
+        bin,
+      ]);
+      const { stdout, stderr } = await exec(bin, [], {
+        timeout: 60000,
+        env: { ...process.env, UBSAN_OPTIONS: "halt_on_error=1" },
+      });
+      expect(stdout.trim().split("\n")).toEqual([
+        "inline chunk: system",
+        "arena objects: window",
+        "large object: window",
+        "reused chunks: window",
+      ]);
+      expect(stderr).toBe("");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 300000);
 });

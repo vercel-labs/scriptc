@@ -6476,6 +6476,12 @@ export function lowerVarDecl(
       raw.type.kind === "dyn" &&
       (g.type.kind === "record" ||
         g.type.kind === "object" ||
+        // `const p = Promise.all.call(C, xs)` in JavaScript: the call runs
+        // the specification's algorithm with `C`'s capability and returns
+        // whatever `C` constructed, a foreign instance the checker still
+        // calls `Promise<T>`. The binding holds that value as dyn; a
+        // native-promise check would reject it (t262-db B3).
+        (g.type.kind === "promise" && isJsPromiseStaticCall(raw)) ||
         (ts.isIdentifier(decl.name) &&
           jsBindingKeepsCheckedObject(lowerer, decl.name, g.type) &&
           (existingValueForm(decl.initializer) || jsHoldsDynObject(lowerer, decl.initializer))))
@@ -6746,10 +6752,20 @@ export function lowerVarDecl(
     init.type.kind === "dyn" &&
     !decl.type &&
     keptIdentityAssertion(lowerer, decl.initializer) !== undefined;
+  // `const p = Promise.all.call(C, xs)` in JavaScript: the checked-dynamic
+  // promise-static call returns whatever `C` constructed — a foreign
+  // instance, not the `Promise<T>` the checker infers from the signature —
+  // so the binding holds it as dyn (t262-db B3).
+  const keepsPromiseStaticValue =
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isJsPromiseStaticCall(init);
   if (
     expandsObject ||
     preservesObjectIdentity ||
     keepsAssertedObject ||
+    keepsPromiseStaticValue ||
     (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       isNativeBuiltinValueInitializer(lowerer, decl.initializer))
@@ -7168,6 +7184,13 @@ function inferredOptionalRecordType(
   )
     return declared;
   return actual;
+}
+
+/** Whether a lowered initializer is the checked-dynamic `Promise.<static>.call(C, …)`
+ * call (lower-calls.ts, JavaScript sources only). Its result is whatever `C`
+ * constructed, so a binding the checker typed `Promise<T>` holds it as dyn. */
+function isJsPromiseStaticCall(value: IrExpr): boolean {
+  return value.kind === "libCall" && value.fn === "promise.genericStatic";
 }
 
 function lowerVariableInitializer(

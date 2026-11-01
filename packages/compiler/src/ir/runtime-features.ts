@@ -1126,6 +1126,10 @@ const RUNTIME_FEATURE_RULES = {
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
   }),
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor (scr_js_promise_generic.c): NewPromiseCapability(C), the
+   * C.resolve lookup and the iterator protocol. */
+  promiseGeneric: rule({ fns: ["promise.genericStatic"] }),
   /** EventEmitter and the stream classes as untyped constructor values
    * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
    * unit, render unhandled 'error' payloads through the inspect unit and
@@ -1599,6 +1603,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     textCodecDyn: false,
     dnsPromises: false,
     dynAsync: false,
+    promiseGeneric: false,
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,

@@ -64,6 +64,7 @@ export function lowerArrayCallback(
   arrT: IrType,
   bindUntyped = false,
   expectedReturn?: IrType,
+  bindAnyLead = false,
 ): {
   fnArg: IrExpr & { type: IrType & { kind: "func" } };
   arity: number;
@@ -148,6 +149,8 @@ export function lowerArrayCallback(
   // in this comparison. The override is temporary because one callback
   // AST can lower under several generic instances.
   const contextual: { symbol: ts.Symbol; previous: IrType | undefined }[] = [];
+  // Element parameters bound as `any` for this lowering (see bindAnyLead).
+  const anyLead: ts.Symbol[] = [];
   const previousImplicit = lowerer.implicitParamTypes;
   let contextualTs: Map<ts.Symbol, ts.Type> | null = null;
   if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
@@ -161,6 +164,27 @@ export function lowerArrayCallback(
         param.initializer ||
         param.dotDotDotToken
       ) {
+        // A mutable-buffers helper passes a checked-dynamic element that a
+        // shrink or detach can leave out of view, where the spec's Get
+        // answers undefined. The checker's contextual `number` (from the
+        // typed-array signature) is then unsound, and a checked extraction
+        // of it would throw on a value Node hands the callback. Reads of
+        // the parameter are `any`, so the body's conversions are JS-exact
+        // (String(undefined), arithmetic NaN, typeof).
+        if (
+          bindAnyLead &&
+          expected?.kind === "dyn" &&
+          !param.type &&
+          !param.initializer &&
+          !param.dotDotDotToken &&
+          ts.isIdentifier(param.name)
+        ) {
+          const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+          if (symbol !== undefined && !lowerer.anySymbols.has(symbol)) {
+            lowerer.anySymbols.add(symbol);
+            anyLead.push(symbol);
+          }
+        }
         return;
       }
       const checkerType = lowerer.checker.getTypeAtLocation(param.name);
@@ -245,6 +269,7 @@ export function lowerArrayCallback(
       if (previous === undefined) lowerer.runtimeOptionalPatternTypes.delete(node);
       else lowerer.runtimeOptionalPatternTypes.set(node, previous);
     }
+    for (const symbol of anyLead) lowerer.anySymbols.delete(symbol);
     for (const { symbol, previous } of contextual) {
       if (previous === undefined) lowerer.runtimeOptionalBindingTypes.delete(symbol);
       else lowerer.runtimeOptionalBindingTypes.set(symbol, previous);

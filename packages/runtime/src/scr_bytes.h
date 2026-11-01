@@ -376,6 +376,18 @@ void scr_js_buffers_arm(void);
  * Answers true when the view is usable. */
 bool scr_js_bytes_live(const ScrBytes *b);
 void scr_js_bytes_throw_detached(const char *label);
+/* The typed-array callback methods' entry guard (t262-dc2): Node's
+ * ValidateTypedArray runs once before a forEach/map/... visit, so a
+ * detached or out-of-bounds receiver throws even when the visit would run
+ * no iterations. `method` names the method in the message. */
+void scr_js_bytes_require_live(const ScrBytes *b, const ScrStr *method);
+/* The element at `i` as a JavaScript value (+1) for a visit whose bound was
+ * captured before the buffer could shrink: undefined past the live length
+ * (Node's IntegerIndexedElementGet). */
+ScrDyn *scr_bytes_item_dyn(const ScrBytes *b, double i);
+/** The %TypedArray%.prototype method name Node prints in a detached-receiver
+ * TypeError (findLastIndex reports V8's own "findIndexLast" label). */
+const char *scr_js_typed_detached_method(const char *method);
 /* Whether `b` is a length-tracking view. */
 bool scr_js_bytes_tracking(const ScrBytes *b);
 /* `.byteLength` / `.byteOffset` for a view whose owner may move: a DataView

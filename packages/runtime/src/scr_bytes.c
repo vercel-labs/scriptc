@@ -682,6 +682,19 @@ double scr_bytes_get_or_nan(const ScrBytes *b, double i) {
   return scr_bytes_get(b, i);
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The element at `i` as a JavaScript value (+1) for a visit that may outlive
+ * its bound (t262-dc2): past the live length — a buffer that shrank, or a
+ * detached one, under the loop — it is undefined, exactly Node's
+ * IntegerIndexedElementGet on a typed array. The registry keeps b->len
+ * current, so the test sees the shrink. Never touches storage out of
+ * bounds. */
+ScrDyn *scr_bytes_item_dyn(const ScrBytes *b, double i) {
+  if (!(i >= 0) || i != trunc(i) || i >= (double)b->len) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_dyn_new_num(scr_bytes_load(b, (size_t)i));
+}
+#endif
+
 /* Store v at a valid index with the element type's JS conversion. */
 static void scr_bytes_store(ScrBytes *b, size_t idx, double v) {
   if (b->shared) {
@@ -1258,6 +1271,14 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
 }
 
 void scr_bytes_set_from_dyn(ScrBytes *dst, const ScrDyn *src, double offset) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Node validates the receiver before the offset: a detached or
+   * out-of-bounds target is a TypeError, not the RangeError below. */
+  if (!scr_js_bytes_live(dst)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
+    return;
+  }
+#endif
   double t = isnan(offset) ? 0 : trunc(offset);
   if (!(t >= 0)) {
     static const char msg[] = "offset is out of bounds";
@@ -1306,6 +1327,29 @@ void scr_js_bytes_throw_detached(const char *label) {
   scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
 }
 
+/* V8's own label for %TypedArray%.prototype.findLastIndex's receiver check is
+ * "findIndexLast" (the C++ builtin's name), and Node prints the label
+ * verbatim, so the message names that text. */
+const char *scr_js_typed_detached_method(const char *method) {
+  return strcmp(method, "findLastIndex") == 0 ? "findIndexLast" : method;
+}
+
+/* A callback method's entry guard (t262-dc2): Node's ValidateTypedArray runs
+ * once before forEach/map/... reads %TypedArrayLength, so a detached or
+ * out-of-bounds receiver throws even when the visit would run no iterations.
+ * `method` names the %TypedArray%.prototype method for Node's message. */
+void scr_js_bytes_require_live(const ScrBytes *b, const ScrStr *method) {
+  if (scr_js_bytes_live(b)) return;
+  char name[48];
+  size_t len = method->len < sizeof name - 1 ? method->len : sizeof name - 1;
+  memcpy(name, method->data, len);
+  name[len] = '\0';
+  char label[96];
+  snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s",
+           scr_js_typed_detached_method(name));
+  scr_js_bytes_throw_detached(label);
+}
+
 /* Whether `b`'s length follows its owner (a view built without a length
  * over a resizable buffer); a subarray that runs to the end of one stays
  * tracking. */
@@ -1318,7 +1362,8 @@ bool scr_js_bytes_tracking(const ScrBytes *b) {
 static bool scr_js_typed_method_ok(const ScrBytes *b, const char *method) {
   if (scr_js_bytes_live(b)) return true;
   char label[96];
-  int length = snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+  int length = snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s",
+                        scr_js_typed_detached_method(method));
   scr_js_bytes_throw_detached(label);
   (void)length;
   return false;

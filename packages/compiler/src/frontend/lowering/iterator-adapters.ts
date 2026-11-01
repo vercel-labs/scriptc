@@ -20,6 +20,7 @@ import { typeKey, genResultRecord } from "../type-mapper.js";
 import type { Lowerer } from "./lowerer.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import { lowerSafeIndexRead } from "./array-values.js";
+import { requireLiveBytes } from "./buffers.js";
 
 /** The conversion into an iterator-typed slot (a generator type): a
  * checked-dynamic iterator or a generator with other channel types steps
@@ -643,6 +644,7 @@ export function lowerBytesIteratorValue(
         { id: "index.0", name: "index", type: F64, mutable: true },
       ],
       body: [
+        ...(lowerer.buffersMutable ? [requireLiveBytes(list, method, loc)] : []),
         {
           kind: "varDecl",
           localId: "index.0",

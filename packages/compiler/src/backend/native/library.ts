@@ -116,8 +116,13 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // The builtin intrinsic graph (t262-da A1): the archive carries it when
     // the program names the object model build, exactly like the pack. The
     // graph itself needs the intrinsicObjects fact, which the archive never
-    // carries; this build is the fill stub scr_json.c's object model asks.
-    ...(opts.jsObjectModel === true || opts.bigintBytes === true ? ["scr_js_intrinsics.c"] : []),
+    // carries; this build is the fill stub scr_json.c's object model asks, so
+    // the condition matches the SCR_JS_OBJECT_MODEL one below — a program
+    // that only resizes buffers compiles the object model's scr_json.c and
+    // asks the stub what it filled.
+    ...(opts.jsObjectModel === true || opts.bigintBytes === true || opts.mutableBuffers === true
+      ? ["scr_js_intrinsics.c"]
+      : []),
     // The buffer views registry: only a program that resizes, grows or
     // detaches a buffer installs its ops table.
     ...(opts.mutableBuffers === true ? ["scr_js_buffers.c"] : []),

@@ -1,6 +1,6 @@
 // Emit the intrinsic member table scr_js_intrinsics.c is built from, read
-// from the pinned Node release itself (run it with Node 24.22.0; the header
-// records the version and refuses another one).
+// from the pinned Node release itself (.node-version; the header records the
+// version and refuses another one).
 //   node scripts/gen-intrinsics.mjs > packages/runtime/src/scr_js_intrinsics_table.h
 //   node scripts/gen-intrinsics.mjs --ts > packages/compiler/src/frontend/lowering/intrinsic-ids.generated.ts
 // packages/runtime/test/intrinsics-table.test.ts reruns it and compares, so the
@@ -9,7 +9,9 @@
 // order Object.getOwnPropertyNames answers), with the property's attributes,
 // its kind, and for functions their name and length. Values that are other
 // intrinsics are named, not copied, so the runtime links the same objects.
-const PIN = "v24.22.0";
+import { readFileSync } from "node:fs";
+
+const PIN = `v${readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim()}`;
 if (process.version !== PIN && !process.env.SCRIPTC_INTRINSICS_ANY_NODE) {
   console.error(`gen-intrinsics: run with Node ${PIN} (this is ${process.version})`);
   process.exit(2);

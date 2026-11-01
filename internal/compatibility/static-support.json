@@ -124,7 +124,7 @@
     "node-builtin.os.uptime": ["tests/corpus/5140-os-host-facts.ts"],
     "node-builtin.os.version": ["tests/corpus/5140-os-host-facts.ts"],
     "node-builtin.os.constants": ["tests/corpus/5141-os-constants.ts"],
-    "node-builtin.os.userInfo": ["tests/corpus/1480-os-network-interfaces.ts", "tests/corpus/2917-builtin-callable-widths.ts", "tests/corpus/1540-os-userinfo.ts", "tests/corpus/os-userinfo-passwd-entry.ts", "tests/corpus/9204-os-user-info-buffer.ts"],
+    "node-builtin.os.userInfo": ["tests/corpus/1480-os-network-interfaces.ts", "tests/corpus/2917-builtin-callable-widths.ts", "tests/corpus/1540-os-userinfo.ts", "tests/corpus/os-userinfo-passwd-entry.ts", "tests/corpus/9204-os-user-info-buffer.ts", "tests/corpus/os-user-info-encoding.ts"],
     "node-builtin.fs.constants": ["tests/corpus/6207-fs-constants-object.ts", "tests/corpus/6208-fs-constants-require.cjs"],
     "node-builtin.crypto.generatePrime": ["tests/corpus/7152-crypto-prime.ts", "tests/corpus/7153-crypto-prime-errors.cjs"],
     "node-builtin.crypto.generatePrimeSync": ["tests/corpus/7152-crypto-prime.ts", "tests/corpus/7153-crypto-prime-errors.cjs"],

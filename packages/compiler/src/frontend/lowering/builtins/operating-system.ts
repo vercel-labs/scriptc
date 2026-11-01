@@ -1,6 +1,7 @@
 import { keyedHelperName } from "../stable-names.js";
 import { numLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { knownBufEncoding } from "../containers/bytes.js";
 import { type Lowerer } from "../lowerer.js";
 import {
   BOOL,
@@ -23,9 +24,12 @@ import {
  * not the process gid; -1 on Windows), shell = pw_shell (as the `string | null`
  * union @types/node declares — POSIX always answers the string arm;
  * null is Node's Windows answer), homedir = pw_dir (the PASSWD home,
- * NOT os.homedir's $HOME-first cascade — Node's own split). The record
- * assembles field-by-field from scalar libCalls in the shape's
- * declaration order; unknown fields and the options argument fence. */
+ * NOT os.homedir's $HOME-first cascade — Node's own split). A literal
+ * `encoding` names the form of the three strings: 'buffer' for Buffers,
+ * another Buffer encoding for the passwd text re-encoded in it, utf8
+ * otherwise. The record assembles field-by-field from scalar libCalls in
+ * the shape's declaration order; unknown fields and a runtime encoding
+ * fence. */
 export function lowerOsUserInfoCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -35,12 +39,14 @@ export function lowerOsUserInfoCall(
   if (args.length > 1) {
     lowerer.noLowering(`userInfo with ${args.length} arguments`, call);
   }
-  // The options object selects the Buffer form: Node answers Buffers for
-  // the three strings exactly when `options.encoding === 'buffer'`, and
-  // any other options object (or a non-object) yields the string record.
-  // The argument must spell that decision statically — a runtime encoding
-  // would make the result shape depend on the value.
-  let buffer = false;
+  // The options object names the encoding Node's binding hands the passwd
+  // bytes to StringBytes::Encode: 'buffer' answers the three strings as
+  // Buffers, any other Buffer encoding (aliases and letter case folded)
+  // answers the passwd text re-encoded in it, and a spelling Node does not
+  // know reads as utf8 — its ParseEncoding default. The argument must
+  // spell the decision statically: a runtime encoding would make both the
+  // result shape and the decoder depend on the value.
+  let encoding = "utf8";
   if (args.length === 1) {
     let options: ts.Expression = args[0]!;
     while (ts.isParenthesizedExpression(options)) options = options.expression;
@@ -51,7 +57,7 @@ export function lowerOsUserInfoCall(
         "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
       );
     }
-    let encoding: ts.Expression | undefined;
+    let encodingExpr: ts.Expression | undefined;
     for (const prop of options.properties.nodes) {
       if (
         !ts.isPropertyAssignment(prop) ||
@@ -64,13 +70,16 @@ export function lowerOsUserInfoCall(
           "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
         );
       }
-      encoding = prop.initializer;
+      encodingExpr = prop.initializer;
     }
-    if (encoding !== undefined) {
-      let value: ts.Expression = encoding;
+    if (encodingExpr !== undefined) {
+      let value: ts.Expression = encodingExpr;
       while (ts.isParenthesizedExpression(value)) value = value.expression;
-      if (ts.isStringLiteral(value)) {
-        buffer = value.text === "buffer";
+      if (ts.isStringLiteralLike(value)) {
+        encoding =
+          value.text.toLowerCase() === "buffer"
+            ? "buffer"
+            : (knownBufEncoding(value.text) ?? "utf8");
       } else if (
         !(
           ts.isIdentifier(value) &&
@@ -80,7 +89,7 @@ export function lowerOsUserInfoCall(
       ) {
         lowerer.noLowering(
           "userInfo with a runtime encoding",
-          encoding,
+          encodingExpr,
           "the encoding must be the literal 'buffer' or a non-buffer string literal",
         );
       }
@@ -98,13 +107,25 @@ export function lowerOsUserInfoCall(
   if (!shape || shape.tuple || shape.indexValue || shape.fields.length === 0) fence();
   const fields: { name: string; value: IrExpr }[] = [];
   const isBytes = (t: IrType): boolean => t.kind === "bytes" && t.elem === "u8";
+  const buffer = encoding === "buffer";
   const textField = (
     fn: "os.userName" | "os.userHomedir" | "os.userShell",
     bufferFn: "os.userNameBuf" | "os.userHomedirBuf" | "os.userShellBuf",
-  ): IrExpr =>
-    buffer
-      ? { kind: "libCall", fn: bufferFn, args: [], type: BYTES_U8, loc }
-      : { kind: "libCall", fn, args: [], type: STRING, loc };
+  ): IrExpr => {
+    if (buffer) return { kind: "libCall", fn: bufferFn, args: [], type: BYTES_U8, loc };
+    if (encoding === "utf8") return { kind: "libCall", fn, args: [], type: STRING, loc };
+    // Any other encoding re-encodes the passwd bytes: the field's own bytes
+    // go through the decoder Buffer#toString uses for that name, which is
+    // the StringBytes::Encode Node's binding calls on the same bytes.
+    return {
+      kind: "bytesIntrinsic",
+      method: "toString",
+      receiver: { kind: "libCall", fn: bufferFn, args: [], type: BYTES_U8, loc },
+      args: [strLit(encoding, loc)],
+      type: STRING,
+      loc,
+    };
+  };
   for (const f of shape.fields) {
     if (f.name === "username" && (buffer ? isBytes(f.type) : f.type.kind === "string")) {
       fields.push({ name: f.name, value: textField("os.userName", "os.userNameBuf") });

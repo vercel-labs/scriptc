@@ -74707,6 +74707,7 @@
           "tests/corpus/5141-os-constants.ts",
           "tests/corpus/5883-os-set-priority.ts",
           "tests/corpus/9204-os-user-info-buffer.ts",
+          "tests/corpus/os-user-info-encoding.ts",
           "tests/corpus/os-userinfo-passwd-entry.ts"
         ]
       },
@@ -75396,7 +75397,8 @@
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/1540-os-userinfo.ts",
           "tests/corpus/os-userinfo-passwd-entry.ts",
-          "tests/corpus/9204-os-user-info-buffer.ts"
+          "tests/corpus/9204-os-user-info-buffer.ts",
+          "tests/corpus/os-user-info-encoding.ts"
         ]
       },
       "anchorSource": "exact"

@@ -23,6 +23,12 @@ import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import {
+  isPrimitiveValueType,
+  staticallyPrimitive,
+  throwAfterEach,
+  throwTypeError,
+} from "./primitive-throws.js";
+import {
   constructedFromValue,
   constructedValue,
   constructorPrimitiveFlag,
@@ -217,7 +223,11 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
 import { constructionEscape } from "./construction-escapes.js";
-import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
+import {
+  checkedClassConstruction,
+  checkedClassConstructionPacked,
+  primitiveCheckedConstruction,
+} from "./class-construction.js";
 import {
   initializeRuntimeStatics,
   hasRuntimeStatics,
@@ -11968,6 +11978,29 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   }
   // Checked construction supports emitted classes and builtin typed arrays.
   const callee = tryLowerExpression(lowerer, expr.expression);
+  // A callee whose VALUE is a primitive (`new (null)()`, `new (5)()`, and a
+  // union whose arms are all primitives): JavaScript's IsConstructor step
+  // throws Node's TypeError, which names the constructed expression. V8
+  // evaluates the callee, then every argument, and only then checks, so the
+  // arguments lower for their effects ahead of the throw.
+  if (callee && isPrimitiveValueType(callee.type)) {
+    return primitiveCalleeThrow(lowerer, expr, callee, loc);
+  }
+  if (callee && callee.type.kind === "union") {
+    const arms = lowerer.unions.get(callee.type.unionId)?.arms ?? [];
+    if (arms.length > 0 && arms.every(isPrimitiveValueType)) {
+      return primitiveCalleeThrow(lowerer, expr, callee, loc);
+    }
+  }
+  // A callee the CHECKER types as a primitive that still lowers to a
+  // dynamic slot (`const n = null`, or a property whose initializer was
+  // null): the same Node TypeError, but the value decides at run time,
+  // because a JavaScript property keeps its initializer's type through a
+  // later assignment (`reg.ctor = Foo; new reg.ctor()`). A typed
+  // construction site and an `any` callee keep the lowering they had.
+  if (callee && callee.type.kind === "dyn" && staticallyPrimitive(lowerer, expr.expression)) {
+    return primitiveCheckedNew(lowerer, expr, callee, loc);
+  }
   if (
     callee &&
     (callee.type.kind === "dyn" ||
@@ -12004,6 +12037,82 @@ function lowerCheckedConstructor(lowerer: Lowerer, expr: ts.NewExpression, calle
     args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     loc,
   );
+}
+
+/** A checker-primitive callee whose value is a dynamic slot: the callee and
+ * every argument evaluate, then the runtime primitive check throws Node's
+ * "<callee> is not a constructor" — or, when the slot holds something else
+ * after all, constructs it as a dynamic `new` always did. */
+function primitiveCheckedNew(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const message = `${constructorSpelling(expr.expression)} is not a constructor`;
+  const args = expr.arguments?.nodes ?? [];
+  if (args.some(ts.isSpreadElement)) {
+    const packed = lowerer.completeArgs(args, [{ type: DYN, mode: "dynRest" }], loc, expr)[0]!;
+    return primitiveCheckedConstruction(lowerer, callee, message, [], loc, packed);
+  }
+  return primitiveCheckedConstruction(
+    lowerer,
+    callee,
+    message,
+    args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    loc,
+  );
+}
+
+/** The always-throwing construction of a provably primitive callee. */
+function primitiveCalleeThrow(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments?.nodes ?? [];
+  const effects: IrExpr[] = [callee];
+  if (args.some(ts.isSpreadElement)) {
+    effects.push(lowerer.completeArgs(args, [{ type: DYN, mode: "dynRest" }], loc, expr)[0]!);
+  } else {
+    for (const arg of args) effects.push(lowerer.lowerExpr(arg));
+  }
+  return throwAfterEach(
+    effects,
+    throwTypeError(
+      strLit(`${constructorSpelling(expr.expression)} is not a constructor`, loc),
+      DYN,
+      loc,
+    ),
+    loc,
+  );
+}
+
+/** The constructed expression as V8 names it in "is not a constructor": its
+ * source text, without the parentheses that only group it (`new (null)()`
+ * reports "null is not a constructor") and with a call's argument list
+ * abbreviated to "..." (`new (factory(null))()` reports "factory(...)",
+ * `new (factory(o).f)()` "factory(...).f", `new o["f"]()` "o.f"). A comma
+ * expression keeps V8's own "(a , b)" spelling. */
+function constructorSpelling(node: ts.Expression): string {
+  let spelled = node;
+  while (ts.isParenthesizedExpression(spelled)) spelled = spelled.expression;
+  if (ts.isCallExpression(spelled)) return `${constructorSpelling(spelled.expression)}(...)`;
+  if (ts.isPropertyAccessExpression(spelled)) {
+    return `${constructorSpelling(spelled.expression)}.${spelled.name.text}`;
+  }
+  if (
+    ts.isElementAccessExpression(spelled) &&
+    ts.isStringLiteralLike(spelled.argumentExpression) &&
+    /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(spelled.argumentExpression.text)
+  ) {
+    return `${constructorSpelling(spelled.expression)}.${spelled.argumentExpression.text}`;
+  }
+  if (ts.isBinaryExpression(spelled) && spelled.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+    return `(${constructorSpelling(spelled.left)} , ${constructorSpelling(spelled.right)})`;
+  }
+  return spelled.getText();
 }
 
 /** A getter/setter invocation over an accessor target's receiver — the

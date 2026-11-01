@@ -134,6 +134,7 @@ import {
   staticImportNamespaceType,
 } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
+import { lowerPrimitiveBaseDelete, isPrimitiveValueType } from "./primitive-throws.js";
 import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
@@ -8181,6 +8182,18 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     if (unionDelete) return unionDelete;
   }
   let obj = lowerer.lowerExpr(target.expression);
+  // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key,
+  // and the base's type decides the answer — null and undefined throw
+  // Node's TypeError, `?.` on a nullish base short-circuits to `true`
+  // without evaluating the key, and every other primitive deletes from its
+  // ToObject wrapper (a String's indexes and `length` refuse the delete).
+  if (isPrimitiveValueType(obj.type)) {
+    return {
+      kind: "exprStmt",
+      expr: lowerPrimitiveBaseDelete(lowerer, expr, target, obj, VOID),
+      loc,
+    };
+  }
   // `delete this.stack` in an Error subclass that declares a `stack`
   // accessor (quickjs-wasi's JSException): V8 gives each error an own
   // `stack` that shadows the accessor, and the delete removes it so reads

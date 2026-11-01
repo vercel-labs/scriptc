@@ -1532,6 +1532,13 @@ const CHECKED_JS_ENFORCED_CODES: ReadonlySet<number> = new Set([
 function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   const file = d.fileName;
   if (!file || !isJsSourceFileName(file)) return false;
+  // A private setter's implicit any stays reported: the private-element
+  // lowering does not implement the shadowing and brand-check rules these
+  // programs exercise (a private setter shadowed across nested classes
+  // reaches the LLVM emitter's unknown-class path), so the program keeps
+  // refusing until that lowering exists.
+  if (d.code === 7032 && ts.flattenDiagnosticMessageText(d, "\n").includes("Property '#"))
+    return false;
   if (JS_RELAXED_TSC_CODES.has(d.code) || TS7_JS_RELAXED_EXTRA.has(d.code)) return true;
   // The triage table's `relax` rows: legal JavaScript whose construct the
   // lowering already builds Node-exactly (tsc-codes.ts).

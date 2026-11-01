@@ -254,6 +254,11 @@ function buildLibFnSignatures() {
      * arguments; other receiver representations retain a runtime refusal. */
     "dyn.keyDelete": { argTypes: [DYN, STRING, BOOL], result: VOID },
     "dyn.keyDeleteComputed": { argTypes: [DYN, DYN, BOOL], result: VOID },
+    /** `delete` on a primitive base: ToPropertyKey of the key, then the
+     * ToObject wrapper's own properties (a String's indexes and `length`
+     * answer false in sloppy code and throw in strict code). Borrows both
+     * operands; answers the delete's value. */
+    "dyn.primitiveDelete": { argTypes: [DYN, DYN, BOOL], result: BOOL },
     "dyn.reflectDeleteProperty": { argTypes: [DYN, DYN], result: BOOL },
     /** Reflect.has's target check: Node's TypeError for a primitive. */
     "dyn.reflectHasTarget": { argTypes: [DYN], result: VOID },

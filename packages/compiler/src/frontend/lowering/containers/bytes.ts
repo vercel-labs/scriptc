@@ -1,6 +1,13 @@
 import { keyedHelperName } from "../stable-names.js";
 import { allBytesArms, indexedUnionArms, lowerIndexedUnionMethod } from "../indexed-unions.js";
-import { boolLit, dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
+import {
+  boolLit,
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import { BUF_NUM_METHODS } from "./buffer-numeric-methods.js";
 import * as ts from "../../ts7/adapter.js";
 import { constituentTypes } from "../../ts7/checker.js";
@@ -49,6 +56,21 @@ import { lowerBytesIteratorValue } from "../iterator-adapters.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
 import { callbackSite, findPredicateOk, predicateToBoolean } from "./array-callbacks.js";
 import { typeKey } from "../../type-mapper.js";
+
+/** Whether a callback's first data parameter carries no annotation: the
+ * mutable-buffers path binds it as `any` (callback-arguments), so the value
+ * it receives may be an absent element. */
+function unannotatedLeadParam(fn: ts.ArrowFunction | ts.FunctionExpression): boolean {
+  const params = fn.parameters.nodes;
+  const first = params.length > 0 && params[0]!.name.getText() === "this" ? params[1] : params[0];
+  return (
+    first !== undefined &&
+    ts.isIdentifier(first.name) &&
+    !first.type &&
+    !first.initializer &&
+    !first.dotDotDotToken
+  );
+}
 
 /** TypedArray.prototype.sort and toSorted. The receiver and comparator
  * expressions are evaluated before entering the helper (buildBytesSortFn).
@@ -223,13 +245,30 @@ function lowerBytesCallbackCall(
   if (accT !== null && (accT.kind === "void" || accT.kind === "func"))
     lowerer.badType(call, lowerer.typeOf(call));
   const receiver = lowerer.lowerExprExpecting(access.expression, bytesT);
+  // A mutable-buffers program's callback receives the JavaScript value the
+  // live view holds (undefined once the buffer shrank or detached under the
+  // visit), so its element slot binds as the checked-dynamic value and the
+  // body reads the parameter as `any`.
+  const elemLead: IrType = lowerer.buffersMutable ? DYN : F64;
+  // An unannotated element parameter binds as `any` (callback-arguments), so
+  // a result the visit stores can be the absent element itself. The
+  // callback's return slot is then the checked-dynamic value too, and the
+  // helper's ToNumber converts it, exactly Node's IntegerIndexedElementSet
+  // (undefined → NaN, then the element conversion). A callback that carries
+  // its own types keeps them.
+  const anyLead =
+    lowerer.buffersMutable &&
+    (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) &&
+    unannotatedLeadParam(argNode);
+  const returnLead = anyLead && (method === "map" || (accT !== null && accT.kind === "f64"));
   const { fnArg, arity } = lowerArrayCallback(
     lowerer,
     argNode,
-    accT !== null ? [accT, F64] : [F64],
+    accT !== null ? [accT, elemLead] : [elemLead],
     bytesT,
     false,
-    accT ?? undefined,
+    returnLead ? DYN : (accT ?? undefined),
+    lowerer.buffersMutable,
   );
   const fnRet = fnArg.type.ret;
   const predicate =
@@ -288,15 +327,24 @@ function bytesCallbackHelper(
   loc: SrcLoc,
   site: string,
 ): string {
-  const key = `bytes.${method}:${bytesT.elem}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : ""}${site}`;
+  // A mutable-buffers program's visit can outlive its buffer: Node captures
+  // %TypedArrayLength once (the loop bound below) and reads each element
+  // through the LIVE view, so an index a shrink or detach left out of view
+  // reads undefined — a JavaScript value, not an element slot. The callback
+  // therefore receives the checked-dynamic value, and every write of the
+  // visit goes through ToNumber, exactly Node's IntegerIndexedElementSet.
+  // Every other program keeps the typed element and its direct reads.
+  const mutable = lowerer.buffersMutable;
+  const key = `bytes.${method}:${bytesT.elem}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : ""}${mutable ? ":mutable" : ""}${site}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%bytes.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
   const reduce = method === "reduce" || method === "reduceRight";
   const backward = method === "reduceRight" || method === "findLast" || method === "findLastIndex";
+  const elemT: IrType = mutable ? DYN : F64;
   const fnT = funcOf(
-    (reduce ? [resultT, F64, F64, bytesT] : [F64, F64, bytesT]).slice(0, arity),
+    (reduce ? [resultT, elemT, F64, bytesT] : [elemT, F64, bytesT]).slice(0, arity),
     fnRet,
   );
   const keptT = arrayOf(F64);
@@ -304,19 +352,40 @@ function bytesCallbackHelper(
   const i = (): IrExpr => varRef("i.0", F64, loc);
   const n = (): IrExpr => varRef("n.0", F64, loc);
   const acc = (): IrExpr => varRef("acc.0", resultT, loc);
-  const element = (): IrExpr => varRef("v.0", F64, loc);
-  const at = (index: IrExpr): IrExpr => ({
-    kind: "bytesIntrinsic",
-    method: "get",
-    receiver: a(),
-    args: [index],
-    type: F64,
-    loc,
-  });
+  const element = (): IrExpr => varRef("v.0", elemT, loc);
+  // The element read: a plain typed load normally; in a mutable-buffers
+  // program the JavaScript value the live view holds at that index, which is
+  // undefined once a shrink or detach put the index out of view (and never
+  // reads storage out of bounds).
+  const at = (index: IrExpr): IrExpr =>
+    mutable
+      ? { kind: "libCall", fn: "bytes.itemDyn", args: [a(), index], type: DYN, loc }
+      : {
+          kind: "bytesIntrinsic",
+          method: "get",
+          receiver: a(),
+          args: [index],
+          type: F64,
+          loc,
+        };
+  // ToNumber of a value the visit holds, where Node stores a number
+  // (undefined → NaN, a string or object through its own conversion).
+  const toNumber = (value: IrExpr): IrExpr =>
+    value.type.kind === "dyn"
+      ? { kind: "libCall", fn: "dyn.toNumberCoerce", args: [value], type: F64, loc }
+      : value;
+  // The element slot the callback receives: the checked-dynamic value
+  // normally. A callback that annotated its parameter (or one from a typed
+  // program) claims a number, and Node's ToNumber of an absent element is
+  // NaN, so that slot converts instead of a checked extraction that would
+  // throw on the undefined a shrink or detach hands it.
+  const elemParam = (): IrType | undefined =>
+    fnT.kind === "func" ? fnT.params[reduce ? 1 : 0] : undefined;
+  const elemArg = (): IrExpr => (elemParam()?.kind === "dyn" ? element() : toNumber(element()));
   const callback = (): IrExpr => ({
     kind: "callValue",
     callee: varRef("f.0", fnT, loc),
-    args: (reduce ? [acc(), element(), i(), a()] : [element(), i(), a()]).slice(0, arity),
+    args: (reduce ? [acc(), elemArg(), i(), a()] : [elemArg(), i(), a()]).slice(0, arity),
     type: fnRet,
     loc,
   });
@@ -370,7 +439,7 @@ function bytesCallbackHelper(
       : []),
     { id: "n.0", name: "n", type: F64, mutable: false },
     { id: "i.0", name: "i", type: F64, mutable: true },
-    { id: "v.0", name: "v", type: F64, mutable: true },
+    { id: "v.0", name: "v", type: elemT, mutable: true },
   ];
   const params: IrParam[] = [
     { localId: "a.0", name: "a", type: bytesT },
@@ -378,26 +447,9 @@ function bytesCallbackHelper(
     ...(hasInit ? [{ localId: "z.0", name: "z", type: resultT }] : []),
   ];
   // A mutable-buffers program's visit runs to the captured length even after
-  // the buffer shrinks under it, where Node's element Get answers undefined.
-  // The typed model has no undefined in an element slot, so an out-of-view
-  // index reads as NaN, which is what every numeric use of undefined converts
-  // to. The callback still runs, and the result array is independent of the
-  // source, so its element Set always stores.
-  const inView = (): IrExpr =>
-    lowerer.buffersMutable
-      ? { kind: "bin", op: "<", left: i(), right: length(), type: BOOL, loc }
-      : boolLit(true, loc);
-  const visit: IrStmt[] = lowerer.buffersMutable
-    ? [
-        {
-          kind: "if",
-          cond: inView(),
-          then: [{ kind: "assign", localId: "v.0", value: at(i()), loc }],
-          else_: [{ kind: "assign", localId: "v.0", value: numLit(NaN, loc), loc }],
-          loc,
-        },
-      ]
-    : [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
+  // the buffer shrinks under it; there the element read answers undefined
+  // (Node's IntegerIndexedElementGet) and the callback still runs.
+  const visit: IrStmt[] = [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
   let seeded = false;
   const prologue: IrStmt[] = [];
   let epilogue: IrStmt[];
@@ -413,7 +465,9 @@ function bytesCallbackHelper(
         init: { kind: "bytesNew", source: n(), type: bytesT, loc },
         loc,
       });
-      const mapped = lowerer.coerceToExpected(callback(), F64);
+      const mapped = mutable ? toNumber(callback()) : lowerer.coerceToExpected(callback(), F64);
+      // The result array is fresh with the captured length, so the write is
+      // in bounds even after a shrink of the source.
       visit.push({ kind: "bytesSet", arr: acc(), index: i(), value: mapped, loc });
       if (bytesT.elem === "u8") prologue.push(copyBrand(acc()));
       epilogue = [ret(acc())];
@@ -435,7 +489,7 @@ function bytesCallbackHelper(
               kind: "arrIntrinsic",
               method: "push",
               receiver: varRef("kept.0", keptT, loc),
-              args: [element()],
+              args: [mutable ? toNumber(element()) : element()],
               type: F64,
               loc,
             },
@@ -541,11 +595,30 @@ function bytesCallbackHelper(
           {
             kind: "varDecl",
             localId: "acc.0",
-            init: at(
-              backward
-                ? { kind: "bin", op: "-", left: n(), right: numLit(1, loc), type: F64, loc }
-                : numLit(0, loc),
-            ),
+            init:
+              mutable && resultT.kind === "f64"
+                ? lowerer.coerceToExpected(
+                    toNumber(
+                      at(
+                        backward
+                          ? {
+                              kind: "bin",
+                              op: "-",
+                              left: n(),
+                              right: numLit(1, loc),
+                              type: F64,
+                              loc,
+                            }
+                          : numLit(0, loc),
+                      ),
+                    ),
+                    resultT,
+                  )
+                : at(
+                    backward
+                      ? { kind: "bin", op: "-", left: n(), right: numLit(1, loc), type: F64, loc }
+                      : numLit(0, loc),
+                  ),
             loc,
           },
         );
@@ -553,20 +626,46 @@ function bytesCallbackHelper(
       visit.push({
         kind: "assign",
         localId: "acc.0",
-        value: lowerer.coerceToExpected(callback(), resultT),
+        value:
+          mutable && resultT.kind === "f64"
+            ? lowerer.coerceToExpected(toNumber(callback()), resultT)
+            : lowerer.coerceToExpected(callback(), resultT),
         loc,
       });
       epilogue = [ret(acc())];
       break;
   }
   const body: IrStmt[] = [
+    // Node's ValidateTypedArray runs before the visit reads the length: a
+    // detached or out-of-bounds receiver throws even though the loop below
+    // would run no iterations and never read an element.
+    ...(mutable
+      ? [
+          {
+            kind: "exprStmt" as const,
+            expr: {
+              kind: "libCall" as const,
+              fn: "bytes.requireLive" as const,
+              args: [a(), strLit(method, loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ]
+      : []),
     {
       kind: "varDecl",
       localId: "n.0",
       init: { kind: "bytesIntrinsic", method: "length", receiver: a(), args: [], type: F64, loc },
       loc,
     },
-    { kind: "varDecl", localId: "v.0", init: numLit(0, loc), loc },
+    {
+      kind: "varDecl",
+      localId: "v.0",
+      init: mutable ? dynUndefinedExpr(loc) : numLit(0, loc),
+      loc,
+    },
     ...prologue,
     {
       kind: "for",

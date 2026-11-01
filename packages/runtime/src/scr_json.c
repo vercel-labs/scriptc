@@ -6492,7 +6492,8 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
    * out-of-bounds view first (t262-dc); Node names the method. */
   if (!scr_js_bytes_live(bytes)) {
     char label[96];
-    snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+    snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s",
+             scr_js_typed_detached_method(method));
     scr_js_bytes_throw_detached(label);
     return NULL;
   }
@@ -19119,14 +19120,43 @@ static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method
   return NULL;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The prototype methods of the two buffer classes (t262-dc2). A program with
+ * the mutableBuffers fact reaches transfer/resize/grow as *values* too —
+ * `typeof ab.transfer`, `const f = ab.transfer`, `f.call(ab, 8)`, `"resize"
+ * in ab` — and Node's prototype holds all of them; the tables let the generic
+ * handle-method interning answer them (one shared function per name, so
+ * `ab.transfer === other.transfer`). A program without the fact never reads
+ * these names as values, and keeps the default unit's appearance. */
+static const ScrDynHandleMethod scr_array_buffer_methods[] = {
+  {"slice", 2, false, NULL},
+  {"resize", 1, false, NULL},
+  {"transfer", 0, false, NULL},
+  {"transferToFixedLength", 0, false, NULL},
+  {NULL, 0, false, NULL},
+};
+
+static const ScrDynHandleMethod scr_shared_array_buffer_methods[] = {
+  {"slice", 2, false, NULL},
+  {"grow", 1, false, NULL},
+  {NULL, 0, false, NULL},
+};
+#endif
+
 ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
   static const ScrDynHandleOps ops = {
     "ArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+#ifdef SCR_JS_OBJECT_MODEL
+    .methods = scr_array_buffer_methods,
+#endif
   };
   static const ScrDynHandleOps shared_ops = {
     "SharedArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+#ifdef SCR_JS_OBJECT_MODEL
+    .methods = scr_shared_array_buffer_methods,
+#endif
   };
   ScrDynHandleTag tag = view->shared ? SCR_DYNH_SHARED_ARRAY_BUFFER : SCR_DYNH_ARRAY_BUFFER;
   scr_dyn_handle_install(tag, view->shared ? &shared_ops : &ops);

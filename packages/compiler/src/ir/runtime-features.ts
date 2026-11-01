@@ -999,6 +999,11 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "arrayBuffer.newResizable",
   "sharedArrayBuffer.newGrowable",
   "arrayBuffer.armMutable",
+  // The typed-array callback methods' entry guard and live element read
+  // (t262-dc2), emitted only for a mutableBuffers program; the symbols live
+  // in the object model build of scr_bytes.c beside the registry.
+  "bytes.requireLive",
+  "bytes.itemDyn",
 ]);
 
 /** The JavaScript object model build's program facts (t262-da §J): every
@@ -1529,7 +1534,13 @@ const RUNTIME_FEATURE_RULES = {
    * ORs into jsObjectModel (jsObjectModelFact), so it selects no build
    * column of its own. Every other program links no part of the unit. */
   mutableBuffers: rule({
-    fns: ["arrayBuffer.armMutable", "arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable"],
+    fns: [
+      "arrayBuffer.armMutable",
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+      "bytes.requireLive",
+      "bytes.itemDyn",
+    ],
   }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),

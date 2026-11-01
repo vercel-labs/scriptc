@@ -270,6 +270,8 @@ describe("runtime feature snapshots", () => {
     expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
       "arrayBuffer.armMutable",
       "arrayBuffer.newResizable",
+      "bytes.itemDyn",
+      "bytes.requireLive",
       "sharedArrayBuffer.newGrowable",
     ]);
     const mod = module();

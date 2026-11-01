@@ -702,6 +702,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "text.decodeStreamOption": "scr_text_decode_stream_option",
   "text.decoderEncodingOptions": "scr_text_decoder_encoding_options",
   "bytes.copyBrand": "scr_bytes_copy_brand",
+  "bytes.requireLive": "scr_js_bytes_require_live",
+  "bytes.itemDyn": "scr_bytes_item_dyn",
   "text.decodeBufferSource": "scr_text_decode_buffer_source",
   "text.decodeOptions": "scr_text_decode_options",
   "text.decodeStream": "scr_text_decode_stream",

@@ -57,6 +57,7 @@ import {
 import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
+  findGenericMethodOn,
   type ClassInfo,
   storedClassValueType,
 } from "../lower-classes.js";
@@ -1663,6 +1664,176 @@ const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "toLocaleString",
 ]);
 
+/** The declarers of `key` on an instance of a compiled class: a declared
+ * field (inherited included in `fields`), a method, an accessor half, or a
+ * generic member (a generic method or a generic function field, which live
+ * in their own table and have no field slot). */
+function declaresInstanceMember(lowerer: Lowerer, info: ClassInfo, key: string): boolean {
+  if (OBJECT_PROTOTYPE_KEYS.has(key)) return true;
+  return (
+    info.fields.has(key) ||
+    lowerer.findMethodOn(info, key) !== null ||
+    lowerer.findMethodOn(info, `get:${key}`) !== null ||
+    lowerer.findMethodOn(info, `set:${key}`) !== null ||
+    findGenericMethodOn(lowerer, info, key) !== null
+  );
+}
+
+/** A member one class spells in its own source (no base-chain walk): the
+ * subclass check below only cares about what the class itself adds. */
+function declaresOwnMember(info: ClassInfo, key: string): boolean {
+  if (info.fields.has(key) || info.methods.has(key) || info.genericMethods?.has(key) === true)
+    return true;
+  return info.methods.has(`get:${key}`) || info.methods.has(`set:${key}`);
+}
+
+/** `classInstanceIn`'s answer: a static boolean, "the declaration lacks the
+ * key but a subclass may declare it" (the caller resolves it with class
+ * tests), or "the declaration cannot answer" (runtime-provided root, index
+ * signature, unknown class). */
+type ClassInAnswer = boolean | "below" | "unknown";
+
+/** `classInstanceIn`'s subclass guard: a subclass whose values land in THIS
+ * arm (it is not an arm of the union itself) that declares `key` makes the
+ * arm's static `false` a lie. An arm of the union is tagged with its own
+ * arm, so its subtree answers there and is skipped. */
+function subclassDeclares(
+  info: ClassInfo,
+  key: string,
+  armNames: ReadonlySet<string> | null,
+): boolean {
+  for (const sub of info.subclasses) {
+    if (armNames?.has(sub.def.name)) continue;
+    if (declaresOwnMember(sub, key)) return true;
+    if (subclassDeclares(sub, key, armNames)) return true;
+  }
+  return false;
+}
+
+/** The program subclasses below `info` that declare `key` themselves (the
+ * class tests a "below" answer ranges over): a subclass whose declaring
+ * ancestor already answered is covered by that ancestor's test. */
+function declaringSubclasses(info: ClassInfo, key: string, out: string[] = []): string[] {
+  for (const sub of info.subclasses) {
+    if (declaresOwnMember(sub, key)) out.push(sub.def.name);
+    else declaringSubclasses(sub, key, out);
+  }
+  return out;
+}
+
+/** A class body spelling an index signature: `'k' in instance` then answers
+ * per VALUE (the overflow map), not from the declaration. */
+function declaresIndexSignature(info: ClassInfo): boolean {
+  if (!info.decl) return false;
+  for (const member of info.decl.members.nodes)
+    if (ts.isIndexSignatureDeclaration(member)) return true;
+  return false;
+}
+
+/** `'k' in instance` for a compiled class: every declared member is present
+ * on every instance (a class field is defined at construction whether or
+ * not it holds `undefined`, and a method lives on the prototype), so
+ * membership answers STATICALLY from the declaration — exactly Node's
+ * answer. `"unknown"` when the declaration cannot answer for the value:
+ * runtime-provided roots (`decl === null`, the Error/EventEmitter/stream/
+ * EventTarget/Date/Array families) expose members their declaration does
+ * not spell, and an index signature answers per value. `armNames` are the
+ * class arms of the union whose arm this is (null for a single-class
+ * receiver): a subclass that is itself an arm is tagged with that arm, so
+ * only the other subclasses can lie about this arm's `false`. */
+function classInstanceIn(
+  lowerer: Lowerer,
+  className: string,
+  key: string,
+  armNames: ReadonlySet<string> | null,
+): ClassInAnswer {
+  const info = lowerer.classes.get(className);
+  if (!info) return "unknown";
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    // `decl === null` marks the runtime-provided roots (%Error and the
+    // families below): their members come from the runtime, not a
+    // declaration this can read.
+    if (
+      c.decl === null ||
+      c.builtinError ||
+      c.builtinEmitter ||
+      c.builtinStream ||
+      c.builtinEventTarget ||
+      c.extendsDate ||
+      c.extendsArray
+    )
+      return "unknown";
+    if (declaresIndexSignature(c)) return "unknown";
+  }
+  if (declaresInstanceMember(lowerer, info, key)) return true;
+  if (subclassDeclares(info, key, armNames)) return "below";
+  return false;
+}
+
+/** Whether `'key' in instance` must read the instance's own property state
+ * instead of answering from the declaration. Two shapes cannot answer from
+ * a declaration: a JAVASCRIPT class whose field layout is created by
+ * assignment (a constructor branch may not run, and the instance can gain a
+ * property at any point in its life), and a key nothing in the family
+ * declares (a property added through an untyped view). The property bag the
+ * checked-dynamic machinery keeps holds exactly Node's own-property state
+ * for both, so these tests lower to a runtime probe when the receiver can
+ * become an untyped value. */
+function classAnswersAtRuntime(lowerer: Lowerer, info: ClassInfo, declared: boolean): boolean {
+  if (!declared) return true;
+  // A TypeScript class body defines every field it declares (a `declare`
+  // field is erased at collection time), so its layout IS the declaration;
+  // a JavaScript class in the family creates its fields by assignment.
+  return lowerer.familyAnswersFromInstance(info);
+}
+
+/** Whether `node` is part of `initializer`'s own evaluation: a nested
+ * function body runs later (after construction), so it does not see the
+ * initializer's position in the field order. */
+function directlyInsideInitializer(initializer: ts.Node, node: ts.Node): boolean {
+  for (let current: ts.Node | undefined = node; current; current = current.parent) {
+    if (current === initializer) return !ts.isFunctionLike(current);
+    if (ts.isFunctionLike(current)) return false;
+  }
+  return false;
+}
+
+/** `'key' in this` inside one of the class's own field initializers. Node
+ * defines a field only as that field's own initializer finishes, so the
+ * answer is the fields defined BEFORE this one, plus every inherited field
+ * (a base class's initializers ran first) and the prototype's members;
+ * a name this class defines later, or never, is absent. Null when the test
+ * is not a direct part of such an initializer. */
+function fieldInitializerAnswer(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  key: string,
+  receiverClass: string,
+): boolean | null {
+  const context = lowerer.fieldInitializer;
+  if (!context || context.info.def.name !== receiverClass) return null;
+  let receiver = expr.right;
+  while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+  if (receiver.kind !== ts.SyntaxKind.ThisKeyword) return null;
+  if (!directlyInsideInitializer(context.initializer, expr)) return null;
+  const info = context.info;
+  if (OBJECT_PROTOTYPE_KEYS.has(key)) return true;
+  if (
+    lowerer.findMethodOn(info, key) !== null ||
+    lowerer.findMethodOn(info, `get:${key}`) !== null ||
+    lowerer.findMethodOn(info, `set:${key}`) !== null ||
+    findGenericMethodOn(lowerer, info, key) !== null
+  )
+    return true;
+  for (let base = info.base; base; base = base.base) if (base.fields.has(key)) return true;
+  // A parameter property is assigned in the constructor body, after every
+  // field initializer has run (Node's transform), so it is not on `this` yet.
+  if (info.paramProps?.some((pp) => pp.name === key)) return false;
+  const own = info.fieldOrder.findIndex((f) => f.name === key);
+  if (own < 0) return false;
+  return own < context.index;
+}
+
 /** `"key" in v` — the key-presence test. Three lowered receivers:
  * process.env (getenv(3) presence — Node-exact, an empty value still
  * counts as present), and monomorphic record shapes, where the answer is
@@ -2070,7 +2241,8 @@ export function lowerInExpression(
         c.fields.has(key) ||
         lowerer.findMethodOn(c, key) !== null ||
         lowerer.findMethodOn(c, `get:${key}`) !== null ||
-        lowerer.findMethodOn(c, `set:${key}`) !== null;
+        lowerer.findMethodOn(c, `set:${key}`) !== null ||
+        findGenericMethodOn(lowerer, c, key) !== null;
       const staticInfo = lowerer.classes.get(recv.type.className);
       if (staticInfo && declares(staticInfo)) return always();
       // Any other key: a descendant class that declares it (instanceof), or
@@ -2122,6 +2294,90 @@ export function lowerInExpression(
         `'in' with the key '${key}' on Error receivers (code answers from the error's code slot; message and name are always present)`,
       );
     }
+    // A plain compiled class (no Error root): every instance carries its
+    // declared fields and prototype members, so membership answers from the
+    // declaration (classInstanceIn). A receiver that is not a stable read
+    // still evaluates for its effects.
+    const classInfo = lowerer.classes.get(recv.type.className);
+    const classVerdict = classInstanceIn(lowerer, recv.type.className, key, null);
+    // A question a declaration cannot settle reads the instance's own
+    // property state: a JavaScript class whose fields are created by
+    // assignment, or a name no class in the family declares. Both land in
+    // the property bag the checked-dynamic machinery keeps, which holds
+    // Node's own-property state exactly.
+    if (
+      classInfo &&
+      classVerdict !== "unknown" &&
+      classAnswersAtRuntime(lowerer, classInfo, declaresInstanceMember(lowerer, classInfo, key)) &&
+      lowerer.dynConvertible(recv.type)
+    ) {
+      return {
+        kind: "dynHasKey",
+        key,
+        value: lowerer.coerceToExpected(recv, DYN),
+        type: BOOL,
+        loc,
+      };
+    }
+    // Inside one of the class's own field initializers, only the fields
+    // defined before this one are on `this` yet.
+    const initializerAnswer =
+      classVerdict === "unknown"
+        ? null
+        : fieldInitializerAnswer(lowerer, expr, key, recv.type.className);
+    if (initializerAnswer !== null) {
+      const answer: IrExpr = { kind: "boolLit", value: initializerAnswer, type: BOOL, loc };
+      return isSafeToDiscard(recv)
+        ? answer
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: recv, loc }],
+            result: answer,
+            type: BOOL,
+            loc,
+          };
+    }
+    if (classVerdict === true || classVerdict === false) {
+      const answer: IrExpr = { kind: "boolLit", value: classVerdict, type: BOOL, loc };
+      return isSafeToDiscard(recv)
+        ? answer
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: recv, loc }],
+            result: answer,
+            type: BOOL,
+            loc,
+          };
+    }
+    // The declaration lacks the key, but a subclass may declare it (the
+    // static type is the base): the declaring subclasses answer through
+    // class tests, exactly the Error case above. The receiver evaluates
+    // once, so it is stabilized when it is not a plain read.
+    if (classVerdict === "below") {
+      const info = lowerer.classes.get(recv.type.className)!;
+      const declarers = declaringSubclasses(info, key);
+      const stable =
+        recv.kind === "varRef" || recv.kind === "caughtNarrow"
+          ? null
+          : lowerer.declareHiddenLocal("%inRecv", recv.type);
+      const ref = (): IrExpr => (stable ? varRef(stable.id, recv.type, loc) : recv);
+      let answer = declarers.reduce<IrExpr | null>((acc, className) => {
+        const test: IrExpr = { kind: "instanceOf", value: ref(), className, type: BOOL, loc };
+        return acc === null
+          ? test
+          : { kind: "logical", op: "||", left: acc, right: test, type: BOOL, loc };
+      }, null) ?? { kind: "boolLit", value: false, type: BOOL, loc };
+      if (stable) {
+        answer = {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
+          result: answer,
+          type: BOOL,
+          loc,
+        };
+      }
+      return answer;
+    }
   }
   // A dyn receiver (`"portless" in pkg` after the `typeof pkg ===
   // "object"` guard): own-member presence on the checked-dynamic tree — tsc admits `in`
@@ -2140,7 +2396,14 @@ export function lowerInExpression(
   if (recv.type.kind === "union") {
     const unionId = recv.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms ?? [];
-    const answers: { tag: number; has: boolean | "slot" | "unit" | "keyed"; arm: IrType }[] = [];
+    const answers: {
+      tag: number;
+      has: boolean | "slot" | "unit" | "keyed" | "probe";
+      arm: IrType;
+    }[] = [];
+    const armClasses = new Set(
+      arms.filter((arm) => arm.kind === "object").map((arm) => arm.className),
+    );
     let staticAnswers = arms.length > 0;
     for (const arm of arms) {
       const tag = lowerer.armTag(unionId, arm);
@@ -2152,6 +2415,26 @@ export function lowerInExpression(
       // erased assertion over an optional value still carries one.
       if (isUnitType(arm)) {
         answers.push({ tag, has: "unit", arm });
+        continue;
+      }
+      // A CLASS arm answers from its declaration too (classInstanceIn);
+      // a subclass that lands in this arm and declares the key keeps the
+      // per-value answer impossible, so the fence stays.
+      if (arm.kind === "object") {
+        const verdict = classInstanceIn(lowerer, arm.className, key, armClasses);
+        if (verdict === "below" || verdict === "unknown") {
+          staticAnswers = false;
+          break;
+        }
+        // A JavaScript arm's fields are created by assignment, so its
+        // static answer is not a property of the tag: the arm reads its
+        // own instance instead (see perValueUnionIn).
+        const armInfo = lowerer.classes.get(arm.className);
+        if (armInfo !== undefined && lowerer.familyAnswersFromInstance(armInfo)) {
+          answers.push({ tag, has: "probe", arm });
+          continue;
+        }
+        answers.push({ tag, has: verdict, arm });
         continue;
       }
       const shape = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
@@ -2184,7 +2467,9 @@ export function lowerInExpression(
     }
     if (
       staticAnswers &&
-      answers.some((a) => a.has === "slot" || a.has === "unit" || a.has === "keyed")
+      answers.some(
+        (a) => a.has === "slot" || a.has === "unit" || a.has === "keyed" || a.has === "probe",
+      )
     ) {
       return perValueUnionIn(lowerer, recv, unionId, key, answers, loc);
     }
@@ -2297,7 +2582,7 @@ export function lowerInExpression(
     lowerer.unsupported(
       "SC1090",
       expr,
-      `'in' on '${lowerer.fmt(recv.type)}' receivers (only process.env, Error instances, record-typed values, and unions of fixed record shapes answer; ${NARROW_FIRST})`,
+      `'in' on '${lowerer.fmt(recv.type)}' receivers (only process.env, Error instances, class instances, record-typed values, and unions of fixed record shapes answer; ${NARROW_FIRST})`,
     );
   }
   const shape = lowerer.shapes.get(recv.type.shapeId);
@@ -2403,7 +2688,7 @@ function perValueUnionIn(
   key: string,
   answers: readonly {
     tag: number;
-    has: boolean | "slot" | "unit" | "keyed";
+    has: boolean | "slot" | "unit" | "keyed" | "probe";
     arm: IrType;
   }[],
   loc: SrcLoc,
@@ -2442,6 +2727,33 @@ function perValueUnionIn(
           },
           shapeId: a.arm.shapeId,
           field: key,
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+    if (a.has === "probe" && a.arm.kind === "object") {
+      // This arm answers from the instance itself: the class creates its
+      // own fields by assignment, so the narrowed value's own property
+      // state decides (the tag test has proven the arm).
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag: a.tag,
+        value: ref(),
+        type: a.arm,
+        loc,
+      };
+      test = {
+        kind: "logical",
+        op: "&&",
+        left: test,
+        right: {
+          kind: "dynHasKey",
+          key,
+          value: lowerer.coerceToExpected(narrowed, DYN),
           type: BOOL,
           loc,
         },

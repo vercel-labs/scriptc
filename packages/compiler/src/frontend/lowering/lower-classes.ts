@@ -649,6 +649,12 @@ export interface ClassInfo {
   /** ALL fields visible on instances — the inherited ones included — for
    * receiver-side lookup (def.fields carries the layout order). */
   fields: Map<string, IrType>;
+  /** `declare` fields of this class: erased at run time (no slot, no own
+   * property), so they take no part in the layout or the membership
+   * answers, and a read of the name asks the instance's property bag. A
+   * subclass answers for an inherited erased name through the base chain,
+   * the same way `fields` already carries inherited entries. */
+  erasedFields?: ReadonlySet<string>;
   /** OWN fields only (declaration order) with their initializers: the
    * class's constructor runs exactly these — inherited fields initialize in
    * the base constructor, before/via super(). */
@@ -2531,6 +2537,7 @@ export function collectClassShapeInner(
     if (base?.symbolMethods)
       for (const [symbol, name] of base.symbolMethods) symbolMethods.set(symbol, name);
     const fieldOrder: ClassInfo["fieldOrder"] = [];
+    const erasedFields = new Set<string>();
     const methods = new Map<
       string,
       {
@@ -3038,6 +3045,21 @@ export function collectClassShapeInner(
         // ABSTRACT-typed receivers resolve the concrete instance's
         // property through checked class dispatch.
         if (modifiers?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword)) continue;
+        // A DECLARE field is erased the same way: JavaScript emits no field
+        // for it (verified: `declare p: number` leaves the instance without
+        // an own property, so `'p' in instance` is false and an unassigned
+        // read is undefined), so it contributes nothing to the layout. Its
+        // type still answers the checker; a value under that name can only
+        // come from elsewhere (a base class, a decorator, an assignment
+        // through an untyped view or the constructor), so a read asks the
+        // instance rather than a slot (erasedFields, property-access.ts).
+        if (modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) {
+          if (ts.isIdentifier(member.name) || ts.isStringLiteralLike(member.name))
+            erasedFields.add(member.name.text);
+          else if (ts.isNumericLiteral(member.name))
+            erasedFields.add(String(Number(member.name.text)));
+          continue;
+        }
         if (modifiers?.some((m) => m.kind === ts.SyntaxKind.AccessorKeyword)) {
           // `accessor x = 1` desugars (in JS) to a private slot plus a
           // get/set pair — declare the field and accessors explicitly.
@@ -4716,6 +4738,7 @@ export function collectClassShapeInner(
       },
       fields,
       fieldOrder,
+      ...(erasedFields.size > 0 ? { erasedFields } : {}),
       methods,
       ...(methodEntryFences.size > 0 ? { methodEntryFences } : {}),
       ...(returnAdapters.size > 0 ? { returnAdapters } : {}),
@@ -9307,7 +9330,7 @@ function superBaseOf(info: ClassInfo): ClassInfo | null {
 export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
   const out: IrStmt[] = [];
   const thisType: IrType = { kind: "object", className: info.def.name };
-  for (const f of info.fieldOrder) {
+  for (const [index, f] of info.fieldOrder.entries()) {
     if (f.errorCause) {
       const loc = f.initializer ? locOf(f.initializer) : f.undefinedInitializer!;
       const value = f.initializer
@@ -9342,6 +9365,11 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
     lowerer.countStatement(f.initializer, locOf(f.initializer).file);
     const diagsBefore = lowerer.diags.length;
     const sinkMark = lowerer.diagSinkMark();
+    // `'k' in this` inside the initializer answers from the fields defined
+    // SO FAR (Node defines each field as its own initializer finishes), so
+    // the lowering needs this field's position in the order.
+    const previousInitializer = lowerer.fieldInitializer;
+    lowerer.fieldInitializer = { info, index, initializer: f.initializer };
     try {
       const value = lowerer.lowerExprExpecting(f.initializer, f.type);
       out.push({
@@ -9363,6 +9391,8 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
             : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
+    } finally {
+      lowerer.fieldInitializer = previousInitializer;
     }
   }
   return out;

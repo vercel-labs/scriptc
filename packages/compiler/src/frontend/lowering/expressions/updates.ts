@@ -22,6 +22,7 @@ import {
   concatOperand,
   deferredSlotOr,
   dynCompoundValue,
+  lowerOptionalBigint,
   lowerOptionalNumber,
   lowerOperatorNumber,
   operatorUnsupported,
@@ -627,6 +628,37 @@ export function lowerIncDecTarget(
         ],
         result,
         type: F64,
+        loc,
+      };
+    }
+    const bigintRead = lowerOptionalBigint(
+      lowerer,
+      varRef(target.id, target.type, loc),
+      loc,
+      expr.operand,
+    );
+    if (bigintRead) {
+      const old = lowerer.declareHiddenLocal("%bigintOld", BIGINT_T);
+      const next = lowerer.declareHiddenLocal("%bigintNext", BIGINT_T);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: old.id, init: bigintRead, loc },
+          {
+            kind: "varDecl",
+            localId: next.id,
+            init: bigintStep(op, varRef(old.id, BIGINT_T, loc), loc),
+            loc,
+          },
+          {
+            kind: "assign",
+            localId: target.id,
+            value: lowerer.coerceInto(expr.operand, varRef(next.id, BIGINT_T, loc), target.type),
+            loc,
+          },
+        ],
+        result: varRef(prefix ? next.id : old.id, BIGINT_T, loc),
+        type: BIGINT_T,
         loc,
       };
     }

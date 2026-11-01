@@ -260,16 +260,18 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
   });
 
-  test("the JavaScript object model build owns the buffer views registry calls", () => {
+  test("every entry of the JavaScript object model build selects it", () => {
     // t262-da §J: the features only a JavaScript source reaches share one
     // runtime feature, whose entry list the slices fill as they land. The
     // buffer views registry (t262-dc C2) arms itself through these calls, and
     // the resizable constructors lower to them, so a program that makes one
-    // selects the object model build; every other program keeps the default
-    // objects.
+    // selects the object model build; the value-level standard library
+    // prototypes (t262-w4: DisposableStack.prototype) arm it the same way.
+    // Every other program keeps the default objects.
     expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
       "arrayBuffer.armMutable",
       "arrayBuffer.newResizable",
+      "disposable.stackPrototype",
       "sharedArrayBuffer.newGrowable",
     ]);
     const mod = module();
@@ -282,7 +284,18 @@ describe("runtime feature snapshots", () => {
       const armed = module();
       armed.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
-      expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);
+    }
+    // The buffer views registry is one member of that build, not the whole of
+    // it: only its own calls make the bytes headers mutable.
+    const bufferFns: readonly IrLibFn[] = [
+      "arrayBuffer.armMutable",
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+    ];
+    for (const fn of JS_OBJECT_MODEL_LIB_FNS) {
+      const armed = module();
+      armed.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(bufferFns.includes(fn));
     }
   });
 

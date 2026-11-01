@@ -8,55 +8,6 @@ import { compile } from "@scriptc/compiler";
 
 const execFileAsync = promisify(execFile);
 
-// A builtin prototype is an ordinary object (t262-da A1): replacing or
-// deleting one of its members lands as a plain property write, a receiver
-// reads the replacement back, restoring the original member makes the
-// runtime's own calls work again, and a member the object does not have
-// reads as undefined. Node's behavior is the expectation.
-test("builtin intrinsic members are ordinary properties", async () => {
-  const outDir = mkdtempSync(join(tmpdir(), "scriptc-intrinsic-members-"));
-  const entry = join(outDir, "main.cjs");
-  writeFileSync(
-    entry,
-    `
-const push = Array.prototype.push;
-console.log("own-before", Array.prototype.push === push, typeof [].push);
-Array.prototype.push = 1;
-console.log("own-written", Array.prototype.push, typeof [].push, [].push);
-delete Array.prototype.push;
-console.log("after-delete", Array.prototype.push, typeof [].push);
-Array.prototype.push = push;
-const list = [];
-list.push(9);
-console.log("restored", Array.prototype.push === push, list.length, list[0]);
-Object.defineProperty(Number.prototype, "toFixed", { value: 1 });
-console.log("defined", Number.prototype.toFixed);
-console.log("missing", Array.prototype.notAMember, Object.hasOwn(Array.prototype, "notAMember"));
-`,
-  );
-  const result = await compile(entry, {
-    backend: "llvm",
-    sanitize: process.env["SCRIPTC_SAN"] === "1",
-    outDir,
-    outPath: join(outDir, "program"),
-  });
-  expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true);
-  if (!result.ok) return;
-  const { stdout, stderr } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
-  expect(stdout).toBe(
-    [
-      "own-before true function",
-      "own-written 1 number 1",
-      "after-delete undefined undefined",
-      "restored true 1 9",
-      "defined 1",
-      "missing undefined false",
-      "",
-    ].join("\n"),
-  );
-  expect(stderr).toBe("");
-});
-
 // A member the table installs is the runtime's function, so calling it
 // through the prototype and through a receiver runs the same operation; a
 // primitive wrapper's prototype keeps its own builder and answers its

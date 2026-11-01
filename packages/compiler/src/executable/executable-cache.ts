@@ -69,6 +69,10 @@ export interface EarlyExecutableNativeFeatures {
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
   mutableBuffers: boolean;
+  /** The builtin intrinsic graph (scr_js_intrinsics.c, t262-da A1): links
+   * only for a program that reads a builtin intrinsic object from a
+   * JavaScript source. */
+  intrinsicObjects?: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;

@@ -99,8 +99,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Every builtin prototype and constructor object as an ordinary checked
   // object, built from the pinned Node release's own table (t262-da A1).
   // One build carries the whole graph, so the unit links into any program
-  // with the JavaScript object model and fill-in place keeps the runtime's
-  // singletons the same objects.
+  // with the JavaScript object model: the graph for a program that reads a
+  // builtin intrinsic object from a JavaScript source, and the fill stub for
+  // the object model's other programs, whose scr_json.c build asks the graph
+  // what it filled. Fill-in place keeps the runtime's singletons the same
+  // objects.
   ["scr_js_intrinsics.c", "jsObjectModel"],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
@@ -307,10 +310,18 @@ export function variantsFor(source) {
     withJsObjectModel(variants);
   }
   // The builtin intrinsic graph (t262-da A1) is one unit written entirely
-  // for the JavaScript object model build, so the default object is empty and
-  // a program without the feature links none of the graph.
+  // for the JavaScript object model build. Its default object is the fill
+  // stub, so a program that holds the object model for another reason (a
+  // BigInt typed array selects it for bytes and json) carries no graph. Its
+  // own column (intrinsicObjects) is the raw program fact, deliberately not
+  // jsObjectModel: only a program whose JavaScript source reads an intrinsic
+  // links the table.
   if (source === "scr_js_intrinsics.c") {
-    withJsObjectModel(variants);
+    variants.push({
+      id: "js-om",
+      when: { intrinsicObjects: true },
+      defines: ["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS"],
+    });
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.

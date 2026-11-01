@@ -284,7 +284,12 @@ describe("runtime feature snapshots", () => {
       armed.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
     }
-    for (const fn of ["arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable", "arrayBuffer.armMutable"]) {
+    const bufferFns = [
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+      "arrayBuffer.armMutable",
+    ] as const;
+    for (const fn of bufferFns) {
       const armed = module();
       armed.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);

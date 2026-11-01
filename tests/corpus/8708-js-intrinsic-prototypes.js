@@ -71,6 +71,15 @@ Array.prototype.addedByProgram = 7;
 show("addedMember", Array.prototype.addedByProgram);
 show("addedOwn", Array.prototype.hasOwnProperty("addedByProgram"));
 
+// An object created over a prototype answers that prototype's members
+// through the chain, `in` included: Array.prototype is itself an array, and
+// its members are the table's.
+const arrayHost = Object.create(Array.prototype);
+show("inArrayLength", "length" in arrayHost);
+show("inArrayJoin", "join" in arrayHost);
+show("inArrayMissing", "nope" in arrayHost);
+show("inPlainLength", "length" in {});
+
 // The same object, read twice.
 show("protoIdentity", Map.prototype === Map.prototype);
 

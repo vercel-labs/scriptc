@@ -114,7 +114,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.dynInvoke && opts.dynBuffer ? ["scr_bytes_dyn.c"] : []),
     ...(opts.dynTier === true ? ["scr_js_value.c", "scr_js_object.c"] : []),
     // The builtin intrinsic graph (t262-da A1): the archive carries it when
-    // the program names the object model build, exactly like the pack.
+    // the program names the object model build, exactly like the pack. The
+    // graph itself needs the intrinsicObjects fact, which the archive never
+    // carries; this build is the fill stub scr_json.c's object model asks.
     ...(opts.jsObjectModel === true || opts.bigintBytes === true ? ["scr_js_intrinsics.c"] : []),
     // The buffer views registry: only a program that resizes, grows or
     // detaches a buffer installs its ops table.

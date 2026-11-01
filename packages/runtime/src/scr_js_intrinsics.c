@@ -30,24 +30,29 @@
  * object under construction instead of a second one.
  *
  * All state is thread-local, like the invoke unit's interned functions it is
- * built from, and released by one atexit handler. The unit links only into
- * programs compiled with the JavaScript object model (the frontend marks
- * dyn.intrinsic there), so typed programs keep their exact executables. */
+ * built from, and released by one atexit handler. The frontend marks
+ * dyn.intrinsic only for a program whose JavaScript source reads one of these
+ * objects, and the graph links only into that program's intrinsicObjects
+ * build, so typed programs keep their exact executables. */
 #include "scr_runtime.h"
 #include "scr_dyn_methods.h"
-#include "scr_js_intrinsics_table.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* The unit exists only in the JavaScript object model build: the frontend
- * marks dyn.intrinsic there, the pack ships this unit's object-model variant,
- * and every other program links no part of it. The guard keeps the default
- * object empty, so a program without the feature carries none of the graph's
- * code and its executable stays byte for byte what it was. */
-#ifdef SCR_JS_OBJECT_MODEL
+/* The graph is the build for the program fact intrinsicObjects (the frontend
+ * marks dyn.intrinsic), and it implies the JavaScript object model. A build
+ * with that fact carries the graph; a program with the object model for
+ * another reason (a BigInt typed array selects it for bytes and json) links
+ * the stub below instead. scr_json.c's object-model build asks the graph what
+ * it filled, and a runtime with no graph has nothing to report. The guard
+ * keeps the graph's code — and the generated table — out of every other
+ * program, so its executable stays byte for byte what it was. */
+#ifdef SCR_JS_INTRINSICS
+
+#include "scr_js_intrinsics_table.h"
 
 /* ── the generated table ─────────────────────────────────────────────── */
 
@@ -65,6 +70,7 @@ static const ScrJsIntrinsicRow scr_js_rows[] = {
   SCR_JS_INTRINSIC_ROWS(SCR_JS_ROW)
 #undef SCR_JS_ROW
 };
+#define SCR_JS_ROW_COUNT (sizeof scr_js_rows / sizeof scr_js_rows[0])
 
 static const char *const scr_js_object_ids[] = {
 #define SCR_JS_OBJECT(id) id,
@@ -155,6 +161,48 @@ static size_t scr_js_value_index(const ScrDyn *object) {
   for (size_t i = 0; i < SCR_JS_OBJECT_COUNT; i++)
     if (scr_js_objects[i] == object) return i;
   return SIZE_MAX;
+}
+
+/* The table's rows are grouped by owner, and every row of an owner's block
+ * belongs to the object with that id, so a member lookup is one block and a
+ * handful of compares rather than a scan of all 719 rows: the fence runs on
+ * every dynamic write of an intrinsic. */
+static SCR_TL size_t scr_js_row_start[SCR_JS_OBJECT_COUNT];
+static SCR_TL size_t scr_js_row_end[SCR_JS_OBJECT_COUNT];
+static SCR_TL bool scr_js_rows_indexed;
+
+static void scr_js_index_rows(void) {
+  if (scr_js_rows_indexed) return;
+  scr_js_rows_indexed = true;
+  for (size_t i = 0; i < SCR_JS_ROW_COUNT;) {
+    const char *owner = scr_js_rows[i].owner;
+    size_t end = i + 1;
+    while (end < SCR_JS_ROW_COUNT && strcmp(scr_js_rows[end].owner, owner) == 0) end++;
+    size_t index = scr_js_object_index(owner);
+    if (index != SIZE_MAX) {
+      scr_js_row_start[index] = i;
+      scr_js_row_end[index] = end;
+    }
+    i = end;
+  }
+}
+
+/* Whether the table's member spelling `name` is the property key `key`: the
+ * name itself for a string key, `Symbol.<name>` for the table's "@@name". */
+static bool scr_js_names_key(const char *name, const ScrDyn *key) {
+  if (name[0] == '@' && name[1] == '@') {
+    if (key->kind != SCR_DYN_SYMBOL || !key->v.symbol.description) return false;
+    ScrStr *description = key->v.symbol.description(key->v.symbol.value);
+    if (!description) return false;
+    size_t length = strlen(name + 2);
+    bool same = description->len == length + 7 && memcmp(description->data, "Symbol.", 7) == 0 &&
+                memcmp(description->data + 7, name + 2, length) == 0;
+    scr_str_release(description);
+    return same;
+  }
+  if (key->kind != SCR_DYN_STR) return false;
+  size_t length = strlen(name);
+  return key->v.str->len == length && memcmp(key->v.str->data, name, length) == 0;
 }
 
 /* The [[Prototype]] of the object named `id` as the table names it, or NULL
@@ -679,6 +727,23 @@ bool scr_js_intrinsic_filled(const ScrDyn *object) {
  * a builtin member are off while the runtime builds them. */
 bool scr_js_intrinsic_filling(void) { return scr_js_fill_depth != 0; }
 
+/* Whether the table names `key` as a member of the intrinsic `object` stands
+ * for. The member-replacement fence (scr_json.c) refuses a program's write,
+ * delete or redefinition of one: the member value is the runtime's interned
+ * function, and every typed call site calls the native entry point, so a
+ * replacement would look accepted and never be observed. A key the table
+ * does not name — including one the program adds — is an ordinary property. */
+bool scr_js_intrinsic_has_builtin_member(const ScrDyn *object, const ScrDyn *key) {
+  if (!scr_js_built_count || !object || !key) return false;
+  if (key->kind != SCR_DYN_STR && key->kind != SCR_DYN_SYMBOL) return false;
+  size_t index = scr_js_value_index(object);
+  if (index == SIZE_MAX) return false;
+  scr_js_index_rows();
+  for (size_t i = scr_js_row_start[index]; i < scr_js_row_end[index]; i++)
+    if (scr_js_names_key(scr_js_rows[i].key, key)) return true;
+  return false;
+}
+
 /* The table id a value the runtime keeps outside this unit stands for: an
  * interned builtin constructor (`Date`), which the frontend reads through
  * dyn.globalConstructor rather than through this unit, or one of the
@@ -812,4 +877,32 @@ ScrDyn *scr_js_intrinsic_prototype_of(const ScrDyn *value) {
   }
 }
 
-#endif /* SCR_JS_OBJECT_MODEL */
+#else /* SCR_JS_INTRINSICS */
+
+/* The object model build of scr_json.c calls these five; without the graph
+ * no object was ever filled, so the answers are the empty ones. */
+void scr_js_intrinsics_fill(ScrDyn *object) {
+  (void)object;
+}
+
+bool scr_js_intrinsic_filled(const ScrDyn *object) {
+  (void)object;
+  return false;
+}
+
+bool scr_js_intrinsic_filling(void) {
+  return false;
+}
+
+bool scr_js_intrinsic_has_builtin_member(const ScrDyn *object, const ScrDyn *key) {
+  (void)object;
+  (void)key;
+  return false;
+}
+
+ScrDyn *scr_js_intrinsic_prototype_of(const ScrDyn *value) {
+  (void)value;
+  return NULL;
+}
+
+#endif /* SCR_JS_INTRINSICS */

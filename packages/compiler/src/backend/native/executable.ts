@@ -238,7 +238,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
   // Every builtin prototype and constructor object as an ordinary checked
-  // object, built from the pinned Node release's table (t262-da A1).
+  // object, built from the pinned Node release's table (t262-da A1). The
+  // object model's programs always carry the unit: the graph for a program
+  // that reads one of those objects from a JavaScript source, the fill stub
+  // for the others, whose scr_json.c build asks the graph what it filled.
   unit((u) => u.opts.jsObjectModel === true, "scr_js_intrinsics.c"),
   // The buffer views registry (resizable/growable buffers): the program's
   // %main installs its ops table, and its bytes headers stop being
@@ -494,6 +497,10 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
+  // The builtin intrinsic graph (scr_js_intrinsics.c, t262-da A1): only a
+  // program that reads one of those objects from a JavaScript source builds
+  // the table; the object model's other programs build the fill stub.
+  { define: "SCR_JS_INTRINSICS", when: (opts) => opts.intrinsicObjects },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
   // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form

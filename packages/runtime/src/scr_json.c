@@ -77,6 +77,32 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
   return true;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* A write, delete or redefinition of a member an intrinsic was built with:
+ * typed code calls the native entry point and would never see the change, so
+ * it refuses (t262-da §2.5, decision DA-2). A key the table does not name —
+ * including one the program adds — is an ordinary property of an extensible
+ * object. The fill itself defines the table's members, so a fill in progress
+ * is exempt. */
+static bool scr_dyn_intrinsic_member_fence(const ScrDyn *object, const ScrDyn *key) {
+  if (scr_js_intrinsic_filling()) return false;
+  if (!key || !scr_js_intrinsic_filled(object)) return false;
+  if (!scr_js_intrinsic_has_builtin_member(object, key)) return false;
+  static const char message[] = "replacing a builtin prototype or constructor member is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");
+  return true;
+}
+
+/* The same fence for the paths that hold the key as a ScrStr. */
+static bool scr_dyn_intrinsic_str_member_fence(const ScrDyn *object, const ScrStr *key) {
+  if (!key || scr_js_intrinsic_filling() || !scr_js_intrinsic_filled(object)) return false;
+  ScrDyn *value = scr_dyn_new_str((ScrStr *)key);
+  bool fenced = scr_dyn_intrinsic_member_fence(object, value);
+  scr_dyn_release(value);
+  return fenced;
+}
+#endif
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3286,6 +3312,20 @@ static const ScrDyn *scr_dyn_property_owner(const ScrDyn *object, const char *ke
       scr_dyn_release(table);
       return owner;
     }
+#ifdef SCR_JS_OBJECT_MODEL
+    /* An array on the chain answers its own members like any other
+     * prototype, the way the read path already walks it: Array.prototype is
+     * an array, and the intrinsic fill (t262-da A1) gives it the table's
+     * members in its property dictionary, so an object the program creates
+     * over it finds `length` and `join` here. The default build keeps the
+     * pre-fill walk, byte for byte. */
+    if (current->kind == SCR_DYN_ARR) {
+      if (length == 6 && memcmp(key, "length", 6) == 0) return current;
+      if (current->v.arr.properties && scr_dyn_obj_get(current->v.arr.properties, key, length))
+        return current;
+      continue;
+    }
+#endif
     if (current->kind != SCR_DYN_OBJ) continue;
     if (current->v.obj.layout) {
       if (scr_layout_find(current->v.obj.layout, key, length) != UINT32_MAX) return current;
@@ -10121,6 +10161,9 @@ static bool scr_bytes_symbol_write(ScrDyn *value, const ScrDyn *key, bool assign
 
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
   if (scr_dyn_error_prototype_fence(value)) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_member_fence(value, key)) return;
+#endif
   if (value->kind == SCR_DYN_BYTES && !scr_bytes_symbol_write(value, key, true)) return;
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
   if (!receiver) {
@@ -10301,6 +10344,12 @@ void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol) {
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *raw_key, bool strict) {
   ScrDyn *key = scr_dyn_property_key_value(raw_key);
   if (!key) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_member_fence(value, key)) {
+    scr_dyn_release(key);
+    return;
+  }
+#endif
   if (key->kind != SCR_DYN_SYMBOL) {
     scr_dyn_key_delete(value, key->v.str, strict);
     scr_dyn_release(key);
@@ -10393,6 +10442,9 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
   if (scr_dyn_error_prototype_fence(target)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_member_fence(target, key)) return NULL;
+#endif
   if (target->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(target) &&
       (key->kind == SCR_DYN_STR || key->kind == SCR_DYN_NUM)) {
     /* A native array's numeric properties ("-1", "1.5") live in its
@@ -13252,6 +13304,9 @@ void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn 
 
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_str_member_fence(recv, key)) return;
+#endif
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_set(recv, key, value); return; }
   if (recv->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_set(recv, key, value)) return;
@@ -15462,6 +15517,9 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     return;
   }
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_intrinsic_str_member_fence(recv, key)) return;
+#endif
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_delete(recv, key); return; }
   if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit &&
       (!strncmp(recv->v.typed_ref.type_key, "record:", 7) ||

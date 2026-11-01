@@ -38,7 +38,8 @@ export interface NativeLinkFeatures {
   /** The program uses a runtime feature only a JavaScript source reaches:
    * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
    * (t262-da §J). Absent for every other program, so their objects stay
-   * identical. */
+   * identical. `bigintBytes` ORs into it (jsObjectModelFact), so a typed
+   * program that constructs a BigInt typed array selects it too. */
   jsObjectModel?: boolean;
   /** A JavaScript source resizes, grows or detaches an ArrayBuffer
    * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
@@ -46,6 +47,12 @@ export interface NativeLinkFeatures {
    * (jsObjectModelFact), so it selects no build column of its own. Absent
    * for every other program, so their objects stay identical. */
   mutableBuffers?: boolean;
+  /** The program reads a builtin intrinsic object (`X.prototype`, a builtin
+   * constructor as a value) from a JavaScript source: links
+   * scr_js_intrinsics.c, the whole intrinsic graph (t262-da A1). Split from
+   * jsObjectModel, which bigintBytes also selects, so a typed program that
+   * only constructs a BigInt typed array links none of the graph. */
+  intrinsicObjects?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;

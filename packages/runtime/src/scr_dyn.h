@@ -1778,6 +1778,13 @@ bool scr_js_intrinsic_filled(const ScrDyn *object);
 /* Whether a fill is running: the fences that keep a program from replacing
  * a builtin member stay off while the runtime builds them. */
 bool scr_js_intrinsic_filling(void);
+/* Whether the table names `key` as a member of the intrinsic `object` stands
+ * for. The member-replacement fence (scr_json.c) refuses a program's write,
+ * delete or redefinition of one: the member is the runtime's interned
+ * function and the typed call sites call the native entry point, so the
+ * replacement would never be observed. Keys the table does not name are
+ * ordinary. */
+bool scr_js_intrinsic_has_builtin_member(const ScrDyn *object, const ScrDyn *key);
 /* The [[Prototype]] the intrinsic graph gives `value` (+1), or NULL when the
  * value is not one the graph describes. */
 ScrDyn *scr_js_intrinsic_prototype_of(const ScrDyn *value);

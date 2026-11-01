@@ -195,21 +195,25 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
 });
 
 test("the builtin intrinsic graph is one object-model unit", () => {
-  const plain = { jsObjectModel: false, workers: false };
+  const plain = { jsObjectModel: false, intrinsicObjects: false, workers: false };
   const unit = matrix.runtime_units.find(
     (u: { source: string }) => u.source === "scr_js_intrinsics.c",
   );
-  // Only a program with the JavaScript object model links the unit at all,
-  // and it links the build that defines the guard its whole body sits in.
+  // Every program with the JavaScript object model links the unit: the graph
+  // when its source reads a builtin intrinsic object, the fill stub that
+  // scr_json.c's object-model build asks otherwise.
   expect(unit.predicate).toBe("jsObjectModel");
   expect(selected("scr_js_intrinsics.c", plain).defines).toEqual([]);
-  expect(selected("scr_js_intrinsics.c", { ...plain, jsObjectModel: true }).defines).toEqual([
-    "SCR_JS_OBJECT_MODEL",
-  ]);
+  // The object model build alone (a typed program's BigInt view) carries
+  // none of the graph: it builds the stub, which names neither guard.
+  expect(selected("scr_js_intrinsics.c", { ...plain, jsObjectModel: true }).defines).toEqual([]);
+  expect(
+    selected("scr_js_intrinsics.c", { ...plain, jsObjectModel: true, intrinsicObjects: true })
+      .defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS"]);
   // Worker executables get the same object model build with their own flag,
   // so the unit's TLS agrees with the rest of the runtime.
-  expect(selected("scr_js_intrinsics.c", { jsObjectModel: true, workers: true }).defines).toEqual([
-    "SCR_JS_OBJECT_MODEL",
-    "SCR_WORKERS",
-  ]);
+  expect(
+    selected("scr_js_intrinsics.c", { intrinsicObjects: true, workers: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS", "SCR_WORKERS"]);
 });

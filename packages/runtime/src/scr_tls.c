@@ -103,6 +103,7 @@
 #include "mbedtls/net_sockets.h" /* the MBEDTLS_ERR_NET_* codes the BIOs answer */
 #include "mbedtls/pk.h"
 #include "mbedtls/ssl.h"
+#include "mbedtls/sha256.h"
 #include "mbedtls/x509_crt.h"
 
 static void scr_tls_oom(void) {
@@ -783,6 +784,51 @@ static void scr_tls_cli_set_own(ScrTlsCli *c, const ScrBytes *cert, const ScrByt
  * hello replayed into the bio; the handshake runs). */
 enum { SCR_SNI_NONE = 0, SCR_SNI_COLLECT, SCR_SNI_WAIT, SCR_SNI_DONE };
 
+/* SHA-256 of DER SubjectPublicKeyInfo, from Node v24.22.1:
+ * https://github.com/nodejs/node/blob/01acf0ee7493d9a6b68dd66eeefe242aa9010759/src/crypto/crypto_context.cc#L1320
+ * Trust anchors do not exempt a compromised key from this policy. */
+static const unsigned char SCR_TLS_BLOCKED_SPKIS[][32] = {
+  {0x49, 0xdd, 0x35, 0x3d, 0xc2, 0xb9, 0x19, 0xa3, 0x77, 0x06, 0x45, 0x11, 0x7d, 0x0e, 0x60, 0xc1, 0x61, 0x15, 0xe7, 0xd1, 0xbc, 0x25, 0x9e, 0xef, 0xe7, 0x34, 0xb0, 0x0e, 0xa4, 0x34, 0xfe, 0x5f},
+  {0x5c, 0x06, 0x60, 0xa2, 0xb1, 0x64, 0x91, 0x0d, 0x8f, 0xf5, 0x89, 0xc1, 0x8e, 0x14, 0x55, 0x2e, 0x9e, 0x0e, 0xc2, 0x37, 0xdc, 0xef, 0xe2, 0xcb, 0x73, 0x6d, 0x41, 0xa4, 0x81, 0x1f, 0x81, 0xa0},
+  {0x63, 0xec, 0xef, 0xee, 0x43, 0x1d, 0x49, 0x52, 0x3b, 0xc1, 0x13, 0x6c, 0x4e, 0x72, 0xd0, 0x20, 0x6a, 0x47, 0x70, 0x86, 0xca, 0xf6, 0x06, 0xcd, 0x5c, 0xf0, 0x25, 0x68, 0x6c, 0x10, 0x9c, 0xf8},
+  {0x92, 0xc0, 0x63, 0xd6, 0x7e, 0x8f, 0x14, 0xdb, 0x71, 0xd2, 0x88, 0xe1, 0x12, 0x66, 0xff, 0xda, 0xf6, 0x9c, 0xbf, 0x11, 0x5f, 0x7b, 0xab, 0x14, 0xf3, 0xbc, 0x2f, 0x68, 0xd2, 0x5e, 0x0e, 0x30},
+  {0xeb, 0xed, 0x64, 0x75, 0xc2, 0xc2, 0xd8, 0x0f, 0xcb, 0x19, 0x9f, 0x3f, 0xe8, 0xdd, 0x6e, 0x6b, 0x3c, 0xe6, 0x0b, 0x77, 0xeb, 0x15, 0xd4, 0xe4, 0x2c, 0x3d, 0xec, 0x0c, 0x6f, 0x5b, 0x51, 0x05},
+  {0xec, 0x4f, 0xfa, 0x1a, 0xd0, 0xac, 0x88, 0x08, 0x13, 0x14, 0xb7, 0xaa, 0xff, 0xef, 0x6a, 0x91, 0xf9, 0x7c, 0xd5, 0x72, 0x91, 0xbb, 0x5b, 0xa6, 0x86, 0xc5, 0x41, 0x5f, 0x5e, 0xb4, 0xf6, 0xb6},
+  {0x43, 0xbf, 0xfa, 0x19, 0xd6, 0xef, 0x65, 0x14, 0x51, 0xf6, 0x84, 0x1e, 0x01, 0x99, 0x31, 0xe9, 0x6f, 0x6f, 0x2e, 0xae, 0xff, 0x28, 0xab, 0x4b, 0x6f, 0x1c, 0xe4, 0x57, 0x6d, 0xe2, 0x71, 0x7b},
+  {0xe0, 0x25, 0x4c, 0x7f, 0xcd, 0xc2, 0x65, 0xe2, 0xf0, 0xf8, 0xa4, 0x28, 0xda, 0xbb, 0x75, 0xab, 0x4a, 0xe0, 0x39, 0xb4, 0x87, 0x2d, 0x62, 0xf5, 0xee, 0x57, 0xf0, 0x87, 0x7d, 0x5a, 0x8a, 0x41},
+};
+
+typedef enum {
+  SCR_TLS_SPKI_ALLOWED,
+  SCR_TLS_SPKI_BLOCKED,
+  SCR_TLS_SPKI_ERROR,
+} ScrTlsSpki;
+
+static ScrTlsSpki scr_tls_check_spki(const mbedtls_x509_crt *crt) {
+  if (crt == NULL) return SCR_TLS_SPKI_ALLOWED;
+  unsigned char digest[32];
+  if (crt->pk_raw.p == NULL || crt->pk_raw.len == 0 ||
+      mbedtls_sha256(crt->pk_raw.p, crt->pk_raw.len, digest, 0) != 0)
+    return SCR_TLS_SPKI_ERROR;
+  for (size_t i = 0; i < sizeof SCR_TLS_BLOCKED_SPKIS / sizeof SCR_TLS_BLOCKED_SPKIS[0]; i++)
+    if (memcmp(digest, SCR_TLS_BLOCKED_SPKIS[i], sizeof digest) == 0)
+      return SCR_TLS_SPKI_BLOCKED;
+  return SCR_TLS_SPKI_ALLOWED;
+}
+
+static ScrTlsSpki scr_tls_check_peer_spkis(const mbedtls_x509_crt *crt) {
+  for (; crt != NULL; crt = crt->next) {
+    ScrTlsSpki result = scr_tls_check_spki(crt);
+    if (result != SCR_TLS_SPKI_ALLOWED) return result;
+  }
+  return SCR_TLS_SPKI_ALLOWED;
+}
+
+static uint32_t scr_tls_spki_flags(ScrTlsSpki result) {
+  return result == SCR_TLS_SPKI_BLOCKED ? MBEDTLS_X509_BADCERT_REVOKED :
+         result == SCR_TLS_SPKI_ERROR ? MBEDTLS_X509_BADCERT_OTHER : 0;
+}
+
 typedef struct ScrTlsSock {
   mbedtls_ssl_context ssl;
   ScrNetSocket *sock; /* BORROWED: the tctx lives and dies with the socket */
@@ -800,6 +846,9 @@ typedef struct ScrTlsSock {
   bool vrfy_chain_self;
   bool vrfy_expired;
   bool vrfy_cn_mismatch;
+  /* Scalars survive TLS 1.2 freeing the peer chain on rejection. */
+  ScrTlsSpki vrfy_spki;
+  ScrTlsSpki vrfy_peer_spki;
   /* SNI pre-parse state (server side with an SNI callback only) */
   int sni_state;
   bool in_handshake;   /* a synchronous cb answer must not re-pump */
@@ -863,6 +912,19 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
   return false;
 }
 
+/* Secondary usage/curve checks run after the certificate callback. Only
+ * a failed chain admits the original peer-list fallback; Node checks
+ * hostname identity later, so CN_MISMATCH alone cannot admit it. */
+static uint32_t scr_tls_verify_result(const ScrTlsSock *t) {
+  uint32_t flags = mbedtls_ssl_get_verify_result(&t->ssl);
+  ScrTlsSpki result = t->vrfy_spki;
+  if (result == SCR_TLS_SPKI_ALLOWED && flags != UINT32_MAX &&
+      (flags & ~MBEDTLS_X509_BADCERT_CN_MISMATCH) != 0)
+    result = t->vrfy_peer_spki;
+  uint32_t policy = scr_tls_spki_flags(result);
+  return policy != 0 ? policy : flags;
+}
+
 /* The client verify callback: records WHERE verification failed and how
  * the presented chain is shaped, per certificate (depth 0 = leaf), so
  * the failure message can be Node's exact split. The verdict stays
@@ -873,6 +935,15 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * a mismatch. */
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
+  /* mbedTLS visits root to leaf. Replacing each nonallowed result keeps
+   * Node's first leaf-to-root offender, including hash-error precedence. */
+  ScrTlsSpki result = scr_tls_check_spki(crt);
+  if (result != SCR_TLS_SPKI_ALLOWED) t->vrfy_spki = result;
+  if (depth == 0) {
+    /* Save the peer list before the name check temporarily unlinks it. */
+    t->vrfy_peer_spki = scr_tls_check_peer_spkis(crt);
+    *flags |= scr_tls_spki_flags(t->vrfy_spki);
+  }
   if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
     const char *name = t->cli->verify_name;
     if (name == NULL || name[0] == '\0') {
@@ -1065,6 +1136,12 @@ static ssize_t scr_tls_xwrite(void *tctx, const char *buf, size_t n) {
  * shape comes from the verify callback's records — the peer chain is
  * already gone once the handshake has failed. */
 static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
+  uint32_t verdict = scr_tls_verify_result(t);
+  if (verdict == MBEDTLS_X509_BADCERT_REVOKED || verdict == MBEDTLS_X509_BADCERT_OTHER) {
+    snprintf(out, n, "%s", verdict == MBEDTLS_X509_BADCERT_REVOKED ?
+             "certificate revoked" : "unspecified certificate verification error");
+    return;
+  }
   if (t->vrfy_expired) {
     snprintf(out, n, "certificate has expired");
     return;
@@ -1085,7 +1162,7 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
   /* the identity check only decides on a TRUSTED chain — Node's order
    * (checkServerIdentity runs after verification succeeds) */
   if (t->vrfy_cn_mismatch &&
-      (mbedtls_ssl_get_verify_result(&t->ssl) & MBEDTLS_X509_BADCERT_NOT_TRUSTED) == 0) {
+      (scr_tls_verify_result(t) & MBEDTLS_X509_BADCERT_NOT_TRUSTED) == 0) {
     snprintf(out, n, "Hostname/IP does not match certificate's altnames");
     return;
   }
@@ -1533,21 +1610,32 @@ static int scr_tls_handshake(void *tctx) {
               ? scr_tls_handshake_requiring_cert(t)
               : mbedtls_ssl_handshake(&t->ssl);
   scr_tls_current = NULL;
+  uint32_t verdict = scr_tls_verify_result(t);
+  if (t->cli != NULL && t->cli->verify_recorded && t->cli->reject &&
+      verdict != UINT32_MAX && verdict != 0) {
+    /* A secondary check can reject after mbedTLS buffered its alert.
+     * Drop that flight before any held-byte flush, as Node's client does. */
+    t->quiet_failure = true;
+    t->held_off = t->held_len = 0;
+    if (r == 0) r = MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
+  }
+  if (r == 0 && t->srv != NULL && t->srv->request_cert && t->srv->reject_unauthorized &&
+      !t->srv->standalone && verdict != 0) {
+    /* OPTIONAL keeps the peer verdict, but required server policy must
+     * reject before secureConnection or releasing Finished. The hang-up
+     * notification follows socket closure, as for other rejected clients. */
+    t->holding = false;
+    t->held_off = t->held_len = 0;
+    scr_net_sock_transport_error(t->sock, NULL);
+    t->hang_up_pending = true;
+    return -1;
+  }
   if (r == 0) {
     scr_tls_hold_until_immediate(t);
   } else {
     /* a step that did not finish the handshake sends what it wrote now */
     t->holding = false;
     if (t->held_len > t->held_off) (void)scr_tls_flush_held(t);
-  }
-  if (r == 0 && t->srv != NULL && t->srv->request_cert && t->srv->reject_unauthorized &&
-      !t->srv->standalone && mbedtls_ssl_get_verify_result(&t->ssl) != 0) {
-    /* a client certificate that fails verification: Node's server
-     * destroys the socket before 'secureConnection', and its
-     * 'tlsClientError' is the hang-up */
-    scr_net_sock_transport_error(t->sock, NULL);
-    t->hang_up_pending = true;
-    return -1;
   }
   if (r == 0) return 1;
   if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) return 0;
@@ -1573,7 +1661,9 @@ static int scr_tls_handshake(void *tctx) {
     return -1;
   }
   char msg[160];
-  if (r == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
+  if (r == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED ||
+      (r == MBEDTLS_ERR_SSL_BAD_CERTIFICATE &&
+       (verdict == MBEDTLS_X509_BADCERT_REVOKED || verdict == MBEDTLS_X509_BADCERT_OTHER))) {
     scr_tls_verify_msg(t, msg, sizeof msg);
   } else if (r == MBEDTLS_ERR_SSL_CONN_EOF) {
     /* The peer closed the connection mid-handshake: Node's socket ends,
@@ -3506,7 +3596,9 @@ void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/,
  * ssl.verifyError() first and only reaches checkServerIdentity's
  * ERR_TLS_CERT_ALTNAME_INVALID on a VERIFIED chain. */
 static const char *scr_tls_auth_code(ScrTlsSock *t) {
-  uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
+  uint32_t vr = scr_tls_verify_result(t);
+  if (vr == MBEDTLS_X509_BADCERT_REVOKED) return "CERT_REVOKED";
+  if (vr == MBEDTLS_X509_BADCERT_OTHER) return "UNSPECIFIED";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
   if (t->vrfy_leaf_self) return "DEPTH_ZERO_SELF_SIGNED_CERT";
   if (t->vrfy_chain_self) return "SELF_SIGNED_CERT_IN_CHAIN";
@@ -3520,7 +3612,9 @@ static const char *scr_tls_auth_code(ScrTlsSock *t) {
  * checked last, the purpose (clientAuth) before it, the chain first. A
  * client that sent none is UNABLE_TO_GET_ISSUER_CERT, as Node reports it. */
 static const char *scr_tls_client_cert_code(ScrTlsSock *t) {
-  uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
+  uint32_t vr = scr_tls_verify_result(t);
+  if (vr == MBEDTLS_X509_BADCERT_REVOKED) return "CERT_REVOKED";
+  if (vr == MBEDTLS_X509_BADCERT_OTHER) return "UNSPECIFIED";
   if (vr & MBEDTLS_X509_BADCERT_MISSING) return "UNABLE_TO_GET_ISSUER_CERT";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
   if (vr & (MBEDTLS_X509_BADCERT_EXT_KEY_USAGE | MBEDTLS_X509_BADCERT_KEY_USAGE)) return "INVALID_PURPOSE";
@@ -3582,12 +3676,12 @@ static bool scr_tls_sock_verifies(const ScrTlsSock *t) {
 
 bool scr_tls_sock_authorized(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  return t != NULL && scr_tls_sock_verifies(t) && mbedtls_ssl_get_verify_result(&t->ssl) == 0;
+  return t != NULL && scr_tls_sock_verifies(t) && scr_tls_verify_result(t) == 0;
 }
 
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || !scr_tls_sock_verifies(t) || mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
+  if (t == NULL || !scr_tls_sock_verifies(t) || scr_tls_verify_result(t) == 0) {
     return NULL; /* the null arm — authorized, or never verified */
   }
   const char *code = t->srv != NULL ? scr_tls_client_cert_code(t) : scr_tls_auth_code(t);
@@ -3816,9 +3910,7 @@ static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
   ScrTlsSock *t = scr_tls_sock_of(s);
   if (t == NULL) return false; /* a plain socket: the net dispatch answers */
   if (strcmp(key, "authorized") == 0) {
-    bool a = t->established && t->cli != NULL && t->cli->verify_recorded &&
-             mbedtls_ssl_get_verify_result(&t->ssl) == 0;
-    *out = scr_dyn_new_bool(a);
+    *out = scr_dyn_new_bool(scr_tls_sock_authorized(s));
     return true;
   }
   if (strcmp(key, "alpnProtocol") == 0) {
@@ -3826,13 +3918,11 @@ static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
     return true;
   }
   if (strcmp(key, "authorizationError") == 0) {
-    if (!t->established || t->cli == NULL || !t->cli->verify_recorded ||
-        mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
+    ScrStr *str = scr_tls_sock_auth_error(s);
+    if (str == NULL) {
       *out = scr_dyn_new_null();
       return true;
     }
-    const char *code = scr_tls_auth_code(t);
-    ScrStr *str = scr_str_new(code, strlen(code));
     *out = scr_dyn_new_str(str);
     scr_str_release(str);
     return true;

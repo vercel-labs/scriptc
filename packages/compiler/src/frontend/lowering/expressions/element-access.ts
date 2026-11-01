@@ -513,7 +513,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         key:
           index.type.kind === "f64"
             ? { kind: "toString", operand: index, type: STRING, loc: locOf(expr) }
-            : index,
+            : lowerer.coerceToExpected(index, DYN),
         type: DYN,
         loc: locOf(expr),
       };
@@ -1054,7 +1054,11 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(arr, DYN),
-      key: index,
+      // A non-f64 key (a JavaScript file's `arr[true]`, an `any` index) is a
+      // dynamic key: the property read below the IR is dynamic, and the
+      // class member dispatch helpers take a dynamic key — never the bool or
+      // record value the checker typed here.
+      key: lowerer.coerceToExpected(index, DYN),
       type: DYN,
       loc: locOf(expr),
     };

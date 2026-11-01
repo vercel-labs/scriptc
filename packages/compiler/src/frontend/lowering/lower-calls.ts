@@ -9045,9 +9045,28 @@ function lowerObjectStaticCall(
           }
         }
       }
-      if (tProbe?.type.kind === "record" && sProbe?.type.kind === "record") {
-        const tShape = lowerer.shapes.get(tProbe.type.shapeId);
-        const sShape = lowerer.shapes.get(sProbe.type.shapeId);
+      // An operand the CHECKER narrowed to one record ARM of its declared
+      // union (`content?.type === "toolCall"` narrows the array element to
+      // ToolCall, whose lowered value still carries the element's
+      // `ToolCall | ToolResult`): the plan runs over the arm, and the
+      // operand lowers through the CHECKED extraction — the same
+      // `%union.narrow` every other arm-typed site uses, so a value that
+      // is not that arm throws the catchable TypeError instead of being
+      // copied through the wrong layout. The extraction yields the arm's
+      // own record, so the write still mutates the value the program holds.
+      const assignOperand = (node: ts.Expression, probe: IrExpr | null): IrType | null => {
+        if (probe?.type.kind === "record") return probe.type;
+        if (probe?.type.kind !== "union") return null;
+        const site = lowerer.mapTypeOf(lowerer.typeOf(node));
+        return site?.kind === "record" && lowerer.armTag(probe.type.unionId, site) >= 0
+          ? site
+          : null;
+      };
+      const tOperand = assignOperand(call.arguments.nodes[0]!, tProbe);
+      const sOperand = assignOperand(call.arguments.nodes[1]!, sProbe);
+      if (tOperand?.kind === "record" && sOperand?.kind === "record") {
+        const tShape = lowerer.shapes.get(tOperand.shapeId);
+        const sShape = lowerer.shapes.get(sOperand.shapeId);
         const ok =
           tShape &&
           sShape &&
@@ -9068,8 +9087,12 @@ function lowerObjectStaticCall(
           });
         if (ok) {
           const loc = locOf(call);
-          const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
-          const source = lowerer.lowerExpr(call.arguments.nodes[1]!);
+          const operand = (node: ts.Expression, arm: IrType): IrExpr => {
+            const value = lowerer.lowerExpr(node);
+            return value.type.kind === "record" ? value : lowerer.coerceToExpected(value, arm);
+          };
+          const target = operand(call.arguments.nodes[0]!, tOperand);
+          const source = operand(call.arguments.nodes[1]!, sOperand);
           if (target.type.kind === "record" && source.type.kind === "record") {
             const helper = recordAssignHelper(
               lowerer,

@@ -1045,6 +1045,8 @@ static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
 
 static ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
 
+ScrStr *scr_str_empty_value(void) { return scr_str_empty(); }
+
 /* Empty/ASCII characters are immortal; tiny spans share live heap strings. */
 static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   if (len == 0) return scr_str_empty();
@@ -1063,6 +1065,8 @@ static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   }
   return scr_str_new(bytes, len);
 }
+
+ScrStr *scr_str_intern_span(const char *bytes, size_t len) { return scr_str_from_span(bytes, len); }
 
 /* scr_str_from_span for a span of a proven-ASCII string: the result is
  * ASCII without another scan. */

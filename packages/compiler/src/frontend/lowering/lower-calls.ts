@@ -10752,9 +10752,11 @@ export function lowerRecordFieldCall(
 /** The URL factories use the constructor's conversion order and parser.
  * URL.revokeObjectURL() with NO argument: Node's ERR_MISSING_ARGS
  * throws before the registry lookup, so the zero-argument contract is
- * exact without any blob machinery. The one-argument form (Node's
- * no-op for unregistered ids) and createObjectURL keep their
- * fences — a compiled program has no blob registry to consult. */
+ * exact without any blob machinery. The one-argument form coerces the
+ * id to a string (a Symbol throws) and finds nothing registered — a
+ * compiled program cannot create a blob URL, so the lookup always
+ * misses and the call is its own coercion. createObjectURL keeps its
+ * fence: there is no blob registry to register into. */
 function lowerUrlStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -10767,14 +10769,25 @@ function lowerUrlStaticCall(
   if (callee.name.text === "canParse" || callee.name.text === "parse") {
     return lowerUrlFactory(lowerer, call, callee.name.text);
   }
-  if (callee.name.text !== "revokeObjectURL" || call.arguments.nodes.length !== 0) return null;
-  return nodeThrowExpr(
-    1,
-    "ERR_MISSING_ARGS",
-    'The "url" argument must be specified',
-    VOID,
-    locOf(call),
-  );
+  if (callee.name.text !== "revokeObjectURL") return null;
+  const args = call.arguments.nodes;
+  if (args.length === 0) {
+    return nodeThrowExpr(
+      1,
+      "ERR_MISSING_ARGS",
+      'The "url" argument must be specified',
+      VOID,
+      locOf(call),
+    );
+  }
+  if (args.length !== 1) return null;
+  const arg = args[0]!;
+  const id = lowerer.lowerExpr(arg);
+  const text: IrExpr =
+    id.type.kind === "url"
+      ? { kind: "libCall", fn: "url.href", args: [id], type: STRING, loc: locOf(arg) }
+      : lowerer.ensureString(id, arg);
+  return { kind: "libCall", fn: "url.revokeObjectURL", args: [text], type: VOID, loc: locOf(call) };
 }
 
 const SP_BRAND_METHODS = new Set([

@@ -1497,6 +1497,9 @@ ScrStr *scr_os_user_homedir(void) {
 double scr_os_user_uid(void) { return -1; }
 double scr_os_user_gid(void) { return -1; }
 
+/* Each Windows field is its own API call, so there is no entry to hold. */
+void scr_os_user_info_begin(void) {}
+
 ScrStr *scr_os_release(void) {
   /* uv_os_uname on Windows: RtlGetVersion (the un-lied-to GetVersionEx),
    * rendered "major.minor.build" — Node answers e.g. "10.0.26100". */
@@ -1589,55 +1592,54 @@ ScrStr *scr_os_homedir(void) {
 }
 
 /* The os.userInfo() fields — uv_os_get_passwd's slices of the passwd
- * entry for the effective uid. One passwd lookup per call (one call per
- * userInfo field — cheap, no caching to invalidate). Failure aborts: Node
- * throws a system error there, but no compiled program path reaches it
- * for the running uid. */
-static const struct passwd *scr_os_passwd(char *buf, size_t cap, struct passwd *pw) {
+ * entry for the effective uid. One lookup per record, taken by
+ * scr_os_user_info_begin (the record's own ordering does not matter: the
+ * fields only read what it stored). Failure aborts: Node throws a system
+ * error there, but no compiled program path reaches it for the running
+ * uid. The state is per thread; a compiled program may run several. */
+static _Thread_local struct passwd scr_os_user_pw;
+static _Thread_local char scr_os_user_buf[8192];
+static _Thread_local const struct passwd *scr_os_user_snapshot;
+
+void scr_os_user_info_begin(void) {
   struct passwd *result = NULL;
-  if (getpwuid_r(geteuid(), pw, buf, cap, &result) != 0 || !result) {
+  if (getpwuid_r(geteuid(), &scr_os_user_pw, scr_os_user_buf, sizeof scr_os_user_buf, &result) !=
+          0 ||
+      !result) {
     scr_trap("scriptc: os.userInfo() failed\n");
   }
-  return result;
+  scr_os_user_snapshot = &scr_os_user_pw;
+}
+
+/* A field read outside a userInfo() record takes its own lookup. */
+static const struct passwd *scr_os_user_entry(void) {
+  if (!scr_os_user_snapshot) scr_os_user_info_begin();
+  return scr_os_user_snapshot;
 }
 
 ScrStr *scr_os_user_name(void) {
-  struct passwd pw;
-  char buf[8192];
-  const struct passwd *r = scr_os_passwd(buf, sizeof buf, &pw);
-  return scr_str_new(r->pw_name, strlen(r->pw_name));
+  const char *name = scr_os_user_entry()->pw_name;
+  return scr_str_new(name, strlen(name));
 }
 
 ScrStr *scr_os_user_shell(void) {
-  struct passwd pw;
-  char buf[8192];
-  const struct passwd *r = scr_os_passwd(buf, sizeof buf, &pw);
-  const char *sh = r->pw_shell ? r->pw_shell : "";
+  const char *sh = scr_os_user_entry()->pw_shell;
+  if (!sh) sh = "";
   return scr_str_new(sh, strlen(sh));
 }
 
 ScrStr *scr_os_user_homedir(void) {
   /* The PASSWD home (pw_dir) — Node's userInfo().homedir, distinct from
    * os.homedir()'s $HOME-first cascade. */
-  struct passwd pw;
-  char buf[8192];
-  const struct passwd *r = scr_os_passwd(buf, sizeof buf, &pw);
-  return scr_str_new(r->pw_dir, strlen(r->pw_dir));
+  const char *dir = scr_os_user_entry()->pw_dir;
+  return scr_str_new(dir, strlen(dir));
 }
 
 /* The entry's pw_uid and pw_gid: the user's primary group, which can
  * differ from the process gid. */
-double scr_os_user_uid(void) {
-  struct passwd pw;
-  char buf[8192];
-  return (double)scr_os_passwd(buf, sizeof buf, &pw)->pw_uid;
-}
+double scr_os_user_uid(void) { return (double)scr_os_user_entry()->pw_uid; }
 
-double scr_os_user_gid(void) {
-  struct passwd pw;
-  char buf[8192];
-  return (double)scr_os_passwd(buf, sizeof buf, &pw)->pw_gid;
-}
+double scr_os_user_gid(void) { return (double)scr_os_user_entry()->pw_gid; }
 
 ScrStr *scr_os_release(void) {
   /* uname(2)'s release field — Node's uv_os_uname()-backed answer. */
@@ -1656,6 +1658,21 @@ ScrStr *scr_os_type(void) {
   }
   return scr_str_new(u.sysname, strlen(u.sysname));
 }
+
+/* os.userInfo({ encoding: 'buffer' }): the three string fields as Buffers
+ * with the same bytes (the passwd slices above). +1 each. */
+static ScrBytes *scr_os_user_field_bytes(ScrStr *text) {
+  ScrBytes *bytes = scr_bytes_from_data((const uint8_t *)text->data, text->len);
+  scr_str_release(text);
+  /* Node answers Buffers: the brand is observable (Buffer.isBuffer,
+   * .constructor, instanceof, inspect), so the copies carry it. */
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+}
+
+ScrBytes *scr_os_user_name_bytes(void) { return scr_os_user_field_bytes(scr_os_user_name()); }
+ScrBytes *scr_os_user_shell_bytes(void) { return scr_os_user_field_bytes(scr_os_user_shell()); }
+ScrBytes *scr_os_user_homedir_bytes(void) { return scr_os_user_field_bytes(scr_os_user_homedir()); }
 
 #ifdef __linux__
 /* libuv's uv__slurp: one read of at most cap - 1 bytes of path into buf

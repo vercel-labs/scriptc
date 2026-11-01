@@ -10408,6 +10408,43 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
   return ref?.kind === "collection" || ref?.kind === "error";
 }
 
+/** `new url.URL(...)` / `new url.URLSearchParams(...)`: the member of a
+ * node:url binding (a namespace import, a require result, or an import=
+ * alias) resolves to the stdlib class symbol the named import binds, so the
+ * construction takes the same lowering. A binding that holds the class
+ * (`const U = url.URL`) follows its initializer to the same symbol. */
+function stdlibUrlClassOf(
+  lowerer: Lowerer,
+  callee: ts.Expression,
+): "URL" | "URLSearchParams" | null {
+  const classNamed = (sym: ts.Symbol | undefined): "URL" | "URLSearchParams" | null => {
+    if (!sym || !lowerer.isStdlibSymbol(sym)) return null;
+    const name = ts.symbolName(sym);
+    return name === "URL" || name === "URLSearchParams" ? name : null;
+  };
+  const aliased = (raw: ts.Symbol | undefined): ts.Symbol | undefined =>
+    raw && raw.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(raw) : raw;
+  let selected: ts.Expression = callee;
+  for (let hops = 0; hops < 4; hops++) {
+    while (ts.isParenthesizedExpression(selected)) selected = selected.expression;
+    if (ts.isPropertyAccessExpression(selected) && !selected.questionDotToken) {
+      return classNamed(aliased(lowerer.checker.getSymbolAtLocation(selected.name)));
+    }
+    if (!ts.isIdentifier(selected)) return null;
+    const sym = aliased(lowerer.checker.getSymbolAtLocation(selected));
+    if (!sym) return null;
+    const known = classNamed(sym);
+    if (known !== null) return known;
+    const decl = sym.valueDeclaration;
+    if (!decl || !ts.isVariableDeclaration(decl) || !decl.initializer) return null;
+    let next: ts.Expression = decl.initializer;
+    while (ts.isParenthesizedExpression(next)) next = next.expression;
+    if (next === selected) return null;
+    selected = next;
+  }
+  return null;
+}
+
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
   // Constructing a Node 24 global the native runtime does not provide
@@ -10444,6 +10481,14 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
+  }
+  // `new url.URL(input)` / `new url.URLSearchParams(init?)`: the node:url
+  // member names the same class the named import does, so both take the
+  // class's own lowering (including its argument diagnostics).
+  {
+    const urlClass = stdlibUrlClassOf(lowerer, expr.expression);
+    if (urlClass === "URL") return lowerUrlNew(lowerer, expr);
+    if (urlClass === "URLSearchParams") return lowerSearchParamsNew(lowerer, expr, loc);
   }
   const wrapper = lowerWrapperNew(lowerer, expr);
   if (wrapper) return wrapper;

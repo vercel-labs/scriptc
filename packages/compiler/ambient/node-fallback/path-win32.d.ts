@@ -13,8 +13,13 @@ declare module "path/win32" {
   export function matchesGlob(path: string, pattern: string): boolean;
   export function parse(path: string): import("path").ParsedPath;
   export function format(pathObject: import("path").FormatInputPathObject): string;
+  /* Node's deprecated alias of toNamespacedPath. */
+  export function _makeLong(path: string): string;
   export const sep: "\\";
   export const delimiter: ";";
+  /* Node's win32 object carries the other namespace too. */
+  export const posix: typeof import("path/posix");
+  export const win32: typeof import("path/win32");
 }
 
 declare module "node:path/win32" {

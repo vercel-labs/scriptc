@@ -878,8 +878,15 @@ function buildLibFnSignatures() {
     "os.userName": { argTypes: [], result: STRING },
     "os.userShell": { argTypes: [], result: STRING },
     "os.userHomedir": { argTypes: [], result: STRING },
+    /** The same three fields as Buffers (os.userInfo({ encoding: 'buffer' })). */
+    "os.userNameBuf": { argTypes: [], result: BYTES_U8 },
+    "os.userShellBuf": { argTypes: [], result: BYTES_U8 },
+    "os.userHomedirBuf": { argTypes: [], result: BYTES_U8 },
     "os.userUid": { argTypes: [], result: F64 },
     "os.userGid": { argTypes: [], result: F64 },
+    /** The single passwd lookup the field libCalls above read: one per
+     * userInfo() record instead of one per field. */
+    "os.userInfoBegin": { argTypes: [], result: VOID },
     "os.tmpdir": { argTypes: [], result: STRING },
     // Result is the call site's Dict<NetworkInterfaceInfo[]> record (VOID is
     // the dgram.address sentinel — the libCall case checks the structure).
@@ -1152,6 +1159,10 @@ function buildLibFnSignatures() {
     "url.canParseBase": { argTypes: [STRING, STRING], result: BOOL },
     "url.parse": { argTypes: [STRING], result: DYN },
     "url.parseBase": { argTypes: [STRING, STRING], result: DYN },
+    /** URL.revokeObjectURL(id): the id arrives already converted. A
+     * compiled program registers no blob URLs, so Node's registry lookup
+     * always misses and the call answers undefined. Never throws. */
+    "url.revokeObjectURL": { argTypes: [STRING], result: VOID },
     "url.protocol": { argTypes: [URL_T], result: STRING },
     "url.origin": { argTypes: [URL_T], result: STRING },
     "url.username": { argTypes: [URL_T], result: STRING },

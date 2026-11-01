@@ -44,11 +44,35 @@ export interface IslandModule {
   decision: "marked" | "auto";
 }
 
+/** The islands a build installed outside node_modules (a linked or hoisted
+ * workspace member), by directory, and the answer already given for each
+ * file. The memo lives on the set it describes, and an island set with no
+ * linked member never fills it. */
+export interface IslandDirIdentity {
+  byDir: Map<string, IslandPackage>;
+  answered: Map<string, IslandPackage | null>;
+  /** Whether `byDir` has been built from the set's packages. */
+  built: boolean;
+}
+
 /** The program's island packages, by package name, and island modules, by
  * absolute file path. */
 export interface NodeIslandSet {
   packages: ReadonlyMap<string, IslandPackage>;
   modules: ReadonlyMap<string, IslandModule>;
+  linked: IslandDirIdentity;
+}
+
+/** An island set with the boundary's directory memo in place. */
+export function nodeIslandSet(
+  packages: ReadonlyMap<string, IslandPackage>,
+  modules: ReadonlyMap<string, IslandModule>,
+): NodeIslandSet {
+  return {
+    packages,
+    modules,
+    linked: { byDir: new Map(), answered: new Map(), built: false },
+  };
 }
 
 function normalizePath(file: string): string {
@@ -97,36 +121,27 @@ export function islandPackageOfFile(islands: NodeIslandSet, file: string): Islan
 
 /* A workspace-linked package's realpath elides the node_modules segment the
  * file path names it by, so its files carry no package name at all: the
- * island's installed directory is the only identity left. Indexed once per
- * island set, and only for islands installed OUTSIDE node_modules (a linked
- * or hoisted workspace member), so an ordinary build never reaches the
- * prefix scan — and a per-file memo keeps it off the hot path when it does. */
-const islandsOutsideNodeModules = new WeakMap<NodeIslandSet, Map<string, IslandPackage>>();
-const islandDirAnswers = new WeakMap<NodeIslandSet, Map<string, IslandPackage | null>>();
-
+ * island's installed directory is the only identity left. The index holds
+ * only islands installed OUTSIDE node_modules — a package there is already
+ * named by the paths above — so an ordinary build never reaches the prefix
+ * scan, and a per-file memo keeps it off the hot path when it does. Both
+ * live on the island set (see `IslandDirIdentity`). */
 function islandPackageUnderDir(islands: NodeIslandSet, file: string): IslandPackage | null {
-  if (islands.packages.size === 0) return null;
-  let index = islandsOutsideNodeModules.get(islands);
-  if (index === undefined) {
-    index = new Map();
+  const linked = islands.linked;
+  if (!linked.built) {
+    linked.built = true;
     for (const pkg of islands.packages.values()) {
       const dir = normalizePath(pkg.dir).replace(/\/+$/, "");
       if (packageDirOf(`${dir}/package.json`) !== null) continue;
-      index.set(dir, pkg);
+      linked.byDir.set(dir, pkg);
     }
-    islandsOutsideNodeModules.set(islands, index);
   }
-  if (index.size === 0) return null;
-  let answers = islandDirAnswers.get(islands);
-  if (answers === undefined) {
-    answers = new Map();
-    islandDirAnswers.set(islands, answers);
-  }
+  if (linked.byDir.size === 0) return null;
   const path = normalizePath(file);
-  const known = answers.get(path);
+  const known = linked.answered.get(path);
   if (known !== undefined) return known;
   let answer: IslandPackage | null = null;
-  for (const [dir, pkg] of index) {
+  for (const [dir, pkg] of linked.byDir) {
     if (path !== dir && !path.startsWith(`${dir}/`)) continue;
     // The directory fallback applies only to files whose path carries no
     // package identity: a workspace link's realpath elides the node_modules
@@ -139,7 +154,7 @@ function islandPackageUnderDir(islands: NodeIslandSet, file: string): IslandPack
     answer = pkg;
     break;
   }
-  answers.set(path, answer);
+  linked.answered.set(path, answer);
   return answer;
 }
 

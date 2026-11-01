@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   islandOwnerOfFile,
   islandPackageOfFile,
+  nodeIslandSet,
   type IslandPackage,
   type NodeIslandSet,
 } from "./boundary.js";
@@ -11,7 +12,7 @@ function island(name: string, dir: string): IslandPackage {
 }
 
 function set(...packages: IslandPackage[]): NodeIslandSet {
-  return { packages: new Map(packages.map((p) => [p.name, p])), modules: new Map() };
+  return nodeIslandSet(new Map(packages.map((p) => [p.name, p])), new Map());
 }
 
 describe("islandPackageOfFile", () => {

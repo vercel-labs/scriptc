@@ -37,6 +37,7 @@ import {
   type NodeIslandPolicy,
 } from "../node-islands/policy.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
+import { nodeIslandSet } from "../node-islands/boundary.js";
 import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
 import {
   classifyDiagnostic,
@@ -587,7 +588,7 @@ function decideNodeIslands(
       }
     }
   }
-  if (errors.length > 0) return { packages: new Map(), modules: new Map(), notes: [], errors };
+  if (errors.length > 0) return { ...nodeIslandSet(new Map(), new Map()), notes: [], errors };
   // A user module that reads a patched member runs in a Node island, so its
   // read goes through the patched object exactly as in Node (H3.4).
   for (const [file, reader] of readerModules) {
@@ -710,7 +711,9 @@ function decideNodeIslands(
         end: 0,
       }),
     );
-  return packages.size === 0 && modules.size === 0 ? null : { packages, modules, notes, errors };
+  return packages.size === 0 && modules.size === 0
+    ? null
+    : { ...nodeIslandSet(packages, modules), notes, errors };
 }
 
 /** The installed package directory of `name` as Node resolves it from

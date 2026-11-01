@@ -22,6 +22,7 @@ import {
   lowerFsStreamCreate,
   lowerFsPromisesMkdirCall,
   lowerFsRemoveCall,
+  lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
   lowerFsWriteOptionsCall,
   lowerFsReadPathCall,
@@ -381,9 +382,11 @@ export function lowerBuiltinModuleCall(
       loc,
     };
   }
+  // The byte-data two-argument forms: appendFile appends, writeFile
+  // truncates (the same difference the string forms have).
   if (
     bi.module === "fs/promises" &&
-    bi.member === "appendFile" &&
+    (bi.member === "appendFile" || bi.member === "writeFile") &&
     expr.arguments.nodes.length === 2 &&
     lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "bytes"
   ) {
@@ -420,6 +423,13 @@ export function lowerBuiltinModuleCall(
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
   if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
     return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
+  }
+  // appendFileSync(p, data, options): only the encoding can be lowered
+  // here (utf8 is what the runtime appends anyway; the flag a plain append
+  // already uses); `mode` and any other flag keep their fence, since they
+  // change what an append creates.
+  if (bi.module === "fs" && bi.member === "appendFileSync" && expr.arguments.nodes.length === 3) {
+    return lowerFsAppendOptionsCall(lowerer, expr, loc);
   }
   if (fn.variadicPack) {
     // join(...parts) forwards the array itself; mixing spread and plain

@@ -1,0 +1,106 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-write-options-bytes.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type 'Uint8Array<ArrayBuffer>' is not assignable to parameter of type 'string'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 925,
+    "end": 959
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type 'Uint8Array<ArrayBuffer>' is not assignable to parameter of type 'string'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 1180,
+    "end": 1199
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Argument of type 'Uint8Array<ArrayBuffer>' is not assignable to parameter of type 'string'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 1452,
+    "end": 1480
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Argument of type 'Buffer<ArrayBufferLike>' is not assignable to parameter of type 'string'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 1751,
+    "end": 1804
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type 'string' is not assignable to parameter of type 'number'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 2020,
+    "end": 2028
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Expected 2 arguments, but got 3.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 2306,
+    "end": 2326
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Expected 2 arguments, but got 3.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 2364,
+    "end": 2384
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type 'string | Uint8Array<ArrayBufferLike>' is not assignable to parameter of type 'string'.\n      Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'string'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 2786,
+    "end": 2793
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type 'string' is not assignable to parameter of type 'number'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 3072,
+    "end": 3085
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type 'string' is not assignable to parameter of type 'number'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 3130,
+    "end": 3143
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type 'Uint8Array<ArrayBuffer>' is not assignable to parameter of type 'string'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/fs-write-options-bytes.ts",
+    "start": 3419,
+    "end": 3441
+   }
+  }
+ ]
+}

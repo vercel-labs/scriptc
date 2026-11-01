@@ -147,7 +147,7 @@ declare module "fs/promises" {
   export function readFile(path: string | URL): Promise<Buffer>;
   export function writeFile(
     path: string | URL,
-    data: string,
+    data: string | Uint8Array,
     options?: {
       mode?: number;
       encoding?: "utf8" | "utf-8";

@@ -46,8 +46,8 @@ import {
   isClassOwnEnumerableFieldName,
   isDirentShape,
   isDynTypedRefType,
+  accessorSlotProp,
   recordTextCodecClass,
-  shapeHasAccessorSlots,
   shapeKeyOrders,
   typeKey,
 } from "../../ir/ir.js";
@@ -815,13 +815,6 @@ function inspectSupport(
         visiting.delete(t.shapeId);
         return null;
       }
-      // Accessor-carrying shapes: Node prints the accessor names as
-      // `x: [Getter]` / `[Setter]` / `[Getter/Setter]` in insertion order
-      // — a position the static field walk does not track (accessor slots
-      // live outside declaredOrder), so the render fences by name.
-      if (shapeHasAccessorSlots(shape)) {
-        return "shapes carrying get/set accessor properties have no inspect lowering yet (Node prints the accessor names as [Getter]/[Setter] in insertion order — read the properties explicitly)";
-      }
       if (shape.indexValue !== undefined) {
         // PURE index-signature shapes (Record<string, V> — no declared
         // fields) render like the dyn's objects: a runtime key walk
@@ -838,6 +831,19 @@ function inspectSupport(
         return null;
       }
       for (const f of shape.fields) {
+        // An accessor's closure slot never renders itself: the property's
+        // entry prints Node's label, or the getter's RESULT under the
+        // getters option (a setter-only property stays a label). A getter
+        // that returns nothing renders `[Getter: undefined]` — the label
+        // path already, so its void result is no fence.
+        const slot = accessorSlotProp(f.name);
+        if (slot && f.type.kind === "func") {
+          if (slot.kind === "set") continue;
+          if (f.type.ret.kind === "void") continue;
+          const why = inspectSupport(lowerer, f.type.ret, visiting, out);
+          if (why !== null) return why;
+          continue;
+        }
         const why = inspectSupport(lowerer, f.type, visiting, out);
         if (why !== null) return why;
       }
@@ -1254,6 +1260,16 @@ export function typeReachesItself(lowerer: Lowerer, t: IrType): boolean {
     return false;
   };
   return walk(t);
+}
+
+/** Whether a record shape carries an accessor getter, whose result can be
+ * the walked value itself. */
+function shapeHasGetter(lowerer: Lowerer, shapeId: string): boolean {
+  const shape = lowerer.shapes.get(shapeId);
+  if (!shape) return false;
+  return shape.fields.some(
+    (f) => accessorSlotProp(f.name)?.kind === "get" && f.type.kind === "func",
+  );
 }
 
 /** True when a value of `t` can be cyclic: `t` or any type reachable from
@@ -1696,9 +1712,12 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   // order), seen-push after begin, and refWrap around end's result (end
   // adds the <ref *N> prefix on values the walk found circular). Acyclic types
   // keep the zero-cost path.
+  // An accessor's getter answers any value — the walked value itself
+  // included — which no declared field type shows, so a shape with a
+  // getter keeps Node's circular bookkeeping on.
   const onCycle =
     (t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
-    typeReachesItself(lowerer, t);
+    (typeReachesItself(lowerer, t) || (t.kind === "record" && shapeHasGetter(lowerer, t.shapeId)));
   const begin = (): IrStmt[] => [
     exprStmt({ kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: { kind: "void" }, loc }),
     ...(onCycle
@@ -2232,9 +2251,241 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // reachability can settle this shape after the helper is first
       // interned, so rebuild the field walk once metadata is final.
       lowerer.keyOrder.observe(t);
+      // Accessor properties: the shape keeps the getter and setter as
+      // `%get:`/`%set:` closure slots and names the property once, in
+      // accessorOrder (see accessorSlotProp). The walk prints the label
+      // Node prints, or — under Node's getters option — runs the getter
+      // and prints what it answered, or the value it threw. The slots
+      // cannot change after interning, so the locals pool here serves
+      // every rebuild.
+      interface AccessorSlots {
+        get?: IrType & { kind: "func" };
+        set?: IrType & { kind: "func" };
+      }
+      const accessors = new Map<string, AccessorSlots>();
+      for (const f of shape.fields) {
+        const slot = accessorSlotProp(f.name);
+        if (!slot || f.type.kind !== "func") continue;
+        const slots = accessors.get(slot.prop) ?? {};
+        if (slot.kind === "get") slots.get = f.type;
+        else slots.set = f.type;
+        accessors.set(slot.prop, slots);
+      }
+      if (accessors.size > 0) {
+        // The getters option, read once per render: the helper is shared
+        // by every call site, so the option is run-time state.
+        locals.push({ id: "gm.0", name: "gm", type: F64, mutable: false });
+        for (let i = 0; i < accessors.size; i++) {
+          locals.push(
+            { id: `a.${i}`, name: "a", type: STRING, mutable: true },
+            { id: `ae.${i}`, name: "ae", type: CAUGHT, mutable: false },
+          );
+        }
+      }
+      const ACCESSOR_PRIMITIVES = new Set([
+        "f64",
+        "string",
+        "bool",
+        "undefinedT",
+        "nullT",
+        "bigint",
+        "symbol",
+      ]);
+      let accessorIndex = 0;
+      const accessorValueLocals = new Set<string>();
+      /** `key: <label>` for an accessor property, invoking its getter when
+       * the getters option names it: the result renders by kind (Node's
+       * formatProperty), a throw as `[Label: <Inspection threw (err)>]`. */
+      const accessorEntry = (name: string, slots: AccessorSlots): IrStmt[] => {
+        const index = accessorIndex++;
+        const strId = `a.${index}`;
+        const caughtId = `ae.${index}`;
+        const label = slots.get ? (slots.set ? "Getter/Setter" : "Getter") : "Setter";
+        const s = (): IrExpr => varRef(strId, STRING, loc);
+        const entryOf = (value: IrExpr): IrStmt =>
+          entry(concatAll([strLit(`${inspectKey(name)}: `, loc), value], loc), boolLit(false, loc));
+        const getType = slots.get;
+        if (getType === undefined) {
+          return [
+            { kind: "varDecl", localId: strId, init: strLit(`[${label}]`, loc), loc },
+            entryOf(s()),
+          ];
+        }
+        const called: IrExpr = {
+          kind: "callValue",
+          callee: {
+            kind: "recordGet",
+            obj: v(),
+            shapeId: t.shapeId,
+            field: `%get:${name}`,
+            type: getType,
+            loc,
+          },
+          args: [],
+          type: getType.ret,
+          loc,
+        };
+        const resultT = getType.ret;
+        // What the getter answered renders by RUNTIME kind (Node's
+        // formatProperty): a null and the primitives `[Label: <primitive>]`,
+        // an object or a function `[Label] <value>`. A checker union
+        // dispatches on the arm that holds; a checked-dynamic answer is
+        // classified by the runtime. A getter that returns nothing runs for
+        // its effects and renders Node's `[Getter: undefined]`.
+        const primitiveText = (armT: IrType, value: IrExpr): IrExpr =>
+          concatAll([strLit(`[${label}: `, loc), child(armT, value), strLit("]", loc)], loc);
+        const rendered = (armT: IrType, value: IrExpr): IrExpr => {
+          if (armT.kind === "dyn")
+            return {
+              kind: "libCall",
+              fn: "insp.accessorValue",
+              args: [value, strLit(label, loc), rPlus1(), d()],
+              type: STRING,
+              loc,
+            };
+          return ACCESSOR_PRIMITIVES.has(armT.kind)
+            ? primitiveText(armT, value)
+            : concatAll([strLit(`[${label}] `, loc), child(armT, value)], loc);
+        };
+        // The getter runs in an inspection context of its own: util.inspect
+        // calls INSIDE it start from Node's fresh context and must leave
+        // this walk's frames and circular bookkeeping alone. What it
+        // answered renders in THIS context, at the property's level.
+        const valueId = `av.${index}`;
+        const doneId = `ad.${index}`;
+        const hasValue = resultT.kind !== "void";
+        if (hasValue && !accessorValueLocals.has(valueId)) {
+          accessorValueLocals.add(valueId);
+          // Assigned inside the try so the getter's answer outlives it.
+          locals.push({ id: valueId, name: "av", type: resultT, mutable: true });
+        }
+        if (!accessorValueLocals.has(doneId)) {
+          accessorValueLocals.add(doneId);
+          locals.push({ id: doneId, name: "ad", type: BOOL, mutable: true });
+        }
+        const val = (): IrExpr => varRef(valueId, resultT, loc);
+        const render: IrStmt[] = [];
+        if (resultT.kind === "void") {
+          render.push({
+            kind: "assign",
+            localId: strId,
+            value: strLit(`[${label}: undefined]`, loc),
+            loc,
+          });
+        } else if (resultT.kind === "union") {
+          const def = lowerer.unions.get(resultT.unionId);
+          if (!def) throw new InternalCompilerError(`inspect of unknown union ${resultT.unionId}`);
+          // The result is read once, then the arm holding decides the form.
+          def.arms.forEach((arm, tag) => {
+            const narrowed: IrExpr = {
+              kind: "unionNarrow",
+              unionId: resultT.unionId,
+              tag,
+              value: val(),
+              type: arm,
+              loc,
+            };
+            render.push({
+              kind: "if",
+              cond: {
+                kind: "unionIsTag",
+                unionId: resultT.unionId,
+                tag,
+                negated: false,
+                value: val(),
+                type: BOOL,
+                loc,
+              },
+              then: [{ kind: "assign", localId: strId, value: rendered(arm, narrowed), loc }],
+              else_: null,
+              loc,
+            });
+          });
+        } else {
+          render.push({ kind: "assign", localId: strId, value: rendered(resultT, val()), loc });
+        }
+        const threw = concatAll(
+          [
+            strLit(`[${label}: <Inspection threw (`, loc),
+            child(DYN, {
+              kind: "caughtToDyn",
+              value: varRef(caughtId, CAUGHT, loc),
+              type: DYN,
+              loc,
+            }),
+            strLit(")>]", loc),
+          ],
+          loc,
+        );
+        // Node's condition reads the option's truthiness first: `true`
+        // runs every getter, 'get' the ones without a setter and 'set' the
+        // ones with one.
+        const mode = (n: number): IrExpr => ({
+          kind: "bin",
+          op: "===",
+          left: varRef("gm.0", F64, loc),
+          right: numLit(n, loc),
+          type: BOOL,
+          loc,
+        });
+        const either = (a: IrExpr, b: IrExpr): IrExpr => ({
+          kind: "logical",
+          op: "||",
+          left: a,
+          right: b,
+          type: BOOL,
+          loc,
+        });
+        const libStmt = (fn: "insp.nestedBegin" | "insp.nestedRestore"): IrStmt => ({
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn, args: [], type: VOID, loc },
+          loc,
+        });
+        return [
+          { kind: "varDecl", localId: strId, init: strLit(`[${label}]`, loc), loc },
+          {
+            kind: "if",
+            cond: slots.set ? either(mode(1), mode(3)) : either(mode(1), mode(2)),
+            then: [
+              {
+                kind: "tryCatch",
+                tryBody: [
+                  { kind: "assign", localId: doneId, value: boolLit(false, loc), loc },
+                  libStmt("insp.nestedBegin"),
+                  hasValue
+                    ? { kind: "assign", localId: valueId, value: called, loc }
+                    : { kind: "exprStmt", expr: called, loc },
+                  libStmt("insp.nestedRestore"),
+                  { kind: "assign", localId: doneId, value: boolLit(true, loc), loc },
+                ],
+                catchLocalId: caughtId,
+                // A throwing getter restores the context it is still in.
+                catchBody: [
+                  libStmt("insp.nestedRestore"),
+                  { kind: "assign", localId: strId, value: threw, loc },
+                ],
+                finallyBody: null,
+                loc,
+              },
+              {
+                kind: "if",
+                cond: varRef(doneId, BOOL, loc),
+                then: render,
+                else_: null,
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          entryOf(s()),
+        ];
+      };
       rebuildShapeOrderBody = (): void => {
         const current = lowerer.shapes.get(t.shapeId) ?? shape;
-        const order = current.declaredOrder ?? current.fields.map((f) => f.name);
+        accessorIndex = 0;
+        const order =
+          current.accessorOrder ?? current.declaredOrder ?? current.fields.map((f) => f.name);
         const byName = new Map(current.fields.map((f) => [f.name, f.type] as const));
         // Optional fields render only while present (an omitted or
         // deleted property is not shown; an explicit undefined is). A
@@ -2260,14 +2511,29 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
           });
         }
         body.push(depthGate("[Object]"), ...begin());
-        // One walk per key order (see perKeyOrder).
-        const orders = shapeKeyOrders(current);
+        if (accessors.size > 0) {
+          body.push({
+            kind: "varDecl",
+            localId: "gm.0",
+            init: { kind: "libCall", fn: "insp.gettersMode", args: [], type: F64, loc },
+            loc,
+          });
+        }
+        // One walk per key order (see perKeyOrder). An accessor-carrying
+        // shape enumerates in accessorOrder, exactly as its
+        // checked-dynamic copy does (dyn.ts).
+        const orders =
+          current.accessorOrder !== undefined ? [current.accessorOrder] : shapeKeyOrders(current);
         const walks = orders.map((): IrStmt[] => []);
         for (const [k, fname] of orders.flatMap((order, k) =>
           order.map((name) => [k, name] as const),
         )) {
           const ft = byName.get(fname);
-          if (!ft) continue;
+          if (!ft) {
+            const slots = accessors.get(fname);
+            if (slots) walks[k]!.push(...accessorEntry(fname, slots));
+            continue;
+          }
           const show = entry(
             concatAll([strLit(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
             boolLit(false, loc),
@@ -2995,6 +3261,10 @@ interface InspectOptions {
    * checked-dynamic walk (util.inspect routes the same option to the
    * runtime reader instead). */
   showHidden: boolean;
+  /** Node's getters option: 0 prints the labels only, 1 (`true`) runs
+   * every accessor's getter, 2 (`'get'`) the ones without a setter and
+   * 3 (`'set'`) the ones with one. */
+  getters: number;
 }
 
 function parseInspectOptions(
@@ -3016,6 +3286,7 @@ function parseInspectOptions(
     depthKind: 0,
     customInspect: !dir,
     showHidden: false,
+    getters: 0,
   };
   if (!node || (ts.isIdentifier(node) && node.text === "undefined")) return options;
   if (!ts.isObjectLiteralExpression(node)) {
@@ -3187,6 +3458,31 @@ function parseInspectOptions(
         }
         options.maxArrayLength = n;
       }
+    } else if (key === "getters") {
+      // Node reads the option's truthiness first and compares it to true
+      // and to 'get'/'set' after: any other value keeps the labels.
+      const spelled = ts.isStringLiteral(value) ? value.text : null;
+      if (value.kind === ts.SyntaxKind.TrueKeyword) options.getters = 1;
+      else if (value.kind === ts.SyntaxKind.FalseKeyword) options.getters = 0;
+      else if (spelled === "get") options.getters = 2;
+      else if (spelled === "set") options.getters = 3;
+      else if (
+        spelled !== null ||
+        numeric() !== null ||
+        value.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(value) && value.text === "undefined")
+      ) {
+        options.getters = 0;
+      } else if (atRunTime) {
+        options.runtime = true;
+        continue;
+      } else {
+        lowerer.noLowering(
+          `${surface} with this getters option`,
+          value,
+          "getters must be true, false, 'get' or 'set'",
+        );
+      }
     } else if (
       !dir &&
       key === "customInspect" &&
@@ -3226,7 +3522,7 @@ function parseInspectOptions(
       lowerer.noLowering(
         `${surface} with the '${key}' option`,
         prop,
-        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength and maxStringLength (a non-negative integer or null), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
+        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength and maxStringLength (a non-negative integer or null), getters (true, false, 'get' or 'set'), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
       );
     }
   }
@@ -3234,8 +3530,8 @@ function parseInspectOptions(
 }
 
 /** A render under non-default breakLength/compact/sorted/maxArrayLength/
- * maxStringLength: the value is evaluated first, the options apply to this
- * render only, and the defaults return however the render ends, an
+ * maxStringLength/getters: the value is evaluated first, the options apply
+ * to this render only, and the defaults return however the render ends, an
  * inspection refusal included. The render runs in a lifted function,
  * `(v) => { set...; try { return render(v); } finally { restore...; } }`,
  * since a seqExpr cannot hold the try; `tag` names the render for the
@@ -3253,10 +3549,11 @@ function withInspectLayout(
     options.compact === 3 &&
     !options.sorted &&
     options.maxArrayLength === 100 &&
-    options.maxStringLength === 10000
+    options.maxStringLength === 10000 &&
+    options.getters === 0
   )
     return render(value);
-  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.depth}`;
+  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.depth}`;
   let name = lowerer.inspectHelpers.get(key);
   if (name === undefined) {
     name = keyedHelperName(lowerer, "%util.inspLayout", key);
@@ -3307,6 +3604,29 @@ function withInspectLayout(
       restore.unshift({
         kind: "exprStmt",
         expr: limit(varRef(previous, F64, loc)),
+        loc,
+      });
+    }
+    if (options.getters !== 0) {
+      // insp.getters answers the previous value.
+      const previous = `previous.${locals.length}`;
+      locals.push({ id: previous, name: "previous", type: F64, mutable: false });
+      const getters = (arg: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.getters",
+        args: [arg],
+        type: F64,
+        loc,
+      });
+      apply.push({
+        kind: "varDecl",
+        localId: previous,
+        init: getters(numLit(options.getters, loc)),
+        loc,
+      });
+      restore.unshift({
+        kind: "exprStmt",
+        expr: getters(varRef(previous, F64, loc)),
         loc,
       });
     }
@@ -3606,7 +3926,7 @@ export function lowerInspectValue(
     // render(v); } finally { restore; } }`, so the previous ones return on
     // every exit, an inspection refusal's throw included (a seqExpr cannot
     // hold the try).
-    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${depth}`;
+    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${depth}`;
     let name = lowerer.inspectHelpers.get(key);
     if (name === undefined) {
       name = keyedHelperName(lowerer, "%util.inspContext", key);

@@ -2023,12 +2023,34 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // incompatible boundary keeps the ordinary per-statement refusal.
     let value: IrExpr | null = null;
     // A derived constructor that can record a pending TypeError on a
-    // primitive return drops it before a return of its own: a `finally`
-    // block's `return;`, `return undefined` or `return this` replaces the
-    // earlier completion instead of leaving it pending.
+    // primitive return drops it when a return of its own completes: a
+    // `finally` block's `return;`, `return undefined` or `return this`
+    // replaces the earlier completion instead of leaving it pending. The
+    // drop follows the operand, which may throw — an operand that throws
+    // never completes the return, so a `finally` that catches it and then
+    // finishes resumes the earlier primitive return (and its TypeError).
     const withClearedPending = (ret: IrStmt): IrStmt => {
       const clear = clearPendingPrimitiveReturn(lowerer, stmt);
-      return clear.length === 0 ? ret : { kind: "block", body: [...clear, ret], loc: locOf(stmt) };
+      if (clear.length === 0) return ret;
+      const loc = locOf(stmt);
+      const body = ret.kind === "block" ? ret.body : [ret];
+      const last = body.at(-1);
+      if (last?.kind !== "return") return { kind: "block", body: [...clear, ret], loc };
+      const before = body.slice(0, -1);
+      if (last.value === null) return { kind: "block", body: [...before, ...clear, last], loc };
+      // A constructor returns void, so a valued operand only evaluates for
+      // effect — ahead of the drop, since a `return this.fail()` inside a
+      // `finally` that catches the throw never completes.
+      return {
+        kind: "block",
+        body: [
+          ...before,
+          { kind: "exprStmt", expr: last.value, loc },
+          ...clear,
+          { kind: "return", value: null, loc },
+        ],
+        loc,
+      };
     };
     if (stmt.expression) {
       // A constructor's returned object replaces the constructed `this`.

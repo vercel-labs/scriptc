@@ -167,3 +167,99 @@ class BaseBare extends Base {
 }
 const baseBare = new BaseBare("base-bare");
 console.log("base", baseBare.tag, baseBare.ran, baseBare instanceof BaseBare);
+
+// A `finally` return whose operand throws, with the throw caught inside that
+// `finally`: the return never completes, so the earlier primitive return is
+// still pending and the construction throws its TypeError.
+class CaughtOperand extends Base {
+  constructor(tag) {
+    super(tag);
+    try {
+      return 1;
+    } finally {
+      try {
+        return this.fail();
+      } catch (error) {
+        console.log("operand-caught", error.message);
+      }
+    }
+  }
+  fail() {
+    throw new Error("operand");
+  }
+}
+try {
+  new CaughtOperand("caught-operand");
+  console.log("caught-operand constructed");
+} catch (error) {
+  console.log("caught-operand", describe(error));
+}
+
+// The same shape with a void operand.
+class CaughtVoidOperand extends Base {
+  constructor(tag) {
+    super(tag);
+    try {
+      return 1;
+    } finally {
+      try {
+        return this.consume();
+      } catch (error) {
+        console.log("void-operand-caught", error.message);
+      }
+    }
+  }
+  consume() {
+    throw new Error("void-operand");
+  }
+}
+try {
+  new CaughtVoidOperand("caught-void-operand");
+  console.log("caught-void-operand constructed");
+} catch (error) {
+  console.log("caught-void-operand", describe(error));
+}
+
+// A `finally` return whose operand throws past the finalizer: the thrown
+// error replaces the pending primitive return, and the record does not leak
+// into the next construction.
+class EscapedOperand extends Base {
+  constructor(tag) {
+    super(tag);
+    try {
+      return 1;
+    } finally {
+      return this.fail();
+    }
+  }
+  fail() {
+    throw new Error("escaped");
+  }
+}
+try {
+  new EscapedOperand("escaped-operand");
+  console.log("escaped-operand constructed");
+} catch (error) {
+  console.log("escaped-operand", describe(error));
+}
+try {
+  new EscapedOperand("escaped-operand-again");
+  console.log("escaped-operand-again constructed");
+} catch (error) {
+  console.log("escaped-operand-again", describe(error));
+}
+
+// A `finally` return whose operand completes drops the pending error.
+class CompletingOperand extends Base {
+  constructor(tag) {
+    super(tag);
+    try {
+      return 1;
+    } finally {
+      return this.nothing();
+    }
+  }
+  nothing() {}
+}
+const completing = new CompletingOperand("completing-operand");
+console.log("completing-operand", completing.tag, completing instanceof CompletingOperand);

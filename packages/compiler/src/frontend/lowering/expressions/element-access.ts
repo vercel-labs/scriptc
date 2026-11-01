@@ -43,6 +43,7 @@ import { globalSymbolKey } from "./global-symbols.js";
 import {
   HOST_GLOBAL_PROTOTYPE_MEMBERS,
   HOST_GLOBAL_VALUE_MEMBERS,
+  NODE_GLOBALS_WITHOUT_NATIVE,
   hostAbsentInstall,
   hostGlobalCallTarget,
   hostGlobalNameOfElement,
@@ -253,10 +254,20 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     globalName === null &&
     !expr.questionDotToken &&
     isGlobalObjectRead(lowerer, expr.expression, undefined, globalName);
+  // A key the checker spells as one literal (a literal, an enum member, a
+  // `const` of one, a template of those — the same fold property keys take)
+  // is decided here rather than at run time, so a static key arms nothing
+  // unless it IS one of the derived globals: the fence above cannot see that
+  // one, because the key is not a string literal (`const key: "FormData" =
+  // "FormData"; globalThis[key]`). Every other static key keeps its read.
+  const foldedKey = expr.questionDotToken
+    ? null
+    : lowerer.foldedStringKeyOf(expr.argumentExpression);
+  const foldedHostGlobal = foldedKey !== null && NODE_GLOBALS_WITHOUT_NATIVE.has(foldedKey);
   const dynamicKey =
-    !ts.isStringLiteralLike(expr.argumentExpression) &&
+    foldedKey === null &&
     lowerer.mapTypeOf(lowerer.typeOf(expr.argumentExpression))?.kind !== "symbol";
-  if (plainGlobalRead || (aliasGlobalRead && dynamicKey)) {
+  if (plainGlobalRead || (aliasGlobalRead && (dynamicKey || foldedHostGlobal))) {
     const symbol = globalSymbolKey(lowerer, expr.expression, expr.argumentExpression);
     if (symbol)
       return {
@@ -287,7 +298,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       type: DYN,
       loc,
     };
-    if (!dynamicKey) return read;
+    // Only a key the compiler cannot resolve, or a folded one that names a
+    // derived global, needs the runtime's set; the other static keys keep the
+    // read exactly as they had it.
+    if (!dynamicKey && !foldedHostGlobal) return read;
     return {
       kind: "seqExpr",
       stmts: [{ kind: "exprStmt", expr: hostAbsentInstall(loc), loc }],

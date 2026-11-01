@@ -180,3 +180,30 @@ console.log(key in globalThis);
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain(`TypeError: ${missing("URLPattern")}`);
 });
+
+test("a folded host-global key still throws, a folded other key does not", async () => {
+  // The key of `globalThis[key]` folds when the checker spells it as one
+  // string literal (foldedStringKeyOf), which is what keeps the table off a
+  // static read. A folded name that IS one of the derived globals keeps the
+  // refusal — the string-literal fence cannot see it — and any other folded
+  // name is an ordinary global-object read, so it answers without arming
+  // anything (element-access.ts).
+  const thrown = await runProgram(
+    "folded-host",
+    `const s = globalThis as Record<string, unknown>;
+const key: "WebSocket" = "WebSocket";
+console.log(s[key]);
+`,
+  );
+  expect(thrown.exitCode).toBe(1);
+  expect(thrown.stderr).toContain(`TypeError: ${missing("WebSocket")}`);
+  const read = await runProgram(
+    "folded-other",
+    `const s = globalThis as Record<string, unknown>;
+const key = "__notAGlobal";
+console.log(s[key], key in globalThis);
+`,
+  );
+  expect(read.exitCode).toBe(0);
+  expect(read.stdout).toBe(["undefined false", ""].join("\n"));
+});

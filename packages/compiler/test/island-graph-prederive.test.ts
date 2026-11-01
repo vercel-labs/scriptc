@@ -268,14 +268,14 @@ function writePackage(dir: string, name: string, js: string, dts: string): void 
   writeFileSync(join(root, "index.d.ts"), dts);
 }
 
-function buildStdoutPatchProgram(lazyUse: string) {
+function buildStdoutPatchProgram(lazyUse: string, okJs?: string) {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-island-graph-lazy-"));
   scratch.push(dir);
   // A package the program compiles, so the scan collects package edges.
   writePackage(
     dir,
     "okpkg",
-    "module.exports.add = function (a, b) { return a + b; };\n",
+    okJs ?? "module.exports.add = function (a, b) { return a + b; };\n",
     "export declare function add(a: number, b: number): number;\n",
   );
   // One the program only names in code that never runs.
@@ -319,4 +319,33 @@ test("a require() that never runs decides no island", () => {
     "export function loadAny(): unknown { return require('lazypkg'); }",
   );
   expect(uncalled.ok ? [] : uncalled.diagnostics.map((d) => d.code)).toEqual([]);
+  // An expression-bodied arrow the program hands to a call as a callback: its
+  // require() sits in an expression, but the arrow runs only when something
+  // calls it. A package file holds it because a user TypeScript module's own
+  // require() has no lowering.
+  const callback = buildStdoutPatchProgram(
+    "",
+    [
+      "module.exports.add = function (a, b) { return a + b; };",
+      "function keep(f) { return f; }",
+      "keep(() => require('lazypkg'));",
+      "",
+    ].join("\n"),
+  );
+  expect(callback.ok ? [] : callback.diagnostics.map((d) => d.code)).toEqual([]);
+}, 600_000);
+
+test("an arrow called where it is written still decides its island", () => {
+  // The callback rule stops the walk at an arrow the module hands over; one
+  // the module invokes right there loads its package with the module, so the
+  // graph proves the island and the stream patch is SC8020 as before.
+  const called = buildStdoutPatchProgram(
+    "",
+    [
+      "module.exports.add = function (a, b) { return a + b; };",
+      "(() => require('lazypkg'))();",
+      "",
+    ].join("\n"),
+  );
+  expect(called.ok ? [] : called.diagnostics.map((d) => d.code)).toEqual(["SC8020"]);
 }, 600_000);

@@ -84,11 +84,25 @@ function isNodeRequire(program: ts.Program, identifier: ts.Identifier): boolean 
   return (symbol?.declarations ?? []).every((d) => ts.getSourceFileOfNode(d).isDeclarationFile);
 }
 
+/** True when a function expression runs where it is written: it is the callee
+ * of a call, parentheses aside. An arrow handed to a call as a callback, or
+ * stored in a variable, runs only when something calls it. */
+function runsInPlace(fn: ts.Node): boolean {
+  let callee: ts.Node = fn;
+  while (callee.parent !== undefined && ts.isParenthesizedExpression(callee.parent))
+    callee = callee.parent;
+  const call = callee.parent;
+  return call !== undefined && ts.isCallExpression(call) && call.expression === callee;
+}
+
 /** True when a call runs whenever its module evaluates: every node between it
  * and the module's top level is an expression that always evaluates its
  * operands, or a top-level statement. A function body, a condition, a short
  * circuit, a loop or a try block runs the call only when that code runs, so a
- * package it names is not loaded on evaluation. */
+ * package it names is not loaded on evaluation. An arrow's expression body is
+ * an expression like the ones above, but the arrow itself runs only where
+ * something calls it, so an arrow the walk reaches has to be invoked in place
+ * for the walk to go on. */
 function loadsWithModule(call: ts.CallExpression): boolean {
   let node: ts.Node = call;
   while (node.parent !== undefined) {
@@ -102,6 +116,10 @@ function loadsWithModule(call: ts.CallExpression): boolean {
         parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
     )
       return false;
+    // An arrow's expression body is an expression like the ones below, so
+    // without this the walk steps out of a callback into whatever holds it:
+    // an arrow that runs only when something calls it loads nothing here.
+    if (ts.isArrowFunction(parent) && !runsInPlace(parent)) return false;
     if (
       !ts.isExpression(parent) &&
       !ts.isExpressionStatement(parent) &&

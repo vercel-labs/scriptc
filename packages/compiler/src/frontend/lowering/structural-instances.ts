@@ -13,7 +13,7 @@ import { nsPathPrefix } from "./lower-namespaces.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
 import { locOf } from "../program.js";
-import { widthCopyRefusalDiag } from "../../diagnostics/diagnostic.js";
+import { keptLayoutStoreCopyDiag, widthCopyRefusalDiag } from "../../diagnostics/diagnostic.js";
 import { observesIdentity } from "./observable-write.js";
 
 /** Instances of a typed function for arguments that keep their own layout.
@@ -369,4 +369,83 @@ export function refuseWrittenParamCopy(
     );
     throw new PoisonError();
   });
+}
+
+/** The width lifts that rebuild a value: they copy the source's contents
+ * into the destination's layout instead of storing the same object. */
+const COPYING_STORE_LIFTS = new Set<string>(["width", "ovf", "arr", "tupleArr", "emptyArr"]);
+
+/** Whether a value of layout `from` arrives at the slot `to` as a rebuilt
+ * object: both sides are the same kind of composite and the store converts
+ * between their layouts. */
+function storeRebuilds(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (typeEquals(from, to)) return false;
+  const paired =
+    (from.kind === "record" && to.kind === "record") ||
+    (from.kind === "array" && to.kind === "array");
+  if (!paired) return false;
+  const plan = lowerer.widthLiftPlan(from, to);
+  return plan !== null && COPYING_STORE_LIFTS.has(plan.how);
+}
+
+/** The store that would copy an existing value into a slot of a binding
+ * that kept its initializer's layout: the kept slot represents the value in
+ * a different layout, so the store rebuilds the object instead of sharing
+ * it. Null when the target does not root at such a binding, the value is
+ * fresh (its copy is not observable), or the value already has the slot's
+ * layout. */
+export function copiedStoreIntoKeptLayout(
+  lowerer: Lowerer,
+  target: ts.Expression,
+  slot: IrType,
+  value: ts.Expression,
+): { binding: string; field: string | null; kept: IrType } | null {
+  let e: ts.Expression = target;
+  let field: string | null = null;
+  if (ts.isPropertyAccessExpression(e) && !ts.isPrivateIdentifier(e.name)) field = e.name.text;
+  else if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression))
+    field = e.argumentExpression.text;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) e = e.expression;
+    else if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+    else break;
+  }
+  const root = ts.isIdentifier(e) ? e : undefined;
+  if (root === undefined || preservedLayoutOf(lowerer, root) === undefined) return null;
+  if (!namesExistingValue(value)) return null;
+  const source = lowerer.mapTypeOf(preservedLayoutOf(lowerer, value) ?? lowerer.typeOf(value));
+  if (!source || !storeRebuilds(lowerer, source, slot)) return null;
+  return { binding: root.text, field, kept: slot };
+}
+
+/** Refuse a store that would copy an existing value into a binding that kept
+ * its initializer's layout (SC2021): the kept slot rebuilds the assigned
+ * value, so a later write through the stored name would reach only the
+ * copy, while under Node both names are one object. */
+export function refuseCopiedStore(
+  lowerer: Lowerer,
+  target: ts.Expression,
+  slot: IrType,
+  value: ts.Expression,
+): void {
+  const store = copiedStoreIntoKeptLayout(lowerer, target, slot, value);
+  if (store === null) return;
+  const checker = lowerer.checker;
+  const sourceText = checker.typeToString(lowerer.typeOf(value));
+  const declaredText = checker.typeToString(lowerer.typeOf(target));
+  const targetName = store.field === null ? store.binding : `${store.binding}.${store.field}`;
+  const detail =
+    store.field === null
+      ? `'${store.binding}' keeps the initializer's layout ('${lowerer.fmt(store.kept)}') instead of the declared '${declaredText}'`
+      : `'${store.binding}' keeps the initializer's layout, so its field '${store.field}' is '${lowerer.fmt(store.kept)}' while the declared field is '${declaredText}'`;
+  lowerer.pushDiag(
+    keptLayoutStoreCopyDiag(
+      targetName,
+      sourceText,
+      detail,
+      `make the initializer's layout match the declared '${declaredText}' so both names are the same object, or make the shape a class`,
+      locOf(target),
+    ),
+  );
+  throw new PoisonError();
 }

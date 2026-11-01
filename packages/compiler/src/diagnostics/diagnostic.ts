@@ -1365,6 +1365,27 @@ export function widthCopyRefusalDiag(
   };
 }
 
+/** A store into a binding that kept its initializer's layout (SC2021): the
+ * kept slot represents the assigned value in a different layout, so the
+ * store rebuilds the object instead of sharing it, while Node keeps one
+ * object. Refusing the store keeps a later write through the assigned value
+ * from silently reaching only the copy. */
+export function keptLayoutStoreCopyDiag(
+  targetName: string,
+  sourceType: string,
+  detail: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2021",
+    message: `assigning a '${sourceType}' to '${targetName}' copies the object, so a later write through the assigned value would reach only the copy: ${detail}`,
+    loc,
+    milestone: "later",
+    hint,
+  };
+}
+
 /** Union values carry a runtime tag assigned per-union: a value of one
  * union type flowing into a DIFFERENT union's slot re-tags at runtime when
  * every source arm has a home in the destination (`A | B` into `A | B | C`

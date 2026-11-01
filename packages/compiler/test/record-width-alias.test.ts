@@ -98,6 +98,95 @@ export {};
   expect(ir).toContain("%rec.width");
 });
 
+test("a store of an existing array into a kept field is refused", async () => {
+  const { messages } = await compileSource(`type Item = { list: number[] };
+const source: number[] = [1, 2];
+const value = { list: [0] as any[] };
+const alias: Item = value;
+alias.list = source;
+source.push(3);
+console.log(alias.list.length, alias.list[0], alias.list[2]);
+export {};
+`);
+  // The kept `any[]` slot rebuilds the assigned `number[]`, so a later
+  // push through `source` would not be seen through `alias.list`.
+  const refusal = messages.filter((m) => m.startsWith("SC2021"));
+  expect(refusal).toHaveLength(1);
+  expect(refusal[0]).toContain("'alias.list'");
+  // The kept slot is `any[]`, which the IR spells `unknown[]`.
+  expect(refusal[0]).toContain("'unknown[]'");
+  expect(refusal[0]).toContain("'number[]'");
+});
+
+test("reassigning an annotated let that kept its layout is refused", async () => {
+  const { messages } = await compileSource(`type Item = { n: number; k: number };
+function f(anyValue: any): void {
+  const value = { n: anyValue, k: 1 };
+  let alias: Item = value;
+  const replacement: Item = { n: 2, k: 3 };
+  alias = replacement;
+  replacement.n = 9;
+  console.log(alias.n, replacement.n);
+}
+f(1);
+export {};
+`);
+  // `alias` keeps the initializer's `{ n: dyn; k: number }` layout, so the
+  // assignment rebuilds `replacement` and the later write reaches only it.
+  const refusal = messages.filter((m) => m.startsWith("SC2021"));
+  expect(refusal).toHaveLength(1);
+  expect(refusal[0]).toContain("'alias'");
+  expect(refusal[0]).toContain("keeps the initializer's layout");
+});
+
+test("reassigning a kept let with a fresh literal still converts", async () => {
+  const { ok, messages } = await compileSource(`type Item = { n: number; k: number };
+function f(anyValue: any): void {
+  const value = { n: anyValue, k: 1 };
+  let alias: Item = value;
+  alias = { n: 2, k: 3 };
+  console.log(alias.n);
+}
+f(1);
+export {};
+`);
+  // A fresh literal is built in the kept layout; there is no other name
+  // holding the value, so no copy is observable.
+  expect(messages).toEqual([]);
+  expect(ok).toBe(true);
+});
+
+test("a kept field the program mutates in place keeps its layout", async () => {
+  const { ok, ir, messages } = await compileSource(`type Item = { list: number[] };
+const value = { list: [0] as any[] };
+const alias: Item = value;
+alias.list.push(5);
+console.log(alias.list.length, value.list.length);
+export {};
+`);
+  expect(messages).toEqual([]);
+  expect(ok).toBe(true);
+  // Only the initializer's own `[0]` widens to `any[]`; the push reads and
+  // mutates the kept array, so it adds no copying call.
+  expect(ir.match(/"callee":"%arr\.width/g)).toHaveLength(1);
+});
+
+test("a store of a value already in the kept layout still compiles", async () => {
+  const { ok, messages } = await compileSource(`type Item = { list: number[] };
+const value = { list: [0] as any[] };
+const alias: Item = value;
+const same = { list: [1] as any[] };
+alias.list = same.list;
+same.list.push(2);
+console.log(alias.list.length);
+export {};
+`);
+  // The stored value already has the kept `any[]` layout: no conversion,
+  // and both names keep seeing the same array.
+  expect(messages).toEqual([]);
+  expect(ok).toBe(true);
+});
+
 test("a parameter the callee writes is refused", async () => {
   const { messages } = await compileSource(`${VALUE}function bump(box: Box): void {
   box.count++;

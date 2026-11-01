@@ -32,3 +32,17 @@ const sharedAlias: Box = shared;
 sharedAlias.next = { value: 1 };
 shared.count++;
 console.log(sharedAlias.next.value, sharedAlias.count);
+
+// An array field keeps the value's element storage, so a push through
+// either name is visible through the other.
+type List = { items: number[] };
+
+function pushThrough(seed: any[]): [number, number] {
+  const value = { items: seed };
+  const alias: List = value;
+  alias.items.push(9);
+  value.items.push(4);
+  return [alias.items.length, value.items.length];
+}
+
+console.log(pushThrough([1]).join(","));

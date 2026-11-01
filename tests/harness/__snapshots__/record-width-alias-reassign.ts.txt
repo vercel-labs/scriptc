@@ -1,0 +1,8 @@
+record-width-alias-reassign.ts:10:3 - error SC2021: assigning a 'Item' to 'alias' copies the object, so a later write through the assigned value would reach only the copy: 'alias' keeps the initializer's layout ('{ k: number; n: unknown }') instead of the declared 'Item'
+
+   9 |   const replacement: Item = { n: 2, k: 3 };
+  10 |   alias = replacement;
+     |   ^~~~~
+  11 |   replacement.n = 9;
+
+  hint: make the initializer's layout match the declared 'Item' so both names are the same object, or make the shape a class

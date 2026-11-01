@@ -4,6 +4,7 @@ import {
   keepsInitializerLayout,
   namesExistingValue,
   notePreservedLayout,
+  refuseCopiedStore,
   sameFieldsForCopy,
 } from "./structural-instances.js";
 import { partialFieldRead } from "./partial-assertions.js";
@@ -9728,6 +9729,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);
+          refuseCopiedStore(lowerer, expr.left, target.fieldType, expr.right);
           return lowerer.fieldSetStmt(target, value, locOf(expr), expr.left);
         }
         const callback = lowerClassCallbackAssign(lowerer, expr);
@@ -9966,6 +9968,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           `assignment to '${expr.left.text}' (not a writable local or module global)`,
         );
       const value = lowerer.lowerExprExpecting(expr.right, target.type);
+      refuseCopiedStore(lowerer, expr.left, target.type, expr.right);
       const runtimeOptionalRoot = lowerer.runtimeOptionalRootOf(target);
       if (lowerer.runtimeOptionalStorageLocals.has(runtimeOptionalRoot))
         lowerer.runtimeOptionalLocals.add(runtimeOptionalRoot);

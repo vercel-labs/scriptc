@@ -269,8 +269,14 @@ static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 
 /* Registry of descriptors by id (copies, so a header reaches its entry
  * points in one step); ids are assigned on first allocation and shared by
- * every thread. */
+ * every thread. The table is static, so memory-constrained builds can shrink
+ * it with -DSCR_CYC_MAX_TYPES=<n>; registration traps once a program needs
+ * more. Headers store the id in 16 bits. */
+#ifndef SCR_CYC_MAX_TYPES
 #define SCR_CYC_MAX_TYPES ((uint32_t)1 << 15)
+#endif
+_Static_assert(SCR_CYC_MAX_TYPES >= 2 && SCR_CYC_MAX_TYPES <= 65536,
+               "SCR_CYC_MAX_TYPES must leave id 0 unused and fit a 16-bit header id");
 extern ScrCycType scr_cyc_types[SCR_CYC_MAX_TYPES];
 uint32_t scr_cyc_register(ScrCycType *type);
 static inline uint32_t scr_cyc_type_id(ScrCycType *type) {

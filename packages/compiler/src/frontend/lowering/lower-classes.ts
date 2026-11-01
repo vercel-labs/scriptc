@@ -3630,6 +3630,27 @@ export function collectClassShapeInner(
         ) {
           while (shapes.length < virtualArity) shapes.push({ type: DYN, mode: "omittable" });
         }
+        // A TypeScript override may add trailing omittable parameters. The
+        // family's slot carries them too (collectOverrideParamReservations
+        // found the widest override), so a base-typed call's omitted
+        // arguments reach the override as undefined and its defaults run.
+        // This declaration's own body keeps its declared binding: the tail
+        // slots have no source binding and lower as ignored parameters.
+        {
+          const reserved = lowerer.overrideParamReservations.get(member);
+          if (
+            reserved &&
+            reserved.params.length > shapes.length &&
+            !bodyReadsArguments(member) &&
+            shapes.every((p) => p.mode === "required" || p.mode === "omittable")
+          ) {
+            for (const param of reserved.params.slice(shapes.length)) {
+              const shape = lowerer.paramShape(param);
+              shapes.push({ type: shape.type, mode: "omittable" });
+            }
+            ft.params = shapes.map((shape) => shape.type);
+          }
+        }
         if (fields.has(mName)) {
           lowerer.unsupported("SC1090", member.name, "methods shadowing inherited fields");
         }
@@ -3726,6 +3747,61 @@ export function collectClassShapeInner(
               .slice(shapes.length)
               .map((p): ParamShape => ({ type: p.type, mode: "omittable" })),
           );
+        }
+        // A TypeScript override may also declare FEWER parameters than the
+        // family's slot reserves. collectOverrideParamReservations padded
+        // the ancestor with a sibling's trailing omittable parameters, and
+        // a sibling declaring only the inherited prefix is legal TS and JS:
+        // the caller evaluates the extra arguments and this body drops them,
+        // exactly as in Node. Keep the reserved tail slots as ignored
+        // parameters rather than refusing the override.
+        {
+          // The reservation is recorded on the ancestor that ADDS the
+          // trailing parameter; this override may sit below an intermediate
+          // class that merely inherited the widened slot, so walk the chain.
+          let reservedWidth: number | undefined;
+          for (
+            let declarer = overridden?.declarer;
+            declarer;
+            declarer = declarer.base ?? undefined
+          ) {
+            const declaration = declarer.decl?.members?.nodes.find(
+              (candidate): candidate is ts.MethodDeclaration =>
+                ts.isMethodDeclaration(candidate) &&
+                candidate.body !== undefined &&
+                !candidate.asteriskToken &&
+                classMemberNameOf(lowerer, candidate.name) === mName,
+            );
+            const reservation = declaration && lowerer.overrideParamReservations.get(declaration);
+            if (reservation) {
+              reservedWidth = reservation.params.length;
+              break;
+            }
+          }
+          if (
+            overridden &&
+            // The inherited ABI is exactly the reserved slot, so the tail
+            // below belongs to the reservation and not to some other
+            // signature difference the fence must still report.
+            reservedWidth === overridden.sig.params.length &&
+            shapes.length < overridden.sig.params.length &&
+            !bodyReadsArguments(member) &&
+            shapes.every(
+              (p, i) =>
+                (p.mode === "required" || p.mode === "omittable") &&
+                typeEquals(p.type, overridden.sig.params[i]!.type),
+            ) &&
+            overridden.sig.params
+              .slice(shapes.length)
+              .every((p) => p.mode === "required" || p.mode === "omittable")
+          ) {
+            shapes.push(
+              ...overridden.sig.params
+                .slice(shapes.length)
+                .map((p): ParamShape => ({ type: p.type, mode: "omittable" })),
+            );
+            ft.params = shapes.map((shape) => shape.type);
+          }
         }
         // A TypeScript override of a JavaScript method (`class T extends
         // Agent` over an npm-static package) keeps the base's checked-value
@@ -8007,6 +8083,117 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
         }
     }
   }
+}
+
+/** Discover TypeScript overrides that ADD trailing omittable parameters
+ * (`m(a: A, b?: B)` over `m(a: A)`) before any class shape is collected.
+ * The added parameter is part of the override's body signature, but a
+ * virtual slot keeps the BASE's ABI: a base-typed call passes one argument
+ * and cannot reach the override's default. Reserving the extra slots on
+ * every ancestor declaration of the family (they carry the widest
+ * override's parameter types as omittable slots, padded with undefined by
+ * omitted call arguments) is what lets the override's own default run —
+ * exactly Node's answer for a call through a base-typed receiver.
+ *
+ * Only a family where every override agrees on the type of each new slot
+ * reserves; any disagreement leaves the ordinary exactness fence in place,
+ * since one vtable slot cannot carry two ABIs. The walk is over the whole
+ * program, like collectVirtualJsMethods: base classes may live in other
+ * modules, and collection visits bases first. */
+export function collectOverrideParamReservations(
+  lowerer: Lowerer,
+  files: readonly ts.SourceFile[],
+): void {
+  /** What a slot's type is, for cross-override agreement: the declared
+   * omittability spelling and the checker's type text. */
+  const slotKey = (param: ts.ParameterDeclaration): string =>
+    `${param.questionToken || param.initializer ? "omittable" : "required"}|${lowerer.checker.typeToString(lowerer.typeOf(param.name))}`;
+  const record = (
+    declaration: ts.MethodDeclaration,
+    params: readonly ts.ParameterDeclaration[],
+  ): void => {
+    if (lowerer.overrideParamConflicts.has(declaration)) return;
+    const keys = params.map(slotKey);
+    const existing = lowerer.overrideParamReservations.get(declaration);
+    if (!existing) {
+      lowerer.overrideParamReservations.set(declaration, { params: [...params], keys });
+      return;
+    }
+    const shared = Math.min(existing.keys.length, keys.length);
+    for (let i = 0; i < shared; i++) {
+      if (existing.keys[i] === keys[i]) continue;
+      // Two overrides want different types in one slot: no single ABI
+      // serves both, so neither may reserve and both keep their fence.
+      lowerer.overrideParamReservations.delete(declaration);
+      lowerer.overrideParamConflicts.add(declaration);
+      return;
+    }
+    if (keys.length > existing.keys.length) {
+      lowerer.overrideParamReservations.set(declaration, { params: [...params], keys });
+    }
+  };
+  // A `this` parameter is type-world (paramShapes skips it), so a list
+  // holding one would not line up with the ABI slots by index.
+  const thisParameter = (param: ts.ParameterDeclaration): boolean =>
+    ts.isIdentifier(param.name) && param.name.text === "this";
+  const visit = (node: ts.Node): void => {
+    if (!ts.isClassDeclaration(node) && !ts.isClassExpression(node)) return;
+    if (!node.heritageClauses?.nodes.length) return;
+    if (isJsSourceFile(ts.getSourceFileOfNode(node))) return;
+    const own = node.members.nodes.filter(
+      (member): member is ts.MethodDeclaration =>
+        ts.isMethodDeclaration(member) &&
+        ts.isIdentifier(member.name) &&
+        member.body !== undefined &&
+        !member.asteriskToken &&
+        member.typeParameters === undefined &&
+        !member.parameters.nodes.some((p) => p.dotDotDotToken || thisParameter(p)) &&
+        !member.modifiers?.nodes.some(
+          (modifier) =>
+            modifier.kind === ts.SyntaxKind.StaticKeyword ||
+            modifier.kind === ts.SyntaxKind.AsyncKeyword,
+        ) &&
+        !bodyReadsArguments(member),
+    );
+    if (own.length === 0) return;
+    const symbol = lowerer.typeOf(node).getSymbol();
+    const instance = symbol ? lowerer.checker.getDeclaredTypeOfSymbol(symbol) : null;
+    if (!instance) return;
+    const seen = new Set<ts.Type>();
+    const markBases = (type: ts.Type): void => {
+      const target = type.isTypeReference() ? type.getTarget() : type;
+      if (target === undefined || !target.isClassOrInterface() || seen.has(target)) return;
+      seen.add(target);
+      for (const base of lowerer.checker.getBaseTypes(target)) {
+        for (const member of own) {
+          if (!ts.isIdentifier(member.name)) continue;
+          const property = lowerer.checker.getPropertyOfType(base, member.name.text);
+          for (const declaration of property ? property.declarations : []) {
+            if (
+              !ts.isMethodDeclaration(declaration) ||
+              declaration.body === undefined ||
+              declaration.asteriskToken !== undefined ||
+              declaration.typeParameters !== undefined ||
+              declaration.parameters.nodes.some((p) => p.dotDotDotToken || thisParameter(p)) ||
+              bodyReadsArguments(declaration) ||
+              isJsSourceFile(ts.getSourceFileOfNode(declaration))
+            )
+              continue;
+            if (member.parameters.nodes.length <= declaration.parameters.nodes.length) continue;
+            // Every ADDED parameter must be omittable (defaulted or `?`):
+            // a required tail slot has no value a base-typed call could
+            // supply, so that override keeps the exactness fence.
+            const added = member.parameters.nodes.slice(declaration.parameters.nodes.length);
+            if (added.some((p) => !p.questionToken && !p.initializer)) continue;
+            record(declaration, member.parameters.nodes);
+          }
+        }
+        markBases(base);
+      }
+    };
+    markBases(instance);
+  };
+  for (const file of files) ts.walkPreorder(file, visit);
 }
 
 /** An override whose base and overriding methods are in files TypeScript

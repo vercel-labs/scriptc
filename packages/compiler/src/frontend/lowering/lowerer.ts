@@ -3777,6 +3777,18 @@ export class Lowerer {
   /** Largest fixed argument list below a JS method, discovered before any
    * base vtable signature is collected. Unused checked slots carry undefined. */
   readonly virtualJsMethodArity = new Map<ts.MethodDeclaration, number>();
+  /** A TypeScript override may only add TRAILING OMITTABLE parameters
+   * (`m(a: A, b?: B)` / `b: B = e` over `m(a: A)`): the family's slot then
+   * carries those slots too, so a base-typed call can reach the override's
+   * default. Keyed by each ancestor declaration in the family, holding the
+   * widest override's parameter list; collected before any class shape. */
+  readonly overrideParamReservations = new Map<
+    ts.MethodDeclaration,
+    { params: readonly ts.ParameterDeclaration[]; keys: readonly string[] }
+  >();
+  /** Families whose overrides disagreed about a reserved slot's type. The
+   * reservation is refused and the ordinary exactness fence reports. */
+  readonly overrideParamConflicts = new Set<ts.MethodDeclaration>();
   readonly checkedVirtualJsMethods = new Set<ts.MethodDeclaration>();
   /** Overrides whose return narrows part of the base's union return; they
    * return through the base's union ABI (overrideReturnAbi). */
@@ -4557,6 +4569,8 @@ export class Lowerer {
       checkedTable("virtualJsMethods", () => this.virtualJsMethods.size),
       checkedTable("inheritedJsFieldWrites", () => this.inheritedJsFieldWrites.size),
       checkedTable("virtualJsMethodArity", () => this.virtualJsMethodArity.size),
+      checkedTable("overrideParamReservations", () => this.overrideParamReservations.size),
+      checkedTable("overrideParamConflicts", () => this.overrideParamConflicts.size),
       checkedTable("checkedVirtualJsMethods", () => this.checkedVirtualJsMethods.size),
       checkedTable("unionReturnOverrides", () => this.unionReturnOverrides.size),
       checkedTable("checkedVirtualJsAccessors", () => this.checkedVirtualJsAccessors.size),

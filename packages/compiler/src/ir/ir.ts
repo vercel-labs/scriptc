@@ -4126,6 +4126,16 @@ export type IrExpr =
        * (`emitter.onDyn`, `emitter.onDataDyn`, `emitter.onFlex`,
        * `emitter.onAny`) always bind it. */
       bindsThis?: true;
+      /** The program's own Object/Reflect call (defineProperty, freeze,
+       * seal, preventExtensions) on a value it did not statically know:
+       * the argument can be a dynamic array at run time, whose exotic
+       * [[DefineOwnProperty]] and integrity state only the JavaScript
+       * object model build answers (SCR_JS_OBJECT_MODEL). Lowering-emitted
+       * calls on targets
+       * it built itself (class machinery, tagged-template `raw`, object
+       * literal accessors) leave it unset, so they keep the default
+       * runtime object. */
+      mayTargetArray?: true;
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,

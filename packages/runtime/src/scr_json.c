@@ -1430,6 +1430,9 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       d->v.arr.properties = NULL;
       d->v.arr.sealed = false;
       d->v.arr.frozen = false;
+#ifdef SCR_JS_OBJECT_MODEL
+      d->v.arr.length_readonly = false; /* a recycled node's last attributes */
+#endif
       d->v.arr.presence = NULL;
       d->v.arr.region = NULL;
     } else if (kind == SCR_DYN_OBJ) {
@@ -1992,6 +1995,184 @@ static bool dyn_bytes_element_set(ScrDyn *target, double index, const ScrDyn *va
   if (!scr_dyn_number_coerce_js(value, &number)) return false;
   if (index >= 0 && index < (double)b->len) scr_bytes_set(b, index, number);
   return true;
+}
+#endif
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* Element attributes of a checked-dynamic array (Object.defineProperty on
+ * an index) live in its presence byte; SCR_ARR_* names the bits (scr_dyn.h).
+ * An array whose elements all have default attributes keeps the NULL
+ * presence of a dense array. */
+static unsigned char scr_dyn_arr_attr_at(const ScrDyn *arr, size_t index) {
+  return arr->v.arr.presence ? arr->v.arr.presence[index] : (unsigned char)SCR_ARR_PRESENT;
+}
+
+/* Store index `index`'s attributes, materializing the presence array as
+ * every present element with default attributes first. */
+static void scr_dyn_arr_attr_store(ScrDyn *arr, size_t index, unsigned char attr) {
+  if (!arr->v.arr.presence) {
+    arr->v.arr.presence = malloc(arr->v.arr.cap);
+    if (!arr->v.arr.presence) scr_json_oom();
+    memset(arr->v.arr.presence, SCR_ARR_PRESENT, arr->v.arr.len);
+  }
+  arr->v.arr.presence[index] = attr;
+}
+
+bool scr_dyn_arr_index_writable(const ScrDyn *arr, size_t index) {
+  if (arr->v.arr.frozen) return false;
+  return !(scr_dyn_arr_attr_at(arr, index) & SCR_ARR_NONWRITABLE);
+}
+
+bool scr_dyn_arr_index_configurable(const ScrDyn *arr, size_t index) {
+  if (arr->v.arr.sealed) return false;
+  return !(scr_dyn_arr_attr_at(arr, index) & SCR_ARR_NONCONF);
+}
+
+bool scr_dyn_arr_index_enumerable(const ScrDyn *arr, size_t index) {
+  return !(scr_dyn_arr_attr_at(arr, index) & SCR_ARR_NONENUM);
+}
+
+/* A mutating array method's first refused write, thrown as the TypeError
+ * Node's frozen path would throw: the op codes and their argument shapes
+ * are scr_array_frozen_error's (2 pop, 4 unshift, 6 shift, 7
+ * sort/reverse, 8 fill, 10 splice), with x/y already relative indices.
+ * Each operation is scanned in the order it makes its writes, so a method
+ * whose writes Node interleaves with reads throws at the same index.
+ * Push writes only new elements, and a new element is always a writable
+ * default. */
+bool scr_dyn_arr_attrs_refuse(const ScrDyn *arr, int op, size_t len, double x, double y, double z) {
+  size_t items = (size_t)z;
+  switch (op) {
+  case 2:
+    if (len == 0 || !scr_dyn_arr_has_index(arr, len - 1) ||
+        scr_dyn_arr_index_configurable(arr, len - 1))
+      return false;
+    scr_array_frozen_error(5, len, (double)(len - 1), 0, 0);
+    return true;
+  case 4: {
+    /* Every old element moves up `items` slots, the last one first, and
+     * the inserted items then land at the front. An unshift without items
+     * writes nothing. */
+    if (items == 0) return false;
+    for (size_t i = len; i-- > 0;) {
+      size_t to = i + items;
+      if (to >= len || !scr_dyn_arr_has_index(arr, to)) continue;
+      if (!scr_dyn_arr_index_writable(arr, to)) {
+        scr_array_frozen_error(0, len, (double)to, 0, 0);
+        return true;
+      }
+    }
+    size_t inserted_end = items < len ? items : len;
+    for (size_t i = 0; i < inserted_end; i++)
+      if (scr_dyn_arr_has_index(arr, i) && !scr_dyn_arr_index_writable(arr, i)) {
+        scr_array_frozen_error(0, len, (double)i, 0, 0);
+        return true;
+      }
+    return false;
+  }
+  case 6:
+    /* Every element but the first moves down one slot, the last one
+     * first; the last then goes when the length shrinks. */
+    for (size_t i = len; i-- > 1;)
+      if (scr_dyn_arr_has_index(arr, i)) {
+        if (!scr_dyn_arr_has_index(arr, i - 1) && arr->non_extensible) {
+          scr_array_not_extensible_error((double)(i - 1));
+          return true;
+        }
+        if (!scr_dyn_arr_index_writable(arr, i - 1)) {
+          scr_array_frozen_error(0, len, (double)(i - 1), 0, 0);
+          return true;
+        }
+      }
+    /* A last element that is only non-configurable refuses at its own
+     * delete, which comes after the moves: the mutator moves the elements
+     * and throws there. Only one a frozen array holds (non-writable too)
+     * refuses here, where its writes already would. */
+    if (len > 0 && scr_dyn_arr_has_index(arr, len - 1) &&
+        !scr_dyn_arr_index_configurable(arr, len - 1) &&
+        !scr_dyn_arr_index_writable(arr, len - 1)) {
+      scr_array_frozen_error(5, len, (double)(len - 1), 0, 0);
+      return true;
+    }
+    return false;
+  case 7:
+    /* sort and reverse rewrite every present element. */
+    for (size_t i = 0; i < len; i++)
+      if (scr_dyn_arr_has_index(arr, i) && !scr_dyn_arr_index_writable(arr, i)) {
+        scr_array_frozen_error(0, len, (double)i, 0, 0);
+        return true;
+      }
+    return false;
+  case 8: {
+    size_t start = (size_t)x, end = (size_t)y;
+    for (size_t i = start; i < end && i < len; i++)
+      if (scr_dyn_arr_has_index(arr, i) && !scr_dyn_arr_index_writable(arr, i)) {
+        scr_array_frozen_error(0, len, (double)i, 0, 0);
+        return true;
+      }
+    return false;
+  }
+  case 9: {
+    /* copyWithin writes the destination range in the direction that keeps
+     * an overlapping source intact, so that is the order Node refuses in. */
+    size_t target = (size_t)x, start = (size_t)y, end = (size_t)z;
+    size_t count = end > start ? end - start : 0;
+    if (count > len - target) count = len - target;
+    if (start < target && target < start + count) {
+      for (size_t i = count; i > 0; i--) {
+        size_t to = target + i - 1;
+        if (scr_dyn_arr_has_index(arr, to) && !scr_dyn_arr_index_writable(arr, to)) {
+          scr_array_frozen_error(0, len, (double)to, 0, 0);
+          return true;
+        }
+      }
+    } else {
+      for (size_t i = 0; i < count; i++) {
+        size_t to = target + i;
+        if (scr_dyn_arr_has_index(arr, to) && !scr_dyn_arr_index_writable(arr, to)) {
+          scr_array_frozen_error(0, len, (double)to, 0, 0);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  case 10: {
+    /* splice: the elements past the removed range move first, the last one
+     * first, then the inserted items are written, and the tail beyond the
+     * new length is deleted from the top down. */
+    size_t start = (size_t)x;
+    size_t removed = (size_t)y >= len - start ? len - start : (size_t)y;
+    size_t next_len = len - removed + items;
+    size_t moved_end = next_len < len ? next_len : len;
+    for (size_t to = moved_end; to-- > start + items;) {
+      size_t from = to + removed - items;
+      if (from >= len || !scr_dyn_arr_has_index(arr, from)) continue;
+      if (!scr_dyn_arr_has_index(arr, to) && arr->non_extensible) {
+        scr_array_not_extensible_error((double)to);
+        return true;
+      }
+      if (!scr_dyn_arr_index_writable(arr, to)) {
+        scr_array_frozen_error(0, len, (double)to, 0, 0);
+        return true;
+      }
+    }
+    size_t inserted_end = start + items < len ? start + items : len;
+    for (size_t i = start; i < inserted_end; i++)
+      if (scr_dyn_arr_has_index(arr, i) && !scr_dyn_arr_index_writable(arr, i)) {
+        scr_array_frozen_error(0, len, (double)i, 0, 0);
+        return true;
+      }
+    if (removed > items)
+      for (size_t i = len; i-- > next_len;)
+        if (scr_dyn_arr_has_index(arr, i) && !scr_dyn_arr_index_configurable(arr, i)) {
+          scr_array_frozen_error(5, len, (double)i, 0, 0);
+          return true;
+        }
+    return false;
+  }
+  default: return false;
+  }
 }
 #endif
 
@@ -3623,7 +3804,12 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   if (value->kind == SCR_DYN_ARR && key->len == 6 && memcmp(key->data, "length", 6) == 0) {
     ScrDyn *out = scr_dyn_new_obj();
     scr_dyn_obj_set(out, "value", 5, scr_dyn_new_num((double)value->v.arr.len));
-    scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(!value->v.arr.frozen));
+    scr_dyn_obj_set(out, "writable", 8,
+#ifdef SCR_JS_OBJECT_MODEL
+                    scr_dyn_new_bool(!value->v.arr.frozen && !value->v.arr.length_readonly));
+#else
+                    scr_dyn_new_bool(!value->v.arr.frozen));
+#endif
     scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(false));
     scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(false));
     return out;
@@ -3656,9 +3842,18 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
       if (!scr_dyn_arr_has_index(value, index)) return scr_dyn_retain(scr_dyn_undefined());
       ScrDyn *out = scr_dyn_new_obj();
       scr_dyn_obj_set(out, "value", 5, scr_dyn_retain(value->v.arr.items[index]));
+#ifdef SCR_JS_OBJECT_MODEL
+      scr_dyn_obj_set(out, "writable", 8,
+                      scr_dyn_new_bool(scr_dyn_arr_index_writable(value, index)));
+      scr_dyn_obj_set(out, "enumerable", 10,
+                      scr_dyn_new_bool(scr_dyn_arr_index_enumerable(value, index)));
+      scr_dyn_obj_set(out, "configurable", 12,
+                      scr_dyn_new_bool(scr_dyn_arr_index_configurable(value, index)));
+#else
       scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(!value->v.arr.frozen));
       scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(true));
       scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(!value->v.arr.sealed));
+#endif
       return out;
     }
     return scr_dyn_retain(scr_dyn_undefined());
@@ -10297,6 +10492,154 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
   return false;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+static void scr_dyn_array_define_error(const ScrStr *name) {
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  scr_jb_puts(&buffer, "Cannot define property ");
+  scr_jb_write(&buffer, name->data, name->len);
+  scr_jb_puts(&buffer, ", object is not extensible");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+}
+
+static void scr_dyn_array_redefine_error(const ScrStr *name) {
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  scr_jb_puts(&buffer, "Cannot redefine property: ");
+  scr_jb_write(&buffer, name->data, name->len);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+}
+
+/* ArraySetLength (ES2023 10.4.2.4), the length half of an array's exotic
+ * [[DefineOwnProperty]]: an array's length is a non-enumerable,
+ * non-configurable data property whose value truncates or extends the
+ * element store, and whose writable attribute turns later length writes
+ * into Node's read-only TypeError. */
+static bool scr_dyn_array_define_length(ScrDyn *target, const ScrStr *name, ScrDyn *value,
+                                        ScrDyn *writable, ScrDyn *enumerable,
+                                        ScrDyn *configurable) {
+  if ((enumerable && scr_dyn_truthy(enumerable)) || (configurable && scr_dyn_truthy(configurable))) {
+    scr_dyn_array_redefine_error(name);
+    return false;
+  }
+  bool old_writable = !target->v.arr.length_readonly && !target->v.arr.frozen;
+  /* A descriptor without `writable` does not change it; an explicit `true`
+   * on a read-only length is a failed OrdinaryDefineOwnProperty. */
+  if (writable && scr_dyn_truthy(writable) && !old_writable) {
+    scr_dyn_array_redefine_error(name);
+    return false;
+  }
+  bool make_readonly = writable && !scr_dyn_truthy(writable) && old_writable;
+  size_t old_len = target->v.arr.len;
+  if (!value) {
+    /* No value: only the writable attribute can change. */
+    if (make_readonly) target->v.arr.length_readonly = true;
+    return true;
+  }
+  double number;
+  if (!scr_dyn_number_coerce_js(value, &number)) return false;
+  if (!(number >= 0 && number <= 4294967295.0) || trunc(number) != number) {
+    static const char message[] = "Invalid array length";
+    scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+    return false;
+  }
+  size_t length = (size_t)number;
+  if (length != old_len && !old_writable) {
+    scr_dyn_array_redefine_error(name);
+    return false;
+  }
+  if (length > old_len) {
+    if (length > old_len + 1000000) {
+      static const char message[] = "Checked array growth exceeds the native allocation limit";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return false;
+    }
+    while (target->v.arr.len < length) scr_dyn_arr_push_hole(target);
+  } else if (length < old_len) {
+    /* ArraySetLength deletes from the top down and stops at the first
+     * element whose attributes keep it: the length then stays at that
+     * element plus one and the refused delete throws. */
+    size_t stop = length;
+    for (size_t i = old_len; i-- > length;)
+      if (scr_dyn_arr_has_index(target, i) && !scr_dyn_arr_index_configurable(target, i)) {
+        stop = i + 1;
+        break;
+      }
+    while (target->v.arr.len > stop) scr_dyn_release(target->v.arr.items[--target->v.arr.len]);
+    if (make_readonly) target->v.arr.length_readonly = true;
+    if (stop != length) {
+      scr_array_undeletable_error((double)(stop - 1));
+      return false;
+    }
+    return true;
+  }
+  if (make_readonly) target->v.arr.length_readonly = true;
+  return true;
+}
+
+/* OrdinaryDefineOwnProperty for an array index (ES2023 10.4.2.1, the
+ * index half of the exotic [[DefineOwnProperty]]): the descriptor's
+ * absent fields inherit the element's current attributes (and start false
+ * on a new element), a non-configurable element refuses any change, and
+ * an index at or beyond the length extends it with holes. */
+static bool scr_dyn_array_define_index(ScrDyn *target, const ScrStr *name, size_t index,
+                                       ScrDyn *value, ScrDyn *writable, ScrDyn *enumerable,
+                                       ScrDyn *configurable) {
+  size_t len = target->v.arr.len;
+  bool present = scr_dyn_arr_has_index(target, index);
+  bool prior_writable = present && scr_dyn_arr_index_writable(target, index);
+  bool prior_enumerable = present && scr_dyn_arr_index_enumerable(target, index);
+  bool prior_configurable = present && scr_dyn_arr_index_configurable(target, index);
+  bool new_writable = writable ? scr_dyn_truthy(writable) : prior_writable;
+  bool new_enumerable = enumerable ? scr_dyn_truthy(enumerable) : prior_enumerable;
+  bool new_configurable = configurable ? scr_dyn_truthy(configurable) : prior_configurable;
+  if (!present) {
+    /* A new element needs room: neither a non-extensible array nor a
+     * non-writable length (ArraySetLength past the length fails) can give
+     * it, and V8 reports both as a failed define. */
+    bool length_writable = !target->v.arr.length_readonly && !target->v.arr.frozen;
+    if (target->non_extensible || (index >= len && !length_writable)) {
+      scr_dyn_array_define_error(name);
+      return false;
+    }
+    if (index > len + 1000000) {
+      static const char message[] = "Checked array growth exceeds the native allocation limit";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return false;
+    }
+    while (target->v.arr.len <= index) scr_dyn_arr_push_hole(target);
+  }
+  bool same_value = !value || (present && scr_dyn_property_same_value(target->v.arr.items[index], value));
+  if (present) {
+    bool refused = false;
+    if (!prior_configurable) {
+      if (new_configurable || new_enumerable != prior_enumerable) refused = true;
+      else if (!prior_writable && new_writable) refused = true;
+    }
+    /* The same-value rule guards a non-configurable, non-writable data
+     * property; a configurable element accepts any new value. */
+    if (!refused && !prior_configurable && !prior_writable && !same_value) refused = true;
+    if (refused) {
+      scr_dyn_array_redefine_error(name);
+      return false;
+    }
+  }
+  if (!present || (value && !same_value)) {
+    scr_dyn_region_store(target, value ? value : scr_dyn_undefined());
+    ScrDyn *replacement = scr_dyn_retain(value ? value : scr_dyn_undefined());
+    ScrDyn *old = target->v.arr.items[index];
+    target->v.arr.items[index] = replacement;
+    scr_dyn_release(old);
+  }
+  unsigned char attr = SCR_ARR_PRESENT;
+  if (!new_writable) attr |= SCR_ARR_NONWRITABLE;
+  if (!new_enumerable) attr |= SCR_ARR_NONENUM;
+  if (!new_configurable) attr |= SCR_ARR_NONCONF;
+  scr_dyn_arr_attr_store(target, index, attr);
+  return true;
+}
+#endif
+
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
   if (scr_dyn_error_prototype_fence(target)) return NULL;
   if (target->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(target) &&
@@ -10359,6 +10702,41 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     ScrStr *name = scr_dyn_property_key(key);
     if (!name) return NULL;
     double index;
+#ifdef SCR_JS_OBJECT_MODEL
+    bool length_key = name->len == 6 && memcmp(name->data, "length", 6) == 0;
+    bool special = length_key || scr_dyn_key_is_index(name->data, name->len, &index);
+    if (special) {
+      ScrDyn *fields[6];
+      if (!scr_dyn_descriptor_fields_read(descriptor, fields)) {
+        scr_str_release(name);
+        return NULL;
+      }
+      bool ok;
+      if (fields[4] || fields[5]) {
+        ok = false;
+        if (length_key) {
+          /* ArraySetLength refuses an accessor descriptor outright: the
+           * length is a non-configurable data property. */
+          scr_dyn_array_redefine_error(name);
+        } else {
+          /* An element store has no accessor slots: the refusal is precise
+           * about the descriptor it cannot honor. */
+          static const char message[] =
+              "Object.defineProperty on an array index or length with an accessor descriptor is not supported yet";
+          scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+        }
+      } else if (length_key) {
+        ok = scr_dyn_array_define_length(target, name, fields[2], fields[3], fields[0], fields[1]);
+      } else {
+        ok = scr_dyn_array_define_index(target, name, (size_t)index, fields[2], fields[3], fields[0],
+                                        fields[1]);
+      }
+      scr_dyn_descriptor_fields_drop(fields);
+      scr_str_release(name);
+      return ok ? scr_dyn_retain(target) : NULL;
+    }
+    scr_str_release(name);
+#else
     bool special = name->len == 6 && memcmp(name->data, "length", 6) == 0;
     special = special || scr_dyn_key_is_index(name->data, name->len, &index);
     scr_str_release(name);
@@ -10367,6 +10745,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
       scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
       return NULL;
     }
+#endif
     if (!target->v.arr.properties) target->v.arr.properties = scr_dyn_new_obj();
     target->v.arr.properties->non_extensible = target->non_extensible;
     ScrDyn *defined = scr_dyn_define_property(target->v.arr.properties, key, descriptor);
@@ -13143,7 +13522,11 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   }
   if (recv->kind == SCR_DYN_ARR) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) {
-      if (recv->v.arr.frozen) {
+      if (recv->v.arr.frozen
+#ifdef SCR_JS_OBJECT_MODEL
+          || recv->v.arr.length_readonly
+#endif
+      ) {
         scr_array_frozen_error(3, recv->v.arr.len, 0, 0, 0);
         scr_dyn_note_assign_failure();
         return;
@@ -13163,11 +13546,22 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       }
       while (recv->v.arr.len < length) scr_dyn_arr_push_hole(recv);
       while (recv->v.arr.len > length) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* ArraySetLength deletes the elements from the top down and stops
+         * at the first non-configurable one, reporting that delete. */
+        size_t last = recv->v.arr.len - 1;
+        if (!scr_dyn_arr_index_configurable(recv, last) && scr_dyn_arr_has_index(recv, last)) {
+          scr_array_frozen_error(5, recv->v.arr.len, (double)last, 0, 0);
+          scr_dyn_note_assign_failure();
+          return;
+        }
+#else
         if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
           scr_array_frozen_error(5, recv->v.arr.len, (double)(recv->v.arr.len - 1), 0, 0);
           scr_dyn_note_assign_failure();
           return;
         }
+#endif
         scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
       }
       return;
@@ -13188,6 +13582,24 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
         scr_dyn_note_assign_failure();
         return;
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      /* A non-writable element refuses the write with the same TypeError a
+       * frozen one does, and sloppy mode ignores it ([[Set]] answers false
+       * for both). */
+      if (idx < recv->v.arr.len && scr_dyn_arr_has_index(recv, idx) &&
+          !scr_dyn_arr_index_writable(recv, idx)) {
+        scr_array_frozen_error(0, recv->v.arr.len, (double)idx, 0, 0);
+        scr_dyn_note_assign_failure();
+        return;
+      }
+      /* Extending the store is ArraySetLength past the length, which a
+       * non-writable length refuses (a write of the read-only length). */
+      if (idx >= recv->v.arr.len && recv->v.arr.length_readonly) {
+        scr_array_frozen_error(3, recv->v.arr.len, 0, 0, 0);
+        scr_dyn_note_assign_failure();
+        return;
+      }
+#endif
       if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx)) {
         /* An absent index, a hole included, is a property to add. */
         scr_array_frozen_error(0, 0, (double)idx, 0, 0);
@@ -13205,7 +13617,14 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       scr_dyn_region_store(recv, value);
       ScrDyn *old = recv->v.arr.items[idx];
       recv->v.arr.items[idx] = scr_dyn_retain(value);
+#ifdef SCR_JS_OBJECT_MODEL
+      /* A hole takes the default attributes; a present element keeps its
+       * own (a plain write changes no attribute). */
+      if (recv->v.arr.presence && !recv->v.arr.presence[idx])
+        recv->v.arr.presence[idx] = SCR_ARR_PRESENT;
+#else
       if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
+#endif
       scr_dyn_release(old);
       return;
     }
@@ -15381,7 +15800,11 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     size_t index = 0;
     for (size_t i = 0; i < key->len; i++) index = index * 10 + (size_t)(key->data[i] - '0');
     if (!scr_dyn_arr_has_index(recv, index)) return;
-    if (recv->v.arr.sealed) {
+    if (recv->v.arr.sealed
+#ifdef SCR_JS_OBJECT_MODEL
+        || !scr_dyn_arr_index_configurable(recv, index)
+#endif
+    ) {
       if (strict) scr_array_frozen_error(5, recv->v.arr.len, (double)index, 0, 0);
       return;
     }
@@ -17568,6 +17991,11 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     size_t n = v->kind == SCR_DYN_ARR ? v->v.arr.len : v->v.bytes->is_data_view ? 0 : v->v.bytes->len;
     for (size_t i = 0; i < n; i++) {
       if (v->kind == SCR_DYN_ARR && !scr_dyn_arr_has_index(v, i)) continue;
+#ifdef SCR_JS_OBJECT_MODEL
+      /* Object.keys/values/entries and the other own-enumerable walks skip
+       * a non-enumerable element (JSON and iteration read by index). */
+      if (v->kind == SCR_DYN_ARR && !scr_dyn_arr_index_enumerable(v, i)) continue;
+#endif
       char key[24];
       int klen = snprintf(key, sizeof key, "%zu", i);
       ScrDyn *val = NULL;

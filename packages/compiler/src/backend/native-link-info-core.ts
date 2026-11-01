@@ -35,6 +35,12 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
+  /** The program lowers Object.defineProperty onto a checked-dynamic
+   * value, or freeze/seal/preventExtensions onto one: its array-attribute
+   * code lives in the JavaScript object model build (t262-da §J), which
+   * jsObjectModelFact ORs this fact into. Absent for every other program,
+   * so their objects stay identical. */
+  dynArrayAttrs?: boolean;
   /** The program asserts a record literal to a wider record type (a partial
    * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
    * Absent for every program without one, so their objects stay identical. */

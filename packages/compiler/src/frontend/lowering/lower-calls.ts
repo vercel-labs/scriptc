@@ -9092,6 +9092,7 @@ function lowerObjectStaticCall(
       args: [target, key, descriptor],
       type: DYN,
       loc: locOf(call),
+      mayTargetArray: true,
     };
   }
   // Object.defineProperties over a CHECKED-DYNAMIC target (test/common's
@@ -9173,10 +9174,16 @@ function lowerObjectStaticCall(
   }
   if (
     ["preventExtensions", "isExtensible", "seal", "isSealed"].includes(member) &&
-    call.arguments.nodes.length === 1 &&
-    !ts.isSpreadElement(call.arguments.nodes[0]!)
+    call.arguments.nodes.length <= 1 &&
+    (call.arguments.nodes.length === 0 || !ts.isSpreadElement(call.arguments.nodes[0]!))
   ) {
-    const value = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    // A missing argument is `undefined`, which ES2015 20.1.2.13 onwards
+    // treats as a primitive: the mutators return it unchanged and the
+    // queries answer `false`/`true` for it.
+    const value: IrExpr =
+      call.arguments.nodes.length === 0
+        ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(call) }
+        : lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (
       value.type.kind === "string" ||
       value.type.kind === "f64" ||
@@ -9237,6 +9244,25 @@ function lowerObjectStaticCall(
         locOf(call),
       );
     }
+    // A record or an array is non-extensible only by being frozen — nothing
+    // else creates that state — so both queries answer from the frozen bit
+    // Object.isFrozen already reads.
+    if (
+      (member === "isExtensible" || member === "isSealed") &&
+      (value.type.kind === "record" || value.type.kind === "array")
+    ) {
+      const loc = locOf(call);
+      const frozen: IrExpr = {
+        kind: "libCall",
+        fn: value.type.kind === "record" ? "record.isFrozen" : "array.isFrozen",
+        args: [value],
+        type: BOOL,
+        loc,
+      };
+      return member === "isSealed"
+        ? frozen
+        : { kind: "unary", op: "!", operand: frozen, type: BOOL, loc };
+    }
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -9270,6 +9296,9 @@ function lowerObjectStaticCall(
         args: [value],
         type: member.startsWith("is") ? BOOL : DYN,
         loc: locOf(call),
+        // The value may be a dynamic array, which these calls make
+        // non-extensible through the array-attribute build.
+        ...(member.startsWith("is") ? {} : { mayTargetArray: true as const }),
       };
     }
   }
@@ -9280,6 +9309,10 @@ function lowerObjectStaticCall(
   // Aliased records get the frozen bit of their rc word (frozen-records.ts);
   // other aliased objects keep a fence: a later write through the original
   // reference would need a runtime frozen bit (strict mode throws).
+  // A missing argument is `undefined`, a primitive, and every primitive is
+  // frozen (ES2023 7.3.15/20.1.2.16).
+  if (member === "isFrozen" && call.arguments.nodes.length === 0)
+    return { kind: "boolLit", value: true, type: BOOL, loc: locOf(call) };
   if (member === "isFrozen" && call.arguments.nodes.length === 1) {
     const argNode = call.arguments.nodes[0]!;
     const probedKind = tryLowerExpression(lowerer, argNode)?.type.kind;
@@ -9320,6 +9353,12 @@ function lowerObjectStaticCall(
     return { kind: "libCall", fn: "dyn.isFrozen", args: [value], type: BOOL, loc: locOf(call) };
   }
   if (member === "freeze") {
+    if (call.arguments.nodes.length === 0) {
+      // A missing argument is `undefined`, a primitive: ES2015 20.1.2.2
+      // returns it unchanged.
+      const loc = locOf(call);
+      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
+    }
     if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!)) {
       lowerer.noLowering(`Object.freeze with ${call.arguments.nodes.length} arguments`, call);
     }
@@ -9334,7 +9373,14 @@ function lowerObjectStaticCall(
         : lowerer.lowerExpr(argNode);
     if (value.type.kind === "dyn") {
       noteUntypedIntegrity(lowerer, argNode);
-      return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
+      return {
+        kind: "libCall",
+        fn: "dyn.freeze",
+        args: [value],
+        type: DYN,
+        loc: locOf(call),
+        mayTargetArray: true,
+      };
     }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
       // A fresh literal can still reach untyped code, which observes and

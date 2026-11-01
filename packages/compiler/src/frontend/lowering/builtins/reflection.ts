@@ -147,7 +147,14 @@ export function lowerReflectCall(
       stmts: [
         {
           kind: "exprStmt",
-          expr: { kind: "libCall", fn: "dyn.defineProperty", args, type: DYN, loc },
+          expr: {
+            kind: "libCall",
+            fn: "dyn.defineProperty",
+            args,
+            type: DYN,
+            loc,
+            mayTargetArray: true,
+          },
           loc,
         },
       ],

@@ -834,6 +834,9 @@ ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method,
 static bool dyn_arr_plain(const ScrDyn *recv) {
   return recv->kind == SCR_DYN_ARR && !recv->v.arr.presence && !recv->v.arr.properties &&
          !recv->prototype && !recv->null_proto && !recv->non_extensible &&
+#ifdef SCR_JS_OBJECT_MODEL
+         !recv->v.arr.length_readonly &&
+#endif
          !recv->v.arr.sealed && !recv->v.arr.frozen && !scr_dyn_is_array_prototype(recv);
 }
 
@@ -1285,7 +1288,18 @@ static ScrDyn *scr_dyn_invoke_impl(
     size_t len = recv->v.arr.len;
     if (recv->v.arr.presence) {
       bool sparse = false;
-      for (size_t i = 0; i < len; i++) if (!recv->v.arr.presence[i]) { sparse = true; break; }
+      for (size_t i = 0; i < len; i++) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* A byte that carries attributes is not the dense default; the
+         * array keeps its presence then. */
+        if (recv->v.arr.presence[i] != SCR_ARR_PRESENT) {
+#else
+        if (!recv->v.arr.presence[i]) {
+#endif
+          sparse = true;
+          break;
+        }
+      }
       if (!sparse) { free(recv->v.arr.presence); recv->v.arr.presence = NULL; }
       else if ((mid == DYN_M_forEach) || (mid == DYN_M_map) || (mid == DYN_M_filter) ||
           (mid == DYN_M_some) || (mid == DYN_M_every) || (mid == DYN_M_find) ||
@@ -1361,15 +1375,59 @@ static ScrDyn *scr_dyn_invoke_impl(
       if (frozen_op >= 0 &&
           scr_array_frozen_error(frozen_op, len, (double)splice_start, frozen_op == 10 ? (double)splice_removed : items, items))
         return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+      /* Growing an array that is not extensible refuses the first index it
+       * would add: push writes its items in order, unshift moves the last
+       * element up first, and splice moves the element at the old end to
+       * the new one. (The default build keeps its push-only check so its
+       * object stays byte-identical.) */
+      if (grows && recv->non_extensible) {
+        double first_new = (mid == DYN_M_push) ? (double)len
+            : (mid == DYN_M_unshift) ? (double)len + items - 1
+            : (double)(len - splice_removed + (size_t)items) - 1;
+        scr_array_not_extensible_error(first_new);
+        return NULL;
+      }
+#else
       if ((mid == DYN_M_push) && grows && recv->non_extensible) {
         scr_array_not_extensible_error((double)len);
         return NULL;
       }
+#endif
+#ifdef SCR_JS_OBJECT_MODEL
+      /* Object.defineProperty can make the length read-only and an element
+       * non-writable or non-configurable; a refused element write throws
+       * the one its frozen counterpart would, and it comes before the
+       * length write. Push, pop, shift, unshift and splice write the length
+       * even when it does not change (V8 throws for `push()`, `pop()` on an
+       * empty array and a no-op `splice`), while sort, reverse, fill and
+       * copyWithin never write it. */
+      int attr_op = (mid == DYN_M_push) ? 1
+          : (mid == DYN_M_pop) ? 2
+          : (mid == DYN_M_shift) ? 6
+          : (mid == DYN_M_unshift) ? 4
+          : (mid == DYN_M_splice) ? 10
+          : ((mid == DYN_M_sort) || (mid == DYN_M_reverse)) ? (len > 1 ? 7 : -1)
+          : -1;
+      if (attr_op >= 0 && scr_dyn_arr_attrs_refuse(recv, attr_op, len, (double)splice_start,
+                                                   attr_op == 10 ? (double)splice_removed : 0.0, items))
+        return NULL;
+      bool writes_length = (mid == DYN_M_push) || (mid == DYN_M_pop) ||
+          (mid == DYN_M_shift) || (mid == DYN_M_unshift) || (mid == DYN_M_splice);
+      if (recv->v.arr.length_readonly && writes_length) {
+        scr_array_frozen_error(3, len, 0, 0, 0);
+        return NULL;
+      }
+#endif
       if ((mid == DYN_M_pop) && shrinks && recv->v.arr.sealed) {
         scr_array_undeletable_error((double)(len - 1));
         return NULL;
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      if (shrinks && recv->v.arr.sealed && !(mid == DYN_M_shift)) {
+#else
       if ((grows && recv->non_extensible) || (shrinks && recv->v.arr.sealed && !(mid == DYN_M_shift))) {
+#endif
         static const char message[] = "Cannot modify a sealed or frozen array";
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
         return NULL;
@@ -1388,7 +1446,16 @@ static ScrDyn *scr_dyn_invoke_impl(
     }
     if ((mid == DYN_M_shift)) {
       if (len == 0) return scr_dyn_retain(scr_dyn_undefined());
-      if (recv->v.arr.sealed) {
+#ifdef SCR_JS_OBJECT_MODEL
+      /* A last element Object.defineProperty made non-configurable refuses
+       * its delete, which comes after every element moved down: the array
+       * keeps the moved elements, as Node's does. */
+      bool undeletable_tail = scr_dyn_arr_has_index(recv, len - 1) &&
+          !scr_dyn_arr_index_configurable(recv, len - 1);
+#else
+      bool undeletable_tail = false;
+#endif
+      if (recv->v.arr.sealed || undeletable_tail) {
         if (recv->v.arr.frozen) {
           static const char message[] = "Cannot assign to read only property";
           scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -1413,6 +1480,14 @@ static ScrDyn *scr_dyn_invoke_impl(
        * abandon retained argument references. */
       for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(recv, scr_dyn_retain(scr_dyn_undefined()));
       memmove(recv->v.arr.items + argc, recv->v.arr.items, len * sizeof(ScrDyn *));
+#ifdef SCR_JS_OBJECT_MODEL
+      /* The attribute bytes follow their indices; the arguments take the
+       * default attributes of new elements. */
+      if (recv->v.arr.presence) {
+        memmove(recv->v.arr.presence + argc, recv->v.arr.presence, len);
+        memset(recv->v.arr.presence, SCR_ARR_PRESENT, argc);
+      }
+#endif
       for (size_t i = 0; i < argc; i++) {
         scr_dyn_region_store(recv, args[i]);
         recv->v.arr.items[i] = scr_dyn_retain(args[i]);
@@ -1437,11 +1512,27 @@ static ScrDyn *scr_dyn_invoke_impl(
         if (!items) scr_trap("scriptc: out of memory\n");
         recv->v.arr.items = items;
         recv->v.arr.cap = capacity;
+#ifdef SCR_JS_OBJECT_MODEL
+        if (recv->v.arr.presence) {
+          unsigned char *presence = realloc(recv->v.arr.presence, capacity);
+          if (!presence) scr_trap("scriptc: out of memory\n");
+          recv->v.arr.presence = presence;
+        }
+#endif
       }
       for (size_t i = start; i < start + removed; i++) scr_dyn_release(recv->v.arr.items[i]);
       memmove(recv->v.arr.items + start + inserted,
               recv->v.arr.items + start + removed,
               (len - start - removed) * sizeof(ScrDyn *));
+#ifdef SCR_JS_OBJECT_MODEL
+      /* Like unshift: the attribute bytes follow the elements they belong
+       * to, and inserted arguments take the default attributes. */
+      if (recv->v.arr.presence) {
+        memmove(recv->v.arr.presence + start + inserted, recv->v.arr.presence + start + removed,
+                len - start - removed);
+        memset(recv->v.arr.presence + start, SCR_ARR_PRESENT, inserted);
+      }
+#endif
       for (size_t i = 0; i < inserted; i++) {
         scr_dyn_region_store(recv, args[i + 2]);
         recv->v.arr.items[start + i] = scr_dyn_retain(args[i + 2]);
@@ -1627,6 +1718,9 @@ static ScrDyn *scr_dyn_invoke_impl(
       size_t start = dyn_rel_index(startD, len);
       size_t end = dyn_rel_index(endD, len);
       if (recv->v.arr.frozen && scr_array_frozen_error(8, len, (double)start, (double)end, 0)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_dyn_arr_attrs_refuse(recv, 8, len, (double)start, (double)end, 0)) return NULL;
+#endif
       ScrDyn *fill = argc ? args[0] : scr_dyn_undefined();
       if (start < end) scr_dyn_region_store(recv, fill);
       for (size_t i = start; i < end; i++) {
@@ -1637,7 +1731,14 @@ static ScrDyn *scr_dyn_invoke_impl(
         }
         ScrDyn *old = recv->v.arr.items[i];
         recv->v.arr.items[i] = scr_dyn_retain(fill);
+#ifdef SCR_JS_OBJECT_MODEL
+        /* A hole becomes a default present element; a present one keeps
+         * its own attributes. */
+        if (recv->v.arr.presence && !recv->v.arr.presence[i])
+          recv->v.arr.presence[i] = SCR_ARR_PRESENT;
+#else
         if (recv->v.arr.presence) recv->v.arr.presence[i] = 1;
+#endif
         scr_dyn_release(old);
       }
       return scr_dyn_retain(recv);
@@ -1657,6 +1758,9 @@ static ScrDyn *scr_dyn_invoke_impl(
       if (count > len - target) count = len - target;
       if (recv->v.arr.frozen && scr_array_frozen_error(9, len, (double)target, (double)start, (double)end))
         return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_dyn_arr_attrs_refuse(recv, 9, len, (double)target, (double)start, (double)end)) return NULL;
+#endif
       if (start < target && target < start + count) {
         for (size_t i = count; i > 0; i--) {
           ScrDyn *old = recv->v.arr.items[target + i - 1];

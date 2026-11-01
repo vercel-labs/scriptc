@@ -544,6 +544,18 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         : undefined;
     if (caught && caughtTarget && !caughtTarget.localClass && !caughtTarget.def.runtime) {
       const classValue = lowerer.lowerExpr(expr.right);
+      // A class that declares a static `Symbol.hasInstance` hook answers
+      // through the hook: the caught payload reaches it as a checked-dynamic
+      // value, exactly as a thrown value reaches Node's hook.
+      if (classDeclaresHasInstanceHook(caughtTarget)) {
+        return checkedClassInstanceOf(
+          lowerer,
+          { kind: "caughtToDyn", value: varRef(caught.id, CAUGHT, loc), type: DYN, loc },
+          lowerer.coerceToExpected(classValue, DYN),
+          dynInstanceOfRefusal(lowerer, expr),
+          loc,
+        );
+      }
       if (caughtTarget.subclasses.length === 0) {
         return {
           kind: "seqExpr",
@@ -804,6 +816,23 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // narrowing then types the branches; reads bridge through caughtRead.
   const caughtLocal = lowerer.caughtLocalOf(expr.left);
   if (caughtLocal) {
+    // A class that declares a static `Symbol.hasInstance` hook answers
+    // through the hook whatever the operand's static type: the caught
+    // payload reaches it as a checked-dynamic value, exactly as a thrown
+    // value reaches Node's hook.
+    if (!target.def.runtime && classDeclaresHasInstanceHook(target)) {
+      const classValue = classValueOperand(lowerer, expr.right, {
+        kind: "classval",
+        className: target.def.name,
+      });
+      return checkedClassInstanceOf(
+        lowerer,
+        { kind: "caughtToDyn", value: varRef(caughtLocal.id, CAUGHT, loc), type: DYN, loc },
+        lowerer.coerceToExpected(classValue, DYN),
+        dynInstanceOfRefusal(lowerer, expr),
+        loc,
+      );
+    }
     const caughtInstanceOf = (info: ClassInfo): IrExpr =>
       caughtClassInstanceOf(lowerer, caughtLocal.id, info, loc);
     let test = caughtInstanceOf(target);

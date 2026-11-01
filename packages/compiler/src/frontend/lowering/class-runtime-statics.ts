@@ -13,6 +13,27 @@ export function hasRuntimeStatics(info: ClassInfo): boolean {
   return false;
 }
 
+/** Whether the class value's property table defines the static `name`: the
+ * members a class that keeps its statics in the table declares there. A
+ * class whose table holds only a `Symbol.hasInstance` hook keeps its other
+ * statics in module storage, so those keep their own lowering. */
+export function runtimeStaticDefines(info: ClassInfo, name: string): boolean {
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    for (const member of current.runtimeStatics ?? []) {
+      const memberName = (member as { name?: ts.PropertyName }).name;
+      if (memberName === undefined || ts.isComputedPropertyName(memberName)) continue;
+      const text =
+        ts.isIdentifier(memberName) || ts.isPrivateIdentifier(memberName)
+          ? memberName.text
+          : ts.isStringLiteral(memberName) || ts.isNumericLiteral(memberName)
+            ? memberName.text
+            : undefined;
+      if (text === name) return true;
+    }
+  }
+  return false;
+}
+
 /** Constructor descriptors preserve inherited getter receivers and static
  * initialization order. Factory evaluations additionally own independent
  * fields and closures when the same factory is called repeatedly.

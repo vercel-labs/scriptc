@@ -284,7 +284,7 @@ static ScrDyn *dyn_borrow_get(ScrDyn *recv, const ScrStr *key) {
   }
   if (recv->kind == SCR_DYN_ARR || recv->kind == SCR_DYN_STR || recv->kind == SCR_DYN_BYTES) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) {
-      double length = recv->kind == SCR_DYN_ARR ? (double)recv->v.arr.len
+      double length = recv->kind == SCR_DYN_ARR ? (double)scr_dyn_arr_length(recv)
         : recv->kind == SCR_DYN_STR ? scr_str_utf16_len(recv->v.str)
         : (double)recv->v.bytes->len;
       return scr_dyn_new_num(length);
@@ -848,12 +848,134 @@ static inline bool dyn_elem_strict_eq(const ScrDyn *a, const ScrDyn *b) {
   return scr_dyn_strict_eq(a, b);
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* indexOf, lastIndexOf and includes over an array whose length may exceed
+ * its dense prefix. The prefix answers from items, as the dense path does;
+ * the elements past it are own index properties of the array, so the
+ * searches visit those properties instead of walking the hole range
+ * between them (a length near 2^32 would otherwise cost four billion
+ * steps). Only the JavaScript object model build reaches a length that
+ * differs from the prefix. */
+static int dyn_arr_index_order(const void *a, const void *b) {
+  size_t x = *(const size_t *)a;
+  size_t y = *(const size_t *)b;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* The array's own indexes at or past `dense` and below `total`, ascending.
+ * *out is a malloc'd block of the returned count, or NULL. */
+static size_t dyn_arr_sparse_indexes(const ScrDyn *recv, size_t dense, size_t total, size_t **out) {
+  *out = NULL;
+  const ScrDyn *props = recv->v.arr.properties;
+  if (!props) return 0;
+  size_t count = scr_dyn_obj_count(props);
+  if (count == 0) return 0;
+  size_t *indexes = (size_t *)malloc(count * sizeof *indexes);
+  if (!indexes) return 0;
+  size_t kept = 0;
+  for (size_t i = 0; i < count; i++) {
+    size_t key_len = 0;
+    const char *key = scr_dyn_obj_key_at(props, i, &key_len);
+    size_t idx = 0;
+    if (!scr_dyn_arr_index_key(key, key_len, &idx)) continue;
+    if (idx < dense || idx >= total) continue;
+    indexes[kept++] = idx;
+  }
+  /* The table holds creation order; the searches need index order. */
+  qsort(indexes, kept, sizeof *indexes, dyn_arr_index_order);
+  *out = indexes;
+  return kept;
+}
+
+/* Whether index `idx` of the array holds `needle`; NaN matches itself for
+ * includes. False with the exception pending when reading it threw. */
+static bool dyn_arr_matches(ScrDyn *recv, size_t idx, ScrDyn *needle, bool nan_match) {
+  ScrDyn *value = scr_dyn_arr_at(recv, (double)idx);
+  bool hit = value && !scr_exc_pending() &&
+    (nan_match ? value->kind == SCR_DYN_NUM && value->v.num != value->v.num
+               : dyn_elem_strict_eq(value, needle));
+  scr_dyn_release(value);
+  return hit;
+}
+
+static ScrDyn *dyn_arr_search(ScrDyn *recv, int mid, ScrDyn *const *args, size_t argc,
+                              const char *what) {
+  size_t dense = recv->v.arr.len;
+  size_t total = scr_dyn_arr_length(recv);
+  ScrDyn *needle = argc > 0 ? args[0] : scr_dyn_undefined();
+  double from = (mid == DYN_M_lastIndexOf) ? (double)total - 1 : 0;
+  if (argc > 1) {
+    from = dyn_index_arg(args, argc, 1, 0, what);
+    if (scr_exc_pending()) return NULL;
+  }
+  bool nan_match = mid == DYN_M_includes && needle->kind == SCR_DYN_NUM &&
+                   needle->v.num != needle->v.num;
+  if (mid == DYN_M_lastIndexOf) {
+    double first = from < 0 ? (double)total + from : from;
+    if (first >= (double)total) first = (double)total - 1;
+    if (first >= (double)dense) {
+      /* Every index past the prefix comes before every prefix index. */
+      size_t *indexes = NULL;
+      size_t count = dyn_arr_sparse_indexes(recv, dense, total, &indexes);
+      for (size_t i = count; i > 0; i--) {
+        size_t idx = indexes[i - 1];
+        if ((double)idx > first) continue;
+        bool hit = dyn_arr_matches(recv, idx, needle, nan_match);
+        if (scr_exc_pending()) { free(indexes); return NULL; }
+        if (hit) {
+          free(indexes);
+          return scr_dyn_new_num((double)idx);
+        }
+      }
+      free(indexes);
+      first = (double)dense - 1;
+    }
+    for (size_t i = first < 0 ? 0 : (size_t)first + 1; i > 0; i--) {
+      /* A hole in the dense prefix has no element: the search skips it. */
+      if (recv->v.arr.presence && !recv->v.arr.presence[i - 1]) continue;
+      if (dyn_elem_strict_eq(recv->v.arr.items[i - 1], needle)) return scr_dyn_new_num((double)(i - 1));
+    }
+    return scr_dyn_new_num(-1);
+  }
+  double first = from < 0 ? (double)total + from : from;
+  if (first < 0) first = 0;
+  size_t start = first >= (double)dense ? dense : (size_t)first;
+  for (size_t i = start; i < dense; i++) {
+    /* A hole in the dense prefix has no element: the search skips it. */
+    if (recv->v.arr.presence && !recv->v.arr.presence[i]) continue;
+    if (!dyn_elem_strict_eq(recv->v.arr.items[i], needle)) continue;
+    return (mid == DYN_M_includes) ? scr_dyn_new_bool(true) : scr_dyn_new_num((double)i);
+  }
+  if (first < (double)total) {
+    size_t *indexes = NULL;
+    size_t count = dyn_arr_sparse_indexes(recv, dense, total, &indexes);
+    for (size_t i = 0; i < count; i++) {
+      size_t idx = indexes[i];
+      if ((double)idx < first) continue;
+      bool hit = dyn_arr_matches(recv, idx, needle, nan_match);
+      if (scr_exc_pending()) { free(indexes); return NULL; }
+      if (hit) {
+        free(indexes);
+        return (mid == DYN_M_includes) ? scr_dyn_new_bool(true) : scr_dyn_new_num((double)idx);
+      }
+    }
+    free(indexes);
+  }
+  return (mid == DYN_M_includes) ? scr_dyn_new_bool(false) : scr_dyn_new_num(-1);
+}
+#endif
+
 /* push, pop, shift, at, includes and indexOf of a plain array, with the
  * ladder's results. An argument that would run user code (a non-number
  * index, a fromIndex) leaves the call to the ladder. True when answered. */
 static bool dyn_arr_fast(ScrDyn *recv, int mid, ScrDyn *const *args, size_t argc,
                          ScrDyn **result) {
   size_t len = recv->v.arr.len;
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Elements past the dense prefix live in the array's property table; the
+   * ladder reaches them (and answers the length they imply). */
+  if (recv->v.arr.length != len) return false;
+#endif
   switch (mid) {
   case DYN_M_push:
     for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(recv, scr_dyn_retain(args[i]));
@@ -1279,6 +1401,56 @@ static ScrDyn *scr_dyn_invoke_impl(
   }
 
   if (recv->kind == SCR_DYN_ARR) {
+#ifdef SCR_JS_OBJECT_MODEL
+    size_t arr_len = recv->v.arr.len;
+    /* An array whose length exceeds its dense prefix holds the elements
+     * past it in its own property table (see scr_dyn.h). The operations
+     * that can answer around them are handled here; the rest would stop at
+     * the prefix and silently see a shorter array. */
+    if (recv->v.arr.length != arr_len) {
+      if ((mid == DYN_M_indexOf) || (mid == DYN_M_lastIndexOf) || (mid == DYN_M_includes))
+        return dyn_arr_search(recv, mid, args, argc, what);
+      if ((mid == DYN_M_push)) {
+        size_t at = scr_dyn_arr_length(recv);
+        for (size_t i = 0; i < argc; i++)
+          if (!scr_dyn_arr_sparse_put(recv, at + i, args[i])) return NULL;
+        return scr_dyn_new_num((double)scr_dyn_arr_length(recv));
+      }
+      if ((mid == DYN_M_pop)) {
+        size_t last = scr_dyn_arr_length(recv);
+        if (last == 0) return scr_dyn_retain(scr_dyn_undefined());
+        if (last <= recv->v.arr.len) {
+          /* The last element is inside the dense prefix. */
+          recv->v.arr.len = last - 1;
+          recv->v.arr.length = last - 1;
+          return recv->v.arr.items[last - 1]; /* ownership moves out */
+        }
+        ScrDyn *result = scr_dyn_arr_at(recv, (double)(last - 1));
+        if (!result || scr_exc_pending()) return NULL;
+        ScrStr *key = dyn_borrow_key(last - 1);
+        scr_dyn_key_delete(recv, key, false);
+        scr_str_release(key);
+        recv->v.arr.length = last - 1;
+        return result;
+      }
+      if ((mid == DYN_M_at)) {
+        double iD = dyn_index_arg(args, argc, 0, 0, what);
+        if (scr_exc_pending()) return NULL;
+        double total = (double)scr_dyn_arr_length(recv);
+        double idx = iD < 0 ? total + iD : iD;
+        if (idx < 0 || idx >= total) return scr_dyn_retain(scr_dyn_undefined());
+        return scr_dyn_arr_at(recv, idx);
+      }
+      /* Every remaining operation would stop at the dense prefix: the
+       * iteration a native handle iterator drives, join, the callback
+       * methods, the in-place sorts and fills. None of them may answer a
+       * shorter array than the one the program built. */
+      static const char message[] =
+        "checked array methods over an array with elements past its dense prefix are not supported yet";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+#endif
     if ((mid == DYN_M_keys) || (mid == DYN_M_values) || (mid == DYN_M_entries))
       return scr_dyn_native_handle_iterator(callback_recv ? callback_recv : recv,
         (mid == DYN_M_keys) ? 1 : (mid == DYN_M_entries) ? 2 : 0);

@@ -4,7 +4,8 @@
 // layers are read, function values are skipped, and symbols and accessors
 // print in Node's form. The entries follow the object's own keys and respect
 // sorted and depth, a property that points back at the
-// object prints as [Circular *N], and the builtin prototypes
+// object prints as [Circular *N], a cycle that passes only through
+// inherited properties keeps one circular stack, and the builtin prototypes
 // (Object.prototype, Array.prototype) contribute nothing.
 import * as util from "node:util";
 
@@ -68,6 +69,31 @@ const back: Record<string, unknown> = {};
 const ring = Object.create(back);
 back.self = ring;
 show(ring);
+
+// A cycle that passes only through inherited properties keeps one seen
+// stack: each object renders at the same depth, so the check reaches the
+// circular reference instead of restarting.
+const protoA: Record<string, unknown> = {};
+const protoB: Record<string, unknown> = {};
+const ringA = Object.create(protoA);
+const ringB = Object.create(protoB);
+protoA.x = ringB;
+protoB.y = ringA;
+show(ringA);
+show(ringB);
+show(ringA, { showHidden: true, depth: 0 });
+show([ringA]);
+
+const first: Record<string, unknown> = {};
+const second: Record<string, unknown> = {};
+const third: Record<string, unknown> = {};
+const loopA = Object.create(first);
+const loopB = Object.create(second);
+const loopC = Object.create(third);
+first.a = loopB;
+second.b = loopC;
+third.c = loopA;
+show(loopA);
 
 const heldOptions: util.InspectOptions = { showHidden: true };
 show(Object.create({ x: 1 }), heldOptions);

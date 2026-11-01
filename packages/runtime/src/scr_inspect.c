@@ -423,8 +423,16 @@ static void insp_circ_reset(void); /* circular-reference state, below */
  * on the seen stack (the runtime inspector's class instances). */
 static SCR_TL const void *g_pending_seen;
 
+/* An inherited value renders at the object's own recursion depth, so its
+ * frame begins at 1 like a top-level value's. The per-render reset must
+ * not run for it: a cycle that passes only through inherited properties
+ * would restart the seen stack on every step and never reach the circular
+ * check. Counted, since several inherited values can nest. */
+static SCR_TL int g_insp_hold_seen;
+
 void scr_insp_begin(double recurse) {
-  if (recurse == 1) insp_circ_reset(); /* a fresh top-level value: Node's per-inspect ctx */
+  /* a fresh top-level value: Node's per-inspect ctx */
+  if (recurse == 1 && g_insp_hold_seen == 0) insp_circ_reset();
   if (g_nframes == g_frames_cap) {
     g_frames_cap = g_frames_cap ? g_frames_cap * 2 : 8;
     g_frames = realloc(g_frames, g_frames_cap * sizeof(InspFrame));
@@ -2156,10 +2164,17 @@ static ScrStr *insp_proto_entry(const ScrDyn *name, const ScrDyn *symbol,
   if (data) {
     /* Node renders an inherited value at the depth the object itself
      * renders at: the walk did not advance for it. A value that is
-     * already being rendered is Node's [Circular *N]. */
+     * already being rendered is Node's [Circular *N]. The same-depth
+     * frame must keep the seen stack, or a cycle through inherited
+     * properties would reset it at every step. */
     double circular = scr_insp_circ_check(data);
-    val = circular > 0 ? scr_insp_circular(circular)
-                       : scr_insp_dyn((ScrDyn *)data, recurse, depth);
+    if (circular > 0) {
+      val = scr_insp_circular(circular);
+    } else {
+      g_insp_hold_seen++;
+      val = scr_insp_dyn((ScrDyn *)data, recurse, depth);
+      g_insp_hold_seen--;
+    }
   } else {
     const char *text = get && set ? "[Getter/Setter]" : get ? "[Getter]"
                      : set ? "[Setter]" : "undefined";

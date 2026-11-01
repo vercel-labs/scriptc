@@ -1095,7 +1095,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   }
   if (emitter.cstrs.size > 0) out.push(``);
   for (const [body, sym] of emitter.mapOpsConsts) {
-    out.push(`@${sym} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`);
+    // A ScrMapOps, or a ScrMapIdentityOps (promise keys) with one more field.
+    const fields = body
+      .split(", ")
+      .map(() => "ptr")
+      .join(", ");
+    out.push(`@${sym} = internal constant { ${fields} } { ${body} }`);
   }
   if (emitter.mapOpsConsts.size > 0) out.push(``);
   for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);

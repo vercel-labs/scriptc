@@ -3,6 +3,8 @@ import { expect, test } from "vitest";
 import { ARRAY_PROTOTYPE_MEMBER_NAMES } from "../../ir/runtime-features.js";
 import { BYTES_ELEM_NUM, CLOSURE_KIND, SCR_ARR_FROZEN, SCR_ARR_STATES } from "./common.js";
 import { DYN_KIND, MESSAGE_KIND } from "./dyn.js";
+import { mapKeyKindNum } from "./shapes.js";
+import { BOOL, DYN, F64, STRING, type IrType } from "../../ir/ir.js";
 
 // The backend writes the numbers of several runtime enums and flag sets
 // into the IR it emits, and the IR layer names the methods a runtime
@@ -146,4 +148,27 @@ test("the %ScrArr spare flags the backend tests match scr_array.h", () => {
   expectSingleBits(spare, "%ScrArr spare");
   expect(spare.get("STATES")).toBe(SCR_ARR_STATES);
   expect(spare.get("FROZEN")).toBe(SCR_ARR_FROZEN);
+});
+
+test("mapKeyKindNum matches ScrMapKeyKind", () => {
+  const kinds = cEnum("scr_map.h", "ScrMapKeyKind");
+  expectDistinct(kinds, "ScrMapKeyKind");
+  const record: IrType = { kind: "record", shapeId: "r" };
+  const cases: [IrType, string][] = [
+    [F64, "F64"],
+    [STRING, "STR"],
+    [record, "REF"],
+    [DYN, "DYN"],
+    [{ kind: "bigint" }, "BIGINT"],
+    [BOOL, "BOOL"],
+    [{ kind: "nullT" }, "NULL"],
+    [{ kind: "undefinedT" }, "UNDEFINED"],
+    [{ kind: "promise", inner: F64 }, "PROMISE"],
+  ];
+  for (const [type, name] of cases) {
+    expect(kinds.get(`SCR_MAP_KEY_${name}`), name).toBe(mapKeyKindNum(type));
+  }
+  const union: IrType = { kind: "union", unionId: "u" };
+  expect(mapKeyKindNum(union, [record, record])).toBe(kinds.get("SCR_MAP_KEY_UNION_REF"));
+  expect(mapKeyKindNum(union, [STRING, F64])).toBe(kinds.get("SCR_MAP_KEY_UNION_VALUE"));
 });

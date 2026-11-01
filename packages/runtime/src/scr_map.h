@@ -48,12 +48,15 @@
  * roots (scr_closure_identity), so a signature adapter is the key of the
  * function it adapts, and the map stores the closure it was given. A
  * UNION_VALUE map's function arms use this kind too.
+ * PROMISE keys are REF keys whose identity is the address key_identity
+ * answers (ScrMapIdentityOps): every adapter box of a typed promise answers
+ * the same one, as `===` compares them.
  * These key kinds serve both Maps and Sets. */
 typedef enum {
   SCR_MAP_KEY_F64, SCR_MAP_KEY_STR, SCR_MAP_KEY_REF, SCR_MAP_KEY_UNION_REF, SCR_MAP_KEY_DYN,
   SCR_MAP_KEY_BIGINT, SCR_MAP_KEY_BOOL, SCR_MAP_KEY_UNION_VALUE,
   SCR_MAP_KEY_NULL, SCR_MAP_KEY_UNDEFINED /* tag-only union arms */,
-  SCR_MAP_KEY_CLOSURE
+  SCR_MAP_KEY_CLOSURE, SCR_MAP_KEY_PROMISE
 } ScrMapKeyKind;
 /* SCR_MAP_VAL_CREF: a string-key map whose values are compact class
  * instances in the program-lifetime region (llvm/classes.ts
@@ -111,6 +114,14 @@ typedef struct ScrMapOps {
   ScrTraceFn val_trace;
   const uint8_t *union_keys;
 } ScrMapOps;
+
+/* The ops of a SCR_MAP_KEY_PROMISE map, or of a UNION_VALUE map with a
+ * promise arm: key_identity maps a stored or probing promise key to the
+ * address its hash and equality use. */
+typedef struct ScrMapIdentityOps {
+  ScrMapOps ops;
+  void *(*key_identity)(void *);
+} ScrMapIdentityOps;
 
 /* ScrMap.traced: the map has a collector header (either side can point
  * back at it) and traces the flagged sides. */

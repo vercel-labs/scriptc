@@ -1128,7 +1128,26 @@ export function runtimeOptionalReceiverRead(
     // array mutation can leave any of the stored tags in the slot. Use
     // the checked helper so every other arm, including undefined, remains
     // a catchable TypeError rather than an unchecked payload read.
-    const helper = lowerer.narrowedArmHelper(local.type.unionId, narrowed, loc);
+    //
+    // An ERASED wrapper carries a type of its own that no arm of the slot
+    // holds (`(header as { id?: unknown }).id` with `header: SessionEntry |
+    // undefined` types the receiver `{ id?: unknown }`), while the value at
+    // runtime is still whichever arm the slot stores. The identifier itself
+    // proves exactly one arm there, so extract THAT arm — the same checked
+    // helper, every other arm a catchable TypeError — and let the wrapper's
+    // narrowing apply to the extracted value, as the two-arm path below
+    // does. A wrapper naming a field the arm does not carry keeps its
+    // shape fence instead of reading a guessed slot.
+    const ownArm = narrowedNode === expr ? null : lowerer.mapTypeOf(lowerer.typeOf(expr));
+    const armTarget =
+      ownArm &&
+      !isUnitType(ownArm) &&
+      lowerer.armTag(local.type.unionId, ownArm) >= 0 &&
+      !typeEquals(ownArm, narrowed)
+        ? ownArm
+        : null;
+    const target = armTarget ?? narrowed;
+    const helper = lowerer.narrowedArmHelper(local.type.unionId, target, loc);
     if (!helper) {
       lowerer.unsupported(
         "SC1090",
@@ -1136,9 +1155,13 @@ export function runtimeOptionalReceiverRead(
         "a direct read from a runtime-optional capture with multiple value arms",
       );
     }
-    return holeGuarded(
-      lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), narrowed, loc),
+    const extracted = lowerer.checkedNarrowCall(
+      helper,
+      varRef(local.id, local.type, loc),
+      target,
+      loc,
     );
+    return holeGuarded(armTarget ? lowerer.maybeNarrow(extracted, narrowedNode) : extracted);
   }
   // A predicate can strengthen a record's fields or narrow a base class
   // to a subclass without changing the slot's stored value arm. Extract

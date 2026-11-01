@@ -726,6 +726,10 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // per evaluation), so pointer identity is JS function identity.
     // Closures are cycle-headered and traced like records.
     t.kind === "func" ||
+    // A promise is one object for its whole life, so pointer identity is
+    // JS promise identity; the runtime's scr_promise_{retain,release,trace}_v
+    // adapters already serve Map values and boxed captures.
+    t.kind === "promise" ||
     t.kind === "date"
   );
 }

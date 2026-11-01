@@ -1571,6 +1571,21 @@ function buildLibFnSignatures() {
      * with the disposition flag — flag 1 is "wx" (O_EXCL: EEXIST when the
      * path exists), 0 is "w" (the default truncate-or-create). */
     "fs.writeFileFlagsSync": { argTypes: [STRING, STRING, F64, F64], result: VOID },
+    /** writeFileSync(path, data, { encoding, mode, flag }): the same open(2)
+     * write with the data encoded for `encoding` and the flag table Node
+     * documents (scr_fs_flags.c). appendFileOptionsSync is appendFileSync's
+     * three-argument form, whose default flag is "a"; the Bytes twins write
+     * a Buffer/TypedArray argument with the mode and flag options. */
+    "fs.writeFileOptionsSync": { argTypes: [STRING, STRING, STRING, F64, STRING], result: VOID },
+    "fs.appendFileOptionsSync": { argTypes: [STRING, STRING, STRING, F64, STRING], result: VOID },
+    "fs.writeFileBytesOptionsSync": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING],
+      result: VOID,
+    },
+    "fs.appendFileBytesOptionsSync": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING],
+      result: VOID,
+    },
     "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },
     "fs.mkdirRecursiveModeSync": { argTypes: [STRING, F64], result: VOID },
     "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },

@@ -379,6 +379,19 @@ void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath
 void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode);
 /* writeFileSync(path, data, { mode, flag }): `exclusive` is "wx" (O_EXCL). */
 void scr_fs_write_file_flags(ScrStr *path, ScrStr *data, double mode, double exclusive);
+/* writeFileSync(p, data, { encoding, mode, flag }) and appendFileSync's
+ * three-argument form: the string data encoded with `encoding` (an empty
+ * name is utf8) and written through Node's open(2) flag table, or the
+ * bytes of a Buffer/TypedArray argument written the same way (their
+ * encoding name is validated and otherwise ignored, as in Node). */
+void scr_fs_write_file_options(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                               ScrStr *flags);
+void scr_fs_append_file_options(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                                ScrStr *flags);
+void scr_fs_write_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                     double mode, ScrStr *flags);
+void scr_fs_append_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                      double mode, ScrStr *flags);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
 /* The same walk, answering the first directory created (+1) or NULL

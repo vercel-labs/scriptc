@@ -43,3 +43,15 @@ console.log('methods', w.at(0), w.at(3000000), w.at(-1), w.length);
 w.push('pushed');
 console.log('push', w.length, w[3000001]);
 console.log('pop', w.pop(), w.length, w[3000000]);
+
+// The build above is the program's: a dense array in the same program still
+// shrinks through pop/shift/splice, and reads its length back.
+let d = [1, 2, 3];
+console.log('dense-pop', d.pop(), d.length, d.map((v) => v * 2).join(','));
+let e = [4, 5, 6];
+console.log('dense-shift', e.shift(), e.length, e.join(','));
+let f = [7, 8, 9];
+console.log('dense-splice', f.splice(1, 1).join(','), f.join(','), f.length);
+let g = [1, 2, 3, 4, 5];
+g.length = 2;
+console.log('dense-truncate', g.length, g.join(','));

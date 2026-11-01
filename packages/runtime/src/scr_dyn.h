@@ -686,6 +686,17 @@ static inline __attribute__((always_inline)) size_t scr_dyn_arr_length(const Scr
 #endif
 }
 
+/* Moves the dense prefix, and with it the array's length. A dense mutation
+ * only runs while the two agree (a length past the prefix sends the call to
+ * the property table), so every dense path keeps them equal: a pop, shift or
+ * splice that shrank only `len` would leave a length no element back. */
+static inline __attribute__((always_inline)) void scr_dyn_arr_set_len(ScrDyn *d, size_t len) {
+#ifdef SCR_JS_OBJECT_MODEL
+  d->v.arr.length = len;
+#endif
+  d->v.arr.len = len;
+}
+
 /* ── layouts ───────────────────────────────────────────────────────────
  * An ordinary object (SCR_DYN_OBJ) is in one of two modes.
  *

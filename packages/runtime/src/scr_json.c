@@ -13454,7 +13454,8 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
 #endif
           return;
         }
-        scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
+        scr_dyn_release(recv->v.arr.items[recv->v.arr.len - 1]);
+        scr_dyn_arr_set_len(recv, recv->v.arr.len - 1);
       }
 #ifdef SCR_JS_OBJECT_MODEL
       scr_dyn_arr_truncate_sparse(recv, length);

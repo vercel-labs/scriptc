@@ -267,6 +267,14 @@ function withJsObjectModel(variants) {
 }
 
 export function variantsFor(source) {
+  // One program uses one cell layout. Scalar-only modules keep ABI2's
+  // runtime byte-for-byte; vector interfaces require ABI3's full cells.
+  if (source === "scr_wasm.c") {
+    return [
+      { id: "default", when: { wasmVectors: false }, defines: ["SCR_WASM_SCALAR_RUNTIME"] },
+      { id: "vectors", when: { wasmVectors: true }, defines: [] },
+    ];
+  }
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths
   // for Node island handles and handle classes call through tables that

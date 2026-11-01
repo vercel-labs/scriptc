@@ -20,7 +20,7 @@ scriptc coverage tests/coverage-fixtures/wasm/main.ts
     tests/coverage-fixtures/wasm/node_modules/wasm-fixture-pkg/lib/core.wasm  27 bytes  invalid: type mismatch (at byte 27)
       1 function, 0 imports, 0 exports
       found: shipped by the package at tests/coverage-fixtures/wasm/node_modules/wasm-fixture-pkg
-    tests/coverage-fixtures/wasm/build/generated.wasm  43 bytes  uses simd
+    tests/coverage-fixtures/wasm/build/generated.wasm  43 bytes  valid
       1 function, 0 imports, 0 exports
       features: simd
       found: configured by tests/coverage-fixtures/wasm/package.json

@@ -41,7 +41,6 @@ function module(...sections: number[][]): Uint8Array {
 const I32 = 0x7f;
 const I64 = 0x7e;
 const F32 = 0x7d;
-const V128 = 0x7b;
 const EXTERNREF = 0x6f;
 
 const funcType = (params: number[], results: number[]): number[] => [
@@ -141,14 +140,6 @@ describe("analyzeWasm", () => {
   });
 
   test.each([
-    [
-      "simd",
-      module(
-        types(funcType([], [V128])),
-        funcs(0),
-        code(body([0xfd, 0x0c, ...Array.from({ length: 16 }, () => 0)])),
-      ),
-    ],
     ["threads", module(memory([0x03, 0x01, 0x01]))],
     ["exceptions", module(types(funcType([], [])), section(13, vec([[0x00, 0x00]])))],
     ["tail-call", module(types(funcType([], [])), funcs(0), code(body([0x12, 0x00])))],

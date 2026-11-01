@@ -1159,6 +1159,11 @@ static ScrDyn *scr_wasm_function_value(ScrWasmInst *host, uint32_t func);
 /* ToJSValue (+1; NULL with an exception pending). */
 static ScrDyn *scr_wasm_to_js(char t, uint64_t v) {
   switch (t) {
+#ifndef SCR_WASM_SCALAR_RUNTIME
+    case 'v':
+      scr_wasm_type_error("type incompatibility when transforming from/to JS");
+      return NULL;
+#endif
     case 'i': return scr_dyn_new_num((double)(int32_t)(uint32_t)v);
     case 'I': {
       ScrBigInt *b = scr_bigint_from_i64((int64_t)v);
@@ -1211,6 +1216,11 @@ static ScrWasmFuncRef *scr_wasm_funcref_of(const ScrDyn *v);
 static bool scr_wasm_from_js_as(char t, const ScrDyn *v, uint64_t *out, const char *funcref_error) {
   if (!v) v = scr_dyn_undefined();
   switch (t) {
+#ifndef SCR_WASM_SCALAR_RUNTIME
+    case 'v':
+      scr_wasm_type_error("type incompatibility when transforming from/to JS");
+      return false;
+#endif
     case 'i': {
       double n;
       if (!scr_dyn_number_coerce_js(v, &n)) return false;
@@ -1288,6 +1298,13 @@ static ScrDyn *scr_wasm_export_call(ScrClosure *clo, ScrDyn *const *args, size_t
   ScrWasmInst *host = scr_box_get_ref(clo->caps[0]);
   uint32_t func = (uint32_t)scr_box_get_f64(clo->caps[1]);
   const char *sig = host->desc->func_sigs[func];
+#ifndef SCR_WASM_SCALAR_RUNTIME
+  if (strchr(sig, 'v')) {
+    scr_wasm_type_error("type incompatibility when transforming from/to JS");
+    scr_wasm_inst_release(host);
+    return NULL;
+  }
+#endif
   ScrWasmThunk thunk = NULL;
   for (uint64_t i = 0; i < host->desc->export_count; i++) {
     const ScrWasmExportDesc *ex = &host->desc->exports[i];
@@ -1371,6 +1388,23 @@ static ScrWasmFuncRef *scr_wasm_funcref_of(const ScrDyn *v) {
   return &host->funcrefs[func];
 }
 
+#ifndef SCR_WASM_SCALAR_RUNTIME
+/* A vector import can call another translated Wasm function, including
+ * another import stub, without converting its arguments or result to JS. */
+void scr_wasm_vector_js_error(void) {
+  scr_wasm_type_error("type incompatibility when transforming from/to JS");
+  scr_wasm_trap(SCR_WASM_TRAP_HOST);
+}
+
+void *scr_wasm_import_vector_ref(void *hostp, int32_t index) {
+  ScrWasmInst *host = hostp;
+  ScrWasmFuncRef *ref = scr_wasm_funcref_of(host->funcs[index]);
+  if (!ref) scr_wasm_vector_js_error();
+  return ref;
+}
+
+#endif
+
 /* ── imported functions ──────────────────────────────────────────────── */
 
 void scr_wasm_import_call(void *hostp, int32_t index, const uint64_t *args, uint64_t *results) {
@@ -1449,7 +1483,27 @@ static ScrDyn *scr_wasm_memory_buffer(ScrWasmMemory *m) {
   return scr_dyn_retain(m->buffer);
 }
 
-static ScrDyn *scr_wasm_global_value(ScrWasmGlobal *g) { return scr_wasm_to_js(g->type, g->value); }
+static ScrDyn *scr_wasm_global_value(ScrWasmGlobal *g) {
+#ifndef SCR_WASM_SCALAR_RUNTIME
+  if (g->type == 'v') {
+    scr_wasm_type_error("get WebAssembly.Global.value): Can't get the value of s128 WebAssembly.Global");
+    return NULL;
+  }
+#endif
+  return scr_wasm_to_js(g->type, g->value);
+}
+
+#ifndef SCR_WASM_SCALAR_RUNTIME
+static ScrDyn *scr_wasm_global_value_of(ScrWasmGlobal *g) {
+  if (g->type == 'v') {
+    scr_wasm_type_error("WebAssembly.Global.valueOf(): Can't get the value of s128 WebAssembly.Global");
+    return NULL;
+  }
+  return scr_wasm_global_value(g);
+}
+#else
+#define scr_wasm_global_value_of scr_wasm_global_value
+#endif
 
 static ScrDyn *scr_wasm_get(void *h, const char *key, size_t len) {
   ScrWasmObj *o = h;
@@ -1476,6 +1530,12 @@ static bool scr_wasm_global_assign(ScrWasmGlobal *g, const ScrDyn *value) {
     scr_wasm_type_error("set WebAssembly.Global.value): Can't set the value of an immutable global.");
     return false;
   }
+#ifndef SCR_WASM_SCALAR_RUNTIME
+  if (g->type == 'v') {
+    scr_wasm_type_error("set WebAssembly.Global.value): Can't set the value of s128 WebAssembly.Global");
+    return false;
+  }
+#endif
   uint64_t v;
   if (!scr_wasm_from_js_as(g->type, value, &v, "set WebAssembly.Global.value): " SCR_WASM_FUNCREF_EXPECTED))
     return false;
@@ -1586,7 +1646,7 @@ static ScrDyn *scr_wasm_invoke(void *h, ScrDyn *self, const char *method, ScrDyn
       return scr_dyn_new_num((double)old);
     }
   }
-  if (o->kind == SCR_WASM_K_GLOBAL && !strcmp(method, "valueOf")) return scr_wasm_global_value(o->global);
+  if (o->kind == SCR_WASM_K_GLOBAL && !strcmp(method, "valueOf")) return scr_wasm_global_value_of(o->global);
   char msg[200];
   snprintf(msg, sizeof msg, "%s is not a function", what ? what : method);
   scr_wasm_type_error(msg);
@@ -1660,7 +1720,11 @@ static const ScrWasmModuleDesc *scr_wasm_lookup(const uint8_t *data, size_t len)
   bool hashed = false;
   for (uint64_t i = 0; i < scr_wasm_registry.count; i++) {
     const ScrWasmModuleDesc *d = scr_wasm_registry.modules[i];
-    if (d->byte_length != len || d->abi_version != SCR_WASM_ABI_VERSION) continue;
+#ifdef SCR_WASM_SCALAR_RUNTIME
+    if (d->byte_length != len || d->abi_version != SCR_WASM_SCALAR_ABI_VERSION) continue;
+#else
+    if (d->byte_length != len || (d->abi_version != SCR_WASM_ABI_VERSION && d->abi_version != SCR_WASM_SCALAR_ABI_VERSION)) continue;
+#endif
     if (!hashed) {
       scr_wasm_sha256(data, len, digest);
       hashed = true;
@@ -1898,6 +1962,11 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
       } else if (mutable_) {
         scr_wasm_link_error(what, i, im, "imported mutable global must be a WebAssembly.Global object");
         ok = false;
+#ifndef SCR_WASM_SCALAR_RUNTIME
+      } else if (type == 'v') {
+        scr_wasm_link_error(what, i, im, "global import of type v128 must be a WebAssembly.Global");
+        ok = false;
+#endif
       } else if (type == 'r') {
         if (!v || (v->kind != SCR_DYN_NULL && !scr_wasm_funcref_of(v))) {
           scr_wasm_link_error(what, i, im, SCR_WASM_FUNCREF_EXPECTED);
@@ -2346,7 +2415,7 @@ ScrDyn *scr_wasm_module_custom_sections(ScrDyn *module, ScrDyn *name) {
  * other value answers what the generic valueOf answers. */
 ScrDyn *scr_wasm_value_of(ScrDyn *value) {
   ScrWasmObj *g = scr_wasm_unbox(value, SCR_WASM_K_GLOBAL);
-  if (g) return scr_wasm_global_value(g->global);
+  if (g) return scr_wasm_global_value_of(g->global);
   ScrStr *what = scr_str_new("valueOf", 7);
   ScrDyn *out = scr_dyn_value_of(value, what);
   scr_str_release(what);

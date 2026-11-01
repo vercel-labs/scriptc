@@ -1,0 +1,1282 @@
+[
+  {
+    "opcode": "0x00",
+    "instruction": "v128.load",
+    "translated": true
+  },
+  {
+    "opcode": "0x01",
+    "instruction": "v128.load8x8_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x02",
+    "instruction": "v128.load8x8_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x03",
+    "instruction": "v128.load16x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x04",
+    "instruction": "v128.load16x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x05",
+    "instruction": "v128.load32x2_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x06",
+    "instruction": "v128.load32x2_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x07",
+    "instruction": "v128.load8_splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x08",
+    "instruction": "v128.load16_splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x09",
+    "instruction": "v128.load32_splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x0a",
+    "instruction": "v128.load64_splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x0b",
+    "instruction": "v128.store",
+    "translated": true
+  },
+  {
+    "opcode": "0x0c",
+    "instruction": "v128.const",
+    "translated": true
+  },
+  {
+    "opcode": "0x0d",
+    "instruction": "i8x16.shuffle",
+    "translated": true
+  },
+  {
+    "opcode": "0x0e",
+    "instruction": "i8x16.swizzle",
+    "translated": true
+  },
+  {
+    "opcode": "0x0f",
+    "instruction": "i8x16.splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x10",
+    "instruction": "i16x8.splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x11",
+    "instruction": "i32x4.splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x12",
+    "instruction": "i64x2.splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x13",
+    "instruction": "f32x4.splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x14",
+    "instruction": "f64x2.splat",
+    "translated": true
+  },
+  {
+    "opcode": "0x15",
+    "instruction": "i8x16.extract_lane_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x16",
+    "instruction": "i8x16.extract_lane_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x17",
+    "instruction": "i8x16.replace_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x18",
+    "instruction": "i16x8.extract_lane_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x19",
+    "instruction": "i16x8.extract_lane_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x1a",
+    "instruction": "i16x8.replace_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x1b",
+    "instruction": "i32x4.extract_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x1c",
+    "instruction": "i32x4.replace_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x1d",
+    "instruction": "i64x2.extract_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x1e",
+    "instruction": "i64x2.replace_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x1f",
+    "instruction": "f32x4.extract_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x20",
+    "instruction": "f32x4.replace_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x21",
+    "instruction": "f64x2.extract_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x22",
+    "instruction": "f64x2.replace_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x23",
+    "instruction": "i8x16.eq",
+    "translated": true
+  },
+  {
+    "opcode": "0x24",
+    "instruction": "i8x16.ne",
+    "translated": true
+  },
+  {
+    "opcode": "0x25",
+    "instruction": "i8x16.lt_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x26",
+    "instruction": "i8x16.lt_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x27",
+    "instruction": "i8x16.gt_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x28",
+    "instruction": "i8x16.gt_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x29",
+    "instruction": "i8x16.le_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x2a",
+    "instruction": "i8x16.le_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x2b",
+    "instruction": "i8x16.ge_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x2c",
+    "instruction": "i8x16.ge_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x2d",
+    "instruction": "i16x8.eq",
+    "translated": true
+  },
+  {
+    "opcode": "0x2e",
+    "instruction": "i16x8.ne",
+    "translated": true
+  },
+  {
+    "opcode": "0x2f",
+    "instruction": "i16x8.lt_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x30",
+    "instruction": "i16x8.lt_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x31",
+    "instruction": "i16x8.gt_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x32",
+    "instruction": "i16x8.gt_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x33",
+    "instruction": "i16x8.le_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x34",
+    "instruction": "i16x8.le_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x35",
+    "instruction": "i16x8.ge_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x36",
+    "instruction": "i16x8.ge_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x37",
+    "instruction": "i32x4.eq",
+    "translated": true
+  },
+  {
+    "opcode": "0x38",
+    "instruction": "i32x4.ne",
+    "translated": true
+  },
+  {
+    "opcode": "0x39",
+    "instruction": "i32x4.lt_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x3a",
+    "instruction": "i32x4.lt_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x3b",
+    "instruction": "i32x4.gt_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x3c",
+    "instruction": "i32x4.gt_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x3d",
+    "instruction": "i32x4.le_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x3e",
+    "instruction": "i32x4.le_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x3f",
+    "instruction": "i32x4.ge_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x40",
+    "instruction": "i32x4.ge_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x41",
+    "instruction": "f32x4.eq",
+    "translated": true
+  },
+  {
+    "opcode": "0x42",
+    "instruction": "f32x4.ne",
+    "translated": true
+  },
+  {
+    "opcode": "0x43",
+    "instruction": "f32x4.lt",
+    "translated": true
+  },
+  {
+    "opcode": "0x44",
+    "instruction": "f32x4.gt",
+    "translated": true
+  },
+  {
+    "opcode": "0x45",
+    "instruction": "f32x4.le",
+    "translated": true
+  },
+  {
+    "opcode": "0x46",
+    "instruction": "f32x4.ge",
+    "translated": true
+  },
+  {
+    "opcode": "0x47",
+    "instruction": "f64x2.eq",
+    "translated": true
+  },
+  {
+    "opcode": "0x48",
+    "instruction": "f64x2.ne",
+    "translated": true
+  },
+  {
+    "opcode": "0x49",
+    "instruction": "f64x2.lt",
+    "translated": true
+  },
+  {
+    "opcode": "0x4a",
+    "instruction": "f64x2.gt",
+    "translated": true
+  },
+  {
+    "opcode": "0x4b",
+    "instruction": "f64x2.le",
+    "translated": true
+  },
+  {
+    "opcode": "0x4c",
+    "instruction": "f64x2.ge",
+    "translated": true
+  },
+  {
+    "opcode": "0x4d",
+    "instruction": "v128.not",
+    "translated": true
+  },
+  {
+    "opcode": "0x4e",
+    "instruction": "v128.and",
+    "translated": true
+  },
+  {
+    "opcode": "0x4f",
+    "instruction": "v128.andnot",
+    "translated": true
+  },
+  {
+    "opcode": "0x50",
+    "instruction": "v128.or",
+    "translated": true
+  },
+  {
+    "opcode": "0x51",
+    "instruction": "v128.xor",
+    "translated": true
+  },
+  {
+    "opcode": "0x52",
+    "instruction": "v128.bitselect",
+    "translated": true
+  },
+  {
+    "opcode": "0x53",
+    "instruction": "v128.any_true",
+    "translated": true
+  },
+  {
+    "opcode": "0x54",
+    "instruction": "v128.load8_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x55",
+    "instruction": "v128.load16_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x56",
+    "instruction": "v128.load32_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x57",
+    "instruction": "v128.load64_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x58",
+    "instruction": "v128.store8_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x59",
+    "instruction": "v128.store16_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x5a",
+    "instruction": "v128.store32_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x5b",
+    "instruction": "v128.store64_lane",
+    "translated": true
+  },
+  {
+    "opcode": "0x5c",
+    "instruction": "v128.load32_zero",
+    "translated": true
+  },
+  {
+    "opcode": "0x5d",
+    "instruction": "v128.load64_zero",
+    "translated": true
+  },
+  {
+    "opcode": "0x5e",
+    "instruction": "f32x4.demote_f64x2_zero",
+    "translated": true
+  },
+  {
+    "opcode": "0x5f",
+    "instruction": "f64x2.promote_low_f32x4",
+    "translated": true
+  },
+  {
+    "opcode": "0x60",
+    "instruction": "i8x16.abs",
+    "translated": true
+  },
+  {
+    "opcode": "0x61",
+    "instruction": "i8x16.neg",
+    "translated": true
+  },
+  {
+    "opcode": "0x62",
+    "instruction": "i8x16.popcnt",
+    "translated": true
+  },
+  {
+    "opcode": "0x63",
+    "instruction": "i8x16.all_true",
+    "translated": true
+  },
+  {
+    "opcode": "0x64",
+    "instruction": "i8x16.bitmask",
+    "translated": true
+  },
+  {
+    "opcode": "0x65",
+    "instruction": "i8x16.narrow_i16x8_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x66",
+    "instruction": "i8x16.narrow_i16x8_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x67",
+    "instruction": "f32x4.ceil",
+    "translated": true
+  },
+  {
+    "opcode": "0x68",
+    "instruction": "f32x4.floor",
+    "translated": true
+  },
+  {
+    "opcode": "0x69",
+    "instruction": "f32x4.trunc",
+    "translated": true
+  },
+  {
+    "opcode": "0x6a",
+    "instruction": "f32x4.nearest",
+    "translated": true
+  },
+  {
+    "opcode": "0x6b",
+    "instruction": "i8x16.shl",
+    "translated": true
+  },
+  {
+    "opcode": "0x6c",
+    "instruction": "i8x16.shr_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x6d",
+    "instruction": "i8x16.shr_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x6e",
+    "instruction": "i8x16.add",
+    "translated": true
+  },
+  {
+    "opcode": "0x6f",
+    "instruction": "i8x16.add_sat_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x70",
+    "instruction": "i8x16.add_sat_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x71",
+    "instruction": "i8x16.sub",
+    "translated": true
+  },
+  {
+    "opcode": "0x72",
+    "instruction": "i8x16.sub_sat_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x73",
+    "instruction": "i8x16.sub_sat_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x74",
+    "instruction": "f64x2.ceil",
+    "translated": true
+  },
+  {
+    "opcode": "0x75",
+    "instruction": "f64x2.floor",
+    "translated": true
+  },
+  {
+    "opcode": "0x76",
+    "instruction": "i8x16.min_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x77",
+    "instruction": "i8x16.min_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x78",
+    "instruction": "i8x16.max_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x79",
+    "instruction": "i8x16.max_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x7a",
+    "instruction": "f64x2.trunc",
+    "translated": true
+  },
+  {
+    "opcode": "0x7b",
+    "instruction": "i8x16.avgr_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x7c",
+    "instruction": "i16x8.extadd_pairwise_i8x16_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x7d",
+    "instruction": "i16x8.extadd_pairwise_i8x16_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x7e",
+    "instruction": "i32x4.extadd_pairwise_i16x8_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x7f",
+    "instruction": "i32x4.extadd_pairwise_i16x8_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x80",
+    "instruction": "i16x8.abs",
+    "translated": true
+  },
+  {
+    "opcode": "0x81",
+    "instruction": "i16x8.neg",
+    "translated": true
+  },
+  {
+    "opcode": "0x82",
+    "instruction": "i16x8.q15mulr_sat_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x83",
+    "instruction": "i16x8.all_true",
+    "translated": true
+  },
+  {
+    "opcode": "0x84",
+    "instruction": "i16x8.bitmask",
+    "translated": true
+  },
+  {
+    "opcode": "0x85",
+    "instruction": "i16x8.narrow_i32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x86",
+    "instruction": "i16x8.narrow_i32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x87",
+    "instruction": "i16x8.extend_low_i8x16_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x88",
+    "instruction": "i16x8.extend_high_i8x16_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x89",
+    "instruction": "i16x8.extend_low_i8x16_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x8a",
+    "instruction": "i16x8.extend_high_i8x16_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x8b",
+    "instruction": "i16x8.shl",
+    "translated": true
+  },
+  {
+    "opcode": "0x8c",
+    "instruction": "i16x8.shr_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x8d",
+    "instruction": "i16x8.shr_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x8e",
+    "instruction": "i16x8.add",
+    "translated": true
+  },
+  {
+    "opcode": "0x8f",
+    "instruction": "i16x8.add_sat_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x90",
+    "instruction": "i16x8.add_sat_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x91",
+    "instruction": "i16x8.sub",
+    "translated": true
+  },
+  {
+    "opcode": "0x92",
+    "instruction": "i16x8.sub_sat_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x93",
+    "instruction": "i16x8.sub_sat_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x94",
+    "instruction": "f64x2.nearest",
+    "translated": true
+  },
+  {
+    "opcode": "0x95",
+    "instruction": "i16x8.mul",
+    "translated": true
+  },
+  {
+    "opcode": "0x96",
+    "instruction": "i16x8.min_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x97",
+    "instruction": "i16x8.min_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x98",
+    "instruction": "i16x8.max_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x99",
+    "instruction": "i16x8.max_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x9b",
+    "instruction": "i16x8.avgr_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x9c",
+    "instruction": "i16x8.extmul_low_i8x16_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x9d",
+    "instruction": "i16x8.extmul_high_i8x16_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x9e",
+    "instruction": "i16x8.extmul_low_i8x16_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x9f",
+    "instruction": "i16x8.extmul_high_i8x16_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xa0",
+    "instruction": "i32x4.abs",
+    "translated": true
+  },
+  {
+    "opcode": "0xa1",
+    "instruction": "i32x4.neg",
+    "translated": true
+  },
+  {
+    "opcode": "0xa3",
+    "instruction": "i32x4.all_true",
+    "translated": true
+  },
+  {
+    "opcode": "0xa4",
+    "instruction": "i32x4.bitmask",
+    "translated": true
+  },
+  {
+    "opcode": "0xa7",
+    "instruction": "i32x4.extend_low_i16x8_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xa8",
+    "instruction": "i32x4.extend_high_i16x8_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xa9",
+    "instruction": "i32x4.extend_low_i16x8_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xaa",
+    "instruction": "i32x4.extend_high_i16x8_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xab",
+    "instruction": "i32x4.shl",
+    "translated": true
+  },
+  {
+    "opcode": "0xac",
+    "instruction": "i32x4.shr_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xad",
+    "instruction": "i32x4.shr_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xae",
+    "instruction": "i32x4.add",
+    "translated": true
+  },
+  {
+    "opcode": "0xb1",
+    "instruction": "i32x4.sub",
+    "translated": true
+  },
+  {
+    "opcode": "0xb5",
+    "instruction": "i32x4.mul",
+    "translated": true
+  },
+  {
+    "opcode": "0xb6",
+    "instruction": "i32x4.min_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xb7",
+    "instruction": "i32x4.min_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xb8",
+    "instruction": "i32x4.max_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xb9",
+    "instruction": "i32x4.max_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xba",
+    "instruction": "i32x4.dot_i16x8_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xbc",
+    "instruction": "i32x4.extmul_low_i16x8_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xbd",
+    "instruction": "i32x4.extmul_high_i16x8_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xbe",
+    "instruction": "i32x4.extmul_low_i16x8_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xbf",
+    "instruction": "i32x4.extmul_high_i16x8_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xc0",
+    "instruction": "i64x2.abs",
+    "translated": true
+  },
+  {
+    "opcode": "0xc1",
+    "instruction": "i64x2.neg",
+    "translated": true
+  },
+  {
+    "opcode": "0xc3",
+    "instruction": "i64x2.all_true",
+    "translated": true
+  },
+  {
+    "opcode": "0xc4",
+    "instruction": "i64x2.bitmask",
+    "translated": true
+  },
+  {
+    "opcode": "0xc7",
+    "instruction": "i64x2.extend_low_i32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xc8",
+    "instruction": "i64x2.extend_high_i32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xc9",
+    "instruction": "i64x2.extend_low_i32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xca",
+    "instruction": "i64x2.extend_high_i32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xcb",
+    "instruction": "i64x2.shl",
+    "translated": true
+  },
+  {
+    "opcode": "0xcc",
+    "instruction": "i64x2.shr_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xcd",
+    "instruction": "i64x2.shr_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xce",
+    "instruction": "i64x2.add",
+    "translated": true
+  },
+  {
+    "opcode": "0xd1",
+    "instruction": "i64x2.sub",
+    "translated": true
+  },
+  {
+    "opcode": "0xd5",
+    "instruction": "i64x2.mul",
+    "translated": true
+  },
+  {
+    "opcode": "0xd6",
+    "instruction": "i64x2.eq",
+    "translated": true
+  },
+  {
+    "opcode": "0xd7",
+    "instruction": "i64x2.ne",
+    "translated": true
+  },
+  {
+    "opcode": "0xd8",
+    "instruction": "i64x2.lt_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xd9",
+    "instruction": "i64x2.gt_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xda",
+    "instruction": "i64x2.le_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xdb",
+    "instruction": "i64x2.ge_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xdc",
+    "instruction": "i64x2.extmul_low_i32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xdd",
+    "instruction": "i64x2.extmul_high_i32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xde",
+    "instruction": "i64x2.extmul_low_i32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xdf",
+    "instruction": "i64x2.extmul_high_i32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xe0",
+    "instruction": "f32x4.abs",
+    "translated": true
+  },
+  {
+    "opcode": "0xe1",
+    "instruction": "f32x4.neg",
+    "translated": true
+  },
+  {
+    "opcode": "0xe3",
+    "instruction": "f32x4.sqrt",
+    "translated": true
+  },
+  {
+    "opcode": "0xe4",
+    "instruction": "f32x4.add",
+    "translated": true
+  },
+  {
+    "opcode": "0xe5",
+    "instruction": "f32x4.sub",
+    "translated": true
+  },
+  {
+    "opcode": "0xe6",
+    "instruction": "f32x4.mul",
+    "translated": true
+  },
+  {
+    "opcode": "0xe7",
+    "instruction": "f32x4.div",
+    "translated": true
+  },
+  {
+    "opcode": "0xe8",
+    "instruction": "f32x4.min",
+    "translated": true
+  },
+  {
+    "opcode": "0xe9",
+    "instruction": "f32x4.max",
+    "translated": true
+  },
+  {
+    "opcode": "0xea",
+    "instruction": "f32x4.pmin",
+    "translated": true
+  },
+  {
+    "opcode": "0xeb",
+    "instruction": "f32x4.pmax",
+    "translated": true
+  },
+  {
+    "opcode": "0xec",
+    "instruction": "f64x2.abs",
+    "translated": true
+  },
+  {
+    "opcode": "0xed",
+    "instruction": "f64x2.neg",
+    "translated": true
+  },
+  {
+    "opcode": "0xef",
+    "instruction": "f64x2.sqrt",
+    "translated": true
+  },
+  {
+    "opcode": "0xf0",
+    "instruction": "f64x2.add",
+    "translated": true
+  },
+  {
+    "opcode": "0xf1",
+    "instruction": "f64x2.sub",
+    "translated": true
+  },
+  {
+    "opcode": "0xf2",
+    "instruction": "f64x2.mul",
+    "translated": true
+  },
+  {
+    "opcode": "0xf3",
+    "instruction": "f64x2.div",
+    "translated": true
+  },
+  {
+    "opcode": "0xf4",
+    "instruction": "f64x2.min",
+    "translated": true
+  },
+  {
+    "opcode": "0xf5",
+    "instruction": "f64x2.max",
+    "translated": true
+  },
+  {
+    "opcode": "0xf6",
+    "instruction": "f64x2.pmin",
+    "translated": true
+  },
+  {
+    "opcode": "0xf7",
+    "instruction": "f64x2.pmax",
+    "translated": true
+  },
+  {
+    "opcode": "0xf8",
+    "instruction": "i32x4.trunc_sat_f32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xf9",
+    "instruction": "i32x4.trunc_sat_f32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xfa",
+    "instruction": "f32x4.convert_i32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xfb",
+    "instruction": "f32x4.convert_i32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0xfc",
+    "instruction": "i32x4.trunc_sat_f64x2_s_zero",
+    "translated": true
+  },
+  {
+    "opcode": "0xfd",
+    "instruction": "i32x4.trunc_sat_f64x2_u_zero",
+    "translated": true
+  },
+  {
+    "opcode": "0xfe",
+    "instruction": "f64x2.convert_low_i32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0xff",
+    "instruction": "f64x2.convert_low_i32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x100",
+    "instruction": "i8x16.relaxed_swizzle",
+    "translated": true
+  },
+  {
+    "opcode": "0x101",
+    "instruction": "i32x4.relaxed_trunc_f32x4_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x102",
+    "instruction": "i32x4.relaxed_trunc_f32x4_u",
+    "translated": true
+  },
+  {
+    "opcode": "0x103",
+    "instruction": "i32x4.relaxed_trunc_f64x2_s_zero",
+    "translated": true
+  },
+  {
+    "opcode": "0x104",
+    "instruction": "i32x4.relaxed_trunc_f64x2_u_zero",
+    "translated": true
+  },
+  {
+    "opcode": "0x105",
+    "instruction": "f32x4.relaxed_madd",
+    "translated": true
+  },
+  {
+    "opcode": "0x106",
+    "instruction": "f32x4.relaxed_nmadd",
+    "translated": true
+  },
+  {
+    "opcode": "0x107",
+    "instruction": "f64x2.relaxed_madd",
+    "translated": true
+  },
+  {
+    "opcode": "0x108",
+    "instruction": "f64x2.relaxed_nmadd",
+    "translated": true
+  },
+  {
+    "opcode": "0x109",
+    "instruction": "i8x16.relaxed_laneselect",
+    "translated": true
+  },
+  {
+    "opcode": "0x10a",
+    "instruction": "i16x8.relaxed_laneselect",
+    "translated": true
+  },
+  {
+    "opcode": "0x10b",
+    "instruction": "i32x4.relaxed_laneselect",
+    "translated": true
+  },
+  {
+    "opcode": "0x10c",
+    "instruction": "i64x2.relaxed_laneselect",
+    "translated": true
+  },
+  {
+    "opcode": "0x10d",
+    "instruction": "f32x4.relaxed_min",
+    "translated": true
+  },
+  {
+    "opcode": "0x10e",
+    "instruction": "f32x4.relaxed_max",
+    "translated": true
+  },
+  {
+    "opcode": "0x10f",
+    "instruction": "f64x2.relaxed_min",
+    "translated": true
+  },
+  {
+    "opcode": "0x110",
+    "instruction": "f64x2.relaxed_max",
+    "translated": true
+  },
+  {
+    "opcode": "0x111",
+    "instruction": "i16x8.relaxed_q15mulr_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x112",
+    "instruction": "i16x8.relaxed_dot_i8x16_i7x16_s",
+    "translated": true
+  },
+  {
+    "opcode": "0x113",
+    "instruction": "i32x4.relaxed_dot_i8x16_i7x16_add_s",
+    "translated": true
+  }
+]

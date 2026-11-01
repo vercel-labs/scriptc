@@ -10,10 +10,11 @@
  * Every descriptor field is pointer- or 64-bit sized so the emitted LLVM
  * structs and these C structs have the same layout without padding rules.
  * Signatures are strings "params:results" over the letters i (i32),
- * I (i64), f (f32), F (f64), r (funcref) and x (externref). Values travel
+ * I (i64), f (f32), F (f64), v (v128), r (funcref) and x (externref). Scalar values travel
  * in uint64_t slots: f32 and f64 as their bit patterns, references as
  * pointers (externref: a borrowed ScrDyn *, NULL for null; funcref: a
- * ScrWasmFuncRef *, NULL for null).
+ * ScrWasmFuncRef *, NULL for null). Vector signatures use native code and
+ * instance pointers directly; JavaScript conversion thunks reject them.
  *
  * Instance layout (the first argument of every translated function):
  *     0   ScrWasmInst *host            runtime state
@@ -21,7 +22,7 @@
  *     16  ScrWasmMemory *memory        memory 0, or NULL
  *     24  ScrWasmFuncRef *funcrefs     one record per function
  *     32  ScrWasmTable *tables[table_count]
- *     ..  uint64_t *globals[global_count]   one cell per global
+ *     ..  ScrWasmGlobal *globals[global_count]   one cell per global
  * With guard pages (no SCR_WASM_DESC_BOUNDS_CHECKS) memory_base never
  * changes: the memory is reserved once at its largest size plus a guard
  * region, and grow only commits pages. With explicit bounds checks the
@@ -35,7 +36,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_WASM_ABI_VERSION 2
+#define SCR_WASM_ABI_VERSION 3
+/* Scalar descriptors keep the same slots and layout as ABI 2. */
+#define SCR_WASM_SCALAR_ABI_VERSION 2
 
 enum { SCR_WASM_FUNC = 0, SCR_WASM_TABLE = 1, SCR_WASM_MEMORY = 2, SCR_WASM_GLOBAL = 3 };
 
@@ -228,7 +231,10 @@ typedef struct ScrWasmTable {
 
 /* A global's cell: the value in the low bytes of `value`. */
 typedef struct ScrWasmGlobal {
-  uint64_t value; /* 0 */
+  uint64_t value; /* 0, low half of v128 */
+#ifndef SCR_WASM_SCALAR_RUNTIME
+  uint64_t value_high; /* 8, high half of v128 */
+#endif
   size_t rc;
   char type;
   bool mutable_;

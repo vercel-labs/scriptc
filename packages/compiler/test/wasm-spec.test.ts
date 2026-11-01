@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { analyzeWasm } from "../src/wasm/binary.js";
 import { decodeBase64 } from "../src/wasm/discover.js";
+import { translateWasmModule } from "../src/wasm/translate.js";
 
 /** V8's verdict (the compiler's type world declares no WebAssembly value). */
 const v8Validate = (bytes: Uint8Array): boolean =>
@@ -136,7 +137,7 @@ describe("modules inlined by packages in this workspace", () => {
         ),
       );
 
-  test("undici's llhttp: the scalar module translates, the SIMD one needs SIMD", () => {
+  test("undici's llhttp: scalar and SIMD modules translate", () => {
     const scalar = inline(
       "node_modules/.pnpm/undici@7.*/node_modules/undici/lib/llhttp/llhttp-wasm.js",
     );
@@ -150,7 +151,8 @@ describe("modules inlined by packages in this workspace", () => {
       expect(v8Validate(bytes)).toBe(true);
     }
     for (const bytes of simd) {
-      expect(analyzeWasm(bytes)).toMatchObject({ status: "unsupported", unsupported: ["simd"] });
+      expect(analyzeWasm(bytes)).toMatchObject({ status: "valid", unsupported: [] });
+      expect(translateWasmModule(bytes, new Uint8Array(32), { boundsChecks: true })).toBeDefined();
       expect(v8Validate(bytes)).toBe(true);
     }
   });

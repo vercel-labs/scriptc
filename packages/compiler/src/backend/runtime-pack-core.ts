@@ -91,6 +91,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   youngNursery: boolean;
   eventTarget: boolean;
   wasm: boolean;
+  wasmVectors: boolean;
   dynTier: boolean;
   streamDyn: boolean;
   handleProps: boolean;
@@ -338,6 +339,7 @@ export function effectiveRuntimeFeatures(
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
+    wasmVectors: features.wasmVectors === true,
     // The JavaScript object model build's code is the dynamic tier's, so a
     // program with it links the dynamic-tier units too.
     dynTier: features.dynTier === true || jsObjectModel,

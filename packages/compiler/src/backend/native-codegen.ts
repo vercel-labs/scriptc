@@ -172,12 +172,23 @@ async function invoke(
       windowsHide: true,
     });
   } catch (error) {
-    const failure = error as NodeJS.ErrnoException & { stderr?: string; stdout?: string };
+    const failure = error as Error & {
+      code?: string | number;
+      signal?: NodeJS.Signals | null;
+      stderr?: string;
+      stdout?: string;
+    };
     const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
     const parsed = helperFailureMessage(stderr, failure.message);
+    const termination =
+      failure.signal != null
+        ? ` (signal ${failure.signal})`
+        : typeof failure.code === "number"
+          ? ` (exit ${failure.code})`
+          : "";
     throw new NativeCodegenError(
       "SC3004",
-      `LLVM native helper failed${parsed.code === undefined ? "" : ` (${parsed.code})`}: ${parsed.message}`,
+      `LLVM native helper failed${parsed.code === undefined ? "" : ` (${parsed.code})`}${termination}: ${parsed.message}`,
       parsed.code,
     );
   }

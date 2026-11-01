@@ -485,6 +485,7 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
+  { define: "SCR_WASM_SCALAR_RUNTIME", when: (opts) => opts.wasm && !opts.wasmVectors },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   // The JavaScript object model build (t262-da §J): the code the runtime
   // features only a JavaScript source reaches share. Its objects are separate

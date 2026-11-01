@@ -65,6 +65,7 @@ export interface EarlyExecutableNativeFeatures {
   fetch: boolean;
   eventTarget?: boolean;
   wasm?: boolean;
+  wasmVectors?: boolean;
   warningReplace?: boolean;
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */

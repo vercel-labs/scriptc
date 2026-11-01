@@ -105,6 +105,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
   "dyn.promiseResolve",
+  // The generic Promise statics build and settle their capability's promise
+  // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
+  "promise.genericStatic",
   "fs.callbackCall",
   "fs.callbackGlob",
   "fs.callbackValue",
@@ -1136,7 +1139,13 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
  * that no typed program can observe. Empty until the first slice lands
  * (A1 adds dyn.intrinsic); the slices share one SCR_JS_OBJECT_MODEL build
  * of every unit they touch instead of one build column per feature. */
-export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]);
+export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // Resizable ArrayBuffers and growable SharedArrayBuffers (t262-dc C2), and
+  // the arming call that turns on the buffer views registry.
+  "arrayBuffer.newResizable",
+  "sharedArrayBuffer.newGrowable",
+  "arrayBuffer.armMutable",
+]);
 
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
@@ -1146,11 +1155,13 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  mutableBuffers?: boolean;
   sparseArrays?: boolean;
 }): boolean {
   return (
     features.jsObjectModel === true ||
     features.bigintBytes === true ||
+    features.mutableBuffers === true ||
     features.sparseArrays === true
   );
 }
@@ -1277,6 +1288,10 @@ const RUNTIME_FEATURE_RULES = {
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
   }),
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor (scr_js_promise_generic.c): NewPromiseCapability(C), the
+   * C.resolve lookup and the iterator protocol. */
+  promiseGeneric: rule({ fns: ["promise.genericStatic"] }),
   /** EventEmitter and the stream classes as untyped constructor values
    * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
    * unit, render unhandled 'error' payloads through the inspect unit and
@@ -1320,6 +1335,9 @@ const RUNTIME_FEATURE_RULES = {
       // The Boolean prototype's methods run scr_js_wrapper_apply in the
       // same unit, which calls scr_dyn_invoke.
       "wrapper.booleanPrototype",
+      // The generic Promise statics call C's resolve and the iterable's
+      // next/return through scr_dyn_invoke.
+      "promise.genericStatic",
     ],
     // Constant-key reads of Object.prototype member names, and of
     // Array.prototype method names on arrays, answer the inherited member
@@ -1636,13 +1654,6 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
-  /** A record literal asserted to a wider record type answers a partial
-   * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
-   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c, so neither program
-   * links the other's code. */
-  recordViewPartial: rule({
-    expr: (node) => node.kind === "dynCheck" && node.partialView === true,
-  }),
   /** A BigInt typed-array constructor read as a value (BigInt64Array,
    * BigUint64Array): their element kinds, which no double represents, live
    * in the JavaScript object model build (t262-da §J) of scr_bytes.c,
@@ -1672,6 +1683,15 @@ const RUNTIME_FEATURE_RULES = {
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): the program arms the buffer views
+   * registry, which lives in the gated unit scr_js_buffers.c, and its bytes
+   * headers stop being invariant (IrModule.bytesHeadersMutable). The fact
+   * ORs into jsObjectModel (jsObjectModelFact), so it selects no build
+   * column of its own. Every other program links no part of the unit. */
+  mutableBuffers: rule({
+    fns: ["arrayBuffer.armMutable", "arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable"],
+  }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
   /** Primitive wrapper objects (scr_js_wrapper.c). */
@@ -1766,6 +1786,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     textCodecDyn: false,
     dnsPromises: false,
     dynAsync: false,
+    promiseGeneric: false,
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
@@ -1790,6 +1811,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     icu: false,
     inspect: false,
     jsObjectModel: false,
+    mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
     webStreams: false,
@@ -1837,7 +1859,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
-    recordViewPartial: false,
     bigintBytes: false,
     sparseArrays: false,
     wasm: false,

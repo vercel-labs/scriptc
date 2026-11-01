@@ -18,7 +18,7 @@ The double-to-shortest-decimal core of Ryū (d2s and its headers only — the fl
 
 ## v8-ieee754/ (derived source)
 
-- Project: https://github.com/v8/v8, `src/base/ieee754.cc` as Node v24.22.0 bundles it (`deps/v8`, V8 13.6.233.17)
+- Project: https://github.com/v8/v8, `src/base/ieee754.cc` as Node v24.22.1 bundles it (`deps/v8`, V8 13.6.233.17)
 - License: BSD-3-Clause (V8), with fdlibm's notice (see v8-ieee754/LICENSE)
 
 V8's adaptation of fdlibm, the code behind Node's Math.sin, Math.exp, Math.cbrt and the other transcendental functions on every platform. `src/scr_ieee754.c` is a C port of the file, so compiled Math members print the values Node prints. The function bodies are unchanged; the port renames the entry points (`scr_ieee754_*`), gives the kernels internal linkage, and replaces V8's C++ helpers (bit casts, wraparound arithmetic, NaN and infinity constants) with C. `legacy::pow` is not ported: Node's Math.pow calls the platform pow. To update, re-fetch `deps/v8/src/base/ieee754.cc` at the new Node version and repeat the same conversion.
@@ -39,7 +39,7 @@ The native runtime pack build produces `libscriptc-quickjs.a` for the compiler b
 ## zlib/
 
 - Project: https://chromium.googlesource.com/chromium/src/third_party/zlib (Chromium's zlib, a fork of https://github.com/madler/zlib)
-- Version: 1.3.2.1-motley-285e94b, the copy Node v24.22.0 bundles in `deps/zlib` (`process.versions.zlib`)
+- Version: 1.3.2.1-motley-285e94b, the copy Node v24.22.1 bundles in `deps/zlib` (`process.versions.zlib`)
 - License: zlib (see zlib/LICENSE)
 
 The codec behind node:zlib's gzip, deflate and inflate functions and streams (see packages/runtime/src/scr_zlib.c) and the native fetch's gzip decoder. The flat `*.c`/`*.h` files at the root of Node's `deps/zlib`, `contrib/optimizations/`, `LICENSE` and `README.chromium` are vendored; `contrib/minizip`, the other contrib directories, tests, patches, Chromium's build files and docs are not. No vendored file is modified, and the files match Node's copy. The gz* file-I/O units are vendored but never compiled (nothing references the gzFile API).
@@ -51,10 +51,10 @@ Runtime packs archive zlib at `-O3`, as Node builds it. Zig cross builds compile
 ## brotli/
 
 - Project: https://github.com/google/brotli
-- Version: 1.2.0 (release tarball brotli-1.2.0.tar.gz, sha256 816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec), the version Node v24.22.0 bundles (`process.versions.brotli`)
+- Version: 1.2.0 (release tarball brotli-1.2.0.tar.gz, sha256 816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec), the version Node v24.22.1 bundles (`process.versions.brotli`)
 - License: MIT (see brotli/LICENSE)
 
-The codec behind node:zlib's Brotli functions and streams (see packages/runtime/src/scr_brotli.c). Only `c/common`, `c/dec`, `c/enc` and `c/include` are vendored, in upstream's layout (LICENSE beside `c/`); the C++ lazy static initializer (`c/enc/static_init_lazy.cc`), the tools, tests, bindings and build machinery are not. No vendored file is modified, and the files match the copy Node bundles in `deps/brotli`. Because the version is Node's, compressed bytes match Node's for the same parameters, so the corpus compares compressed output as well as round trips. To update, re-fetch the release tarball, copy the same directories, and bump `BROTLI_VERSION` in vendor-inputs.ts.
+The codec behind node:zlib's Brotli functions and streams (see packages/runtime/src/scr_brotli.c). Only `c/common`, `c/dec`, `c/enc` and `c/include` are vendored, in upstream's layout (LICENSE beside `c/`); the C++ lazy static initializer (`c/enc/static_init_lazy.cc`), the tools, tests, bindings and build machinery are not. No vendored file is modified, and the files match the copy Node bundles in `deps/brotli`, which is the 1.2.0 release plus upstream commit `0ed4268a` ("Detect and report invalid stream earlier"): `c/dec/decode.c` and `c/include/brotli/decode.h` carry it, so a block switch that names a type the metablock header never declared is rejected with `BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH` instead of decoding on in the malformed state (CVE-2026-111497, the Node 24.22.1 fix). Because the version is Node's, compressed bytes match Node's for the same parameters, so the corpus compares compressed output as well as round trips. To update, re-fetch the release tarball, copy the same directories, take those two files from Node's `deps/brotli` (or apply `0ed4268a`) when the release predates the fix, and bump `BROTLI_VERSION` in vendor-inputs.ts.
 
 The `dec/` and `enc/` directories share file names (`static_init.c`, `state.h`, `prefix.h`), so archive members are named after their directory (`dec-static_init.o`). Brotli-free binaries compile and link none of it.
 
@@ -83,7 +83,7 @@ The unit compiles only into programs that use asymmetric keys and name Ed25519 i
 ## ICU (fetched, not vendored)
 
 - Project: https://github.com/unicode-org/icu
-- Version: ICU4C 78.3, from the `release-78.3` tag — the exact release Node v24.22.0 bundles (`process.versions.icu`)
+- Version: ICU4C 78.3, from the `release-78.3` tag — the exact release Node v24.22.1 bundles (`process.versions.icu`)
 - License: Unicode License V3; the sources and the data file ship under the same terms
 
 The locale/CLDR engine behind the Intl forms only it can answer (see packages/runtime/src/scr_intl.c): the default locale's number and date formats, and word-granularity segmentation. Engine-free Intl forms do not use it and stay in scr_grapheme.c and scr_lib.c.

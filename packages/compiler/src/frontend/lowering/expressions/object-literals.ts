@@ -1795,16 +1795,10 @@ export function lowerObjectLiteral(
       };
     }
   }
-  // Unfoldable computed keys outside the index-signature merge path:
-  // no record shape can hold a runtime-decided name.
+  // Unfoldable computed keys outside the index-signature merge path.
   for (const prop of expr.properties.nodes) {
-    if (isRuntimeComputedKey(prop)) {
-      lowerer.unsupported(
-        "SC1090",
-        (prop as ts.PropertyAssignment).name,
-        "computed property keys (compile-time-known keys fold — a pure expression whose checker type is one string or number literal: consts, enum members, quoted keys, templates of those — `{ [MARKER]: v }`; runtime string keys write through an index-signature target; symbol keys stay out)",
-      );
-    }
+    if (isRuntimeComputedKey(prop))
+      return runtimeKeyedDynLiteral(lowerer, expr, prop, type, expected);
   }
 
   // A declared destination combining fixed records and runtime-keyed
@@ -3541,6 +3535,70 @@ function dynSpreadLiteral(
   // own keys the copy reads, not against the record one arm need not
   // complete.
   return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr, undefined, true), type);
+}
+
+/** The PURE index-signature record `candidate` names — every key an overflow
+ * entry, no declared field, no tuple — when a checked-dynamic value converts
+ * into it. Null for any other type. */
+function indexSignatureDestination(
+  lowerer: Lowerer,
+  candidate: IrType | undefined,
+): (IrType & { kind: "record" }) | null {
+  if (candidate?.kind !== "record") return null;
+  const shape = lowerer.shapes.get(candidate.shapeId);
+  if (!shape || shape.tuple || shape.fields.length > 0 || !shape.indexValue) return null;
+  return canDynCheckTo(
+    candidate,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  )
+    ? candidate
+    : null;
+}
+
+/** `expr` — a literal whose property name is decided at runtime — as the
+ * checked-dynamic object the literal's own keys describe. No record shape can
+ * hold a runtime-decided name: a record stores declared fields sorted and
+ * overflow entries apart, while Node writes the key where it stands
+ * (`{ [k]: 2, n: 1 }` enumerates `k` first), and TypeScript itself drops a
+ * union-keyed computed property from the literal's inferred type once a
+ * spread joins the literal while the evaluated object keeps the key. The
+ * destination's conversion checks the values afterwards (the same
+ * copy-then-check `dynSpreadLiteral` applies to a runtime-keyed source).
+ * A pure index-signature destination is the value's real home, so coerce
+ * into it directly; a destination with declared fields is left to the
+ * caller's own conversion. */
+function runtimeKeyedDynLiteral(
+  lowerer: Lowerer,
+  expr: ts.ObjectLiteralExpression,
+  prop: ts.ObjectLiteralElementLike,
+  type: IrType,
+  expected?: IrType,
+): IrExpr {
+  const destination =
+    indexSignatureDestination(lowerer, expected) ?? indexSignatureDestination(lowerer, type);
+  if (destination === null) {
+    // A layout that keeps DECLARED fields beside an index signature
+    // (`{ fixed: 1, [key]: 2 }`, inferred as `{ fixed: number; [x: string]:
+    // number }`) stores the declared fields ahead of the overflow a runtime
+    // key lands in, so the value would print them first instead of where
+    // Node writes them. Nothing in that layout can carry the order, so the
+    // form keeps its refusal.
+    const mixedLayout = [expected, type].some((candidate) => {
+      if (candidate?.kind !== "record") return false;
+      const shape = lowerer.shapes.get(candidate.shapeId);
+      return shape !== undefined && !shape.tuple && shape.fields.length > 0 && !!shape.indexValue;
+    });
+    if (mixedLayout) {
+      lowerer.unsupported(
+        "SC1090",
+        prop.name ?? prop,
+        "computed property keys (compile-time-known keys fold — a pure expression whose checker type is one string or number literal: consts, enum members, quoted keys, templates of those — `{ [MARKER]: v }`; runtime string keys write through an index-signature target; symbol keys stay out)",
+      );
+    }
+  }
+  const dyn = lowerDynObjectLiteral(lowerer, expr, undefined, true);
+  return destination === null ? dyn : lowerer.coerceToExpected(dyn, destination);
 }
 
 /** A conditional spread source in a checked-dynamic literal, as the dyn

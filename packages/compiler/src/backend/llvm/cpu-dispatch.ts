@@ -1,7 +1,15 @@
-/* Runtime CPU dispatch for x86-64 executables (cloneForCpuDispatch): the
- * program's functions get a copy compiled for x86-64-v3, chosen once per
- * call by the CPU level the executable detects at startup. */
+/* CPU copies of the program's functions for x86-64 executables
+ * (cloneForCpuDispatch):
+ * - runtime CPU dispatch (`--cpu-dispatch`): a copy compiled for x86-64-v3,
+ *   chosen once per call by the CPU level the executable detects at startup;
+ * - `--target-cpu=x86-64-v3`: a baseline copy beside the x86-64-v3 code, so
+ *   that the LLVM helper can give a function the baseline's code where
+ *   x86-64-v3 only adds 128-bit vector instructions. */
 import type { TargetCpu } from "../target-cpu.js";
+
+/** How the program's functions are copied: "dispatch" for runtime CPU
+ * dispatch, "target" for code compiled for x86-64-v3. */
+export type CpuCopies = "dispatch" | "target";
 
 /** The levels a dispatching executable carries a copy of its program's
  * functions for, above the baseline. */
@@ -21,9 +29,25 @@ const COPY_GROUPS: ReadonlyMap<string, string> = new Map([
   ["2", "4"],
 ]);
 
-export function cpuDispatchAttributes(common: string): string[] {
+/** The attribute groups of the baseline copies in "target" mode: #0's and
+ * #2's without a `target-cpu`, since #0 and #2 carry x86-64-v3 there. */
+const BASE_GROUPS: ReadonlyMap<string, string> = new Map([
+  ["0", "5"],
+  ["2", "6"],
+]);
+
+export function cpuCopyAttributes(common: string, mode: CpuCopies): string[] {
   const copy = `"target-cpu"="x86-64-v3" "scriptc-cpu-copy"`;
-  return [`attributes #3 = {${common} ${copy} }`, `attributes #4 = { noinline${common} ${copy} }`];
+  return [
+    `attributes #3 = {${common} ${copy} }`,
+    `attributes #4 = { noinline${common} ${copy} }`,
+    ...(mode === "target"
+      ? [
+          `attributes #5 = {${common || ' "scriptc-function"'} }`,
+          `attributes #6 = { noinline${common} }`,
+        ]
+      : []),
+  ];
 }
 
 /** Bits of CPUID leaf 1's ECX that x86-64-v3 needs: SSE3 (0), SSSE3 (9),
@@ -52,6 +76,14 @@ const LEVEL_NAMES: readonly [string, number][] = [
   ["x86-64-v3", 3],
   ["x86-64-v4", 4],
 ];
+
+/** @sc_cpu_level for "target" mode: 3 from the start, with nothing that
+ * stores to it, so the dispatchers always call the x86-64-v3 copies. It is
+ * not internal, so LLVM keeps the dispatchers' tests and with them the
+ * baseline copies that the helper compares the x86-64-v3 copies with. */
+export function targetLevelDefs(): string[] {
+  return [`${LEVEL} = hidden global i32 3`];
+}
 
 /** @sc_cpu_level and @sc_cpu_level_init, which main calls first:
  * - CPUID reports every x86-64-v3 feature, and XGETBV that the operating
@@ -246,18 +278,23 @@ interface Definition {
 }
 
 /** Rewrites the program's function definitions in `parts` for runtime
- * dispatch. A definition is a part, or a `define` chunk of a part, that
- * follows a partition group line (emit-module.ts partitionGroupLines);
+ * dispatch, or for "target" mode. A definition is a part, or a `define`
+ * chunk of a part, that follows a partition group line (emit-module.ts
+ * partitionGroupLines);
  * runtime helpers and the module's entry points stay as they are. Each
  * cloneable function `@f` becomes:
- * - `@f.base`, its body as before;
+ * - `@f.base`, its body as before (in "target" mode, in a baseline
+ *   attribute group);
  * - `@f.v3`, the same body in an x86-64-v3 attribute group;
  * - `@f`, a dispatcher with the same signature, which every reference to
  *   the function as a value and every call from outside the program's
  *   functions still names; a function with no such reference gets none.
  * Direct calls between cloned functions go to the caller's own tier, so the
  * level is tested once on entry into the program's code. */
-export function cloneForCpuDispatch(parts: readonly string[]): string[] {
+export function cloneForCpuDispatch(
+  parts: readonly string[],
+  mode: CpuCopies = "dispatch",
+): string[] {
   const program: { index: number; chunks: string[] }[] = [];
   for (let i = 1; i < parts.length; i++)
     if (parts[i - 1]!.startsWith("; scriptc-group") && parts[i]!.startsWith("define "))
@@ -291,7 +328,7 @@ export function cloneForCpuDispatch(parts: readonly string[]): string[] {
           `define internal ${h.ret} @${h.name}.${tier}(${h.params})${h.attrs} #${group}${h.rest}\n${retarget(def.body, tier)}`;
         return (
           [
-            copy("base", h.group),
+            copy("base", mode === "target" ? BASE_GROUPS.get(h.group)! : h.group),
             copy("v3", COPY_GROUPS.get(h.group)!),
             ...(named.has(h.name) ? [dispatcher(h)] : []),
           ].join("\n") + def.after

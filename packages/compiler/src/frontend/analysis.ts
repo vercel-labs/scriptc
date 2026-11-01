@@ -12,6 +12,7 @@ import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { nodeIslandPolicy, type NodeIslandPolicy } from "../node-islands/policy.js";
 import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.js";
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
+import { outsideGraphIslands } from "../node-islands/graph-islands.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
  * Unlike compile(), lowering diagnostics are data here, not failure. */
@@ -123,13 +124,16 @@ export function analyzeWithFrontend(
             .map((e) => e.package)
         : [],
     );
+    // One scan of the program decides every island question below: the
+    // lowering's set, the graph-proven growth of it, and the final report.
+    const scan = fe.nodeIslandScan?.({ userJs: policy.strictUserJs });
     const lowerIslands =
-      fe.nodeIslandScan === undefined
+      scan === undefined
         ? null
         : reportIslandSet(
             buildNodeIslandReport({
               entry: entryPath,
-              scan: fe.nodeIslandScan({ userJs: policy.strictUserJs }),
+              scan,
               npm: fe.npmStatic,
               diagnostics: [],
               fences: [],
@@ -178,7 +182,34 @@ export function analyzeWithFrontend(
         ...(opts.wasm !== undefined && opts.wasm.length > 0 ? { wasmFiles: opts.wasm } : {}),
       });
     };
+    // A package the module graph proves runs in Node — a value import of an
+    // installed package whose implementation the first load did not put in
+    // the program — is exactly the SC2013 refusal the discovery lowering
+    // would report and the retry below would then answer with an island.
+    // Deciding it here makes the discovery lowering the retry lowering, so a
+    // program pays one lowering instead of two
+    // (node-islands/graph-islands.ts; executable/prepare.ts decides the same
+    // set for builds). The retry stays for what only a lowering can see.
     let lowerIslandsLocal = lowerIslands;
+    const proven =
+      scan === undefined
+        ? null
+        : outsideGraphIslands(
+            policy,
+            fe.npmStatic,
+            scan,
+            lowerIslands?.modules ?? new Map(),
+            lowerIslands?.packages ?? new Map(),
+            // The analysis lowers every site, including the deferred require()
+            // a build leaves to its retry, so those packages are refusals it
+            // is about to report rather than decisions it may skip.
+            true,
+          );
+    if (proven !== null) {
+      const packages = new Map(lowerIslands?.packages ?? []);
+      for (const [name, island] of proven) packages.set(name, island);
+      lowerIslandsLocal = { packages, modules: lowerIslands?.modules ?? new Map() };
+    }
     let lowered = lowerWith(lowerIslandsLocal);
     // A package the lowering refused (its implementation is not part of the
     // compiled module graph) runs in a Node island in a build, which lowers
@@ -199,11 +230,11 @@ export function analyzeWithFrontend(
     }
     const provenance = provenanceSources();
     const islandReport =
-      fe.nodeIslandScan === undefined
+      scan === undefined
         ? null
         : buildNodeIslandReport({
             entry: entryPath,
-            scan: fe.nodeIslandScan({ userJs: policy.strictUserJs }),
+            scan,
             npm: fe.npmStatic,
             diagnostics: [...lowered.diagnostics, ...(lowered.unreached?.diagnostics ?? [])],
             fences: [...lowered.runtimeFences, ...(lowered.unreached?.runtimeFences ?? [])],

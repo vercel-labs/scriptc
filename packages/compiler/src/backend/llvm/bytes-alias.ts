@@ -17,7 +17,14 @@ import type { LlvmEmitterContext } from "./expr-context.js";
  * a conditionally executed load inside the loop. */
 export function bytesHeaderAlias(host: LlvmEmitterContext): string {
   const tag = host.memoryAliasAttachment("bytes:header");
-  return tag === "" ? "" : `${tag}, !invariant.load !{}`;
+  if (tag === "") return "";
+  // A program whose JavaScript resizes, grows or detaches a buffer
+  // (IrModule.bytesHeadersMutable): a view's length and data pointer can
+  // change under any call, so the header keeps its alias tag and loses the
+  // invariance. Calls alias every category, so a reload is never hoisted
+  // across the call that changed the length.
+  if (host.mod.bytesHeadersMutable === true) return tag;
+  return `${tag}, !invariant.load !{}`;
 }
 
 /** A header load whose value the program reads (`length`, `byteLength`)

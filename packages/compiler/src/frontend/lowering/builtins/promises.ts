@@ -29,12 +29,81 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 
+/** A payload whose only values are `undefined` and `void` (no `null`). */
+function undefinedOnly(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "void" || t.kind === "undefinedT") return true;
+  if (t.kind !== "union") return false;
+  const def = lowerer.unions.get(t.unionId);
+  return def !== undefined && def.arms.every((a) => a.kind === "void" || a.kind === "undefinedT");
+}
+
+/** A promise-or-unit union entry whose only data arm is `undefined` and
+ * whose promise arm carries no value — the `?.` shape `Promise<void> |
+ * undefined` (`server.connection?.close()`, `this.opening?.catch(...)`).
+ * Node's Promise.all treats the undefined side as an already-fulfilled
+ * undefined, so the entry joins a combinator as a promise settled with
+ * nothing. Any other union keeps the general path: a `null` arm would
+ * fulfill `null`, and a value-carrying arm cannot be read back from a
+ * promise widened to `Promise<void>`. */
+function armedVoidPromiseOf(
+  lowerer: Lowerer,
+  t: IrType,
+): { unionId: string; tag: number; promise: IrType & { kind: "promise" } } | null {
+  if (t.kind !== "union") return null;
+  const armed = promiseOrUnitUnionOf(lowerer, t);
+  if (!armed) return null;
+  if (!undefinedOnly(lowerer, armed.promise.inner)) return null;
+  if (armed.def.arms.some((a, i) => i !== armed.promiseTag && a.kind !== "undefinedT")) return null;
+  return { unionId: armed.def.id, tag: armed.promiseTag, promise: armed.promise };
+}
+
+/** `value` (an `armedVoidPromiseOf` union) as a promise of nothing: the
+ * promise arm widened to `Promise<void>`, the undefined arm an
+ * already-fulfilled undefined. Reads `value` twice, so the caller stages
+ * it in a local first. */
+function armedVoidPromiseEntry(
+  value: IrExpr,
+  armed: { unionId: string; tag: number; promise: IrType & { kind: "promise" } },
+  voidPromise: IrType & { kind: "promise" },
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId: armed.unionId,
+      tag: armed.tag,
+      negated: false,
+      value,
+      type: BOOL,
+      loc,
+    },
+    then: {
+      kind: "promiseVoidWiden",
+      value: {
+        kind: "unionNarrow",
+        unionId: armed.unionId,
+        tag: armed.tag,
+        value,
+        type: armed.promise,
+        loc,
+      },
+      type: voidPromise,
+      loc,
+    },
+    else_: { kind: "intrinsic", name: "promise.resolve", args: [], type: voidPromise, loc },
+    type: voidPromise,
+    loc,
+  };
+}
+
 /** `Promise.all([p, q, r])` over DIFFERENT promise types — the checker's
  * tuple overload, `Promise<[A, B, C]>`: the result type and tuple shape,
  * or null when the result type or an entry has no typed home here.
  * Entries are promises, checked-dynamic values (a JavaScript function's
- * result) and plain numbers, strings, booleans and unit values, which are
- * never thenable. */
+ * result), `Promise<void> | undefined` values (the `?.` shape, whose
+ * undefined side settles as undefined) and plain numbers, strings,
+ * booleans and unit values, which are never thenable. */
 function tuplePromiseAllShape(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -48,7 +117,9 @@ function tuplePromiseAllShape(
     t.kind === "f64" || t.kind === "string" || t.kind === "bool" || isUnitType(t);
   // A checked-dynamic entry (a JavaScript function's result) may hold a
   // promise or a plain value at run time; it joins through its promise view.
-  const settles = (t: IrType): boolean => t.kind === "promise" || t.kind === "dyn";
+  // A promise-or-undefined entry joins through the arm its tag selects.
+  const settles = (t: IrType): boolean =>
+    t.kind === "promise" || t.kind === "dyn" || armedVoidPromiseOf(lowerer, t) !== null;
   if (!elems.some((e) => settles(e.type))) return null;
   if (!elems.every((e) => settles(e.type) || plainValue(e.type))) return null;
   return { resultT, tuple: resultT.inner };
@@ -79,10 +150,13 @@ function lowerTuplePromiseAll(
   const entriesT = arrayOf(voidPromise);
   const dynPromise: IrType = { kind: "promise", inner: DYN };
   // A checked-dynamic entry's PromiseResolve can run a `then` getter, which
-  // Node runs after the whole array literal evaluated. With such an entry,
-  // every entry evaluates into a hidden local first.
+  // Node runs after the whole array literal evaluated; an armed
+  // promise-or-undefined entry is read by its tag and then again for the
+  // arm. With either, every entry evaluates into a hidden local first.
   const staged: IrStmt[] = [];
-  const values = !elems.some((e) => e.type.kind === "dyn")
+  const values = !elems.some(
+    (e) => e.type.kind === "dyn" || armedVoidPromiseOf(lowerer, e.type) !== null,
+  )
     ? elems
     : elems.map((e): IrExpr => {
         if (e.kind === "unitLit") return e;
@@ -100,6 +174,8 @@ function lowerTuplePromiseAll(
         return varRef(local.id, e.type, loc);
       });
   const entries = values.map((e): IrExpr => {
+    const armed = armedVoidPromiseOf(lowerer, e.type);
+    if (armed) return armedVoidPromiseEntry(e, armed, voidPromise, loc);
     let promise: IrExpr;
     if (e.type.kind === "promise") promise = e;
     else if (e.type.kind === "dyn")
@@ -154,32 +230,34 @@ function lowerTuplePromiseAll(
     const fields = shape.fields.map((field) => {
       const i = Number(field.name);
       const type = elems[i]!.type;
-      const inner = type.kind === "promise" ? type.inner : type;
-      const value: IrExpr =
-        inner.kind === "void"
-          ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }
-          : isUnitType(inner)
-            ? {
-                kind: "unitLit",
-                unit: inner.kind === "nullT" ? "null" : "undefined",
-                type: inner,
-                loc,
-              }
-            : {
-                kind: "libCall",
-                fn: "promise.fulfilledValue",
-                args: [
-                  {
-                    kind: "arrayGet",
-                    arr: entriesRef,
-                    index: { kind: "numLit", value: i, type: F64, loc },
-                    type: voidPromise,
-                    loc,
-                  },
-                ],
-                type: inner,
-                loc,
-              };
+      // An armed promise-or-undefined entry fulfills nothing either way, so
+      // its position holds undefined; any other entry reads its payload.
+      const armed = armedVoidPromiseOf(lowerer, type);
+      const inner = armed !== null ? UNDEFINED_T : type.kind === "promise" ? type.inner : type;
+      const value: IrExpr = undefinedOnly(lowerer, inner)
+        ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }
+        : isUnitType(inner)
+          ? {
+              kind: "unitLit",
+              unit: inner.kind === "nullT" ? "null" : "undefined",
+              type: inner,
+              loc,
+            }
+          : {
+              kind: "libCall",
+              fn: "promise.fulfilledValue",
+              args: [
+                {
+                  kind: "arrayGet",
+                  arr: entriesRef,
+                  index: { kind: "numLit", value: i, type: F64, loc },
+                  type: voidPromise,
+                  loc,
+                },
+              ],
+              type: inner,
+              loc,
+            };
       return { name: field.name, value: lowerer.coerceToExpected(value, field.type) };
     });
     lowerer.liftedFns.push({
@@ -407,6 +485,11 @@ export function lowerPromiseStaticCall(
       lowerer.dynConvertible(entries.type)
     )
       return checkedPromiseAll(lowerer, lowerer.coerceToExpected(entries, DYN), loc);
+    // `Promise.all(xs)` over `(Promise<void> | undefined)[]` — the `?.`
+    // shape, whose undefined entries a Node Promise.all treats as
+    // already-fulfilled undefined values.
+    const armedAll = armedVoidPromiseAll(lowerer, entries, loc);
+    if (armedAll) return armedAll;
 
     // loadPlugin(p)))` — the loadPlugins shape, where the checker
     // spells `any[]`): the ENGINE's own Promise.all runs over the
@@ -996,6 +1079,88 @@ export function lowerAwaitedUniformPromiseAll(
       loc,
     },
     type: tuple,
+    loc,
+  };
+}
+
+/** `Promise.all(ps)` over `(Promise<void> | undefined)[]` — the `?.`
+ * shape (`removed.map((s) => s.connection?.close())`), whose undefined
+ * entries Node's Promise.all fulfills with undefined rather than skipping
+ * or rejecting. Every entry joins the combinator as a promise of nothing:
+ * its promise arm widened to `Promise<void>`, its undefined arm an
+ * already-fulfilled undefined. The result carries none of them, so it
+ * types as `Promise<void>` like an all-void array. */
+function armedVoidPromiseAll(lowerer: Lowerer, entries: IrExpr, loc: SrcLoc): IrExpr | null {
+  const entriesT = entries.type;
+  if (entriesT.kind !== "array") return null;
+  const armed = armedVoidPromiseOf(lowerer, entriesT.elem);
+  if (!armed) return null;
+  const voidPromise: IrType & { kind: "promise" } = { kind: "promise", inner: VOID };
+  const joinedT = arrayOf(voidPromise);
+  const key = `promise.allArmed:${typeKey(entriesT)}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%promise.allArmed", key);
+    lowerer.arrHofHelpers.set(key, helper);
+    const length = (arr: IrExpr): IrExpr => ({
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: arr,
+      args: [],
+      type: F64,
+      loc,
+    });
+    const ps = varRef("ps.0", entriesT, loc);
+    const joined = varRef("joined.0", joinedT, loc);
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "ps.0", name: "ps", type: entriesT }],
+      returnType: joinedT,
+      locals: [
+        { id: "ps.0", name: "ps", type: entriesT, mutable: false },
+        { id: "joined.0", name: "joined", type: joinedT, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+        { id: "e.0", name: "e", type: entriesT.elem, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "joined.0",
+          init: { kind: "arrayLit", elems: [], type: joinedT, loc },
+          loc,
+        },
+        countedFor(loc, length(ps), (index) => [
+          {
+            kind: "varDecl",
+            localId: "e.0",
+            init: { kind: "arrayGet", arr: ps, index, type: entriesT.elem, loc },
+            loc,
+          },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "arrIntrinsic",
+              method: "push",
+              receiver: joined,
+              args: [
+                armedVoidPromiseEntry(varRef("e.0", entriesT.elem, loc), armed, voidPromise, loc),
+              ],
+              type: F64,
+              loc,
+            },
+            loc,
+          },
+        ]),
+        { kind: "return", value: joined, loc },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "intrinsic",
+    name: "promise.all",
+    args: [{ kind: "call", callee: helper, args: [entries], type: joinedT, loc }],
+    type: { kind: "promise", inner: VOID },
     loc,
   };
 }

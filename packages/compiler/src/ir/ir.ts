@@ -1132,6 +1132,13 @@ export interface IrModule {
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** A JavaScript source may resize, grow or detach an ArrayBuffer
+   * (frontend/lowering/buffers.ts `mutableBuffers`): a view's ScrBytes header
+   * is no longer fixed at construction, so bytes header loads keep their
+   * alias tag but lose `!invariant.load`, and typed-array loop versioning
+   * (bytes-loop-versions.ts) is off for this program. Absent in every other
+   * program, whose IR and LLVM are unchanged. */
+  bytesHeadersMutable?: true;
   /** typeKeys of the array types whose values the program may freeze
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */

@@ -120,12 +120,14 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   builtinPrototypeValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
-  recordViewPartial: boolean;
   /** The JavaScript object model build (t262-da §J): the runtime code every
    * feature reached only from JavaScript sources shares, the
    * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
    * dynTier. */
   jsObjectModel: boolean;
+  /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
+   * JavaScript source resizes, grows or detaches an ArrayBuffer. */
+  mutableBuffers?: boolean;
   stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
@@ -360,8 +362,8 @@ export function effectiveRuntimeFeatures(
     builtinPrototypeValue: features.builtinPrototypeValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
-    recordViewPartial: features.recordViewPartial === true,
     jsObjectModel,
+    mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,

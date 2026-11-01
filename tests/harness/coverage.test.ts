@@ -427,6 +427,79 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
   );
 });
 
+test("--explain-dynamic explains the runtime-optional storage behind a narrowed read", async () => {
+  const { coverage, sourceTexts } = analyze(fixture("runtime-optional-narrowing.ts"), {
+    explainDynamic: true,
+  });
+  const slots = coverage.tiers!.runtimeOptional;
+  // Each binding holds a value an unchecked read can leave undefined, while
+  // the checker types every read with the declared type; the decision names
+  // the read that made the slot optional.
+  expect(slots.map((s) => [s.name, s.storage, s.narrowed])).toEqual([
+    ["count", "number | undefined", "number"],
+    ["label", "string | undefined", "string"],
+    ["first", "number | undefined", "number"],
+  ]);
+  expect(slots.map((s) => s.decisions.map((d) => d.kind))).toEqual([
+    ["binding"],
+    ["binding"],
+    ["pattern-binding"],
+  ]);
+  // A declared optional parameter leaves no hidden absence to report.
+  expect(slots.some((s) => s.name === "value")).toBe(false);
+  const guard = slots[0]!;
+  // The `typeof` guard and the read it guards; the fixture's type alias
+  // references the binding but does not read its storage.
+  expect(guard.reads).toHaveLength(2);
+  for (const read of guard.reads) expect(read.end).toBeGreaterThan(read.start);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.tiers?.runtimeOptional[0]).toMatchObject({
+    name: "count",
+    storage: "number | undefined",
+    narrowed: "number",
+    decisions: [{ kind: "binding" }],
+  });
+  expect(envelope.tiers?.runtimeOptional[0]?.reads.length).toBe(guard.reads.length);
+  const relative = JSON.parse(
+    JSON.stringify(coverage.tiers).replaceAll(repoRoot + "/", ""),
+  ) as typeof coverage.tiers;
+  await expect(renderExplainDynamic(relative!)).toMatchFileSnapshot(
+    "__snapshots__/coverage-explain-runtime-optional.txt",
+  );
+});
+
+test("--explain-dynamic names the short call that passed undefined to a widened parameter", () => {
+  const { coverage } = analyze(fixture("runtime-optional-parameter.js"), { explainDynamic: true });
+  const slots = coverage.tiers!.runtimeOptional;
+  expect(slots.map((s) => [s.name, s.storage, s.narrowed])).toEqual([
+    ["value", "number | undefined", "number"],
+  ]);
+  expect(slots[0]!.decisions).toMatchObject([
+    { kind: "parameter", detail: "(omitted or undefined argument)" },
+  ]);
+});
+
+test("--explain-dynamic reports shorthand reads and multi-arm guard narrowings", () => {
+  const { coverage } = analyze(fixture("runtime-optional-shorthand.ts"), { explainDynamic: true });
+  const slots = coverage.tiers!.runtimeOptional;
+  // A guard that narrows the slot to several storage arms at once is still a
+  // read below the storage, and every distinct narrowing it reaches is
+  // listed.
+  const item = slots.find((s) => s.name === "item");
+  expect(item?.storage).toBe("string | number | boolean | undefined");
+  expect(item?.narrowed.split(" or ").sort()).toEqual([
+    "boolean | number",
+    "boolean | number | string",
+    "number | string",
+  ]);
+  // An object shorthand reads the binding behind the property it creates, so
+  // a slot whose only read is a shorthand keeps that read.
+  const label = slots.find((s) => s.name === "label");
+  expect(label?.storage).toBe("string | undefined");
+  expect(label?.narrowed).toBe("string");
+  expect(label?.reads).toHaveLength(1);
+});
+
 test("--explain-dynamic lists the type failures localized failure would turn into dynamic slots", async () => {
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;

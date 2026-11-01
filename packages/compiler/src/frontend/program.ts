@@ -1532,6 +1532,13 @@ const CHECKED_JS_ENFORCED_CODES: ReadonlySet<number> = new Set([
 function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   const file = d.fileName;
   if (!file || !isJsSourceFileName(file)) return false;
+  // A private setter's implicit any stays reported: the private-element
+  // lowering does not implement the shadowing and brand-check rules these
+  // programs exercise (a private setter shadowed across nested classes
+  // reaches the LLVM emitter's unknown-class path), so the program keeps
+  // refusing until that lowering exists.
+  if (d.code === 7032 && ts.flattenDiagnosticMessageText(d, "\n").includes("Property '#"))
+    return false;
   if (JS_RELAXED_TSC_CODES.has(d.code) || TS7_JS_RELAXED_EXTRA.has(d.code)) return true;
   // The triage table's `relax` rows: legal JavaScript whose construct the
   // lowering already builds Node-exactly (tsc-codes.ts).
@@ -2639,7 +2646,9 @@ function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
   return out;
 }
 
-type RequireCallBindingKind7 = "ambient" | "createRequire" | "source";
+/** What a call spelled `require(...)` runs: Node's ambient loader, a
+ * createRequire binding, or a binding the file declares itself. */
+export type RequireCallBindingKind7 = "ambient" | "createRequire" | "source";
 
 function stripRequireCasts7(expr: ts.Expression): ts.Expression {
   let cur = expr;
@@ -7687,6 +7696,7 @@ export { npmPackageNameOf, workspacePackageOfPath } from "./workspace-registry.j
 
 export {
   requireSpecOf7 as requireSpecOf,
+  requireCallBindingKind7 as requireCallBindingKind,
   isRequireStatement7 as isRequireStatement,
   requiresOf7 as requiresOf,
   splitRequireCallOf7 as splitRequireCallOf,

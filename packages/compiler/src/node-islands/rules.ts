@@ -63,6 +63,7 @@ const REASON_RULES: Record<string, NodeIslandRule> = {
   "loader-hook": "R1.4",
   "engine-internal": "R1.5",
   "weak-ref": "R1.6",
+  "host-global": "R1.6",
   "constructor-function": "R2.1",
   "prototype-write": "R2.2",
   "define-property": "R2.3",

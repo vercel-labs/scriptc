@@ -14,7 +14,7 @@ import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
 import type { NpmStaticStatus } from "../coverage/report.js";
-import { entryFunctionExports, type EntryExportInfo } from "./lib-exports.js";
+import { entryExportFacts, type EntryExport } from "./lib-exports.js";
 import { entryContractFacts, type ContractFacts } from "./lib-contract.js";
 import {
   canonicalBuiltinModule,
@@ -111,9 +111,10 @@ export interface Frontend {
   preflight: ScrDiagnostic[];
   /** The entry source file's text for diagnostics and source annotations. */
   entryText: () => string;
-  /** Library mode's resolution input: the entry file's exported function
-   * declarations (call before dispose — it reads the ts7 AST). */
-  entryExports: () => Map<string, EntryExportInfo>;
+  /** Library mode's resolution input: the profile's export names resolved
+   * through the entry module's export table (call before dispose — it
+   * reads the ts7 AST). */
+  entryExports: (names: readonly string[]) => Map<string, EntryExport>;
   /** The contract sidecar's projection input: the entry file's exported
    * function signatures and convention consts, plus the whole graph's
    * exported type declarations, in declaration order (call before
@@ -874,7 +875,7 @@ function loadFrontend(
     ),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
     entryText: () => finalLoad.entry.text,
-    entryExports: () => entryFunctionExports(finalLoad.entry),
+    entryExports: (names) => entryExportFacts(finalLoad.program, finalLoad.entry, names),
     // The contract scans the PROGRAM's source files, not the runtime
     // module order: a type-only module (nothing but exported types) has no
     // runtime edge and never joins moduleOrder, yet its declarations are

@@ -138,6 +138,8 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     errors.push({ message: "declOrigins must be an array of strings", loc: moduleLoc });
   if (mod.untypedIntegrity !== undefined && mod.untypedIntegrity !== true)
     errors.push({ message: "untypedIntegrity must be true when present", loc: moduleLoc });
+  if (mod.bytesHeadersMutable !== undefined && mod.bytesHeadersMutable !== true)
+    errors.push({ message: "bytesHeadersMutable must be true when present", loc: moduleLoc });
   if (mod.lifetimeRegions !== undefined && mod.lifetimeRegions !== true)
     errors.push({ message: "lifetimeRegions must be true when present", loc: moduleLoc });
   if (mod.workers && mod.lib !== undefined)
@@ -2888,13 +2890,23 @@ function validateFunction(
           break;
         }
         const ft = e.callee.type;
-        if (ft.params.length !== e.args.length) {
-          err(`callValue: ${e.args.length} args, expected ${ft.params.length}`, e.loc);
+        // A checked-dynamic variadic value's lifted signature carries one
+        // trailing dyn array after its declared parameters.
+        const hiddenRest = ft.rest === true && ft.restAbi === undefined;
+        if (ft.params.length + (hiddenRest ? 1 : 0) !== e.args.length) {
+          err(
+            `callValue: ${e.args.length} args, expected ${ft.params.length + (hiddenRest ? 1 : 0)}`,
+            e.loc,
+          );
         }
         e.args.forEach((a, i) => {
           const p = ft.params[i];
           if (p) expectType(a, p, `callValue arg ${i}`);
         });
+        const hiddenArg = hiddenRest ? e.args[ft.params.length] : undefined;
+        if (hiddenArg !== undefined && hiddenArg.type.kind !== "dyn") {
+          err(`callValue hidden rest argument is ${hiddenArg.type.kind}, not dyn`, e.loc);
+        }
         if (!typeEquals(e.type, ft.ret)) {
           err(`callValue type ${e.type.kind} != return ${ft.ret.kind}`, e.loc);
         }

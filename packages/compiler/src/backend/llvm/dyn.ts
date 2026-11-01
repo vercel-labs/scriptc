@@ -5411,8 +5411,10 @@ export class LlDyn {
    * BORROWED in every arm. Emits into the given builder. */
   /** A live capsule of a record or array value (+1; the value is
    * borrowed), as `dynFrom` with `liveRef` builds it; null for other
-   * types. Closures boxed in a declaration-typed boundary program return
-   * their records and arrays this way. A TextEncoder, TextDecoder or
+   * types. Every typed value crossing into the dynamic tier this way keeps
+   * its identity — a boxed closure's result and a settled promise payload
+   * included, so `f()`/`await p` hand out the object the producer holds,
+   * as Node does, not a snapshot. A TextEncoder, TextDecoder or
    * StringDecoder record is null too: it boxes as its own handle, which
    * holds the record by reference (toDynHelper). */
   private liveToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
@@ -5435,6 +5437,16 @@ export class LlDyn {
     );
     for (const line of bindLiveArrayOps(host, adapter, boxed)) B.line(line);
     return boxed;
+  }
+
+  /** A static value handed OUT by a container read (a record field a runtime
+   * key selects) as a checked-dynamic value (+1; the value is BORROWED): a
+   * record, an array or a union holding one boxes as a LIVE capsule of the
+   * value itself, the way `dynFrom` with `liveRef` boxes it, so a write
+   * through the result reaches the field; every other type converts by
+   * value. Reading a keyed field is one object either way in JavaScript. */
+  liveReadToDyn(B: BlockBuilder, t: IrType, expr: string): string {
+    return this.liveToDyn(B, t, expr) ?? this.toDynExpr(B, t, expr);
   }
 
   private toDynExpr(B: BlockBuilder, t: IrType, expr: string): string {
@@ -5619,10 +5631,12 @@ export class LlDyn {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
       this.pendingBail(B, "dfkr", () => {}, "ptr null");
-      const out =
-        this.host.declBoundary?.() === true
-          ? (this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r))
-          : this.toDynExpr(B, t.ret, r);
+      // A record or array result crosses the way `dynFrom liveRef` boxes
+      // one — a LIVE capsule of the closure's own object — so the caller's
+      // `() => shared` through an untyped slot still answers `shared`
+      // (`(r as Row) === shared`), as Node does. Everything else keeps the
+      // to-dyn spelling (handles box by reference there already).
+      const out = this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r);
       if (isRefCounted(t.ret)) B.line(`call void ${releaseSym(host, t.ret)}(ptr ${r})`);
       B.terminate(`ret ptr ${out}`);
     }

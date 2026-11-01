@@ -35,15 +35,17 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
-  /** The program asserts a record literal to a wider record type (a partial
-   * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
-   * Absent for every program without one, so their objects stay identical. */
-  recordViewPartial?: boolean;
   /** The program uses a runtime feature only a JavaScript source reaches:
    * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
    * (t262-da §J). Absent for every other program, so their objects stay
    * identical. */
   jsObjectModel?: boolean;
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
+   * registry those operations maintain. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
+  mutableBuffers?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
@@ -74,6 +76,9 @@ export interface NativeLinkFeatures {
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
    * otherwise. */
   primitiveWrapper?: boolean;
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
+  promiseGeneric?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;

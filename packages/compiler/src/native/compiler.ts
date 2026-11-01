@@ -544,12 +544,21 @@ export class NativeCompiler {
         ));
       const executableCache =
         outputKind === "exe"
-          ? openNativeExecutableCache(this.cache, toolchain, digestLlvm, options, ffi, {
-              root: toolchain.runtimePackRoot,
-              features,
-              flavor: optimization,
-              select: selectPack,
-            })
+          ? openNativeExecutableCache(
+              this.cache,
+              toolchain,
+              // The same count emitProgramObject derives from the staged LLVM.
+              nativeProgramPartitions(statSync(llvmInput).size, optimization === "dev"),
+              digestLlvm,
+              options,
+              ffi,
+              {
+                root: toolchain.runtimePackRoot,
+                features,
+                flavor: optimization,
+                select: selectPack,
+              },
+            )
           : null;
       // An unchanged rebuild keeps the executable the last build left.
       const kept = executableCache?.keep(output) ?? false;

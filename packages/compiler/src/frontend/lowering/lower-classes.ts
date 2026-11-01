@@ -23,8 +23,16 @@ import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import {
+  isBuiltinIdentityToken,
+  isPrimitiveValueType,
+  staticallyPrimitive,
+  throwAfterEach,
+  throwTypeError,
+} from "./primitive-throws.js";
+import {
   constructedFromValue,
   constructedValue,
+  constructorPrimitiveFlag,
   superIntoResultSlot,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
@@ -200,6 +208,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "./lower-namespaces.js";
+import { hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
 import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
@@ -216,8 +225,16 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
 import { constructionEscape } from "./construction-escapes.js";
-import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
-import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
+import {
+  checkedClassConstruction,
+  checkedClassConstructionPacked,
+  primitiveCheckedConstruction,
+} from "./class-construction.js";
+import {
+  initializeRuntimeStatics,
+  hasRuntimeStatics,
+  runtimeStaticDefines,
+} from "./class-runtime-statics.js";
 import {
   reflectedClassMethodValue,
   reflectedClassStaticMethodValue,
@@ -316,6 +333,67 @@ function perInstanceMember(node: ts.Node): boolean {
   return !ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword);
 }
 
+/** `Symbol.hasInstance` over the standard global. */
+export function isSymbolHasInstanceKey(lowerer: Lowerer, key: ts.Expression): boolean {
+  let e = key;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    !e.questionDotToken &&
+    ts.isIdentifier(e.expression) &&
+    lowerer.isStdlibGlobal(e.expression, "Symbol") &&
+    ts.isIdentifier(e.name) &&
+    e.name.text === "hasInstance"
+  );
+}
+
+/** The static members keyed by `Symbol.hasInstance`
+ * (`static [Symbol.hasInstance](v) { … }`): defining them on the class
+ * value's own-property table gives `instanceof` its hook (the runtime
+ * consults that table, scr_dyn_has_instance_hook). */
+export function staticHasInstanceHookMembers(
+  lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
+): ts.ClassElement[] {
+  return decl.members.nodes.filter((member) => {
+    const name = (member as { name?: ts.PropertyName }).name;
+    return (
+      name !== undefined &&
+      ts.isComputedPropertyName(name) &&
+      ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+        true &&
+      isSymbolHasInstanceKey(lowerer, name.expression)
+    );
+  });
+}
+
+/** Whether `info` or an ancestor declares a static `Symbol.hasInstance`
+ * member. Node's `instanceof` asks the hook on the constructor (inherited
+ * through the static prototype chain) and uses OrdinaryHasInstance only
+ * when no hook exists. */
+export function classDeclaresHasInstanceHook(info: ClassInfo): boolean {
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    if (current.hasInstanceHook === true) return true;
+  }
+  return false;
+}
+
+/** Whether `expression` reads an element of a JavaScript array whose
+ * compiled storage is checked-dynamic (`const classes = [A, B]`; the
+ * array literal of several class constructors lowers as the checked
+ * array, and an unannotated file-scope binding keeps that layout). */
+function jsCheckedDynamicArrayElement(lowerer: Lowerer, expression: ts.Expression): boolean {
+  if (!ts.isElementAccessExpression(expression)) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expression))) return false;
+  if (!ts.isIdentifier(expression.expression)) return false;
+  const stored =
+    lowerer.peekLocal(expression.expression) ?? lowerer.globalOf(expression.expression);
+  if (!stored) return false;
+  return (
+    stored.type.kind === "dyn" || (stored.type.kind === "array" && stored.type.elem.kind === "dyn")
+  );
+}
+
 export function storedClassValueType(
   lowerer: Lowerer,
   expression: ts.Expression,
@@ -366,6 +444,11 @@ export function storedClassValueType(
   }
   const type = lowerer.typeOf(expression);
   const mapped = lowerer.mapTypeOf(type);
+  // An element of a CHECKED-DYNAMIC JavaScript array (`const classes =
+  // [A, B]`, `both[1]`): the storage holds whichever constructor the array
+  // holds, so tsc's inferred element type — best common type spells the
+  // first — does not name the class the slot holds at run time.
+  if (mapped?.kind === "classval" && jsCheckedDynamicArrayElement(lowerer, expression)) return null;
   if (mapped?.kind === "classval" && !lowerer.classes.has(mapped.className)) {
     for (const signature of lowerer.checker.getConstructSignatures(type)) {
       const constructor = signature.declaration;
@@ -536,6 +619,9 @@ export interface ClassInfo {
   def: IrClassDef;
   expressionInitializationEmitted?: true;
   runtimeStatics?: readonly ts.ClassElement[];
+  /** The class declares its own static `Symbol.hasInstance` member:
+   * `instanceof` asks the hook before OrdinaryHasInstance. */
+  hasInstanceHook?: true;
   /** Direct calls of runtime static methods (directRuntimeStaticCall), by
    * member name. */
   runtimeStaticCalls?: Map<string, GenericFnInfo>;
@@ -4554,7 +4640,17 @@ export function collectClassShapeInner(
       ctorParams.push({ type: DYN, mode: "arguments" });
     }
 
+    // A static `Symbol.hasInstance` member of a class that otherwise keeps
+    // its statics in module storage: the hook only exists if the CLASS
+    // VALUE carries it, so the member joins the runtime property table
+    // (initializeRuntimeStatics). Only the hook members are added; every
+    // other static keeps its current representation.
+    const hasInstanceHooks = staticHasInstanceHookMembers(lowerer, decl);
+    for (const member of hasInstanceHooks) {
+      if (!runtimeStatics.includes(member)) runtimeStatics.push(member);
+    }
     const info: ClassInfo = {
+      ...(hasInstanceHooks.length ? { hasInstanceHook: true as const } : {}),
       ...(runtimeStatics.length || checkedStatics ? { runtimeStatics } : {}),
       ...(runtimePrototypeMembers.length ? { runtimePrototypeMembers } : {}),
       def: {
@@ -5205,10 +5301,19 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
     | { pos: number; kind: "field"; f: ClassInfo["staticFields"][number] }
     | { pos: number; kind: "block"; b: ts.ClassStaticBlockDeclaration };
   const items: Item[] = [
-    // A runtime-statics class initializes its private static fields with
-    // its other initializers (initializeRuntimeStatics).
+    // A runtime-statics class initializes the private static fields its
+    // property table carries with its other initializers
+    // (initializeRuntimeStatics). One whose table carries only its
+    // `Symbol.hasInstance` hook keeps its native initializers here.
     ...info.staticFields
-      .filter((f) => !(info.runtimeStatics && f.name.startsWith("#")))
+      .filter(
+        (f) =>
+          !(
+            info.runtimeStatics &&
+            f.name.startsWith("#") &&
+            runtimeStaticDefines(lowerer, info, f.name)
+          ),
+      )
       .map((f): Item => ({
         pos: ts.tokenStartOfNode(f.initializer),
         kind: "field",
@@ -5918,7 +6023,15 @@ export function lowerClassStaticRead(
     !(ts.isCallExpression(site.parent) && site.parent.expression === site)
   )
     lowerer.noLowering(`Date.${name} read through a class that extends Date`, site);
-  if (hasRuntimeStatics(info) && !found?.field && !name.startsWith("#"))
+  // A statically known member that the class value's table does not carry
+  // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+  // reads its own storage, as it would without the hook.
+  if (
+    hasRuntimeStatics(info) &&
+    !found?.field &&
+    !name.startsWith("#") &&
+    (!found || runtimeStaticDefines(lowerer, info, name))
+  )
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(classValueRef(lowerer, info, receiver), DYN),
@@ -6817,13 +6930,16 @@ function staticCallOn(
     const date = lowerDateStaticCall(lowerer, call, access.name.text);
     if (date) return date;
   }
+  const staticMember = findStaticOn(lowerer, info, access.name.text);
+  // A statically known member that the class value's table does not carry
+  // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+  // calls its own function, as it would without the hook.
   if (
     (hasRuntimeStatics(info) &&
       !access.name.text.startsWith("#") &&
-      !findStaticOn(lowerer, info, access.name.text)?.field) ||
-    (info.callableBase &&
-      !findStaticOn(lowerer, info, access.name.text) &&
-      !findGenericStaticOn(lowerer, info, access.name.text))
+      !staticMember?.field &&
+      (!staticMember || runtimeStaticDefines(lowerer, info, access.name.text))) ||
+    (info.callableBase && !staticMember && !findGenericStaticOn(lowerer, info, access.name.text))
   )
     return {
       kind: "dynInvoke",
@@ -7067,12 +7183,12 @@ function directRuntimeStaticCall(
       c.genericStatics?.has(name) === true
     )
       return null;
-    const runtime = c.runtimeStatics?.find(
-      (element) =>
-        (element as { name?: ts.PropertyName }).name !== undefined &&
-        ts.isIdentifier((element as { name: ts.PropertyName }).name) &&
-        (element as { name: ts.Identifier }).name.text === name,
-    );
+    // A computed name defines the key it folds to, so `static ['m']` in
+    // this class answers for `m` and hides the inherited method.
+    const runtime = c.runtimeStatics?.find((element) => {
+      const elementName = (element as { name?: ts.PropertyName }).name;
+      return elementName !== undefined && classMemberNameOf(lowerer, elementName) === name;
+    });
     if (runtime) {
       if (!ts.isMethodDeclaration(runtime) || !runtime.body) return null;
       declarer = c;
@@ -7273,12 +7389,17 @@ export function lowerClassValueProperty(
   // A runtime-provided class value answers `.name` from its class object;
   // its other statics (`Error.stackTraceLimit`) keep their own lowerings.
   if (info?.def.runtime && member !== "name") return null;
+  const storedMember = info ? findStaticOn(lowerer, info, member) : undefined;
+  // A statically known member that the class value's table does not carry
+  // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+  // reads its own storage, as it would without the hook.
   if (
     info &&
     ((hasRuntimeStatics(info) &&
       !member.startsWith("#") &&
-      !findStaticOn(lowerer, info, member)?.field) ||
-      (info.callableBase && !findStaticOn(lowerer, info, member)))
+      !storedMember?.field &&
+      (!storedMember || runtimeStaticDefines(lowerer, info, member))) ||
+      (info.callableBase && !storedMember))
   )
     return {
       kind: "dynKeyGet",
@@ -8241,6 +8362,20 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
     const thisLocal = lowerer.declareThis(thisType);
     const params: IrParam[] = [{ localId: thisLocal.id, name: "this", type: thisType }];
     const body: IrStmt[] = [];
+    // A derived constructor that can return a primitive records the pending
+    // TypeError for the construction site to raise. Drop a stale record on
+    // entry: a `finally` that throws after the return abandons the
+    // construction before any site reads it.
+    const pendingPrimitive = constructorPrimitiveFlag(lowerer, info);
+    if (pendingPrimitive !== null) {
+      const clearLoc = locOf(info.ctor ?? info.decl!);
+      body.push({
+        kind: "assign",
+        localId: pendingPrimitive.id,
+        value: { kind: "boolLit", value: false, type: BOOL, loc: clearLoc },
+        loc: clearLoc,
+      });
+    }
     // The construction-relevant base: generic families are transparent
     // (an instantiation of a base-less generic class IS a base class —
     // its source has no super()).
@@ -10275,6 +10410,14 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // Constructing a Node 24 global the native runtime does not provide
+  // (WebSocket, FormData, …): the value a read answers refuses construction
+  // (host-global-values.ts), so the construction is that refusal — SC2020,
+  // which a JavaScript source defers to the throw at this statement.
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr.expression);
+  }
   // The deprecated `new Buffer(...)` (containers/bytes.ts).
   {
     const buffer = lowerBufferConstruct(lowerer, expr);
@@ -11845,6 +11988,33 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   }
   // Checked construction supports emitted classes and builtin typed arrays.
   const callee = tryLowerExpression(lowerer, expr.expression);
+  // A callee whose VALUE is a primitive (`new (null)()`, `new (5)()`, and a
+  // union whose arms are all primitives): JavaScript's IsConstructor step
+  // throws Node's TypeError, which names the constructed expression. V8
+  // evaluates the callee, then every argument, and only then checks, so the
+  // arguments lower for their effects ahead of the throw.
+  if (
+    callee &&
+    isPrimitiveValueType(callee.type) &&
+    !isBuiltinIdentityToken(lowerer, expr.expression, callee)
+  ) {
+    return primitiveCalleeThrow(lowerer, expr, callee, loc);
+  }
+  if (callee && callee.type.kind === "union") {
+    const arms = lowerer.unions.get(callee.type.unionId)?.arms ?? [];
+    if (arms.length > 0 && arms.every(isPrimitiveValueType)) {
+      return primitiveCalleeThrow(lowerer, expr, callee, loc);
+    }
+  }
+  // A callee the CHECKER types as a primitive that still lowers to a
+  // dynamic slot (`const n = null`, or a property whose initializer was
+  // null): the same Node TypeError, but the value decides at run time,
+  // because a JavaScript property keeps its initializer's type through a
+  // later assignment (`reg.ctor = Foo; new reg.ctor()`). A typed
+  // construction site and an `any` callee keep the lowering they had.
+  if (callee && callee.type.kind === "dyn" && staticallyPrimitive(lowerer, expr.expression)) {
+    return primitiveCheckedNew(lowerer, expr, callee, loc);
+  }
   if (
     callee &&
     (callee.type.kind === "dyn" ||
@@ -11881,6 +12051,82 @@ function lowerCheckedConstructor(lowerer: Lowerer, expr: ts.NewExpression, calle
     args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     loc,
   );
+}
+
+/** A checker-primitive callee whose value is a dynamic slot: the callee and
+ * every argument evaluate, then the runtime primitive check throws Node's
+ * "<callee> is not a constructor" — or, when the slot holds something else
+ * after all, constructs it as a dynamic `new` always did. */
+function primitiveCheckedNew(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const message = `${constructorSpelling(expr.expression)} is not a constructor`;
+  const args = expr.arguments?.nodes ?? [];
+  if (args.some(ts.isSpreadElement)) {
+    const packed = lowerer.completeArgs(args, [{ type: DYN, mode: "dynRest" }], loc, expr)[0]!;
+    return primitiveCheckedConstruction(lowerer, callee, message, [], loc, packed);
+  }
+  return primitiveCheckedConstruction(
+    lowerer,
+    callee,
+    message,
+    args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    loc,
+  );
+}
+
+/** The always-throwing construction of a provably primitive callee. */
+function primitiveCalleeThrow(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments?.nodes ?? [];
+  const effects: IrExpr[] = [callee];
+  if (args.some(ts.isSpreadElement)) {
+    effects.push(lowerer.completeArgs(args, [{ type: DYN, mode: "dynRest" }], loc, expr)[0]!);
+  } else {
+    for (const arg of args) effects.push(lowerer.lowerExpr(arg));
+  }
+  return throwAfterEach(
+    effects,
+    throwTypeError(
+      strLit(`${constructorSpelling(expr.expression)} is not a constructor`, loc),
+      DYN,
+      loc,
+    ),
+    loc,
+  );
+}
+
+/** The constructed expression as V8 names it in "is not a constructor": its
+ * source text, without the parentheses that only group it (`new (null)()`
+ * reports "null is not a constructor") and with a call's argument list
+ * abbreviated to "..." (`new (factory(null))()` reports "factory(...)",
+ * `new (factory(o).f)()` "factory(...).f", `new o["f"]()` "o.f"). A comma
+ * expression keeps V8's own "(a , b)" spelling. */
+function constructorSpelling(node: ts.Expression): string {
+  let spelled = node;
+  while (ts.isParenthesizedExpression(spelled)) spelled = spelled.expression;
+  if (ts.isCallExpression(spelled)) return `${constructorSpelling(spelled.expression)}(...)`;
+  if (ts.isPropertyAccessExpression(spelled)) {
+    return `${constructorSpelling(spelled.expression)}.${spelled.name.text}`;
+  }
+  if (
+    ts.isElementAccessExpression(spelled) &&
+    ts.isStringLiteralLike(spelled.argumentExpression) &&
+    /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(spelled.argumentExpression.text)
+  ) {
+    return `${constructorSpelling(spelled.expression)}.${spelled.argumentExpression.text}`;
+  }
+  if (ts.isBinaryExpression(spelled) && spelled.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+    return `(${constructorSpelling(spelled.left)} , ${constructorSpelling(spelled.right)})`;
+  }
+  return spelled.getText();
 }
 
 /** A getter/setter invocation over an accessor target's receiver — the

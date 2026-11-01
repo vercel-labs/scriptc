@@ -82,7 +82,7 @@ static bool scr_http_timeout_valid(double ms) {
   return false;
 }
 
-/* Node v24.22.0's STATUS_CODES table, shared by the module export and the
+/* Node v24.22.1's STATUS_CODES table, shared by the module export and the
  * default ServerResponse reason phrase. */
 static const struct { int code; const char *reason; } scr_http_status_codes_table[] = {
   {100, "Continue"}, {101, "Switching Protocols"}, {102, "Processing"},

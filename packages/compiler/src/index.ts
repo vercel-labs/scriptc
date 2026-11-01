@@ -834,6 +834,7 @@ async function compileExecutableNative(
     ...(features.primitiveWrapper ? { primitiveWrapper: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
+    ...(features.zstd ? { zstd: true } : {}),
     ...(features.intl ? { intl: true } : {}),
     ...(icuPack === null ? {} : { icuPack }),
     assert: features.assert,

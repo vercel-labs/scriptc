@@ -83,6 +83,7 @@ export interface EarlyExecutableNativeFeatures {
   primitiveWrapper?: boolean;
   zlib: boolean;
   brotli?: boolean;
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;

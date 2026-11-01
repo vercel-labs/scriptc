@@ -1732,6 +1732,12 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       brotliCompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
       brotliDecompress: { fn: "zlib.cbOpts", params: [], result: VOID },
       brotliDecompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
+      // zstd, the same shape with Node's ZSTD_COMPRESS or ZSTD_DECOMPRESS
+      // mode (special-cased in lowerZlibModuleCall).
+      zstdCompress: { fn: "zlib.cbOpts", params: [], result: VOID },
+      zstdCompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
+      zstdDecompress: { fn: "zlib.cbOpts", params: [], result: VOID },
+      zstdDecompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
       // The stream factories (special-cased in lowerZlibModuleCall): each
       // answers a runtime Transform stream over the zlib engine.
       createDeflate: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
@@ -1743,6 +1749,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       createUnzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
       createBrotliCompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
       createBrotliDecompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+      createZstdCompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+      createZstdDecompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
     },
     url: {
       fileURLToPath: {

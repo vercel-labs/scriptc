@@ -1,4 +1,5 @@
-/** The pinned QuickJS, mbedTLS, zlib, and brotli inputs used by native recipes. */
+/** The pinned QuickJS, mbedTLS, zlib, brotli, and zstd inputs used by native
+ * recipes. */
 export const QJS_COMMIT = "3c8f3d68953955950074c41c6e4d999562ae82a7";
 export const MBEDTLS_VERSION = "3.6.7";
 /** The zlib Node v24.22.1 bundles (`process.versions.zlib` there), the
@@ -6,6 +7,8 @@ export const MBEDTLS_VERSION = "3.6.7";
 export const ZLIB_VERSION = "1.3.2.1-motley-285e94b";
 /** The brotli release Node v24.22.1 bundles (packages/runtime/vendor/brotli). */
 export const BROTLI_VERSION = "1.2.0";
+/** The zstd release Node v24.22.1 bundles (packages/runtime/vendor/zstd). */
+export const ZSTD_VERSION = "1.5.7";
 /** ICU4C release 78.3 — the exact version Node v24.22.1 bundles
  * (`process.versions.icu` there), from the `release-78.3` tag. ICU is not
  * vendored: the build fetches the release's own source tarball and data zip
@@ -138,4 +141,72 @@ export function zlibInputs(triple: string): { sources: string[]; defines: string
     defines.push("CPU_NO_SIMD");
   }
   return { sources, defines };
+}
+
+/** Every zstd translation unit a build compiles: the list Node's
+ * deps/zstd/zstd.gyp names for the static library (its libraries without C
+ * files, such as bitstream and entropy, contribute none). */
+export const ZSTD_SOURCES = [
+  "common/debug.c",
+  "common/entropy_common.c",
+  "common/error_private.c",
+  "common/fse_decompress.c",
+  "common/pool.c",
+  "common/threading.c",
+  "common/xxhash.c",
+  "common/zstd_common.c",
+  "compress/fse_compress.c",
+  "compress/hist.c",
+  "compress/huf_compress.c",
+  "compress/zstd_compress.c",
+  "compress/zstd_compress_literals.c",
+  "compress/zstd_compress_sequences.c",
+  "compress/zstd_compress_superblock.c",
+  "compress/zstd_double_fast.c",
+  "compress/zstd_fast.c",
+  "compress/zstd_lazy.c",
+  "compress/zstd_ldm.c",
+  "compress/zstd_opt.c",
+  "compress/zstd_preSplit.c",
+  "compress/zstdmt_compress.c",
+  "decompress/huf_decompress.c",
+  "decompress/zstd_ddict.c",
+  "decompress/zstd_decompress.c",
+  "decompress/zstd_decompress_block.c",
+] as const;
+
+/** The zstd translation units, defines and compile flags for a target,
+ * chosen the way Node's deps/zstd/zstd.gyp chooses them: the same units
+ * everywhere against the same defines, so compressed bytes do not depend on
+ * the target. ZSTD_MULTITHREAD turns on the multi-threaded compressor, which
+ * Node builds in on every target that has threads, and which is left out of
+ * WASI (its libc has none); a WASI build compresses on one thread, so it
+ * rejects the nbWorkers parameter Node accepts. packages/runtime-pack-common/
+ * scripts/zstd-inputs.mjs keeps the same table for the runtime packs.
+ * `triple` is an LLVM or Zig target triple. */
+export function zstdInputs(triple: string): {
+  sources: string[];
+  defines: string[];
+  compileFlags: string[];
+} {
+  const [cpu = "", ...rest] = triple.split("-");
+  const system = rest.join("-");
+  const windows =
+    system.includes("windows") || system.includes("win32") || system.includes("mingw");
+  const wasi = system.includes("wasi") || cpu === "wasm32" || cpu === "wasm64";
+  return {
+    sources: [...ZSTD_SOURCES],
+    defines: [
+      // The units share Node's xxhash under zstd's own symbol prefix, so the
+      // library never collides with another xxhash implementation.
+      "XXH_NAMESPACE=ZSTD_",
+      ...(wasi ? [] : ["ZSTD_MULTITHREAD"]),
+      // The hand-written HUF decoder assembly is not built; the portable C
+      // path decodes the same bytes.
+      "ZSTD_DISABLE_ASM",
+    ],
+    // zstd's threading units include pthread.h on POSIX; Node builds them
+    // with -pthread, which also selects the reentrant C library headers.
+    compileFlags: !windows && !wasi ? ["-pthread"] : [],
+  };
 }

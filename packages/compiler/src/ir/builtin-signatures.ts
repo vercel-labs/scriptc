@@ -3625,6 +3625,8 @@ function buildLibFnSignatures() {
      * receivers are borrowed. */
     /** Connects scr_brotli.c to the zlib engine (%main, before any module). */
     "zlib.brotliInstall": { argTypes: [], result: VOID },
+    /** Connects scr_zstd.c the same way. */
+    "zlib.zstdInstall": { argTypes: [], result: VOID },
     "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
     "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
     /** `stream instanceof zlib.Gzip`: the borrowed stream and the class's

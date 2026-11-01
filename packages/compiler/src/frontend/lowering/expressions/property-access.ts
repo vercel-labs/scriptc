@@ -5550,7 +5550,7 @@ export function builtinGlobalValueAt(
               : callee.expression,
           ),
         ));
-    if (reflects) {
+    if (reflects && !answersOwnKeyProbe(lowerer, callee, call, node, expr)) {
       const name =
         owner !== null
           ? `${owner}.${callee.name.text}`
@@ -5563,6 +5563,52 @@ export function builtinGlobalValueAt(
     }
   }
   return value;
+}
+
+/** The `Object.prototype` methods whose answer for a builtin function value
+ * follows from the own keys the interned value models: the two own-key
+ * probes, and the tag `toString` answers. */
+const BUILTIN_VALUE_OWN_KEY_PROBES: ReadonlySet<string> = new Set([
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+  "toString",
+]);
+
+/** Whether `callee` is `Object.prototype.<probe>.call` (`probe` one of
+ * BUILTIN_VALUE_OWN_KEY_PROBES) handing the builtin global `expr` to a probe
+ * the value answers exactly. Such a probe asks whether a key is an OWN
+ * property (or which tag the value has), and a lib-declared builtin FUNCTION
+ * — `parseInt`, `parseFloat`, the URI codecs — owns exactly `length` and
+ * `name`, which the interned value models, so `dyn.hasOwn` and the tag walk
+ * answer Node's question directly. Every other builtin global read as a
+ * value is a `var` of a constructor or namespace interface that also owns
+ * `prototype` and its statics, which the interned value does not describe
+ * yet, so those keep the fence. */
+function answersOwnKeyProbe(
+  lowerer: Lowerer,
+  callee: ts.PropertyAccessExpression,
+  call: ts.CallExpression,
+  value: ts.Node,
+  expr: ts.Expression,
+): boolean {
+  if (callee.name.text !== "call" || call.arguments.nodes[0] !== value) return false;
+  const method = callee.expression;
+  if (!ts.isPropertyAccessExpression(method) || !BUILTIN_VALUE_OWN_KEY_PROBES.has(method.name.text))
+    return false;
+  const prototype = method.expression;
+  if (
+    !ts.isPropertyAccessExpression(prototype) ||
+    prototype.name.text !== "prototype" ||
+    !lowerer.isStdlibGlobal(prototype.expression, "Object") ||
+    !lowerer.isStdlibMember(method)
+  )
+    return false;
+  const symbol = lowerer.typeOf(expr).getSymbol();
+  return (
+    symbol !== undefined &&
+    lowerer.isStdlibSymbol(symbol) &&
+    symbol.declarations.some((d) => ts.isFunctionDeclaration(d))
+  );
 }
 
 /** Whether the stdlib global `expr` is read for its members (`Map.prototype`,

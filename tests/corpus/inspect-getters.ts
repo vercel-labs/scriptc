@@ -1,9 +1,11 @@
 // util.inspect's getters option over accessor properties in a typed record:
 // the [Getter]/[Setter]/[Getter/Setter] labels, true/'get'/'set' choosing
 // which getters run, the result's form by kind (primitives, null, an object
-// or a function-like value), a getter that throws, results under the depth
-// options, a circular reference through a getter, a getter that inspects a
-// value of its own, console.dir and formatWithOptions. Node is the oracle.
+// or a function-like value), a getter that throws, a result whose custom
+// inspector throws, results under the depth options, a circular reference
+// through a getter, a getter that inspects a value of its own (the inner
+// inspection starting from the default options), console.dir and
+// formatWithOptions. Node is the oracle.
 import * as util from "node:util";
 
 const inner: { x: number } = { x: 1 };
@@ -76,6 +78,62 @@ const nested = {
 };
 console.log(util.inspect(nested, { getters: true }));
 console.log(util.inspect(nested));
+
+// A getter's own util.inspect calls start from Node's default options, so
+// the inner inspection keeps the labels whether or not this one runs the
+// getters; the options the call does name still apply.
+const innerAccess = {
+  get x(): number {
+    return 7;
+  },
+  plain: 1,
+};
+const inspectingGetter = {
+  get plainCall(): string {
+    return util.inspect(innerAccess);
+  },
+  get withGetters(): string {
+    return util.inspect(innerAccess, { getters: true });
+  },
+  get withDepth(): string {
+    return util.inspect(innerAccess, { depth: 0 });
+  },
+  plain: 2,
+};
+console.log(util.inspect(inspectingGetter, { getters: true }));
+console.log(util.inspect(inspectingGetter, { depth: 5 }));
+
+// What the getter answers renders in THIS inspection, so its own accessors
+// run under this inspection's getters option.
+const resultAccess = {
+  get obj(): { get y(): number; z: number } {
+    return {
+      get y(): number {
+        return 8;
+      },
+      z: 2,
+    };
+  },
+};
+console.log(util.inspect(resultAccess, { getters: true }));
+console.log(util.inspect(resultAccess));
+
+// A result whose custom inspector throws renders the threw label, exactly
+// as a throwing getter does.
+class Boom {
+  boom = 1;
+  [util.inspect.custom](): string {
+    throw { code: 9 };
+  }
+}
+const badResult = {
+  get bad(): Boom {
+    return new Boom();
+  },
+  plain: 3,
+};
+console.log(util.inspect(badResult, { getters: true }));
+console.log(util.inspect({ wrap: badResult }, { getters: true }));
 
 console.dir(combo, { getters: true });
 console.log(util.formatWithOptions({ getters: true }, "%O", mixed));

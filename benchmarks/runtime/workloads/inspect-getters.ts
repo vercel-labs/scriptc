@@ -1,14 +1,15 @@
 // util.inspect over records that carry accessor properties, with the
 // getters option running them: renders of a fixed table of rows whose
-// getters answer a number, a string, a small record and a throwing one,
-// accumulating the rendered length.
+// getters answer a number, a string and a small record, accumulating the
+// rendered length. A throwing getter is left out: the thrown value renders
+// through the checked-dynamic walk, whose symbols would move the workload
+// off the static tier.
 import { inspect } from "node:util";
 
 interface Row {
   get id(): number;
   get label(): string;
   get meta(): { tag: string };
-  get bad(): number;
   plain: number;
   note: string;
 }
@@ -25,9 +26,6 @@ for (let i = 0; i < 64; i++) {
     },
     get meta(): { tag: string } {
       return { tag: "t" + (i % 7) };
-    },
-    get bad(): number {
-      throw { code: i % 5 };
     },
     plain: i,
     note: "n" + (i % 11),

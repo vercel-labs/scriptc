@@ -2348,20 +2348,21 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             : concatAll([strLit(`[${label}] `, loc), child(armT, value)], loc);
         };
         // The getter runs in an inspection context of its own: util.inspect
-        // calls INSIDE it start from Node's fresh context and must leave
-        // this walk's frames and circular bookkeeping alone. What it
-        // answered renders in THIS context, at the property's level.
+        // calls INSIDE it start from Node's fresh defaults and must leave
+        // this walk's options, frames and circular bookkeeping alone. What
+        // it answered renders in THIS context, at the property's level.
         const valueId = `av.${index}`;
-        const doneId = `ad.${index}`;
+        const tokenId = `at.${index}`;
         const hasValue = resultT.kind !== "void";
         if (hasValue && !accessorValueLocals.has(valueId)) {
           accessorValueLocals.add(valueId);
-          // Assigned inside the try so the getter's answer outlives it.
-          locals.push({ id: valueId, name: "av", type: resultT, mutable: true });
+          // Declared by the try's varDecl, so the answer's release is the
+          // try's; nothing reads it outside.
+          locals.push({ id: valueId, name: "av", type: resultT, mutable: false });
         }
-        if (!accessorValueLocals.has(doneId)) {
-          accessorValueLocals.add(doneId);
-          locals.push({ id: doneId, name: "ad", type: BOOL, mutable: true });
+        if (!accessorValueLocals.has(tokenId)) {
+          accessorValueLocals.add(tokenId);
+          locals.push({ id: tokenId, name: "at", type: F64, mutable: true });
         }
         const val = (): IrExpr => varRef(valueId, resultT, loc);
         const render: IrStmt[] = [];
@@ -2436,42 +2437,55 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
           type: BOOL,
           loc,
         });
-        const libStmt = (fn: "insp.nestedBegin" | "insp.nestedRestore"): IrStmt => ({
+        const libStmt = (
+          fn: "insp.mark" | "insp.unwind" | "insp.customCallEnd",
+          args: IrExpr[] = [],
+        ): IrStmt => ({
           kind: "exprStmt",
-          expr: { kind: "libCall", fn, args: [], type: VOID, loc },
+          expr: { kind: "libCall", fn, args, type: VOID, loc },
           loc,
         });
+        const endCall = libStmt("insp.customCallEnd", [varRef(tokenId, F64, loc)]);
         return [
           { kind: "varDecl", localId: strId, init: strLit(`[${label}]`, loc), loc },
           {
             kind: "if",
             cond: slots.set ? either(mode(1), mode(3)) : either(mode(1), mode(2)),
             then: [
+              libStmt("insp.mark"),
               {
-                kind: "tryCatch",
-                tryBody: [
-                  { kind: "assign", localId: doneId, value: boolLit(false, loc), loc },
-                  libStmt("insp.nestedBegin"),
-                  hasValue
-                    ? { kind: "assign", localId: valueId, value: called, loc }
-                    : { kind: "exprStmt", expr: called, loc },
-                  libStmt("insp.nestedRestore"),
-                  { kind: "assign", localId: doneId, value: boolLit(true, loc), loc },
-                ],
-                catchLocalId: caughtId,
-                // A throwing getter restores the context it is still in.
-                catchBody: [
-                  libStmt("insp.nestedRestore"),
-                  { kind: "assign", localId: strId, value: threw, loc },
-                ],
-                finallyBody: null,
+                kind: "assign",
+                localId: tokenId,
+                value: { kind: "libCall", fn: "insp.customCallBegin", args: [], type: F64, loc },
                 loc,
               },
               {
-                kind: "if",
-                cond: varRef(doneId, BOOL, loc),
-                then: render,
-                else_: null,
+                // Node's try spans the getter call AND the result's
+                // rendering, so a throw from either answers the threw
+                // label. The call's context ends before the result renders
+                // (it renders in this walk's); the mark puts this walk's
+                // options and frames back when the rendering throws and
+                // left them open.
+                kind: "tryCatch",
+                tryBody: [
+                  // Declared here, so the answer's release is the try's:
+                  // nothing reads it outside.
+                  hasValue
+                    ? { kind: "varDecl", localId: valueId, init: called, loc }
+                    : { kind: "exprStmt", expr: called, loc },
+                  endCall,
+                  ...render,
+                  libStmt("insp.unwind"),
+                ],
+                catchLocalId: caughtId,
+                // A throw from the getter leaves its call open; a throw
+                // from the rendering leaves frames open. The mark returns
+                // this walk to where it was either way.
+                catchBody: [
+                  libStmt("insp.unwind"),
+                  { kind: "assign", localId: strId, value: threw, loc },
+                ],
+                finallyBody: null,
                 loc,
               },
             ],

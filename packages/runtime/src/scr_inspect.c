@@ -1545,22 +1545,56 @@ static bool insp_getter_runs(bool has_set) {
   return g_getters == 1 || (g_getters == 2 && !has_set) || (g_getters == 3 && has_set);
 }
 
-/* The frames a getter's own inspect calls left open: a throw unwinds
- * without running their ends, and they are not the walk's. */
-static void insp_getter_discard(size_t nframes) {
-  while (g_nframes > nframes) {
-    InspFrame *f = &g_frames[--g_nframes];
-    for (size_t i = 0; i < f->len; i++) scr_str_release(f->items[i]);
-    free(f->items);
+/* `[Label: <Inspection threw (err)>]`: the text of an accessor whose
+ * getter or whose result's rendering raised (Node's formatProperty
+ * catches both in one try and inspects the thrown value at this level).
+ * +1, or NULL with the exception pending (the thrown value's own
+ * rendering threw). */
+static ScrStr *insp_accessor_threw(ScrDyn *err, const char *label, double recurse, double depth) {
+  scr_insp_mark();
+  ScrStr *text = scr_insp_dyn(err, recurse, depth);
+  scr_insp_unwind();
+  if (!text || scr_exc_pending()) {
+    scr_str_release(text);
+    return NULL;
   }
-  g_pending_seen = NULL;
+  InspBuf b = {0};
+  if (g_colors) insp_style_open(&b, INSP_SPECIAL);
+  ib_char(&b, '[');
+  ib_cstr(&b, label);
+  ib_cstr(&b, ": <Inspection threw (");
+  if (g_colors) insp_style_close(&b, INSP_SPECIAL);
+  ib_bytes(&b, text->data, text->len);
+  if (g_colors) insp_style_open(&b, INSP_SPECIAL);
+  ib_cstr(&b, ")>]");
+  if (g_colors) insp_style_close(&b, INSP_SPECIAL);
+  scr_str_release(text);
+  return ib_take(&b);
 }
 
 /* The `[Label...]` text an INVOKED accessor property renders as: a null
  * and the primitives read `[Label: <value>]`, an object or a function
- * `[Label] <value>` (Node's formatProperty). +1. */
+ * `[Label] <value>` (Node's formatProperty). Rendering the result counts
+ * as part of the getter: when it throws, the accessor answers the threw
+ * label instead of letting the exception end the inspection. +1, or NULL
+ * with an exception pending (the thrown value's own rendering threw). */
 static ScrStr *insp_accessor_text(ScrDyn *value, const char *label, double recurse,
                                   double depth) {
+  scr_insp_mark();
+  ScrStr *text = scr_insp_dyn(value, recurse, depth);
+  scr_insp_unwind();
+  if (!text) return NULL;
+  if (scr_exc_pending()) {
+    scr_str_release(text);
+    ScrCaught *caught = scr_exc_take();
+    if (!caught) return NULL;
+    ScrDyn *err = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    if (!err) return NULL;
+    ScrStr *threw = insp_accessor_threw(err, label, recurse, depth);
+    scr_dyn_release(err);
+    return threw;
+  }
   bool object = insp_fmt_object(value);
   InspBuf b = {0};
   if (g_colors) insp_style_open(&b, INSP_SPECIAL);
@@ -1569,8 +1603,6 @@ static ScrStr *insp_accessor_text(ScrDyn *value, const char *label, double recur
   ib_cstr(&b, object ? "]" : ": ");
   if (g_colors) insp_style_close(&b, INSP_SPECIAL);
   if (object) ib_char(&b, ' ');
-  ScrStr *text = scr_insp_dyn(value, recurse, depth);
-  if (!text) return NULL;
   ib_bytes(&b, text->data, text->len);
   scr_str_release(text);
   if (!object) {
@@ -1584,7 +1616,7 @@ static ScrStr *insp_accessor_text(ScrDyn *value, const char *label, double recur
 /* An INVOKED accessor property's value for the lowered renders, which
  * call the getter themselves: `label` is 'Getter' or 'Getter/Setter', and
  * the result renders by kind exactly as the walk renders it. +1, or NULL
- * with the exception pending. */
+ * with an exception pending. */
 ScrStr *scr_insp_accessor_result(ScrDyn *value, ScrStr *label, double recurse, double depth) {
   char buf[16];
   size_t n = label->len < sizeof buf - 1 ? label->len : sizeof buf - 1;
@@ -1605,17 +1637,17 @@ static ScrStr *insp_accessor_value(const ScrDynProp *ent, ScrDyn *owner, double 
   bool set = ent->setter && ent->setter->kind == SCR_DYN_FUNC;
   if (!get || !insp_getter_runs(set)) return insp_accessor_tag(ent);
   const char *label = set ? "Getter/Setter" : "Getter";
-  size_t nframes = g_nframes;
-  scr_insp_nested_begin();
+  /* The getter is user code called from the inspection: the util.inspect
+   * calls inside it start from Node's fresh defaults, and the options,
+   * frames and nested contexts it leaves, a throw included, are not the
+   * walk's. */
+  double token = scr_insp_custom_call_begin();
   g_indent += 2;
   scr_dyn_this_push_dyn(owner);
   ScrDyn *tmp = scr_dyn_call(ent->getter, NULL, 0, "getter");
   scr_dyn_this_pop();
   g_indent -= 2;
-  /* What the getter's own inspect calls left, a throw included, is not
-   * the walk's. */
-  insp_getter_discard(nframes);
-  scr_insp_nested_restore();
+  scr_insp_custom_call_end(token);
   if (tmp) {
     ScrStr *out = insp_accessor_text(tmp, label, recurse, depth);
     scr_dyn_release(tmp);
@@ -1626,21 +1658,9 @@ static ScrStr *insp_accessor_value(const ScrDynProp *ent, ScrDyn *owner, double 
   ScrDyn *err = scr_caught_to_dyn(caught);
   scr_caught_release(caught);
   if (!err) return NULL;
-  ScrStr *text = scr_insp_dyn(err, recurse, depth);
+  ScrStr *out = insp_accessor_threw(err, label, recurse, depth);
   scr_dyn_release(err);
-  if (!text) return NULL;
-  InspBuf b = {0};
-  if (g_colors) insp_style_open(&b, INSP_SPECIAL);
-  ib_char(&b, '[');
-  ib_cstr(&b, label);
-  ib_cstr(&b, ": <Inspection threw (");
-  if (g_colors) insp_style_close(&b, INSP_SPECIAL);
-  ib_bytes(&b, text->data, text->len);
-  if (g_colors) insp_style_open(&b, INSP_SPECIAL);
-  ib_cstr(&b, ")>]");
-  if (g_colors) insp_style_close(&b, INSP_SPECIAL);
-  scr_str_release(text);
-  return ib_take(&b);
+  return out;
 }
 
 static void insp_key_into(InspBuf *b, const char *key, size_t len) {
@@ -2698,6 +2718,7 @@ typedef struct {
   bool custom_inspect;
   bool sorted;
   bool no_break;
+  int getters;
   int depth_kind;
   double depth_number;
   double break_length;
@@ -2745,6 +2766,7 @@ double scr_insp_custom_call_begin(void) {
   sv->custom_inspect = g_custom_inspect;
   sv->sorted = g_sorted;
   sv->no_break = g_no_break;
+  sv->getters = g_getters;
   sv->depth_kind = g_depth_kind;
   sv->depth_number = g_depth_number;
   sv->break_length = g_break_length;
@@ -2756,6 +2778,7 @@ double scr_insp_custom_call_begin(void) {
   g_show_hidden = false;
   g_custom_inspect = true;
   g_no_break = false;
+  g_getters = 0;
   g_depth_kind = 1;
   g_depth_number = 0;
   g_user_options = NULL;
@@ -2774,6 +2797,7 @@ static InspCallSaved *insp_call_options_restore(size_t depth) {
   g_show_hidden = sv->show_hidden;
   g_custom_inspect = sv->custom_inspect;
   g_no_break = sv->no_break;
+  g_getters = sv->getters;
   g_depth_kind = sv->depth_kind;
   g_depth_number = sv->depth_number;
   g_user_options = sv->user_options;
@@ -3436,7 +3460,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       for (size_t k = 0; props && k < scr_dyn_obj_count(props); k++) {
         ScrDynProp ent = scr_dyn_obj_prop_at(props, k);
         if (!insp_obj_shows(&ent)) continue;
-        ScrStr *val = ent.accessor ? insp_accessor_value(&ent, props, recurse + 1, depth)
+        /* The array itself is the getter's `this` (Node's formatProperty
+         * calls it with the value it formats), not the property table. */
+        ScrStr *val = ent.accessor ? insp_accessor_value(&ent, d, recurse + 1, depth)
                                    : scr_insp_dyn(ent.value, recurse + 1, depth);
         if (!val) break;
         InspBuf eb = {0};
@@ -3463,7 +3489,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         if (!scr_dyn_own_symbol_prop(d, symbol, &ent)) continue;
         if (!(ent.enumerable || g_show_hidden)) continue;
         ScrStr *key = scr_insp_dyn(symbol, recurse + 1, depth);
-        ScrStr *val = ent.accessor ? insp_accessor_value(&ent, props, recurse + 1, depth)
+        /* The array itself is the getter's `this` (Node's formatProperty
+         * calls it with the value it formats), not the property table. */
+        ScrStr *val = ent.accessor ? insp_accessor_value(&ent, d, recurse + 1, depth)
                                    : scr_insp_dyn(ent.value, recurse + 1, depth);
         if (!val) {
           scr_str_release(key);

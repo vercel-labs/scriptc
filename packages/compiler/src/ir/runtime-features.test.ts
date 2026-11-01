@@ -300,6 +300,71 @@ describe("runtime feature snapshots", () => {
     expect(selects("dyn.keySetComputed", { kind: "varRef", localId: "k", type: DYN, loc })).toBe(
       false,
     );
+    // A live view of a native array keeps its far slots out of line already
+    // (the ScrArr ext), so a spelled far write through it selects nothing.
+    const view = module();
+    const native = arrayOf(DYN);
+    view.functions[0]!.locals.push({ id: "%typed", name: "typed", mutable: false, type: native });
+    view.functions[0]!.body.push(
+      {
+        kind: "varDecl",
+        localId: "%view",
+        init: boxed({ kind: "varRef", localId: "%typed", type: native, loc }),
+        loc,
+      },
+      { kind: "varDecl", localId: "%key", init: boxed(num(3000001)), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySetComputed",
+          args: [
+            { kind: "varRef", localId: "%view", type: DYN, loc },
+            { kind: "varRef", localId: "%key", type: DYN, loc },
+            value,
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(view).sparseArrays).toBe(false);
+    // A module-level `const view: any = typed` initializes its global with an
+    // assign, and is the same live view.
+    const globalView = module();
+    globalView.functions[0]!.locals.push({
+      id: "%typed",
+      name: "typed",
+      mutable: false,
+      type: native,
+    });
+    globalView.functions[0]!.body.push(
+      {
+        kind: "assign",
+        localId: "%view",
+        value: boxed({ kind: "varRef", localId: "%typed", type: native, loc }),
+        initializes: true,
+        loc,
+      },
+      { kind: "varDecl", localId: "%key", init: boxed(num(3000001)), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySetComputed",
+          args: [
+            { kind: "varRef", localId: "%view", type: DYN, loc },
+            { kind: "varRef", localId: "%key", type: DYN, loc },
+            value,
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(globalView).sparseArrays).toBe(false);
     // `length` moves where the prefix ends, so the spelled value decides.
     expect(selects("dyn.keySet", str("length"), boxed(num(5000000)))).toBe(true);
     expect(selects("dyn.keySet", str("length"), boxed(num(8)))).toBe(false);

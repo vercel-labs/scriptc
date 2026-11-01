@@ -1,0 +1,15 @@
+  dynamic tier   (tier assignment, report-only; --tier=auto)
+    0 functions already operate on dynamic values (0 statements)
+
+    0 demotion requests (refusals and fences the dynamic tier would replace)
+
+    3 runtime-optional slots (report-only: widened storage the checker still reads at its declared type)
+    count  tests/coverage-fixtures/runtime-optional-narrowing.ts:6:7  (number | undefined, read as number at 2 sites)
+      <- binding from tests/coverage-fixtures/runtime-optional-narrowing.ts:6:15
+      -> read at tests/coverage-fixtures/runtime-optional-narrowing.ts:7:12, tests/coverage-fixtures/runtime-optional-narrowing.ts:7:44
+    label  tests/coverage-fixtures/runtime-optional-narrowing.ts:10:7  (string | undefined, read as string at 1 site)
+      <- binding from tests/coverage-fixtures/runtime-optional-narrowing.ts:10:15
+      -> read at tests/coverage-fixtures/runtime-optional-narrowing.ts:11:13
+    first  tests/coverage-fixtures/runtime-optional-narrowing.ts:14:10  (number | undefined, read as number at 1 site)
+      <- pattern-binding from tests/coverage-fixtures/runtime-optional-narrowing.ts:14:19
+      -> read at tests/coverage-fixtures/runtime-optional-narrowing.ts:15:10

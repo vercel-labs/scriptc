@@ -60,6 +60,8 @@ export const BASE_RUNTIME_SOURCES = [
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
+  // The call-time parameter bind of a generator (fn.generator.bindAtCall).
+  ["scr_gen_bind.c", "genBind"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
@@ -101,11 +103,21 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
   ["scr_js_object.c", "dynTier"],
+  // Mutable ArrayBuffers (t262-dc C1/C2): the views registry that recomputes
+  // every view's length when a buffer resizes, grows or detaches, and the
+  // operations themselves. A JavaScript source with the `mutableBuffers`
+  // fact arms it at the top of %main (arrayBuffer.armMutable); every other
+  // program keeps the base units' hooks NULL and links no registry.
+  ["scr_js_buffers.c", "mutableBuffers"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
     any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
   ],
+  // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
+  // the specification's algorithms over the checked-dynamic tier. Its
+  // feature also selects dynInvoke and dynAsync, whose units it calls.
+  ["scr_js_promise_generic.c", "promiseGeneric"],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -124,6 +136,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
+  ["scr_zstd.c", all("zlib", "zstd")],
   // Intl over ICU (scr_intl.c): the default-locale number/date formats and
   // word segmentation, over the packed ICU archive and its data file.
   // Every engine-free Intl form (the en-US fast paths, default grapheme
@@ -240,23 +253,54 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
+/** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
+ * object model features reach (t262-da §J). Every such feature is inert
+ * until its own runtime state exists, so one build carries all of them. */
+function withJsObjectModel(variants) {
+  for (const { id, when, defines } of variants.slice()) {
+    const suffix = id === "default" ? "" : `-${id}`;
+    variants.push({
+      id: `js-om${suffix}`,
+      when: { ...when, jsObjectModel: true },
+      defines: [...defines, "SCR_JS_OBJECT_MODEL"],
+    });
+  }
+  return variants;
+}
+
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths
   // for Node island handles and handle classes call through tables that
   // scr_node_island_handle.c and scr_dyn_handle_class.c install when a
-  // program links them, and its dynamic-tier primitives are always defined.
-  // A program with a partial record assertion (record-views.ts) links the
-  // build whose view slot answers NULL for a field the viewed record does
-  // not declare, so the emitted guard, clone helper and presence test can
-  // stop with the program's message instead of reading a bogus slot; every
-  // other program keeps the default object.
+  // program links them, its dynamic-tier primitives are always defined, and
+  // its view slot answers NULL for a field the viewed record does not
+  // declare (a partial record assertion, record-views.ts), so the emitted
+  // guard, clone helper and presence test stop with the program's message.
+  // A full view holds an offset for every target field, so the NULL case is
+  // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
+    // An error thrown by island code answers `constructor` from V8 (NI-4),
+    // so `e.constructor === TypeError` holds with the island's TypeError.
+    // Pushed before the object model twins below, so a program that has both
+    // selects one build that carries both defines. Every other program keeps
+    // the default object, byte for byte.
     variants.push({
-      id: "record-view-partial",
-      when: { recordViewPartial: true },
-      defines: ["SCR_RECORD_VIEW_PARTIAL"],
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
     });
+    // The JavaScript object model build (t262-da §J): every runtime feature
+    // reached only from JavaScript-source facts — builtin intrinsics, array
+    // attributes, BigInt views, handle property tables, buffer views —
+    // shares SCR_JS_OBJECT_MODEL instead of adding a variant column of its
+    // own. jsObjectModel implies dynTier, so such a program links the
+    // dynamic tier's units as well, and each feature's code is inert until
+    // its own runtime state exists. #2701 made this unit one
+    // build per flavor, so every variant here already carries the dynamic
+    // tier's primitives and each one gets its object model twin. Every other
+    // program keeps the default object, byte for byte.
+    withJsObjectModel(variants);
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
@@ -277,29 +321,31 @@ export function variantsFor(source) {
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
     });
+    // The BigInt element kinds and their element accessors are part of the
+    // JavaScript object model build (t262-da §J): a BigInt view's program
+    // has jsObjectModel, so it selects the object model build beside the
+    // TextDecoder legacy one when it has both. Every other program keeps the
+    // default object, byte for byte.
+    withJsObjectModel(variants);
   }
-  // fs.watchFile's poll needs a path stat that reports the errno (its failed
-  // poll IS a reportable event). The Stats snapshot is private to scr_lib.c,
-  // so the two entry points live in a build of that unit only programs that
-  // poll link; every other program keeps the default object, byte for byte.
-  if (source === "scr_lib.c") {
-    variants.push({
-      id: "fs-watch-file",
-      when: { watchFile: true },
-      defines: ["SCR_FS_WATCH_FILE"],
-    });
-    // Node answers a Buffer from a file read, and its brand is observable
-    // (Buffer.isBuffer, instanceof, inspect): a program that can observe it
-    // links the build that sets it. Combined with every variant above so a
-    // program that also polls keeps scr_watch_file's stat entry points
-    // (selectVariant takes the variant with the most conditions).
-    for (const { id, when, defines } of variants.slice()) {
-      variants.push({
-        id: `${id}-fs-buffer-brand`,
-        when: { ...when, fsBufferBrand: true },
-        defines: [...defines, "SCR_FS_BUFFER_BRAND"],
-      });
-    }
+  // The mutable-buffers registry (t262-dc C1/C2) is part of the JavaScript
+  // object model build: its tables and the ScrJsBufferOps contract it fills
+  // exist only there (SCR_JS_OBJECT_MODEL), so the unit selects that build
+  // and its default object compiles empty. A program with the fact links
+  // the unit at all (OPTIONAL_RUNTIME_SOURCES).
+  if (source === "scr_js_buffers.c") withJsObjectModel(variants);
+  // util.inspect prints a BigInt typed array by reading its elements as
+  // BigInts, whichever build of the unit the program selects. Its Node island
+  // build is not the one these variants name: island output keeps its own
+  // object.
+  if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
+    withJsObjectModel(variants);
+  }
+  // console.table reads the cells of a row's typed array, so a BigInt view
+  // needs the element accessor that answers BigInts. The default object keeps
+  // the numeric read, byte for byte.
+  if (source === "scr_console_native.c") {
+    withJsObjectModel(variants);
   }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
@@ -522,6 +568,7 @@ export function createRuntimePackMatrix({
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];

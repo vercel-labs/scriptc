@@ -1488,34 +1488,49 @@ static void sf_then_schedule(
   scr_queue_microtask(task);
 }
 
+/* Resolves `target` with a stream callback's result, as a promise's
+ * resolve function does. A record or array result of a compiled closure
+ * crosses the dynamic boundary as a live typed-reference capsule (see
+ * scr_dyn_thenable_function), so the thenable stance is the resolution
+ * procedure's rather than "a plain object with a then method". */
 static void sf_then_adopt(ScrPromise *target, ScrDyn *value) {
   if (value->kind == SCR_DYN_PROMISE) {
     scr_promise_race_add(
         target, value->v.promise, &scr_promise_adapt_copy);
     return;
   }
-  if (value->kind == SCR_DYN_OBJ) {
-    const ScrDyn *then_fn = scr_dyn_obj_get(value, "then", 4);
-    if (then_fn && then_fn->kind == SCR_DYN_FUNC) {
-      sf_then_schedule(target, value, (ScrDyn *)then_fn);
-      return;
-    }
+  ScrDyn *then_fn = scr_dyn_thenable_function(value, NULL);
+  if (scr_exc_pending()) {
+    scr_promise_reject_pending(target);
+    return;
+  }
+  if (then_fn) {
+    sf_then_schedule(target, value, then_fn);
+    scr_dyn_release(then_fn);
+    return;
   }
   scr_promise_fulfill_ref(
       target, scr_dyn_retain(value), &scr_dyn_retain_v,
       &scr_dyn_release_v, NULL);
 }
 
-/* +1 when the callback result must be awaited; NULL for a plain value. */
+/* +1 when the callback result must be awaited; NULL for a plain value. A
+ * throwing `then` read answers a rejected promise exactly as the await
+ * would reject. */
 static ScrPromise *sf_stream_callback_promise(ScrDyn *value) {
   if (value->kind == SCR_DYN_PROMISE) {
     return scr_promise_retain(value->v.promise);
   }
-  if (value->kind != SCR_DYN_OBJ) return NULL;
-  const ScrDyn *then_fn = scr_dyn_obj_get(value, "then", 4);
-  if (!then_fn || then_fn->kind != SCR_DYN_FUNC) return NULL;
+  ScrDyn *then_fn = scr_dyn_thenable_function(value, NULL);
+  if (scr_exc_pending()) {
+    ScrPromise *rejected = scr_promise_new();
+    scr_promise_reject_pending(rejected);
+    return rejected;
+  }
+  if (!then_fn) return NULL;
   ScrPromise *promise = scr_promise_new();
-  sf_then_schedule(promise, value, (ScrDyn *)then_fn);
+  sf_then_schedule(promise, value, then_fn);
+  scr_dyn_release(then_fn);
   return promise;
 }
 

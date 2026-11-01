@@ -22,6 +22,10 @@ export interface NativeLinkFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** A BigInt typed-array constructor is read as a value: its element kinds
+   * live in the JavaScript object model build (t262-da §J), which
+   * jsObjectModelFact ORs this fact into. */
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
@@ -31,10 +35,17 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
-  /** The program asserts a record literal to a wider record type (a partial
-   * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
-   * Absent for every program without one, so their objects stay identical. */
-  recordViewPartial?: boolean;
+  /** The program uses a runtime feature only a JavaScript source reaches:
+   * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
+   * (t262-da §J). Absent for every other program, so their objects stay
+   * identical. */
+  jsObjectModel?: boolean;
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
+   * registry those operations maintain. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
+  mutableBuffers?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
@@ -65,12 +76,17 @@ export interface NativeLinkFeatures {
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
    * otherwise. */
   primitiveWrapper?: boolean;
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
+  promiseGeneric?: boolean;
   /** %Iterator% and %Iterator.prototype% as values link
    * scr_js_iterator.c; absent (false) otherwise. */
   iteratorProto?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
+  /** node:zlib's zstd forms: scr_zstd.c and the vendored zstd archive. */
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -100,6 +116,9 @@ export interface NativeLinkFeatures {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * scr_dyn_integrity.c. Absent (false) for programs without it. */
   dynIntegrityQueries?: boolean;
+  /** A generator that binds its parameters at the call: scr_gen_bind.c.
+   * Absent (false) for programs without one. */
+  genBind?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
@@ -165,10 +184,6 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
-  /** A typed fs read whose bytes value the program can observe as a Buffer:
-   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
-   * brand keep the default object. */
-  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;

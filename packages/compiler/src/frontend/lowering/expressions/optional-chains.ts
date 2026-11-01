@@ -1,6 +1,7 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
+import { overloadValueResult } from "../lower-calls.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { DYN, STRING, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../../ir/ir.js";
@@ -515,7 +516,16 @@ export function lowerOptionalChain(
       type: narrowed.ret,
       loc,
     };
-    return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
+    // A callee VALUE of an overloaded type holds the set's erased function:
+    // the call's result converts to the resolved overload's type inside the
+    // guard, exactly as the same call without `?.` does (lower-calls.ts).
+    return lowerer.finishOptionalChain(
+      expr,
+      id,
+      receiver,
+      overloadValueResult(lowerer, expr, recvRef, body),
+      loc,
+    );
   }
 
   // Member forms: re-dispatch the normal lowering with the receiver node

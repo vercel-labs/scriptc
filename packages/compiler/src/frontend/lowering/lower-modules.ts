@@ -175,7 +175,11 @@ import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
 import { dateClassOperationPrelude } from "./builtins/date-classes.js";
-import { cjsAccessorSnapshotStores, jsHoldsDynObject } from "./lower-exprs.js";
+import {
+  cjsAccessorSnapshotStores,
+  jsHoldsDynObject,
+  jsHoldsMixedClassConstructors,
+} from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
@@ -2468,6 +2472,37 @@ export function collectGlobals(
             }
             continue;
           }
+          // A JS file-scope ARRAY LITERAL of several class constructors
+          // (`const classes = [A, B]`): tsc's best common type spells the
+          // FIRST constructor, but the literal is a fresh array of every
+          // constructor it names, so the binding holds the checked-dynamic
+          // array (lowerArrayLiteral's own rule). The spelled element type
+          // would check each element against A's class key and reject B at
+          // module init.
+          if (
+            isJsSourceFile(sf) &&
+            ts.isIdentifier(decl.name) &&
+            nameNode === decl.name &&
+            !decl.type &&
+            !hasJsTypeAnnotation(decl) &&
+            decl.initializer !== undefined &&
+            jsHoldsMixedClassConstructors(lowerer, decl.initializer)
+          ) {
+            const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+            if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              const g: IrGlobal = {
+                id: `%g.${tag}${nsPrefix}${nameNode.text}`,
+                name: nameNode.text,
+                type: DYN,
+                mutable: isLet,
+                source: bindingSource(nameNode),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+            }
+            continue;
+          }
           // A JS file-scope ANY-RESIDUE binding whose VALUE provably
           // lives in the checked-dynamic tree: no initializer (`let catchWarning;` —
           // test/common's warning ledger), a unit initializer (`let
@@ -2619,6 +2654,20 @@ export function collectGlobals(
           )
             continue;
           let type = handleT ?? factoryType ?? (inferredJsCall ? DYN : lowerer.irTypeOf(nameNode));
+          // An initializer-less `let` without an annotation takes its
+          // writes' type, as a function's local does (lowerVarDecl's own
+          // binding path): `let stat; try { stat = lstatSync(".") } catch
+          // { stat = null }` holds `Stats | null` rather than an
+          // unchecked-dynamic slot.
+          const evolvedGlobal =
+            type.kind === "dyn" &&
+            isLet &&
+            !isVarDeclared(decl) &&
+            decl.type === undefined &&
+            decl.initializer === undefined
+              ? inferredEvolvingLetType(lowerer, decl)
+              : null;
+          if (evolvedGlobal) type = evolvedGlobal;
           if (
             isJsSourceFile(sf) &&
             !decl.type &&
@@ -2876,7 +2925,11 @@ export function collectGlobals(
           // reads the dyn undefined instead of faulting on NULL — the
           // dyn face of let's documented pre-declaration window (Node
           // throws the TDZ ReferenceError there).
-          if (isVarDeclared(decl) || (g.type.kind === "dyn" && g.mutable)) {
+          if (
+            isVarDeclared(decl) ||
+            evolvedGlobal !== null ||
+            (g.type.kind === "dyn" && g.mutable)
+          ) {
             noteVarGlobalEntryInit(lowerer, sf, g);
           }
         } catch (e) {

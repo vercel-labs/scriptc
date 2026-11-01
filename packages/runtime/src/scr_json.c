@@ -90,6 +90,15 @@ static void scr_json_oom(void) {
 static SCR_TL ScrDyn *scr_iterator_symbol;
 static SCR_TL ScrDyn *scr_async_iterator_symbol;
 static SCR_TL ScrDyn *scr_to_primitive_symbol;
+static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint, bool *handled);
+/* ToNumber's Symbol.toPrimitive step, set by
+ * scr_dyn_to_primitive_number_install: programs that never read
+ * Symbol.toPrimitive do not link the step or the ToString its TypeError
+ * messages use. External, so the optimizer does not turn the call through
+ * it into a direct call. */
+ScrDyn *(*scr_to_primitive_number_fn)(const ScrDyn *value, const char *hint, bool *handled) = NULL;
+
+void scr_dyn_to_primitive_number_install(void) { scr_to_primitive_number_fn = scr_dyn_exotic_to_primitive; }
 static bool scr_dyn_generator(const ScrDyn *value) {
   if (!value || value->kind != SCR_DYN_TYPED_REF) return false;
   /* Array keys also start with 'a': the second byte sets them apart before
@@ -188,6 +197,8 @@ static void scr_inspect_custom_symbol_cleanup(void) {
   scr_dyn_release(scr_inspect_custom_symbol);
   scr_inspect_custom_symbol = NULL;
 }
+
+ScrSym *(*scr_sym_for_fn)(ScrStr *key) = NULL;
 
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key) {
   if (scr_inspect_custom_symbol) return;
@@ -803,6 +814,14 @@ static SCR_TL ScrDyn *scr_builtin_array_prototype;
 
 bool scr_dyn_is_array_prototype(const ScrDyn *d) {
   return d && d == scr_builtin_array_prototype;
+}
+
+bool scr_dyn_is_object_prototype(const ScrDyn *d) {
+  return d && d == scr_builtin_object_prototype;
+}
+
+bool scr_dyn_is_error_prototype(const ScrDyn *d) {
+  return d && d == scr_builtin_error_prototype;
 }
 
 bool scr_dyn_array_prototype_element_fence(const ScrDyn *recv) {
@@ -1484,6 +1503,9 @@ static inline ScrDyn *scr_dyn_leaf_alloc(ScrDynKind kind) {
 
 static void scr_dyn_handle_release(void *h, ScrDynHandleTag tag);
 static bool scr_dyn_to_primitive_result_is_object(const ScrDyn *d);
+static bool scr_dyn_primitive_kind(const ScrDyn *v);
+static ScrStr *scr_dyn_no_side_effects_to_string(const ScrDyn *d);
+static bool scr_dyn_in_on_primitive(const ScrDyn *v, const ScrStr *key);
 
 /* Pooled dyn nodes report their disposal to weak collections only: they
  * are never the native records the kept-source table is keyed by. */
@@ -1962,6 +1984,28 @@ void scr_dyn_arr_push_hole(ScrDyn *arr) {
   arr->v.arr.presence[arr->v.arr.len - 1] = 0;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* One typed-array element as the dyn value a read answers: a number for the
+ * numeric kinds, a BigInt for the 64-bit kinds (whose elements no double
+ * holds). `index` is the caller's validated element index. */
+static ScrDyn *dyn_bytes_element(const ScrBytes *b, double index) {
+  if (scr_bytes_elem_is_bigint(b->elem)) return scr_bytes_get_bigint(b, index);
+  return scr_dyn_new_num(scr_bytes_get(b, index));
+}
+
+/* A copy or callback result stored into a typed array: the target's element
+ * kind decides between ToBigInt and ToNumber, exactly as Node's element
+ * [[Set]] does. False with the exception pending. */
+static bool dyn_bytes_element_set(ScrDyn *target, double index, const ScrDyn *value) {
+  ScrBytes *b = target->v.bytes;
+  if (scr_bytes_elem_is_bigint(b->elem)) return scr_bytes_set_bigint(b, index, value);
+  double number;
+  if (!scr_dyn_number_coerce_js(value, &number)) return false;
+  if (index >= 0 && index < (double)b->len) scr_bytes_set(b, index, number);
+  return true;
+}
+#endif
+
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
  * checked-dynamic tier): JS's spread over the checked-dynamic tree's iterable kinds —
  * arrays element-by-element (retained), strings by code POINT (the string
@@ -1993,6 +2037,12 @@ void scr_dyn_arr_push_spread(ScrDyn *arr, const ScrDyn *src, const char *what) {
   }
   if (src->kind == SCR_DYN_BYTES) {
     for (size_t i = 0; i < src->v.bytes->len; i++) {
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_bytes_elem_is_bigint(src->v.bytes->elem)) {
+        scr_dyn_arr_push(arr, scr_bytes_get_bigint(src->v.bytes, (double)i));
+        continue;
+      }
+#endif
       scr_dyn_arr_push(arr, scr_dyn_new_num(scr_bytes_get(src->v.bytes, (double)i)));
     }
     return;
@@ -2206,6 +2256,14 @@ ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_l
     if (link->kind != SCR_DYN_OBJ && link->kind != SCR_DYN_ARR) break;
   }
   return NULL;
+}
+
+/* Whether the builtin Array.prototype object exists and carries `key`
+ * before the method table installs. A read that already went through that
+ * prototype answered such a name; the inherited-read fallback must not read
+ * it (or run a getter on it) a second time. */
+bool scr_dyn_array_prototype_owns(const ScrStr *key) {
+  return scr_builtin_array_prototype != NULL && scr_dyn_has_own(scr_builtin_array_prototype, key);
 }
 
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
@@ -3588,6 +3646,11 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
     size_t index = 0;
     for (size_t i = 0; i < key->len; i++) index = index * 10 + (size_t)(key->data[i] - '0');
     ScrDyn *out = scr_dyn_new_obj();
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(value->v.bytes->elem))
+      scr_dyn_obj_set(out, "value", 5, scr_bytes_get_bigint(value->v.bytes, (double)index));
+    else
+#endif
     scr_dyn_obj_set(out, "value", 5, scr_dyn_new_num(scr_bytes_get(value->v.bytes, (double)index)));
     scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(true));
     scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(true));
@@ -3929,10 +3992,21 @@ static void scr_record_link_disposed(void *copy);
 static SCR_TL size_t scr_record_link_count;
 
 static void scr_dispose_observers(void *object) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The mutable-buffers registry forgets a freed view or owner (t262-dc);
+   * a program without the fact has no table to consult. */
+  if (scr_js_buffer_ops) scr_js_buffer_ops->disposed(object);
+#endif
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
   if (scr_record_link_count) scr_record_link_disposed(object);
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* scr_js_buffers_arm: the registry must see frees even in a program that
+ * creates no weak collection, so it installs the one dispose hook. */
+void scr_js_dispose_hook_install(void) { scr_weak_dispose_hook = &scr_dispose_observers; }
+#endif
 
 /* Keeps live entries plus deleted markers at most half the table: grows
  * when live entries fill a quarter, otherwise rehashes in place to drop the
@@ -4623,21 +4697,16 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
 
 /* The slot of field `position` of a view (emitted view guards, cold). A
  * PARTIAL view (a record literal asserted to a wider record type) holds
- * SIZE_MAX for every field its viewed record does not declare: the
- * SCR_RECORD_VIEW_PARTIAL build of this unit answers NULL for it, the guard
- * that gets NULL stops with scr_trap and the program's own message, and a
- * presence test asks for the same slot and answers by it. Only a program
- * with such an assertion links that build (runtime-pack-matrix.mjs); every
- * other program links this default object, whose bytes are unchanged. */
+ * SIZE_MAX for every field its viewed record does not declare: the lookup
+ * answers NULL there, the guard that gets NULL stops with scr_trap and the
+ * program's own message, and a presence test asks for the same slot and
+ * answers by it. A full view holds an offset for every target field, so the
+ * NULL case is unreachable for programs without a partial assertion. */
 void *scr_record_view_slot(void *view, size_t position) {
   ScrRecordSource *entry = scr_record_source_slot(view);
-#ifdef SCR_RECORD_VIEW_PARTIAL
   size_t offset = entry->offsets[position];
   if (offset == SIZE_MAX) return NULL;
   return (char *)entry->viewed + offset;
-#else
-  return (char *)entry->viewed + entry->offsets[position];
-#endif
 }
 
 /* The address of field `position` of a value of a view target type, whose
@@ -5363,6 +5432,10 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isArrayBufferView")) return value->kind == SCR_DYN_BYTES;
   if (PROBE("isDataView")) return value->kind == SCR_DYN_BYTES && value->v.bytes->is_data_view;
   if (PROBE("isTypedArray")) return value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (PROBE("isBigInt64Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_I64);
+  if (PROBE("isBigUint64Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_U64);
+#endif
   if (PROBE("isUint8Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_U8);
   if (PROBE("isUint8ClampedArray")) return scr_dyn_typed_array_is(value, SCR_BYTES_U8C);
   if (PROBE("isUint16Array")) return scr_dyn_typed_array_is(value, SCR_BYTES_U16);
@@ -5457,7 +5530,15 @@ static int scr_bytes_ctor_elem(const ScrDyn *callee) {
 }
 
 ScrDyn *scr_dyn_iterator_method(const ScrDyn *value) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A function is an object for a Symbol.iterator lookup: a method the
+   * program put on it (`fn[Symbol.iterator] = {}`) is read, so a non-callable
+   * one is Node's TypeError instead of an array-like read. The default build
+   * keeps the plain-object read. */
+  if (!scr_iterator_symbol || (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_FUNC)) return NULL;
+#else
   if (!scr_iterator_symbol || value->kind != SCR_DYN_OBJ) return NULL;
+#endif
   ScrDyn *method = scr_dyn_symbol_key_get(value, scr_iterator_symbol, true);
   if (method && (method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL)) {
     scr_dyn_release(method);
@@ -5560,6 +5641,11 @@ static ScrDyn *scr_bytes_static_create(ScrDyn *constructor, size_t n) {
 
 /* target[k] = value, converting with ToNumber as a typed array [[Set]] does. */
 static bool scr_bytes_static_set(ScrDyn *target, size_t k, const ScrDyn *value) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A BigInt view's element store is ToBigInt (TypedArray.from/of). */
+  if (scr_bytes_elem_is_bigint(target->v.bytes->elem))
+    return dyn_bytes_element_set(target, (double)k, value);
+#endif
   double v;
   if (!scr_dyn_number_coerce_js(value, &v)) return false;
   if (k < target->v.bytes->len) scr_bytes_set(target->v.bytes, (double)k, v);
@@ -6024,7 +6110,9 @@ SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *a
 SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
                                             bool descriptor) = NULL;
 SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
+SCR_TL const char *(*scr_dyn_builtin_owner_fn)(const ScrDyn *fn) = NULL;
 ScrDyn *(*scr_bytes_buffer_constructor_fn)(void) = NULL;
+ScrDyn *(*scr_bytes_buffer_member_fn)(const ScrDyn *value, const ScrStr *key) = NULL;
 
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (callee->kind == SCR_DYN_FUNC && scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo)
@@ -6053,10 +6141,32 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
+  /* A builtin method read as a value (Array.prototype.slice, a string's
+   * trim) is not a constructor in Node, which names the callee the source
+   * used. */
+  if (callee->kind == SCR_DYN_FUNC && callee->v.fn.sig &&
+      (strcmp(callee->v.fn.sig, "native:prototype") == 0 ||
+       strstr(callee->v.fn.sig, ".prototype") != NULL)) {
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_write(&message, what->data, what->len);
+    scr_jb_puts(&message, " is not a constructor");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return NULL;
+  }
+  /* A compiled function that is not a constructor (an arrow function, a
+   * method, a builtin function value such as Symbol or Number.parseFloat)
+   * throws Node's TypeError. Native functions without a construction here
+   * keep the refusal. */
+  bool compiled = callee->kind == SCR_DYN_FUNC && !callee->v.fn.class_obj &&
+      !(callee->v.fn.sig && strncmp(callee->v.fn.sig, "native:", 7) == 0);
+  /* Symbol refuses construction itself, under its own name. */
+  const char *builtin = compiled && scr_dyn_builtin_owner_fn ? scr_dyn_builtin_owner_fn(callee) : NULL;
   ScrJsonBuf message;
   scr_jb_init(&message);
-  scr_jb_write(&message, what->data, what->len);
-  scr_jb_puts(&message, " is not a supported native constructor");
+  if (builtin && strcmp(builtin, "Symbol") == 0) scr_jb_puts(&message, builtin);
+  else scr_jb_write(&message, what->data, what->len);
+  scr_jb_puts(&message, compiled ? " is not a constructor" : " is not a supported native constructor");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
   return NULL;
 }
@@ -6106,8 +6216,18 @@ static ScrDyn *dyn_bytes_wrap(const ScrDyn *recv, ScrBytes *out) {
 
 /* The element at k, or undefined past the view's current end. */
 static ScrDyn *dyn_bytes_item(const ScrBytes *b, size_t k) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (k < b->len && scr_bytes_elem_is_bigint(b->elem)) return scr_bytes_get_bigint(b, (double)k);
+#endif
   return k < b->len ? scr_dyn_new_num(scr_bytes_get(b, (double)k)) : scr_dyn_retain(scr_dyn_undefined());
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The same element read for a unit that is not part of the typed-array
+ * dispatch (console.table cells): the kind decides here, so the caller needs
+ * no build of its own. +1. */
+ScrDyn *scr_dyn_bytes_item(const ScrBytes *b, size_t k) { return dyn_bytes_item(b, k); }
+#endif
 
 /* callback(value, index, array) with thisArg as `this`. */
 static ScrDyn *dyn_bytes_call(ScrDyn *cb, ScrDyn *this_arg, ScrDyn *const *cbargs, size_t n) {
@@ -6266,16 +6386,139 @@ static ScrDyn *scr_bytes_species_create(ScrDyn *recv, size_t n) {
   return result;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* ── the element-value methods of a BigInt view ──────────────────────────
+ * A BigInt element is a checked-dynamic value, not a double, so the methods
+ * that order, copy or stringify values rather than bytes work over ScrDyn
+ * elements. An element past a shrunk view's current end is undefined, as the
+ * numeric walkers answer NaN's slot: it joins as "" and sorts last. */
+
+/* The elements as checked-dynamic values; index n holds undefined. */
+static ScrDyn **dyn_bigint_values(const ScrBytes *b, size_t n) {
+  ScrDyn **values = malloc((n ? n : 1) * sizeof *values);
+  if (!values) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < n; i++)
+    values[i] = i < b->len ? scr_bytes_get_bigint(b, (double)i) : scr_dyn_retain(scr_dyn_undefined());
+  return values;
+}
+
+static void dyn_bigint_values_release(ScrDyn **values, size_t n) {
+  if (!values) return;
+  for (size_t i = 0; i < n; i++) scr_dyn_release(values[i]);
+  free(values);
+}
+
+/* SortCompare over BigInt elements: the comparator's ToNumber answer (NaN as
+ * 0, so it compares equal), or the numeric order the values have. */
+static bool dyn_bigint_less_eq(ScrDyn *cmp, ScrDyn *x, ScrDyn *y, bool *ok) {
+  if (cmp->kind != SCR_DYN_UNDEF) {
+    ScrDyn *cbargs[2] = { x, y };
+    /* The comparator is called with an undefined `this`. */
+    scr_dyn_this_push_dyn(scr_dyn_undefined());
+    ScrDyn *r = scr_dyn_call(cmp, cbargs, 2, "comparefn");
+    scr_dyn_this_pop();
+    double v = 0;
+    if (!r || !scr_dyn_number_coerce_js(r, &v)) { scr_dyn_release(r); *ok = false; return true; }
+    scr_dyn_release(r);
+    return isnan(v) || v <= 0;
+  }
+  /* undefined sorts after every BigInt, like NaN after every number. */
+  if (x->kind != SCR_DYN_BIGINT) return y->kind != SCR_DYN_BIGINT;
+  if (y->kind != SCR_DYN_BIGINT) return true;
+  return scr_bigint_cmp_f64(x->v.bigint, y->v.bigint) <= 0;
+}
+
+/* A stable merge sort of values[0..n). False with the exception pending. */
+static bool dyn_bigint_sort_values(ScrDyn **values, size_t n, ScrDyn *cmp) {
+  if (n < 2) return true;
+  ScrDyn **tmp = malloc(n * sizeof *tmp);
+  if (!tmp) scr_trap("scriptc: out of memory\n");
+  bool ok = true;
+  for (size_t width = 1; width < n && ok; width *= 2) {
+    for (size_t lo = 0; lo < n && ok; lo += 2 * width) {
+      size_t mid = lo + width < n ? lo + width : n, hi = lo + 2 * width < n ? lo + 2 * width : n;
+      size_t i = lo, j = mid, k = lo;
+      while (i < mid && j < hi && ok)
+        tmp[k++] = dyn_bigint_less_eq(cmp, values[i], values[j], &ok) ? values[i++] : values[j++];
+      while (i < mid) tmp[k++] = values[i++];
+      while (j < hi) tmp[k++] = values[j++];
+    }
+    if (ok) memcpy(values, tmp, n * sizeof *values);
+  }
+  free(tmp);
+  return ok;
+}
+
+/* BigInt.prototype.toLocaleString's answer in the default (en-US) locale:
+ * the exact decimal value with thousands separators. */
+static ScrStr *dyn_bigint_locale(const ScrBigInt *value) {
+  ScrStr *text = scr_bigint_to_string((ScrBigInt *)value, 10);
+  size_t sign = text->data[0] == '-' ? 1 : 0;
+  size_t digits = text->len - sign;
+  if (digits <= 3) return text;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  if (sign) scr_jb_putc(&b, '-');
+  const char *p = text->data + sign;
+  size_t head = digits % 3 == 0 ? 3 : digits % 3;
+  scr_jb_write(&b, p, head);
+  for (size_t i = head; i < digits; i += 3) {
+    scr_jb_putc(&b, ',');
+    scr_jb_write(&b, p + i, 3);
+  }
+  scr_str_release(text);
+  return scr_jb_finish(&b);
+}
+
+/* join and toString over BigInt elements: each element's decimal ToString,
+ * and "" for an element past a shrunk view's end. */
+static ScrStr *dyn_bigint_join(const ScrBytes *bytes, size_t len, const ScrStr *separator) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  for (size_t i = 0; i < len; i++) {
+    if (i > 0) scr_jb_write(&b, separator->data, separator->len);
+    if (i >= bytes->len) continue;
+    ScrDyn *element = scr_bytes_get_bigint(bytes, (double)i);
+    ScrStr *text = scr_bigint_to_string(element->v.bigint, 10);
+    scr_dyn_release(element);
+    scr_jb_write(&b, text->data, text->len);
+    scr_str_release(text);
+  }
+  return scr_jb_finish(&b);
+}
+
+/* Writes values[0..n) into a bigint target, which a species constructor can
+ * have made another content type: that is a value conversion per element. */
+static bool dyn_bigint_write_values(ScrDyn *target, ScrDyn **values, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (!dyn_bytes_element_set(target, (double)i, values[i])) return false;
+  return true;
+}
+#endif
+
 ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, bool *handled) {
   ScrBytes *bytes = recv->v.bytes;
   size_t len = bytes->len;
   *handled = true;
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Every %TypedArray%.prototype method re-validates a detached or
+   * out-of-bounds view first (t262-dc); Node names the method. */
+  if (!scr_js_bytes_live(bytes)) {
+    char label[96];
+    snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+    scr_js_bytes_throw_detached(label);
+    return NULL;
+  }
+#endif
   size_t blen = bytes->len;
   if (scr_dyn_bytes_named(method, "at")) {
     double iD = scr_dyn_bytes_index_arg(args, argc, 0, 0);
     if (scr_exc_pending()) return NULL;
     double idx = iD < 0 ? (double)blen + iD : iD;
     if (idx < 0 || idx >= (double)blen) return scr_dyn_retain(scr_dyn_undefined());
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem)) return scr_bytes_get_bigint(bytes, idx);
+#endif
     return scr_dyn_new_num(scr_bytes_get(bytes, idx));
   }
   if (scr_dyn_bytes_named(method, "slice") || scr_dyn_bytes_named(method, "subarray")) {
@@ -6283,7 +6526,14 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
      * owns an independent copy; all keep the receiver's Buffer flavor. */
     double startD = scr_dyn_bytes_index_arg(args, argc, 0, 0);
     if (scr_exc_pending()) return NULL;
+    /* An omitted end is +Infinity, which every clamp reads as the end; a
+     * length-tracking receiver's subarray stays length-tracking then. A
+     * program without the fact keeps the element count it always passed. */
+#ifdef SCR_JS_OBJECT_MODEL
+    double endD = scr_dyn_bytes_index_arg(args, argc, 1, INFINITY);
+#else
     double endD = scr_dyn_bytes_index_arg(args, argc, 1, (double)blen);
+#endif
     if (scr_exc_pending()) return NULL;
     const bool subarray = recv->buffer || scr_dyn_bytes_named(method, "subarray");
     bool failed;
@@ -6299,6 +6549,19 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
       scr_dyn_release(species);
       if (!result) return NULL;
       size_t end = to < bytes->len ? to : bytes->len;
+#ifdef SCR_JS_OBJECT_MODEL
+      /* The copy is a value copy (Set(result, n, Get(src, k))), so a species
+       * constructor of another content type converts or throws. */
+      if (scr_bytes_elem_is_bigint(bytes->elem) || scr_bytes_elem_is_bigint(result->v.bytes->elem)) {
+        for (size_t k = from, n = 0; k < end; k++, n++) {
+          ScrDyn *element = dyn_bytes_element(bytes, (double)k);
+          bool ok = dyn_bytes_element_set(result, (double)n, element);
+          scr_dyn_release(element);
+          if (!ok) { scr_dyn_release(result); return NULL; }
+        }
+        return result;
+      }
+#endif
       for (size_t k = from, n = 0; k < end; k++, n++)
         scr_bytes_set(result->v.bytes, (double)n, scr_bytes_get(bytes, (double)k));
       return result;
@@ -6345,6 +6608,18 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     return scr_dyn_retain(recv);
   }
   if (scr_dyn_bytes_named(method, "fill") && !recv->buffer) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem)) {
+      /* ToBigInt of the fill value happens before start and end are read. */
+      ScrBigInt *big = scr_dyn_bigint_coerce(argc ? args[0] : scr_dyn_undefined());
+      if (!big) return NULL;
+      double start = scr_dyn_bytes_index_arg(args, argc, 1, 0);
+      double end = scr_exc_pending() ? 0 : scr_dyn_bytes_index_arg(args, argc, 2, (double)blen);
+      if (!scr_exc_pending()) scr_bytes_release(scr_bytes_fill_bigint(bytes, big, start, end));
+      scr_bigint_release(big);
+      return scr_exc_pending() ? NULL : scr_dyn_retain(recv);
+    }
+#endif
     double value;
     if (!scr_dyn_number_coerce_js(argc ? args[0] : scr_dyn_undefined(), &value)) return NULL;
     double start = scr_dyn_bytes_index_arg(args, argc, 1, 0);
@@ -6358,7 +6633,13 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     ScrStr *separator = scr_dyn_bytes_named(method, "join") && argc && args[0]->kind != SCR_DYN_UNDEF
       ? scr_dyn_string_coerce_js(args[0]) : scr_str_new(",", 1);
     if (scr_exc_pending()) { scr_str_release(separator); return NULL; }
+#ifdef SCR_JS_OBJECT_MODEL
+    /* A BigInt element's ToString is its decimal form. */
+    ScrStr *joined = scr_bytes_elem_is_bigint(bytes->elem) ? dyn_bigint_join(bytes, blen, separator)
+                                                           : scr_bytes_join(bytes, separator);
+#else
     ScrStr *joined = scr_bytes_join(bytes, separator);
+#endif
     scr_str_release(separator);
     ScrDyn *out = scr_dyn_new_str(joined);
     scr_str_release(joined);
@@ -6371,7 +6652,18 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     for (size_t i = 0; i < len; i++) {
       if (i > 0) scr_jb_putc(&b, ',');
       if (i >= bytes->len) continue;
+#ifdef SCR_JS_OBJECT_MODEL
+      /* In a BigInt build a numeric view still formats numbers. */
+      ScrStr *text;
+      if (scr_bytes_elem_is_bigint(bytes->elem)) {
+        ScrDyn *element = scr_bytes_get_bigint(bytes, (double)i);
+        text = dyn_bigint_locale(element->v.bigint);
+        scr_dyn_release(element);
+      } else
+        text = scr_intl_num_format_en_us(scr_bytes_get(bytes, (double)i));
+#else
       ScrStr *text = scr_intl_num_format_en_us(scr_bytes_get(bytes, (double)i));
+#endif
       scr_jb_write(&b, text->data, text->len);
       scr_str_release(text);
     }
@@ -6390,6 +6682,35 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     ScrDyn *needle = argc ? args[0] : scr_dyn_undefined();
     const bool number = needle->kind == SCR_DYN_NUM;
     const double target = number ? needle->v.num : 0;
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem)) {
+      /* SameValueZero over BigInt elements: a non-BigInt needle never
+       * matches, and no conversion throws. */
+      if (needle->kind != SCR_DYN_BIGINT) return includes ? scr_dyn_new_bool(false) : scr_dyn_new_num(-1);
+      if (last) {
+        if (n == -INFINITY) return scr_dyn_new_num(-1);
+        double k = n >= 0 ? (n < (double)len - 1 ? n + 0.0 : (double)len - 1) : (double)len + n;
+        for (; k >= 0; k--) {
+          if ((size_t)k >= bytes->len) continue;
+          ScrDyn *element = scr_bytes_get_bigint(bytes, k);
+          bool same = scr_bigint_eq(element->v.bigint, needle->v.bigint);
+          scr_dyn_release(element);
+          if (same) return scr_dyn_new_num(k);
+        }
+        return scr_dyn_new_num(-1);
+      }
+      if (n == INFINITY) return includes ? scr_dyn_new_bool(false) : scr_dyn_new_num(-1);
+      double k = n >= 0 ? n + 0.0 : ((double)len + n < 0 ? 0 : (double)len + n);
+      for (; k < (double)len; k++) {
+        if ((size_t)k >= bytes->len) continue;
+        ScrDyn *element = scr_bytes_get_bigint(bytes, k);
+        bool same = scr_bigint_eq(element->v.bigint, needle->v.bigint);
+        scr_dyn_release(element);
+        if (same) return includes ? scr_dyn_new_bool(true) : scr_dyn_new_num(k);
+      }
+      return includes ? scr_dyn_new_bool(false) : scr_dyn_new_num(-1);
+    }
+#endif
     if (last) {
       if (n == -INFINITY) return scr_dyn_new_num(-1);
       double k = n >= 0 ? (n < (double)len - 1 ? n + 0.0 : (double)len - 1) : (double)len + n;
@@ -6421,6 +6742,15 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     ScrDyn *mapped = NULL;
     if (scr_dyn_bytes_named(method, "map") && !(mapped = scr_bytes_species_create(recv, len))) return NULL;
     double *kept = scr_dyn_bytes_named(method, "filter") ? malloc((len ? len : 1) * sizeof *kept) : NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+    /* A BigInt view keeps the element values themselves. */
+    ScrDyn **kept_vals = NULL;
+    if (kept && scr_bytes_elem_is_bigint(bytes->elem)) {
+      free(kept);
+      kept = NULL;
+      kept_vals = malloc((len ? len : 1) * sizeof *kept_vals);
+    }
+#endif
     size_t nkept = 0;
     for (size_t step = 0; step < len; step++) {
       size_t k = backward ? len - 1 - step : step;
@@ -6432,9 +6762,21 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
         scr_dyn_release(item);
         scr_dyn_release(mapped);
         free(kept);
+#ifdef SCR_JS_OBJECT_MODEL
+        dyn_bigint_values_release(kept_vals, nkept);
+#endif
         return NULL;
       }
       if (mapped) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* A value store: a BigInt element stays a BigInt, and a species
+         * constructor of another content type converts or throws. */
+        bool converted = dyn_bytes_element_set(mapped, (double)k, r);
+        scr_dyn_release(r);
+        scr_dyn_release(item);
+        if (!converted) { scr_dyn_release(mapped); return NULL; }
+        continue;
+#else
         double v;
         bool converted = scr_dyn_number_coerce_js(r, &v);
         scr_dyn_release(r);
@@ -6442,9 +6784,19 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
         if (!converted) { scr_dyn_release(mapped); return NULL; }
         if (k < mapped->v.bytes->len) scr_bytes_set(mapped->v.bytes, (double)k, v);
         continue;
+#endif
       }
       bool truthy = scr_dyn_truthy(r);
       scr_dyn_release(r);
+#ifdef SCR_JS_OBJECT_MODEL
+      if (kept_vals) {
+        /* Ownership of a kept element moves into the array; it is released
+         * after the write-back. */
+        if (truthy) kept_vals[nkept++] = item;
+        else scr_dyn_release(item);
+        continue;
+      }
+#endif
       if (kept) {
         if (truthy) kept[nkept++] = item->kind == SCR_DYN_NUM ? item->v.num : NAN;
       } else if (truthy && (scr_dyn_bytes_named(method, "find") || scr_dyn_bytes_named(method, "findLast"))) {
@@ -6468,6 +6820,15 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
       free(kept);
       return out;
     }
+#ifdef SCR_JS_OBJECT_MODEL
+    if (kept_vals) {
+      ScrDyn *out = scr_bytes_species_create(recv, nkept);
+      bool ok = out && dyn_bigint_write_values(out, kept_vals, nkept);
+      dyn_bigint_values_release(kept_vals, nkept);
+      if (!ok) { scr_dyn_release(out); return NULL; }
+      return out;
+    }
+#endif
     if (scr_dyn_bytes_named(method, "some")) return scr_dyn_new_bool(false);
     if (scr_dyn_bytes_named(method, "every")) return scr_dyn_new_bool(true);
     if (scr_dyn_bytes_named(method, "findIndex") || scr_dyn_bytes_named(method, "findLastIndex")) return scr_dyn_new_num(-1);
@@ -6501,6 +6862,19 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     return acc;
   }
   if (scr_dyn_bytes_named(method, "reverse")) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem)) {
+      for (size_t lo = 0, hi = len; lo + 1 < hi; lo++, hi--) {
+        ScrDyn *a = scr_bytes_get_bigint(bytes, (double)lo);
+        ScrDyn *b = scr_bytes_get_bigint(bytes, (double)(hi - 1));
+        scr_bytes_set_bigint(bytes, (double)lo, b);
+        scr_bytes_set_bigint(bytes, (double)(hi - 1), a);
+        scr_dyn_release(a);
+        scr_dyn_release(b);
+      }
+      return scr_dyn_retain(recv);
+    }
+#endif
     for (size_t lo = 0, hi = len; lo + 1 < hi; lo++, hi--) {
       double a = scr_bytes_get(bytes, (double)lo), b = scr_bytes_get(bytes, (double)(hi - 1));
       scr_bytes_set(bytes, (double)lo, b);
@@ -6510,6 +6884,27 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
   }
   if (scr_dyn_bytes_named(method, "sort") || scr_dyn_bytes_named(method, "toSorted")) {
     if (!dyn_bytes_comparefn_check(args, argc)) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem)) {
+      ScrDyn **values = dyn_bigint_values(bytes, len);
+      bool sorted = dyn_bigint_sort_values(values, len, argc ? args[0] : scr_dyn_undefined());
+      ScrBytes *target = scr_dyn_bytes_named(method, "sort") ? bytes : scr_bytes_new(bytes->elem, (double)len);
+      for (size_t i = 0; sorted && i < len && i < target->len; i++) {
+        if (scr_bytes_elem_is_bigint(target->elem)) scr_bytes_set_bigint(target, (double)i, values[i]);
+        else {
+          double v;
+          if (!scr_dyn_number_coerce_js(values[i], &v)) sorted = false;
+          else scr_bytes_set(target, (double)i, v);
+        }
+      }
+      dyn_bigint_values_release(values, len);
+      if (!sorted) {
+        if (target != bytes) scr_bytes_release(target);
+        return NULL;
+      }
+      return scr_dyn_bytes_named(method, "sort") ? scr_dyn_retain(recv) : dyn_bytes_wrap(recv, target);
+    }
+#endif
     double *values = dyn_bytes_values(bytes, len);
     if (!dyn_bytes_sort_values(values, len, argc ? args[0] : scr_dyn_undefined())) { free(values); return NULL; }
     ScrBytes *target = scr_dyn_bytes_named(method, "sort") ? bytes : scr_bytes_new(bytes->elem, (double)len);
@@ -6518,11 +6913,59 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     return scr_dyn_bytes_named(method, "sort") ? scr_dyn_retain(recv) : dyn_bytes_wrap(recv, target);
   }
   if (scr_dyn_bytes_named(method, "toReversed")) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem)) {
+      ScrBytes *out = scr_bytes_new(bytes->elem, (double)len);
+      for (size_t i = 0; i < len; i++) {
+        ScrDyn *element = scr_bytes_get_bigint(bytes, (double)(len - 1 - i));
+        scr_bytes_set_bigint(out, (double)i, element);
+        scr_dyn_release(element);
+      }
+      return dyn_bytes_wrap(recv, out);
+    }
+#endif
     ScrBytes *out = scr_bytes_new(bytes->elem, (double)len);
     for (size_t i = 0; i < len; i++) scr_bytes_set(out, (double)i, scr_bytes_get(bytes, (double)(len - 1 - i)));
     return dyn_bytes_wrap(recv, out);
   }
   if (scr_dyn_bytes_named(method, "with")) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem)) {
+      double rel2;
+      if (!dyn_bytes_integer_arg(args, argc, 0, 0, &rel2)) return NULL;
+      double actual2 = rel2 >= 0 ? rel2 : (double)len + rel2;
+      /* ToBigInt runs before the index check, as the spec orders it. */
+      ScrBigInt *big = scr_dyn_bigint_coerce(argc > 1 ? args[1] : scr_dyn_undefined());
+      if (!big) return NULL;
+      if (!(actual2 >= 0 && actual2 < (double)bytes->len)) {
+        scr_bigint_release(big);
+        static const char message[] = "Invalid typed array index";
+        scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+        return NULL;
+      }
+      ScrBytes *out = scr_bytes_new(bytes->elem, (double)len);
+      for (size_t i = 0; i < len; i++) {
+        /* A shrink under the index coercion makes the remaining copies read
+         * undefined, which a BigInt element store rejects with Node's
+         * TypeError (t262-dc C2). */
+        if ((double)i >= (double)bytes->len) {
+          scr_bytes_release(out);
+          scr_bigint_release(big);
+          ScrBigInt *missing = scr_dyn_bigint_coerce(scr_dyn_undefined());
+          if (missing) scr_bigint_release(missing);
+          return NULL;
+        }
+        ScrDyn *element = scr_bytes_get_bigint(bytes, (double)i);
+        scr_bytes_set_bigint(out, (double)i, element);
+        scr_dyn_release(element);
+      }
+      ScrDyn *replacement = scr_dyn_new_bigint(big);
+      scr_bigint_release(big);
+      scr_bytes_set_bigint(out, actual2, replacement);
+      scr_dyn_release(replacement);
+      return dyn_bytes_wrap(recv, out);
+    }
+#endif
     double rel, value;
     if (!dyn_bytes_integer_arg(args, argc, 0, 0, &rel)) return NULL;
     double actual = rel >= 0 ? rel : (double)len + rel;
@@ -6533,7 +6976,16 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
       return NULL;
     }
     ScrBytes *out = scr_bytes_new(bytes->elem, (double)len);
+    /* A shrink under the index or value coercion makes the remaining copies
+     * read undefined, which a numeric element store turns into NaN (0 for
+     * an integer kind); the result keeps the captured length (t262-dc C2).
+     * A program without the fact never shrinks, so it reads directly. */
+#ifdef SCR_JS_OBJECT_MODEL
+    for (size_t i = 0; i < len; i++)
+      scr_bytes_set(out, (double)i, scr_bytes_get_or_nan(bytes, (double)i));
+#else
     for (size_t i = 0; i < len; i++) scr_bytes_set(out, (double)i, scr_bytes_get(bytes, (double)i));
+#endif
     scr_bytes_set(out, actual, value);
     return dyn_bytes_wrap(recv, out);
   }
@@ -6595,8 +7047,21 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
   ScrBytes *bytes = value->v.bytes;
   /* Own named properties first; a getter sees the view as `this`. */
   if (scr_bytes_has_named(value, key)) return scr_bytes_named_get(value, key->data, key->len);
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A DataView over a detached or out-of-bounds buffer throws here; a typed
+   * array answers 0. */
+  if (key->len == 10 && memcmp(key->data, "byteLength", 10) == 0) {
+    double value = scr_js_bytes_byte_length(bytes);
+    return scr_exc_pending() ? NULL : scr_dyn_new_num(value);
+  }
+  if (key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0) {
+    double value = scr_js_bytes_byte_offset(bytes);
+    return scr_exc_pending() ? NULL : scr_dyn_new_num(value);
+  }
+#else
   if (key->len == 10 && memcmp(key->data, "byteLength", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_len(bytes));
   if (key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
+#endif
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
   if (bytes->is_data_view) {
     /* A DataView has no length or indexed elements. */
@@ -6630,7 +7095,22 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
       if (key->data[i] < '0' || key->data[i] > '9' || index > (SIZE_MAX - 9) / 10) { digits = false; break; }
       index = index * 10 + (size_t)(key->data[i] - '0');
     }
+#ifdef SCR_JS_OBJECT_MODEL
+    if (digits && index < bytes->len && scr_bytes_elem_is_bigint(bytes->elem))
+      return scr_bytes_get_bigint(bytes, (double)index);
+#endif
     if (digits && index < bytes->len) return scr_dyn_new_num(scr_bytes_get(bytes, (double)index));
+  }
+  /* Buffer.prototype's parent and offset getters: the instance's
+   * ArrayBuffer and byteOffset. */
+  if (value->buffer && key->len == 6 && memcmp(key->data, "parent", 6) == 0) return scr_array_buffer_from_bytes(bytes);
+  if (value->buffer && key->len == 6 && memcmp(key->data, "offset", 6) == 0)
+    return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
+  /* A Buffer's own Buffer.prototype methods come before the
+   * %TypedArray%.prototype ones they override (slice, fill, indexOf, ...). */
+  if (value->buffer && scr_bytes_buffer_member_fn) {
+    ScrDyn *member = scr_bytes_buffer_member_fn(value, key);
+    if (member) return member;
   }
   /* %TypedArray%.prototype methods, with their lengths. */
   static const struct { const char *name; size_t arity; } methods[] = {
@@ -7446,6 +7926,9 @@ typedef struct {
    * instance in `ptr` boxes with this recipe on the first read, and dv
    * caches the box. */
   const ScrDynTypedRefRecipe *recipe;
+  /* A one-shot entry (scr_dyn_this_push_dyn_once): the first read takes
+   * dv, and later reads in the window answer undefined. */
+  bool once;
 } ScrDynThisEnt;
 
 static SCR_TL ScrDynThisEnt *scr_dyn_this_stack;
@@ -7478,6 +7961,7 @@ void scr_dyn_this_push(void *h, ScrDynHandleTag tag) {
   e->tag = tag;
   e->dv = NULL;
   e->recipe = NULL;
+  e->once = false;
 }
 
 void scr_dyn_this_push_dyn(const ScrDyn *v) {
@@ -7486,6 +7970,12 @@ void scr_dyn_this_push_dyn(const ScrDyn *v) {
   e->tag = 0;
   e->dv = v ? scr_dyn_retain((ScrDyn *)v) : NULL;
   e->recipe = NULL;
+  e->once = false;
+}
+
+void scr_dyn_this_push_dyn_once(const ScrDyn *v) {
+  scr_dyn_this_push_dyn(v);
+  scr_dyn_this_stack[scr_dyn_this_n - 1].once = true;
 }
 
 void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe) {
@@ -7494,6 +7984,7 @@ void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe) {
   e->tag = 0;
   e->dv = NULL;
   e->recipe = recipe;
+  e->once = false;
 }
 
 void scr_dyn_this_pop(void) {
@@ -7525,6 +8016,12 @@ ScrDyn *scr_dyn_this_get(void) {
         scr_dyn_typed_ref_bind_class(e->dv, (const ScrDynTypedClassOps *)r->ops);
       else if (r->view == 4)
         scr_dyn_typed_ref_bind_bag_class(e->dv, (const ScrDynTypedBagClassOps *)r->ops);
+    }
+    if (e->once) {
+      ScrDyn *taken = e->dv ? e->dv : scr_dyn_retain(scr_dyn_undefined());
+      e->dv = NULL;
+      e->once = false;
+      return taken;
     }
     if (e->dv) return scr_dyn_retain(e->dv);
     /* An uninstalled tag never binds: a unit that fires without its dyn
@@ -8328,7 +8825,14 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
     double index = iterator->index++;
     if (iterator->selection == 1) value = scr_dyn_new_num(index);
     else {
+#ifdef SCR_JS_OBJECT_MODEL
+      /* A BigInt element has no numeric form: read it as a BigInt. */
+      value = scr_bytes_elem_is_bigint(items->v.bytes->elem)
+        ? scr_bytes_get_bigint(items->v.bytes, index)
+        : scr_dyn_new_num(scr_bytes_get(items->v.bytes, index));
+#else
       value = scr_dyn_new_num(scr_bytes_get(items->v.bytes, index));
+#endif
       if (iterator->selection == 2) {
         ScrDyn *entry = scr_dyn_new_arr();
         scr_dyn_arr_push(entry, scr_dyn_new_num(index));
@@ -9528,8 +10032,19 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
     if (member || scr_exc_pending()) return member;
   }
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
-  if (!receiver) return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
-  ScrDynEntry *entry = scr_dyn_symbol_entry(receiver, key, false);
+  if (!receiver && scr_exc_pending()) return NULL;
+  ScrDynEntry *entry = receiver ? scr_dyn_symbol_entry(receiver, key, false) : NULL;
+  /* A Buffer inherits Buffer.prototype[Symbol(nodejs.util.inspect.custom)],
+   * its inspect function, unless an own symbol property shadows it. */
+  if (!entry && value->kind == SCR_DYN_BYTES && value->buffer && scr_bytes_buffer_member_fn &&
+      scr_inspect_custom_symbol && key->v.symbol.value == scr_inspect_custom_symbol->v.symbol.value) {
+    ScrStr *name = scr_str_new("inspect", 7);
+    ScrDyn *inspect = scr_bytes_buffer_member_fn(value, name);
+    scr_str_release(name);
+    scr_dyn_release(receiver);
+    return inspect ? inspect : scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (!receiver) return scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *out;
   if (!entry) out = scr_dyn_retain(scr_dyn_undefined());
   else if (!entry->accessor) out = scr_dyn_retain(entry->value);
@@ -9692,6 +10207,15 @@ static ScrDyn *scr_dyn_define_symbol(ScrDyn *target, ScrDyn *key, ScrDyn *descri
 }
 
 static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_key, int mode) {
+  // `in` checks its receiver before converting the key: a primitive receiver
+  // throws Node's TypeError, and the key's own toString must not run.
+  if (mode == 0 && scr_dyn_primitive_kind(value)) {
+    ScrStr *text = scr_dyn_no_side_effects_to_string(raw_key);
+    if (!text) return false;
+    scr_dyn_in_on_primitive(value, text);
+    scr_str_release(text);
+    return false;
+  }
   ScrDyn *key = scr_dyn_property_key_value(raw_key);
   if (!key) return false;
   if (key->kind != SCR_DYN_SYMBOL) {
@@ -9739,21 +10263,9 @@ bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key) { return s
 
 /* Reflect.has's target check: Node's TypeError for a primitive target. */
 void scr_dyn_reflect_has_target(const ScrDyn *target) {
-  switch (target->kind) {
-  case SCR_DYN_NULL:
-  case SCR_DYN_UNDEF:
-  case SCR_DYN_BOOL:
-  case SCR_DYN_NUM:
-  case SCR_DYN_STR:
-  case SCR_DYN_BIGINT:
-  case SCR_DYN_SYMBOL: {
-    static const char message[] = "Reflect.has called on non-object";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    return;
-  }
-  default:
-    return;
-  }
+  if (!scr_dyn_primitive_kind(target)) return;
+  static const char message[] = "Reflect.has called on non-object";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
 }
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 2); }
 
@@ -9979,9 +10491,20 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
       double number;
       bool stored = true;
       if (value) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* A BigInt view's element store is ToBigInt. */
+        if (scr_bytes_elem_is_bigint(target->v.bytes->elem)) {
+          stored = scr_bytes_set_bigint(target->v.bytes, index, value);
+        } else {
+          stored = scr_dyn_number_coerce_js(value, &number);
+          /* The conversion can run user code; the index is checked again. */
+          if (stored && index < (double)target->v.bytes->len) scr_bytes_set(target->v.bytes, index, number);
+        }
+#else
         stored = scr_dyn_number_coerce_js(value, &number);
         /* The conversion can run user code; the index is checked again. */
         if (stored && index < (double)target->v.bytes->len) scr_bytes_set(target->v.bytes, index, number);
+#endif
       }
       scr_dyn_descriptor_fields_drop(fields);
       return stored ? scr_dyn_retain(target) : NULL;
@@ -10503,6 +11026,14 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
     if (d->buffer) scr_jb_puts(b, "{\"type\":\"Buffer\",\"data\":[");
     else scr_jb_putc(b, '{');
     size_t count = bytes->is_data_view ? 0 : bytes->len;
+#ifdef SCR_JS_OBJECT_MODEL
+    if (!d->buffer && scr_bytes_elem_is_bigint(bytes->elem) && count > 0) {
+      /* Node's BigInt serialization rule: a BigInt element is unrepresentable. */
+      static const char message[] = "Do not know how to serialize a BigInt";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return false;
+    }
+#endif
     for (size_t i = 0; i < count; i++) {
       if (i > 0) scr_jb_putc(b, ',');
       if (!d->buffer) {
@@ -11478,7 +12009,14 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if (d->v.bytes->is_data_view) return scr_str_new("[object DataView]", 17);
     {
       ScrStr *separator = scr_str_new(",", 1);
+#ifdef SCR_JS_OBJECT_MODEL
+      /* A BigInt element's ToString is its decimal form. */
+      ScrStr *out = scr_bytes_elem_is_bigint(d->v.bytes->elem)
+        ? dyn_bigint_join(d->v.bytes, d->v.bytes->len, separator)
+        : scr_bytes_join(d->v.bytes, separator);
+#else
       ScrStr *out = scr_bytes_join(d->v.bytes, separator);
+#endif
       scr_str_release(separator);
       return out;
     }
@@ -11832,60 +12370,79 @@ ScrStr *scr_util_to_usv_string(const ScrDyn *input) {
   return usv;
 }
 
+/* An object's Symbol.toPrimitive member called with `hint` ("string" or
+ * "number"), once the program has read the symbol: the primitive (+1), or
+ * NULL with *handled false when the object has no such member, or NULL with
+ * the exception pending (a member that is not a function, a throw, or an
+ * object result). */
+static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint, bool *handled) {
+  *handled = false;
+  if (!scr_to_primitive_symbol || !scr_iterator_object(value)) return NULL;
+  ScrDyn *method = scr_dyn_reflect_get((ScrDyn *)value, scr_to_primitive_symbol, (ScrDyn *)value);
+  if (!method) {
+    *handled = true;
+    return NULL;
+  }
+  if (method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL) {
+    scr_dyn_release(method);
+    return NULL;
+  }
+  *handled = true;
+  if (!scr_dyn_is_callable(method)) {
+    ScrJsonBuf buffer;
+    scr_jb_init(&buffer);
+    if (scr_iterator_object(method)) scr_jb_puts(&buffer, "object");
+    else {
+      ScrStr *type = scr_dyn_typeof(method);
+      scr_jb_put_str(&buffer, type);
+      scr_str_release(type);
+      if (method->kind != SCR_DYN_SYMBOL && method->kind != SCR_DYN_BIGINT) scr_jb_puts(&buffer, " ");
+      if (method->kind == SCR_DYN_STR) {
+        scr_jb_puts(&buffer, "\"");
+        scr_jb_put_str(&buffer, method->v.str);
+        scr_jb_puts(&buffer, "\"");
+      }
+      else if (method->kind != SCR_DYN_SYMBOL && method->kind != SCR_DYN_BIGINT) {
+        ScrStr *text = scr_dyn_string_coerce(method);
+        scr_jb_put_str(&buffer, text);
+        scr_str_release(text);
+      }
+    }
+    scr_jb_puts(&buffer, " is not a function");
+    ScrStr *message = scr_jb_finish(&buffer);
+    scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
+    scr_str_release(message);
+    scr_dyn_release(method);
+    return NULL;
+  }
+  ScrStr *hint_text = scr_str_new(hint, strlen(hint));
+  ScrDyn *argument = scr_dyn_new_str(hint_text);
+  scr_str_release(hint_text);
+  scr_dyn_this_push_dyn(value);
+  ScrDyn *primitive = scr_dyn_call(method, &argument, 1, "Symbol.toPrimitive");
+  scr_dyn_this_pop();
+  scr_dyn_release(argument);
+  scr_dyn_release(method);
+  if (!primitive) return NULL;
+  if (scr_dyn_to_primitive_result_is_object(primitive)) {
+    static const char message[] = "Cannot convert object to primitive value";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_dyn_release(primitive);
+    return NULL;
+  }
+  return primitive;
+}
+
 /* ToString, preserving the object protocol. */
 ScrStr *scr_util_to_string(const ScrDyn *input) {
   const ScrDyn *value = input ? input : scr_dyn_undefined();
-  if (scr_to_primitive_symbol && scr_iterator_object(value)) {
-    ScrDyn *method = scr_dyn_reflect_get((ScrDyn *)value, scr_to_primitive_symbol, (ScrDyn *)value);
-    if (!method) return NULL;
-    if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
-      if (!scr_dyn_is_callable(method)) {
-        ScrJsonBuf buffer;
-        scr_jb_init(&buffer);
-        if (scr_iterator_object(method)) scr_jb_puts(&buffer, "object");
-        else {
-          ScrStr *type = scr_dyn_typeof(method);
-          scr_jb_put_str(&buffer, type);
-          scr_str_release(type);
-          if (method->kind != SCR_DYN_SYMBOL && method->kind != SCR_DYN_BIGINT) scr_jb_puts(&buffer, " ");
-          if (method->kind == SCR_DYN_STR) {
-            scr_jb_puts(&buffer, "\"");
-            scr_jb_put_str(&buffer, method->v.str);
-            scr_jb_puts(&buffer, "\"");
-          }
-          else if (method->kind != SCR_DYN_SYMBOL && method->kind != SCR_DYN_BIGINT) {
-            ScrStr *text = scr_dyn_string_coerce(method);
-            scr_jb_put_str(&buffer, text);
-            scr_str_release(text);
-          }
-        }
-        scr_jb_puts(&buffer, " is not a function");
-        ScrStr *message = scr_jb_finish(&buffer);
-        scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
-        scr_str_release(message);
-        scr_dyn_release(method);
-        return NULL;
-      }
-      ScrStr *hint = scr_str_new("string", 6);
-      ScrDyn *argument = scr_dyn_new_str(hint);
-      scr_str_release(hint);
-      scr_dyn_this_push_dyn(value);
-      ScrDyn *primitive = scr_dyn_call(method, &argument, 1, "Symbol.toPrimitive");
-      scr_dyn_this_pop();
-      scr_dyn_release(argument);
-      scr_dyn_release(method);
-      if (!primitive) return NULL;
-      if (scr_dyn_to_primitive_result_is_object(primitive)) {
-        static const char message[] = "Cannot convert object to primitive value";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-        scr_dyn_release(primitive);
-        return NULL;
-      }
-      ScrStr *text = scr_dyn_string_coerce(primitive);
-      scr_dyn_release(primitive);
-      return text;
-    }
-    scr_dyn_release(method);
+  bool handled;
+  ScrDyn *primitive = scr_dyn_exotic_to_primitive(value, "string", &handled);
+  if (handled) {
+    if (!primitive) return NULL;
+    ScrStr *text = scr_dyn_string_coerce(primitive);
+    scr_dyn_release(primitive);
+    return text;
   }
   return scr_dyn_string_coerce_js(value);
 }
@@ -11939,6 +12496,17 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
     *out = NAN;
     return true;
   case SCR_DYN_OBJ: {
+    /* An own or inherited Symbol.toPrimitive runs first, with the number
+     * hint. */
+    bool handled = false;
+    ScrDyn *primitive =
+        scr_to_primitive_number_fn ? scr_to_primitive_number_fn(d, "number", &handled) : NULL;
+    if (handled) {
+      if (!primitive) return false;
+      bool ok = scr_dyn_number_coerce_js(primitive, out);
+      scr_dyn_release(primitive);
+      return ok;
+    }
     static const char *const hint[2] = { "valueOf", "toString" };
     for (int i = 0; i < 2; i++) {
       const ScrDyn *owner = scr_dyn_property_owner(d, hint[i], strlen(hint[i]));
@@ -12393,11 +12961,66 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   return false;
 }
 
+/* True for the dyn kinds whose JS value is a primitive: the `in` operator
+ * and Reflect reject them with Node's TypeError instead of taking a
+ * property key. */
+static bool scr_dyn_primitive_kind(const ScrDyn *v) {
+  switch (v->kind) {
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NULL:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* V8's Object::NoSideEffectsToString: the spelling Node's TypeError gives an
+ * operand, computed WITHOUT running user code (a key's own toString never
+ * runs — `["x"] in null` reports "[object Array]", not "x"). Primitives and
+ * arrays are exact; every other object renders "#<Object>", which is V8's
+ * spelling for a plain object, a Map or a Promise, while an object that
+ * shadows toString, a Date, or a function spells differently there (only a
+ * computed KEY can reach this: an `in` RECEIVER is a primitive here).
+ * Borrows d; returns +1. */
+static ScrStr *scr_dyn_no_side_effects_to_string(const ScrDyn *d) {
+  if (scr_dyn_primitive_kind(d)) return scr_dyn_string_constructor(d);
+  if (d->kind == SCR_DYN_ARR) return scr_str_new("[object Array]", 14);
+  return scr_str_new("#<Object>", 9);
+}
+
+/* The `in` operator's ToObject step: every primitive receiver throws Node's
+ * TypeError ("Cannot use 'in' operator to search for 'k' in 5"), and the
+ * throw precedes the key's ToPropertyKey, so an object key's toString must
+ * NOT run (V8 spells it with NoSideEffectsToString). Throws and returns true
+ * for a primitive v; returns false — no exception — otherwise. */
+static bool scr_dyn_in_on_primitive(const ScrDyn *v, const ScrStr *key) {
+  if (!scr_dyn_primitive_kind(v)) return false;
+  ScrStr *receiver = scr_dyn_string_constructor(v);
+  if (!receiver) return true;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Cannot use 'in' operator to search for '");
+  scr_jb_write(&b, key->data, key->len);
+  scr_jb_puts(&b, "' in ");
+  scr_jb_write(&b, receiver->data, receiver->len);
+  scr_str_release(receiver);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return true;
+}
+
 /* The `in` operator: scr_dyn_has_key's own-chain answer, plus the members
  * every chain inherits from its builtin prototype (Object.prototype, and
  * Array.prototype before it for arrays) and, for a class instance seen as
- * `unknown`, its class's compiled methods and accessors. */
+ * `unknown`, its class's compiled methods and accessors. A primitive
+ * receiver throws Node's TypeError instead of answering (a string's index
+ * presence included: `'0' in 'ab'` throws in Node). */
 bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
+  if (scr_dyn_in_on_primitive(v, key)) return false;
   if (scr_ni_dyn_handle(v)) {
     ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
     int found = scr_ni_dyn_ops->has((ScrDyn *)v, k);
@@ -12735,6 +13358,12 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
      * A DataView has no elements: its numeric keys are named properties. */
     double index;
     if (!recv->v.bytes->is_data_view && scr_bytes_numeric_key(key, &index)) {
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_bytes_elem_is_bigint(recv->v.bytes->elem)) {
+        scr_bytes_set_bigint(recv->v.bytes, index, value);
+        return;
+      }
+#endif
       double number;
       if (!scr_dyn_number_coerce_js(value, &number)) return;
       if (!signbit(index) && index < (double)recv->v.bytes->len && trunc(index) == index) {
@@ -14746,6 +15375,10 @@ static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key) {
     size_t index = 0;
     for (size_t i = 0; i < key->len; i++) index = index * 10 + (size_t)(key->data[i] - '0');
     if (holder->kind == SCR_DYN_BYTES) {
+#ifdef SCR_JS_OBJECT_MODEL
+      if (index < holder->v.bytes->len && scr_bytes_elem_is_bigint(holder->v.bytes->elem))
+        return scr_bytes_get_bigint(holder->v.bytes, (double)index);
+#endif
       return index < holder->v.bytes->len ? scr_dyn_new_num(scr_bytes_get(holder->v.bytes, (double)index))
                                          : scr_dyn_retain(scr_dyn_undefined());
     }
@@ -14780,6 +15413,24 @@ static void scr_json_delete_member(ScrDyn *object, const ScrStr *key) {
 
 void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key) {
   if (obj->kind == SCR_DYN_OBJ) scr_json_delete_member(obj, key);
+}
+
+/* A String wrapper's own non-configurable properties: its `length` and its
+ * indexes below the UTF-16 length. Deleting one answers false in sloppy
+ * code, and strict code throws the TypeError V8 names with the wrapper's
+ * class. True when `name` is one of them. */
+static bool scr_dyn_string_delete_own(const ScrDyn *recv, const ScrStr *name, bool strict) {
+  bool own = (name->len == 6 && memcmp(name->data, "length", 6) == 0) ||
+             scr_dyn_canonical_own_index(name, (size_t)scr_str_utf16_len(recv->v.str));
+  if (own && strict) {
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_puts(&message, "Cannot delete property '");
+    scr_jb_write(&message, name->data, name->len);
+    scr_jb_puts(&message, "' of [object String]");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  }
+  return own;
 }
 
 /* Ordinary native objects carry removable own data properties. Dense
@@ -14915,6 +15566,18 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     if (entry) scr_json_delete_member(recv->v.bytes->properties, key);
     return;
   }
+  if (recv->kind == SCR_DYN_STR) {
+    /* ToObject's wrapper carries the String's indexes and `length` as
+     * non-configurable own properties; a symbol key names none of them. */
+    (void)scr_dyn_string_delete_own(recv, key, strict);
+    return;
+  }
+  if (recv->kind == SCR_DYN_BOOL || recv->kind == SCR_DYN_NUM ||
+      recv->kind == SCR_DYN_BIGINT || recv->kind == SCR_DYN_SYMBOL) {
+    /* Every other primitive's ToObject wrapper owns no property, so the
+     * delete succeeds; the wrapper itself is unobservable. */
+    return;
+  }
   if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL) {
     const char *message = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
@@ -14922,6 +15585,27 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
   }
   const char *message = "delete on this checked-native receiver is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
+}
+
+/* Expression-position `delete` on a primitive base: ToPropertyKey of the
+ * key (which preserves a Symbol — it names no wrapper property), then the
+ * ToObject wrapper's own properties decide the answer. Returns the delete's
+ * answer; strict code throws instead of answering false. Both operands
+ * BORROWED. */
+bool scr_dyn_primitive_delete(ScrDyn *recv, const ScrDyn *raw_key, bool strict) {
+  ScrDyn *key = scr_dyn_property_key_value(raw_key);
+  if (!key) return false;
+  bool deleted = true;
+  if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL) {
+    /* ToObject's refusal names neither the key nor the receiver. */
+    const char *message = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    deleted = false;
+  } else if (recv->kind == SCR_DYN_STR && key->kind == SCR_DYN_STR) {
+    deleted = !scr_dyn_string_delete_own(recv, key->v.str, strict);
+  }
+  scr_dyn_release(key);
+  return deleted;
 }
 
 static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
@@ -16282,6 +16966,16 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
         "ReferenceError", "EvalError", "URIError", "AggregateError",
     };
     size_t hit = scr_errdyn_find(d, false);
+#ifdef SCR_NODE_ISLANDS
+    /* An error island code threw keeps its own realm's constructor (the
+     * island unit answers it from V8), so the island's TypeError is the
+     * one `e.constructor` names. */
+    if (hit != SIZE_MAX && scr_ni_dyn_ops != NULL &&
+        scr_ni_dyn_ops->error_constructor != NULL) {
+      ScrDyn *island = NULL;
+      if (scr_ni_dyn_ops->error_constructor(scr_errdyn_cache[hit].err, &island)) return island;
+    }
+#endif
     const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
     for (size_t kind = 0; vt && kind < sizeof names / sizeof names[0]; kind++) {
       if (!names[kind]) continue;
@@ -17070,8 +17764,15 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
       int klen = snprintf(key, sizeof key, "%zu", i);
       ScrDyn *val = NULL;
       if (mode != SCR_OBJWALK_KEYS) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* A BigInt element has no numeric form: read it as a BigInt. */
+        if (v->kind == SCR_DYN_ARR) val = scr_dyn_retain(v->v.arr.items[i]);
+        else if (scr_bytes_elem_is_bigint(v->v.bytes->elem)) val = scr_bytes_get_bigint(v->v.bytes, (double)i);
+        else val = scr_dyn_new_num(scr_bytes_get(v->v.bytes, (double)i));
+#else
         val = v->kind == SCR_DYN_ARR ? scr_dyn_retain(v->v.arr.items[i])
                                      : scr_dyn_new_num(scr_bytes_get(v->v.bytes, (double)i));
+#endif
       }
       if (mode == SCR_OBJWALK_KEYS) {
         scr_dyn_arr_push(out, scr_dyn_objwalk_key(key, (size_t)klen));
@@ -18171,8 +18872,9 @@ ScrError *scr_domex_clone(ScrError *e, const ScrDyn *options) {
 /* ── atob/btoa — the WHATWG base64 globals (Node globals since v16) ───
  * They live HERE (not scr_string.c) because the argument is a dyn value:
  * WebIDL ToString runs over the dyn kind (Node's atob(null) decodes the
- * string "null"), and the string unit must stay linkable without the
- * dyn. atob checks its input as Node's lib/buffer.js does (an invalid
+ * string "null", an object converts through Symbol.toPrimitive, toString
+ * or valueOf, and a symbol throws the TypeError), and the string unit must stay linkable
+ * without the dyn. atob checks its input as Node's lib/buffer.js does (an invalid
  * character or a misplaced '=' is "Invalid character", a length the
  * forgiving-base64 rules refuse "not correctly encoded"), then decodes
  * with leftover bits discarded to the latin1 code points as a UTF-8 string;
@@ -18190,7 +18892,8 @@ static int scr_b64_val(unsigned char c) {
 }
 
 ScrStr *scr_atob(const ScrDyn *data) {
-  ScrStr *s = scr_dyn_string_coerce(data);
+  ScrStr *s = scr_util_to_string(data);
+  if (!s) return NULL;
   /* Node's checks (lib/buffer.js): only ASCII whitespace and the base64
    * alphabet with '=' are allowed, '=' only at the end and at most twice;
    * the count of the other characters decides the rest. One pass checks
@@ -18260,7 +18963,8 @@ ScrStr *scr_atob(const ScrDyn *data) {
 ScrStr *scr_btoa(const ScrDyn *data) {
   static const char alphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  ScrStr *s = scr_dyn_string_coerce(data);
+  ScrStr *s = scr_util_to_string(data);
+  if (!s) return NULL;
   /* UTF-8 → code points, each must fit latin1 (one byte). The runtime's
    * strings are canonical WTF-8, so only C2/C3 leads can stay in range;
    * every other lead byte names a code unit over U+00FF. */
@@ -18333,12 +19037,38 @@ bool scr_array_buffer_is_view(const ScrDyn *value) {
 }
 
 static ScrDyn *scr_array_buffer_get(void *h, const char *key, size_t len) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A program with the mutableBuffers fact answers from the registry: a
+   * detached buffer reports length 0 (its maxByteLength too) and stays
+   * detached/resizable, and a resizable one reports its reserved capacity.
+   * A program without the fact never detaches or resizes. */
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+#endif
   if ((len == 10 && memcmp(key, "byteLength", len) == 0) ||
-      (len == 13 && memcmp(key, "maxByteLength", len) == 0))
+      (len == 13 && memcmp(key, "maxByteLength", len) == 0)) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (ops && ops->owner_detached(h)) return scr_dyn_new_num(0);
+    if (ops && len == 13)
+      return scr_dyn_new_num(ops->owner_capacity(h, scr_bytes_byte_len(h)));
+#endif
     return scr_dyn_new_num(scr_bytes_byte_len(h));
-  if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) return scr_dyn_new_bool(false);
+  }
+  if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (ops) return scr_dyn_new_bool(ops->owner_growable(h));
+#endif
+    return scr_dyn_new_bool(false);
+  }
   if (!((ScrBytes *)h)->shared && ((len == 9 && memcmp(key, "resizable", len) == 0) ||
-      (len == 8 && memcmp(key, "detached", len) == 0))) return scr_dyn_new_bool(false);
+      (len == 8 && memcmp(key, "detached", len) == 0))) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (ops) {
+      if (len == 9) return scr_dyn_new_bool(ops->owner_resizable(h));
+      return scr_dyn_new_bool(ops->owner_detached(h));
+    }
+#endif
+    return scr_dyn_new_bool(false);
+  }
   if (len == 11 && !memcmp(key, "constructor", len) && !((ScrBytes *)h)->shared)
     return scr_array_buffer_constructor();
   return NULL;
@@ -18352,7 +19082,39 @@ static bool scr_array_buffer_set(void *h, const char *key, size_t len, const Scr
 static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
   (void)self; (void)what;
+#ifdef SCR_JS_OBJECT_MODEL
+  {
+    const ScrJsBufferOps *ops = scr_js_buffer_ops;
+    /* The length-changing methods (t262-dc C1/C2); their arguments are
+     * coerced by the registry with Node's messages. */
+    if (ops && (strcmp(method, "transfer") == 0 || strcmp(method, "transferToFixedLength") == 0)) {
+      const bool fixed = method[8] != '\0';
+      double length = 0;
+      const bool has_length = argc > 0 && args[0]->kind != SCR_DYN_UNDEF;
+      if (has_length && !scr_dyn_number_coerce_js(args[0], &length)) return NULL;
+      return ops->transfer(h, has_length, length, fixed);
+    }
+    if (ops && strcmp(method, "resize") == 0) {
+      double length = 0;
+      if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &length)) return NULL;
+      if (!ops->resize(h, length)) return NULL;
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    if (ops && strcmp(method, "grow") == 0) {
+      double length = 0;
+      if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &length)) return NULL;
+      if (!ops->grow(h, length)) return NULL;
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+  }
+#endif
   if (strcmp(method, "slice") == 0) {
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_js_buffer_ops && scr_js_buffer_ops->owner_detached(h)) {
+      scr_js_bytes_throw_detached("ArrayBuffer.prototype.slice");
+      return NULL;
+    }
+#endif
     double start = 0, end = scr_bytes_byte_len(h);
     if (argc && !scr_dyn_number_coerce_js(args[0], &start)) return NULL;
     if (argc > 1 && args[1]->kind != SCR_DYN_UNDEF && !scr_dyn_number_coerce_js(args[1], &end)) return NULL;

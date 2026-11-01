@@ -1095,6 +1095,22 @@ int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor) {
   return out.tag == SCR_NV_BOOL && out.u.boolean ? 1 : 0;
 }
 
+/* NI-4: the `constructor` an error thrown by island code keeps. The
+ * runtime's error view answers the interned native constructor, but this
+ * error IS a V8 error: in the island's realm its `constructor` is V8's
+ * TypeError — the very value the island's own `TypeError` crosses as — so
+ * `e.constructor === TypeError` holds as it does in one realm, agreeing
+ * with the bridge's instanceof. 0 for an error the runtime made itself. */
+static int nh_error_constructor(const struct ScrError *err, ScrDyn **out) {
+  ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
+  if (ref == NULL) return 0;
+  ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND); /* retains */
+  ScrDyn *ctor = scr_ni_get_str(handle, "constructor", 11);
+  scr_dyn_release(handle);
+  *out = ctor;
+  return 1;
+}
+
 ScrDyn *scr_ni_own_keys(ScrDyn *obj, int mode) {
   uint32_t id;
   if (!nh_receiver(obj, &id, "Object.keys")) return NULL;
@@ -1669,6 +1685,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .instance_of = scr_ni_instanceof,
     .to_primitive = scr_ni_to_primitive,
     .is_function = scr_ni_is_function,
+    .error_constructor = nh_error_constructor,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

@@ -1122,6 +1122,9 @@ bool scr_dyn_checked_record_frozen(const ScrDyn *value);
 ScrDyn *scr_dyn_new_bigint(ScrBigInt *value); /* borrows and retains value */
 ScrDyn *scr_dyn_new_symbol(ScrSym *value); /* borrows and retains value */
 ScrSym *scr_sym_well_known(ScrStr *name);
+/* Symbol.keyFor through a function value: the registry key, undefined, or
+ * NULL with Node's TypeError for a value that is not a symbol (+1). */
+ScrDyn *scr_dyn_symbol_key_for(const ScrDyn *value);
 ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key);
 ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool optional);
 /* `using` and `await using` with a dyn value. scr_dyn_using_method runs the
@@ -1234,6 +1237,16 @@ void scr_dyn_install_iterator_symbol(ScrDyn *key);
  * when the registry creates it; NULL (borrowed) until then. */
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key);
 ScrDyn *scr_dyn_inspect_custom_symbol(void);
+/* Symbol.for(key) once scr_sym_for_install has run, NULL otherwise: units
+ * outside the symbol unit create registered symbols through it. The program
+ * calls scr_sym_for_install before its entry when it reads Buffer.prototype
+ * as a value (RuntimeFeatures bufferPrototypeObject). Borrows key; +1. */
+extern ScrSym *(*scr_sym_for_fn)(ScrStr *key);
+void scr_sym_for_install(void);
+/* Installs ToNumber's Symbol.toPrimitive step (scr_dyn_number_coerce_js).
+ * The program calls it before its entry when it reads Symbol.toPrimitive
+ * (RuntimeFeatures toPrimitiveNumber). */
+void scr_dyn_to_primitive_number_install(void);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
@@ -1325,6 +1338,14 @@ void scr_dyn_proxy_unsupported(const char *operation);
 /* Retains the native view, preserving identity and its shared backing
  * allocation across the checked-dynamic boundary. Borrows b. */
 ScrDyn *scr_dyn_new_bytes(const ScrBytes *b);
+#ifdef SCR_JS_OBJECT_MODEL
+/* The element at k of a typed array view as a checked-dynamic value (a BigInt
+ * for the BigInt kinds), or undefined past the view's current end. +1. The
+ * kind decides inside scr_json.c, so a caller that is not built twice
+ * (console.table cells) reads an element through it; a numeric read of a
+ * BigInt view would trap. */
+ScrDyn *scr_dyn_bytes_item(const ScrBytes *b, size_t k);
+#endif
 ScrDyn *scr_bytes_constructor(const ScrStr *name);
 bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee);
 bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal);
@@ -1355,6 +1376,9 @@ void scr_builtin_statics_install(ScrDyn *lookup);
  * change or reflection; a builtin constructor's static members become own
  * properties of the table the first time. */
 extern SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table);
+/* Installed with scr_dyn_builtin_static_fn: the name of the builtin
+ * constructor `fn` is (borrowed, static storage), or NULL. */
+extern SCR_TL const char *(*scr_dyn_builtin_owner_fn)(const ScrDyn *fn);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
 /* A typed array's, Buffer's or DataView's own named property (+1), or NULL
  * without an exception when it has none. */
@@ -1393,9 +1417,8 @@ typedef struct {
   size_t key_len;
   const size_t *offsets;
 } ScrRecordViewSource;
-/* The slot of field `position` of a view. The SCR_RECORD_VIEW_PARTIAL build
- * of scr_json.c, which only a program with a partial record assertion links,
- * answers NULL for a field the viewed record does not declare (record-views.ts). */
+/* The slot of field `position` of a view, or NULL for a field the viewed
+ * record does not declare (a partial record view, record-views.ts). */
 void *scr_record_view_slot(void *view, size_t position);
 void *scr_record_view_field(void *value, size_t offset, size_t position);
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
@@ -1540,6 +1563,14 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
  * constructor value. */
 ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
 
+/* Promise statics called with a foreign constructor (`Promise.all.call(C, …)`,
+ * scr_js_promise_generic.c, linked only into programs that make the call):
+ * the specification's algorithms over NewPromiseCapability(C) and
+ * GetPromiseResolve(C). `name` is one of the six statics, `thisArg` its
+ * receiver and `arg` the iterable (the combinators) or the value
+ * (resolve/reject). */
+ScrDyn *scr_js_promise_generic_call(const ScrStr *name, const ScrDyn *thisArg, const ScrDyn *arg);
+
 /* %Iterator%, %Iterator.prototype% and Iterator.from (scr_js_iterator.c,
  * linked only into programs that reach them): the live prototype holds
  * the interned helper methods every iterator answers; `new Iterator()`
@@ -1605,6 +1636,10 @@ void scr_weak_dispose(void *object);
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
+/* Whether the builtin Array.prototype object exists and carries `key`
+ * before the method table installs; the inherited-read fallback leaves a
+ * name it owns alone, since the read that reached it already answered. */
+bool scr_dyn_array_prototype_owns(const ScrStr *key);
 /* The member `key` of an array found before Array.prototype: an own named
  * property, or one on its custom prototype chain (Object.setPrototypeOf).
  * NULL when the chain reaches Array.prototype without it. +1. */
@@ -1652,6 +1687,9 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name);
  * True (with the error pending) when `recv` is Array.prototype. */
 bool scr_dyn_array_prototype_element_fence(const ScrDyn *recv);
 bool scr_dyn_is_array_prototype(const ScrDyn *d);
+/* The builtin Object.prototype and Error.prototype singletons. */
+bool scr_dyn_is_object_prototype(const ScrDyn *d);
+bool scr_dyn_is_error_prototype(const ScrDyn *d);
 /* The checked-dynamic keyed WRITE (`h.k = v` on a dyn receiver): OBJ sets
  * the member (JS: later writes win, insertion order); undefined/null and
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
@@ -1666,6 +1704,11 @@ void scr_dyn_key_set_computed_sloppy(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
+/* Expression-position `delete` on a primitive base: ToPropertyKey of the
+ * key, then ToObject's wrapper, whose own non-configurable properties (a
+ * String's indexes and `length`) answer false in sloppy code and throw in
+ * strict code. Both operands BORROWED; returns the delete's answer. */
+bool scr_dyn_primitive_delete(ScrDyn *recv, const ScrDyn *raw_key, bool strict);
 /* Removes the own property `key` of an ordinary object whatever its
  * attributes, as scr_dyn_obj_set_field replaces values. */
 void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key);
@@ -1883,6 +1926,7 @@ ScrDyn *scr_dyn_invoke_buffer_fill(ScrDyn *recv, ScrDyn *callee, const char *met
 ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+ScrDyn *scr_dyn_invoke_buffer_wide(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 /* A %TypedArray%.prototype method called on a checked typed array (not a
  * DataView): its answer (+1, or NULL with the exception pending), with
@@ -2362,6 +2406,13 @@ ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
  * resolve job, a throwing `then` read rejects, and any other value
  * fulfills. */
 void scr_dyn_promise_resolve_with(ScrPromise *target, ScrDyn *value);
+/* The `then` of a dyn value when it is a thenable (its `then` is a
+ * function), +1, and NULL otherwise or when the read threw (the exception
+ * stays pending). The stance is the resolution procedure's: an object, a
+ * function, a proxy or a typed reference capsule (read through its
+ * materialized view, or through `reader` for a program class instance)
+ * qualifies; every other kind does not. */
+ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);
@@ -2386,6 +2437,10 @@ bool scr_dyn_is_nullish(const ScrDyn *d);
  * fn.apply(this, arguments)`) forwards the receiver without extra code. */
 void scr_dyn_this_push(void *h, ScrDynHandleTag tag); /* h BORROWED (the firing site holds it); NULL binds undefined */
 void scr_dyn_this_push_dyn(const ScrDyn *v);          /* retained for the window */
+/* A one-shot dyn entry: the first read takes v (the receiver a plain
+ * function reads at entry), and later reads in the window, such as a
+ * nested plain call's, answer undefined. */
+void scr_dyn_this_push_dyn_once(const ScrDyn *v);
 /* A class's typed-ref construction recipe, emitted once per class as a
  * constant (kind: 0 plain, 1 observed, 2 traced capsule). `view` names the
  * live view bound to the new capsule, as eager boxing binds it: 0 none,

@@ -7,7 +7,8 @@ import {
   boxSlotCount,
   mentionsSuspension,
 } from "./emitter.js";
-import { type IrFunction, type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
+import { type IrFunction, type IrModule, type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
+import { INT32_FALLBACK_SUFFIX } from "../../ir/parameter-versions.js";
 import { BlockBuilder } from "./blocks.js";
 import { findPrivateSplitLocals } from "./split-loops.js";
 import {
@@ -63,6 +64,34 @@ import { beginFunctionLoops, LOOPS } from "./loop-state.js";
 import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
 import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
+
+/** The function attribute of a fallback body that the LLVM helper's
+ * partitioner places by its own name (isPlacedByName, partition.cpp): it
+ * is called from the code it stands in for, usually the largest function
+ * of its partition, and following that caller would put both bodies on the
+ * same partition. */
+const FALLBACK_PLACEMENT_ATTR = '"scriptc-fallback"';
+
+/** The functions whose body `versionLoopBoundParameters` split into a copy
+ * and a fallback: each of them now holds the parameter test and two calls. */
+function versionedNames(mod: IrModule): Set<string> {
+  const names = new Set<string>();
+  for (const fn of mod.functions) {
+    const at = fn.name.indexOf(INT32_FALLBACK_SUFFIX);
+    if (at > 0) names.add(fn.name.slice(0, at));
+  }
+  return names;
+}
+
+/** The names the module's versions split, computed once. */
+function versionedFunctions(emitter: LlEmitter): Set<string> {
+  let names = emitter.int32Versioned;
+  if (names === null) {
+    names = versionedNames(emitter.mod);
+    emitter.int32Versioned = names;
+  }
+  return names;
+}
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
@@ -250,7 +279,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   beginLoopEntryVersions(emitter, numericFn, slotFacts, rangeFacts);
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
-  emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
+  emitter.bytesBounds =
+    emitter.mod.bytesHeadersMutable === true
+      ? new Set()
+      : findBytesBounds(numericFn, emitter.integerRanges);
   emitter.bytesOwned = new Set();
   // Debug builds keep every number local a double for the debugger's
   // variable view. Lazily boxed captured parameters keep their double,
@@ -673,7 +705,20 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // A keyed record read's inherited-method miss path (record-inherited.ts)
   // stays out of line, so the hit path keeps its own small frame.
   else if (fn.name.startsWith("%rec.inherited.")) attrs = `noinline cold ${attrs}`;
+  // The original body of a function versioned for int32 loop bounds runs
+  // only for a bound that is not an int32 (parameter-versions.ts). It stays
+  // out of line, and FALLBACK_PLACEMENT_ATTR lets the helper's partitioner
+  // place it by its own name instead of beside the code it stands in for.
+  else if (fn.name.includes(INT32_FALLBACK_SUFFIX))
+    attrs = `noinline ${unoptimized ? "optnone " : ""}cold ${FALLBACK_PLACEMENT_ATTR} ${attrs}`;
   else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
+  // A function versioned for its loop-bound parameters now holds only the
+  // int32 test and the two calls (parameter-versions.ts). Left inlineable it
+  // is inlined into its callers and takes its copy along, which compiles the
+  // loops in frames they were not compiled in before. Kept out of line, the
+  // copy inlines here instead, and the loops keep the frame and registers
+  // the function had before the version existed.
+  else if (versionedFunctions(emitter).has(fn.name)) attrs = `noinline ${attrs}`;
   if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
   if (unoptimized && attrs === FN_ATTRS) attrs = `noinline optnone ${attrs}`;
   const debug = emitter.debugScope === null ? "" : ` !dbg ${emitter.debugScope}`;
@@ -870,6 +915,7 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       `entry:`,
       ...argPackLines,
     ];
+    if (fn.generator.bindAtCall === true) emitter.declare(`declare void @scr_gen_bind(ptr)`);
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
     const asyncGenNew =
@@ -891,6 +937,12 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
             `  call void @scr_gen_set_unstarted_return(ptr %gg, ptr @${mangleGenSourceClose(fn.name)})`,
           ]
         : []),
+      // fn.generator.bindAtCall: run the parameter prologue (destructuring,
+      // defaults, their throws) inside the call, as
+      // FunctionDeclarationInstantiation does, and stop at the barrier. A
+      // bind failure stays pending, so the caller's check unwinds and
+      // releases the generator just allocated.
+      ...(fn.generator.bindAtCall === true ? [`  call void @scr_gen_bind(ptr %gg)`] : []),
       `  ret ptr %gg`,
       `}`,
       ``,

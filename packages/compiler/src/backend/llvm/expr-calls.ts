@@ -859,7 +859,10 @@ export function emitCallExpr(
       if (e.callee.type.kind !== "func")
         throw new InternalCompilerError("llvm emitter bug: callValue on non-func");
       const ft = e.callee.type;
-      if (e.args.length !== ft.params.length)
+      // A checked-dynamic variadic value's lifted signature carries one
+      // trailing dyn array after its declared parameters.
+      const hiddenRest = ft.rest === true && ft.restAbi === undefined;
+      if (e.args.length !== ft.params.length + (hiddenRest ? 1 : 0))
         throw new LlvmUnsupportedError("callValue:arity", e.loc);
       // A receiver that reads the ambient `this` binds what the callee
       // would see without a binding: the call forwards it unchanged and
@@ -926,12 +929,16 @@ export function emitCallExpr(
       let lend = lent
         ? borrowableInputs(host, e.args, false, host.referenceWrites?.summary(known!.name))
         : [];
+      // A checked-dynamic variadic's hidden rest array is a reference too:
+      // the owned entry consumes it, the borrowing entry only lends it.
+      const hiddenRestIndex = hiddenRest ? ft.params.length : -1;
       let dynamic = false;
       if (!direct && (e.receiver === undefined || forwardsReceiver)) {
         const references = new Set<number>();
         ft.params.forEach((param, index) => {
           if (isRefCounted(param)) references.add(index);
         });
+        if (hiddenRestIndex >= 0) references.add(hiddenRestIndex);
         if (references.size > 0) {
           const inputs = borrowableInputs(host, e.args, false, host.referenceWrites?.ownWrites(e));
           if ([...references].every((index) => inputs[index] === true)) {
@@ -940,6 +947,13 @@ export function emitCallExpr(
             dynamic = true;
           }
         }
+      }
+      // A known callee's borrowed set names the parameters its body lends;
+      // the hidden rest array is not among them when the body never reads
+      // it, and handing it over unretained would leak it.
+      if (lent && hiddenRestIndex >= 0 && !lent.has(hiddenRestIndex)) {
+        lent = new Set([...lent, hiddenRestIndex]);
+        lend = e.args.map((_, index) => (index === hiddenRestIndex ? false : lend[index]!));
       }
       if (lent) host.frames.push([]);
       const args = e.args.map((a, i) =>
@@ -951,7 +965,8 @@ export function emitCallExpr(
       const argListOf = (values: readonly LlValue[]): string =>
         [
           `ptr ${callee.name}`,
-          ...values.map((a, i) => `${host.llType(ft.params[i]!)} ${a.name}`),
+          // The hidden rest array has no declared parameter to name it.
+          ...values.map((a, i) => `${host.llType(ft.params[i] ?? a.type)} ${a.name}`),
         ].join(", ");
       // The owned entry consumes a reference of each lent argument.
       const ownedArgs = (): LlValue[] =>

@@ -7265,10 +7265,13 @@ export class Lowerer {
     };
     /** `r.name` where the name resolves to the receiver's index signature. */
     const isRecordIndexPropertyRead = (e: ts.PropertyAccessExpression): boolean => {
-      // A name that resolves to a declared member is not an index read, and
-      // only a receiver with an index signature maps to an indexed record.
-      if (symbolOf(e.name)) return false;
+      // A name the receiver type declares is a member read, and only a
+      // receiver with an index signature maps to an indexed record. The
+      // member test asks the type, not the name's symbol: a property access
+      // through a named object type resolves its name to the index
+      // signature's symbol too, while a mapped `Record<string, V>` does not.
       const receiverType = this.typeOf(e.expression);
+      if (this.checker.getPropertyOfType(receiverType, e.name.text)) return false;
       if (this.checker.getIndexInfosOfType(receiverType).length === 0) return false;
       const receiver = this.mapTypeOf(receiverType);
       if (receiver?.kind !== "record") return false;

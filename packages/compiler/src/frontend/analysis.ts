@@ -7,12 +7,13 @@ import type { Frontend, FrontendFactory } from "./pipeline.js";
 import type { LowerResult } from "./lowering/lowerer.js";
 import { resolveBareModule } from "./resolve.js";
 import { readProjectConfig } from "../project-config.js";
-import type { IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
-import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
-import { nodeIslandPolicy, type NodeIslandPolicy } from "../node-islands/policy.js";
+import type { NodeIslandSet } from "../node-islands/boundary.js";
+import { packageDirOf } from "../node-islands/origin.js";
+import { nodeIslandPolicy } from "../node-islands/policy.js";
 import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.js";
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
 import { outsideGraphIslands } from "../node-islands/graph-islands.js";
+import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
  * Unlike compile(), lowering diagnostics are data here, not failure. */
@@ -108,15 +109,14 @@ export function analyzeWithFrontend(
     // The analysis lowers with that same set, so a site a build resolves
     // through an island is not reported as a refusal (a `config.region = …`
     // on a refused SDK's config object is a dynamic property write in the
-    // build, not "assignment to non-variables"). The set is the report's
-    // decision for the packages a build actually islands, taken from the load
-    // before lowering exactly as a build takes it (executable/prepare.ts's
-    // decideNodeIslands).
-    // The packages a build islands (executable/prepare.ts's decideNodeIslands):
-    // the ones whose static compilation was refused, or that the policy marks.
-    // The report's other islands are would-be (it lists the islands a build
-    // would choose for packages it compiles natively today); lowering with
-    // those would report refusals for code the build compiles.
+    // build, not "assignment to non-variables"). It starts from the packages
+    // a build islands on its first load (executable/prepare.ts's
+    // decideNodeIslands): the ones whose static compilation was refused, or
+    // that the policy marks. The report's other islands are would-be (it
+    // lists the islands a build would choose for packages it compiles
+    // natively today); lowering with those would report refusals for code
+    // the build compiles. The retry below grows the set with the rules a
+    // build grows its own between retries (node-islands/growth.ts).
     const refused = new Set(
       policy.mode === "auto"
         ? fe.npmStatic
@@ -211,22 +211,48 @@ export function analyzeWithFrontend(
       lowerIslandsLocal = { packages, modules: lowerIslands?.modules ?? new Map() };
     }
     let lowered = lowerWith(lowerIslandsLocal);
-    // A package the lowering refused (its implementation is not part of the
-    // compiled module graph) runs in a Node island in a build, which lowers
-    // again with it islanded (executable/prepare.ts's loweringIslands).
-    // Coverage makes the same retry, so the refusals that package caused —
-    // a property write on its config object, a call of its constructor, a
-    // `for await` over its stream — are reported as what the build does
-    // with them. The first pass's diagnostics stay the island report's
-    // reasons: they named the packages, the retry cleared them.
-    const grewFrom = lowered.diagnostics;
-    for (
-      let grown = grownIslands(entryPath, fe, policy, grewFrom, lowerIslandsLocal);
-      grown !== null;
-    ) {
-      lowerIslandsLocal = grown;
+    // A package whose own module refused or fenced runs in a Node island in
+    // a build, which lowers again with it islanded (node-islands/growth.ts,
+    // the rules executable/prepare.ts retries with). Coverage makes the same
+    // retry, so the refusals those packages caused — a property write on an
+    // SDK's request object, a call of its constructor, a `for await` over
+    // its stream — are reported as what the build does with them. The first
+    // pass's diagnostics stay the island report's reasons: they named the
+    // packages, the retry cleared them.
+    // The fence rule is the sure one: a build islands a package whose
+    // module-init fence or runtime need means it can never compile
+    // natively, and keeps a deferred gap fence native (its refusal stands
+    // where it is reached).
+    const growth: IslandGrowthContext | null =
+      scan === undefined
+        ? null
+        : {
+            entry: entryPath,
+            policy,
+            scan,
+            npm: fe.npmStatic,
+            npmImportSites: fe.npmImportSites,
+            ...(Array.isArray(opts.npmStatic) ? { explicitNpmStatic: opts.npmStatic } : {}),
+            sourceTexts: () => fe.sourceTexts(),
+          };
+    // The pass that grew the set named the packages; the reload no longer
+    // compiles them, so its diagnostics do not. Their first reasons stay the
+    // island report's (the same reasons a build's SC8001 note keeps).
+    const growthReasons: ScrDiagnostic[] = [];
+    const growthFences: ScrDiagnostic[] = [];
+    for (;;) {
+      const known = lowerIslandsLocal;
+      if (growth === null || known === null) break;
+      const grown = growIslandSet(growth, known.packages, {
+        diagnostics: lowered.diagnostics,
+        fences: lowered.runtimeFences,
+        fenceMode: "sure",
+      });
+      if (grown === null) break;
+      growthReasons.push(...lowered.diagnostics);
+      growthFences.push(...lowered.runtimeFences);
+      lowerIslandsLocal = { packages: grown, modules: known.modules };
       lowered = lowerWith(lowerIslandsLocal);
-      grown = grownIslands(entryPath, fe, policy, lowered.diagnostics, lowerIslandsLocal);
     }
     const provenance = provenanceSources();
     const islandReport =
@@ -236,8 +262,16 @@ export function analyzeWithFrontend(
             entry: entryPath,
             scan,
             npm: fe.npmStatic,
-            diagnostics: [...lowered.diagnostics, ...(lowered.unreached?.diagnostics ?? [])],
-            fences: [...lowered.runtimeFences, ...(lowered.unreached?.runtimeFences ?? [])],
+            diagnostics: distinctDiagnostics([
+              growthReasons,
+              lowered.diagnostics,
+              lowered.unreached?.diagnostics ?? [],
+            ]),
+            fences: distinctDiagnostics([
+              growthFences,
+              lowered.runtimeFences,
+              lowered.unreached?.runtimeFences ?? [],
+            ]),
             policy,
           });
     const nodeIslands =
@@ -281,6 +315,22 @@ export function analyzeWithFrontend(
   }
 }
 
+/** Every pass's diagnostics, once each: a package a later pass still
+ * refuses reports the same site again. */
+function distinctDiagnostics(passes: readonly ScrDiagnostic[][]): ScrDiagnostic[] {
+  const seen = new Set<string>();
+  const out: ScrDiagnostic[] = [];
+  for (const pass of passes) {
+    for (const d of pass) {
+      const key = `${d.code}\u0000${d.loc.file}\u0000${d.loc.start}\u0000${d.message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(d);
+    }
+  }
+  return out;
+}
+
 /** The installed directory of an islanded package whose implementation is
  * not part of the program: the report has no directory for it, and a build's
  * island decision resolves it from the importing site the same way
@@ -305,41 +355,4 @@ function islandPackageDir(
   }
   const at = js === null ? null : packageDirOf(js.typesFile);
   return at !== null && at.name === name ? at.dir : null;
-}
-
-/** The island set grown by the packages the lowering said are not part of
- * its compiled module graph (executable/prepare.ts's loweringIslands, first
- * clause): a package named by an SC2013 refusal runs in a Node island in a
- * build, so the analysis lowers again with it islanded. Null when nothing
- * grows — no named package, auto policy off, or the same set the cap allows. */
-function grownIslands(
-  entryPath: string,
-  fe: Frontend,
-  policy: NodeIslandPolicy,
-  diagnostics: readonly ScrDiagnostic[],
-  known: NodeIslandSet | null,
-): NodeIslandSet | null {
-  if (policy.mode !== "auto") return null;
-  const packages = known?.packages ?? new Map<string, IslandPackage>();
-  if (packages.size > 16) return null;
-  let grown: Map<string, IslandPackage> | null = null;
-  for (const d of diagnostics) {
-    if (d.code !== "SC2013") continue;
-    const named = /npm package '([^']+)'/.exec(d.message);
-    if (named === null) continue;
-    const name = named[1]!;
-    if (packages.has(name) || policy.forcedNative.has(name) || policy.unloaded.has(name)) continue;
-    const dir = islandPackageDir(fe, entryPath, name, d.loc.file);
-    if (dir === null) continue;
-    grown ??= new Map(packages);
-    grown.set(name, {
-      name,
-      version: packageVersionOf(dir),
-      dir,
-      class: "packaging",
-      reason: `${d.code}: ${d.message}`,
-    });
-  }
-  if (grown === null) return null;
-  return { packages: grown, modules: known?.modules ?? new Map() };
 }

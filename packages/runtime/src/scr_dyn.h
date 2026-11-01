@@ -670,7 +670,10 @@ _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.layout) == 80, "v.obj.layout offset");
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.slots) == 32, "v.obj.slots offset");
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.region) == 72, "v.obj.region offset");
+/* The emitter loads the object model build's length at these offsets
+ * (dyn.ts arrLengthOf), so both pointer widths are pinned. */
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.arr.length) == 72, "v.arr.length offset");
+_Static_assert(sizeof(void *) != 4 || offsetof(ScrDyn, v.arr.length) == 44, "v.arr.length offset (wasm32)");
 
 /* An array's own length. Equal to the dense prefix length `len` unless the
  * JavaScript object model build stored an element past it (see the arr

@@ -127,10 +127,17 @@ function islandPackageUnderDir(islands: NodeIslandSet, file: string): IslandPack
   if (known !== undefined) return known;
   let answer: IslandPackage | null = null;
   for (const [dir, pkg] of index) {
-    if (path === dir || path.startsWith(`${dir}/`)) {
-      answer = pkg;
-      break;
-    }
+    if (path !== dir && !path.startsWith(`${dir}/`)) continue;
+    // The directory fallback applies only to files whose path carries no
+    // package identity: a workspace link's realpath elides the node_modules
+    // segment its files are named by. A package installed under the island's
+    // directory — `<island>/node_modules/<name>`, that package's @types twin,
+    // a pnpm-store copy — is a separate package, and the name lookup above
+    // already declined it, so the island's directory names only the island's
+    // own files.
+    if (path.slice(dir.length).split("/").includes("node_modules")) continue;
+    answer = pkg;
+    break;
   }
   answers.set(path, answer);
   return answer;

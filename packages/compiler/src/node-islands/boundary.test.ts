@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { islandPackageOfFile, type IslandPackage, type NodeIslandSet } from "./boundary.js";
+import {
+  islandOwnerOfFile,
+  islandPackageOfFile,
+  type IslandPackage,
+  type NodeIslandSet,
+} from "./boundary.js";
 
 function island(name: string, dir: string): IslandPackage {
   return { name, version: null, dir, class: "packaging", reason: "it cannot compile natively" };
@@ -31,6 +36,42 @@ describe("islandPackageOfFile", () => {
       "wsunclean",
     );
     expect(islandPackageOfFile(islands, "/p/workspace/wsunclean")?.name).toBe("wsunclean");
+  });
+
+  test("does not claim a dependency installed inside the island's node_modules", () => {
+    // A workspace island's own directory is its identity, but a package
+    // installed under that directory is a separate package: it is found by
+    // name when it is an island too, and its declarations must not read as
+    // this island's.
+    const islands = set(island("wsunclean", "/p/workspace/wsunclean"));
+    expect(
+      islandPackageOfFile(islands, "/p/workspace/wsunclean/node_modules/native-dep/index.js"),
+    ).toBeNull();
+    expect(
+      islandPackageOfFile(
+        islands,
+        "/p/workspace/wsunclean/node_modules/@scope/native-dep/index.d.ts",
+      ),
+    ).toBeNull();
+    expect(
+      islandPackageOfFile(
+        islands,
+        "/p/workspace/wsunclean/node_modules/.pnpm/native-dep@1.0.0/node_modules/native-dep/index.js",
+      ),
+    ).toBeNull();
+    // The dependency's own package directory, as the resolver spells it.
+    expect(
+      islandPackageOfFile(islands, "/p/workspace/wsunclean/node_modules/native-dep"),
+    ).toBeNull();
+    // The island module link uses the same owner: a require inside island
+    // code for the nested dependency is not island code to load in Node.
+    expect(
+      islandOwnerOfFile(islands, "/p/workspace/wsunclean/node_modules/native-dep/index.js"),
+    ).toBeNull();
+    // The island's own files beside node_modules keep the island.
+    expect(islandPackageOfFile(islands, "/p/workspace/wsunclean/dist/index.js")?.name).toBe(
+      "wsunclean",
+    );
   });
 
   test("does not claim a sibling whose path merely shares a prefix", () => {

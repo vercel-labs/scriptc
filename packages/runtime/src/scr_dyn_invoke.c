@@ -1421,8 +1421,7 @@ static ScrDyn *scr_dyn_invoke_impl(
         if (last == 0) return scr_dyn_retain(scr_dyn_undefined());
         if (last <= recv->v.arr.len) {
           /* The last element is inside the dense prefix. */
-          recv->v.arr.len = last - 1;
-          recv->v.arr.length = last - 1;
+          scr_dyn_arr_set_len(recv, last - 1);
           return recv->v.arr.items[last - 1]; /* ownership moves out */
         }
         ScrDyn *result = scr_dyn_arr_at(recv, (double)(last - 1));

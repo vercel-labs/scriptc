@@ -5406,12 +5406,13 @@ function resolveImport7(
   from: ts.SourceFile,
   specifier: string,
   resolutionKind: "import" | "require" = "import",
+  report = true,
 ): ts.SourceFile | null {
   const resolved = resolveProjectModule(from.fileName, specifier);
   if (resolved !== null) return program.getSourceFile(resolved) ?? null;
   const npm = resolveNpmImport7(from.fileName, specifier, resolutionKind);
   return npm && isNpmStaticPackage(npm.packageName)
-    ? npmStaticProgramDep(program, npm.packageName, npm.typesFile)
+    ? npmStaticProgramDep(program, npm.packageName, npm.typesFile, report)
     : null;
 }
 
@@ -5483,25 +5484,37 @@ function npmStaticProgramFile(program: ts.Program, resolvedFile: string): ts.Sou
 /** The PROGRAM source file an opted-in --npm-static package's resolved
  * entry maps to, or null with the package marked an offender (resolution
  * still answering declarations, or the file missing from the type-checked
- * program — a path-identity mismatch between the two resolvers). */
+ * program — a path-identity mismatch between the two resolvers).
+ *
+ * `report` is false for the HEURISTIC graph walks (the type-only
+ * reachability and reexport planners): they over-count edges on purpose
+ * (any call with a leading string literal is a loading edge), so an
+ * unrelated file's `registerLanguage("diff", …)` must not resolve the
+ * literal `"diff"` through the require condition and classify that PACKAGE
+ * an offender. Only a real import edge decides a package's fate. */
 function npmStaticProgramDep(
   program: ts.Program,
   packageName: string,
   resolvedFile: string,
+  report = true,
 ): ts.SourceFile | null {
   if (!isJsSourceFileName(resolvedFile)) {
-    reportNpmStaticOffender(
-      packageName,
-      `its import resolves to '${resolvedFile}', not to runtime JavaScript`,
-    );
+    if (report) {
+      reportNpmStaticOffender(
+        packageName,
+        `its import resolves to '${resolvedFile}', not to runtime JavaScript`,
+      );
+    }
     return null;
   }
   const dep = npmStaticProgramFile(program, resolvedFile);
   if (dep === null) {
-    reportNpmStaticOffender(
-      packageName,
-      `its entry '${resolvedFile}' did not join the type-checked program`,
-    );
+    if (report) {
+      reportNpmStaticOffender(
+        packageName,
+        `its entry '${resolvedFile}' did not join the type-checked program`,
+      );
+    }
     return null;
   }
   return dep;
@@ -5733,16 +5746,26 @@ function preflight7(load: LoadResult): {
     return sf !== undefined && isCjsJsFile7(sf, p);
   };
 
-  const workspaceImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+  // A resolved JavaScript module without declarations (7016) whose package
+  // scriptc owns: a workspace package, or a SUBPATH of a NODE ISLAND package.
+  // An island package runs in the island's own Node process, so its modules
+  // cross into the program as handles; a missing `.d.ts` for one of its own
+  // subpaths (highlight.js declares `lib/core.js` but not `lib/index.js`) is
+  // a fact about the package the island loads, not a program type error.
+  // Node loads the file like any other module, and the binding types as any
+  // so every use takes the dynamic paths. The package's ROOT specifier keeps
+  // its 7016: a bare import of a package that ships no declarations is the
+  // typed-import case the `scriptc types patch` workflow exists for, and it
+  // refuses until the project declares the surface it uses.
+  const packageModuleImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
     if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
       return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
     const spec = sf.text.slice(d.pos, d.end).replace(/^['"]|['"]$/g, "");
-    const prefix = spec.startsWith("@")
-      ? spec.split("/").slice(0, 2).join("/")
-      : spec.split("/")[0]!;
-    return isWorkspacePackageName(prefix);
+    const pkg = packageNameOfSpecifier(spec);
+    if (isWorkspacePackageName(pkg)) return true;
+    return spec !== pkg && isFrontendIsland(pkg);
   };
   // A JavaScript file that TypeScript checks keeps the type errors that
   // protect its JSDoc types: a value of another type reaching a typed slot,
@@ -5784,7 +5807,7 @@ function preflight7(load: LoadResult): {
         !namespaceCalleeSuppressed(p, d) &&
         !inferredJsDiagnosticSuppressed(p, d) &&
         !isNpmStaticSubclassArgument(p, d) &&
-        !workspaceImplicitAnySuppressed(p, d) &&
+        !packageModuleImplicitAnySuppressed(p, d) &&
         !typeofTestedNameSuppressed(p, d) &&
         !cjsTopLevelReturnSuppressed(p, d) &&
         !jsdocTypeSuppressed(p, d, commentDup),
@@ -5867,7 +5890,7 @@ function preflight7(load: LoadResult): {
     spec: string,
     resolutionKind?: "import" | "require",
   ): ts.SourceFile | null =>
-    resolveImport7(program, sf, spec, resolutionKind) ??
+    resolveImport7(program, sf, spec, resolutionKind, false) ??
     npmStaticDepSf7(program, sf, spec, resolutionKind);
   const typeOnlyFiles = typeOnlyReachedFiles(
     program,

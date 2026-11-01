@@ -115,7 +115,6 @@ const KNOWN: Record<string, Known> = {
   "node24-url-factories": { run: "SC2020" },
   "node24-url-mutation": { run: "SC1090" },
   "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
-  "node24-util-types": { run: "SC1090" },
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
@@ -123,7 +122,6 @@ const KNOWN: Record<string, Known> = {
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },
   // `class Upper extends TransformStream`: extending a builtin class from JavaScript.
-  "web-streams": { run: "SC1090" },
   "workspace-copied": { island: true },
   "workspace-unclean": { build: "SC2013" },
 };

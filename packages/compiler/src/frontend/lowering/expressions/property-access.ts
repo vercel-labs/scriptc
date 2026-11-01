@@ -209,7 +209,7 @@ import {
 } from "../generic-functions.js";
 import { narrowStoredClassValue, structuralReadType } from "../class-unions.js";
 import { InternalCompilerError } from "../../../errors.js";
-import { lowerUnionFieldRead } from "./union-fields.js";
+import { lowerUnionFieldRead, narrowedArmRead, narrowedUnionView } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { partialAssertionFields, partialFieldRead } from "../partial-assertions.js";
@@ -1815,6 +1815,15 @@ export function lowerPropertyAccessExpr(
     const unit = recvLowered.type.kind === "nullT" ? "null" : "undefined";
     const t = ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
     return throwAfterEach([recvLowered], nullishReadTypeError(unit, expr.name.text, t, loc), loc);
+  }
+  // The site is about to be refused: a checker-narrowed receiver still
+  // stores the wider union, whose other arms may be what refuse the member
+  // (the OAuth arm's index signature beside `ApiKeyCredential.key`). Read
+  // it off the arms the checker still allows, exactly where the refusal
+  // would be.
+  if (recvLowered.type.kind === "union") {
+    const read = narrowedUnionValueRead(lowerer, expr, recvLowered);
+    if (read) return read;
   }
   lowerer.unsupported(
     "SC1090",
@@ -4063,7 +4072,8 @@ export function lowerUnionProperty(
       "shared property access without a represented union receiver",
     );
   }
-  const read = lowerUnionValueRead(lowerer, expr, value);
+  const read =
+    lowerUnionValueRead(lowerer, expr, value) ?? narrowedUnionValueRead(lowerer, expr, value);
   if (read) return read;
   lowerer.unsupported(
     "SC1090",
@@ -4085,6 +4095,33 @@ export function lowerUnionValueRead(
   expr: ts.PropertyAccessExpression,
   value: IrExpr,
   missingFieldAsUndefined = false,
+): IrExpr | null {
+  return unionValueRead(lowerer, expr, value, missingFieldAsUndefined);
+}
+
+/** The stored-union read again over the arms the checker's narrowing still
+ * allows: an arm it ruled out at this site refused the read (the OAuth
+ * arm's index signature beside `ApiKeyCredential.key`, behind an
+ * optional-chain discriminant guard). Only the REFUSAL points call this —
+ * a site another lowering answers keeps it — so no compiling program
+ * gains a second, narrowed lowering. Returns null when the site's type is
+ * not a narrowing of the value's union. */
+export function narrowedUnionValueRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  value: IrExpr,
+): IrExpr | null {
+  const narrowed = narrowedUnionView(lowerer, expr.expression, value, locOf(expr));
+  if (!narrowed) return null;
+  if (narrowed.arm) return narrowedArmRead(lowerer, expr, narrowed.value, narrowed.arm);
+  return unionValueRead(lowerer, expr, narrowed.value, false);
+}
+
+function unionValueRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  value: IrExpr,
+  missingFieldAsUndefined: boolean,
 ): IrExpr | null {
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;

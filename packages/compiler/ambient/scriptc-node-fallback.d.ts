@@ -1538,6 +1538,9 @@ declare var URL: {
   new (input: string | { toString: () => string }, base?: string | URL): URL;
   canParse(input: string | URL, base?: string | URL): boolean;
   parse(input: string | URL, base?: string | URL): URL | null;
+  /* The id is coerced to a string before the registry lookup; a
+   * compiled program registers no blob URLs, so every id misses. */
+  revokeObjectURL(url: string | URL): void;
 };
 
 /* URLSearchParams — the WHATWG application/x-www-form-urlencoded list.
@@ -1555,7 +1558,10 @@ interface URLSearchParams {
   set(name: string, value: string): void;
   sort(): void;
   toString(): string;
-  forEach(callback: (value: string, name: string, searchParams: URLSearchParams) => void): void;
+  forEach(
+    callback: (value: string, name: string, searchParams: URLSearchParams) => void,
+    thisArg?: unknown,
+  ): void;
   keys(): IterableIterator<string>;
   values(): IterableIterator<string>;
   entries(): IterableIterator<[string, string]>;

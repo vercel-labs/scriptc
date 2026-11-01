@@ -1018,6 +1018,14 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     valueParams: [{ mode: "required", type: STRING, name: "path" }],
     checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
   },
+  // Node's deprecated alias of toNamespacedPath (the same function object).
+  _makeLong: {
+    fn: "path.toNamespacedPath",
+    params: [STRING],
+    result: STRING,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
+  },
   matchesGlob: {
     fn: "path.matchesGlob",
     params: [STRING, STRING],
@@ -1110,6 +1118,14 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     ],
   },
   toNamespacedPath: {
+    fn: "path.win32ToNamespacedPath",
+    params: [STRING],
+    result: STRING,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [true], result: DYN },
+  },
+  // Node's deprecated alias of toNamespacedPath (the same function object).
+  _makeLong: {
     fn: "path.win32ToNamespacedPath",
     params: [STRING],
     result: STRING,

@@ -4826,6 +4826,25 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // os.BufferUserInfo: os.userInfo({ encoding: 'buffer' }) — the same
+  // record with the three passwd strings as Buffers (the u8 bytes kind).
+  if (isStdlibInterface("BufferUserInfo")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "gid", type: F64 },
+          { name: "homedir", type: bytesOf("u8") },
+          { name: "shell", type: bytesOf("u8") },
+          { name: "uid", type: F64 },
+          { name: "username", type: bytesOf("u8") },
+        ],
+        false,
+        undefined,
+        ["uid", "gid", "username", "homedir", "shell"],
+      ),
+    };
+  }
   // The promisified exec/execFile result `{ stdout: string; stderr: string }`
   // and the promisified dns.lookupService result `{ hostname: string;
   // service: string }`: anonymous type literals (@types/node's

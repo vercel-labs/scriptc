@@ -64,29 +64,42 @@ void scr_url_release_v(void *p) { scr_url_release(p); }
 
 /* ── a tiny growable byte buffer (mirrors scr_path.c's) ──────────────── */
 
+/* Components are short (a host, a path, a query), so the builder holds
+ * them in its own storage and only reaches for the heap when one outgrows
+ * it: a parse allocates nothing here. An empty component takes the shared
+ * empty string, not a fresh one. */
+#define UB_INLINE 96
+
 typedef struct {
   char *data;
   size_t len;
   size_t cap;
+  char inline_data[UB_INLINE];
 } UrlBuf;
 
 static void ub_init(UrlBuf *b) {
-  b->cap = 64;
+  b->data = b->inline_data;
+  b->cap = UB_INLINE;
   b->len = 0;
-  b->data = malloc(b->cap);
-  if (!b->data) {
-    scr_trap("scriptc: out of memory\n");
-  }
 }
 
 static void ub_append(UrlBuf *b, const char *bytes, size_t n) {
   if (b->len + n > b->cap) {
     while (b->len + n > b->cap) b->cap *= 2;
-    char *grown = realloc(b->data, b->cap);
-    if (!grown) {
-      scr_trap("scriptc: out of memory\n");
+    if (b->data == b->inline_data) {
+      char *grown = malloc(b->cap);
+      if (!grown) {
+        scr_trap("scriptc: out of memory\n");
+      }
+      memcpy(grown, b->data, b->len);
+      b->data = grown;
+    } else {
+      char *grown = realloc(b->data, b->cap);
+      if (!grown) {
+        scr_trap("scriptc: out of memory\n");
+      }
+      b->data = grown;
     }
-    b->data = grown;
   }
   memcpy(b->data + b->len, bytes, n);
   b->len += n;
@@ -94,9 +107,21 @@ static void ub_append(UrlBuf *b, const char *bytes, size_t n) {
 
 static void ub_push(UrlBuf *b, char c) { ub_append(b, &c, 1); }
 
+/* Drop a builder's storage without answering a string. */
+static void ub_free(UrlBuf *b) {
+  if (b->data != b->inline_data) free(b->data);
+  b->data = b->inline_data;
+  b->len = 0;
+  b->cap = UB_INLINE;
+}
+
 static ScrStr *ub_take(UrlBuf *b) {
+  if (b->len == 0) {
+    if (b->data != b->inline_data) free(b->data);
+    return scr_str_empty_value();
+  }
   ScrStr *s = scr_str_new(b->data, b->len);
-  free(b->data);
+  if (b->data != b->inline_data) free(b->data);
   return s;
 }
 
@@ -312,7 +337,7 @@ static ScrStr *parse_rooted_path_mode(const char *raw, size_t len, bool special,
     ub_push(&ser, '/');
     ub_append(&ser, out.data + seg_starts[s], end - seg_starts[s]);
   }
-  free(out.data);
+  ub_free(&out);
   free(seg_starts);
   return ub_take(&ser);
 }
@@ -452,7 +477,7 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
   ub_init(&hb);
   if (ipv6) {
     if (!ub_append_ipv6(&hb, hp + 1, ipv6_end - 1)) {
-      free(hb.data);
+      ub_free(&hb);
       return false;
     }
     *host = ub_take(&hb);
@@ -462,7 +487,7 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
     for (size_t i = 0; i < host_len; i++) {
       unsigned char c = (unsigned char)hp[i];
       if (url_host_byte_class[c] & URL_FORBIDDEN_HOST) {
-        free(hb.data);
+        ub_free(&hb);
         return false;
       }
       ub_push_encoded(&hb, c, enc_c0_control);
@@ -486,7 +511,7 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
   if (non_ascii) {
     /* UTS #46 ToASCII, or refused without the IDNA unit. */
     ScrStr *ascii = scr_url_host_to_ascii ? scr_url_host_to_ascii(hb.data, hb.len) : NULL;
-    free(hb.data);
+    ub_free(&hb);
     if (!ascii || ascii->len == 0) {
       scr_str_release(ascii);
       return false;
@@ -497,7 +522,7 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
   }
   for (size_t i = 0; i < hb.len; i++) {
     if (url_host_byte_class[(unsigned char)hb.data[i]] & URL_FORBIDDEN_DOMAIN) {
-      free(hb.data);
+      ub_free(&hb);
       return false;
     }
   }
@@ -505,17 +530,20 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
     UrlBuf ip;
     ub_init(&ip);
     bool ok = url_ipv4_parse(hb.data, hb.len, &ip);
-    free(hb.data);
+    ub_free(&hb);
     if (!ok) {
-      free(ip.data);
+      ub_free(&ip);
       return false;
     }
-    hb = ip;
+    /* Move the dotted-decimal host into hb's own storage: a builder is
+     * never copied by value, since it may own its inline array. */
+    ub_append(&hb, ip.data, ip.len);
+    ub_free(&ip);
   }
   /* file: "localhost" normalizes to "" at parse time (Node). */
   if (is_file && hb.len == 9 && memcmp(hb.data, "localhost", 9) == 0) hb.len = 0;
   if (hb.len == 0 && !is_file) {
-    free(hb.data);
+    ub_free(&hb);
     return false; /* http:// — special non-file needs a host */
   }
   *host = ub_take(&hb);
@@ -597,7 +625,7 @@ static bool parse_authority(const char *raw, size_t len, bool special, bool is_f
     bool any = false;
     for (size_t i = 0; i < ps_len; i++) {
       if (ps[i] < '0' || ps[i] > '9') {
-        free(pb.data);
+        ub_free(&pb);
         return false;
       }
     }
@@ -605,7 +633,7 @@ static bool parse_authority(const char *raw, size_t len, bool special, bool is_f
       value = value * 10 + (ps[i] - '0');
       any = true;
       if (value > 65535) {
-        free(pb.data);
+        ub_free(&pb);
         return false;
       }
     }
@@ -630,6 +658,125 @@ static ScrStr *url_usv(ScrStr *input) {
   return scr_str_has_surrogate(input) ? scr_str_to_well_formed(input) : NULL;
 }
 
+/* ── the plain absolute URL ──────────────────────────────────────────
+ *
+ * A special-scheme URL whose every component is a literal slice of its
+ * input — a lowercase scheme, a bare lowercase host, a rooted path with
+ * no dot segments, and a query and fragment with no byte that needs
+ * escaping — needs none of the authority, host or path machinery: each
+ * component is copied from the input once. Anything else falls through
+ * to the general parser below, which owns every rule this shape skips. */
+typedef struct {
+  bool ok;
+  size_t scheme_len;
+  size_t host_begin, host_end;
+  size_t path_end;                  /* the path is [host_end, path_end) */
+  size_t query_begin, query_end;    /* 0/0 when there is no query */
+  size_t frag_begin, frag_end;      /* 0/0 when there is no fragment */
+} PlainUrl;
+
+/* True for a segment that dot-segment removal never rewrites. The scan
+ * rejects '%' bytes outright, so only the literal spellings matter. */
+static bool url_seg_plain(const char *s, size_t len) {
+  if (len == 1) return s[0] != '.';
+  if (len == 2) return !(s[0] == '.' && s[1] == '.');
+  return true;
+}
+
+static PlainUrl url_scan_plain(const char *s, size_t len) {
+  PlainUrl p;
+  p.ok = false;
+  p.scheme_len = 0;
+  p.host_begin = p.host_end = p.path_end = 0;
+  p.query_begin = p.query_end = p.frag_begin = p.frag_end = 0;
+  size_t i = 0;
+  while (i < len && s[i] >= 'a' && s[i] <= 'z') i++;
+  bool known = (i == 4 && memcmp(s, "http", 4) == 0) ||
+               (i == 5 && memcmp(s, "https", 5) == 0) || (i == 2 && memcmp(s, "ws", 2) == 0) ||
+               (i == 3 && memcmp(s, "wss", 3) == 0) || (i == 3 && memcmp(s, "ftp", 3) == 0);
+  if (!known || i + 3 > len || s[i] != ':' || s[i + 1] != '/' || s[i + 2] != '/') return p;
+  size_t hb = i + 3, he = hb;
+  while (he < len && s[he] != '/' && s[he] != '?' && s[he] != '#') he++;
+  if (he == hb) return p; /* no host at all */
+  for (size_t k = hb; k < he; k++) {
+    unsigned char c = (unsigned char)s[k];
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.')) return p;
+  }
+  if (s[hb] == '.' || s[hb] == '-' || s[he - 1] == '.' || s[he - 1] == '-') return p;
+  if (url_ends_in_number(s + hb, he - hb)) return p; /* IPv4 parsing applies */
+  size_t hash = len, qmark = len;
+  for (size_t k = he; k < len; k++) {
+    if (s[k] == '#') {
+      hash = k;
+      break;
+    }
+  }
+  for (size_t k = he; k < hash; k++) {
+    if (s[k] == '?') {
+      qmark = k;
+      break;
+    }
+  }
+  if (qmark > he && s[he] != '/') return p; /* an absolute path or no path */
+  size_t seg = he + 1;
+  for (size_t k = he + 1; k <= qmark; k++) {
+    if (k < qmark && s[k] != '/') {
+      unsigned char c = (unsigned char)s[k];
+      /* A percent sign may spell a dot segment ("%2e%2e"), which the
+       * general parser removes; that decision needs the decoder. */
+      if (c == '\\' || c == '%' || enc_path(c)) return p;
+      continue;
+    }
+    if (!url_seg_plain(s + seg, k - seg)) return p;
+    seg = k + 1;
+  }
+  if (qmark < hash) {
+    for (size_t k = qmark + 1; k < hash; k++) {
+      if (enc_query((unsigned char)s[k], true)) return p;
+    }
+  }
+  if (hash < len) {
+    for (size_t k = hash + 1; k < len; k++) {
+      if (enc_fragment((unsigned char)s[k])) return p;
+    }
+  }
+  p.ok = true;
+  p.scheme_len = i;
+  p.host_begin = hb;
+  p.host_end = he;
+  p.path_end = qmark;
+  if (qmark < hash) {
+    p.query_begin = qmark;
+    p.query_end = hash;
+  }
+  if (hash < len) {
+    p.frag_begin = hash;
+    p.frag_end = len;
+  }
+  return p;
+}
+
+/* Builds the URL object around seven component references it takes over. */
+static ScrUrl *url_alloc(ScrStr *scheme, ScrStr *userinfo, ScrStr *host, ScrStr *port,
+                         ScrStr *path, ScrStr *query, ScrStr *fragment, bool has_authority) {
+  ScrUrl *u = malloc(sizeof(ScrUrl));
+  if (!u) {
+    scr_trap("scriptc: out of memory\n");
+  }
+  u->rc = 1;
+  u->scheme = scheme;
+  u->userinfo = userinfo;
+  u->host = host;
+  u->port = port;
+  u->path = path;
+  u->query = query;
+  u->fragment = fragment;
+  u->has_authority = has_authority;
+  u->sp_cache = NULL;
+  u->sp_reload = NULL;
+  return u;
+}
+
 /* The full constructor-path parser. Returns NULL after throwing. */
 ScrUrl *scr_url_new(ScrStr *input) {
   ScrStr *usv = url_usv(input);
@@ -645,15 +792,53 @@ ScrUrl *scr_url_new(ScrStr *input) {
   size_t b = 0, e = raw_len;
   while (b < e && (unsigned char)raw[b] <= 0x20) b++;
   while (e > b && (unsigned char)raw[e - 1] <= 0x20) e--;
-  char *buf = malloc(e - b + 1);
-  if (!buf) {
-    scr_trap("scriptc: out of memory\n");
-  }
-  size_t len = 0;
+  /* The input stays alive for the parse and already ends in a NUL, so it
+   * is parsed in place whenever no byte needs rewriting; a TAB/LF/CR in
+   * the trimmed span, or an uppercase scheme, makes the copy. */
+  bool strip = false;
   for (size_t i = b; i < e; i++) {
     char c = raw[i];
-    if (c == '\t' || c == '\n' || c == '\r') continue;
-    buf[len++] = c;
+    if (c == '\t' || c == '\n' || c == '\r') {
+      strip = true;
+      break;
+    }
+  }
+  char *owned = NULL;
+  const char *buf = raw + b;
+  size_t len = e - b;
+  if (strip) {
+    owned = malloc(e - b + 1);
+    if (!owned) {
+      scr_trap("scriptc: out of memory\n");
+    }
+    len = 0;
+    for (size_t i = b; i < e; i++) {
+      char c = raw[i];
+      if (c == '\t' || c == '\n' || c == '\r') continue;
+      owned[len++] = c;
+    }
+    buf = owned;
+  }
+
+  /* The plain absolute shape takes the direct route: every component is
+   * already a slice of the input, in place. */
+  PlainUrl plain = url_scan_plain(buf, len);
+  if (plain.ok) {
+    ScrStr *scheme = scr_str_new(buf, plain.scheme_len);
+    ScrStr *host = scr_str_new(buf + plain.host_begin, plain.host_end - plain.host_begin);
+    ScrStr *path = plain.path_end > plain.host_end
+                       ? scr_str_new(buf + plain.host_end, plain.path_end - plain.host_end)
+                       : scr_str_new("/", 1);
+    ScrStr *query = plain.query_end > plain.query_begin
+                        ? scr_str_new(buf + plain.query_begin, plain.query_end - plain.query_begin)
+                        : scr_str_empty_value();
+    ScrStr *fragment = plain.frag_end > plain.frag_begin
+                           ? scr_str_new(buf + plain.frag_begin, plain.frag_end - plain.frag_begin)
+                           : scr_str_empty_value();
+    ScrUrl *u = url_alloc(scheme, scr_str_empty_value(), host, scr_str_empty_value(), path, query,
+                          fragment, true);
+    free(owned);
+    return u;
   }
 
   /* Scheme: [A-Za-z][A-Za-z0-9+\-.]* ":" — lowercased. */
@@ -668,12 +853,31 @@ ScrUrl *scr_url_new(ScrStr *input) {
     }
   }
   if (sl == 0 || sl >= len || buf[sl] != ':') {
-    free(buf);
+    free(owned);
     scr_url_throw_invalid();
     return NULL;
   }
+  /* Only an uppercase scheme byte is rewritten, so a read-only span stays
+   * borrowed unless there is one. */
+  bool upper = false;
   for (size_t i = 0; i < sl; i++) {
-    if (buf[i] >= 'A' && buf[i] <= 'Z') buf[i] = (char)(buf[i] - 'A' + 'a');
+    if (buf[i] >= 'A' && buf[i] <= 'Z') {
+      upper = true;
+      break;
+    }
+  }
+  if (upper) {
+    if (!owned) {
+      owned = malloc(len + 1);
+      if (!owned) {
+        scr_trap("scriptc: out of memory\n");
+      }
+      memcpy(owned, buf, len + 1);
+      buf = owned;
+    }
+    for (size_t i = 0; i < sl; i++) {
+      if (owned[i] >= 'A' && owned[i] <= 'Z') owned[i] = (char)(owned[i] - 'A' + 'a');
+    }
   }
   const char *scheme = buf;
   bool special = is_special_scheme(scheme, sl);
@@ -726,7 +930,7 @@ ScrUrl *scr_url_new(ScrStr *input) {
         scr_str_release(userinfo);
         scr_str_release(host);
         scr_str_release(port);
-        free(buf);
+        free(owned);
         scr_url_throw_invalid();
         return NULL;
       }
@@ -771,7 +975,7 @@ ScrUrl *scr_url_new(ScrStr *input) {
       scr_str_release(userinfo);
       scr_str_release(host);
       scr_str_release(port);
-      free(buf);
+      free(owned);
       scr_url_throw_invalid();
       return NULL;
     }
@@ -826,24 +1030,9 @@ ScrUrl *scr_url_new(ScrStr *input) {
   ScrStr *fragment = ub_take(&fb);
 
   ScrStr *scheme_str = scr_str_new(scheme, sl);
-  free(buf);
+  free(owned);
 
-  ScrUrl *u = malloc(sizeof(ScrUrl));
-  if (!u) {
-    scr_trap("scriptc: out of memory\n");
-  }
-  u->rc = 1;
-  u->scheme = scheme_str;
-  u->userinfo = userinfo;
-  u->host = host;
-  u->port = port;
-  u->path = path;
-  u->query = query;
-  u->fragment = fragment;
-  u->has_authority = has_authority;
-  u->sp_cache = NULL;
-  u->sp_reload = NULL;
-  return u;
+  return url_alloc(scheme_str, userinfo, host, port, path, query, fragment, has_authority);
 }
 
 /* Resolve a relative reference using the parsed base's component boundaries.
@@ -957,7 +1146,7 @@ ScrUrl *scr_url_new_base(ScrStr *input, ScrStr *base_input) {
   result = scr_url_new(resolved);
   scr_str_release(resolved);
 done:
-  free(cleaned.data);
+  ub_free(&cleaned);
   scr_url_release(base);
   return result;
 }
@@ -1307,7 +1496,7 @@ static bool url_apply_component(ScrUrl *u, ScrStr *field, ScrStr *value) {
     url_strip_opaque_spaces(u);
     if (search && u->sp_cache) u->sp_reload(u->sp_cache, u->query);
   }
-  free(raw.data);
+  ub_free(&raw);
   return applied;
 }
 
@@ -1444,13 +1633,13 @@ static ScrStr *scr_url_to_path_impl(ScrUrl *u, bool win32) {
     int letter = (plen > 1 ? (unsigned char)pp[1] : 0) | 0x20;
     char drive_sep = plen > 2 ? pp[2] : 0;
     if (letter < 'a' || letter > 'z' || drive_sep != ':') {
-      free(out.data);
+      ub_free(&out);
       scr_throw_error_msg_code(SCR_ERR_TYPE, "File URL path must be absolute", 30, "ERR_INVALID_FILE_URL_PATH");
       return NULL;
     }
     /* pathname.slice(1): the leading backslash drops. */
     ScrStr *s = scr_str_new(pp + 1, plen - 1);
-    free(out.data);
+    ub_free(&out);
     return s;
   }
   if (!url_file_posix_host(u)) return NULL;
@@ -1548,7 +1737,7 @@ static void scr_url_throw_arg_value(const char *reason, ScrStr *value) {
   ub_append(&msg, ". Received ", 11);
   ub_push_inspected(&msg, value->data, value->len);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg.data, msg.len, "ERR_INVALID_ARG_VALUE");
-  free(msg.data);
+  ub_free(&msg);
 }
 
 /* Percent-encodes a raw filesystem path the way Node's
@@ -1559,6 +1748,19 @@ static void scr_url_throw_arg_value(const char *reason, ScrStr *value) {
  * it is a path byte rather than a separator) pre-encode here so the
  * parser passes them through. */
 static ScrStr *scr_url_encode_file_path(const char *raw, size_t len, bool backslash_sep) {
+  /* The URL parser strips a trailing run of C0 control bytes from the
+   * input before percent-encoding, so a path ending in one loses it
+   * rather than gaining a %XX escape. Node's path mode spares the bytes
+   * it pre-encodes (tab, LF, CR keep their escapes) and the NUL byte
+   * (which encodes to %00). */
+  while (len > 0) {
+    unsigned char c = (unsigned char)raw[len - 1];
+    if (c >= 0x01 && c <= 0x1F && c != '\t' && c != '\n' && c != '\r') {
+      len--;
+    } else {
+      break;
+    }
+  }
   UrlBuf pre;
   ub_init(&pre);
   for (size_t i = 0; i < len; i++) {
@@ -1573,7 +1775,7 @@ static ScrStr *scr_url_encode_file_path(const char *raw, size_t len, bool backsl
     }
   }
   ScrStr *encoded = parse_rooted_path(pre.data, pre.len, backslash_sep);
-  free(pre.data);
+  ub_free(&pre);
   return encoded;
 }
 
@@ -1639,7 +1841,7 @@ static ScrUrl *scr_url_from_path_impl(ScrStr *path, bool win32) {
       }
       ScrStr *host = NULL;
       bool valid = parse_host(name.data, name.len, true, true, &host);
-      free(name.data);
+      ub_free(&name);
       if (!valid) {
         scr_str_release(resolved);
         scr_url_throw_invalid();
@@ -1669,7 +1871,7 @@ static ScrUrl *scr_url_from_path_impl(ScrStr *path, bool win32) {
   ub_append(&raw, resolved->data, resolved->len);
   if (wants_trailing && !has_trailing) ub_push(&raw, '/');
   ScrStr *encoded = scr_url_encode_file_path(raw.data, raw.len, win32);
-  free(raw.data);
+  ub_free(&raw);
   scr_str_release(resolved);
   return scr_url_new_file(scr_str_new("", 0), encoded);
 }
@@ -1692,6 +1894,11 @@ ScrUrl *scr_url_from_path_platform(ScrStr *path, bool windows) {
  * way Node exposes { windows: true } options on the bridge pair. */
 ScrStr *scr_url_to_path_w32(ScrUrl *u) { return scr_url_to_path_impl(u, true); }
 ScrUrl *scr_url_from_path_w32(ScrStr *path) { return scr_url_from_path_impl(path, true); }
+
+/* URL.revokeObjectURL(id) past the coercion: a compiled program cannot
+ * create a blob URL, so nothing is ever registered and Node's lookup
+ * misses. The argument is borrowed; the caller releases it. */
+void scr_url_revoke_object_url(ScrStr *id) { (void)id; }
 
 /* WHATWG search getter: "" for no query AND for the bare-'?' query;
  * "?..." verbatim otherwise. */
@@ -2192,7 +2399,7 @@ ScrBytes *scr_url_checked_to_path_buffer(const ScrDyn *value, const ScrDyn *opti
   if (windows && url->host->len == 0) {
     int letter = (decoded.len > 1 ? (unsigned char)decoded.data[1] : 0) | 0x20;
     if (letter < 'a' || letter > 'z' || decoded.len < 3 || decoded.data[2] != ':') {
-      free(decoded.data);
+      ub_free(&decoded);
       scr_url_release(url);
       scr_throw_error_msg_code(SCR_ERR_TYPE, "File URL path must be absolute", 30, "ERR_INVALID_FILE_URL_PATH");
       return NULL;
@@ -2202,7 +2409,7 @@ ScrBytes *scr_url_checked_to_path_buffer(const ScrDyn *value, const ScrDyn *opti
   ScrBytes *result = scr_bytes_new(SCR_BYTES_U8, (double)(decoded.len - start));
   result->is_buffer = true;
   if (decoded.len > start) memcpy(result->data, decoded.data + start, decoded.len - start);
-  free(decoded.data);
+  ub_free(&decoded);
   scr_url_release(url);
   return result;
 }

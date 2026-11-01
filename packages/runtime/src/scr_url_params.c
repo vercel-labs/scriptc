@@ -15,39 +15,63 @@
 
 /* ── a tiny growable byte buffer (scr_url.c's, redeclared locally) ───── */
 
+/* Serialization buffers are short (a query string), so the builder keeps
+ * its first bytes in its own storage and reaches for the heap only when
+ * they do not fit. */
+#define UB_INLINE 96
+
 typedef struct {
   char *data;
   size_t len;
   size_t cap;
+  char inline_data[UB_INLINE];
 } UrlBuf;
 
 static void ub_init(UrlBuf *b) {
-  b->cap = 64;
+  b->data = b->inline_data;
+  b->cap = UB_INLINE;
   b->len = 0;
-  b->data = malloc(b->cap);
-  if (!b->data) {
-    scr_trap("scriptc: out of memory\n");
-  }
 }
 
 static void ub_append(UrlBuf *b, const char *bytes, size_t n) {
   if (b->len + n > b->cap) {
     while (b->len + n > b->cap) b->cap *= 2;
-    char *grown = realloc(b->data, b->cap);
-    if (!grown) {
-      scr_trap("scriptc: out of memory\n");
+    if (b->data == b->inline_data) {
+      char *grown = malloc(b->cap);
+      if (!grown) {
+        scr_trap("scriptc: out of memory\n");
+      }
+      memcpy(grown, b->data, b->len);
+      b->data = grown;
+    } else {
+      char *grown = realloc(b->data, b->cap);
+      if (!grown) {
+        scr_trap("scriptc: out of memory\n");
+      }
+      b->data = grown;
     }
-    b->data = grown;
   }
   memcpy(b->data + b->len, bytes, n);
   b->len += n;
 }
 
+/* Drop a builder's storage without answering a string. */
+static void ub_free(UrlBuf *b) {
+  if (b->data != b->inline_data) free(b->data);
+  b->data = b->inline_data;
+  b->len = 0;
+  b->cap = UB_INLINE;
+}
+
 static void ub_push(UrlBuf *b, char c) { ub_append(b, &c, 1); }
 
 static ScrStr *ub_take(UrlBuf *b) {
+  if (b->len == 0) {
+    if (b->data != b->inline_data) free(b->data);
+    return scr_str_empty_value();
+  }
   ScrStr *s = scr_str_new(b->data, b->len);
-  free(b->data);
+  if (b->data != b->inline_data) free(b->data);
   return s;
 }
 
@@ -236,6 +260,17 @@ static ScrStr *sp_scrub_utf8(const char *in_c, size_t n) {
 /* One urlencoded piece → decoded string: '+' is space, %XX decodes
  * (malformed escapes pass through verbatim), then the UTF-8 scrub. */
 static ScrStr *sp_decode_piece(const char *s, size_t len) {
+  /* The overwhelmingly common piece decodes to itself: no '+', no '%', and
+   * ASCII (which the UTF-8 scrub would leave alone). */
+  bool plain = true;
+  for (size_t i = 0; i < len; i++) {
+    unsigned char c = (unsigned char)s[i];
+    if (c == '+' || c == '%' || c >= 0x80) {
+      plain = false;
+      break;
+    }
+  }
+  if (plain) return scr_str_intern_span(s, len);
   UrlBuf b;
   ub_init(&b);
   for (size_t i = 0; i < len; i++) {
@@ -250,7 +285,7 @@ static ScrStr *sp_decode_piece(const char *s, size_t len) {
     }
   }
   ScrStr *out = sp_scrub_utf8(b.data, b.len);
-  free(b.data);
+  ub_free(&b);
   return out;
 }
 
@@ -286,7 +321,8 @@ static void sp_parse_into(ScrSearchParams *sp, const char *s, size_t len) {
         }
       }
       ScrStr *name = sp_decode_piece(s + start, eq - start);
-      ScrStr *value = eq < i ? sp_decode_piece(s + eq + 1, i - eq - 1) : scr_str_new("", 0);
+      ScrStr *value =
+          eq < i ? sp_decode_piece(s + eq + 1, i - eq - 1) : scr_str_empty_value();
       sp_push(sp, name, value);
     }
     start = i + 1;
@@ -312,7 +348,7 @@ static void sp_sync_owner(ScrSearchParams *sp) {
   if (!sp->owner) return;
   scr_str_release(sp->owner->query);
   if (sp->len == 0) {
-    sp->owner->query = scr_str_new("", 0);
+    sp->owner->query = scr_str_empty_value();
     return;
   }
   UrlBuf b;
@@ -547,12 +583,12 @@ double scr_sp_size(ScrSearchParams *sp) { return (double)sp->len; }
  * by the loop condition; out-of-range reads answer "" defensively. */
 ScrStr *scr_sp_key_at(ScrSearchParams *sp, double i) {
   size_t idx = (size_t)i;
-  if (idx >= sp->len) return scr_str_new("", 0);
+  if (idx >= sp->len) return scr_str_empty_value();
   return scr_str_retain(sp->names[idx]);
 }
 
 ScrStr *scr_sp_val_at(ScrSearchParams *sp, double i) {
   size_t idx = (size_t)i;
-  if (idx >= sp->len) return scr_str_new("", 0);
+  if (idx >= sp->len) return scr_str_empty_value();
   return scr_str_retain(sp->vals[idx]);
 }

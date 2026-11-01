@@ -1,9 +1,11 @@
 import { keyedHelperName } from "../stable-names.js";
 import { numLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { knownBufEncoding } from "../containers/bytes.js";
 import { type Lowerer } from "../lowerer.js";
 import {
   BOOL,
+  BYTES_U8,
   F64,
   type IrExpr,
   type IrStmt,
@@ -22,20 +24,76 @@ import {
  * not the process gid; -1 on Windows), shell = pw_shell (as the `string | null`
  * union @types/node declares — POSIX always answers the string arm;
  * null is Node's Windows answer), homedir = pw_dir (the PASSWD home,
- * NOT os.homedir's $HOME-first cascade — Node's own split). The record
- * assembles field-by-field from scalar libCalls in the shape's
- * declaration order; unknown fields and the options argument fence. */
+ * NOT os.homedir's $HOME-first cascade — Node's own split). A literal
+ * `encoding` names the form of the three strings: 'buffer' for Buffers,
+ * another Buffer encoding for the passwd text re-encoded in it, utf8
+ * otherwise. The record assembles field-by-field from scalar libCalls in
+ * the shape's declaration order; unknown fields and a runtime encoding
+ * fence. */
 export function lowerOsUserInfoCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.nodes.length !== 0) {
-    lowerer.noLowering(
-      "userInfo with options",
-      call,
-      "the zero-argument call is the lowered form (Node's buffer encoding option has no lowering)",
-    );
+  const args = call.arguments.nodes;
+  if (args.length > 1) {
+    lowerer.noLowering(`userInfo with ${args.length} arguments`, call);
+  }
+  // The options object names the encoding Node's binding hands the passwd
+  // bytes to StringBytes::Encode: 'buffer' answers the three strings as
+  // Buffers, any other Buffer encoding (aliases and letter case folded)
+  // answers the passwd text re-encoded in it, and a spelling Node does not
+  // know reads as utf8 — its ParseEncoding default. The argument must
+  // spell the decision statically: a runtime encoding would make both the
+  // result shape and the decoder depend on the value.
+  let encoding = "utf8";
+  if (args.length === 1) {
+    let options: ts.Expression = args[0]!;
+    while (ts.isParenthesizedExpression(options)) options = options.expression;
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "userInfo with a non-literal options object",
+        call,
+        "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
+      );
+    }
+    let encodingExpr: ts.Expression | undefined;
+    for (const prop of options.properties.nodes) {
+      if (
+        !ts.isPropertyAssignment(prop) ||
+        !ts.isIdentifier(prop.name) ||
+        prop.name.text !== "encoding"
+      ) {
+        lowerer.noLowering(
+          "userInfo options beyond a plain encoding property",
+          prop,
+          "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
+        );
+      }
+      encodingExpr = prop.initializer;
+    }
+    if (encodingExpr !== undefined) {
+      let value: ts.Expression = encodingExpr;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      if (ts.isStringLiteralLike(value)) {
+        encoding =
+          value.text.toLowerCase() === "buffer"
+            ? "buffer"
+            : (knownBufEncoding(value.text) ?? "utf8");
+      } else if (
+        !(
+          ts.isIdentifier(value) &&
+          value.text === "undefined" &&
+          lowerer.isStdlibGlobal(value, "undefined")
+        )
+      ) {
+        lowerer.noLowering(
+          "userInfo with a runtime encoding",
+          encodingExpr,
+          "the encoding must be the literal 'buffer' or a non-buffer string literal",
+        );
+      }
+    }
   }
   const fence: () => never = () =>
     lowerer.noLowering(
@@ -48,12 +106,29 @@ export function lowerOsUserInfoCall(
   const shape = lowerer.shapes.get(result.shapeId);
   if (!shape || shape.tuple || shape.indexValue || shape.fields.length === 0) fence();
   const fields: { name: string; value: IrExpr }[] = [];
+  const isBytes = (t: IrType): boolean => t.kind === "bytes" && t.elem === "u8";
+  const buffer = encoding === "buffer";
+  const textField = (
+    fn: "os.userName" | "os.userHomedir" | "os.userShell",
+    bufferFn: "os.userNameBuf" | "os.userHomedirBuf" | "os.userShellBuf",
+  ): IrExpr => {
+    if (buffer) return { kind: "libCall", fn: bufferFn, args: [], type: BYTES_U8, loc };
+    if (encoding === "utf8") return { kind: "libCall", fn, args: [], type: STRING, loc };
+    // Any other encoding re-encodes the passwd bytes: the field's own bytes
+    // go through the decoder Buffer#toString uses for that name, which is
+    // the StringBytes::Encode Node's binding calls on the same bytes.
+    return {
+      kind: "bytesIntrinsic",
+      method: "toString",
+      receiver: { kind: "libCall", fn: bufferFn, args: [], type: BYTES_U8, loc },
+      args: [strLit(encoding, loc)],
+      type: STRING,
+      loc,
+    };
+  };
   for (const f of shape.fields) {
-    if (f.name === "username" && f.type.kind === "string") {
-      fields.push({
-        name: f.name,
-        value: { kind: "libCall", fn: "os.userName", args: [], type: STRING, loc },
-      });
+    if (f.name === "username" && (buffer ? isBytes(f.type) : f.type.kind === "string")) {
+      fields.push({ name: f.name, value: textField("os.userName", "os.userNameBuf") });
     } else if (f.name === "uid" && f.type.kind === "f64") {
       fields.push({
         name: f.name,
@@ -64,15 +139,17 @@ export function lowerOsUserInfoCall(
         name: f.name,
         value: { kind: "libCall", fn: "os.userGid", args: [], type: F64, loc },
       });
-    } else if (f.name === "homedir" && f.type.kind === "string") {
+    } else if (f.name === "homedir" && (buffer ? isBytes(f.type) : f.type.kind === "string")) {
       fields.push({
         name: f.name,
-        value: { kind: "libCall", fn: "os.userHomedir", args: [], type: STRING, loc },
+        value: textField("os.userHomedir", "os.userHomedirBuf"),
       });
-    } else if (f.name === "shell") {
+    } else if (f.name === "shell" && buffer && isBytes(f.type)) {
+      fields.push({ name: f.name, value: textField("os.userShell", "os.userShellBuf") });
+    } else if (f.name === "shell" && !buffer) {
       // `string | null` (the @types/node shape) wraps the always-string
       // POSIX answer into its arm; a plain-string mapping takes it raw.
-      const raw: IrExpr = { kind: "libCall", fn: "os.userShell", args: [], type: STRING, loc };
+      const raw: IrExpr = textField("os.userShell", "os.userShellBuf");
       if (f.type.kind === "string") {
         fields.push({ name: f.name, value: raw });
       } else if (f.type.kind === "union") {
@@ -89,7 +166,22 @@ export function lowerOsUserInfoCall(
       fence();
     }
   }
-  return { kind: "recordLit", fields, type: result, loc };
+  // One passwd lookup for the whole record, then the fields read it: Node
+  // builds userInfo() from a single uv_os_get_passwd, and five separate
+  // reads of the same entry are five times the system call.
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "os.userInfoBegin", args: [], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: { kind: "recordLit", fields, type: result, loc },
+    type: result,
+    loc,
+  };
 }
 
 export function lowerOsNetworkInterfacesCall(

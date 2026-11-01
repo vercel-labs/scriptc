@@ -52,11 +52,20 @@ double scr_os_available_parallelism(void); /* uv_available_parallelism: CPUs thi
  * (pw_name / pw_shell / pw_dir — the passwd home, not the $HOME cascade —
  * and pw_uid / pw_gid, -1 on Windows). Strings +1 fresh; abort on lookup
  * failure. */
+/* The one lookup the field calls below read, so a userInfo() record costs a
+ * single passwd read instead of one per field. A field call without it takes
+ * its own lookup. */
+void scr_os_user_info_begin(void);
 ScrStr *scr_os_user_name(void);
 ScrStr *scr_os_user_shell(void);
 ScrStr *scr_os_user_homedir(void);
 double scr_os_user_uid(void);
 double scr_os_user_gid(void);
+/* The same three slices as Buffers, for os.userInfo({ encoding: 'buffer' })
+ * (+1 fresh buffers). */
+ScrBytes *scr_os_user_name_bytes(void);
+ScrBytes *scr_os_user_shell_bytes(void);
+ScrBytes *scr_os_user_homedir_bytes(void);
 
 /* fs.readdirSync(path, { withFileTypes: true }): one readdir pass
  * snapshotting name + entry kind (scr_lib.c) — the emitter walks it to

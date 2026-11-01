@@ -9,9 +9,11 @@ import {
   type IrFunction,
   type IrStmt,
   type IrType,
+  type SrcLoc,
 } from "../../ir/ir.js";
-import { locOf } from "../program.js";
+import { canonicalBuiltinModule, locOf } from "../program.js";
 import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
+import { builtinModuleMemberNames } from "./surfaces.js";
 
 /** Computed namespace reads select live exports instead of copying a
  * namespace into a registry snapshot. Constructor registries may contain
@@ -407,4 +409,167 @@ export function moduleNamespaceDynValue(
     type: DYN,
     loc,
   };
+}
+
+/** Sub-module members: `fs.promises` IS node:fs/promises, `path.posix` IS
+ * node:path/posix, `util.types` IS node:util/types, as in Node. */
+const BUILTIN_NAMESPACE_MEMBERS: Record<string, readonly string[]> = {
+  fs: ["promises"],
+  path: ["posix", "win32"],
+  dns: ["promises"],
+  util: ["types"],
+};
+
+/** A `node:` builtin namespace boxed as a checked-dynamic value. A builtin
+ * has no compiled source, so the key list comes from the compiler's own
+ * member tables (surfaces.ts `builtinModuleMemberNames`) plus the
+ * sub-module members above; the getter is one lifted function over the
+ * values those members lower to (the same `module.namespaceDyn` object
+ * `moduleNamespaceDynValue` builds for a compiled module). A member with no
+ * value lowering is left out of the box, so a read of it fails the checked
+ * cast rather than answering a value Node would not give. Null when the
+ * module has no servable member at all. */
+export function moduleNamespaceBuiltinDynValue(
+  lowerer: Lowerer,
+  moduleId: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (!moduleId.startsWith("builtin:")) return null;
+  const module = moduleId.slice("builtin:".length);
+  const name = `%module.namespace:${moduleId}`;
+  let keys = lowerer.builtinNamespaceBoxKeys.get(moduleId);
+  if (keys === undefined) {
+    const context = newFnCtx(false, null, null, DYN);
+    const previousClass = lowerer.currentClass;
+    lowerer.currentClass = null;
+    lowerer.fnStack.push(context);
+    try {
+      const body: IrStmt[] = [];
+      const served: string[] = [];
+      for (const key of builtinBoxMemberNames(lowerer, module)) {
+        const value = builtinBoxMemberValue(lowerer, module, key, loc);
+        if (value === null) continue;
+        served.push(key);
+        body.push({
+          kind: "if",
+          cond: {
+            kind: "strEq",
+            negated: false,
+            left: varRef("key", STRING, loc),
+            right: strLit(key, loc),
+            type: { kind: "bool" },
+            loc,
+          },
+          then: [{ kind: "return", value, loc }],
+          else_: null,
+          loc,
+        });
+      }
+      if (served.length === 0) return null;
+      body.push({ kind: "return", value: dynUndefinedExpr(loc), loc });
+      lowerer.liftedFns.push({
+        name,
+        params: [{ localId: "key", name: "key", type: STRING }],
+        returnType: DYN,
+        locals: [{ id: "key", name: "key", type: STRING, mutable: false }, ...context.locals],
+        body,
+        loc,
+      });
+      keys = served;
+      lowerer.builtinNamespaceBoxKeys.set(moduleId, keys);
+    } finally {
+      lowerer.fnStack.pop();
+      lowerer.currentClass = previousClass;
+    }
+  }
+  const value: IrExpr = {
+    kind: "libCall",
+    fn: "module.namespaceDyn",
+    args: [
+      strLit(moduleId, loc),
+      {
+        kind: "arrayLit",
+        elems: keys.map((key) => strLit(key, loc)),
+        type: arrayOf(STRING),
+        loc,
+      },
+      {
+        kind: "dynFrom",
+        value: {
+          kind: "closure",
+          fnName: name,
+          captures: [],
+          type: funcOf([STRING], DYN),
+          loc,
+        },
+        type: DYN,
+        loc,
+      },
+      {
+        kind: "dynFrom",
+        value: {
+          kind: "libCall",
+          fn: "sym.wellKnown",
+          args: [strLit("toStringTag", loc)],
+          type: SYMBOL_T,
+          loc,
+        },
+        type: DYN,
+        loc,
+      },
+    ],
+    type: DYN,
+    loc,
+  };
+  return value;
+}
+
+/** Every member key the box tries, sorted: the lowering tables' value
+ * members and the sub-module members. */
+function builtinBoxMemberNames(lowerer: Lowerer, module: string): string[] {
+  const names = new Set<string>(builtinModuleMemberNames(lowerer, module));
+  for (const sub of BUILTIN_NAMESPACE_MEMBERS[module] ?? []) names.add(sub);
+  return [...names].sort();
+}
+
+/** One box member as a dyn value, or null when the tables answer no value
+ * for it. A member whose lowering reports a diagnostic is skipped with its
+ * diagnostics (and any lifted function it created) rolled back: the box
+ * serves the members it can, and reading an unserved one fails the checked
+ * cast. */
+function builtinBoxMemberValue(
+  lowerer: Lowerer,
+  module: string,
+  key: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  const mark = lowerer.diags.length;
+  const liftedMark = lowerer.liftedFns.length;
+  try {
+    const sub = builtinSubModuleOf(module, key);
+    const value: IrExpr | null =
+      sub !== null
+        ? {
+            kind: "moduleNsRef",
+            moduleId: `builtin:${sub}`,
+            type: { kind: "moduleNs", moduleId: `builtin:${sub}` },
+            loc,
+          }
+        : lowerer.lowerBuiltinMemberDynValue(module, key, loc);
+    if (value === null) return null;
+    const dyn = value.type.kind === "dyn" ? value : lowerer.coerceToExpected(value, DYN);
+    if (dyn.type.kind !== "dyn") return null;
+    return dyn;
+  } catch (err) {
+    if (!(err instanceof PoisonError)) throw err;
+    lowerer.diags.length = mark;
+    lowerer.liftedFns.length = liftedMark;
+    return null;
+  }
+}
+
+/** `module.sub` as its own supported builtin module, or null. */
+function builtinSubModuleOf(module: string, key: string): string | null {
+  if (!(BUILTIN_NAMESPACE_MEMBERS[module] ?? []).includes(key)) return null;
+  return canonicalBuiltinModule(`${module}/${key}`);
 }

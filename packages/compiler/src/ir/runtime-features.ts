@@ -1812,6 +1812,11 @@ function scanRuntimeFeatures(
     features.dynTier = mod.functions.some(
       (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
     );
+  // The object-model build's intrinsic graph builds its members through the
+  // invoke unit (scr_dyn_global_constructor, scr_dyn_builtin_method,
+  // scr_dyn_function_apply), so the fact links it: a JavaScript source can
+  // read an intrinsic without dispatching anything of its own (t262-da A1).
+  if (!features.dynInvoke && features.jsObjectModel) features.dynInvoke = true;
   return features;
 }
 

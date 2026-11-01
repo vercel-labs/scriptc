@@ -286,8 +286,10 @@ describe("runtime feature snapshots", () => {
       expect(armedFeatures.jsObjectModel, fn).toBe(true);
       // The intrinsic graph is linked by this fact and defines its
       // symbol-keyed members through scr_symbol.c, so the symbol unit must
-      // follow the whole fact, not only dyn.intrinsic.
+      // follow the whole fact, not only dyn.intrinsic. Its member and
+      // constructor rows come from the invoke unit for the same reason.
       expect(armedFeatures.symbol, fn).toBe(true);
+      expect(armedFeatures.dynInvoke, fn).toBe(true);
     }
     const bufferFns = [
       "arrayBuffer.newResizable",

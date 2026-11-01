@@ -1,7 +1,8 @@
 import { primitiveConstructorOr } from "./lower-exprs.js";
 import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
-import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import { classKeyHash } from "../../ir/class-key-index.js";
 import { constructedValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
@@ -478,6 +479,217 @@ function branchKind(cond: IrExpr, param: string): "classCapsule" | "funcKind" | 
   return null;
 }
 
+/** The fewest distinct classes a run can dispatch on. Indexing costs a key
+ * load, a multiply and a compare tree whatever the table's size, while the
+ * chain costs a key test per class it skips: measured per read over tables
+ * read in rotation, indexing is 1.2 ns a read ahead at 20 classes, 4.1 ns at
+ * 40, 8.3 ns at 60 and 15 to 48 ns at 200. The crossover is far below this
+ * threshold, so what it decides is which tables change at all. Whole
+ * programs whose largest table holds fewer than this many classes measured
+ * within noise; the ones that gained (a nested decode -36.5%, 200-class reads
+ * -47%) gained through tables above it, and every smaller table keeps the
+ * chain it had. */
+const MIN_CLASS_DISPATCH_CASES = 64;
+
+/** A class table's branch whose condition tests one class's type key on a
+ * receiver local, or null for a statement of another form. A branch
+ * qualifies when it returns: a run is a dispatch, so the branch the switch
+ * selects leaves the helper rather than continuing into the statements after
+ * the run, which only the unselected branches would reach. */
+function classBranch(stmt: IrStmt): { value: IrExpr; receiver: string; key: string } | null {
+  if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+  const test = classKeyTest(stmt.cond);
+  if (test === null) return null;
+  if (stmt.then[stmt.then.length - 1]?.kind !== "return") return null;
+  if (assignsLocal(stmt.then, test.receiver)) return null;
+  if (leavesSwitch(stmt.then)) return null;
+  return test;
+}
+
+/** Whether the branch would `break` the switch its body moves into: an
+ * unlabeled break that no loop or switch inside the body binds. A labeled
+ * break and an unlabeled one already bound inside the body keep their
+ * targets. */
+function leavesSwitch(statements: readonly IrStmt[]): boolean {
+  let found = false;
+  const scan = (body: readonly IrStmt[], bound: number): void => {
+    for (const stmt of body) {
+      if (found) return;
+      switch (stmt.kind) {
+        case "break":
+          if (stmt.label === undefined && bound === 0) found = true;
+          break;
+        case "while":
+        case "doWhile":
+        case "for":
+        case "forOf":
+          scan(stmt.body, bound + 1);
+          break;
+        case "switch":
+          for (const { body: caseBody } of stmt.cases) scan(caseBody, bound + 1);
+          break;
+        case "if":
+          scan(stmt.then, bound);
+          if (stmt.else_) scan(stmt.else_, bound);
+          break;
+        case "block":
+          scan(stmt.body, bound);
+          break;
+        case "tryCatch":
+          scan(stmt.tryBody, bound);
+          if (stmt.catchBody) scan(stmt.catchBody, bound);
+          if (stmt.finallyBody) scan(stmt.finallyBody, bound);
+          break;
+        default:
+          break;
+      }
+    }
+  };
+  scan(statements, 0);
+  return found;
+}
+
+/** The receiver local and interned type key of `dyn.typedRefIs(v, "object:C")`,
+ * or of the branch-conditional form `test ? instanceOf(v, C) : false`. The
+ * key must be ASCII: the dispatch indexes on the key's length and last four
+ * bytes, which for ASCII are the key text's own. */
+function classKeyTest(cond: IrExpr): { value: IrExpr; receiver: string; key: string } | null {
+  if (cond.kind === "ternary" && cond.else_.kind === "boolLit" && cond.else_.value === false)
+    return classKeyTest(cond.cond);
+  if (cond.kind !== "libCall" || cond.fn !== "dyn.typedRefIs" || cond.args.length !== 2)
+    return null;
+  const [value, key] = cond.args;
+  if (value?.kind !== "varRef" || key?.kind !== "strLit") return null;
+  if (!key.value.startsWith("object:") || !/^[\x20-\x7e]*$/.test(key.value)) return null;
+  return { value, receiver: value.localId, key: key.value };
+}
+
+/** Whether the branch writes its receiver local, which would make the
+ * dispatch read a value the branch tests do not. */
+function assignsLocal(statements: readonly IrStmt[], localId: string): boolean {
+  let found = false;
+  everyStmtList(statements as IrStmt[], {
+    stmt: (stmt) => {
+      if (
+        (stmt.kind === "assign" || stmt.kind === "varDecl" || stmt.kind === "forOf") &&
+        stmt.localId === localId
+      )
+        found = true;
+      return !found;
+    },
+    expr: () => !found,
+  });
+  return found;
+}
+
+/** The class branches of a generated table, whether its body lists them or
+ * reaches them through the indexed dispatch indexBranchRuns builds. The
+ * passes that read a table's branches run after it: the switch selects a
+ * branch by its class's key and the branch keeps its own key guard, so a
+ * reader treats the branches as the chain they were lowered from. */
+function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
+  if (!body.some(isClassDispatch)) return body;
+  const branches: IrStmt[] = [];
+  for (const stmt of body) {
+    if (isClassDispatch(stmt))
+      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
+    else branches.push(stmt);
+  }
+  return branches;
+}
+
+/** The switch indexBranchRuns builds over a table's branches. */
+function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
+  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
+}
+
+/** One class branch of a run: the receiver local it tests, the key it tests
+ * for, and the statement itself. */
+interface ClassRunBranch {
+  value: IrExpr;
+  receiver: string;
+  key: string;
+  stmt: IrStmt;
+}
+
+/** The run's leading branches that stay in the chain ahead of the switch.
+ * Indexing costs a key load, a multiply and a walk of the compare tree before
+ * the matching branch's own guard runs, so a class the table tests early is
+ * cheaper in the chain: a read that hits one of them never computes the
+ * index. Keeping the first two measured the difference: one effect program
+ * whose tables are large but read near their front ran 3.3% slower with every
+ * branch in the switch (757.0 ms against 735.5 ms over 30 interleaved rounds)
+ * and at the baseline time with two peeled (737.5 ms), while a 200-class read,
+ * where the hit sits deep, keeps its gain. */
+const CLASS_DISPATCH_HEAD = 2;
+
+/** Replace each run of consecutive class branches on one receiver (at least
+ * MIN_CLASS_DISPATCH_CASES distinct classes) with a switch that selects the
+ * receiver's class. The branches move into the switch's cases unchanged and
+ * in order, branches whose keys hash together in one case; a key shared
+ * with a class outside the table selects that case, whose guards are false,
+ * and the switch's fallthrough reaches the remaining guards and the
+ * statements after the run exactly as the chain would. The run's first
+ * CLASS_DISPATCH_HEAD branches stay in the chain ahead of the switch: they
+ * run in order before it, and a class they select returns as it always did,
+ * so the switch only sees the receiver once those tests have failed. */
+function indexBranchRuns(body: IrStmt[]): IrStmt[] {
+  let rebuilt: IrStmt[] | null = null;
+  let i = 0;
+  while (i < body.length) {
+    const start = i;
+    const first = classBranch(body[i]!);
+    if (first === null) {
+      rebuilt?.push(body[i]!);
+      i++;
+      continue;
+    }
+    const run: ClassRunBranch[] = [];
+    let branch: ReturnType<typeof classBranch> = first;
+    while (branch !== null && branch.receiver === first.receiver) {
+      run.push({ value: branch.value, receiver: branch.receiver, key: branch.key, stmt: body[i]! });
+      i++;
+      branch = i < body.length ? classBranch(body[i]!) : null;
+    }
+    const keys = [...new Set(run.map((branch) => branch.key))];
+    if (keys.length < MIN_CLASS_DISPATCH_CASES) {
+      if (rebuilt) for (const branch of run) rebuilt.push(branch.stmt);
+      continue;
+    }
+    rebuilt ??= body.slice(0, start);
+    const head = Math.min(CLASS_DISPATCH_HEAD, run.length - 1);
+    for (const branch of run.slice(0, head)) rebuilt.push(branch.stmt);
+    rebuilt.push(classDispatch(run.slice(head)));
+  }
+  return rebuilt ?? body;
+}
+
+/** The switch that selects one of the run's branches, keyed by the class
+ * hash the emitted code computes from the receiver's key. */
+function classDispatch(run: readonly ClassRunBranch[]): IrStmt {
+  const first = run[0]!;
+  const loc = first.stmt.loc;
+  const branches = new Map<number, IrStmt[]>();
+  for (const branch of run) {
+    const hash = classKeyHash(branch.key);
+    const ofHash = branches.get(hash);
+    if (ofHash) ofHash.push(branch.stmt);
+    else branches.set(hash, [branch.stmt]);
+  }
+  return {
+    kind: "switch",
+    disc: {
+      kind: "libCall",
+      fn: "dyn.classHash",
+      args: [varRef(first.receiver, first.value.type, loc)],
+      type: F64,
+      loc,
+    },
+    cases: [...branches].map(([hash, body]) => ({ test: numLit(hash, loc), body })),
+    loc,
+  };
+}
+
 const READ_PROPERTIES = "%dyn.class.readProperties";
 const READ_PROPERTIES_OR_EMPTY = "%dyn.class.readPropertiesOrEmpty";
 
@@ -776,7 +988,7 @@ export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction
   if (!normalize) return;
   // Static class → its constructible descendants in normalization order.
   const branches = new Map<string, string[]>();
-  for (const stmt of normalize.body) {
+  for (const stmt of classTableBranches(normalize.body)) {
     if (stmt.kind !== "if" || stmt.cond.kind !== "libCall" || stmt.cond.fn !== "dyn.typedRefIs")
       continue;
     const key = stmt.cond.args[1];
@@ -5346,6 +5558,24 @@ export class ClassDynamicDispatch {
     }
     if (lowerer) this.guardClassTables(lowerer);
     if (lowerer) this.guardPropertyHelpers(lowerer);
+    if (lowerer) this.indexClassBranches(lowerer);
+  }
+
+  /** Each generated class table tests its classes in order, one exact type
+   * key test per class, so a receiver costs time linear in the program's
+   * class count. Replace each run of such branches with a switch on the
+   * length and last four bytes of the receiver's key: the branches
+   * themselves stay, each still guarded by its key test, and the switch
+   * selects the class the receiver is. Runs whose branches continue instead
+   * of leaving the helper, or that hold fewer than sixty-four distinct classes,
+   * keep the chain. */
+  private indexClassBranches(lowerer: Lowerer): void {
+    const seen = new Set<IrFunction>();
+    for (const fn of [...this.generated, ...lowerer.liftedFns]) {
+      if (seen.has(fn)) continue;
+      seen.add(fn);
+      fn.body = indexBranchRuns(fn.body);
+    }
   }
 
   /** Each tracked class's bag initializer over a typed receiver (`this`),

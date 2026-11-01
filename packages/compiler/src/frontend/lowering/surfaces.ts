@@ -3475,7 +3475,8 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
       "for (const x of xs) for (const y of x) out.push(y)";
   } else if (container === "process.stdin" || (container === "process" && member === "stdin")) {
     hint =
-      "isTTY, destroy(), on/once of the data/end/error events, and " +
+      "isTTY, destroy(), on/once of the data/end/error/readable events, " +
+      "pause/resume/isPaused/read/readableLength, and " +
       "`for await (const chunk of process.stdin)` are the supported stdin surface " +
       '(or read everything at once: readFileSync(0, "utf8") from node:fs)';
   } else if (

@@ -1375,6 +1375,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "event.broadcastInstall": "scr_et_broadcast_install",
   "process.stdinDestroy": "scr_process_stdin_destroy",
   "process.stdinSetRawMode": "scr_process_stdin_set_raw_mode",
+  "stdin.pause": "scr_stdin_pause",
+  "stdin.resume": "scr_stdin_resume",
+  "stdin.isPaused": "scr_stdin_is_paused",
+  "stdin.readableLength": "scr_stdin_readable_length",
   // node:events EventEmitter (scr_events_emitter.c): receivers borrowed,
   // chaining forms answer the receiver +1 (Node's `return this`). The
   // registration/removal family and emitError are may-throw (meta
@@ -1993,6 +1997,13 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // object as process.stdio and call back from a nextTick.
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  // stdin.resume() and stdin.read() start the runtime's stdin watch (a
+  // resumed stream, a read demand above the held input, or a parked
+  // for-await), which the loop services until end-of-input: without the
+  // loop a program that only waits for input exits at once instead of at
+  // EOF, as Node's does.
+  "stdin.resume",
+  "stdin.read",
   "fetch.start",
   "fetch.input",
   "fetch.function",

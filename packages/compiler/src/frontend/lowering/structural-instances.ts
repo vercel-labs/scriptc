@@ -11,6 +11,10 @@ import {
 } from "./generic-functions.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import type { Lowerer } from "./lowerer.js";
+import { PoisonError } from "./lowerer.js";
+import { locOf } from "../program.js";
+import { keptLayoutStoreCopyDiag, widthCopyRefusalDiag } from "../../diagnostics/diagnostic.js";
+import { observesIdentity } from "./observable-write.js";
 
 /** Instances of a typed function for arguments that keep their own layout.
  *
@@ -27,7 +31,7 @@ import type { Lowerer } from "./lowerer.js";
 /** The argument expressions that can name a value another reference sees:
  * bindings, member reads and `this`. Fresh values (literals, calls) have no
  * other reference, so their copy is not observable. */
-function namesExistingValue(arg: ts.Expression): boolean {
+export function namesExistingValue(arg: ts.Expression): boolean {
   let e = arg;
   for (;;) {
     if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
@@ -86,6 +90,26 @@ function copies(lowerer: Lowerer, from: IrType, to: IrType): boolean {
   if (typeEquals(from, to) || !standsFor(lowerer, from, to)) return false;
   const plan = lowerer.widthLiftPlan(from, to);
   return plan !== null && (plan.how === "arr" || plan.how === "width");
+}
+
+/** Whether `from` and `to` are record layouts that differ only in field
+ * representation: every field of `to` names a field of `from`, and every
+ * field `from` has besides those is optional. No field is added or dropped,
+ * so the two layouts could be served by one storage; a conversion between
+ * them copies the value instead (recordWidthPlan). */
+export function sameFieldsForCopy(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (from.kind !== "record" || to.kind !== "record") return false;
+  const source = lowerer.shapes.get(from.shapeId);
+  const target = lowerer.shapes.get(to.shapeId);
+  if (!source || !target || source.tuple || target.tuple) return false;
+  if (source.indexValue || target.indexValue) return false;
+  if (target.fields.some((field) => !source.fields.some((kept) => kept.name === field.name)))
+    return false;
+  return source.fields.every(
+    (field) =>
+      target.fields.some((kept) => kept.name === field.name) ||
+      (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0),
+  );
 }
 
 /** The structural-instance info of a typed function declaration, created on
@@ -253,7 +277,7 @@ export function layoutReturnType(
  * declaration lowers once per function instance, and only some instances
  * keep a layout, so the recorded type applies only while it maps to the
  * layout of the binding the current lowering resolves. */
-function preservedLayoutOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | undefined {
+export function preservedLayoutOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | undefined {
   let e = arg;
   while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
   if (!ts.isIdentifier(e)) return undefined;
@@ -263,6 +287,35 @@ function preservedLayoutOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | unde
   const binding = lowerer.peekLocal(e)?.type ?? lowerer.globalOf(e)?.type;
   const layout = lowerer.mapTypeOf(recorded);
   return binding && layout && typeEquals(binding, layout) ? recorded : undefined;
+}
+
+/** The type a value really has at run time when it names a binding that kept
+ * its initializer's layout, or a member of one: the binding's kept layout,
+ * or that member's type in it. Undefined for every other expression. The
+ * checker answers `p.list` from `p`'s declaration, which a kept binding
+ * stores in a wider layout. */
+export function keptLayoutTypeOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | undefined {
+  const names: string[] = [];
+  let e = arg;
+  for (;;) {
+    if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+    else if (ts.isPropertyAccessExpression(e) && !ts.isPrivateIdentifier(e.name)) {
+      names.unshift(e.name.text);
+      e = e.expression;
+    } else if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression)) {
+      names.unshift(e.argumentExpression.text);
+      e = e.expression;
+    } else break;
+  }
+  if (!ts.isIdentifier(e)) return undefined;
+  let type = preservedLayoutOf(lowerer, e);
+  if (type === undefined) return undefined;
+  for (const name of names) {
+    const property = lowerer.checker.getPropertyOfType(type, name);
+    if (property === undefined) return undefined;
+    type = lowerer.checker.getTypeOfSymbol(property);
+  }
+  return type;
 }
 
 /** Whether a `const` binding typed `declared` keeps the record or array
@@ -292,4 +345,136 @@ export function notePreservedLayout(lowerer: Lowerer, decl: ts.VariableDeclarati
     preservedLayoutOf(lowerer, decl.initializer) ?? lowerer.typeOf(decl.initializer);
   lowerer.preservedLayoutTypes.set(symbol, initializer);
   lowerer.layoutKeptNodes.add(decl.initializer);
+}
+
+/** Refuse a direct call that would copy an existing value into a parameter
+ * the callee writes through (SC2021): the callee's write would reach only
+ * the copy, while under Node the caller's object is the parameter.
+ * structuralCallInstance already binds such a call to the argument's
+ * layout whenever the callee's own layout can hold the parameter's; a
+ * pair it cannot bind (`dyn` field against a union field) falls back to
+ * the width copy, which this refuses. */
+export function refuseWrittenParamCopy(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  decl: ts.FunctionDeclaration,
+  sig: FnSig,
+): void {
+  if (decl.body === undefined) return;
+  const params = decl.parameters.nodes;
+  expr.arguments.nodes.forEach((arg, index) => {
+    const param = params[index];
+    const declared = sig.params[index];
+    if (!param || !declared || param.type === undefined) return;
+    if (!ts.isIdentifier(param.name)) return;
+    if (!namesExistingValue(arg) || lowerer.layoutKeptNodes.has(arg)) return;
+    // A signature whose own layout widens the declared type keeps its
+    // boundary conversion (structureCallInstance's rule).
+    const own = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(param.name));
+    if (!own || !typeEquals(own, declared.type)) return;
+    if (declared.type.kind !== "record") return;
+    const source = preservedLayoutOf(lowerer, arg) ?? lowerer.typeOf(arg);
+    const from = lowerer.mapTypeOf(source);
+    if (!from || from.kind !== "record" || typeEquals(from, declared.type)) return;
+    // A projection (the argument has fields the parameter's type lacks) is
+    // not the copy this refuses: the callee's layout is the only one that
+    // carries the extra fields.
+    if (!sameFieldsForCopy(lowerer, from, declared.type)) return;
+    if (lowerer.recordWidthPlan(from.shapeId, declared.type.shapeId) === null) return;
+    const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+    if (!symbol || decl.body === undefined) return;
+    if (!observesIdentity(lowerer, decl.body, symbol, param.name.text)) return;
+    const checker = lowerer.checker;
+    const target = checker.typeToString(checker.getTypeAtLocation(param.name));
+    lowerer.pushDiag(
+      widthCopyRefusalDiag(
+        "call",
+        checker.typeToString(source),
+        target,
+        `the callee writes through '${param.name.text}', so the write would reach only the copy`,
+        `declare the argument with the parameter's type ('${target}') so the callee receives the caller's object, or make the shape a class`,
+        locOf(arg),
+      ),
+    );
+    throw new PoisonError();
+  });
+}
+
+/** The width lifts that rebuild a value: they copy the source's contents
+ * into the destination's layout instead of storing the same object. */
+const COPYING_STORE_LIFTS = new Set<string>(["width", "ovf", "arr", "tupleArr", "emptyArr"]);
+
+/** Whether a value of layout `from` arrives at the slot `to` as a rebuilt
+ * object: both sides are the same kind of composite and the store converts
+ * between their layouts. */
+function storeRebuilds(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (typeEquals(from, to)) return false;
+  const paired =
+    (from.kind === "record" && to.kind === "record") ||
+    (from.kind === "array" && to.kind === "array");
+  if (!paired) return false;
+  const plan = lowerer.widthLiftPlan(from, to);
+  return plan !== null && COPYING_STORE_LIFTS.has(plan.how);
+}
+
+/** The store that would copy an existing value into a slot of a binding
+ * that kept its initializer's layout: the kept slot represents the value in
+ * a different layout, so the store rebuilds the object instead of sharing
+ * it. Null when the target does not root at such a binding, the value is
+ * fresh (its copy is not observable), or the value already has the slot's
+ * layout. */
+export function copiedStoreIntoKeptLayout(
+  lowerer: Lowerer,
+  target: ts.Expression,
+  slot: IrType,
+  value: ts.Expression,
+): { binding: string; field: string | null; kept: IrType } | null {
+  let e: ts.Expression = target;
+  let field: string | null = null;
+  if (ts.isPropertyAccessExpression(e) && !ts.isPrivateIdentifier(e.name)) field = e.name.text;
+  else if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression))
+    field = e.argumentExpression.text;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) e = e.expression;
+    else if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+    else break;
+  }
+  const root = ts.isIdentifier(e) ? e : undefined;
+  if (root === undefined || preservedLayoutOf(lowerer, root) === undefined) return null;
+  if (!namesExistingValue(value)) return null;
+  const source = lowerer.mapTypeOf(keptLayoutTypeOf(lowerer, value) ?? lowerer.typeOf(value));
+  if (!source || !storeRebuilds(lowerer, source, slot)) return null;
+  return { binding: root.text, field, kept: slot };
+}
+
+/** Refuse a store that would copy an existing value into a binding that kept
+ * its initializer's layout (SC2021): the kept slot rebuilds the assigned
+ * value, so a later write through the stored name would reach only the
+ * copy, while under Node both names are one object. */
+export function refuseCopiedStore(
+  lowerer: Lowerer,
+  target: ts.Expression,
+  slot: IrType,
+  value: ts.Expression,
+): void {
+  const store = copiedStoreIntoKeptLayout(lowerer, target, slot, value);
+  if (store === null) return;
+  const checker = lowerer.checker;
+  const sourceText = checker.typeToString(lowerer.typeOf(value));
+  const declaredText = checker.typeToString(lowerer.typeOf(target));
+  const targetName = store.field === null ? store.binding : `${store.binding}.${store.field}`;
+  const detail =
+    store.field === null
+      ? `'${store.binding}' keeps the initializer's layout ('${lowerer.fmt(store.kept)}') instead of the declared '${declaredText}'`
+      : `'${store.binding}' keeps the initializer's layout, so its field '${store.field}' is '${lowerer.fmt(store.kept)}' while the declared field is '${declaredText}'`;
+  lowerer.pushDiag(
+    keptLayoutStoreCopyDiag(
+      targetName,
+      sourceText,
+      detail,
+      `make the initializer's layout match the declared '${declaredText}' so both names are the same object, or make the shape a class`,
+      locOf(target),
+    ),
+  );
+  throw new PoisonError();
 }

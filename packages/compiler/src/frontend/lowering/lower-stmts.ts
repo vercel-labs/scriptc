@@ -1,6 +1,12 @@
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
-import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
+import {
+  keepsInitializerLayout,
+  namesExistingValue,
+  notePreservedLayout,
+  refuseCopiedStore,
+  sameFieldsForCopy,
+} from "./structural-instances.js";
 import { partialFieldRead } from "./partial-assertions.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
@@ -278,7 +284,9 @@ import {
   checkerPanicDiag,
   isCheckerPanic,
   unsupportedNativeExecutionDiag,
+  widthCopyRefusalDiag,
 } from "../../diagnostics/diagnostic.js";
+import { observesDeclaration } from "./observable-write.js";
 import {
   isParseArgsDynTypeName,
   isUnitOnlyTsType,
@@ -6469,6 +6477,9 @@ export function lowerVarDecl(
           ? DYN
           : undefined,
       );
+    // After the initializer lowers, so every type this check maps is one the
+    // program's own lowering has already mapped, in its order.
+    if (guardedRead === null) refuseStoredLiteralCopy(lowerer, decl);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
@@ -6483,7 +6494,11 @@ export function lowerVarDecl(
       g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
     // A module const keeps its initializer's record or array layout, as a
-    // function's const does (keepsInitializerLayout).
+    // function's const does (keepsInitializerLayout). An annotated module
+    // binding keeps it when the annotation admits only values that layout
+    // stores (annotatedLayoutFits), so both names stay one object; an
+    // exported binding keeps its declared type, which a library build calls
+    // it by (layoutReturnType).
     if (
       !isVarDeclared(decl) &&
       (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
@@ -6491,6 +6506,20 @@ export function lowerVarDecl(
     ) {
       g.type = raw.type;
       notePreservedLayout(lowerer, decl);
+    } else if (
+      !isVarDeclared(decl) &&
+      !isExportedDeclaration(decl) &&
+      annotatedKeepsLayoutTarget(decl) &&
+      annotatedLayoutFits(lowerer, raw.type, g.type)
+    ) {
+      g.type = raw.type;
+      notePreservedLayout(lowerer, decl);
+    } else if (
+      !isVarDeclared(decl) &&
+      !isExportedDeclaration(decl) &&
+      annotatedKeepsLayoutTarget(decl)
+    ) {
+      refuseWidenedDeclaration(lowerer, decl, raw.type, g.type);
     }
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
@@ -6610,7 +6639,9 @@ export function lowerVarDecl(
           : lowerVariableInitializer(
               lowerer,
               decl.initializer,
-              decl.type && (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Never) === 0
+              decl.type &&
+                (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Never) === 0 &&
+                !annotatedKeepsLayoutTarget(decl)
                 ? annotatedInitializerTarget(lowerer, decl.name)
                 : undefined,
             );
@@ -6623,6 +6654,9 @@ export function lowerVarDecl(
     }
     throw e;
   }
+  // After the initializer lowers, so every type this check maps is one the
+  // program's own lowering has already mapped, in its order.
+  refuseStoredLiteralCopy(lowerer, decl);
   // A dyn initializer under an unmappable declared type (`const ws =
   // pkg.workspaces` — the lowering world types the unknown-receiver read
   // `any`, which a static build cannot hold): the VALUE is a dyn
@@ -7113,6 +7147,17 @@ export function lowerVarDecl(
       loc: locOf(decl),
     };
   }
+  if (
+    !runtimeOptional &&
+    !runtimeStringArithmetic &&
+    annotatedKeepsLayoutTarget(decl) &&
+    annotatedLayoutFits(lowerer, init.type, settledType)
+  ) {
+    settledType = init.type;
+    notePreservedLayout(lowerer, decl);
+  } else if (!runtimeOptional && !runtimeStringArithmetic && annotatedKeepsLayoutTarget(decl)) {
+    refuseWidenedDeclaration(lowerer, decl, init.type, settledType);
+  }
   // Slot coercion: `const r: A | B = bValue;` wraps implicitly; width
   // subtyping (`const p: {a: number} = wider;`) is rejected, not coerced.
   init = lowerer.coerceInto(decl.initializer, init, settledType);
@@ -7126,6 +7171,258 @@ export function lowerVarDecl(
     lowerer.runtimeOptionalStorageLocals.add(runtimeOptionalRoot);
   }
   return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
+}
+
+/** Whether an annotated declaration whose initializer names an existing
+ * value should be lowered for the initializer's own layout first
+ * (namesExistingValue), so the declaration can keep that layout when
+ * annotatedLayoutFits holds. */
+function annotatedKeepsLayoutTarget(decl: ts.VariableDeclaration): boolean {
+  if (decl.type === undefined && !hasJsTypeAnnotation(decl)) return false;
+  return decl.initializer !== undefined && namesExistingValue(decl.initializer);
+}
+
+/** Whether the declaration sits in an exported variable statement: a
+ * library build reaches the binding through its declared type. */
+function isExportedDeclaration(decl: ts.VariableDeclaration): boolean {
+  const statement = decl.parent?.parent;
+  if (statement === undefined) return false;
+  return ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true;
+}
+
+/** Whether two array types differ only in the optional-element mark, which
+ * typeEquals ignores: `(T | undefined)[]` of a primitive T stores T elements
+ * like `T[]`, but its element reads are optional (element-access.ts). A
+ * kept layout would drop that read and the declared type, so a binding
+ * declared with the mark keeps the declared type. */
+function optionalElementMarksDiffer(kept: IrType, declared: IrType): boolean {
+  return (
+    kept.kind === "array" &&
+    declared.kind === "array" &&
+    (kept.optionalElements === true) !== (declared.optionalElements === true)
+  );
+}
+
+/** Whether every value the declared type admits can be stored in the
+ * initializer's layout: the same type, a `dyn` slot, a union that holds every
+ * declared arm, or a record or array whose fields hold up recursively. Only
+ * layouts that differ in field representation qualify (sameFieldsForCopy):
+ * a projection drops fields, and a value declared with fewer fields keeps
+ * the declared layout. */
+function annotatedLayoutFits(lowerer: Lowerer, kept: IrType, declared: IrType): boolean {
+  if (optionalElementMarksDiffer(kept, declared)) return false;
+  if (typeEquals(kept, declared)) return true;
+  if (lowerer.isRuntimeOptionalRecordVariant(kept, declared)) return false;
+  if (kept.kind !== "record" || declared.kind !== "record") return false;
+  if (!sameFieldsForCopy(lowerer, kept, declared)) return false;
+  if (lowerer.recordWidthPlan(kept.shapeId, declared.shapeId) === null) return false;
+  return slotHoldsDeclared(lowerer, kept, declared, new Set());
+}
+
+function slotHoldsDeclared(
+  lowerer: Lowerer,
+  kept: IrType,
+  declared: IrType,
+  assumed: Set<string>,
+): boolean {
+  if (optionalElementMarksDiffer(kept, declared)) return false;
+  if (typeEquals(kept, declared)) return true;
+  if (kept.kind === "dyn") return true;
+  if (kept.kind === "union") {
+    const slots = lowerer.unions.get(kept.unionId)?.arms ?? [];
+    const values =
+      declared.kind === "union" ? (lowerer.unions.get(declared.unionId)?.arms ?? []) : [declared];
+    return values.every((arm) => slots.some((slot) => typeEquals(slot, arm)));
+  }
+  if (kept.kind === "record" && declared.kind === "record") {
+    const pair = `${kept.shapeId}>${declared.shapeId}`;
+    if (assumed.has(pair)) return true;
+    assumed.add(pair);
+    const keptShape = lowerer.shapes.get(kept.shapeId);
+    const declaredShape = lowerer.shapes.get(declared.shapeId);
+    if (!keptShape || !declaredShape || keptShape.tuple || declaredShape.tuple) return false;
+    if (keptShape.indexValue || declaredShape.indexValue) return false;
+    // A declared value may carry fields the kept layout lacks; only a
+    // layout that differs in representation can store it.
+    if (!sameFieldsForCopy(lowerer, kept, declared)) return false;
+    return declaredShape.fields.every((field) => {
+      const slot = keptShape.fields.find((keptField) => keptField.name === field.name);
+      return slot !== undefined && slotHoldsDeclared(lowerer, slot.type, field.type, assumed);
+    });
+  }
+  if (kept.kind === "array" && declared.kind === "array")
+    return slotHoldsDeclared(lowerer, kept.elem, declared.elem, assumed);
+  return false;
+}
+
+/** The field that makes a declaration of a `kept` value as `declared` a
+ * copy: both layouts name the same fields, and a declared field cannot be
+ * stored in the value's field (`{ next: string }` declared as
+ * `{ next: string | number }`). The declared layout admits values the
+ * value's layout cannot hold, so no single storage serves both names. Null
+ * for pairs whose fields all hold (the layout is kept) and for layouts
+ * that drop or add fields (a projection). */
+function widenedCopyOf(
+  lowerer: Lowerer,
+  kept: IrType,
+  declared: IrType,
+): { field: string; kept: string; declared: string } | null {
+  if (kept.kind !== "record" || declared.kind !== "record") return null;
+  if (typeEquals(kept, declared)) return null;
+  const from = lowerer.shapes.get(kept.shapeId);
+  const to = lowerer.shapes.get(declared.shapeId);
+  if (!from || !to || from.tuple || to.tuple || from.indexValue || to.indexValue) return null;
+  if (from.fields.length !== to.fields.length) return null;
+  if (lowerer.recordWidthPlan(kept.shapeId, declared.shapeId) === null) return null;
+  for (const field of to.fields) {
+    const slot = from.fields.find((candidate) => candidate.name === field.name);
+    if (!slot) return null;
+    if (!slotHoldsDeclared(lowerer, slot.type, field.type, new Set())) {
+      return {
+        field: field.name,
+        kept: lowerer.fmt(slot.type),
+        declared: lowerer.fmt(field.type),
+      };
+    }
+  }
+  return null;
+}
+
+/** Refuse an annotated declaration the program writes through when its
+ * conversion is the widening copy widenedCopyOf names (SC2021): the write
+ * would reach only the copy, while under Node both names are one object. */
+function refuseWidenedDeclaration(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  kept: IrType,
+  declared: IrType,
+): void {
+  const widened = widenedCopyOf(lowerer, kept, declared);
+  if (widened === null || !observesDeclaration(lowerer, decl)) return;
+  const checker = lowerer.checker;
+  const sourceType = checker.getTypeAtLocation(decl.initializer!);
+  const source = checker.typeToString(sourceType);
+  const targetType = lowerer.typeOf(decl.name);
+  const target = checker.typeToString(targetType);
+  const keptField = checker.getPropertyOfType(sourceType, widened.field);
+  const keptText = keptField
+    ? checker.typeToString(checker.getTypeOfSymbolAtLocation(keptField, decl.initializer!))
+    : widened.kept;
+  const declaredField = checker.getPropertyOfType(targetType, widened.field);
+  const declaredText = declaredField
+    ? checker.typeToString(checker.getTypeOfSymbolAtLocation(declaredField, decl.name))
+    : widened.declared;
+  lowerer.pushDiag(
+    widthCopyRefusalDiag(
+      "declaration",
+      source,
+      target,
+      `the declared field '${widened.field}' is '${declaredText}' and the value's field is '${keptText}', so a write through the declared name would reach only the copy`,
+      `declare the value with the declared type ('${target}') so both names are the same object, or make the shape a class`,
+      locOf(decl.initializer!),
+    ),
+  );
+  throw new PoisonError();
+}
+
+/** Refuse an annotated literal initializer that stores an existing value in
+ * a declared slot the literal would copy, when the program writes through
+ * the binding (SC2021). Null-property and method members are not stores. */
+function refuseStoredLiteralCopy(lowerer: Lowerer, decl: ts.VariableDeclaration): void {
+  if (decl.type === undefined && !hasJsTypeAnnotation(decl)) return;
+  const init = decl.initializer;
+  if (init === undefined) return;
+  if (!literalStoresExistingValue(init)) return;
+  if (!observesDeclaration(lowerer, decl)) return;
+  const slot = copiedLiteralSlot(lowerer, init);
+  if (slot === null) return;
+  lowerer.pushDiag(
+    widthCopyRefusalDiag(
+      "literal",
+      slot.source,
+      slot.target,
+      `the field copy is a new object, so a write through '${slot.field}' would reach only the copy`,
+      `declare the stored value with the field's type ('${slot.target}') so the literal holds that object, or make the shape a class`,
+      locOf(slot.node),
+    ),
+  );
+  throw new PoisonError();
+}
+
+/** Whether a literal initializer stores at least one value that names an
+ * existing object (the cheap syntactic prefilter for the checker walk). */
+function literalStoresExistingValue(init: ts.Expression): boolean {
+  const values = ts.isObjectLiteralExpression(init)
+    ? objectLiteralValues(init)
+    : ts.isArrayLiteralExpression(init)
+      ? [...init.elements.nodes]
+      : [];
+  return values.some((value) => namesExistingValue(value));
+}
+
+function objectLiteralValues(lit: ts.ObjectLiteralExpression): ts.Expression[] {
+  const values: ts.Expression[] = [];
+  for (const property of lit.properties.nodes) {
+    if (ts.isPropertyAssignment(property)) values.push(property.initializer);
+    else if (ts.isShorthandPropertyAssignment(property) && ts.isIdentifier(property.name))
+      values.push(property.name);
+  }
+  return values;
+}
+
+/** The first property value or element of an annotated literal initializer
+ * that names an existing record the declared slot converts by copying. */
+function copiedLiteralSlot(
+  lowerer: Lowerer,
+  init: ts.Expression,
+): { source: string; field: string; target: string; node: ts.Expression } | null {
+  const checker = lowerer.checker;
+  const read = (value: ts.Expression, field: string) => {
+    if (!namesExistingValue(value)) return null;
+    // Only object-typed pairs can convert between record layouts, so a
+    // nullish or primitive value (or contextual type) is skipped before
+    // either type is mapped: neither is part of this conversion.
+    const valueType = checker.getTypeAtLocation(value);
+    if ((valueType.flags & ts.TypeFlags.Object) === 0) return null;
+    const contextual = checker.getContextualType(value);
+    if (contextual === undefined || (contextual.flags & ts.TypeFlags.Object) === 0) return null;
+    const from = lowerer.mapTypeOf(valueType);
+    const to = lowerer.mapTypeOf(contextual);
+    if (!from || !to || from.kind !== "record" || to.kind !== "record") return null;
+    if (typeEquals(from, to)) return null;
+    if (lowerer.recordWidthPlan(from.shapeId, to.shapeId) === null) return null;
+    return {
+      source: checker.typeToString(checker.getTypeAtLocation(value)),
+      field,
+      target: checker.typeToString(contextual),
+      node: value,
+    };
+  };
+  if (ts.isObjectLiteralExpression(init)) {
+    for (const property of init.properties.nodes) {
+      const name =
+        ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)
+          ? property.name
+          : undefined;
+      if (name === undefined || (!ts.isIdentifier(name) && !ts.isStringLiteral(name))) continue;
+      const value = ts.isPropertyAssignment(property)
+        ? property.initializer
+        : ts.isIdentifier(property.name)
+          ? property.name
+          : undefined;
+      if (value === undefined) continue;
+      const found = read(value, name.text);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (ts.isArrayLiteralExpression(init)) {
+    for (const [index, value] of init.elements.nodes.entries()) {
+      const found = read(value, `[${index}]`);
+      if (found !== null) return found;
+    }
+  }
+  return null;
 }
 
 /** The destination an annotated declaration builds its initializer for:
@@ -9432,6 +9729,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);
+          refuseCopiedStore(lowerer, expr.left, target.fieldType, expr.right);
           return lowerer.fieldSetStmt(target, value, locOf(expr), expr.left);
         }
         const callback = lowerClassCallbackAssign(lowerer, expr);
@@ -9670,6 +9968,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           `assignment to '${expr.left.text}' (not a writable local or module global)`,
         );
       const value = lowerer.lowerExprExpecting(expr.right, target.type);
+      refuseCopiedStore(lowerer, expr.left, target.type, expr.right);
       const runtimeOptionalRoot = lowerer.runtimeOptionalRootOf(target);
       if (lowerer.runtimeOptionalStorageLocals.has(runtimeOptionalRoot))
         lowerer.runtimeOptionalLocals.add(runtimeOptionalRoot);

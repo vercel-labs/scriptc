@@ -20,6 +20,7 @@ import {
   widthCopyDivergenceDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
+import { typeEquals } from "../../ir/ir.js";
 import { isCollationCovered } from "./collation-repertoire.js";
 import type { Lowerer } from "./lowerer.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
@@ -680,10 +681,27 @@ function widthCopyBetween(
     if (sourceProps.some((p) => (p.flags & accessor) !== 0)) return null;
     const sourceNames = new Set(sourceProps.map((p) => ts.symbolName(p)));
     const targetNames = checker.getPropertiesOfType(t).map((p) => ts.symbolName(p));
-    if (targetNames.length === sourceNames.size && targetNames.every((n) => sourceNames.has(n)))
+    // The same property set normally needs no conversion. Fields whose
+    // representation differs (an untyped field against a declared one, a
+    // field the target widens) still copy, so the layouts decide.
+    if (
+      targetNames.length === sourceNames.size &&
+      targetNames.every((n) => sourceNames.has(n)) &&
+      !recordFieldsConvert(lowerer, s, t)
+    )
       return null;
   }
   return { source: checker.typeToString(s), target: checker.typeToString(t) };
+}
+
+/** Whether storing a value of `source` in `target` rebuilds it through a
+ * record conversion, even though both name the same properties. */
+function recordFieldsConvert(lowerer: Lowerer, source: ts.Type, target: ts.Type): boolean {
+  const from = lowerer.mapTypeOf(source);
+  const to = lowerer.mapTypeOf(target);
+  if (!from || !to || from.kind !== "record" || to.kind !== "record") return false;
+  if (typeEquals(from, to)) return false;
+  return lowerer.recordWidthPlan(from.shapeId, to.shapeId) !== null;
 }
 
 function isProgramClassType(checker: ts.TypeChecker, type: ts.Type): boolean {

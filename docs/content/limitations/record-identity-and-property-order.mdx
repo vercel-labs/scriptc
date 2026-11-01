@@ -2,6 +2,11 @@ A record converted to a record type with a different set of properties, such as 
 Mutations through the converted reference do not affect the original, and the copy is not `===` to it.
 Empty record layouts are also snapshots because they have no property storage.
 `scriptc coverage` and `scriptc build` report `SC6001` where a copied value is then written or compared, whether the record was passed as an argument, stored in a typed binding, asserted with `as`, assigned to a typed binding later, or stored as an element of a typed array literal.
+Declaring a record value with a record type that names the same properties, where every declared field fits the value's storage, keeps the value's own layout instead: both names are the same object, as in Node.js.
+When a declared field cannot store the values its type admits, such as a declared field that is a wider union type than the value's field, the declaration, a call that passes the value to a parameter the callee writes, or a literal that stores the value in that field is refused with `SC2021` if the program writes through the binding, because the copy would take the write instead of the original.
+Assigning an existing value to a binding that keeps its initializer's layout, or to one of its fields, is refused with `SC2021`, because the kept layout rebuilds the assigned value, so a later write through it would reach only the copy.
+A member of another binding that kept its initializer's layout carries that layout into the store, so no refusal is reported when the two layouts already match.
+Bracket writes such as `alias["k"] = v` write the field in the kept layout, like their dotted spelling.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.
 A record or class instance converted to a string-keyed dictionary type such as `Record<string, string>`, directly, through a `{}`, `object` or `unknown` binding or parameter, or as an element of a constant `unknown[]` array that holds such records, keeps its identity when the program writes through, compares or inspects values of that dictionary type.

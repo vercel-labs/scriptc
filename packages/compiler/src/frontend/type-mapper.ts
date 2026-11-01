@@ -2117,6 +2117,17 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         if (mapped !== null) contextResolutions++;
       }
     }
+    // A PACKAGE DATA SHAPE the structural rules cannot map: `import type`
+    // from a package whose implementation is not part of the compiled
+    // module graph declares data the program itself builds, and a
+    // declaration the compiled graph never loads cannot produce a value of
+    // its own. A shape with no native mapping is then exactly the
+    // checked-dynamic value — the same answer `unknown` gets — never the
+    // package's story (there is no package value here to disagree with).
+    if (mapped === null && packageTypeIsData(type, ctx)) {
+      mapped = DYN;
+      contextResolutions++;
+    }
     // Localized failure: a type that failed at a committed slot maps to its
     // lenient form. It counts as a context resolution so neither it nor a
     // type containing it is memoized: the strict form may map elsewhere.
@@ -2612,36 +2623,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // such a type is one the program built itself (`import type` from a
   // types-only package), so it maps structurally like a local declaration.
   // Values the package itself would produce stay refused at their import.
-  const packageOnly = (sym: ts.Symbol | undefined): readonly ts.Node[] | null => {
-    const decls = sym ? sym.declarations : undefined;
-    return decls &&
-      decls.length > 0 &&
-      decls.every((d) => {
-        const sf = ts.getSourceFileOfNode(d);
-        return sf.isDeclarationFile && !ctx.isStdlibFile(sf) && !ctx.isExternalTypeFile(sf);
-      })
-      ? decls
-      : null;
-  };
-  const pureTypeShape = (decls: readonly ts.Node[] | null): boolean =>
-    decls === null ||
-    decls.every(
-      (d) =>
-        packageTypeFile(ts.getSourceFileOfNode(d), ctx) &&
-        (ts.isInterfaceDeclaration(d) ||
-          ts.isTypeAliasDeclaration(d) ||
-          ts.isTypeLiteralNode(d) ||
-          ts.isMappedTypeNode(d) ||
-          isDeclaredDataClass(d) ||
-          (decls.some(isDeclaredDataClass) && isTypeOnlyNamespace(d))),
-    );
-  const aliasDecls = packageOnly(widened.getAliasSymbol());
-  const ownDecls = packageOnly(widened.getSymbol());
-  if (
-    (aliasDecls !== null || (widened.getAliasSymbol() === undefined && ownDecls !== null)) &&
-    !(pureTypeShape(aliasDecls) && pureTypeShape(ownDecls))
-  ) {
-    return null;
+  {
+    const aliasDecls = packageDeclarations(widened.getAliasSymbol(), ctx);
+    const ownDecls = packageDeclarations(widened.getSymbol(), ctx);
+    if (
+      (aliasDecls !== null || (widened.getAliasSymbol() === undefined && ownDecls !== null)) &&
+      !(purePackageDeclarations(aliasDecls, ctx) && purePackageDeclarations(ownDecls, ctx))
+    ) {
+      return null;
+    }
   }
   // Module namespaces were claimed above when they name compiled source
   // modules or supported builtins. Declaration-only namespaces remain refused.
@@ -5254,6 +5244,32 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // stream's replaceable method slot, so it is the checked-dynamic function
   // the stream object hands out (scr_events.c ProcessStream).
   if (callSigs.length > 1 && isStdlibStreamWriteOverloads(callSigs, ctx)) return DYN;
+  // An overload set held as a VALUE (a callback parameter, an alias, a
+  // variable, a member read): JavaScript stores ONE function, so the value
+  // is that function's erased type, the same slot a record member of this
+  // type stores (erasedOverloadMemberType). Calls through it convert the
+  // result back to the resolved overload's type (lowerCallThroughValue).
+  if (callSigs.length > 1 && isOverloadedCallableMemberType(widened, checker)) {
+    const erased = erasedOverloadMemberType(widened, ctx);
+    if (erased !== undefined) return erased;
+  }
+  // A generic signature as a VALUE (`const f: <T>(x: T) => T`, a generic
+  // method's record slot, a union arm holding one): JavaScript erases type
+  // parameters, so the value is the ONE function every instantiation calls,
+  // and its type is that signature with each own type parameter bound to
+  // `unknown` — the erased func type erasedGenericMemberType /
+  // erasedOverloadMemberType already answer for generic-callable members.
+  // The calls that instantiate it convert their arguments in and their
+  // result out (lower-calls.ts, genericValueCall). A signature whose
+  // erasure does not map (a rest parameter, an unmappable position) keeps
+  // the fences below: undefined falls through to mapCallSignature's null.
+  if (erasedGenericSignatureType(widened, callSigs, ctx)) {
+    const erased =
+      callSigs.length === 1
+        ? erasedGenericMemberType(widened, ctx)
+        : erasedOverloadMemberType(widened, ctx);
+    if (erased !== undefined) return erased;
+  }
   if (callSigs.length === 1) return mapCallSignature(callSigs[0]!, ctx);
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -7900,6 +7916,89 @@ function packageTypeFile(
   );
 }
 
+/** `type`'s declarations — through its alias, or its own symbol when the
+ * checker gives it no alias — when EVERY one is a declaration-file
+ * declaration outside the standard library and the external type
+ * surfaces; null otherwise. */
+function packageDeclarations(
+  sym: ts.Symbol | undefined,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile">,
+): readonly ts.Node[] | null {
+  const decls = sym ? sym.declarations : undefined;
+  return decls &&
+    decls.length > 0 &&
+    decls.every((d) => {
+      const sf = ts.getSourceFileOfNode(d);
+      return sf.isDeclarationFile && !ctx.isStdlibFile(sf) && !ctx.isExternalTypeFile(sf);
+    })
+    ? decls
+    : null;
+}
+
+/** One non-union part's package provenance: true when the part is
+ * package-declared as data, false when it is package-declared with a value
+ * or implementation shape, null when no package declares it. */
+function packageDataPart(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+): boolean | null {
+  const aliasDecls = packageDeclarations(type.getAliasSymbol(), ctx);
+  const ownDecls = packageDeclarations(type.getSymbol(), ctx);
+  if (aliasDecls === null && (type.getAliasSymbol() !== undefined || ownDecls === null))
+    return null;
+  return purePackageDeclarations(aliasDecls, ctx) && purePackageDeclarations(ownDecls, ctx);
+}
+
+/** True when EVERY declaration `type` is spelled by is a pure data
+ * declaration (interface, type alias, object or mapped type literal,
+ * declared data class, type-only namespace) in a package declaration file —
+ * no value declaration merged in, no class implementation. */
+function purePackageDeclarations(
+  decls: readonly ts.Node[] | null,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+): boolean {
+  return (
+    decls === null ||
+    decls.every(
+      (d) =>
+        packageTypeFile(ts.getSourceFileOfNode(d), ctx) &&
+        (ts.isInterfaceDeclaration(d) ||
+          ts.isTypeAliasDeclaration(d) ||
+          ts.isTypeLiteralNode(d) ||
+          ts.isMappedTypeNode(d) ||
+          isDeclaredDataClass(d) ||
+          (decls.some(isDeclaredDataClass) && isTypeOnlyNamespace(d))),
+    )
+  );
+}
+
+/** True when `type` is PACKAGE-DECLARED as data: some part of its
+ * provenance is a package declaration, and no declaration it reaches is a
+ * value or implementation shape. Such a type describes data the PROGRAM
+ * built — `import type` from a package whose implementation is not part of
+ * the compiled module graph — so the structural rules map it like a local
+ * declaration, and a shape they cannot map is still that data, held as the
+ * checked-dynamic value (`mapTypeEntry`'s fallback). A member the package
+ * does not declare (a scalar beside a recursive knot) carries no provenance
+ * of its own. */
+export function packageTypeIsData(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+): boolean {
+  // `npmPackageOf` reaches the declaring package through the union's
+  // members; the value-shape test is per member and never recurses (a
+  // recursive alias reaches itself here).
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  let declared = false;
+  for (const part of parts) {
+    const data = packageDataPart(part, ctx);
+    if (data === null) continue;
+    declared = true;
+    if (!data) return false;
+  }
+  return declared;
+}
+
 /** The record path's provenance fence. Declared shapes (object literals,
  * interfaces, type literals) must come from user code or an explicitly
  * mapped external type surface, never an arbitrary .d.ts — the empty
@@ -8009,6 +8108,30 @@ function mentionsErasedTypeParam(type: ts.Type, ctx: TypeMapperCtx, depth: numbe
   return false;
 }
 
+/** A type whose call signatures keep their own type parameters and that is
+ * pure function-shaped — call signatures only, no data properties, no
+ * construct or index signatures: the type of a generic function held as a
+ * value (`const f: <T>(x: T) => T`, an interface's generic method, a union
+ * arm naming one). mapType answers its erased func type
+ * (erasedGenericMemberType / erasedOverloadMemberType). False while the
+ * active erasure already IS one of these signatures: that mapping is
+ * mapCallSignature's own, and re-entering the erasure would recurse. */
+function erasedGenericSignatureType(
+  t: ts.Type,
+  sigs: readonly ts.Signature[],
+  ctx: TypeMapperCtx,
+): boolean {
+  if (sigs.length === 0) return false;
+  if (!sigs.some((sig) => sig.getTypeParameters().length > 0)) return false;
+  if (ctx.erasingSignature !== undefined && sigs.includes(ctx.erasingSignature)) return false;
+  const { checker } = ctx;
+  return (
+    checker.getConstructSignatures(t).length === 0 &&
+    checker.getPropertiesOfType(t).length === 0 &&
+    checker.getIndexInfosOfType(t).length === 0
+  );
+}
+
 /** A generic callable member's runtime type: its one call signature with
  * every own type parameter bound to `unknown`, the erased instance a stored
  * or escaping definition carries (JavaScript erases type parameters the
@@ -8042,12 +8165,14 @@ export function erasedGenericMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType 
 
 /** An OVERLOADED callable member type (`on(event: "a", h: (x: number) =>
  * void): () => void; on(event: "b", h: (x: string) => void): () => void`
- * in a program interface or type literal): two or more call signatures and
+ * in a program interface or type literal, or a class's body-less overload
+ * declarations above its implementation): two or more call signatures and
  * nothing else (no data properties, construct signatures, or index
  * signatures), every one declared in TypeScript program source. Such a
  * member keeps a record slot holding its erased runtime function
  * (erasedOverloadMemberType); calls convert per their resolved overload
- * (lowerRecordFieldCall). */
+ * (lowerRecordFieldCall). An overload set held as a value maps to the same
+ * erased function (mapTypeInner). */
 export function isOverloadedCallableMemberType(t: ts.Type, checker: ts.TypeChecker): boolean {
   const sigs = checker.getCallSignatures(t);
   if (sigs.length < 2) return false;
@@ -8060,7 +8185,14 @@ export function isOverloadedCallableMemberType(t: ts.Type, checker: ts.TypeCheck
   return sigs.every((sig) => {
     const decl = sig.declaration;
     if (decl === undefined) return false;
-    if (!ts.isMethodSignatureDeclaration(decl) && !ts.isCallSignatureDeclaration(decl))
+    // Interface and type-literal members, call signatures, and a class's
+    // body-less overload declarations (`getAuth(id: string): R;` above its
+    // implementation): each names one overload of ONE stored function.
+    if (
+      !ts.isMethodSignatureDeclaration(decl) &&
+      !ts.isCallSignatureDeclaration(decl) &&
+      !(ts.isMethodDeclaration(decl) && decl.body === undefined)
+    )
       return false;
     const file = ts.getSourceFileOfNode(decl);
     return !file.isDeclarationFile && !isJsSourceFile(file);
@@ -9189,6 +9321,14 @@ function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
   // Every arm is the undefined unit: the promise never settles a value,
   // exactly `Promise<void>`.
   if (payload.every((arm) => arm.kind === "undefinedT")) payload.length = 0;
+  // SEVERAL MODULE NAMESPACES are ONE checked-dynamic payload: a namespace
+  // has no union tag (its value is the module's namespace object, built by
+  // the same dynamic box a bare namespace value crosses as), so JavaScript
+  // cannot tell the merged arms apart — `then((m) => …)` reads a namespace
+  // object either way. The joint payload is that object, exactly what
+  // `Promise<unknown>` settles here (moduleNamespacePromiseDynValue).
+  else if (payload.length > 1 && payload.every((arm): boolean => arm.kind === "moduleNs"))
+    payload.splice(0, payload.length, DYN);
   // One payload arm is that arm itself (a regex or a promise payload has a
   // promise slot but no union arm); a JOINT payload is a union, so its arms
   // need union homes.

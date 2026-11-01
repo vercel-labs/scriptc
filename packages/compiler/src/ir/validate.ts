@@ -2213,10 +2213,15 @@ function validateFunction(
         ) {
           err(`bytesIntrinsic ${e.method} invalid kind token '${e.args[0].value}'`, e.loc);
         }
-        // fillStr/writeStr carry their NORMALIZED encoding as args[1],
-        // always a strLit (the frontend folds the aliases).
-        if ((e.method === "fillStr" || e.method === "writeStr") && e.args[1]?.kind !== "strLit") {
-          err(`bytesIntrinsic ${e.method} args[1] must be a strLit encoding`, e.loc);
+        // fillStr/writeStr carry their NORMALIZED encoding as args[1]: a
+        // strLit when the frontend folded a literal alias, otherwise a
+        // string value the frontend normalized at run time.
+        if (
+          (e.method === "fillStr" || e.method === "writeStr") &&
+          e.args[1]?.kind !== "strLit" &&
+          !(e.args[1] !== undefined && typeEquals(e.args[1].type, STRING))
+        ) {
+          err(`bytesIntrinsic ${e.method} args[1] must be a string encoding`, e.loc);
         }
         const EXTRA_SIGS: Record<
           string,
@@ -2883,13 +2888,23 @@ function validateFunction(
           break;
         }
         const ft = e.callee.type;
-        if (ft.params.length !== e.args.length) {
-          err(`callValue: ${e.args.length} args, expected ${ft.params.length}`, e.loc);
+        // A checked-dynamic variadic value's lifted signature carries one
+        // trailing dyn array after its declared parameters.
+        const hiddenRest = ft.rest === true && ft.restAbi === undefined;
+        if (ft.params.length + (hiddenRest ? 1 : 0) !== e.args.length) {
+          err(
+            `callValue: ${e.args.length} args, expected ${ft.params.length + (hiddenRest ? 1 : 0)}`,
+            e.loc,
+          );
         }
         e.args.forEach((a, i) => {
           const p = ft.params[i];
           if (p) expectType(a, p, `callValue arg ${i}`);
         });
+        const hiddenArg = hiddenRest ? e.args[ft.params.length] : undefined;
+        if (hiddenArg !== undefined && hiddenArg.type.kind !== "dyn") {
+          err(`callValue hidden rest argument is ${hiddenArg.type.kind}, not dyn`, e.loc);
+        }
         if (!typeEquals(e.type, ft.ret)) {
           err(`callValue type ${e.type.kind} != return ${ft.ret.kind}`, e.loc);
         }
@@ -4766,6 +4781,20 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http.serverOnClientError") {
+      // (err, socket) or a shorter prefix, void return.
+      const cbT = e.args[1]?.type;
+      let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 2;
+      if (ok && cbT?.kind === "func") {
+        const [p0, p1] = cbT.params;
+        if (p0 !== undefined && !(p0.kind === "object" && p0.className === "%Error")) ok = false;
+        if (p1 !== undefined && p1.kind !== "netSocket") ok = false;
+      }
+      if (!ok) {
+        err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "net.listenOptsCb" || e.fn === "net.listenOptsReusePortCb") {
       const cbIndex = e.fn === "net.listenOptsReusePortCb" ? 5 : 4;
       const t = e.args[cbIndex]?.type;
@@ -6333,6 +6362,8 @@ function validateFunction(
           (!Number.isInteger(e.origin) || e.origin < 0 || e.origin >= declOriginCount)
         )
           err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
+        if (e.pathIndex !== undefined && (!Number.isInteger(e.pathIndex) || e.pathIndex < 0))
+          err(`dynCheck pathIndex ${e.pathIndex} is not an array position`, e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).
@@ -7017,6 +7048,12 @@ function validateFunction(
       case "runtimeFence":
         // The deferred JS compile fence: carries only its message/code.
         if (s.message.length === 0) err(`runtimeFence with an empty message`, s.loc);
+        break;
+      case "genBindBarrier":
+        // The generator bind barrier: a marker in a bindAtCall body only.
+        if (fn.generator?.bindAtCall !== true) {
+          err(`genBindBarrier in a body without generator.bindAtCall`, s.loc);
+        }
         break;
       case "rethrow": {
         // `throw e` of a catch binding: re-raises the saved snapshot.

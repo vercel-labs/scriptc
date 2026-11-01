@@ -254,6 +254,11 @@ function buildLibFnSignatures() {
      * arguments; other receiver representations retain a runtime refusal. */
     "dyn.keyDelete": { argTypes: [DYN, STRING, BOOL], result: VOID },
     "dyn.keyDeleteComputed": { argTypes: [DYN, DYN, BOOL], result: VOID },
+    /** `delete` on a primitive base: ToPropertyKey of the key, then the
+     * ToObject wrapper's own properties (a String's indexes and `length`
+     * answer false in sloppy code and throw in strict code). Borrows both
+     * operands; answers the delete's value. */
+    "dyn.primitiveDelete": { argTypes: [DYN, DYN, BOOL], result: BOOL },
     "dyn.reflectDeleteProperty": { argTypes: [DYN, DYN], result: BOOL },
     /** Reflect.has's target check: Node's TypeError for a primitive. */
     "dyn.reflectHasTarget": { argTypes: [DYN], result: VOID },
@@ -430,6 +435,11 @@ function buildLibFnSignatures() {
      * a promise that adopts a thenable's settlement, or a promise fulfilled
      * with the value. The second argument reads `then` as above. */
     "dyn.promiseResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** `Promise.<s>.call(C, value)` in a JavaScript source (scr_js_
+     * promise_generic.c): the static's name, the `this` constructor and the
+     * one argument the algorithm takes. Answers the capability's promise as
+     * a checked-dynamic value (a foreign C may answer anything). */
+    "promise.genericStatic": { argTypes: [STRING, DYN, DYN], result: DYN },
     /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
      * borrowed; result: an owned string) — the dyn kind's JS answer:
      * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest
@@ -480,6 +490,12 @@ function buildLibFnSignatures() {
      * setInterval and 2 for a node:timers import, plus 4 for a delay read
      * from an array element. */
     "timers.userDelay": { argTypes: [F64, F64], result: F64 },
+    /** A timer callback that runs with `this` bound to its handle, as Node
+     * calls it with the Timeout or Immediate (scr_timer_this_callback). */
+    "timers.thisCallback": {
+      argTypes: [{ kind: "func", params: [], ret: VOID }],
+      result: { kind: "func", params: [], ret: VOID },
+    },
     /** The repeating timer pair. setInterval takes (callback, ms) like
      * setTimeout and RETURNS the f64 handle the fallback declarations
      * promise (ids start at 1, so truthiness narrowing works); the loop
@@ -1078,6 +1094,9 @@ function buildLibFnSignatures() {
     "sym.keyFor": { argTypes: [SYMBOL_T], result: VOID },
     "sym.desc": { argTypes: [SYMBOL_T], result: VOID },
     "sym.toString": { argTypes: [SYMBOL_T], result: STRING },
+    /** Symbol.keyFor called through its function value: the key or
+     * undefined, or Node's TypeError for a value that is not a symbol. */
+    "sym.keyForDyn": { argTypes: [DYN], result: DYN },
     /** Engine-free arbitrary-precision bigint operations (scr_bigint.c).
      * parse accepts the ECMAScript BigInt string grammar; fromF64 accepts
      * finite integral Numbers. Arithmetic returns fresh immutable values.
@@ -2234,6 +2253,11 @@ function buildLibFnSignatures() {
      * per-shape adapter — the tags are program data). */
     "http.serverOnConnect": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.clientOnUpgrade": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
+    /** server.on("clientError", (err, socket) => ...): a request the parser
+     * rejects, or a connection error, goes to the listeners instead of the
+     * default 400/413/431 answer, as in Node. (err, socket) and shorter
+     * prefixes (the libCall case checks). */
+    "http.serverOnClientError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.reqSocket": { argTypes: [HTTPREQ_T], result: NETSOCKET_T },
     // reqH2Stream's program-interned Http2Stream | undefined result is
     // checked in the special libCall cases in validate.ts.
@@ -3421,6 +3445,20 @@ function buildLibFnSignatures() {
     /** Buffer.byteLength as a function value: the encoding arrives at run time. */
     "buffer.byteLenValue": { argTypes: [DYN, DYN], result: F64 },
     "buffer.byteLenStr": { argTypes: [STRING, STRING], result: F64 },
+    /** A run-time Buffer encoding name, normalized the way the method's
+     * owner reads it. normalizeEncoding is Node's getEncodingOps (empty and
+     * unknown names throw ERR_UNKNOWN_ENCODING); normalizeEncodingEmptyUtf8
+     * is Node's normalizeEncoding (an empty name reads as utf8, unknown
+     * names throw); normalizeEncodingOrUtf8 is Buffer.byteLength's read (an
+     * unknown name counts as utf8, nothing throws). */
+    "buffer.normalizeEncoding": { argTypes: [STRING], result: STRING },
+    "buffer.normalizeEncodingEmptyUtf8": { argTypes: [STRING], result: STRING },
+    "buffer.normalizeEncodingOrUtf8": { argTypes: [STRING], result: STRING },
+    /** buf.write with an encoding name known only at run time: Node checks
+     * the offset and length BEFORE it reads the name, so the raw value goes
+     * to the runtime and the range errors win over an unknown name. */
+    "buffer.writeStrDyn": { argTypes: [BYTES_U8, STRING, STRING, F64], result: F64 },
+    "buffer.writeStrDynLen": { argTypes: [BYTES_U8, STRING, STRING, F64, F64], result: F64 },
     "buffer.isEncoding": { argTypes: [STRING], result: BOOL },
     /** Buffer.concat(list, totalLength): the concatenation truncated or
      * zero-padded to the total. THROWS Node's 'length' RangeError on a
@@ -3452,6 +3490,8 @@ function buildLibFnSignatures() {
     "buffer.installValue": { argTypes: [], result: VOID },
     "buffer.staticValue": { argTypes: [STRING], result: DYN },
     "buffer.prototypeMember": { argTypes: [DYN], result: DYN },
+    "buffer.prototypeObject": { argTypes: [], result: DYN },
+    "buffer.slowBuffer": { argTypes: [DYN], result: BYTES_U8 },
     /** fs._toUnixTimestamp(time) over a dyn value: numeric strings and
      * finite numbers coerce (negatives answer now/1000, Node's shape);
      * everything else throws Node's ERR_INVALID_ARG_TYPE. May-throw. */
@@ -3868,6 +3908,12 @@ function buildLibFnSignatures() {
      * (scr_js_wrapper_this_string). */
     "wrapper.isStringMethod": { argTypes: [DYN, STRING], result: BOOL },
     "wrapper.thisString": { argTypes: [DYN, STRING], result: DYN },
+    /** Boolean.prototype as a value in a JavaScript source: the wrapper
+     * unit's Boolean prototype object (the one `new Boolean(v)` instances
+     * inherit from), so its valueOf/toString accept a primitive boolean or
+     * a Boolean wrapper receiver and throw Node's brand-check TypeError for
+     * a foreign one. `constructor` is the compiled Boolean constructor. */
+    "wrapper.booleanPrototype": { argTypes: [DYN], result: DYN },
     "fs.callbackValue": { argTypes: [STRING], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },
@@ -5076,9 +5122,13 @@ function buildLibFnSignatures() {
      * 'not supported yet' Error. */
     "insp.dynHidden": { argTypes: [DYN, F64], result: STRING },
     "insp.begin": { argTypes: [F64], result: VOID },
-    /** util.inspect's breakLength, compact (-1 for false) and sorted for the
-     * renders that follow; the call site restores 80, 3 and false afterwards. */
-    "insp.layout": { argTypes: [F64, F64, BOOL], result: VOID },
+    /** util.inspect's breakLength, compact (-1 for false), sorted and
+     * maxArrayLength (Infinity for null) for the renders that follow; the
+     * call site restores 80, 3, false and 100 afterwards. */
+    "insp.layout": { argTypes: [F64, F64, BOOL, F64], result: VOID },
+    /** The render's maxArrayLength, which the array, Map and Set traversals
+     * read: the option applies at every nesting level. */
+    "insp.maxArrayLength": { argTypes: [], result: F64 },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
     // Circular references: the receiver slot is program-dependent (any
     // cycle-capable record/array/map/class type — the insp.error precedent).

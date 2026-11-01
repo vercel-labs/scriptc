@@ -66,10 +66,15 @@ typedef struct ScrInspFormatOptions {
   int depth_kind;
   double depth_number;
   bool colors;
+  bool show_hidden;
+  /* Whether the render is util.format's %o, which the refusal of the
+   * kinds whose hidden entries the walk does not render names. */
+  bool hidden_spec;
   bool custom_inspect;
   double break_length;
   double compact; /* -1 for false */
   bool sorted;
+  double max_array_length; /* Infinity for null */
   /* The options object, when it holds keys inspect does not read: custom
    * inspect functions receive them (borrowed; NULL otherwise). */
   const ScrDyn *user_options;
@@ -107,10 +112,13 @@ bool scr_insp_format_specifies_dyn(ScrDyn *first);
 ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth);
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
 void scr_insp_begin(double recurse);
-/* util.inspect's breakLength, compact (-1 for false) and sorted for the
- * renders that follow; the call site restores the defaults (80, 3, false)
- * afterwards. */
-void scr_insp_layout(double break_length, double compact, bool sorted);
+/* util.inspect's breakLength, compact (-1 for false), sorted and
+ * maxArrayLength (Infinity for null) for the renders that follow; the
+ * call site restores the defaults (80, 3, false, 100) afterwards. */
+void scr_insp_layout(double break_length, double compact, bool sorted, double max_array_length);
+/* The maxArrayLength the render in progress uses, read by the compiler's
+ * array, Map and Set renderings. */
+double scr_insp_max_array_length(void);
 void scr_insp_entry(ScrStr *s, bool is_num);
 /* Circular references, Node-exact (<ref *N> / [Circular *N]): the
  * compiler-emitted helpers over CYCLE-CAPABLE composites call circ_check

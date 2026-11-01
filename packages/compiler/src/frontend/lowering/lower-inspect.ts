@@ -1810,6 +1810,15 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       const i = (): IrExpr => varRef("i.0", F64, loc);
       const next = (): IrExpr => varRef("next.0", F64, loc);
       const hasMore = (): IrExpr => lt(i(), n());
+      // The render's maxArrayLength: entries show while the output holds
+      // fewer than the limit, at every nesting level (Node's ctx).
+      const limit = (): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.maxArrayLength",
+        args: [],
+        type: F64,
+        loc,
+      });
       // A foreign element (state 3) holds a value outside the element type.
       const foreignElements = elementMayBeForeign(lowerer, t.elem);
       const foreign = (): IrExpr => ({
@@ -1880,7 +1889,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             kind: "logical",
             op: "&&",
             left: hasMore(),
-            right: lt(shown(), numLit(100, loc)),
+            right: lt(shown(), limit()),
             type: BOOL,
             loc,
           },
@@ -2022,23 +2031,77 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         break;
       }
       if (shape.tuple) {
-        // Tuples ARE arrays to Node: bracket form, array-extras grouping.
-        if (shape.fields.length === 0) {
+        // Tuples ARE arrays to Node: bracket form, array-extras grouping,
+        // and the same maxArrayLength bound on the entries shown.
+        const count = shape.fields.length;
+        if (count === 0) {
           body = [ret(strLit("[]", loc))];
           break;
         }
-        body = [depthGate("[Array]"), ...begin()];
-        for (const f of shape.fields) {
-          body.push(
-            entry(
-              child(f.type, get(f.name, f.type)),
-              isNumberFlag(lowerer, f.type, () => get(f.name, f.type), loc),
-            ),
-          );
+        locals.push({ id: "lim.0", name: "lim", type: F64, mutable: false });
+        const lim = (): IrExpr => varRef("lim.0", F64, loc);
+        const lt = (left: IrExpr, right: IrExpr): IrExpr => ({
+          kind: "bin",
+          op: "<",
+          left,
+          right,
+          type: BOOL,
+          loc,
+        });
+        const bounded = (): IrExpr => lt(lim(), numLit(count, loc));
+        body = [
+          depthGate("[Array]"),
+          {
+            kind: "varDecl",
+            localId: "lim.0",
+            init: { kind: "libCall", fn: "insp.maxArrayLength", args: [], type: F64, loc },
+            loc,
+          },
+          ...begin(),
+        ];
+        for (let i = 0; i < count; i++) {
+          const f = shape.fields[i]!;
+          body.push({
+            kind: "if",
+            cond: lt(numLit(i, loc), lim()),
+            then: [
+              entry(
+                child(f.type, get(f.name, f.type)),
+                isNumberFlag(lowerer, f.type, () => get(f.name, f.type), loc),
+              ),
+            ],
+            else_: null,
+            loc,
+          });
         }
-        body.push(
-          ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, boolLit(false, loc))),
-        );
+        body.push({
+          kind: "if",
+          cond: bounded(),
+          then: [
+            entry(
+              {
+                kind: "libCall",
+                fn: "insp.moreItems",
+                args: [
+                  {
+                    kind: "bin",
+                    op: "-",
+                    left: numLit(count, loc),
+                    right: lim(),
+                    type: F64,
+                    loc,
+                  },
+                ],
+                type: STRING,
+                loc,
+              },
+              boolLit(false, loc),
+            ),
+          ],
+          else_: null,
+          loc,
+        });
+        body.push(ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, bounded())));
         break;
       }
       if (shape.indexValue && shape.fields.length === 0) {
@@ -2257,11 +2320,20 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       const keyT = isMap
         ? (t as IrType & { kind: "map" }).key
         : (t as IrType & { kind: "set" }).elem;
+      // Node's maxArrayLength bounds the entries shown; the tail counts the
+      // entries past the limit.
+      const limit = (): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.maxArrayLength",
+        args: [],
+        type: F64,
+        loc,
+      });
       const hasMore = (): IrExpr => ({
         kind: "bin",
         op: ">",
         left: n(),
-        right: numLit(100, loc),
+        right: limit(),
         type: BOOL,
         loc,
       });
@@ -2319,7 +2391,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             },
             {
               kind: "if",
-              cond: { kind: "bin", op: "===", left: c(), right: numLit(100, loc), type: BOOL, loc },
+              cond: { kind: "bin", op: "===", left: c(), right: limit(), type: BOOL, loc },
               then: [{ kind: "break", loc }],
               else_: null,
               loc,
@@ -2342,9 +2414,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
               {
                 kind: "libCall",
                 fn: "insp.moreItems",
-                args: [
-                  { kind: "bin", op: "-", left: n(), right: numLit(100, loc), type: F64, loc },
-                ],
+                args: [{ kind: "bin", op: "-", left: n(), right: limit(), type: F64, loc }],
                 type: STRING,
                 loc,
               },
@@ -2901,13 +2971,16 @@ function isDataViewTypeName(tname: string): boolean {
 /* ── the callsite: options, direct function/class names ──────────────── */
 
 /** The parsed options literal: the resolved depth (numeric; Infinity for
- * `null`), breakLength (numeric; default 80) and compact (numeric, -1 for
- * false; default 3), with every other non-default knob fenced by name. */
+ * `null`), breakLength (numeric; default 80), compact (numeric, -1 for
+ * false; default 3) and maxArrayLength (a non-negative integer; Infinity
+ * for `null`; default 100), with every other non-default knob fenced by
+ * name. */
 interface InspectOptions {
   depth: number;
   breakLength: number;
   compact: number;
   sorted: boolean;
+  maxArrayLength: number;
   /** Set by the `atRunTime` parse: colors or a computed knob value, which
    * the runtime reads. */
   runtime: boolean;
@@ -2932,6 +3005,7 @@ function parseInspectOptions(
     breakLength: 80,
     compact: 3,
     sorted: false,
+    maxArrayLength: 100,
     runtime: false,
     depthKind: 0,
     customInspect: !dir,
@@ -3062,14 +3136,52 @@ function parseInspectOptions(
         );
       }
       options.breakLength = n;
+    } else if (key === "maxArrayLength") {
+      if (
+        value.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(value) && value.text === "Infinity")
+      ) {
+        // Node resolves null to Infinity: every element shows.
+        options.maxArrayLength = Infinity;
+      } else {
+        const n = numeric();
+        if (n === null && atRunTime) {
+          options.runtime = true;
+          continue;
+        }
+        if (n === null || !Number.isInteger(n) || n < 0) {
+          lowerer.noLowering(
+            `${surface} with this maxArrayLength option`,
+            value,
+            "maxArrayLength must be a non-negative integer literal (or null)",
+          );
+        }
+        options.maxArrayLength = n;
+      }
     } else if (
       !dir &&
       key === "customInspect" &&
       (value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword)
     ) {
       options.customInspect = value.kind === ts.SyntaxKind.TrueKeyword;
-    } else if (key === "showHidden" && value.kind === ts.SyntaxKind.FalseKeyword) {
-      // util.inspect's default.
+    } else if (key === "showHidden") {
+      if (value.kind === ts.SyntaxKind.FalseKeyword) {
+        // util.inspect's default.
+      } else if (dir) {
+        // console.dir renders through its own entries — the static layout,
+        // or the runtime's dirDyn (custom inspection off) — and neither
+        // carries the option.
+        lowerer.noLowering(
+          "console.dir with the 'showHidden' option",
+          prop,
+          "console.dir's rendering has no showHidden form — use util.inspect with showHidden",
+        );
+      } else {
+        // The hidden entries (an array's [length], a typed array's extras,
+        // non-enumerable and symbol keys) render in the checked-dynamic
+        // walk, so the option takes the runtime reader.
+        options.runtime = true;
+      }
     } else if (dir && key === "customInspect") {
       // console.dir's own default; only that value is lowered.
       if (value.kind !== ts.SyntaxKind.FalseKeyword) {
@@ -3083,19 +3195,20 @@ function parseInspectOptions(
       lowerer.noLowering(
         `${surface} with the '${key}' option`,
         prop,
-        `the lowered options are depth (numeric literal or null), colors: false, showHidden: false, compact (false or a number), breakLength, ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
+        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength (a non-negative integer or null), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
       );
     }
   }
   return options;
 }
 
-/** A render under non-default breakLength/compact/sorted: the value is evaluated
- * first, the layout applies to this render only, and the defaults return
- * however the render ends, an inspection refusal included. The render runs
- * in a lifted function, `(v) => { insp.layout(...); try { return render(v); }
- * finally { insp.layout(80, 3, false); } }`, since a seqExpr cannot hold the
- * try; `tag` names the render for the function's key. */
+/** A render under non-default breakLength/compact/sorted/maxArrayLength: the
+ * value is evaluated first, the layout applies to this render only, and the
+ * defaults return however the render ends, an inspection refusal included.
+ * The render runs in a lifted function, `(v) => { insp.layout(...); try {
+ * return render(v); } finally { insp.layout(80, 3, false, 100); } }`, since a
+ * seqExpr cannot hold the try; `tag` names the render for the function's
+ * key. */
 function withInspectLayout(
   lowerer: Lowerer,
   options: InspectOptions,
@@ -3104,18 +3217,34 @@ function withInspectLayout(
   render: (value: IrExpr) => IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  if (options.breakLength === 80 && options.compact === 3 && !options.sorted) return render(value);
-  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.depth}`;
+  if (
+    options.breakLength === 80 &&
+    options.compact === 3 &&
+    !options.sorted &&
+    options.maxArrayLength === 100
+  )
+    return render(value);
+  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.depth}`;
   let name = lowerer.inspectHelpers.get(key);
   if (name === undefined) {
     name = keyedHelperName(lowerer, "%util.inspLayout", key);
     lowerer.inspectHelpers.set(key, name);
-    const layout = (breakLength: number, compact: number, sorted: boolean): IrStmt => ({
+    const layout = (
+      breakLength: number,
+      compact: number,
+      sorted: boolean,
+      maxArrayLength: number,
+    ): IrStmt => ({
       kind: "exprStmt",
       expr: {
         kind: "libCall",
         fn: "insp.layout",
-        args: [numLit(breakLength, loc), numLit(compact, loc), boolLit(sorted, loc)],
+        args: [
+          numLit(breakLength, loc),
+          numLit(compact, loc),
+          boolLit(sorted, loc),
+          numLit(maxArrayLength, loc),
+        ],
         type: VOID,
         loc,
       },
@@ -3127,13 +3256,13 @@ function withInspectLayout(
       returnType: STRING,
       locals: [{ id: "v.0", name: "v", type: value.type, mutable: false }],
       body: [
-        layout(options.breakLength, options.compact, options.sorted),
+        layout(options.breakLength, options.compact, options.sorted, options.maxArrayLength),
         {
           kind: "tryCatch",
           tryBody: [{ kind: "return", value: render(varRef("v.0", value.type, loc)), loc }],
           catchBody: null,
           catchLocalId: null,
-          finallyBody: [layout(80, 3, false)],
+          finallyBody: [layout(80, 3, false, 100)],
           loc,
         },
       ],
@@ -3382,7 +3511,7 @@ export function lowerInspectValue(
     // render(v); } finally { restore; } }`, so the previous ones return on
     // every exit, an inspection refusal's throw included (a seqExpr cannot
     // hold the try).
-    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${depth}`;
+    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${depth}`;
     let name = lowerer.inspectHelpers.get(key);
     if (name === undefined) {
       name = keyedHelperName(lowerer, "%util.inspContext", key);
@@ -3539,17 +3668,18 @@ function formatSValue(
 }
 
 /** %O (depth 2) / %o (showHidden, depth 4) — inspect with the spec's
- * option deltas. A checked-dynamic argument renders through the runtime's
- * showHidden walk; static %o fences over arrays and nested dynamic values
- * (showHidden adds an array's hidden [length] entry, which the static
- * rendering has no lowering for). */
+ * option deltas. A showHidden argument that the checked-dynamic tree can
+ * hold (arrays — whose hidden [length] entry the static rendering has no
+ * lowering for — records, maps, sets, typed arrays and nested dynamic
+ * values) renders through the runtime's showHidden walk; the static
+ * rendering covers the default %O. */
 function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
   const value = lowerer.lowerExpr(node);
-  if (depth === 4 && value.type.kind === "dyn") {
+  if (depth === 4 && (value.type.kind === "dyn" || lowerer.dynConvertible(value.type))) {
     return {
       kind: "libCall",
       fn: "insp.dynHidden",
-      args: [value, numLit(4, loc)],
+      args: [lowerer.coerceToExpected(value, DYN), numLit(4, loc)],
       type: STRING,
       loc,
     };
@@ -3577,6 +3707,8 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
     );
   }
   if (depth === 4 && typeTreeHasHidden(lowerer, value.type, new Set())) {
+    // The static rendering below has no showHidden entries; the tree is
+    // not one the checked-dynamic walk can hold.
     lowerer.noLowering(
       "util.format %o over arrays",
       node,
@@ -4263,7 +4395,9 @@ export function heldFormatArgs(
   return { stmts, args, specifies, format, joinable };
 }
 
-/** Arrays anywhere in the tree — the %o (showHidden) gate. */
+/** Arrays, byte views or checked-dynamic values anywhere in the tree — the
+ * static %o (showHidden) gate, for the types the checked-dynamic walk
+ * cannot hold. */
 function typeTreeHasHidden(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
   switch (t.kind) {
     case "array":

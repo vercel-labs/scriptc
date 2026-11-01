@@ -149,7 +149,11 @@ export {
   lowerStrictEquality,
   lowerUnitComparison,
 } from "./expressions/binary.js";
-export { jsHoldsDynObject, lowerArrayLiteral } from "./expressions/array-literals.js";
+export {
+  jsHoldsDynObject,
+  jsHoldsMixedClassConstructors,
+  lowerArrayLiteral,
+} from "./expressions/array-literals.js";
 export {
   lowerElementAccess,
   lowerElementWrite,
@@ -162,6 +166,7 @@ export {
   lowerIncDecTarget,
   lowerPrefixUnary,
 } from "./expressions/updates.js";
+import { lowerDeleteExpression } from "./primitive-throws.js";
 import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
 import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
@@ -867,6 +872,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
 
+  // `delete` in expression position: a primitive base answers the way the
+  // statement form does (true, or Node's ToObject TypeError); other bases
+  // keep the fence.
+  if (ts.isDeleteExpression(expr)) return lowerDeleteExpression(lowerer, expr);
   const entry = UNSUPPORTED_EXPR[expr.kind];
   if (entry)
     lowerer.unsupported(
@@ -2683,10 +2692,17 @@ export function lowerDynMemberAssignment(
   const loc = locOf(expr);
   const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
   const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
-  const keyValue = ts.isElementAccessExpression(target)
+  const boxedKey = ts.isElementAccessExpression(target)
     ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
     : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
-  const key = lowerer.declareHiddenLocal("%setKey", DYN);
+  // A key that is a string before boxing is its own property key: the
+  // write takes it as a string, without boxing it and coercing it back.
+  const stringKey =
+    ts.isElementAccessExpression(target) &&
+    boxedKey.kind === "dynFrom" &&
+    boxedKey.value.type.kind === "string";
+  const keyValue = stringKey ? boxedKey.value : boxedKey;
+  const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2715,8 +2731,12 @@ export function lowerDynMemberAssignment(
         kind: "exprStmt",
         expr: {
           kind: "libCall",
-          fn: "dyn.keySetComputed",
-          args: [varRef(receiver.id, DYN, loc), varRef(key.id, DYN, loc), stored],
+          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+          args: [
+            varRef(receiver.id, DYN, loc),
+            varRef(key.id, stringKey ? STRING : DYN, loc),
+            stored,
+          ],
           type: VOID,
           loc,
         },

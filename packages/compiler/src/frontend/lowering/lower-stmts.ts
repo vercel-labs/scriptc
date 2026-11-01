@@ -1,6 +1,10 @@
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
-import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
+import {
+  keepsCheckedDynamicValue,
+  keepsInitializerLayout,
+  notePreservedLayout,
+} from "./structural-instances.js";
 import { partialFieldRead } from "./partial-assertions.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
@@ -35,7 +39,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
-import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
+import { literalFieldKeys, runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -60,7 +64,7 @@ import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
-import { lowerConstructorReturn } from "./constructor-returns.js";
+import { clearPendingPrimitiveReturn, lowerConstructorReturn } from "./constructor-returns.js";
 import type { DynamicSlot, Lowerer } from "./lowerer.js";
 import type { ScrDiagnostic, TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
@@ -130,6 +134,7 @@ import {
   staticImportNamespaceType,
 } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
+import { lowerPrimitiveBaseDelete, isPrimitiveValueType } from "./primitive-throws.js";
 import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
@@ -183,6 +188,7 @@ import {
   bindingGenericFnAliasInfoOf,
   bindingGenericFnInfoOf,
   bindingGenericFnNodeOf,
+  genericAliasPresenceStore,
   genericBindingPresenceStore,
   genericBindingStoredValue,
   implicitLocalFnInfoOf,
@@ -2022,13 +2028,43 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // observed empty returns even when JSDoc omits undefined. Any remaining
     // incompatible boundary keeps the ordinary per-statement refusal.
     let value: IrExpr | null = null;
+    // A derived constructor that can record a pending TypeError on a
+    // primitive return drops it when a return of its own completes: a
+    // `finally` block's `return;`, `return undefined` or `return this`
+    // replaces the earlier completion instead of leaving it pending. The
+    // drop follows the operand, which may throw — an operand that throws
+    // never completes the return, so a `finally` that catches it and then
+    // finishes resumes the earlier primitive return (and its TypeError).
+    const withClearedPending = (ret: IrStmt): IrStmt => {
+      const clear = clearPendingPrimitiveReturn(lowerer, stmt);
+      if (clear.length === 0) return ret;
+      const loc = locOf(stmt);
+      const body = ret.kind === "block" ? ret.body : [ret];
+      const last = body.at(-1);
+      if (last?.kind !== "return") return { kind: "block", body: [...clear, ret], loc };
+      const before = body.slice(0, -1);
+      if (last.value === null) return { kind: "block", body: [...before, ...clear, last], loc };
+      // A constructor returns void, so a valued operand only evaluates for
+      // effect — ahead of the drop, since a `return this.fail()` inside a
+      // `finally` that catches the throw never completes.
+      return {
+        kind: "block",
+        body: [
+          ...before,
+          { kind: "exprStmt", expr: last.value, loc },
+          ...clear,
+          { kind: "return", value: null, loc },
+        ],
+        loc,
+      };
+    };
     if (stmt.expression) {
       // A constructor's returned object replaces the constructed `this`.
       if (lowerer.currentClass?.ctor) {
         const constructorReturn = lowerConstructorReturn(lowerer, stmt);
         if (constructorReturn !== null) return constructorReturn;
       }
-      return lowerer.lowerReturnStmt(stmt.expression, locOf(stmt));
+      return withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
     } else if (lowerer.ctx.returnType.kind === "union") {
       value = lowerer.wrappedUndefined(lowerer.ctx.returnType, locOf(stmt));
       if (value === null) {
@@ -2049,8 +2085,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     }
     // An async generator's bare return has no operand to await.
     if (lowerer.ctx.isAsync === true && lowerer.ctx.generator)
-      return { kind: "return", value, awaited: true, loc: locOf(stmt) };
-    return { kind: "return", value, loc: locOf(stmt) };
+      return withClearedPending({ kind: "return", value, awaited: true, loc: locOf(stmt) });
+    return withClearedPending({ kind: "return", value, loc: locOf(stmt) });
   }
   if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {
     const kw = ts.isBreakStatement(stmt) ? ("break" as const) : ("continue" as const);
@@ -6343,10 +6379,10 @@ export function lowerVarDecl(
 
   // `const h = id` — an ALIAS of a generic function: the alias's symbol
   // registers the target's info (calls and pinned values resolve like
-  // the target's own name), the binding has no runtime value, and the
-  // statement emits nothing (collectGlobals skipped module-scope
-  // globals by the same test; block-scoped aliases register here).
-  if (bindingGenericFnAliasInfoOf(lowerer, decl)) return null;
+  // the target's own name) and the binding has no runtime value, so the
+  // statement emits nothing but the flag of a module-scope alias whose
+  // reads can run before it (genericAliasPresenceStore).
+  if (bindingGenericFnAliasInfoOf(lowerer, decl)) return genericAliasPresenceStore(lowerer, decl);
 
   // `const stored = overloadedDeclaration`: no runtime slot is needed;
   // calls project onto the declaration's implementation ABI and value
@@ -6476,6 +6512,12 @@ export function lowerVarDecl(
       raw.type.kind === "dyn" &&
       (g.type.kind === "record" ||
         g.type.kind === "object" ||
+        // `const p = Promise.all.call(C, xs)` in JavaScript: the call runs
+        // the specification's algorithm with `C`'s capability and returns
+        // whatever `C` constructed, a foreign instance the checker still
+        // calls `Promise<T>`. The binding holds that value as dyn; a
+        // native-promise check would reject it (t262-db B3).
+        (g.type.kind === "promise" && isJsPromiseStaticCall(raw)) ||
         (ts.isIdentifier(decl.name) &&
           jsBindingKeepsCheckedObject(lowerer, decl.name, g.type) &&
           (existingValueForm(decl.initializer) || jsHoldsDynObject(lowerer, decl.initializer))))
@@ -6492,6 +6534,11 @@ export function lowerVarDecl(
       g.type = raw.type;
       notePreservedLayout(lowerer, decl);
     }
+    if (
+      !isVarDeclared(decl) &&
+      keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
+    )
+      g.type = raw.type;
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -6682,6 +6729,11 @@ export function lowerVarDecl(
     type = init.type;
     notePreservedLayout(lowerer, decl);
   }
+  // An index-signature binding whose assertion of an existing value lowered
+  // to that value (narrowing.ts keeps it instead of answering a copy whose
+  // keys live in a map of its own) keeps the value too: converting it here
+  // would take every write through the binding with it.
+  if (keepsCheckedDynamicValue(lowerer, decl.initializer, init.type, type)) type = init.type;
   // A JavaScript binding assigned values outside its declared type
   // (analyzeJsWidenedBindings in lowerer.ts) holds them as checked-dynamic.
   {
@@ -6746,10 +6798,20 @@ export function lowerVarDecl(
     init.type.kind === "dyn" &&
     !decl.type &&
     keptIdentityAssertion(lowerer, decl.initializer) !== undefined;
+  // `const p = Promise.all.call(C, xs)` in JavaScript: the checked-dynamic
+  // promise-static call returns whatever `C` constructed — a foreign
+  // instance, not the `Promise<T>` the checker infers from the signature —
+  // so the binding holds it as dyn (t262-db B3).
+  const keepsPromiseStaticValue =
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isJsPromiseStaticCall(init);
   if (
     expandsObject ||
     preservesObjectIdentity ||
     keepsAssertedObject ||
+    keepsPromiseStaticValue ||
     (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       isNativeBuiltinValueInitializer(lowerer, decl.initializer))
@@ -7168,6 +7230,17 @@ function inferredOptionalRecordType(
   )
     return declared;
   return actual;
+}
+
+/** Whether a lowered initializer is the checked-dynamic `Promise.<static>.call(C, …)`
+ * call (lower-calls.ts, JavaScript sources only). Its result is whatever `C`
+ * constructed, so a binding the checker typed `Promise<T>` holds it as dyn. */
+function isJsPromiseStaticCall(value: IrExpr): boolean {
+  // Surplus arguments evaluate as statements before the call, so the
+  // initializer is a sequence expression whose result is the call.
+  let result = value;
+  while (result.kind === "seqExpr") result = result.result;
+  return result.kind === "libCall" && result.fn === "promise.genericStatic";
 }
 
 function lowerVariableInitializer(
@@ -8026,6 +8099,24 @@ function declaresCheckedDynField(lowerer: Lowerer, type: IrType, name: string): 
   return arms.length > 0 && arms.every((arm) => declaresCheckedDynField(lowerer, arm, name));
 }
 
+/** The constant property key of a `delete` target: the name of a dot
+ * access, or the one key of a bracket access spelled as a literal or
+ * proved by a literal-typed binding (`const key = "a"`). A key of several
+ * literals folds to nothing — deleting it would need per-key dispatch, so
+ * the record branch refuses and names the keys. Consistent with keyed
+ * record reads/writes (literalFieldKeys), the key expression is not
+ * evaluated: only a literal or an identifier folds, and an identifier
+ * read is pure. */
+function constantDeleteKey(lowerer: Lowerer, target: ts.Expression): string | null {
+  if (ts.isPropertyAccessExpression(target)) return target.name.text;
+  if (!ts.isElementAccessExpression(target)) return null;
+  const keyNode = target.argumentExpression;
+  if (ts.isStringLiteralLike(keyNode)) return keyNode.text;
+  if (!ts.isIdentifier(keyNode)) return null;
+  const keys = literalFieldKeys(lowerer, keyNode);
+  return keys?.length === 1 ? keys[0]! : null;
+}
+
 /** Statement-position `delete`: process.env keys → process.envUnset
  * (unsetenv), pure `Record<string, T>` keys → recordKeyDelete (the
  * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
@@ -8109,6 +8200,18 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     if (unionDelete) return unionDelete;
   }
   let obj = lowerer.lowerExpr(target.expression);
+  // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key,
+  // and the base's type decides the answer — null and undefined throw
+  // Node's TypeError, `?.` on a nullish base short-circuits to `true`
+  // without evaluating the key, and every other primitive deletes from its
+  // ToObject wrapper (a String's indexes and `length` refuse the delete).
+  if (isPrimitiveValueType(obj.type)) {
+    return {
+      kind: "exprStmt",
+      expr: lowerPrimitiveBaseDelete(lowerer, expr, target, obj, VOID),
+      loc,
+    };
+  }
   // `delete this.stack` in an Error subclass that declares a `stack`
   // accessor (quickjs-wasi's JSException): V8 gives each error an own
   // `stack` that shadows the accessor, and the delete removes it so reads
@@ -8186,13 +8289,12 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       loc,
     };
   }
-  // The constant property key of the target (dot access or a literal
-  // bracket), when there is one.
-  const constantKey = ts.isPropertyAccessExpression(target)
-    ? target.name.text
-    : ts.isStringLiteral(target.argumentExpression)
-      ? target.argumentExpression.text
-      : null;
+  // The constant property key of the target: dot access, a literal
+  // bracket, or an element access whose key is a literal-typed binding
+  // (`const key = "a"; delete r[key]`) — the same stance a keyed record
+  // read/write takes (literalFieldKeys): identifier evaluation is pure, so
+  // skipping it matches JavaScript.
+  const constantKey = constantDeleteKey(lowerer, target);
   // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
   // which has no ABSENT state yet (an omitted such field already reads as
   // present), so it cannot delete. Name that reason instead of calling
@@ -8248,6 +8350,19 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     }
     if (optionalCheckedDynDelete) {
       lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
+    }
+    // A key of SEVERAL literals names no single slot: say that instead of
+    // blaming a field the caller never named.
+    const keyNames =
+      constantKey === null && ts.isElementAccessExpression(target)
+        ? literalFieldKeys(lowerer, target.argumentExpression)
+        : null;
+    if (keyNames !== null && keyNames.length > 1) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'delete' through keys of ${keyNames.length} literals (${keyNames.map((k) => `'${k}'`).join(", ")}; delete one constant key at a time, or switch over the key)`,
+      );
     }
     lowerer.unsupported(
       "SC1090",

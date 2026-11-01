@@ -133,6 +133,7 @@ import {
 import {
   ADOPTED_OPTIONS,
   isJsSourceFileName,
+  jsTscCodeTriage,
   JS_ANY_OPERATOR_CODES,
   JS_RELAXED_TSC_CODES,
 } from "./tsc-codes.js";
@@ -1531,7 +1532,17 @@ const CHECKED_JS_ENFORCED_CODES: ReadonlySet<number> = new Set([
 function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   const file = d.fileName;
   if (!file || !isJsSourceFileName(file)) return false;
+  // A private setter's implicit any stays reported: the private-element
+  // lowering does not implement the shadowing and brand-check rules these
+  // programs exercise (a private setter shadowed across nested classes
+  // reaches the LLVM emitter's unknown-class path), so the program keeps
+  // refusing until that lowering exists.
+  if (d.code === 7032 && ts.flattenDiagnosticMessageText(d, "\n").includes("Property '#"))
+    return false;
   if (JS_RELAXED_TSC_CODES.has(d.code) || TS7_JS_RELAXED_EXTRA.has(d.code)) return true;
+  // The triage table's `relax` rows: legal JavaScript whose construct the
+  // lowering already builds Node-exactly (tsc-codes.ts).
+  if (jsTscCodeTriage(d.code)?.action === "relax") return true;
   // The 8xxx range is TypeScript's JSDoc-specific diagnostic family
   // (malformed tags, signature/tag mismatches): comment semantics with no
   // runtime meaning in a JS file.
@@ -2859,14 +2870,21 @@ function jsUndeclaredWriteDiags(
         node.text !== "" &&
         isJsWriteTarget7(node) &&
         undeclaredJsName7(checker, node)
-      )
-        diags.push(
-          unsupportedDiag(
-            "SC1091",
-            { file: sf.fileName, start: node.getStart(sf), end: node.end },
-            `writing the undeclared name '${node.text}' in a JavaScript source`,
-          ),
+      ) {
+        const sloppyWrite = !isStrictCode(node);
+        const diag = unsupportedDiag(
+          "SC1091",
+          { file: sf.fileName, start: node.getStart(sf), end: node.end },
+          `writing the undeclared name '${node.text}' in a JavaScript source`,
         );
+        // A sloppy-mode write creates the global at run time, a sloppy-only
+        // semantic the native tier does not implement: the reason lets an
+        // automatic island policy put this module in a Node island instead
+        // of refusing the build. A strict-mode write throws ReferenceError,
+        // which is an ordinary lowering gap and stays a plain refusal.
+        if (sloppyWrite) diag.reason = "implicit-global-write";
+        diags.push(diag);
+      }
       ts.forEachChild(node, (child) => {
         stack.push(child);
         return undefined;
@@ -3188,6 +3206,40 @@ function isCjsJsFile7(sf: ts.SourceFile, program?: ts.Program): boolean {
  * tsgo marks CJS files with export assignments as external modules). */
 export function isCjsJsFile(sf: ts.SourceFile, program?: ts.Program): boolean {
   return isCjsJsFile7(sf, program);
+}
+
+function hasUseStrictDirective(statements: readonly ts.Statement[]): boolean {
+  for (const statement of statements) {
+    if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
+      return false;
+    if (statement.expression.text === "use strict") return true;
+  }
+  return false;
+}
+
+/** Whether `node` runs in strict mode code: inside a class body, a function
+ * with a "use strict" directive, a module, or a script that starts with
+ * "use strict". CommonJS JavaScript is sloppy otherwise; the sloppy-only
+ * semantics (implicit globals, `with`, direct eval, Annex B) need a Node
+ * island. */
+export function isStrictCode(node: ts.Node): boolean {
+  for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+    if (ts.isClassDeclaration(parent) || ts.isClassExpression(parent)) return true;
+    if (
+      ts.isFunctionLike(parent) &&
+      parent.body &&
+      ts.isBlock(parent.body) &&
+      hasUseStrictDirective(parent.body.statements.nodes)
+    )
+      return true;
+    if (ts.isSourceFile(parent)) {
+      return (
+        hasUseStrictDirective(parent.statements.nodes) ||
+        (!isCjsJsFile7(parent) && (isNodeEsmFile7(parent) || ts.isExternalModule(parent)))
+      );
+    }
+  }
+  return false;
 }
 
 /** The self-import TDZ fences: for `import { x } from "<self>"` (default
@@ -5402,12 +5454,17 @@ function resolveImport7(
   from: ts.SourceFile,
   specifier: string,
   resolutionKind: "import" | "require" = "import",
+  /** False for the graph passes that over-approximate edges (see
+   * `resolveRuntimeEdge`): they resolve specifiers Node may never load, so
+   * a miss there is no evidence about the package's entry and must not
+   * classify it. The walks that model real loads pass the default. */
+  reportMiss = true,
 ): ts.SourceFile | null {
   const resolved = resolveProjectModule(from.fileName, specifier);
   if (resolved !== null) return program.getSourceFile(resolved) ?? null;
   const npm = resolveNpmImport7(from.fileName, specifier, resolutionKind);
   return npm && isNpmStaticPackage(npm.packageName)
-    ? npmStaticProgramDep(program, npm.packageName, npm.typesFile)
+    ? npmStaticProgramDep(program, npm.packageName, npm.typesFile, reportMiss)
     : null;
 }
 
@@ -5484,20 +5541,23 @@ function npmStaticProgramDep(
   program: ts.Program,
   packageName: string,
   resolvedFile: string,
+  reportMiss = true,
 ): ts.SourceFile | null {
   if (!isJsSourceFileName(resolvedFile)) {
-    reportNpmStaticOffender(
-      packageName,
-      `its import resolves to '${resolvedFile}', not to runtime JavaScript`,
-    );
+    if (reportMiss)
+      reportNpmStaticOffender(
+        packageName,
+        `its import resolves to '${resolvedFile}', not to runtime JavaScript`,
+      );
     return null;
   }
   const dep = npmStaticProgramFile(program, resolvedFile);
   if (dep === null) {
-    reportNpmStaticOffender(
-      packageName,
-      `its entry '${resolvedFile}' did not join the type-checked program`,
-    );
+    if (reportMiss)
+      reportNpmStaticOffender(
+        packageName,
+        `its entry '${resolvedFile}' did not join the type-checked program`,
+      );
     return null;
   }
   return dep;
@@ -5555,6 +5615,15 @@ function declarationHasRuntimeFile(declaration: ts.SourceFile): boolean {
     if (name.endsWith(declared))
       return trackedFileExists(name.slice(0, -declared.length) + runtime);
   return false;
+}
+
+/** Whether two resolutions name the same module file. Their spellings differ
+ * routinely — a tsconfig `paths` answer keeps the project's spelling where
+ * the npm resolver answers realpath'd — so the real paths decide. */
+function sameResolvedFile(a: string, b: string): boolean {
+  const normalize = (path: string): string => path.replaceAll("\\", "/");
+  if (normalize(a) === normalize(b)) return true;
+  return normalize(trackedRealpath(a) ?? a) === normalize(trackedRealpath(b) ?? b);
 }
 
 function preflight7(load: LoadResult): {
@@ -5620,6 +5689,20 @@ function preflight7(load: LoadResult): {
     const file = d.fileName ?? entry.fileName;
     const start = d.fileName !== undefined ? d.pos : 0;
     const end = d.fileName !== undefined ? d.end : 0;
+    // A JavaScript source's `refuse`/`rewrite` code names the construct
+    // scriptc does not lower (tsc-codes.ts): the user sees what is missing
+    // instead of TypeScript's opinion about legal JavaScript.
+    const triaged =
+      d.fileName !== undefined && isJsSourceFileName(d.fileName) ? jsTscCodeTriage(d.code) : null;
+    if (triaged?.action === "refuse" || triaged?.action === "rewrite") {
+      const diag = unsupportedDiag(
+        "SC1090",
+        { file, start, end },
+        triaged.feature,
+        `${triaged.hint} (TypeScript reports TS${d.code} here.)`,
+      );
+      return diag;
+    }
     const diag = tscPassthroughDiag(message, { file, start, end });
     const hint = typeWorldHint(d, message, load);
     if (hint !== null) {
@@ -5858,12 +5941,26 @@ function preflight7(load: LoadResult): {
   // Files reached only through `import type` / `export type … from` are
   // checker input, never program modules: Node does not load them, so
   // their imports and syntax must not fence the program.
+  //
+  // Reachability over-approximates: `callReferencesOf` and the reexport
+  // planner count EVERY call with a leading string literal as a loading
+  // edge, so a bare specifier that merely names a package — a model id
+  // passed to a catalog helper, a settings key passed to `markModified` —
+  // reaches npm resolution here. Whether this walk runs at all depends on
+  // the program it is handed (it early-returns unless an erased reference
+  // resolves, and the island rounds change the program), so classifying a
+  // miss from it made package selection depend on program composition: the
+  // same build could refuse a static package's entry as "did not join the
+  // type-checked program" or compile it, run to run. Report nothing from
+  // these edges; the walks that model real loads (import/export
+  // declarations and `require()`/`import()` calls) own the offender
+  // classification.
   const resolveRuntimeEdge = (
     sf: ts.SourceFile,
     spec: string,
     resolutionKind?: "import" | "require",
   ): ts.SourceFile | null =>
-    resolveImport7(program, sf, spec, resolutionKind) ??
+    resolveImport7(program, sf, spec, resolutionKind, false) ??
     npmStaticDepSf7(program, sf, spec, resolutionKind);
   const typeOnlyFiles = typeOnlyReachedFiles(
     program,
@@ -6165,13 +6262,30 @@ function preflight7(load: LoadResult): {
       // Project modules win before npm fallback: this is the source graph
       // tsgo type-checked for tsconfig paths, package imports/self-references,
       // and provenance entries. Ordinary packages still answer null here.
-      const projDep = isBare ? resolveImport7(program, sf, spec) : null;
-      // "#" specifiers can never name an npm package — they are the
-      // imports-field family, resolved by the project arm above.
-      const npm =
-        isBare && projDep === null && !spec.startsWith("#")
-          ? resolveNpmImport7(sf.fileName, spec)
-          : null;
+      const projectAnswer = isBare ? resolveImport7(program, sf, spec) : null;
+      let projDep = projectAnswer;
+      let npm: ReturnType<typeof resolveNpmImport7> = null;
+      if (isBare && !spec.startsWith("#")) {
+        // A tsconfig `paths` target can name an installed package's directory
+        // (pi maps "typebox": ["./node_modules/typebox"]): its declarations
+        // are the package's own, so Node resolves the same specifier to the
+        // same answer and the import is an npm import after all. The npm arm
+        // below owns it then — its runtime refusal, npm-static membership and
+        // island policy included. A mapping whose answer the npm resolver does
+        // not reproduce stays a project import (and its SC1010).
+        const installed =
+          projectAnswer !== null &&
+          projectAnswer.isDeclarationFile &&
+          isNodeModulesPath(projectAnswer.fileName)
+            ? resolveNpmImport7(sf.fileName, spec)
+            : null;
+        if (installed !== null && sameResolvedFile(installed.typesFile, projectAnswer!.fileName)) {
+          projDep = null;
+          npm = installed;
+        } else if (projectAnswer === null) {
+          npm = resolveNpmImport7(sf.fileName, spec);
+        }
+      }
       if (npm && isNodeTypesPath(npm.typesFile)) {
         diags.push(unsupportedDiag("SC1010", locOf7(stmt), unsupportedModuleFeatureOf(spec)));
         continue;

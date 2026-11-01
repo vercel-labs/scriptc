@@ -111,6 +111,7 @@ import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import {
+  erasedOverloadMemberType,
   isGenericCallableMemberType,
   isOverloadedCallableMemberType,
   typeKey,
@@ -146,7 +147,7 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import { isPrimitivePrototypeRead } from "./expressions/property-access.js";
+import { builtinGlobalValue, isPrimitivePrototypeRead } from "./expressions/property-access.js";
 import {
   lowerBufferConstruct,
   lowerBytesPrototypeSetCall,
@@ -220,6 +221,7 @@ import {
   primitiveCtorClosure,
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
+import { nullishLiteral, nullishReadTypeError, throwAfterEach } from "./primitive-throws.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
 import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
@@ -300,12 +302,14 @@ import { nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
   completeFuncValueArgs,
+  checkedRestCallArgs,
   lowerSpreadArgsCall,
   completeArgs,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { dynamicOverloadChoice } from "./overload-choice.js";
 import { lowerStringIteratorValue } from "./iterator-adapters.js";
+import { iterableGenerator, iterableUnionOf } from "./iterable-values.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import {
   maybePromiseReturnStmt,
@@ -402,6 +406,27 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
+  // `(null).foo()` / `(undefined)["foo"]()`: the MEMBER READ throws Node's
+  // TypeError before the arguments evaluate, exactly as a plain read does.
+  // Only a nullish LITERAL qualifies — every other receiver, a binding or a
+  // property included, has a value the runtime reads and refuses itself,
+  // with the same message and the same order.
+  {
+    const callee = expr.expression;
+    const member =
+      ts.isPropertyAccessExpression(callee) && !callee.questionDotToken
+        ? { base: callee.expression, name: callee.name.text }
+        : ts.isElementAccessExpression(callee) && !callee.questionDotToken
+          ? { base: callee.expression, name: lowerer.foldedStringKeyOf(callee.argumentExpression) }
+          : null;
+    const unit =
+      !expr.questionDotToken && member !== null ? nullishLiteral(lowerer, member.base) : null;
+    if (member !== null && member.name !== null && unit !== null) {
+      const recv = lowerer.lowerExpr(member.base);
+      const t = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? F64;
+      return throwAfterEach([recv], nullishReadTypeError(unit, member.name, t, loc), loc);
+    }
+  }
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
@@ -1014,10 +1039,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const arg = optionalCallValue(lowerer, argNode) ?? lowerer.lowerExpr(argNode);
     const converted = lowerBigIntConstructorValue(lowerer, arg, loc);
     if (converted) return converted;
+    // Report the type the program wrote, which is the type the checker has
+    // narrowed to here. The stored union only shows up when it is what
+    // actually blocks the conversion.
+    const narrowed = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    const shown = narrowed && !typeEquals(narrowed, arg.type) ? narrowed : arg.type;
     lowerer.noLowering(
-      `BigInt of ${lowerer.fmt(arg.type)} values`,
+      `BigInt of ${lowerer.fmt(shown)} values`,
       argNode,
-      "string, number, boolean, and bigint arguments are supported",
+      bigintRefusalHint(lowerer, arg, narrowed),
     );
   }
 
@@ -1332,34 +1362,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       (expr.expression.text === "atob" || expr.expression.text === "btoa") &&
       lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
     ) {
-      const name = expr.expression.text;
-      if (expr.arguments.nodes.length === 0) {
-        return { kind: "libCall", fn: "str.b64Missing", args: [], type: STRING, loc };
-      }
-      if (expr.arguments.nodes.length > 1) {
-        lowerer.noLowering(`${name} with ${expr.arguments.nodes.length} arguments`, expr);
-      }
-      const argNode = expr.arguments.nodes[0]!;
-      const v = lowerer.lowerExpr(argNode);
-      let data: IrExpr;
-      if (v.type.kind === "dyn") {
-        data = v;
-      } else if (v.kind === "unitLit" || lowerer.dynConvertible(v.type)) {
-        data = { kind: "dynFrom", value: v, type: DYN, loc };
-      } else {
-        lowerer.noLowering(
-          `${name} with a '${lowerer.fmt(v.type)}' argument`,
-          argNode,
-          "string-convertible arguments lower (Node ToStrings the value — convert it explicitly)",
-        );
-      }
-      return {
-        kind: "libCall",
-        fn: name === "atob" ? "str.atob" : "str.btoa",
-        args: [data],
-        type: STRING,
-        loc,
-      };
+      return lowerBase64Call(lowerer, expr, expr.expression.text, loc);
     }
 
     // global function executes — callFn(globalGet(name)) — and the
@@ -2182,6 +2185,135 @@ function callableInstanceStringCall(
   };
 }
 
+/** Refuses a copying conversion at a call through a value whose checker
+ * signature keeps its own type parameters — the erased instance
+ * lowerGenericFnValue / erasedGenericInstance produce. The call itself
+ * needs no new rule: such a value's IR type is already the erased func
+ * type, so the ordinary func-value lane completes its arguments into the
+ * erased signature's `unknown` slots (records, arrays and collections box
+ * as live capsules, primitives as themselves) and leaves the result dyn
+ * for each use to convert, where a lie throws (dynCheck) instead of
+ * answering a value the program never had. Keeping the lane unchanged is
+ * what keeps every program that compiles today byte-identical. */
+function refuseCopyingErasureInstanceCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  callee: IrExpr,
+): void {
+  if (callee.type.kind !== "func") return;
+  const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(call.expression));
+  if (!sigs.some((sig) => sig.getTypeParameters().length > 0)) return;
+  refuseCopyingErasureBoundary(lowerer, call, callee.type);
+}
+
+/** Refuse an erased instantiation whose boundary conversion would COPY the
+ * value instead of carrying it by reference.
+ *
+ * Most conversions across the erased boundary are exact: records and arrays
+ * box into `unknown` as live capsules of themselves, and the checked unbox
+ * back answers the same object (object-model S1). Two conversions are not,
+ * and compiling them would silently hand the program a different object
+ * than Node's:
+ *
+ * - a promise payload crossing the boundary. The dynamic promise conversion
+ *   re-materializes the settled record rather than boxing it live, so a
+ *   `Promise<{ id: number }>` that crosses into `unknown` (or into a wider
+ *   promise) settles to a copy. This is a pre-existing dynamic-tier
+ *   behaviour — it is what `const u: unknown = await p` does today for a
+ *   `Promise<Record>` with no generics in sight — so the erased form must
+ *   not promise otherwise. A closure counts by its RESULT: calling a boxed
+ *   closure converts its result into `unknown`, so a callback returning a
+ *   promise of a record loses that record's identity (the createLimiter
+ *   shape: `async () => shared` over the boundary).
+ * - a record (or array) converting to a different record (or array) type: a
+ *   width conversion copies.
+ *
+ * Everything the rule names is a shape the compiler refuses today, so no
+ * program that compiles changes: these fences only replace a silent
+ * divergence with a diagnostic. */
+function refuseCopyingErasureBoundary(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  funcType: IrType & { kind: "func" },
+): void {
+  const argNodes = call.arguments.nodes;
+  for (let i = 0; i < argNodes.length && i < funcType.params.length; i++) {
+    const arg = argNodes[i]!;
+    if (ts.isSpreadElement(arg)) continue;
+    const reason = erasureCopyReason(lowerer, lowerer.irTypeOf(arg), funcType.params[i]!);
+    if (reason !== null) {
+      lowerer.unsupported(
+        "SC1090",
+        arg,
+        `passing this argument across the erased generic boundary (${reason}; JavaScript hands the same object over)`,
+      );
+    }
+  }
+  const reason = erasureCopyReason(lowerer, funcType.ret, lowerer.irTypeOf(call));
+  if (reason !== null) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `returning this call's result across the erased generic boundary (${reason}; JavaScript hands the same object back)`,
+    );
+  }
+}
+
+/** Why converting a value of type `src` at the erased boundary (`dst`)
+ * copies it, or null when the conversion is exact. */
+function erasureCopyReason(lowerer: Lowerer, src: IrType, dst: IrType): string | null {
+  if (typeEquals(src, dst)) return null;
+  // An unboxed capsule answers the same object, and a promise payload
+  // boxes by reference as well (object-model S1), so no dynamic-side
+  // crossing copies.
+  if (src.kind === "dyn") return null;
+  if (dst.kind === "dyn") return dynCrossingCopyReason(lowerer, src);
+  if (src.kind === "record" && dst.kind === "record")
+    return `a '${lowerer.fmt(src)}' becomes the narrower '${lowerer.fmt(dst)}' by copying it`;
+  if (src.kind === "array" && dst.kind === "array")
+    return `a '${lowerer.fmt(src)}' becomes '${lowerer.fmt(dst)}' by copying it`;
+  if (src.kind === "promise" && dst.kind === "promise")
+    return erasureCopyReason(lowerer, src.inner, dst.inner);
+  if (src.kind === "func" && dst.kind === "func")
+    return erasureCopyReason(lowerer, src.ret, dst.ret);
+  return null;
+}
+
+/** Why a value of type `t` crossing INTO `unknown` copies, or null. A
+ * record, array or promise boxes as a live capsule of itself (a promise's
+ * payload boxes by reference too, object-model S1); a function boxes as a
+ * callable whose RESULT converts through the dynamic call, so a record or
+ * array result comes back as a fresh value. */
+function dynCrossingCopyReason(lowerer: Lowerer, t: IrType): string | null {
+  if (t.kind === "func") {
+    const inner = dynCrossingCopyReason(lowerer, t.ret);
+    if (inner !== null) return inner;
+    if (structuredResultHoldsCopy(lowerer, t.ret))
+      return `a '${lowerer.fmt(t.ret)}' result is re-materialized when the boxed function returns it`;
+    return null;
+  }
+  if (t.kind === "union") {
+    const def = lowerer.unions.get(t.unionId);
+    for (const arm of def?.arms ?? []) {
+      const reason = dynCrossingCopyReason(lowerer, arm);
+      if (reason !== null) return reason;
+    }
+    return null;
+  }
+  return null;
+}
+
+/** True when a boxed function's RESULT is a record or array, or a union with
+ * such an arm. The boxed callable converts that result through the dynamic
+ * call, which answers a fresh value, so the caller does not get the object
+ * the function returned. */
+function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "record" || t.kind === "array") return true;
+  if (t.kind !== "union") return false;
+  const def = lowerer.unions.get(t.unionId);
+  return def !== undefined && def.arms.some((arm) => structuredResultHoldsCopy(lowerer, arm));
+}
+
 /** A call through an evaluated callee value: checked-dynamic callees,
  * function unions, typed-rest and runtime-arity closures. */
 export function lowerCallThroughValue(
@@ -2190,6 +2322,49 @@ export function lowerCallThroughValue(
   callee: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
+  return overloadValueResult(
+    lowerer,
+    expr,
+    callee,
+    lowerCallThroughValueRaw(lowerer, expr, callee, loc),
+  );
+}
+
+/** A call through a VALUE of an OVERLOADED type: the value holds the set's
+ * erased function (mapType's overload-value rule), so its result converts to
+ * the resolved overload's type, as a call through an overloaded record
+ * member does. Only a callee whose IR type IS that erased function converts,
+ * so a class method or a declared function called through its own
+ * implementation is unchanged. Shared with the optional chain's own call
+ * step (`f?.(x)`, `a.m?.(x)`), which builds its callValue directly. */
+export function overloadValueResult(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  callee: IrExpr,
+  result: IrExpr,
+): IrExpr {
+  if (result.kind !== "callValue" || callee.type.kind !== "func") return result;
+  const calleeTs = lowerer.checker.getNonNullableType(lowerer.typeOf(expr.expression));
+  if (!isOverloadedCallableMemberType(calleeTs, lowerer.checker)) return result;
+  const erased = erasedOverloadMemberType(calleeTs, lowerer.typeCtx);
+  if (erased === undefined || !typeEquals(erased, callee.type)) return result;
+  return lowerer.coerceInto(expr, result, resolvedOverloadResultType(lowerer, expr));
+}
+
+function lowerCallThroughValueRaw(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  // A callee value that keeps its call signature's OWN type parameters
+  // (`f(3)` where `f: <T>(x: T) => T`, a generic method's record slot, a
+  // generic result read back) is the ERASED instance — one function whose
+  // parameters and result are `unknown`, exactly the function JavaScript
+  // runs for every type argument. Its IR type is that erased func type, so
+  // the ordinary lanes below serve the call; only a boundary conversion
+  // that would COPY is refused instead of compiled.
+  refuseCopyingErasureInstanceCall(lowerer, expr, callee);
   // A CHECKED-DYNAMIC callee — `fn(a, b)` where fn is an implicit-any
   // JS binding (the mustCall body's `fn(...args)`), a dyn capture, or a
   // keyed read off a dyn value: the dynCall boundary. Arguments convert
@@ -2644,6 +2819,35 @@ function lowerNumberConstructorValue(
   );
 }
 
+/** Whether a stored union arm converts on its own. A whole dynamic
+ * argument takes dyn.bigintConstructor instead, so dyn is never a
+ * dispatched arm. */
+function bigintArmLowers(arm: IrType): boolean {
+  return (
+    arm.kind === "bigint" ||
+    arm.kind === "string" ||
+    arm.kind === "f64" ||
+    arm.kind === "bool" ||
+    arm.kind === "bytes" ||
+    arm.kind === "array" ||
+    isUnitType(arm)
+  );
+}
+
+/** The hint for a BigInt argument no conversion covers. Lowering dispatches
+ * on the STORED union, which a call-site guard need not narrow; when the
+ * checker sees a different type, name both and point at the arms that stand
+ * in the way, rather than pasting the whole tagged storage at the reader. */
+function bigintRefusalHint(lowerer: Lowerer, arg: IrExpr, narrowed: IrType | null): string {
+  const supported =
+    "string, number, boolean, bigint, byte views, and array arguments are supported";
+  if (!narrowed || arg.type.kind !== "union" || typeEquals(narrowed, arg.type)) return supported;
+  const arms = lowerer.unions.get(arg.type.unionId)?.arms ?? [];
+  const blocking = arms.filter((arm) => !bigintArmLowers(arm)).map((arm) => lowerer.fmt(arm));
+  if (blocking.length === 0) return supported;
+  return `the checker narrows the argument to ${lowerer.fmt(narrowed)}, but the stored value can also hold ${blocking.join(" | ")} at run time; ${supported}`;
+}
+
 /** A runtime-optional local retains its full tagged storage even after a
  * checker guard. Dispatch BigInt by the actual value, including nullish
  * TypeErrors, rather than interpreting that storage as the narrowed arm. */
@@ -2660,7 +2864,10 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
   // as that element, none as 0n, several throw the SyntaxError for the
   // joined text), a Buffer's is its UTF-8 decoding and a DataView's is
   // "[object DataView]". The runtime value tells them apart, as for String.
-  if (arg.type.kind === "bytes") {
+  // An array reaches the same ToPrimitive: its text is the elements joined
+  // with "," (`[5]` reads "5", `[]` reads ""), whichever element types it
+  // holds, and BigInt parses that.
+  if (arg.type.kind === "bytes" || arg.type.kind === "array") {
     const text: IrExpr = {
       kind: "toString",
       operand: { kind: "dynFrom", value: arg, type: DYN, loc },
@@ -2701,19 +2908,7 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
   if (arg.type.kind !== "union") return null;
   const unionId = arg.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
-  if (
-    !arms ||
-    !arms.every(
-      (arm) =>
-        arm.kind === "bigint" ||
-        arm.kind === "string" ||
-        arm.kind === "f64" ||
-        arm.kind === "bool" ||
-        arm.kind === "bytes" ||
-        isUnitType(arm),
-    )
-  )
-    return null;
+  if (!arms || !arms.every(bigintArmLowers)) return null;
   const key = `bigint.scalar:${unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
@@ -3729,7 +3924,11 @@ function lowerOptionalStringNumber(
 }
 
 /** `s[Symbol.iterator]()` on a string-typed receiver: the generator over
- * its code points. Null for other element calls. */
+ * its code points. On an `Iterable<T>` value (`Iterable<SegmentData>` in a
+ * union with another iterable, an option's segment function): GetIterator
+ * over the current arm, the same interned helper for-of and spread open —
+ * the answer is the canonical iterator, so `.next()` reads like any other.
+ * Null for other element calls. */
 function lowerStringIteratorCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -3742,7 +3941,10 @@ function lowerStringIteratorCall(
     lowerer.stdlibGlobalMember(key, "Symbol") !== "iterator"
   )
     return null;
-  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "string") return null;
+  const receiverT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  const iterable = receiverT ? iterableUnionOf(lowerer, receiverT) : null;
+  if (iterable) return iterableGenerator(lowerer, lowerer.lowerExpr(access.expression), iterable);
+  if (receiverT?.kind !== "string") return null;
   const type = lowerer.mapTypeOf(lowerer.typeOf(call));
   if (type?.kind !== "generator") return null;
   const receiver = lowerer.lowerExpr(access.expression);
@@ -5232,7 +5434,9 @@ function lowerArrayIsArrayCall(
   if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") return folded;
   // A computed argument (`Array.isArray(make())`, `Array.isArray([1, 2])`)
   // still answers from its static type, so evaluate the argument for its
-  // effects and discard the value.
+  // effects and discard the value. `undefined`/`null` lower to a bare unitLit,
+  // which carries no effect and is not a valid IR expression statement.
+  if (arg.kind === "unitLit") return folded;
   return {
     kind: "seqExpr",
     stmts: [{ kind: "exprStmt", expr: arg, loc }],
@@ -10395,6 +10599,70 @@ export function lowerRecordFieldCall(
       );
     }
   }
+  // A generic member's field holds its erased instance, and the call
+  // through the field crosses the same boundary as one through the
+  // instance value itself: the conversions that would copy are refused
+  // here too.
+  refuseCopyingErasureInstanceCall(lowerer, call, callee);
+  // A rest-marked field value hides one synthetic trailing dyn array in
+  // its lifted signature — the checked variadic ABI a JS rest closure
+  // has, and the one a generic member's erased instance keeps when its
+  // erased signature cannot pin the tail (`...args: EventArguments<…>`, a
+  // conditional tuple over the member's own type parameters). The call
+  // passes that slot natively, so a record or array the callee returns
+  // comes back as the object it returned, exactly as JavaScript hands it
+  // back; the boxed thunk would copy it and break identity and mutation
+  // sharing. A call that leaves an omitted parameter without an absent
+  // spelling still rides the thunk (JavaScript's own arity).
+  if (
+    init === null &&
+    receiver === undefined &&
+    callee.type.rest === true &&
+    callee.type.restAbi === undefined &&
+    !call.arguments.nodes.some(ts.isSpreadElement) &&
+    canBoxFuncIntoDyn(
+      callee.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    const nativeArgs = checkedRestCallArgs(lowerer, call, callee.type, loc);
+    if (nativeArgs) {
+      // The resolved result converts exactly like the fixed-arity lane
+      // below; a void result needs no conversion (the call's own value is
+      // discarded, as an `unknown` has no void spelling).
+      let nativeResult: IrExpr = {
+        kind: "callValue",
+        callee,
+        args: nativeArgs,
+        type: callee.type.ret,
+        loc,
+      };
+      const resolved = lowerer.irTypeOf(call);
+      if (
+        resolved.kind !== "void" &&
+        isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker)
+      )
+        nativeResult = lowerer.coerceInto(call, nativeResult, resolved);
+      return nativeResult;
+    }
+    const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
+    let boxedResult: IrExpr = {
+      kind: "dynCall",
+      callee: boxed,
+      calleeName: v8CalleeText(call.expression),
+      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      type: DYN,
+      loc,
+    };
+    const resolved = lowerer.irTypeOf(call);
+    if (
+      resolved.kind !== "void" &&
+      isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker)
+    )
+      boxedResult = lowerer.coerceInto(call, boxedResult, resolved);
+    return boxedResult;
+  }
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {
     kind: "callValue",
@@ -10679,6 +10947,20 @@ function lowerArrowFunctionApply(
   return { kind: "seqExpr", stmts, result, type: DYN, loc };
 }
 
+/** The Promise statics whose generic algorithms depend only on the `this`
+ * constructor: NewPromiseCapability(C), GetPromiseResolve(C) and the
+ * iterator protocol. scr_js_promise_generic.c runs them for a `this` that
+ * is not %Promise%. `withResolvers` and `try` take no iterable and stay
+ * refused (their capability shapes have no dynamic representation yet). */
+const PROMISE_GENERIC_STATICS: ReadonlySet<string> = new Set([
+  "all",
+  "allSettled",
+  "any",
+  "race",
+  "resolve",
+  "reject",
+]);
+
 function lowerObjLitGenericMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -10686,6 +10968,68 @@ function lowerObjLitGenericMethodCall(
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   const name = access.name.text;
+  // The Promise statics through Function.prototype.call with ANY `this`
+  // (`Promise.all.call(NotPromise, iterable)`): the specification's
+  // algorithms over NewPromiseCapability(C), where %Promise% answers the
+  // ordinary implementation. A `.js` source only — the arm replaces the
+  // checked-value fence below, so no typed program changes shape. The
+  // runtime unit scr_js_promise_generic.c runs the generic steps; the
+  // builtin function's own thunk (dyn_builtin_fn_call) does not grow.
+  if (name === "call" && !call.questionDotToken && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+    const stat = ts.isPropertyAccessExpression(access.expression)
+      ? lowerer.stdlibGlobalMember(access.expression, "Promise")
+      : null;
+    if (
+      stat !== null &&
+      PROMISE_GENERIC_STATICS.has(stat) &&
+      !call.arguments.nodes.some(ts.isSpreadElement)
+    ) {
+      const loc = locOf(call);
+      const thisArg = call.arguments.nodes[0];
+      const value = call.arguments.nodes[1];
+      // `Promise.all.call(Promise, …)` is the ordinary call: the runtime
+      // recognizes %Promise% by identity and forwards to the native
+      // implementation. The global read yields the interned constructor
+      // value (`dyn.globalConstructor`) — exactly the identity compared —
+      // rather than the reflected-value fence a stdlib global read as a
+      // `.call` receiver otherwise reports.
+      let thisIr = !thisArg
+        ? dynUndefinedExpr(loc)
+        : stdlibGlobalNameOf(lowerer, thisArg) === "Promise"
+          ? (builtinGlobalValue("Promise", loc, true) ?? lowerer.lowerExprExpecting(thisArg, DYN))
+          : lowerer.lowerExprExpecting(thisArg, DYN);
+      let valueIr = value ? lowerer.lowerExprExpecting(value, DYN) : dynUndefinedExpr(loc);
+      const callOf = (receiver: IrExpr, iterable: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "promise.genericStatic",
+        args: [{ kind: "strLit", value: stat, type: STRING, loc }, receiver, iterable],
+        type: DYN,
+        loc,
+      });
+      // The algorithm reads only the first two arguments, but Node evaluates
+      // every argument of the call before it runs: the receiver and the
+      // iterable first, then each surplus argument, in source order. Hold the
+      // two the unit reads in hidden locals so the surplus arguments'
+      // effects and exceptions happen after them, and drop their values.
+      const surplus = call.arguments.nodes.slice(2);
+      if (surplus.length === 0) return callOf(thisIr, valueIr);
+      const holds: IrStmt[] = [];
+      // Both are lowered into the checked-dynamic slot, so each is a dyn value
+      // a hidden local can hold.
+      const hold = (expr: IrExpr, name: string): IrExpr => {
+        const local = lowerer.declareHiddenLocal(name, expr.type);
+        holds.push({ kind: "varDecl", localId: local.id, init: expr, loc });
+        return varRef(local.id, expr.type, loc);
+      };
+      thisIr = hold(thisIr, "%promiseStaticThis");
+      valueIr = hold(valueIr, "%promiseStaticIterable");
+      for (const arg of surplus) {
+        const argIr = lowerer.lowerExprExpecting(arg, DYN);
+        holds.push({ kind: "exprStmt", expr: argIr, loc: locOf(arg) });
+      }
+      return { kind: "seqExpr", stmts: holds, result: callOf(thisIr, valueIr), type: DYN, loc };
+    }
+  }
   // URLSearchParams method values through Function.prototype.call/apply
   // with a receiver that is provably NOT a URLSearchParams (the suite's
   // `params.append.call(undefined)` probes): the WHATWG brand check
@@ -12402,6 +12746,44 @@ function lowerEmitterMethodValueCall(
     calleeName: ts.getTextOfNode(access),
     args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
+    loc,
+  };
+}
+
+/** atob(data) / btoa(data), the globals and node:buffer's members (the same
+ * functions in Node): str.atob / str.btoa over the argument as a dyn value,
+ * str.b64Missing for the zero-argument call. */
+export function lowerBase64Call(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  name: "atob" | "btoa",
+  loc: SrcLoc,
+): IrExpr {
+  if (expr.arguments.nodes.length === 0) {
+    return { kind: "libCall", fn: "str.b64Missing", args: [], type: STRING, loc };
+  }
+  if (expr.arguments.nodes.length > 1) {
+    lowerer.noLowering(`${name} with ${expr.arguments.nodes.length} arguments`, expr);
+  }
+  const argNode = expr.arguments.nodes[0]!;
+  const v = lowerer.lowerExpr(argNode);
+  let data: IrExpr;
+  if (v.type.kind === "dyn") {
+    data = v;
+  } else if (v.kind === "unitLit" || lowerer.dynConvertible(v.type)) {
+    data = { kind: "dynFrom", value: v, type: DYN, loc };
+  } else {
+    lowerer.noLowering(
+      `${name} with a '${lowerer.fmt(v.type)}' argument`,
+      argNode,
+      "string-convertible arguments lower (Node ToStrings the value — convert it explicitly)",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: name === "atob" ? "str.atob" : "str.btoa",
+    args: [data],
+    type: STRING,
     loc,
   };
 }

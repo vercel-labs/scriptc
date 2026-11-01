@@ -12,7 +12,7 @@ import { resolveBareModule } from "../frontend/resolve.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "../frontend/workspace-registry.js";
 import { moduleSourceCandidates } from "../frontend/module-source-candidates.js";
-import { scanModuleFacts, type CjsRead, type NodeIslandMarker } from "./detect.js";
+import { scanModuleFacts, type CjsRead, type GlobalRead, type NodeIslandMarker } from "./detect.js";
 import { stripProblem, type StripProblem } from "./type-strip.js";
 import { originOf, packageDirOf, type Origin } from "./origin.js";
 
@@ -25,7 +25,11 @@ export interface ScannedModule {
   markers: NodeIslandMarker[];
   /** Members the module reads through a builtin's CommonJS object (H3.4). */
   cjsReads: CjsRead[];
-  /** A user TypeScript module with a `builtin-patch` marker that Node
+  /** Names the module reads that it declares nowhere and no builtin
+   * provides: each resolves on the global object at run time. */
+  globalReads: GlobalRead[];
+  /** A user TypeScript module the build may need to run in a Node island (a
+   * `builtin-patch` marker, or a read of a patched builtin member) that Node
    * cannot run with type stripping only (H3.5): it stays native. */
   stripProblem: StripProblem | null;
   /** True for a module of a package the drop-and-reload loop removed. */
@@ -160,7 +164,7 @@ export function scanFiles(
     // (H3.2): its other markers are JavaScript semantics, and sloppy
     // parsing is never required of TypeScript.
     const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
-    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [] };
+    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [], globalReads: [] };
     if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
     let markers = userTs
       ? facts.markers.filter((marker) => marker.reason === "builtin-patch")
@@ -173,7 +177,14 @@ export function scanFiles(
       packageName: at === null ? null : at.name,
       markers,
       cjsReads: facts.cjsReads,
-      stripProblem: userTs && markers.length > 0 ? stripProblem(program, sf) : null,
+      globalReads: facts.globalReads,
+      // A TypeScript module can island for a builtin patch (H3.2) and for a
+      // read of a member another island's patch changes (H3.4): both need
+      // Node to run the file with type stripping only.
+      stripProblem:
+        userTs && (markers.length > 0 || facts.cjsReads.length > 0)
+          ? stripProblem(program, sf)
+          : null,
       dropped: opts.dropped,
     });
     if (!opts.edges) continue;

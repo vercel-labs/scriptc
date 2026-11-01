@@ -11,8 +11,12 @@
  *            as source-anchored diagnostics (SC0004), and the ECMAScript
  *            early errors the checker does not model: a duplicated or
  *            `var`-colliding lexical declaration in a block or switch
- *            statement list (SC0005/SC0006) and a declaration where the
- *            grammar admits only a Statement (SC0007)
+ *            statement list (SC0005/SC0006), a declaration where the
+ *            grammar admits only a Statement (SC0007), an ImportCall
+ *            argument list the grammar does not allow (SC0008), a private
+ *            name with no declaring enclosing class (SC0009), and an
+ *            assignment target that is not a variable or a property access
+ *            (SC0010)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected
@@ -396,23 +400,59 @@ export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc
   };
 }
 
-/** SC8020 — native code reads a builtin module member that an island
- * module patches: Node would show the read the patch, the native build
- * cannot. ES module bindings of builtins never see the patch (in Node
- * either), so the named import is the exact spelling. */
-export function nodeIslandPatchedReadDiag(
+/** SC8006 — the entry module reads a builtin module member that an island
+ * module patches. The entry always stays native, so it cannot join the
+ * island set: Node would show this read the patch, the native build cannot.
+ * ES module bindings of builtins never see the patch (in Node either), so
+ * the named import is the exact spelling. */
+export function nodeIslandEntryReadDiag(
+  file: string,
   member: string,
+  module: string,
   patchFile: string,
   loc: SrcLoc,
 ): ScrDiagnostic {
   const dot = member.indexOf(".");
-  const module = dot < 0 ? member : member.slice(0, dot);
   const property = dot < 0 ? member : member.slice(dot + 1);
   return {
-    code: "SC8020",
-    message: `'${member}' is patched by ${patchFile}, which runs in a Node island; Node would show this read through the CommonJS ${module} object the patch, the native build cannot. Use \`import { ${property} } from "node:${module}"\` (ES module bindings never see the patch, in Node either), or move this code into ${patchFile}.`,
+    code: "SC8006",
+    message: `the entry module reads '${member}' through the CommonJS ${module} object, which island module ${patchFile} patches; the entry stays native, so it cannot join the island set and would not see the patch`,
     loc,
-    hint: `node:${module} ES module bindings keep the original function, in Node too`,
+    hint: `use \`import { ${property} } from "node:${module}"\` (ES module bindings never see the patch, in Node either), or move this read into a module of its own, which then runs in a Node island (the entry module ${file} stays native)`,
+  };
+}
+
+/** SC8006 — a user TypeScript module reads a member that an island module
+ * patches, but uses syntax Node cannot run with type stripping only, so the
+ * module cannot join the island set. */
+export function nodeIslandReaderStripDiag(
+  file: string,
+  member: string,
+  patchFile: string,
+  construct: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `'${file}' reads '${member}', which island module ${patchFile} patches, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this read",
+  };
+}
+
+/** SC8020 — native code reads a name that only an island module's sloppy
+ * implicit-global write creates: the global lives on Node's global object,
+ * which the native build does not have. */
+export function nodeIslandImplicitGlobalReadDiag(
+  name: string,
+  writerFile: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8020",
+    message: `'${name}' is created as an implicit global by ${writerFile}, which runs in a Node island; the native build has no global object, so this read cannot see it. Declare '${name}' in this module, or move the code that reads it into ${writerFile}.`,
+    loc,
+    hint: "a declared binding holds the same value in both tiers",
   };
 }
 
@@ -432,10 +472,12 @@ export function sharedModuleDuplicatedDiag(
   };
 }
 
-/** SC8020 — the program replaces a process output stream's write method
- * while a Node island exists: the island's `process.stdout` is its own
- * object, so the replacement and the island's writes cannot see each other.
- * H2 shares the native stream object with the islands and removes this. */
+/** SC8006 — the build refuses the program: it replaces a process output
+ * stream's write method while a Node island exists, and the island's
+ * `process.stdout` is its own object, so the replacement and the island's
+ * writes cannot see each other. The planner stops on this, so it is an
+ * error, not the SC8020 warning. H2 shares the native stream object with
+ * the islands and removes this refusal. */
 export function stdioPatchAcrossIslandsDiag(
   stream: "stdout" | "stderr" | null,
   loc: SrcLoc,
@@ -443,10 +485,10 @@ export function stdioPatchAcrossIslandsDiag(
   const what =
     stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
   return {
-    code: "SC8020",
-    message: `${what} is replaced while a Node island exists: the island's process output stream would not see this patch, and island writes would bypass it`,
+    code: "SC8006",
+    message: `${what} is replaced while a Node island exists: the island's process output stream is its own object, so it would not see this patch and its writes would bypass it`,
     loc,
-    hint: "the island's process.stdout would not see this patch",
+    hint: "remove the replacement, or keep this write in a module that stays native (--node-islands=off for the package)",
   };
 }
 
@@ -792,7 +834,7 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   SC1091: {
     feature: "writing an undeclared name in a JavaScript source",
     milestone: "later",
-    hint: "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)",
+    hint: "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
   },
   SC1100: {
     feature: "operations on 'unknown' values",
@@ -1153,6 +1195,21 @@ export function noLoweringDiag(
   };
 }
 
+/** A read of a Node 24 global the native runtime does not implement
+ * (host-globals.ts). Node has the value, so the read has an exact answer
+ * native code cannot give; answering `undefined` would silently diverge.
+ * The reason id lets a Node island run the module instead. */
+export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${name}' is a Node global that native code does not provide`,
+    loc,
+    milestone: "later",
+    hint: "the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global",
+    reason: "host-global",
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's
@@ -1493,9 +1550,9 @@ export function libExportUnresolvedDiag(
     message: `library export '${exportName}' cannot be resolved: ${detail}`,
     loc,
     hint:
-      "the export map may only name function declarations exported by the profile's ONE entry module; " +
-      "a program with exports scattered across files writes a one-line facade module that re-exports them " +
-      "and points the profile's entry at the facade",
+      "the export map may only name function declarations exported directly by the profile's ONE entry module; " +
+      "when a function lives in another module, the entry module declares an exported wrapper function that " +
+      "forwards to it, such as export function handle(msg: string) { return realHandle(msg); }",
   };
 }
 

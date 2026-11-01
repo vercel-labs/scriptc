@@ -207,7 +207,7 @@ import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.
 import { keyedFieldRead } from "./keyed-field-targets.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
-import { lowerChildPropertyRead } from "../handle-properties.js";
+import { lowerChildPropertyRead, lowerHandlePropertyRead } from "../handle-properties.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -1666,6 +1666,13 @@ export function lowerPropertyAccessExpr(
   }
   const childProperty = lowerChildPropertyRead(lowerer, expr);
   if (childProperty) return childProperty;
+  // A member a typed handle's class does not declare (a JavaScript read
+  // such as `m.label`): a property table entry of the handle
+  // (scr_dyn_handle_props.c).
+  {
+    const handleProperty = lowerHandlePropertyRead(lowerer, expr, recvLowered);
+    if (handleProperty) return handleProperty;
+  }
   // A member a typed array's type does not declare (a JavaScript read, or
   // one under @ts-ignore), such as the feature probe `typeof bytes.toHex`:
   // when Node's prototype chain for the value lacks the name too, the read

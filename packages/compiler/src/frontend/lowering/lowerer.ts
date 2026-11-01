@@ -2806,6 +2806,9 @@ export class Lowerer {
    * program's JavaScript adds to them (handle-properties.ts). */
   writesOntoChildren = false;
   childAdditions: { written: ReadonlySet<string>; everyName: boolean; any: boolean } | null = null;
+  /** Whether the program's JavaScript adds own properties to handles, or
+   * asks their integrity (handle-properties.ts). */
+  handleAdditions: boolean | undefined = undefined;
   /** Bindings whose unchecked string arithmetic can produce either a number
    * (NaN for an absent read) or a string. Preserve that result union at bare
    * reads instead of applying the checker-bare string narrowing adapter. */
@@ -4862,6 +4865,7 @@ export class Lowerer {
       fixed("errorMethodDispatchRevision", () => this.errorMethodDispatchRevision),
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
+      fixed("handleAdditions", () => this.handleAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),

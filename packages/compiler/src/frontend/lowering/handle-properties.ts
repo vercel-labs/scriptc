@@ -1,21 +1,27 @@
-/* Own properties that JavaScript adds to a native ChildProcess: execa's
- * mixin assigns `spawned.kill = ...` and defines then/catch/finally with
- * Reflect.defineProperty, and its callers await the child as a thenable.
+/* Own properties that JavaScript adds to a native handle: a ChildProcess
+ * (execa's mixin assigns `spawned.kill = ...` and defines then/catch/finally
+ * with Reflect.defineProperty, and its callers await the child as a
+ * thenable), a Date, RegExp, Map, Set, WeakMap, WeakSet, ArrayBuffer,
+ * SharedArrayBuffer or FinalizationRegistry (`d = new Date(); d.tag = 1`).
  *
- * The runtime keeps such properties in a side table per child
+ * The runtime keeps such properties in a side table per handle
  * (scr_dyn_handle_props.c). Only programs that can add one link it: a
- * JavaScript write of a property onto a typed child, or JavaScript that
- * calls defineProperty in a program whose JavaScript loads child_process. Those programs install the table at
- * start, and their defineProperty, getOwnPropertyDescriptor, thenable
- * await and typed `child.on(event, listener)` calls take the entries that
- * consult it. Every other program lowers exactly as before. */
+ * JavaScript write of a property onto a typed handle, a type-visible
+ * definition or integrity call on one, or JavaScript that calls
+ * defineProperty in a program whose JavaScript loads child_process. Those
+ * programs install the table at start, and their defineProperty,
+ * getOwnPropertyDescriptor, thenable await and typed `child.on(event,
+ * listener)` calls take the entries that consult it. Every other program
+ * lowers exactly as before. */
 import * as ts from "../ts7/adapter.js";
+import { constituentTypes } from "../ts7/checker.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import type { IrExpr, IrFunction, IrLibFn, IrStmt, SrcLoc } from "../../ir/ir.js";
-import { DYN, STRING, VOID } from "../../ir/ir.js";
-import { everyStmt } from "../../ir/traverse.js";
+import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
+import { DYN, F64, STRING, VOID } from "../../ir/ir.js";
+import { everyStmt, transformStmtList } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
+import { GUARDED_CONSUMERS, consumerName } from "./primitive-wrappers.js";
 import {
   childStreamSetsEncoding,
   lowerWithCheckedParams,
@@ -189,6 +195,178 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
   return known;
 }
 
+/** Stdlib classes whose instances are runtime handles with an own-property
+ * table (scr_dyn_handle_props.c's HP_TAGS). */
+const HANDLE_CLASSES: ReadonlySet<string> = new Set([
+  "Date",
+  "RegExp",
+  "Map",
+  "Set",
+  "WeakMap",
+  "WeakSet",
+  "ArrayBuffer",
+  "SharedArrayBuffer",
+  "FinalizationRegistry",
+]);
+
+/** The handle class `node`'s checker type names (a union names one only
+ * when every constituent is that class), or null. */
+export function handleClassOf(lowerer: Lowerer, node: ts.Node): string | null {
+  const names = new Set<string>();
+  const visit = (t: ts.Type): boolean => {
+    if (t.flags & ts.TypeFlags.Union) return constituentTypes(t).every(visit);
+    const sym = t.getAliasSymbol() ?? t.getSymbol();
+    if (!sym || !HANDLE_CLASSES.has(ts.symbolName(sym))) return false;
+    if (!sym.declarations.some((d) => lowerer.isStdlibFile(ts.getSourceFileOfNode(d))))
+      return false;
+    names.add(ts.symbolName(sym));
+    return true;
+  };
+  return visit(lowerer.typeOf(node)) && names.size === 1 ? [...names][0]! : null;
+}
+
+/** Whether a write or delete target names a member the handle class
+ * declares (`re.lastIndex = pos` in fs.realpath's walker): a member key
+ * stays refused and never enters a property table, so writing it adds no
+ * own property. */
+function namesHandleMember(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): boolean {
+  if (ts.isPropertyAccessExpression(access))
+    return hasDeclaredProperty(lowerer, access.expression, access.name.text);
+  const key = access.argumentExpression;
+  if (!ts.isStringLiteralLike(key) && !ts.isNumericLiteral(key)) return false;
+  return hasDeclaredProperty(lowerer, access.expression, key.text);
+}
+
+/** Whether the program's JavaScript adds own properties to handles: a
+ * write, compound write or delete through a handle-class receiver, or a
+ * defineProperty/defineProperties/preventExtensions/seal/freeze call on
+ * one. A write to a member the class declares does not count. TypeScript
+ * files never count. */
+export function programAddsHandleProperties(lowerer: Lowerer): boolean {
+  if (lowerer.handleAdditions !== undefined) return lowerer.handleAdditions;
+  let found = false;
+  const files = lowerer.program
+    .getImplementationSourceFiles()
+    .filter((sf) => !sf.isDeclarationFile && isJsSourceFile(sf));
+  const integrity = new Set([
+    "defineProperty",
+    "defineProperties",
+    "preventExtensions",
+    "seal",
+    "freeze",
+  ]);
+  for (const sf of files) {
+    const visit = (node: ts.Node): void => {
+      if (found) return;
+      if (
+        ts.isBinaryExpression(node) &&
+        ts.isAssignmentOperator(node.operatorToken.kind) &&
+        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+        handleClassOf(lowerer, node.left.expression) &&
+        !namesHandleMember(lowerer, node.left)
+      )
+        found = true;
+      else if (
+        ts.isDeleteExpression(node) &&
+        (ts.isPropertyAccessExpression(node.expression) ||
+          ts.isElementAccessExpression(node.expression)) &&
+        handleClassOf(lowerer, node.expression.expression) &&
+        !namesHandleMember(lowerer, node.expression)
+      )
+        found = true;
+      else if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        (node.expression.expression.text === "Object" ||
+          node.expression.expression.text === "Reflect") &&
+        integrity.has(node.expression.name.text) &&
+        node.arguments.nodes[0] !== undefined &&
+        handleClassOf(lowerer, node.arguments.nodes[0])
+      )
+        found = true;
+      if (!found) ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    if (found) break;
+  }
+  lowerer.handleAdditions = found;
+  return found;
+}
+
+/** The typed handle kinds a JavaScript program can hold (Date, ArrayBuffer,
+ * WeakMap, WeakSet and FinalizationRegistry are already checked-dynamic
+ * values there). */
+const TYPED_HANDLE_KINDS: ReadonlySet<string> = new Set(["date", "regex", "map", "set"]);
+
+/** A typed handle receiver in a JavaScript file of a program that adds
+ * properties to handles, boxed into its checked-dynamic value; null
+ * otherwise. */
+export function boxedHandleReceiver(
+  lowerer: Lowerer,
+  node: ts.Node,
+  recv: IrExpr | null,
+): IrExpr | null {
+  if (!recv || !TYPED_HANDLE_KINDS.has(recv.type.kind)) return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(node)) || !programAddsHandleProperties(lowerer))
+    return null;
+  return lowerer.coerceToExpected(recv, DYN);
+}
+
+/** `m.label = 1` in a JavaScript file over a typed handle: the write lands
+ * in the handle's property table through its checked-dynamic box. */
+export function lowerHandlePropertyWrite(
+  lowerer: Lowerer,
+  recv: IrExpr,
+  key: IrExpr,
+  value: ts.Expression,
+  loc: SrcLoc,
+): IrStmt {
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: key.type.kind === "string" ? "dyn.keySet" : "dyn.keySetComputed",
+      args: [recv, key, lowerer.lowerExprExpecting(value, DYN)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+}
+
+/** `m.label` as a value over a typed handle in a JavaScript file of a
+ * program that adds properties to handles. */
+export function lowerHandlePropertyRead(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  recv: IrExpr,
+): IrExpr | null {
+  if (access.questionDotToken) return null;
+  const name = access.name.text;
+  if (hasDeclaredProperty(lowerer, access.expression, name)) return null;
+  const boxed = boxedHandleReceiver(lowerer, access, recv);
+  if (!boxed) return null;
+  const loc = locOf(access);
+  return {
+    kind: "dynKeyGet",
+    value: boxed,
+    key: { kind: "strLit", value: name, type: STRING, loc },
+    type: DYN,
+    loc,
+  };
+}
+
+/** Whether the checker declares `name` as a property of `receiver`'s type.
+ * A member name (H2's territory) keeps its own lowering or fence; only an
+ * undeclared name can be a property table entry. */
+function hasDeclaredProperty(lowerer: Lowerer, receiver: ts.Expression, name: string): boolean {
+  return !!lowerer.checker.getPropertyOfType(lowerer.typeOf(receiver), name);
+}
+
 /** The typed child a JavaScript member access reads from, when the member
  * is one the program may have added to it. `untyped` is the last resort
  * when no typed lowering claimed the access (a receiver the checker does
@@ -321,27 +499,136 @@ const RENAMES: ReadonlyMap<IrLibFn, IrLibFn> = new Map<IrLibFn, IrLibFn>([
   ["child.onDyn", "child.propsOnDyn"],
 ]);
 
-/** Switches a program that can add properties to children onto the
- * property-table entries (in place) and installs the table in %main. */
+/** Switches a program that can add properties to handles onto the
+ * property-table entries (in place), installs the table in %main, and
+ * guards the graph walkers of a program that adds properties to handles. */
 export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[]): void {
-  if (!lowerer.writesOntoChildren && !childAdditions(lowerer).any) return;
+  const child = lowerer.writesOntoChildren || childAdditions(lowerer).any;
+  const handle = programAddsHandleProperties(lowerer);
+  if (!child && !handle) return;
+  const renames = new Map<IrLibFn, IrLibFn>(child ? RENAMES : []);
+  // Object.defineProperties reads every descriptor before defining any, a
+  // rule only the table-aware entry point keeps.
+  if (handle) renames.set("dyn.defineProps", "handle.propsDefineProps");
   // A node the IR shares at several places is renamed once.
   const calls = new Set<IrExpr & { kind: "libCall" }>();
   const visitor = {
     expr: (e: IrExpr): boolean => {
-      if (e.kind === "libCall" && RENAMES.has(e.fn)) calls.add(e);
+      if (e.kind === "libCall" && renames.has(e.fn)) calls.add(e);
       return true;
     },
     stmt: (): boolean => true,
   };
   for (const fn of functions) for (const s of fn.body) everyStmt(s, visitor);
-  for (const call of calls) (call as { fn: IrLibFn }).fn = RENAMES.get(call.fn)!;
+  for (const call of calls) (call as { fn: IrLibFn }).fn = renames.get(call.fn)!;
   const main = functions.find((fn) => fn.name === ENTRY_NAME);
-  if (!main) return;
-  const loc = main.loc;
-  main.body.unshift({
-    kind: "exprStmt",
-    expr: { kind: "libCall", fn: "child.propsInstall", args: [], type: VOID, loc },
-    loc,
-  });
+  if (main) {
+    const loc = main.loc;
+    main.body.unshift({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "handle.propsInstall",
+        args: [{ kind: "numLit", value: child ? 1 : 0, type: F64, loc }],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  if (handle) guardHandleConsumers(lowerer, functions);
+}
+
+/** Whether a type holds a typed handle anywhere the dyn copy of the value
+ * walks: itself, an array element, a record field, a union arm, a promise
+ * payload or a collection element. */
+function containsHandleKind(lowerer: Lowerer, type: IrType): boolean {
+  const seen = new Set<string>();
+  const visit = (t: IrType): boolean => {
+    switch (t.kind) {
+      case "date":
+      case "regex":
+      case "map":
+      case "set":
+        return true;
+      case "array":
+        return visit(t.elem);
+      case "promise":
+        return visit(t.inner);
+      case "record":
+        return (lowerer.shapes.get(t.shapeId)?.fields ?? []).some((f) => visit(f.type));
+      case "union": {
+        if (seen.has(t.unionId)) return false;
+        seen.add(t.unionId);
+        return (lowerer.unions.get(t.unionId)?.arms ?? []).some(visit);
+      }
+      default:
+        return false;
+    }
+  };
+  return visit(type);
+}
+
+/** The graph walkers that cannot print or compare a handle's own properties
+ * refuse a value whose graph holds one: a dynamic argument passes through
+ * handle.propsGuard, and a typed argument keeps its typed lowering with a
+ * handle.propsCheck on a copy of the value first. */
+function guardHandleConsumers(lowerer: Lowerer, functions: IrFunction[]): void {
+  for (const fn of functions) {
+    const guarded = (arg: IrExpr, fnName: string): IrExpr => {
+      if (arg.type.kind === "dyn" || (arg.type.kind === "array" && arg.type.elem.kind === "dyn")) {
+        return {
+          kind: "libCall",
+          fn: arg.type.kind === "dyn" ? "handle.propsGuard" : "handle.propsGuardList",
+          args: [arg, { kind: "strLit", value: consumerName(fnName), type: STRING, loc: arg.loc }],
+          type: arg.type,
+          loc: arg.loc,
+        };
+      }
+      if (!containsHandleKind(lowerer, arg.type)) return arg;
+      const id = `%handleCheck.${fn.locals.length}`;
+      fn.locals.push({ id, name: id, type: arg.type, mutable: false });
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: id, init: arg, loc: arg.loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "handle.propsCheck",
+              args: [
+                {
+                  kind: "dynFrom",
+                  value: { kind: "varRef", localId: id, type: arg.type, loc: arg.loc },
+                  type: DYN,
+                  loc: arg.loc,
+                },
+                { kind: "strLit", value: consumerName(fnName), type: STRING, loc: arg.loc },
+              ],
+              type: VOID,
+              loc: arg.loc,
+            },
+            loc: arg.loc,
+          },
+        ],
+        result: { kind: "varRef", localId: id, type: arg.type, loc: arg.loc },
+        type: arg.type,
+        loc: arg.loc,
+      };
+    };
+    fn.body = transformStmtList(fn.body, {
+      expr: (expr) => {
+        if (expr.kind === "libCall" && GUARDED_CONSUMERS.has(expr.fn))
+          return { ...expr, args: expr.args.map((arg) => guarded(arg, expr.fn)) };
+        if (
+          expr.kind === "intrinsic" &&
+          (expr.name === "console.log" || expr.name === "console.error")
+        )
+          return { ...expr, args: expr.args.map((arg) => guarded(arg, expr.name)) };
+        return expr;
+      },
+      stmt: (stmt) => stmt,
+    });
+  }
 }

@@ -898,6 +898,25 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
       return nsUndefRead(lowerer, expr.text, expr, t);
     }
+    // `require` in an ES module: Node defines no `require` binding there, so
+    // the READ throws its catchable ReferenceError "require is not defined"
+    // (probed on Node 24.22.0 for `.ts`, `.mts` and `.mjs` ES modules; the
+    // CommonJS "in ES module scope" suffix belongs to Node's `createRequire`
+    // shim, not to the bare global). The read always throws, so the dummy is
+    // dynamic and never observed.
+    if (
+      expr.text === "require" &&
+      lowerer.isStdlibGlobal(expr, "require") &&
+      isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
+    ) {
+      return {
+        kind: "libCall",
+        fn: "global.undefRead",
+        args: [{ kind: "strLit", value: "require", type: STRING, loc }],
+        type: DYN,
+        loc,
+      };
+    }
     if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
       // Builtin constructors have real function values in both source

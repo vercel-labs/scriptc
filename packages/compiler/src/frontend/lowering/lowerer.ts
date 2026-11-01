@@ -46,6 +46,7 @@ import {
 } from "./unit-journal.js";
 import { UnitReuse, unitReuseVerify, verifyStoredUnit, type UnitStore } from "./unit-reuse.js";
 import {
+  moduleNamespaceBuiltinDynValue,
   moduleNamespaceDynValue,
   moduleNamespaceObject,
   moduleNamespaceValue,
@@ -3761,10 +3762,12 @@ export class Lowerer {
   readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
-   * collection; lowerDynamicImportCall reads it per site). */
+   * collection; lowerDynamicImportCall reads it per site). A program module
+   * carries the module when the specifier was a BOUNDED value: its site has
+   * no literal node, so the lowering needs the module this value named. */
   readonly dynImports = new Map<
     string,
-    | { kind: "program-module" }
+    | { kind: "program-module"; dep?: ts.SourceFile }
     | { kind: "static-builtin"; module: string }
     | { kind: "rejected"; crash: StartupCrash }
   >();
@@ -3991,6 +3994,10 @@ export class Lowerer {
    * values other than fresh literals (noteUntypedIntegrity). */
   untypedIntegrity = false;
   readonly liftedFns: IrFunction[] = [];
+  /** The export keys each builtin namespace box serves, by module id (the
+   * box's getter is lifted once per module; its key list comes from
+   * module-namespace-elements.ts). */
+  readonly builtinNamespaceBoxKeys = new Map<string, string[]>();
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
    * own generators there on the typed path). Local ids repeat across
@@ -5583,9 +5590,11 @@ export class Lowerer {
    * = ns`, `take(ns)`): the runtime's namespace object — one per module,
    * Node's sorted export keys, live reads through a compiled getter, and
    * Node's read-only write errors — built by `moduleNamespaceDynValue`.
-   * `node:` builtins have no compiled source and no complete export table,
-   * so they keep their fence. */
+   * `node:` builtins have no compiled source, so their box comes from the
+   * lowering tables instead (moduleNamespaceBuiltinDynValue). */
   moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
+    if (ns.type.moduleId.startsWith("builtin:"))
+      return moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);
     if (!ns.type.moduleId.startsWith("file:")) return null;
     return moduleNamespaceDynValue(this, ns);
   }
@@ -5601,7 +5610,9 @@ export class Lowerer {
     value: IrExpr & { type: IrType & { kind: "promise" } },
   ): IrExpr | null {
     const inner = value.type.inner;
-    if (inner.kind !== "moduleNs" || !inner.moduleId.startsWith("file:")) return null;
+    if (inner.kind !== "moduleNs") return null;
+    const builtin = inner.moduleId.startsWith("builtin:");
+    if (!builtin && !inner.moduleId.startsWith("file:")) return null;
     const loc = value.loc;
     const name = `%module.promise:${inner.moduleId}`;
     const promiseT: IrType & { kind: "promise" } = { kind: "promise", inner };
@@ -5619,7 +5630,9 @@ export class Lowerer {
           type: inner,
           loc,
         };
-        namespace = moduleNamespaceDynValue(this, awaited);
+        namespace = builtin
+          ? moduleNamespaceBuiltinDynValue(this, inner.moduleId, loc)
+          : moduleNamespaceDynValue(this, awaited);
         if (namespace) {
           const fn: IrFunction = {
             name,
@@ -17696,6 +17709,43 @@ export class Lowerer {
       return fsRealpathValue(this, bi.member === "realpathSync.native", loc);
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+  }
+
+  /** One builtin module member as a value BY NAME (no expression node): the
+   * value half of the named-import/property surface, for the checked-dynamic
+   * namespace box a bounded dynamic import of a builtin produces
+   * (module-namespace-elements.ts). Null when the member has no value
+   * lowering — the box then leaves it out of its key list, so a read fails
+   * the checked cast instead of answering something Node would not. The
+   * node-based `lowerNamespaceBuiltinProperty` keeps its own order (it also
+   * answers JavaScript-only class/global spellings a box never needs). */
+  lowerBuiltinMemberDynValue(module: string, member: string, loc: SrcLoc): IrExpr | null {
+    const bi = { module, member };
+    const c = builtinModuleConstOf(this, module, member);
+    if (c !== undefined) return builtinConstLit(c, loc);
+    if (module === "module" && member === "builtinModules") return builtinModulesArrayLit(loc);
+    if (module === "http" && member === "METHODS")
+      return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
+    if ((module === "http" || module === "https") && member === "globalAgent")
+      return {
+        kind: "libCall",
+        fn: "http.globalAgent",
+        args: [{ kind: "boolLit", value: module === "https", type: BOOL, loc }],
+        type: DYN,
+        loc,
+      };
+    if (module === "http" && member === "STATUS_CODES")
+      return { kind: "libCall", fn: "http.statusCodes", args: [], type: DYN, loc };
+    if (module === "os" && member === "constants")
+      return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
+    const roots = lowerTlsRootCertificates(this, bi, loc);
+    if (roots !== null) return roots;
+    const callable = this.lowerBuiltinCallableValue(bi, loc);
+    if (callable !== null) return callable;
+    if (module === "crypto" && member === "webcrypto")
+      return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+    if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    return null;
   }
 
   lowerNativeCallableValue(fn: BuiltinModuleFn, display: string, loc: SrcLoc): IrExpr | null {

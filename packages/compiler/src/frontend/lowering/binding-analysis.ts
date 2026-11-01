@@ -4,6 +4,15 @@ import { isJsSourceFile } from "../program.js";
 import { dynFallbackType } from "./lowerer.js";
 import { isGenericCallableMemberType } from "../type-mapper.js";
 
+/** The part of a lowering context this analysis reads: the shared
+ * reassignment cache and value-symbol resolution. `Lowerer` satisfies it,
+ * and so does the frontend's specifier bounder (specifier-bounds.ts), which
+ * also runs on the graph walks that precede lowering. */
+export interface BindingScope {
+  readonly neverReassignedCache: Map<ts.Symbol, boolean>;
+  resolveValueSymbol(ident: ts.Identifier): ts.Symbol | null | undefined;
+}
+
 /** True when nothing in `sym`'s DECLARING FILE ever writes it after the
  * initializer: assignments (plain and compound, destructuring targets
  * included), ++/--, for-of/for-in expression targets, a `var` in a
@@ -12,16 +21,16 @@ import { isGenericCallableMemberType } from "../type-mapper.js";
  * bindings are read-only — no other file can write one. Cached per
  * symbol (the scan walks the whole file once). */
 export function bindingNeverReassigned(
-  lowerer: Lowerer,
+  scope: BindingScope,
   sym: ts.Symbol,
   decl: ts.Node,
   resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined = (ident) =>
-    lowerer.resolveValueSymbol(ident),
+    scope.resolveValueSymbol(ident),
 ): boolean {
-  const cached = lowerer.neverReassignedCache.get(sym);
+  const cached = scope.neverReassignedCache.get(sym);
   if (cached !== undefined) return cached;
   const written = fileWritesBinding(sym, ts.getSourceFileOfNode(decl), resolve);
-  lowerer.neverReassignedCache.set(sym, !written);
+  scope.neverReassignedCache.set(sym, !written);
   return !written;
 }
 

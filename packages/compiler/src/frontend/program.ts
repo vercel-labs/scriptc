@@ -54,18 +54,22 @@ import {
 } from "../diagnostics/diagnostic.js";
 import {
   isNodeModulesPath,
+  isPathSpecifier,
   nearestInvalidPackageJsonPath,
   nearestPackageType,
   nearestPkgJsonPath,
   packageImportTarget,
   projectDtsRuntimeSibling,
   resolveBareModule,
+  resolveNodeRuntimeModule,
   resolveProjectModule,
   resolveTypeDirective,
   setProjectPathMappings,
   setProjectRealm,
 } from "./resolve.js";
 import { probeNodeImportRefusal, probeNodeRequireRefusal } from "./npm.js";
+import { boundSpecifier, specifierBoundContextOf } from "./specifier-bounds.js";
+import type { SpecifierBoundContext } from "./specifier-bounds.js";
 import {
   isNpmStaticPackage,
   npmStaticActive,
@@ -720,6 +724,39 @@ function createRequireProgramRoots7(program: ts.Program): string[] {
   return [...roots].sort();
 }
 
+/** Program roots named only by a BOUNDED dynamic import() (SPEC §5.1 of
+ * results/designs/island-dynamic-subgraphs): tsgo includes a literal
+ * import()'s target in the program, but a computed specifier is opaque to it,
+ * so the bound's path values must join the program as roots themselves. A
+ * value resolves to the exact file it names, as Node resolves it at run time:
+ * a `.js` spelling never answers with the `.ts` source beside it. */
+function boundedDynamicImportRoots7(program: ts.Program): string[] {
+  const known = new Set(program.getSourceFileNames().map((name) => tsgoPath(resolve(name))));
+  const roots = new Set<string>();
+  let ctx: SpecifierBoundContext | null = null;
+  for (const sf of program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile || sf.fileName.endsWith(".json")) continue;
+    for (const call of moduleSourceCandidates(program, sf).calls) {
+      if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) continue;
+      const arg = call.arguments.nodes[0];
+      if (arg === undefined || ts.isStringLiteralLike(arg)) continue;
+      ctx ??= specifierBoundContextOf(program);
+      const bound = boundSpecifier(ctx, arg as ts.Expression);
+      if (bound.kind !== "set") continue;
+      for (const value of bound.values) {
+        if (!isPathSpecifier(value)) continue;
+        const path = resolveNodeRuntimeModule(sf.fileName, value);
+        // A declaration file or a non-module artifact (JSON, native addon)
+        // keeps its run-time answer: the load never reaches a compiled module.
+        if (path === null || known.has(path) || !/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(path))
+          continue;
+        roots.add(path);
+      }
+    }
+  }
+  return [...roots].sort();
+}
+
 /** Whether the tsc gate can keep a file's diagnostics when the program
  * loads: it drops all of an opted-in package's files and of the package
  * shims (keptErrors in preflight also drops unselected package JavaScript,
@@ -974,6 +1011,7 @@ function loadProgram7(
         ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
         ...entryPackageProgramRoots7(program, entryPath, rootNpmStaticEdges),
         ...createRequireProgramRoots7(program),
+        ...boundedDynamicImportRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
         ...workerTargetPaths(program, program.getImplementationSourceFiles()),
       ];
@@ -7673,6 +7711,9 @@ export function npmStaticLoadableFiles(
   };
   for (const sf of moduleOrder) add(sf);
   let computed = false;
+  // The bounder a computed import() site needs (SPEC §3.1); built on the
+  // first such site only.
+  let boundContext: SpecifierBoundContext | null = null;
   while (work.length > 0 && !computed) {
     const sf = work.pop()!;
     const packageJs =
@@ -7690,7 +7731,15 @@ export function npmStaticLoadableFiles(
         const arg = n.arguments.nodes[0];
         if (arg !== undefined && ts.isStringLiteralLike(arg))
           follow(arg.text, isImport ? "import" : "require");
-        else if (packageJs || isImport) computed = true;
+        else if (isImport) {
+          // A bounded site is its literal values, one edge each; a site
+          // whose values cannot be bounded has no build-time closure
+          // (SPEC §7 B2).
+          boundContext ??= specifierBoundContextOf(program);
+          const bound = arg === undefined ? null : boundSpecifier(boundContext, arg);
+          if (bound === null || bound.kind !== "set") computed = true;
+          else for (const value of bound.values) follow(value, "import");
+        } else if (packageJs) computed = true;
       } else if (
         packageJs &&
         (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&

@@ -48,12 +48,14 @@ function identities(array, string, bytes) {
   }
 }
 identities([], "", new Uint8Array());
-const savedIterator = Array.prototype[Symbol.iterator];
-Array.prototype[Symbol.iterator] = function () {
+// Replacing a member of a builtin prototype is refused, so read the iterator
+// through the prototype chain instead: an own member on a plain object that
+// inherits Array.prototype is still consulted dynamically by Array.from.
+const detached = Object.create(Array.prototype);
+detached[Symbol.iterator] = function () {
   return { next() { return { done: true }; } };
 };
-console.log(JSON.stringify(copy([1, 2])));
-Array.prototype[Symbol.iterator] = savedIterator;
+console.log(JSON.stringify(copy(detached)));
 
 let nextReads = 0;
 let doneReads = 0;

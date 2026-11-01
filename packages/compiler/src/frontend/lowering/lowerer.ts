@@ -11818,7 +11818,14 @@ export class Lowerer {
         indexSignatureTypeDiag(this.checker.typeToString(type), locOf(node)),
       );
     }
-    // Attribute an unsupported package type to its package.
+    // Attribute an unsupported package type to its package. A PACKAGE DATA
+    // SHAPE (an interface or type alias declared only by a package the
+    // module graph never loads) never reaches this: it describes data the
+    // program itself builds, so mapTypeEntry already widened it to the
+    // checked-dynamic value exactly as it does for the same shape declared
+    // locally. What arrives here is a package's VALUE shape — a class or a
+    // merged value declaration, which only that package's implementation
+    // could produce.
     {
       const pkg = this.npmPackageOf(widened);
       if (pkg) {

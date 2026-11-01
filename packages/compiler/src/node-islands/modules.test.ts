@@ -154,6 +154,40 @@ describe("the collected module tree", () => {
     );
   });
 
+  // Node's type stripping erases a `import type`/`export type` clause whole, so
+  // the module it names never loads, while `import { type I } from "./i.ts"`
+  // keeps its statement and does load the module for its side effects.
+  test("a type-only clause loads nothing, and a default binding named type does", () => {
+    const scan = scanModuleSpecifiers(`
+      import type { A } from "./a.ts";
+      import type B from "./b.ts";
+      import type * as C from "./c.ts";
+      export type { D } from "./d.ts";
+      export type * from "./e.ts";
+      import type F = require("./f.ts");
+      import type from "./g.ts";
+      import type, { H } from "./h.ts";
+      import { type I } from "./i.ts";
+    `);
+    expect(scan.specifiers).toEqual(["./g.ts", "./h.ts", "./i.ts"]);
+    expect(scan.computed).toEqual([]);
+  });
+
+  test("a type-only import of a module with a computed load is not refused", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.ts": 'import type { Env } from "./env.ts";\nconst x: Env = {};\nexport { x };',
+      "src/env.ts":
+        "type DynamicImport = (specifier: string) => Promise<unknown>;\nconst load: DynamicImport = (specifier) => import(specifier);\nexport type Env = typeof load;\n",
+      "src/reexport.ts": 'export type { Env } from "./env.ts";',
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.ts")).toBeNull();
+    expect(collector.add(join(root, "src/main.ts"), "./reexport.ts")).toBeNull();
+    // The program's module ships; the module its type-only clause names does not.
+    expect(collector.tree()!.files.map((f) => f.path)).toEqual(["loader.ts", "reexport.ts"]);
+  });
+
   test("a package ships whole, with its dependencies, but not its nested node_modules", () => {
     const root = project({
       "main.ts": "",

@@ -766,6 +766,17 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
     (is(k + 2, "punct", ")") || is(k + 2, "punct", ","))
       ? at(k + 1)!.value
       : null;
+  /** The last token of a type-only clause that starts at `k` (an `import`
+   * or `export` followed by `type`): the `from "..."` specifier it names,
+   * or the `;` that ends an import-equals. Type stripping erases such a
+   * clause, so the module loads nothing when it runs. */
+  const typeOnlyEnd = (k: number): number => {
+    for (let j = k + 1; j < tokens.length && j < k + 400; j++) {
+      if (is(j, "punct", ";")) return j;
+      if (is(j, "name", "from") && is(j + 1, "string")) return j + 1;
+    }
+    return k + 1;
+  };
   // `const r = createRequire(...)` declares a require function of the
   // module: calls of `r` load modules as require() calls do.
   const aliases = new Set<string>();
@@ -831,6 +842,14 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
         specifiers.push(at(k + 1)!.value);
         continue;
       }
+      // `import type ... from "..."` is a type-only clause: Node's type
+      // stripping erases it, so the module loads nothing when it runs. A
+      // default binding that is itself named `type` (`import type from
+      // "./mod"`, `import type, { a } from "./mod"`) is an ordinary import.
+      if (is(k + 1, "name", "type") && !is(k + 2, "name", "from") && !is(k + 2, "punct", ",")) {
+        k = typeOnlyEnd(k);
+        continue;
+      }
       for (let j = k + 1; j < tokens.length && j < k + 400; j++) {
         if (is(j, "punct", ";")) break;
         if (is(j, "name", "from") && is(j + 1, "string")) {
@@ -841,8 +860,12 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
       continue;
     }
     if (t.value === "export" && !member) {
+      // `export type ...` is erased by type stripping too.
+      if (is(k + 1, "name", "type")) {
+        k = typeOnlyEnd(k);
+        continue;
+      }
       let j = k + 1;
-      if (is(j, "name", "type")) j++;
       if (is(j, "punct", "*")) {
         for (; j < tokens.length && j < k + 400; j++) {
           if (is(j, "punct", ";")) break;

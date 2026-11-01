@@ -314,6 +314,35 @@ function lowerLooseNullCompare(
   return { kind: "boolLit", value: negated, type: BOOL, loc };
 }
 
+/** A plain value read whose storage can carry undefined while the checker
+ * types the read at its declared type: an element access on an array or a
+ * keyed record, a property name only the receiver's index signature answers,
+ * a binding or a call the runtime-optional analysis widened. Checker and
+ * analysis state only: the read is lowered once, where it is used. */
+function mayLowerAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertion(expr))
+    expr = expr.expression;
+  if (ts.isIdentifier(expr)) return runtimeOptionalStorageOperand(lowerer, expr) !== null;
+  if (ts.isCallExpression(expr)) return lowerer.isRuntimeOptionalOrigin(expr);
+  if (ts.isElementAccessExpression(expr)) {
+    let receiver: ts.Expression = expr.expression;
+    while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+    const type = lowerer.checker.getTypeAtLocation(receiver);
+    return (
+      lowerer.checker.isArrayType(type) ||
+      lowerer.checker.isTupleType(type) ||
+      lowerer.checker.getIndexInfosOfType(type).length > 0
+    );
+  }
+  if (ts.isPropertyAccessExpression(expr)) {
+    const type = lowerer.checker.getTypeAtLocation(expr.expression);
+    if (lowerer.checker.getPropertyOfType(type, expr.name.text)) return false;
+    return lowerer.checker.getIndexInfosOfType(type).length > 0;
+  }
+  return false;
+}
+
 /** A plain value read that may be runtime-optional: an unchecked element
  * read, or a binding, member or call that carries one. Lowering these
  * without a destination type is the same as lowering them into one. */
@@ -413,6 +442,7 @@ export function lowerNullishPair(
   }
 
   if (left.type.kind !== "union") return left;
+  const leftUnion = left.type;
   const def = lowerer.unions.get(left.type.unionId);
   if (!def) lowerer.badType(expr.left, lowerer.typeOf(expr.left));
   if (!def.arms.some(isUnitType)) return left;
@@ -505,6 +535,50 @@ export function lowerNullishPair(
       type: DYN,
       loc,
     };
+  }
+  const admitsUndefined = (t: IrType): boolean =>
+    t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
+  // A runtime-optional read can be the DEFAULT too (`empty.a ?? empty.b`,
+  // `names[0] ?? names[1]`): the checker types a keyed read at the record's
+  // value type, but a missing key or index is undefined at run time. The
+  // default's own lowering already carries that absent arm, so the result
+  // keeps it — the left's storage when both sides share it, the checker's
+  // type plus an undefined arm otherwise — instead of coercing the absence
+  // back into the checker's narrower union.
+  if (
+    isPlainValueRead(expr.right) &&
+    !isMemberReceiver(expr) &&
+    !admitsUndefined(type) &&
+    mayLowerAbsent(lowerer, expr.right)
+  ) {
+    const raw = lowerer.lowerExpr(expr.right);
+    if (admitsUndefined(raw.type)) {
+      if (typeEquals(raw.type, leftUnion))
+        return { kind: "nullish", left, right: raw, type: leftUnion, loc };
+      const widened = lowerer.runtimeOptionalType(type);
+      if (widened.kind === "union" && admitsUndefined(widened)) {
+        if (typeEquals(widened, leftUnion)) {
+          const right = lowerer.coerceInto(expr.right, raw, widened);
+          return { kind: "nullish", left, right, type: widened, loc };
+        }
+        const retag =
+          lowerer.unionRetagHelper(leftUnion.unionId, widened.unionId, loc) ??
+          lowerer.narrowedRetagHelper(expr.left, leftUnion.unionId, widened.unionId, loc);
+        if (retag !== null) {
+          const right = lowerer.coerceInto(expr.right, raw, widened);
+          return nullishBranches(
+            lowerer,
+            left,
+            leftUnion,
+            def.arms,
+            widened,
+            loc,
+            () => right,
+            (stable) => ({ kind: "call", callee: retag, args: [stable], type: widened, loc }),
+          );
+        }
+      }
+    }
   }
   // A runtime-optional default (`name ?? names[0]`): the checker types an
   // unchecked element read as the bare element type, but an out-of-range

@@ -141,6 +141,8 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   if (e.kind === "recordGet" || e.kind === "fieldGet") {
     const receiver = emitter.emitReadReceiver(e.obj);
     if (e.kind === "recordGet") {
+      // A field a partial view may lack has no slot to lend.
+      if (emitter.partialFieldMissing(e.shapeId, e.field)) return emitter.emitExpr(e);
       // An inline union field answers a private stack box.
       const { ptr, type, inline } = emitter.recordFieldPtr(receiver.name, e.shapeId, e.field);
       return { name: emitter.loadRecordField(ptr, type, inline), type: e.type };

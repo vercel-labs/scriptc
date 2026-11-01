@@ -186,6 +186,7 @@ import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { executableLinkFeatures } from "./backend/executable-features.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
+import { debugJsIcWays } from "./backend/llvm/js-ic.js";
 import { representationReportPath } from "./backend/llvm/repr-report.js";
 import {
   type FrontendInputSnapshot,
@@ -1999,6 +2000,8 @@ async function compileTracked(
   if (outputKind === "exe") {
     const helperObjectRoute =
       opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, "llvm");
+    // An attribution build emits different code, so it is its own cache entry.
+    const jsIcWays = debugJsIcWays();
     const routeOptions: Omit<
       EarlyExecutableCacheOptions,
       "implementation" | "implementationDependencies" | "nativeEnvironment"
@@ -2035,6 +2038,7 @@ async function compileTracked(
       ...(jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0"
         ? { jsInference: true as const }
         : {}),
+      ...(jsIcWays === null ? {} : { jsIcWays }),
       ffiProfile:
         opts.ffiProfilePath === undefined || ffiProfileBytes === null
           ? null

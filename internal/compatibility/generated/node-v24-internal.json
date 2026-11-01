@@ -101956,6 +101956,7 @@
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/inspect-hidden-properties.cjs",
           "tests/corpus/inspect-max-array-length.ts",
+          "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
@@ -103367,6 +103368,7 @@
           "tests/corpus/7526-inspect-options-runtime.ts",
           "tests/corpus/inspect-max-array-length.ts",
           "tests/corpus/inspect-show-hidden.ts",
+          "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-hidden-properties.cjs"
         ]
       },
@@ -103394,7 +103396,8 @@
         "evidence": "compiler-feature:util.util.inspect",
         "tests": [
           "tests/corpus/7526-inspect-options-runtime.ts",
-          "tests/corpus/inspect-show-hidden.ts"
+          "tests/corpus/inspect-show-hidden.ts",
+          "tests/corpus/inspect-show-hidden-prototypes.ts"
         ]
       },
       "anchorSource": "exact"

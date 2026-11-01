@@ -2072,6 +2072,206 @@ static ScrStr *insp_plain_object_prefix(const ScrDyn *d, const ScrStr *tag) {
   return ib_take(&out);
 }
 
+/* The object Node's constructor walk visits after `node`: its stored
+ * prototype, or the checked view of a typed reference. A record, array or
+ * class instance used as a prototype stays a live capsule on the chain,
+ * and its view carries the properties that are read. */
+static const ScrDyn *insp_proto_link(const ScrDyn *node) {
+  const ScrDyn *next = node->prototype;
+  if (next && next->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(next);
+    bool cached = view == next->v.typed_ref.materialized;
+    scr_dyn_release(view);
+    return cached ? view : NULL;
+  }
+  return next;
+}
+
+/* Whether Node's constructor walk ends at an explicit null prototype
+ * before naming any constructor: then it takes the `Object <...>` form
+ * and lists no inherited properties, however many keys the null
+ * prototype or its descendants carry. */
+static bool insp_proto_chain_ends_null(const ScrDyn *layer) {
+  for (const ScrDyn *cur = layer; cur != NULL; cur = insp_proto_link(cur)) {
+    if (cur->kind != SCR_DYN_OBJ && cur->kind != SCR_DYN_ARR) return false;
+    if (cur->null_proto) return cur->prototype == NULL;
+    if (cur->prototype == NULL) return false;
+  }
+  return false;
+}
+
+/* Whether a showHidden render lists the own properties of prototype
+ * `layer`. Node's walk stops at a builtin prototype, whose own keys are
+ * the builtin's, and an error view's keys are the encoding's. */
+static bool insp_proto_layer_lists(const ScrDyn *layer) {
+  if (layer->kind != SCR_DYN_OBJ && layer->kind != SCR_DYN_ARR) return false;
+  if (scr_dyn_is_object_prototype(layer) || scr_dyn_is_array_prototype(layer)) return false;
+  if (layer->kind == SCR_DYN_OBJ) {
+    if (scr_dyn_is_error_prototype(layer)) return false;
+    if (scr_dyn_obj_get(layer, "%error", 6) != NULL) return false;
+  }
+  return true;
+}
+
+/* Appends `key` to the list of keys Node's walk has already seen on a
+ * shallower layer (strings and symbols alike). */
+static void insp_proto_seen_push(ScrDyn ***seen, size_t *len, size_t *cap, ScrDyn *key) {
+  if (*len == *cap) {
+    *cap = *cap ? *cap * 2 : 8;
+    ScrDyn **grown = realloc(*seen, *cap * sizeof **seen);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    *seen = grown;
+  }
+  (*seen)[(*len)++] = scr_dyn_retain(key);
+}
+
+static bool insp_proto_seen_has(ScrDyn *const *seen, size_t len, const ScrDyn *key) {
+  for (size_t i = 0; i < len; i++) if (scr_dyn_same_value(seen[i], key)) return true;
+  return false;
+}
+
+/* A descriptor field Node reads as "not undefined": the `value`, `get` or
+ * `set` field, or NULL when the field is absent or spells the undefined
+ * value. */
+static const ScrDyn *insp_desc_field(const ScrDyn *desc, const char *key, size_t len) {
+  const ScrDyn *field = scr_dyn_obj_get(desc, key, len);
+  return field && field->kind != SCR_DYN_UNDEF ? field : NULL;
+}
+
+static bool insp_desc_enumerable(const ScrDyn *desc) {
+  const ScrDyn *flag = scr_dyn_obj_get(desc, "enumerable", 10);
+  return flag && scr_dyn_truthy(flag);
+}
+
+/* The `key: value` entry of the prototype property `name` (an own string
+ * key), or of the own symbol key `symbol` when `name` is NULL, rendered
+ * from its `desc` as Node's formatProperty does. +1. */
+static ScrStr *insp_proto_entry(const ScrDyn *name, const ScrDyn *symbol,
+                                const ScrDyn *desc, double recurse, double depth) {
+  const ScrDyn *data = insp_desc_field(desc, "value", 5);
+  const ScrDyn *get = insp_desc_field(desc, "get", 3);
+  const ScrDyn *set = insp_desc_field(desc, "set", 3);
+  bool enumerable = insp_desc_enumerable(desc);
+  ScrStr *val;
+  if (data) {
+    /* Node renders an inherited value at the depth the object itself
+     * renders at: the walk did not advance for it. A value that is
+     * already being rendered is Node's [Circular *N]. */
+    double circular = scr_insp_circ_check(data);
+    val = circular > 0 ? scr_insp_circular(circular)
+                       : scr_insp_dyn((ScrDyn *)data, recurse, depth);
+  } else {
+    const char *text = get && set ? "[Getter/Setter]" : get ? "[Getter]"
+                     : set ? "[Setter]" : "undefined";
+    val = scr_str_new(text, strlen(text));
+  }
+  InspBuf eb = {0};
+  if (!enumerable) ib_char(&eb, '[');
+  if (symbol) {
+    ScrStr *key = scr_insp_dyn((ScrDyn *)symbol, recurse + 1, depth);
+    ib_bytes(&eb, key->data, key->len);
+    scr_str_release(key);
+  } else {
+    insp_key_into(&eb, name->v.str->data, name->v.str->len);
+  }
+  if (!enumerable) ib_char(&eb, ']');
+  ib_cstr(&eb, ": ");
+  ib_bytes(&eb, val->data, val->len);
+  scr_str_release(val);
+  return ib_take(&eb);
+}
+
+/* Node's addPrototypeProperties: the inherited properties a showHidden
+ * render lists after the object's own string and symbol keys — up to three
+ * prototype layers, each one's own keys that nothing above it carries.
+ * Returns the number of entries; with `render`, also appends them to the
+ * open frame. */
+static size_t insp_proto_props(ScrDyn *d, double recurse, double depth, bool render) {
+  if (!g_show_hidden || d->prototype == NULL || recurse > depth) return 0;
+  const ScrDyn *layer = insp_proto_link(d);
+  if (insp_proto_chain_ends_null(layer)) return 0;
+  size_t count = 0;
+  /* Node renders a layer's properties with the object itself on its seen
+   * stack, so a property that points back to it is [Circular *N]. */
+  const void *outer_seen = NULL;
+  if (render) {
+    if (g_nframes > 0) outer_seen = insp_top()->seen;
+    scr_insp_seen_push(d);
+  }
+  ScrDyn **seen = NULL;
+  size_t nseen = 0, seen_cap = 0;
+  for (size_t level = 0; layer != NULL && level < 3; level++, layer = insp_proto_link(layer)) {
+    if (!insp_proto_layer_lists(layer)) break;
+    ScrDyn *names = scr_dyn_get_own_property_names(layer);
+    if (!names) break;
+    ScrDyn *symbols = scr_dyn_get_own_property_symbols(layer);
+    if (!symbols) {
+      scr_dyn_release(names);
+      break;
+    }
+    for (size_t i = 0; i < names->v.arr.len; i++) {
+      ScrDyn *name = names->v.arr.items[i];
+      if (name->kind != SCR_DYN_STR) continue;
+      const ScrStr *key = name->v.str;
+      bool constructor = key->len == 11 && memcmp(key->data, "constructor", 11) == 0;
+      /* The encoding's `%` markers are not program keys. */
+      bool shown = !constructor && !(key->len && key->data[0] == '%') &&
+                   !insp_proto_seen_has(seen, nseen, name) && !scr_dyn_has_own(d, key);
+      ScrDyn *owned = shown ? scr_dyn_own_descriptor(layer, key) : NULL;
+      const ScrDyn *desc = owned && owned->kind != SCR_DYN_UNDEF ? owned : NULL;
+      if (desc) {
+        const ScrDyn *value = insp_desc_field(desc, "value", 5);
+        if (!(value && value->kind == SCR_DYN_FUNC)) {
+          count++;
+          if (render) {
+            ScrStr *entry = insp_proto_entry(name, NULL, desc, recurse, depth);
+            scr_insp_entry(entry, false);
+            scr_str_release(entry);
+          }
+        }
+      }
+      scr_dyn_release(owned);
+      insp_proto_seen_push(&seen, &nseen, &seen_cap, name);
+    }
+    if (!(render && scr_exc_pending())) {
+      for (size_t i = 0; i < symbols->v.arr.len; i++) {
+        ScrDyn *symbol = symbols->v.arr.items[i];
+        bool shown = !insp_proto_seen_has(seen, nseen, symbol) &&
+                     scr_dyn_own_symbol_entry(d, symbol) == NULL;
+        ScrDyn *owned = shown
+            ? scr_dyn_get_own_property_descriptor((ScrDyn *)layer, symbol) : NULL;
+        const ScrDyn *desc = owned && owned->kind != SCR_DYN_UNDEF ? owned : NULL;
+        if (desc) {
+          const ScrDyn *value = insp_desc_field(desc, "value", 5);
+          if (!(value && value->kind == SCR_DYN_FUNC)) {
+            count++;
+            if (render) {
+              ScrStr *entry = insp_proto_entry(NULL, symbol, desc, recurse, depth);
+              scr_insp_entry(entry, false);
+              scr_str_release(entry);
+            }
+          }
+        }
+        scr_dyn_release(owned);
+        insp_proto_seen_push(&seen, &nseen, &seen_cap, symbol);
+      }
+    }
+    scr_dyn_release(names);
+    scr_dyn_release(symbols);
+    if (render && scr_exc_pending()) break;
+  }
+  if (render) {
+    if (g_nseen > 0) g_nseen--;
+    /* A circular target keeps its place in the frame so that its close
+     * writes the `<ref *N>` prefix, as Node does. */
+    if (g_nframes > 0 && (outer_seen || insp_circ_id(d) == 0))
+      insp_top()->seen = outer_seen;
+  }
+  for (size_t i = 0; i < nseen; i++) scr_dyn_release(seen[i]);
+  free(seen);
+  return count;
+}
+
 static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
   /* A plain object with a tag takes Node's tagged prefix in all three
    * forms: `Object [Math] {}`, `[Object [Math]]` past the depth limit,
@@ -2089,6 +2289,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     ScrDynProp ent;
     shown += scr_insp_symbol_entry(d, i, &ent);
   }
+  shown += insp_proto_props(d, recurse, depth, false);
   if (tagged && (shown == 0 || recurse > depth)) {
     InspBuf out = {0};
     bool bracket = shown != 0 && !d->null_proto;
@@ -2149,6 +2350,9 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     scr_insp_entry(entry, false);
     scr_str_release(entry);
   }
+  /* Node appends the inherited properties of a user-defined prototype
+   * after every own key, string and symbol alike. */
+  if (!scr_exc_pending()) insp_proto_props(d, recurse, depth, true);
   ScrStr *base = cls             ? scr_str_new(cls, strlen(cls))
                  : tagged        ? tagged
                  : d->null_proto ? scr_str_new("[Object: null prototype]", 24)

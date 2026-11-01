@@ -816,6 +816,14 @@ bool scr_dyn_is_array_prototype(const ScrDyn *d) {
   return d && d == scr_builtin_array_prototype;
 }
 
+bool scr_dyn_is_object_prototype(const ScrDyn *d) {
+  return d && d == scr_builtin_object_prototype;
+}
+
+bool scr_dyn_is_error_prototype(const ScrDyn *d) {
+  return d && d == scr_builtin_error_prototype;
+}
+
 bool scr_dyn_array_prototype_element_fence(const ScrDyn *recv) {
   if (!scr_dyn_is_array_prototype(recv)) return false;
   static const char message[] = "Elements on Array.prototype are not supported yet";

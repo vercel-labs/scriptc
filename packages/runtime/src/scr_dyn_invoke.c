@@ -986,7 +986,7 @@ static bool dyn_arr_fast(ScrDyn *recv, int mid, ScrDyn *const *args, size_t argc
       *result = scr_dyn_retain(scr_dyn_undefined());
       return true;
     }
-    recv->v.arr.len = len - 1;
+    scr_dyn_arr_set_len(recv, len - 1);
     *result = recv->v.arr.items[len - 1]; /* ownership moves out */
     return true;
   case DYN_M_shift:
@@ -996,7 +996,7 @@ static bool dyn_arr_fast(ScrDyn *recv, int mid, ScrDyn *const *args, size_t argc
     }
     *result = recv->v.arr.items[0]; /* ownership moves out */
     memmove(recv->v.arr.items, recv->v.arr.items + 1, (len - 1) * sizeof(ScrDyn *));
-    recv->v.arr.len = len - 1;
+    scr_dyn_arr_set_len(recv, len - 1);
     return true;
   case DYN_M_at: {
     if (argc == 0 || args[0]->kind != SCR_DYN_NUM) return false;
@@ -1555,7 +1555,8 @@ static ScrDyn *scr_dyn_invoke_impl(
       if (len == 0) return scr_dyn_retain(scr_dyn_undefined());
       ScrDyn *result = scr_dyn_arr_at(recv, (double)(len - 1));
       if (!result) return NULL;
-      scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
+      scr_dyn_arr_set_len(recv, len - 1);
+      scr_dyn_release(recv->v.arr.items[len - 1]);
       return result;
     }
     if ((mid == DYN_M_shift)) {
@@ -1576,7 +1577,7 @@ static ScrDyn *scr_dyn_invoke_impl(
       ScrDyn *first = recv->v.arr.items[0];
       memmove(recv->v.arr.items, recv->v.arr.items + 1, (len - 1) * sizeof(ScrDyn *));
       if (recv->v.arr.presence) memmove(recv->v.arr.presence, recv->v.arr.presence + 1, len - 1);
-      recv->v.arr.len = len - 1;
+      scr_dyn_arr_set_len(recv, len - 1);
       return first; /* ownership moves out */
     }
     if ((mid == DYN_M_unshift)) {
@@ -1618,7 +1619,7 @@ static ScrDyn *scr_dyn_invoke_impl(
         scr_dyn_region_store(recv, args[i + 2]);
         recv->v.arr.items[start + i] = scr_dyn_retain(args[i + 2]);
       }
-      recv->v.arr.len = next_len;
+      scr_dyn_arr_set_len(recv, next_len);
       return out;
     }
     if ((mid == DYN_M_slice)) {

@@ -69,6 +69,7 @@ export interface EarlyExecutableNativeFeatures {
   jsObjectModel?: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
+  fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */

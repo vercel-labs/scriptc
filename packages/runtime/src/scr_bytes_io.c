@@ -155,13 +155,6 @@ ScrPromise *scr_fsp_read_file_bytes(ScrStr *path) {
   return scr_promise_settled_ref(b, &scr_bytes_retain_v, &scr_bytes_release_v, NULL);
 }
 
-/* fs.promises.writeFile(path, bytes): the TRUNCATING write, unlike its
- * appendFile twin (the two-argument string forms differ the same way). */
-ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data) {
-  scr_fs_write_file_bytes(path, data);
-  return scr_promise_settled_void();
-}
-
 /* Native error-first callbacks remain callable values when a platform layer
  * captures them. Argument failures throw at the call; filesystem failures
  * arrive through the callback on the next event-loop turn. The synchronous

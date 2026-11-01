@@ -80,52 +80,6 @@ static void scr_fs_write_file_open(ScrStr *path, ScrStr *data, mode_t mode, int 
   if (close(fd) != 0) scr_fs_throw(errno, "close", path);
 }
 
-/* The same open(2) write over BYTE data (Uint8Array/Buffer): writeFileSync
- * and fs.promises.writeFile accept the same options record with either data
- * kind, and a Buffer writes exactly its bytes. The string form's loop is
- * left untouched so programs that only write strings keep its object. */
-static void scr_fs_write_file_open_bytes(ScrStr *path, const ScrBytes *data, mode_t mode,
-                                         int extra) {
-  if (!scr_fs_path_ok(path, "path")) return;
-  SCR_BYTES_SNAPSHOT(data);
-  int fd = open(path->data, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY | extra, mode);
-  if (fd < 0) {
-    scr_fs_throw(errno, "open", path);
-    return;
-  }
-  size_t len = data->len * scr_bytes_elem_size(data->elem);
-  const char *bytes = (const char *)data->data;
-  size_t at = 0;
-  while (at < len) {
-    ssize_t wrote = write(fd, bytes + at, len - at);
-    if (wrote < 0) {
-      if (errno == EINTR) continue;
-      int e = errno;
-      close(fd);
-      scr_fs_throw(e, "write", path);
-      return;
-    }
-    at += (size_t)wrote;
-  }
-  if (close(fd) != 0) scr_fs_throw(errno, "close", path);
-}
-
-/* writeFileSync(p, bytes, { mode, flag }): the byte-data spelling of the
- * options write, with the same mode validation and flag semantics. */
-void scr_fs_write_file_flags_bytes(ScrStr *path, const ScrBytes *data, double mode,
-                                   double exclusive) {
-  if (!scr_fs_write_mode_ok(mode)) return;
-  scr_fs_write_file_open_bytes(path, data, (mode_t)mode, exclusive != 0 ? O_EXCL : 0);
-}
-
-/* fs.promises.writeFile(path, bytes, { mode, flag }): the settled-promise
- * twin of fs.writeFileSyncBytesFlags. */
-ScrPromise *scr_fsp_write_file_flags_bytes(ScrStr *path, ScrBytes *data, double mode,
-                                           double exclusive) {
-  scr_fs_write_file_flags_bytes(path, data, mode, exclusive);
-  return scr_promise_settled_void();
-}
-
 /* writeFileSync(p, data, { mode, flag }): Node's open(2) with the
  * disposition flag. `exclusive` is "wx" (O_EXCL: EEXIST when the path
  * exists); 0 is "w", the default truncate-or-create. */

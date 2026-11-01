@@ -359,6 +359,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.builtinFunction",
   "dyn.builtinMethod",
   "dyn.stdlibPrototype",
+  "dyn.intrinsic",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
   "child.propsDefine",
@@ -467,6 +468,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
   "dyn.usingMethod",
+  "dyn.intrinsic",
   "util.isDeepStrictEqual",
   // The Buffer function value's Symbol(kIsEncodingSymbol) member
   "buffer.constructor",
@@ -990,10 +992,13 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 /** The entries that need the JavaScript object model build (t262-da §J):
  * the runtime code a JavaScript source reaches for builtin intrinsics,
  * array attributes, BigInt views, handle property tables and buffer views
- * that no typed program can observe. Empty until the first slice lands
- * (A1 adds dyn.intrinsic); the slices share one SCR_JS_OBJECT_MODEL build
- * of every unit they touch instead of one build column per feature. */
+ * that no typed program can observe. The slices share one
+ * SCR_JS_OBJECT_MODEL build of every unit they touch instead of one build
+ * column per feature. */
 export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // A builtin prototype or constructor object read as an ordinary checked
+  // object, built from the table of the pinned Node release (A1).
+  "dyn.intrinsic",
   // Resizable ArrayBuffers and growable SharedArrayBuffers (t262-dc C2), and
   // the arming call that turns on the buffer views registry.
   "arrayBuffer.newResizable",

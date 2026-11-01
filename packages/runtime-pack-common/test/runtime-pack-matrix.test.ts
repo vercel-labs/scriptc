@@ -193,3 +193,23 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
     expect(selected(source, plain).defines).toEqual([]);
   }
 });
+
+test("the builtin intrinsic graph is one object-model unit", () => {
+  const plain = { jsObjectModel: false, workers: false };
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_js_intrinsics.c",
+  );
+  // Only a program with the JavaScript object model links the unit at all,
+  // and it links the build that defines the guard its whole body sits in.
+  expect(unit.predicate).toBe("jsObjectModel");
+  expect(selected("scr_js_intrinsics.c", plain).defines).toEqual([]);
+  expect(selected("scr_js_intrinsics.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  // Worker executables get the same object model build with their own flag,
+  // so the unit's TLS agrees with the rest of the runtime.
+  expect(selected("scr_js_intrinsics.c", { jsObjectModel: true, workers: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+    "SCR_WORKERS",
+  ]);
+});

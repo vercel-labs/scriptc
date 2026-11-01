@@ -237,6 +237,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
+  // Every builtin prototype and constructor object as an ordinary checked
+  // object, built from the pinned Node release's table (t262-da A1).
+  unit((u) => u.opts.jsObjectModel === true, "scr_js_intrinsics.c"),
   // The buffer views registry (resizable/growable buffers): the program's
   // %main installs its ops table, and its bytes headers stop being
   // invariant. Every other program keeps the default bytes objects and

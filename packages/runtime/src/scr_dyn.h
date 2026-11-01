@@ -1184,6 +1184,11 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
+#ifdef SCR_JS_OBJECT_MODEL
+/* Whether scr_dyn_global_constructor answers a value for `name` (it traps on
+ * the names it does not intern). */
+bool scr_dyn_global_constructor_known(const ScrStr *name);
+#endif
 /* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
  * as an interned dynamic function value: +1. */
 ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
@@ -1753,6 +1758,29 @@ ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *argument
 ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what);
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
+/* ── the builtin intrinsics (scr_js_intrinsics.c) ──────────────────────
+ * The standard library's prototype and constructor objects as ordinary
+ * checked-dynamic values, built from the table the pinned Node release
+ * generated (scr_js_intrinsics_table.h): one object per intrinsic, whose
+ * members are the runtime's interned functions, and whose [[Prototype]]
+ * links are the standard's. `id` is one of the table's names
+ * ("Date.prototype", "Object.keys", "%TypedArray%"), which the frontend
+ * compiles against, so an unknown one traps. The unit links only into
+ * programs built with SCR_JS_OBJECT_MODEL. */
+ScrDyn *scr_js_intrinsic(const ScrStr *id); /* +1 */
+/* Fills the intrinsic `object` stands for in place. It answers the runtime's
+ * existing singletons (Object.prototype, Array.prototype, Error.prototype),
+ * so every reference the program already holds sees the members; an object
+ * the table does not name is left alone. Idempotent. */
+void scr_js_intrinsics_fill(ScrDyn *object);
+/* Whether the runtime has filled `object` with its intrinsic members. */
+bool scr_js_intrinsic_filled(const ScrDyn *object);
+/* Whether a fill is running: the fences that keep a program from replacing
+ * a builtin member stay off while the runtime builds them. */
+bool scr_js_intrinsic_filling(void);
+/* The [[Prototype]] the intrinsic graph gives `value` (+1), or NULL when the
+ * value is not one the graph describes. */
+ScrDyn *scr_js_intrinsic_prototype_of(const ScrDyn *value);
 /* A standard library prototype object as a value — `Date.prototype` read in
  * a JavaScript source (+1, one object per thread; the constructor's
  * `prototype` is the same object). Named by the constructor whose interface

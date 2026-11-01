@@ -9,6 +9,7 @@ import {
   undefinedTypedArrayKeyFence,
 } from "../undefined-index.js";
 import { type Lowerer, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
+import { lowerIntrinsicElement } from "../intrinsics.js";
 import {
   BOOL,
   DYN,
@@ -168,6 +169,12 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // tail short-circuits with the guard.
   if (!expr.questionDotToken && isOptionalChainTail(lowerer, expr)) {
     return lowerer.lowerOptionalChain(expr);
+  }
+  // `X.prototype[k]` reads the builtin intrinsic object's member (t262-da
+  // A1), the same one the dot spelling reads.
+  {
+    const intrinsic = lowerIntrinsicElement(lowerer, expr);
+    if (intrinsic) return intrinsic;
   }
   // A PRESENCE PROBE of a member read through an erased assertion in the
   // bracket spelling (`typeof (u as R)["member"]`, `(u as R)["member"] !==

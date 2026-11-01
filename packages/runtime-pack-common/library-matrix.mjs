@@ -24,6 +24,7 @@ export function withLibraryRuntimeFlavors(matrix) {
     // detaches a buffer names scr_js_buffers_arm from its own object, so the
     // library flavors must carry the unit the executable flavors compile.
     "scr_js_buffers.c",
+    "scr_js_intrinsics.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

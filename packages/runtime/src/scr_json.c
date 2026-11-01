@@ -35,6 +35,13 @@ const ScrDateClassHooks *scr_date_class_hooks = NULL;
 static SCR_TL ScrDyn *scr_builtin_error_prototype;
 static bool scr_dyn_error_prototype_fence(const ScrDyn *value) {
   if (!value || value != scr_builtin_error_prototype) return false;
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Filled with the intrinsic's members, Error.prototype is an ordinary
+   * object the program may extend. The fill itself is the table's one
+   * writer, so a registered-and-filled object is past this fence even while
+   * the fill scope is open. */
+  if (scr_js_intrinsic_filled(value)) return false;
+#endif
   static const char message[] = "Error.prototype mutation is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return true;
@@ -53,6 +60,12 @@ static void scr_dyn_namespace_member_fence(void) {
 /* Constructor capsules expose identity and name/length, but do not model
  * per-class static property tables yet. Never report a fabricated empty view. */
 static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The fill defines the members the intrinsic table lists; a filled
+   * Object.prototype is an ordinary object. */
+  if (scr_js_intrinsic_filling()) return false;
+  if (value && value == scr_builtin_object_prototype && scr_js_intrinsic_filled(value)) return false;
+#endif
   if (value && value == scr_builtin_object_prototype) {
     static const char message[] = "scriptc: Object.prototype reflection and mutation are not supported yet";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -2809,6 +2822,12 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  {
+    ScrDyn *intrinsic = scr_js_intrinsic_prototype_of(object);
+    if (intrinsic || scr_exc_pending()) return intrinsic;
+  }
+#endif
   static const char message[] = "Object.getPrototypeOf on this value is not supported yet";
   scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
   return NULL;
@@ -8311,6 +8330,13 @@ static ScrDyn *scr_dyn_fn_table(const ScrDyn *function) {
 static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
   ScrDyn *table = scr_dyn_fn_table(function);
   if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The constructor's own members are the intrinsic table's rows when it is
+   * the interned builtin constructor (`Object.getOwnPropertyNames(Date)`),
+   * filled in place like the prototype singletons (t262-da A1). */
+  if (function->kind == SCR_DYN_FUNC && !scr_js_intrinsic_filled(function))
+    scr_js_intrinsics_fill((ScrDyn *)function);
+#endif
   return table;
 }
 
@@ -10346,6 +10372,11 @@ bool scr_dyn_reflect_delete_property(ScrDyn *target, const ScrDyn *raw_key) {
 /* Native call/apply/bind lowering still owns these prototype operations.
  * Refuse overrides until every typed call site observes the property table. */
 static bool scr_dyn_fn_property_fence(const ScrStr *key) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The intrinsic fill defines Function.prototype.call and its siblings on
+   * the function values it builds. */
+  if (scr_js_intrinsic_filling()) return false;
+#endif
   static const char *const reserved[] = {
     "call", "apply", "bind", "valueOf", "toLocaleString",
     "hasOwnProperty", "propertyIsEnumerable", "isPrototypeOf",
@@ -16907,6 +16938,14 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
   for (const ScrDyn *current = d; current; current = scr_dyn_proto_next(current)) {
     if (current == scr_builtin_object_prototype) {
+#ifdef SCR_JS_OBJECT_MODEL
+      /* Filled from the intrinsic table, Object.prototype is an ordinary
+       * object: its own members read as any other prototype's do, and a
+       * miss walks past it (its [[Prototype]] is null) to undefined. Only
+       * the unfilled one keeps the reflection refusal — and the tail's own
+       * read answers the receiver's members when it is the receiver. */
+      if (scr_js_intrinsic_filled(current)) continue;
+#endif
       scr_dyn_class_reflection_fence(current);
       return NULL;
     }

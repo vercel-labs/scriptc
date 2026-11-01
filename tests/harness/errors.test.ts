@@ -1993,14 +1993,14 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
 
   test("members without a lowering stay refused instead of reading undefined", async () => {
     // Builtin constructors read as interned function values that model only
-    // name, length and constructor. Every other static member or prototype
-    // read (direct, bracketed, through an alias or globalThis), and
-    // reflection on or redefinition of their members, must stay a located
-    // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // Date.prototype is the one value: it reads as the prototype object, so
-    // a direct read, a member read through it and reflection on it answer as
-    // Node does. `key in Ctor` answers from the constructor's fixed keys.
-    // Test262 lost 769 refusals to undefined reads before this was pinned.
+    // name, length and constructor. A prototype read, and a member read
+    // through it, answers from the intrinsic object (t262-da A1) exactly as
+    // Node does; every other static member or prototype read that still has
+    // no lowering (the bracketed spelling, an alias's prototype, a static
+    // member or a reflection helper) stays a located SC2020/SC1090 refusal,
+    // never an undefined or otherwise wrong value. `key in Ctor` answers
+    // from the constructor's fixed keys. Test262 lost 769 refusals to
+    // undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
       ["Date.prototype", "Date.prototype"],
@@ -2026,11 +2026,27 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
-    // The reads that answer from Date.prototype's object rather than refusing.
+    // The reads that answer from the intrinsic graph rather than refusing.
     const readsAsValue = new Map<string, string>([
       ["Date.prototype", "read object"],
+      ["WeakMap.prototype", "read object"],
+      ["WeakSet.prototype", "read object"],
       ["Date.prototype.getYear", "read function"],
+      ["Map.prototype.constructor", "read function"],
+      ["getOwnPropertyDescriptor(Map.prototype)", "read object"],
       ["isExtensible(Date.prototype)", "read boolean"],
+    ]);
+    // The reads whose value is right but whose binding to a local still runs
+    // the checked cast the JS lane inserts for the checker's declared type
+    // (`Map`, `RegExp`, `Set`), which the intrinsic object is not: the same
+    // limitation the prototype builders that predate the table have, and the
+    // reason the value is read inline elsewhere.
+    const readsTrap = new Map<string, string>([
+      ["Map.prototype", "Map"],
+      ["RegExp.prototype", "RegExp"],
+      ["Set.prototype", "Set"],
+      ["globalThis.Map.prototype", "Map"],
+      ["Map alias prototype", "Map"],
     ]);
     const source = `"use strict";
 const MapAlias = Map;
@@ -2053,6 +2069,13 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
     const lines = r.stdout.trimEnd().split("\n");
     expect(lines.slice(0, reads.length)).toEqual(
       reads.map(([label], i) => {
+        const trap = readsTrap.get(label);
+        if (trap !== undefined)
+          return expect.stringMatching(
+            new RegExp(
+              `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} threw expected ${trap} at \\$, got object$`,
+            ),
+          );
         const read = readsAsValue.get(label);
         return read === undefined
           ? expect.stringMatching(

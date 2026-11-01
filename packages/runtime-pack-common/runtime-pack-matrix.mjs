@@ -96,6 +96,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
+  // Every builtin prototype and constructor object as an ordinary checked
+  // object, built from the pinned Node release's own table (t262-da A1).
+  // One build carries the whole graph, so the unit links into any program
+  // with the JavaScript object model and fill-in place keeps the runtime's
+  // singletons the same objects.
+  ["scr_js_intrinsics.c", "jsObjectModel"],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
@@ -298,6 +304,12 @@ export function variantsFor(source) {
     // build per flavor, so every variant here already carries the dynamic
     // tier's primitives and each one gets its object model twin. Every other
     // program keeps the default object, byte for byte.
+    withJsObjectModel(variants);
+  }
+  // The builtin intrinsic graph (t262-da A1) is one unit written entirely
+  // for the JavaScript object model build, so the default object is empty and
+  // a program without the feature links none of the graph.
+  if (source === "scr_js_intrinsics.c") {
     withJsObjectModel(variants);
   }
   // util.inspect and instanceof of Node island handles; Node's report for

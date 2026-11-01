@@ -4335,6 +4335,11 @@ function buildLibFnSignatures() {
      * in a JavaScript source), named by its constructor: the unit in
      * scr_dyn_stdlib_prototype.c. */
     "dyn.stdlibPrototype": { argTypes: [STRING], result: DYN },
+    /** A builtin prototype or constructor object as an ordinary checked
+     * object (`Date.prototype`, `Array.prototype.push` read in a JavaScript
+     * source), named by the intrinsic table's id: the unit in
+     * scr_js_intrinsics.c (t262-da A1). */
+    "dyn.intrinsic": { argTypes: [STRING], result: DYN },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },

@@ -24,6 +24,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
+import { lowerIntrinsicMember } from "../intrinsics.js";
 import { wrapperConstructors } from "../primitive-wrappers.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
@@ -2177,6 +2178,13 @@ export function lowerIntrinsicProperty(
   // because a write lowers the prototype read with the chain blocked.
   fenceDatePrototypeWrite(lowerer, expr);
   if (lowerer.chainBlocked(expr)) return null;
+  // A builtin prototype object and the members read through it, in a
+  // program that reads intrinsics: one ordinary checked object per
+  // intrinsic (scr_js_intrinsics.c, t262-da A1), filled in place for the
+  // runtime's singletons. Every older prototype lowering below stays for a
+  // program that never reads one.
+  const intrinsic = lowerIntrinsicMember(lowerer, expr);
+  if (intrinsic) return intrinsic;
   // Object.prototype.constructor: the Object constructor value.
   if (
     expr.name.text === "constructor" &&

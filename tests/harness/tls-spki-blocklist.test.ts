@@ -7,9 +7,9 @@
 //
 // expected/<case>.txt is what Node 24.22.1 prints for the fixture with that
 // key blocked (tests/fixtures/tls-spki/record.mjs). The compiled binary must
-// print it byte for byte. When the Node running this suite carries the same
-// hook (24.22.1 and newer), the suite re-runs Node live and compares, so a
-// pin bump re-checks the recordings instead of trusting them.
+// print exactly that. When the Node running this suite carries the same hook
+// (24.22.1 and newer), the suite re-runs Node live and compares, so a pin
+// bump re-checks the recordings instead of trusting them.
 import { execFile } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";

@@ -40,9 +40,9 @@ function port(srv: tls.Server): number {
 const chainUntrusted = Buffer.concat([leaf, unrelated]);
 
 // The client's side of a handshake against a server serving `cert`.
-function clientCase(name: string, ca: Buffer, reject: boolean, cert: Buffer): Promise<void> {
+function clientCase(name: string, ca: Buffer, reject: boolean, cert: Buffer, maxVersion?: string): Promise<void> {
   return new Promise((done) => {
-    const srv = tls.createServer({ key: leafKey, cert }, () => {});
+    const srv = tls.createServer({ key: leafKey, cert, maxVersion }, () => {});
     void listen(srv).then(() => {
       let settled = false;
       const finish = (): void => {
@@ -51,7 +51,7 @@ function clientCase(name: string, ca: Buffer, reject: boolean, cert: Buffer): Pr
         c.destroy();
         srv.close(() => done());
       };
-      const c = tls.connect({ port: port(srv), host: "127.0.0.1", ca, rejectUnauthorized: reject, servername: "localhost" });
+      const c = tls.connect({ port: port(srv), host: "127.0.0.1", ca, rejectUnauthorized: reject, servername: "localhost", maxVersion });
       c.on("secureConnect", () => {
         console.log("client", name, "authorized", c.authorized, "error", c.authorizationError, "error-type", typeof c.authorizationError);
         finish();
@@ -94,5 +94,15 @@ await clientCase("client-default", root, true, chain);
 await clientCase("client-noreject", root, false, chain);
 await clientCase("client-empty-ca", Buffer.alloc(0), true, chainUntrusted);
 await clientCase("client-verified-unrelated", root, true, chainWithUnrelated);
+// The intermediate is a trust anchor here, so mbedTLS's chain ends at it while
+// Node's continues to the root the client also trusts: a blocked root is part
+// of the chain Node selects, a blocked unrelated key is still not.
+await clientCase("client-trusted-intermediate", Buffer.concat([inter, root]), true, chain);
+// TLS 1.2 hands the parsed chain to verification inside a message the
+// handshake releases on failure, so the unverified peer list is only reachable
+// while verification runs: a blocked certificate outside the selected path
+// still reports CERT_REVOKED ahead of the chain's own error.
+await clientCase("client-tls12-unselected", root, true, chainUntrusted, "TLSv1.2");
+await clientCase("client-tls12-default", root, true, chain, "TLSv1.2");
 await serverCase("server-noreject", false);
 await serverCase("server-reject", true);

@@ -808,9 +808,12 @@ typedef struct ScrTlsSock {
   /* the verify callback ran at least once: a peer certificate arrived and
    * was examined, so a verdict exists even if the handshake then failed */
   bool vrfy_seen;
+  /* the flags every certificate of the chain raised so far: the callback
+   * runs depth-descending, so the leaf's turn holds the whole verdict */
+  uint32_t vrfy_flags;
   /* the trust list this connection verifies against (borrowed from the
-   * client or server config, or the system store): the anchor that ended
-   * the chain is found there, since the verify callback never sees it */
+   * client or server config, or the system store): the chain is continued
+   * through it past the certificate mbedTLS stopped at */
   mbedtls_x509_crt *vrfy_trust;
   /* the topmost certificate the verification walked — the callback runs
    * depth-descending, the leaf last, so the leaf's turn closes the walk */
@@ -869,9 +872,11 @@ static bool scr_tls_alert_error(ScrTlsSock *t, unsigned char alert);
  * certificate the peer sent. A hit is CERT_REVOKED ("certificate
  * revoked"), which outranks the error the verification itself found.
  *
- * mbedTLS hands its verify callback the leaf and the intermediates only:
- * the walk stops at the trusted parent, so the anchor is resolved here
- * from the configured trust list (scr_tls_spki_anchor_blocked). */
+ * mbedTLS's walk ends at the first certificate it trusts, which may be an
+ * intermediate; the chain Node keeps building there, up to the root it can
+ * resolve from the trust list, is continued by scr_tls_spki_anchor_blocked,
+ * and the peer's whole list is scanned on the leaf's turn when the chain did
+ * not verify, because mbedTLS releases it with the handshake. */
 
 #define SCR_TLS_SPKI_LEN 32
 
@@ -981,27 +986,6 @@ static bool scr_tls_spki_anchor_blocked(const ScrTlsSock *t, const mbedtls_x509_
   return false;
 }
 
-/* Every certificate the peer sent. Node scans this list (the leaf, then
- * X509_STORE_CTX_get0_untrusted) only when the chain did not verify, so a
- * blocked key in a certificate the chain did not select still reports
- * CERT_REVOKED ahead of the chain's own error. The list lives in the
- * session being negotiated, which mbedtls_ssl_get_peer_cert does not
- * reach until the handshake has stood. */
-static const mbedtls_x509_crt *scr_tls_peer_chain(const ScrTlsSock *t) {
-  const mbedtls_ssl_session *s = t->ssl.MBEDTLS_PRIVATE(session_negotiate);
-  if (s == NULL) s = t->ssl.MBEDTLS_PRIVATE(session);
-  return s != NULL ? s->MBEDTLS_PRIVATE(peer_cert) : NULL;
-}
-
-static void scr_tls_spki_peer_chain(ScrTlsSock *t) {
-  for (const mbedtls_x509_crt *crt = scr_tls_peer_chain(t); crt != NULL; crt = crt->next) {
-    if (scr_tls_spki_check(crt) != 0) {
-      t->vrfy_blocked = true;
-      return;
-    }
-  }
-}
-
 /* checkServerIdentity for an IP literal: the address must be one of the
  * certificate's IP SANs (no DNS SAN or CN applies). */
 static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
@@ -1056,11 +1040,29 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     *flags |= MBEDTLS_X509_BADCERT_REVOKED;
     t->vrfy_blocked = true;
   }
-  /* the trust anchor ended the chain but never reaches this callback, so
-   * it is checked on the leaf's turn, which closes the walk */
+  /* the chain Node selects continues past a trusted certificate to the root
+   * it can build, which mbedTLS never walks; the leaf's turn, which closes
+   * the walk, adds that issuer to the chain under the same policy */
   if (depth == 0 && !t->vrfy_blocked && scr_tls_spki_anchor_blocked(t, t->vrfy_top)) {
     *flags |= MBEDTLS_X509_BADCERT_REVOKED;
     t->vrfy_blocked = true;
+  }
+  /* Node checks every certificate the peer sent when the chain did not
+   * verify, the leaf and X509_STORE_CTX_get0_untrusted after it, so a
+   * blocked key the chain did not select still reports CERT_REVOKED ahead
+   * of the chain's own error. The parsed peer list hangs off the leaf and
+   * is released once the handshake call returns (a failed TLS 1.2 chain is
+   * gone by then), so the scan runs here, on the leaf's turn, which has
+   * seen every flag of the walk. */
+  t->vrfy_flags |= *flags;
+  if (depth == 0 && t->vrfy_flags != 0 && !t->vrfy_blocked) {
+    for (const mbedtls_x509_crt *c = crt->next; c != NULL; c = c->next) {
+      if (scr_tls_spki_check(c) != 0) {
+        t->vrfy_blocked = true;
+        *flags |= MBEDTLS_X509_BADCERT_REVOKED;
+        break;
+      }
+    }
   }
   /* a rejecting client fails the handshake on any flag; Node's client
    * then closes without sending an alert (its Finished is discarded) */
@@ -1720,11 +1722,6 @@ static int scr_tls_handshake(void *tctx) {
     t->holding = false;
     if (t->held_len > t->held_off) (void)scr_tls_flush_held(t);
   }
-  /* Node checks every certificate the peer sent when the chain did not
-   * verify, so a blocked key outside the chain it selected still reports
-   * CERT_REVOKED ahead of the chain's own error. */
-  if (!t->vrfy_blocked && mbedtls_ssl_get_verify_result(&t->ssl) != 0)
-    scr_tls_spki_peer_chain(t);
   if (r == 0 && t->srv != NULL && t->srv->request_cert && t->srv->reject_unauthorized &&
       !t->srv->standalone && mbedtls_ssl_get_verify_result(&t->ssl) != 0) {
     /* a client certificate that fails verification: Node's server

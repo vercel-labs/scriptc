@@ -1997,6 +1997,13 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // object as process.stdio and call back from a nextTick.
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  // stdin.resume() and stdin.read() start the runtime's stdin watch (a
+  // resumed stream, a read demand above the held input, or a parked
+  // for-await), which the loop services until end-of-input: without the
+  // loop a program that only waits for input exits at once instead of at
+  // EOF, as Node's does.
+  "stdin.resume",
+  "stdin.read",
   "fetch.start",
   "fetch.input",
   "fetch.function",

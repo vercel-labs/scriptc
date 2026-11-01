@@ -1138,10 +1138,23 @@ export function lowerProcessMethodCall(
       }
       const sizeNode = args[0];
       // read(undefined) is read(), as in Node: the undefined size reads
-      // everything held rather than coercing through a number.
+      // everything held rather than coercing through a number. A size
+      // argument written out still evaluates — Node evaluates every
+      // argument before the call, so its side effects and throws are the
+      // read's — it just contributes 0.
       const all =
         sizeNode === undefined || (lowerer.typeOf(sizeNode).flags & ts.TypeFlags.Undefined) !== 0;
-      const size = all ? numLit(0, loc) : lowerer.lowerExprExpecting(sizeNode!, F64);
+      const size: IrExpr = !all
+        ? lowerer.lowerExprExpecting(sizeNode!, F64)
+        : sizeNode === undefined
+          ? numLit(0, loc)
+          : {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: lowerer.lowerExpr(sizeNode), loc }],
+              result: numLit(0, loc),
+              type: F64,
+              loc,
+            };
       // The interner's identity is the typeKey-SORTED arm list.
       const arms: IrType[] = [BYTES_U8, { kind: "nullT" }];
       arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));

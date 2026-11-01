@@ -70,6 +70,16 @@ export const eventLoopCases: EventLoopCase[] = [
     },
   },
   {
+    title: "typed stdio: read(undefined) evaluates its argument, its throw included",
+    fixture: "stdin-read-argument.ts",
+    script: { writes: [{ delayMs: 0, data: "abc" }], end: true },
+  },
+  {
+    title: "typed stdio: read() alone keeps the loop open until end-of-input",
+    fixture: "stdin-read-exit.ts",
+    script: { writes: [{ delayMs: 30, data: "abc" }], end: true },
+  },
+  {
     title: "stdio values: input a once('readable') listener leaves stays buffered for 'data'",
     fixture: "stdio-readable-once-rest.mjs",
     script: { writes: [{ delayMs: 0, data: "abcdefgh" }], end: true },

@@ -619,6 +619,12 @@ export interface ClassInfo {
   def: IrClassDef;
   expressionInitializationEmitted?: true;
   runtimeStatics?: readonly ts.ClassElement[];
+  /** The program reflects this class VALUE by name (an `Object.*`/
+   * `Reflect.ownKeys` query, `hasOwnProperty`/`propertyIsEnumerable`, or a
+   * Test262 property-check helper), so the constructor's own-property table
+   * also carries `prototype`, between `length`/`name` and the statics —
+   * Node's own-key order (t262-da A2). */
+  constructorReflected?: true;
   /** The class declares its own static `Symbol.hasInstance` member:
    * `instanceof` asks the hook before OrdinaryHasInstance. */
   hasInstanceHook?: true;
@@ -2570,12 +2576,18 @@ export function collectClassShapeInner(
     const staticBlocks: ts.ClassStaticBlockDeclaration[] = [];
     const runtimeStatics: ts.ClassElement[] = [];
     const runtimePrototypeMembers: ts.ClassElement[] = [];
+    // A JavaScript class value the program reflects by name needs the
+    // constructor's live own-property table (t262-da A2), like a class
+    // whose statics the program already defines or deletes through.
+    const reflectedConstructor =
+      isJsSourceFile(ts.getSourceFileOfNode(decl)) && reflectedClassConstructor(lowerer, decl);
     // Public JS accessors need live constructor descriptors, including
     // receiver-sensitive getters and setters inherited by subclasses.
     const checkedStatics =
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       ((base && hasRuntimeStatics(base)) ||
         definedThroughReflection(lowerer, decl) ||
+        reflectedConstructor ||
         decl.members.nodes.some(
           (member) =>
             ts.isAccessor(member) &&
@@ -4652,6 +4664,7 @@ export function collectClassShapeInner(
     const info: ClassInfo = {
       ...(hasInstanceHooks.length ? { hasInstanceHook: true as const } : {}),
       ...(runtimeStatics.length || checkedStatics ? { runtimeStatics } : {}),
+      ...(reflectedConstructor && checkedStatics ? { constructorReflected: true as const } : {}),
       ...(runtimePrototypeMembers.length ? { runtimePrototypeMembers } : {}),
       def: {
         name: className,
@@ -12385,6 +12398,145 @@ function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaratio
       )
         found = true;
     }
+    return undefined;
+  });
+  return found;
+}
+
+/** The `Object.*` and `Reflect.ownKeys` queries that read a value's own
+ * properties (t262-da §5.1). */
+const CLASS_CONSTRUCTOR_QUERIES: ReadonlySet<string> = new Set([
+  "getOwnPropertyDescriptor",
+  "getOwnPropertyDescriptors",
+  "getOwnPropertyNames",
+  "getOwnPropertySymbols",
+  "isExtensible",
+  "isFrozen",
+  "isSealed",
+  "keys",
+  "values",
+  "entries",
+  "hasOwn",
+]);
+
+/** Test262's property-check helpers (`propertyHelper.js`); each reads its
+ * first argument's own property descriptors. */
+const CLASS_CONSTRUCTOR_HELPERS: ReadonlySet<string> = new Set([
+  "verifyProperty",
+  "verifyEqualTo",
+  "verifyWritable",
+  "verifyNotWritable",
+  "verifyEnumerable",
+  "verifyNotEnumerable",
+  "verifyConfigurable",
+  "verifyNotConfigurable",
+]);
+
+/** The identifier whose symbol is the class VALUE a reflective call
+ * receives: a class declaration's own name, or a class expression's
+ * variable binding (`var E = class { … }`). */
+function classValueBindingOf(decl: ts.ClassLikeDeclaration): ts.Identifier | null {
+  const parent = decl.parent;
+  if (
+    parent !== undefined &&
+    ts.isVariableDeclaration(parent) &&
+    ts.isIdentifier(parent.name) &&
+    parent.initializer === decl
+  )
+    return parent.name;
+  return decl.name ?? null;
+}
+
+/** `Object.prototype.hasOwnProperty` or its `propertyIsEnumerable` sibling
+ * — the receiver of a `.call` — or null. */
+function objectPrototypeOwnMethod(lowerer: Lowerer, node: ts.Expression): string | null {
+  if (!ts.isPropertyAccessExpression(node)) return null;
+  const name = node.name.text;
+  if (name !== "hasOwnProperty" && name !== "propertyIsEnumerable") return null;
+  const owner = node.expression;
+  if (
+    !ts.isPropertyAccessExpression(owner) ||
+    owner.name.text !== "prototype" ||
+    !lowerer.isStdlibGlobal(owner.expression, "Object")
+  )
+    return null;
+  return name;
+}
+
+/** Whether a JavaScript class value is passed to a reflective operation as
+ * its receiver (t262-da §5.1): `Object.getOwnPropertyNames(C)`,
+ * `Reflect.ownKeys(C)`, `Object.prototype.hasOwnProperty.call(C, key)`,
+ * `C.hasOwnProperty(key)` and Test262's `verifyProperty(C, …)` helpers.
+ * Those read the constructor's live own-property table, which
+ * `constructorReflected` materializes through the runtime statics. */
+function reflectedClassConstructor(lowerer: Lowerer, decl: ts.ClassLikeDeclaration): boolean {
+  const binding = classValueBindingOf(decl);
+  if (binding === null) return false;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (
+    !sf.text.includes("ownProperty") &&
+    !sf.text.includes("ownKeys") &&
+    !sf.text.includes("hasOwn") &&
+    !sf.text.includes("propertyIsEnumerable") &&
+    !sf.text.includes("isFrozen") &&
+    !sf.text.includes("isSealed") &&
+    !sf.text.includes("isExtensible") &&
+    !sf.text.includes("Object.keys") &&
+    !sf.text.includes("Object.values") &&
+    !sf.text.includes("Object.entries") &&
+    !sf.text.includes("verify")
+  )
+    return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(binding);
+  if (symbol === undefined) return false;
+  const isBinding = (node: ts.Expression | undefined): boolean =>
+    node !== undefined &&
+    ts.isIdentifier(node) &&
+    node.text === binding.text &&
+    lowerer.checker.getSymbolAtLocation(node) === symbol;
+  const kind = isJsSourceFile(sf);
+  let found = false;
+  ts.walkPreorder(sf, (node) => {
+    if (found) return "stop";
+    if (!ts.isCallExpression(node) || node.arguments.nodes.some(ts.isSpreadElement))
+      return undefined;
+    const callee = node.expression;
+    if (ts.isIdentifier(callee)) {
+      // A Test262 property-check helper declared in this program.
+      if (!kind || !CLASS_CONSTRUCTOR_HELPERS.has(callee.text)) return undefined;
+      if (!isBinding(node.arguments.nodes[0])) return undefined;
+      const helper = lowerer.checker.getSymbolAtLocation(callee)?.valueDeclaration;
+      if (
+        helper !== undefined &&
+        ts.isFunctionDeclaration(helper) &&
+        isJsSourceFile(ts.getSourceFileOfNode(helper))
+      )
+        found = true;
+      return undefined;
+    }
+    if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return undefined;
+    const method = callee.name.text;
+    // `C.hasOwnProperty(key)` / `C.propertyIsEnumerable(key)`.
+    if (
+      (method === "hasOwnProperty" || method === "propertyIsEnumerable") &&
+      isBinding(callee.expression)
+    ) {
+      found = true;
+      return "stop";
+    }
+    // `Object.prototype.hasOwnProperty.call(C, key)` and its sibling.
+    if (method === "call" && objectPrototypeOwnMethod(lowerer, callee.expression) !== null) {
+      if (isBinding(node.arguments.nodes[0])) found = true;
+      return undefined;
+    }
+    // `Object.<query>(C, …)` and `Reflect.ownKeys(C)`.
+    if (
+      (CLASS_CONSTRUCTOR_QUERIES.has(method) || method === "ownKeys") &&
+      (lowerer.stdlibGlobalMember(callee, "Object") !== null ||
+        lowerer.stdlibGlobalMember(callee, "Reflect") !== null) &&
+      isBinding(node.arguments.nodes[0])
+    )
+      found = true;
     return undefined;
   });
   return found;

@@ -144,6 +144,7 @@ import {
   deferredProbeReadAccess,
 } from "./asserted-receiver.js";
 import { lowerRecordInheritedMember } from "../record-inherited.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
   cjsClassExprWholeExportOf,
@@ -341,6 +342,11 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // A JavaScript source reading a member that resizes, grows or detaches a
+  // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The name
+  // decides: the receiver may be a checked-dynamic value.
+  if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+    lowerer.buffersMutable = true;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `R.#x` for a static private on a checked-dynamic receiver: the brand

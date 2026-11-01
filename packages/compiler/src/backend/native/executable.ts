@@ -233,6 +233,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
+  // The buffer views registry (resizable/growable buffers): the program's
+  // %main installs its ops table, and its bytes headers stop being
+  // invariant. Every other program keeps the default bytes objects and
+  // links no part of the unit.
+  unit((u) => u.opts.mutableBuffers === true, "scr_js_buffers.c"),
   unit(
     (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
     "scr_event_target.c",

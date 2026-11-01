@@ -4223,6 +4223,15 @@ function buildLibFnSignatures() {
     "sharedArrayBuffer.new": { argTypes: [DYN], result: DYN },
     "sharedArrayBuffer.is": { argTypes: [DYN], result: BOOL },
     "arrayBuffer.new": { argTypes: [DYN], result: DYN },
+    /** `new ArrayBuffer(len, { maxByteLength })` in a JavaScript source
+     * (t262-dc C2): the maxByteLength reserved up front, the visible length
+     * len. */
+    "arrayBuffer.newResizable": { argTypes: [DYN, DYN], result: DYN },
+    /** `new SharedArrayBuffer(len, { maxByteLength })`: the same, growable. */
+    "sharedArrayBuffer.newGrowable": { argTypes: [DYN, DYN], result: DYN },
+    /** The %main prologue call that arms scr_js_buffers's views registry
+     * (buffers.ts): never throws, never answers. */
+    "arrayBuffer.armMutable": { argTypes: [], result: VOID },
     "ffi.argument": { argTypes: [DYN, STRING], result: DYN },
     "ffi.memoryModule": { argTypes: [DYN], result: DYN },
     "intl.segmenterNew": { argTypes: [], result: DYN },

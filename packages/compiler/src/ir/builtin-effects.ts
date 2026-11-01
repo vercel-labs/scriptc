@@ -148,6 +148,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",
+  "arrayBuffer.newResizable",
+  "sharedArrayBuffer.newGrowable",
   "atomics.op",
   "atomics.wait",
   "atomics.notify",

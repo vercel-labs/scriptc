@@ -205,6 +205,11 @@ export interface CcOptions {
   /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
    * object model feature the program reaches (t262-da §J). */
   jsObjectModel?: boolean;
+  /** The program resizes, grows or detaches an ArrayBuffer: compiles the
+   * buffer views registry, scr_js_buffers.c, whose arming call the program's
+   * %main emits. The fact ORs into jsObjectModel, so the unit's definition
+   * of the JavaScript object model build is already on. */
+  mutableBuffers?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
@@ -463,6 +468,9 @@ export interface LibArchiveOptions {
   /** See CcOptions.jsObjectModel: the archive's bytes and json units carry
    * the JavaScript object model build. */
   jsObjectModel?: boolean;
+  /** See CcOptions.mutableBuffers: the archive carries the buffer views
+   * registry, scr_js_buffers.c. */
+  mutableBuffers?: boolean;
 }
 
 export interface NativeArtifactDependency {

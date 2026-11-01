@@ -993,7 +993,13 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
  * that no typed program can observe. Empty until the first slice lands
  * (A1 adds dyn.intrinsic); the slices share one SCR_JS_OBJECT_MODEL build
  * of every unit they touch instead of one build column per feature. */
-export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]);
+export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // Resizable ArrayBuffers and growable SharedArrayBuffers (t262-dc C2), and
+  // the arming call that turns on the buffer views registry.
+  "arrayBuffer.newResizable",
+  "sharedArrayBuffer.newGrowable",
+  "arrayBuffer.armMutable",
+]);
 
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
@@ -1003,8 +1009,13 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  mutableBuffers?: boolean;
 }): boolean {
-  return features.jsObjectModel === true || features.bigintBytes === true;
+  return (
+    features.jsObjectModel === true ||
+    features.bigintBytes === true ||
+    features.mutableBuffers === true
+  );
 }
 
 /** One rule per runtime feature, sorted by name. A new feature is an
@@ -1511,6 +1522,15 @@ const RUNTIME_FEATURE_RULES = {
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): the program arms the buffer views
+   * registry, which lives in the gated unit scr_js_buffers.c, and its bytes
+   * headers stop being invariant (IrModule.bytesHeadersMutable). The fact
+   * ORs into jsObjectModel (jsObjectModelFact), so it selects no build
+   * column of its own. Every other program links no part of the unit. */
+  mutableBuffers: rule({
+    fns: ["arrayBuffer.armMutable", "arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable"],
+  }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
   /** Primitive wrapper objects (scr_js_wrapper.c). */
@@ -1630,6 +1650,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     icu: false,
     inspect: false,
     jsObjectModel: false,
+    mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
     webStreams: false,

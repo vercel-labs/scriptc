@@ -234,6 +234,7 @@ import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
+import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -3998,6 +3999,11 @@ export class Lowerer {
   /** Whether the program freezes, seals or prevents extensions of untyped
    * values other than fresh literals (noteUntypedIntegrity). */
   untypedIntegrity = false;
+  /** A JavaScript source constructs an ArrayBuffer with a maxByteLength,
+   * or reads a member that resizes, grows or detaches a buffer
+   * (buffers.ts, t262-dc §2.4). Sets IrModule.bytesHeadersMutable and arms
+   * the scr_js_buffers views registry in %main. */
+  buffersMutable = false;
   readonly liftedFns: IrFunction[] = [];
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
@@ -4856,6 +4862,11 @@ export class Lowerer {
         "untypedIntegrity",
         () => this.untypedIntegrity,
         () => (this.untypedIntegrity = true),
+      ),
+      flag(
+        "buffersMutable",
+        () => this.buffersMutable,
+        () => (this.buffersMutable = true),
       ),
       flag(
         "partialDegradedTypesMapped",
@@ -9974,6 +9985,9 @@ export class Lowerer {
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
     installBufferValue(functions);
+    // A mutable-buffers program arms the views registry before any buffer
+    // exists, so every buffer in it is detachable from the start.
+    const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
     installFetchBodyWebStreams(this, functions);
     returnDispatchReceivers(this, functions);
 
@@ -10103,6 +10117,7 @@ export class Lowerer {
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
             ...(this.untypedIntegrity ? { untypedIntegrity: true as const } : {}),
+            ...(buffersMutable ? { bytesHeadersMutable: true as const } : {}),
             ...(sloppyDynWrites.length > 0 ? { sloppyDynWrites } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),

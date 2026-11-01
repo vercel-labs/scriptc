@@ -671,11 +671,15 @@ function executableNativeFeatures(
   optimization: NativeOptimization,
   largePages: boolean,
 ): EarlyExecutableNativeFeatures {
-  return {
+  const features = {
     backend,
     ...optimizationField(optimization),
     ...executableLinkFeatures(mod, largePages),
   };
+  // The executable cache record spells every boolean key (BOOLEAN_NATIVE_KEYS
+  // in executable-cache.ts), and mutableBuffers is optional in the link
+  // features so that a program without the fact keeps its link identity.
+  return { ...features, mutableBuffers: features.mutableBuffers === true };
 }
 
 /** Install the run-time data files of the selected runtime pack beside an
@@ -817,6 +821,7 @@ async function compileExecutableNative(
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
+    ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -2452,6 +2457,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     dynInvoke: features.dynInvoke,
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
+    mutableBuffers: features.mutableBuffers,
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
   };
 }
@@ -2549,6 +2555,7 @@ async function compileLibraryNative(
     dynInvoke: features.dynInvoke,
     ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(features.dynTier === true ? { dynTier: true } : {}),
+    ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

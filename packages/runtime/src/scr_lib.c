@@ -682,7 +682,7 @@ ScrStr *scr_process_arch(void) {
  * is no Node under a compiled binary; this is the version whose semantics
  * SEMANTICS.md verifies the runtime against (divergence 60, the execPath
  * stance: answer for the world that actually exists). */
-#define SCR_NODE_COMPAT_VERSION "24.22.0"
+#define SCR_NODE_COMPAT_VERSION "24.22.1"
 ScrStr *scr_process_versions_node(void) {
   if (!scr_versions_node_str) {
     scr_versions_node_str =
@@ -701,7 +701,7 @@ ScrStr *scr_process_versions_node(void) {
  * sites). Reading undefined here made every hasCrypto test self-skip —
  * measuring nothing (SEMANTICS.md; the divergence entry documents that
  * the string names the compat target's OpenSSL, not a linked library). */
-#define SCR_OPENSSL_COMPAT_VERSION "3.5.8"
+#define SCR_OPENSSL_COMPAT_VERSION "3.5.9"
 ScrStr *scr_process_versions_openssl(void) {
   if (!scr_versions_openssl_str) {
     scr_versions_openssl_str =

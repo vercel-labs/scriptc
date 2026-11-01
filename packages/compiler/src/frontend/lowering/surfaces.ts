@@ -1144,7 +1144,7 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
   },
 };
 
-/** util.types's own keys in Node's order (Node 24.22.0). The table is the
+/** util.types's own keys in Node's order (Node 24.22.1). The table is the
  * key census for Object.keys over util.types and node:util/types, including
  * the members that do not compile yet; the corpus checks it against Node. */
 export const UTIL_TYPES_KEYS: readonly string[] = [

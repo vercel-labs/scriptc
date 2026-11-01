@@ -3,6 +3,7 @@ import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
+import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
   arrayClassReceiver,
@@ -132,7 +133,7 @@ import {
 } from "../lower-node-module.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
-import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   applyDeferredAssertion,
@@ -183,7 +184,7 @@ import {
 } from "../builtins/module-resolution.js";
 import { builtinPrototypeMethod, lowerCheckedPredicateValue } from "../lower-builtin-values.js";
 import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js";
-import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
 import { arrayValueRead, arrayValueType } from "../array-values.js";
@@ -379,7 +380,8 @@ export function lowerPropertyAccessExpr(
     };
   }
   {
-    const member = lowerBufferPrototypeMember(lowerer, expr);
+    const member =
+      lowerBufferPrototypeMember(lowerer, expr) ?? lowerBufferPrototypeObject(lowerer, expr);
     if (member) return member;
   }
   // A dgram socket's method read as a value in JavaScript (`emit:
@@ -1032,8 +1034,10 @@ export function lowerPropertyAccessExpr(
     const canonical = stdlibGlobalNameOf(lowerer, expr);
     if (canonical !== null) {
       if (canonical === "globalThis") return lowerGlobalValue(lowerer, expr);
-      // Typed for the programs that name it, absent in Node 24.
-      if (canonical === TEMPORAL_GLOBAL) return dynUndefinedExpr(loc);
+      // Typed for the programs that name it, absent in Node 24, and the
+      // CommonJS module bindings, which the global object does not hold.
+      if (canonical === TEMPORAL_GLOBAL || COMMONJS_MODULE_BINDINGS.has(canonical))
+        return dynUndefinedExpr(loc);
       const value = jsSpecialGlobalValue(lowerer, canonical, loc);
       if (value) return value;
       return (
@@ -1221,15 +1225,19 @@ export function lowerPropertyAccessExpr(
       // by the property or function it reads. A builtin function value
       // keeps its length when that is not its adapter's parameter count
       // (`Math.max.length` is 2).
-      const fnName =
-        builtinValueNameOf(expr.expression, lowerer) ?? jsFuncNameOf(expr.expression, lowerer);
-      const fnLength = lowerer.builtinFunctionIdentity(probed).fnLength;
+      const builtinName = builtinValueNameOf(expr.expression, lowerer);
+      const fnName = builtinName ?? jsFuncNameOf(expr.expression, lowerer);
+      const identity = lowerer.builtinFunctionIdentity(probed);
+      const fnLength = identity.fnLength;
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: probed,
         type: DYN,
         ...(fnName !== null ? { fnName } : {}),
         ...(fnLength !== undefined ? { fnLength } : {}),
+        ...(builtinName !== null && identity.fnNameMainThreadOnly
+          ? { fnNameMainThreadOnly: true as const }
+          : {}),
         loc,
       };
       const key: IrExpr = {
@@ -1674,6 +1682,24 @@ export function lowerPropertyAccessExpr(
     typedArrayLacksMember(expr.name.text, recvLowered.type.elem === "u8")
   ) {
     return afterReceiver(recvLowered, dynUndefinedExpr(loc), loc);
+  }
+  // Buffer.prototype's parent and offset getters, which @types/node does not
+  // declare (so only JavaScript reads them): the box answers a Buffer's
+  // ArrayBuffer and byteOffset, and undefined for a Uint8Array, by the
+  // runtime flag that tells the two apart.
+  if (
+    recvLowered.type.kind === "bytes" &&
+    recvLowered.type.elem === "u8" &&
+    (expr.name.text === "parent" || expr.name.text === "offset") &&
+    !declaredMemberOf(lowerer, expr.expression, expr.name.text)
+  ) {
+    return {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(recvLowered, DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
   }
   // A typed array under a checker `any` (a JS binding its own initializer's
   // inference refers to: hono's etag digest `nextChunk`) reads through its
@@ -2782,6 +2808,22 @@ export function lowerIntrinsicProperty(
       const receiver =
         expected?.kind === "bytes" ? strictReceiver(expected) : lowerer.lowerExpr(expr.expression);
       return { kind: "bytesIntrinsic", method: "buffer", receiver, args: [], type: DYN, loc };
+    }
+    // A method read as a value in JavaScript (`buf.indexOf ===
+    // Buffer.prototype.indexOf`, `const write = buf.writeUInt8`): the box
+    // answers the function Node's prototype holds, which runs on the
+    // receiver it is called with.
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const expected = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+      const receiver =
+        expected?.kind === "bytes" ? strictReceiver(expected) : lowerer.lowerExpr(expr.expression);
+      return {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(receiver, DYN),
+        key: { kind: "strLit", value: name, type: STRING, loc },
+        type: DYN,
+        loc,
+      };
     }
     if (name === "slice" || name === "subarray" || name === "set" || name === "toString") {
       lowerer.unsupported(
@@ -5358,7 +5400,9 @@ export function builtinGlobalValueAt(
   const namespace = js ? builtinNamespaceValue(lowerer, canonical, loc) : null;
   if (namespace !== null) return namespace;
   if (readsBuiltinGlobalMembers(expr)) return null;
-  const value = builtinGlobalValue(canonical, loc, js);
+  const value =
+    builtinGlobalValue(canonical, loc, js) ??
+    (js ? globalFunctionValue(lowerer, canonical, loc) : null);
   if (value === null) return null;
   let node: ts.Node = expr;
   while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;

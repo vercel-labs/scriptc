@@ -130,6 +130,10 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     "-DSCR_LIB",
     ...(opts.threadInstances ? ["-DSCR_THREAD_INSTANCES"] : []),
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    // The program's unit reads the JavaScript object model build
+    // (t262-da §J): the archive's bytes and json units must carry it too, so
+    // the program names the same build the pack matrix selects.
+    ...(opts.jsObjectModel || opts.bigintBytes ? ["-DSCR_JS_OBJECT_MODEL"] : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),

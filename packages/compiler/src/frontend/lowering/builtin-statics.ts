@@ -13,6 +13,7 @@ import {
   DYN,
   F64,
   STRING,
+  SYMBOL_T,
   type IrExpr,
   type IrFunction,
   type IrStmt,
@@ -68,14 +69,44 @@ function staticValueMembers(owner: string): Readonly<Record<string, number>> {
       return { now: 0 };
     case "Error":
       return { captureStackTrace: 2 };
+    case "Symbol": {
+      const members: Record<string, number> = { for: 1, keyFor: 1 };
+      for (const key of WELL_KNOWN_SYMBOLS) members[key] = SYMBOL_CONSTANT;
+      return members;
+    }
     default:
       return {};
   }
 }
 
+/** Node 24's well-known symbols, the Symbol constructor's constant
+ * members. */
+const WELL_KNOWN_SYMBOLS = [
+  "asyncIterator",
+  "hasInstance",
+  "isConcatSpreadable",
+  "iterator",
+  "match",
+  "matchAll",
+  "replace",
+  "search",
+  "species",
+  "split",
+  "toPrimitive",
+  "toStringTag",
+  "unscopables",
+  "dispose",
+  "asyncDispose",
+];
+
+/** The length staticValueMembers gives a well-known symbol: the lookup
+ * answers it whether or not the program names it. */
+const SYMBOL_CONSTANT = -1;
+
 /** The compiled closures the primitive constructors read as (lower-exprs.ts
- * primitiveCtorClosure). The runtime does not intern them, so the lookup
- * names their constructor when the runtime asks for the key "". */
+ * primitiveCtorClosure, and Symbol's in global-function-values.ts). The
+ * runtime does not intern them, so the lookup names their constructor when
+ * the runtime asks for the key "". */
 const PRIMITIVE_CONSTRUCTORS: ReadonlyMap<string, string> = new Map([
   ["%builtin.String", "String"],
   ["%builtin.String.dyn", "String"],
@@ -85,6 +116,7 @@ const PRIMITIVE_CONSTRUCTORS: ReadonlyMap<string, string> = new Map([
   ["%builtin.Boolean.dyn", "Boolean"],
   ["%builtin.BigInt", "BigInt"],
   ["%builtin.BigInt.dyn", "BigInt"],
+  ["%builtin.global.Symbol", "Symbol"],
 ]);
 
 /** The function value the static spelling `owner.key` reads, or null when
@@ -121,6 +153,8 @@ export function constructorStaticValue(
             loc,
           )
         : null;
+    case "Symbol":
+      return symbolStaticValue(lowerer, key, loc);
     case "Error":
       return key === "captureStackTrace"
         ? { kind: "libCall", fn: "dyn.errorCaptureStackTraceFunction", args: [], type: DYN, loc }
@@ -128,6 +162,53 @@ export function constructorStaticValue(
     default:
       return null;
   }
+}
+
+/** Symbol.for, Symbol.keyFor and the well-known symbols. */
+function symbolStaticValue(lowerer: Lowerer, key: string, loc: SrcLoc): IrExpr | null {
+  if (WELL_KNOWN_SYMBOLS.includes(key))
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "libCall",
+        fn: "sym.wellKnown",
+        args: [{ kind: "strLit", value: key, type: STRING, loc }],
+        type: SYMBOL_T,
+        loc,
+      },
+      type: DYN,
+      loc,
+    };
+  if (key !== "for" && key !== "keyFor") return null;
+  const name = `%builtin.Symbol.${key}`;
+  const argument = varRef("value", DYN, loc);
+  const value: IrExpr =
+    key === "for"
+      ? {
+          kind: "dynFrom",
+          value: {
+            kind: "libCall",
+            fn: "sym.for",
+            args: [
+              { kind: "libCall", fn: "dyn.toStringCoerce", args: [argument], type: STRING, loc },
+            ],
+            type: SYMBOL_T,
+            loc,
+          },
+          type: DYN,
+          loc,
+        }
+      : { kind: "libCall", fn: "sym.keyForDyn", args: [argument], type: DYN, loc };
+  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "value", name: "value", type: DYN }],
+      locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+      returnType: DYN,
+      body: [{ kind: "return", value, loc }],
+      loc,
+    });
+  return { kind: "closure", fnName: name, captures: [], type: funcOf([DYN], DYN), loc };
 }
 
 /** Object.freeze as a function value. It can freeze any untyped value it
@@ -295,7 +376,7 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
           ];
       const lengths = staticValueMembers(constructor.owner);
       for (const member of Object.keys(lengths)) {
-        if (!names.has(member)) continue;
+        if (!names.has(member) && lengths[member] !== SYMBOL_CONSTANT) continue;
         // Untyped values carry integrity words only in programs that can
         // freeze them, which lowering has settled by now.
         if (member === "freeze" && !lowerer.untypedIntegrity) continue;

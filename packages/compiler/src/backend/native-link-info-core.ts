@@ -22,6 +22,10 @@ export interface NativeLinkFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** A BigInt typed-array constructor is read as a value: its element kinds
+   * live in the JavaScript object model build (t262-da §J), which
+   * jsObjectModelFact ORs this fact into. */
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
@@ -37,6 +41,11 @@ export interface NativeLinkFeatures {
    * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
    * Absent for every program without one, so their objects stay identical. */
   recordViewPartial?: boolean;
+  /** The program uses a runtime feature only a JavaScript source reaches:
+   * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
+   * (t262-da §J). Absent for every other program, so their objects stay
+   * identical. */
+  jsObjectModel?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
@@ -167,10 +176,6 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
-  /** A typed fs read whose bytes value the program can observe as a Buffer:
-   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
-   * brand keep the default object. */
-  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;

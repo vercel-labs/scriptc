@@ -13,7 +13,12 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CcCompileError, subprocessFailureDetail } from "./native/process.js";
 import { NativeCodegenError } from "./native-codegen-core.js";
-import { staticExecutableRefusal, staticLinkFailureNote, staticLinkMapArgs } from "./targets.js";
+import {
+  staticExecutableRefusal,
+  staticLinkFailureNote,
+  staticLinkMapArgs,
+  type NativeTargetPlatform,
+} from "./targets.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import { parseLinkTraceFiles } from "./native/linker-fingerprint.js";
 import {
@@ -358,6 +363,46 @@ export async function installRuntimeDataFiles(
   }
 }
 
+/** A driver the host cannot execute at all, rather than one that ran and
+ * failed. `execFile` reports both as a rejected call; only a missing
+ * executable says the build needs a tool this host does not have. */
+function isMissingExecutable(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+/** What to install when a target's link driver cannot be spawned. A spawn
+ * failure names only the driver (`spawn zig ENOENT`), which says neither
+ * what the driver is used for nor where it comes from, so the message names
+ * the target's requirement and the package that provides the driver. Null
+ * for any other failure, whose own output is the useful report. */
+export function missingLinkDriverMessage(
+  error: unknown,
+  linker: string,
+  platform: NativeTargetPlatform,
+): string | null {
+  if (!isMissingExecutable(error)) return null;
+  const driver = basename(linker.replace(/\\/g, "/")).replace(/\.exe$/i, "");
+  let guidance: string;
+  if (driver === "zig")
+    guidance =
+      platform === "win32"
+        ? "Windows targets link with Zig, whose releases are a single zig.exe: download it from https://ziglang.org/download and put it on PATH."
+        : "This target links with Zig: download it from https://ziglang.org/download and put zig on PATH.";
+  else if (driver === "clang" || driver === "clang-cl")
+    guidance =
+      platform === "darwin"
+        ? 'macOS targets link with the clang in Apple\'s Command Line Tools: install them with "xcode-select --install".'
+        : platform === "win32"
+          ? "Windows targets link with clang from the LLVM release: download it from https://releases.llvm.org and put clang.exe on PATH."
+          : 'Linux targets link with clang: install it with the distribution\'s package manager, for example "apt install clang".';
+  else guidance = `Install ${driver} and put it on PATH.`;
+  return (
+    `cannot run the link driver "${linker}": the host has no ${driver} executable.\n` +
+    `${guidance}\n` +
+    "Set SCRIPTC_LINKER to use a different driver."
+  );
+}
+
 export async function linkNativeExecutable(
   plan: NativeLinkPlan,
   options: {
@@ -434,13 +479,27 @@ export async function linkNativeExecutable(
               ...(await snapshotDependencies([...toolchain, ...additionalDependencyPaths])),
             ])
             .catch(() => null);
+    const link = async (withLld: boolean): Promise<void> => {
+      try {
+        await execFileAsync(linker, linkArgs(withLld));
+      } catch (error) {
+        // Only the link invocation itself can report a driver the host lacks.
+        // Everything after it fails with its own tool, whose name the message
+        // must keep.
+        const missing = missingLinkDriverMessage(error, linker, plan.target.platform);
+        if (missing === null) throw error;
+        throw new CcCompileError(linker, subprocessFailureDetail(error), missing);
+      }
+    };
     let linkedWithDefaultLinker = false;
-    await execFileAsync(linker, args).catch(async (error: unknown) => {
+    await link(lld.length !== 0).catch(async (error: unknown) => {
       // A failed link with lld runs again with the driver's default linker,
       // whose error (if any) is the one reported. That link line differs from
       // the one the pre-link proof describes, so the result is not published.
-      if (lld.length === 0) throw error;
-      await execFileAsync(linker, linkArgs(false));
+      // A driver the host cannot start is not retried, since the same command
+      // cannot succeed.
+      if (lld.length === 0 || error instanceof CcCompileError) throw error;
+      await link(false);
       linkedWithDefaultLinker = true;
     });
     const output = await stat(privateOut);
@@ -451,7 +510,21 @@ export async function linkNativeExecutable(
       if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
     }
     if (plan.darwinDebugSymbols) {
-      await createDarwinDebugSymbols(privateOut);
+      try {
+        await createDarwinDebugSymbols(privateOut);
+      } catch (error) {
+        // The link succeeded and only the debug symbols are missing, so name
+        // the tool that could not produce them rather than the driver.
+        const detail = subprocessFailureDetail(error);
+        throw new CcCompileError(
+          "dsymutil",
+          detail,
+          `dsymutil failed to collect the debug symbols for ${basename(plan.outputPath)}:\n${detail}` +
+            (isMissingExecutable(error)
+              ? '\ndsymutil comes with Apple\'s developer tools: on macOS, install them with "xcode-select --install".'
+              : ""),
+        );
+      }
       await installDarwinDebugSymbols(await readDarwinDebugSymbols(privateOut), plan.outputPath);
     }
     await rename(privateOut, plan.outputPath).catch(async () => {

@@ -2213,10 +2213,15 @@ function validateFunction(
         ) {
           err(`bytesIntrinsic ${e.method} invalid kind token '${e.args[0].value}'`, e.loc);
         }
-        // fillStr/writeStr carry their NORMALIZED encoding as args[1],
-        // always a strLit (the frontend folds the aliases).
-        if ((e.method === "fillStr" || e.method === "writeStr") && e.args[1]?.kind !== "strLit") {
-          err(`bytesIntrinsic ${e.method} args[1] must be a strLit encoding`, e.loc);
+        // fillStr/writeStr carry their NORMALIZED encoding as args[1]: a
+        // strLit when the frontend folded a literal alias, otherwise a
+        // string value the frontend normalized at run time.
+        if (
+          (e.method === "fillStr" || e.method === "writeStr") &&
+          e.args[1]?.kind !== "strLit" &&
+          !(e.args[1] !== undefined && typeEquals(e.args[1].type, STRING))
+        ) {
+          err(`bytesIntrinsic ${e.method} args[1] must be a string encoding`, e.loc);
         }
         const EXTRA_SIGS: Record<
           string,

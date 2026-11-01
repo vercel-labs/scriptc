@@ -26,82 +26,92 @@ test.each([
   [
     "a compiler change",
     ["packages/compiler/src/backend/emit.ts"],
-    { linux: true, macos: false, effects: false, bootstrap: false },
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true },
+  ],
+  [
+    "a compiler test",
+    ["packages/compiler/test/emit.test.ts"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false },
+  ],
+  [
+    "a refreshed profile",
+    ["packages/compiler/native/cli.profdata.gz"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true },
   ],
   [
     "a runtime C change",
     ["packages/runtime/src/scr_array.c"],
-    { linux: true, macos: false, effects: false, bootstrap: false },
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false },
   ],
   [
     "a corpus program",
     ["tests/corpus/1234-example.ts"],
-    { linux: true, macos: false, effects: false, bootstrap: false },
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false },
   ],
   [
     "documentation only",
     ["docs/content/guide.mdx", "README.md"],
-    { linux: false, macos: false, effects: false, bootstrap: false },
+    { linux: false, macos: false, effects: false, bootstrap: false, profile: false },
   ],
   [
     "a darwin package",
     ["packages/runtime-darwin-arm64/scripts/build.mjs"],
-    { linux: true, macos: true, effects: false, bootstrap: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: false },
   ],
   [
     "the LLVM helper",
     ["native/llvm-codegen/src/emit.cpp"],
-    { linux: true, macos: true, effects: false, bootstrap: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: true },
   ],
   [
     "a darwin test file",
     ["tests/harness/ffi-frameworks.test.ts"],
-    { linux: true, macos: true, effects: false, bootstrap: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: false },
   ],
   [
     "the kqueue event loop",
     ["packages/runtime/src/scr_loop_kqueue.c"],
-    { linux: true, macos: true, effects: false, bootstrap: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: false },
   ],
   [
     "the runtime's platform header",
     ["packages/runtime/src/scr_platform.h"],
-    { linux: true, macos: true, effects: false, bootstrap: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: false },
   ],
   [
     "the Effect harness",
     ["tests/harness/effect.test.ts"],
-    { linux: true, macos: false, effects: true, bootstrap: false },
+    { linux: true, macos: false, effects: true, bootstrap: false, profile: false },
   ],
   [
     "the bootstrap scripts",
     ["scripts/build-native-cli.mts"],
-    { linux: true, macos: false, effects: false, bootstrap: true },
+    { linux: true, macos: false, effects: false, bootstrap: true, profile: true },
   ],
   [
     "CI configuration",
     [".github/workflows/ci.yml"],
-    { linux: true, macos: true, effects: true, bootstrap: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
   ],
   [
     "this script",
     ["scripts/ci-lanes.mjs"],
-    { linux: true, macos: true, effects: true, bootstrap: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
   ],
   [
     "the lockfile",
     ["pnpm-lock.yaml"],
-    { linux: true, macos: true, effects: true, bootstrap: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
   ],
   [
     "a package manifest",
     ["packages/compiler/package.json"],
-    { linux: true, macos: true, effects: true, bootstrap: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
   ],
   [
     "the shard partitioner",
     ["tests/harness/shard.ts"],
-    { linux: true, macos: true, effects: true, bootstrap: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
   ],
 ])("CI lanes for %s", (_name, files, expected) => {
   expect(lanesOf(files)).toEqual(expected);
@@ -147,9 +157,13 @@ function runLanes(event: string) {
 }
 
 test("pushes to main run every lane except macos; the nightly sweep and manual runs run every lane", () => {
-  expect(runLanes("push")).toBe("linux=true\nmacos=false\neffects=true\nbootstrap=true\n");
+  expect(runLanes("push")).toBe(
+    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\n",
+  );
   for (const event of ["schedule", "workflow_dispatch"])
-    expect(runLanes(event), event).toBe("linux=true\nmacos=true\neffects=true\nbootstrap=true\n");
+    expect(runLanes(event), event).toBe(
+      "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\n",
+    );
   expect(workflow.on.workflow_dispatch.inputs["macos_suite"]).toEqual({
     description: "The test suite to run on macOS",
     type: "choice",

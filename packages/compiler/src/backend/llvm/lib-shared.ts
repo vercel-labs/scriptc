@@ -554,6 +554,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",
   "buffer.byteLenValue": "scr_buffer_byte_length_value",
   "buffer.byteLenStr": "scr_bytes_byte_length_str",
+  "buffer.normalizeEncoding": "scr_bytes_normalize_encoding",
+  "buffer.normalizeEncodingEmptyUtf8": "scr_bytes_normalize_encoding_empty_utf8",
+  "buffer.normalizeEncodingOrUtf8": "scr_bytes_normalize_encoding_or_utf8",
+  "buffer.writeStrDyn": "scr_bytes_write_str_dyn",
+  "buffer.writeStrDynLen": "scr_bytes_write_str_dyn_len",
   "buffer.isEncoding": "scr_bytes_is_encoding",
   // The checked-dynamic compare/equals validators (scr_bytes_io.c):
   // Node's argument ladders throw catchably (MAY_THROW_LIB_FNS).
@@ -580,6 +585,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.installValue": "scr_buffer_install_value",
   "buffer.staticValue": "scr_buffer_static_value",
   "buffer.prototypeMember": "scr_buffer_prototype_member",
+  "buffer.prototypeObject": "scr_buffer_prototype_object",
+  "buffer.slowBuffer": "scr_buffer_slow",
   "fs.toUnixTimestamp": "scr_fs_to_unix_timestamp",
   "fs.existsChk": "scr_fs_exists_async",
   "fs.mkdtempSyncChk": "scr_fs_mkdtemp_sync_chk",
@@ -1027,6 +1034,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sym.for": "scr_sym_for",
   "sym.wellKnown": "scr_sym_well_known",
   "sym.toString": "scr_sym_to_string",
+  "sym.keyForDyn": "scr_dyn_symbol_key_for",
   "bigint.parse": "scr_bigint_parse",
   "bigint.fromF64": "scr_bigint_from_f64",
   "bigint.neg": "scr_bigint_neg",
@@ -1886,6 +1894,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
   "timers.userDelay": "scr_timer_user_delay",
+  "timers.thisCallback": "scr_timer_this_callback",
 };
 
 /** The mock-aware entry points (scr_test.c) that the timer calls of a
@@ -1950,8 +1959,10 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "url.legacyParse",
   "url.legacyFormat",
   "url.legacyResolve",
-  // The deprecated Buffer constructor reports DEP0005 on the next tick.
+  // The deprecated Buffer constructor reports DEP0005, and SlowBuffer
+  // DEP0030, on the next tick.
   "buffer.deprecation",
+  "buffer.slowBuffer",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.isArrayDeprecated",

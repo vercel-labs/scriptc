@@ -84,10 +84,14 @@ jobs:
     permissions:
       contents: read
     outputs:
-      linux: ${{ steps.lanes.outputs.linux }}
-      macos: ${{ steps.lanes.outputs.macos }}
-      effects: ${{ steps.lanes.outputs.effects }}
-      bootstrap: ${{ steps.lanes.outputs.bootstrap }}
+      # A pull request runs the base revision's lane selector, and one that
+      # predates a lane emits nothing for it; that lane is off then, so its job
+      # is skipped and the required check accepts the skip.
+      linux: ${{ steps.lanes.outputs.linux || 'false' }}
+      macos: ${{ steps.lanes.outputs.macos || 'false' }}
+      effects: ${{ steps.lanes.outputs.effects || 'false' }}
+      bootstrap: ${{ steps.lanes.outputs.bootstrap || 'false' }}
+      profile: ${{ steps.lanes.outputs.profile || 'false' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
@@ -100,9 +104,9 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\n' | tee -a "$GITHUB_OUTPUT"; }
+          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\n' | tee -a "$GITHUB_OUTPUT"; }
           if [ "$EVENT" = push ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
           elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -584,6 +588,42 @@ jobs:
           path: ${{ runner.temp }}/bootstrap-seed.tar
           retention-days: 1
           if-no-files-found: error
+
+  # Optimized builds of the native compiler use the committed profile and
+  # layout. The share of the profile's functions a build matches falls as
+  # compiler code changes, and a stale profile leaves the compiler's cold code
+  # inline (11 MB more text at 85.4% than with a fresh one). The seed above
+  # builds without the layout, so this build keeps the committed one, as local
+  # builds do, and fails below the floor (scripts/build-native-cli-profile.mjs).
+  # It runs on the profile lane, which follows compiler code, code generation
+  # and the native CLI build, where the profile goes stale.
+  native_profile:
+    needs: [validation_scope, lanes]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.profile == 'true' }}
+    name: check (native compiler profile)
+    runs-on: ubuntu-24.04
+    # The compiler build takes about as long as the seed's on a hosted runner.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - run: pnpm build
+      - name: Build the native compiler with the committed profile
+        run: pnpm build:native-compiler
+        env:
+          SCRIPTC_NATIVE_PROFILE_CHECK: "1"
 
   bootstrap:
     needs: [validation_scope, lanes, bootstrap_seed]
@@ -1231,6 +1271,7 @@ jobs:
         three_nodes_san,
         native_frontend_san,
         bootstrap_seed,
+        native_profile,
         bootstrap,
         linux_host_clang,
         ts7_parity,
@@ -1268,6 +1309,7 @@ jobs:
               lane three_nodes_san "${{ needs.three_nodes_san.result }}" "${{ needs.lanes.outputs.linux }}"
               lane native_frontend_san "${{ needs.native_frontend_san.result }}" "${{ needs.lanes.outputs.linux }}"
               lane bootstrap_seed "${{ needs.bootstrap_seed.result }}" "${{ needs.lanes.outputs.bootstrap }}"
+              lane native_profile "${{ needs.native_profile.result }}" "${{ needs.lanes.outputs.profile }}"
               lane bootstrap "${{ needs.bootstrap.result }}" "${{ needs.lanes.outputs.bootstrap }}"
               lane linux_host_clang "${{ needs.linux_host_clang.result }}" "${{ needs.lanes.outputs.linux }}"
               lane ts7_parity "${{ needs.ts7_parity.result }}" "${{ needs.lanes.outputs.linux }}"

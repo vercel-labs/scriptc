@@ -58,6 +58,12 @@ export function isIntegerBytesElem(elem: IrBytesElem): boolean {
   return elem !== "f16" && elem !== "f32" && elem !== "f64";
 }
 
+/** Typed-array constructors whose element kind is a BigInt. The typed IR has
+ * no BigInt element kind, so these exist only in the checked-dynamic tier:
+ * their value is the bytes.constructor libCall naming them, and every element
+ * they hold is a checked-dynamic BigInt. */
+export const BIGINT_BYTES_NAMES: ReadonlySet<string> = new Set(["BigInt64Array", "BigUint64Array"]);
+
 export const BYTES_ELEMENT_NAME: Record<IrBytesElem, string> = {
   u8: "Uint8Array",
   u8c: "Uint8ClampedArray",
@@ -3562,6 +3568,10 @@ export type IrExpr =
       loc: SrcLoc;
       liveRef?: true;
       fnName?: string;
+      /** The callable answers `fnName` on the main thread and the empty
+       * string on a worker thread (Node's main-thread wrapper for
+       * `process.cwd`). */
+      fnNameMainThreadOnly?: true;
       /** A boxed function's `length` when it differs from its parameter
        * count (builtin function values). */
       fnLength?: number;

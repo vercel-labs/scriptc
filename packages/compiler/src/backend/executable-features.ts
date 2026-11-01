@@ -1,6 +1,6 @@
 /** Runtime requirements derived from the lowered program, shared by compiler hosts. */
 import { type IrModule } from "../ir/ir.js";
-import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
+import { jsObjectModelFact, moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import { decodeBase64 } from "../wasm/base64.js";
@@ -16,6 +16,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     regex: features.regex,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
+    bigintBytes: features.bigintBytes,
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
@@ -29,6 +30,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
       : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
+    ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -90,7 +92,6 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     textCodecDyn: features.textCodecDyn,
     watch: features.fsWatch,
     watchFile: features.fsWatchFile,
-    fsBufferBrand: features.fsBufferBrand,
     foreignFfi: hasForeignFfiCallback(mod.ffiImports ?? []),
     nodeTest: features.nodeTest,
     tls: features.tls,

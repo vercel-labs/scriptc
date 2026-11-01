@@ -1515,9 +1515,9 @@ export function libExportUnresolvedDiag(
     message: `library export '${exportName}' cannot be resolved: ${detail}`,
     loc,
     hint:
-      "the export map may only name function declarations exported by the profile's ONE entry module; " +
-      "a program with exports scattered across files writes a one-line facade module that re-exports them " +
-      "and points the profile's entry at the facade",
+      "the export map may only name function declarations exported directly by the profile's ONE entry module; " +
+      "when a function lives in another module, the entry module declares an exported wrapper function that " +
+      "forwards to it, such as export function handle(msg: string) { return realHandle(msg); }",
   };
 }
 

@@ -1337,34 +1337,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       (expr.expression.text === "atob" || expr.expression.text === "btoa") &&
       lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
     ) {
-      const name = expr.expression.text;
-      if (expr.arguments.nodes.length === 0) {
-        return { kind: "libCall", fn: "str.b64Missing", args: [], type: STRING, loc };
-      }
-      if (expr.arguments.nodes.length > 1) {
-        lowerer.noLowering(`${name} with ${expr.arguments.nodes.length} arguments`, expr);
-      }
-      const argNode = expr.arguments.nodes[0]!;
-      const v = lowerer.lowerExpr(argNode);
-      let data: IrExpr;
-      if (v.type.kind === "dyn") {
-        data = v;
-      } else if (v.kind === "unitLit" || lowerer.dynConvertible(v.type)) {
-        data = { kind: "dynFrom", value: v, type: DYN, loc };
-      } else {
-        lowerer.noLowering(
-          `${name} with a '${lowerer.fmt(v.type)}' argument`,
-          argNode,
-          "string-convertible arguments lower (Node ToStrings the value — convert it explicitly)",
-        );
-      }
-      return {
-        kind: "libCall",
-        fn: name === "atob" ? "str.atob" : "str.btoa",
-        args: [data],
-        type: STRING,
-        loc,
-      };
+      return lowerBase64Call(lowerer, expr, expr.expression.text, loc);
     }
 
     // global function executes — callFn(globalGet(name)) — and the
@@ -12429,6 +12402,44 @@ function lowerEmitterMethodValueCall(
     calleeName: ts.getTextOfNode(access),
     args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
+    loc,
+  };
+}
+
+/** atob(data) / btoa(data), the globals and node:buffer's members (the same
+ * functions in Node): str.atob / str.btoa over the argument as a dyn value,
+ * str.b64Missing for the zero-argument call. */
+export function lowerBase64Call(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  name: "atob" | "btoa",
+  loc: SrcLoc,
+): IrExpr {
+  if (expr.arguments.nodes.length === 0) {
+    return { kind: "libCall", fn: "str.b64Missing", args: [], type: STRING, loc };
+  }
+  if (expr.arguments.nodes.length > 1) {
+    lowerer.noLowering(`${name} with ${expr.arguments.nodes.length} arguments`, expr);
+  }
+  const argNode = expr.arguments.nodes[0]!;
+  const v = lowerer.lowerExpr(argNode);
+  let data: IrExpr;
+  if (v.type.kind === "dyn") {
+    data = v;
+  } else if (v.kind === "unitLit" || lowerer.dynConvertible(v.type)) {
+    data = { kind: "dynFrom", value: v, type: DYN, loc };
+  } else {
+    lowerer.noLowering(
+      `${name} with a '${lowerer.fmt(v.type)}' argument`,
+      argNode,
+      "string-convertible arguments lower (Node ToStrings the value — convert it explicitly)",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: name === "atob" ? "str.atob" : "str.btoa",
+    args: [data],
+    type: STRING,
     loc,
   };
 }

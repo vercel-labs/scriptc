@@ -2,6 +2,7 @@
  * discovery, artifact verification and staging belong to the calling host. */
 import { optimizationClass, type NativeOptimization } from "./optimization.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { jsObjectModelFact } from "../ir/runtime-features.js";
 import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import type { NativeTargetSpec } from "./targets.js";
 
@@ -121,6 +122,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   computedRequire: boolean;
   warningReplace: boolean;
   recordViewPartial: boolean;
+  /** The JavaScript object model build (t262-da §J): the runtime code every
+   * feature reached only from JavaScript sources shares, the
+   * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
+   * dynTier. */
+  jsObjectModel: boolean;
   stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
@@ -319,15 +325,21 @@ export function effectiveRuntimeFeatures(
   const httpEffective = features.http || nativeFetch;
   const tlsEffective = features.tls || nativeFetch;
   const tlsCaEffective = features.tlsCa || tlsEffective;
+  // The JavaScript object model build (t262-da §J): the features reached only
+  // from JavaScript sources OR into one define and one runtime feature, so
+  // their migrations share one build of each unit they touch instead of one
+  // build column per feature.
+  const jsObjectModel = jsObjectModelFact(features);
   return {
     ...features,
-    fsBufferBrand: features.fsBufferBrand === true,
     workers: features.workers === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
     wasmVectors: features.wasmVectors === true,
-    dynTier: features.dynTier === true,
+    // The JavaScript object model build's code is the dynamic tier's, so a
+    // program with it links the dynamic-tier units too.
+    dynTier: features.dynTier === true || jsObjectModel,
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
@@ -351,6 +363,8 @@ export function effectiveRuntimeFeatures(
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     recordViewPartial: features.recordViewPartial === true,
+    jsObjectModel,
+    bigintBytes: features.bigintBytes === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioWriteSlot: features.stdioWriteSlot === true,

@@ -2464,7 +2464,8 @@ console.log(words.length);
 // cannot answer as Node does throw SC2020: calling or constructing it
 // through the value (Node reports DEP0005 by the caller's location), its
 // prototype as a whole, copyBytesFrom and of, and Buffer.prototype members
-// that are inherited, symbol-keyed or called on other receivers.
+// that are inherited, symbol-keyed or called on a receiver that is neither
+// a Buffer nor a Uint8Array.
 describe("Buffer value refusals", () => {
   test("unmodeled Buffer value forms throw SC2020", async () => {
     const r = await compileAndRun(
@@ -2480,6 +2481,7 @@ const runs = [
   () => Buffer.prototype.map,
   () => Buffer.prototype[Symbol.iterator],
   () => Buffer.prototype.readUInt8.call(new Uint8Array(2), 0),
+  () => Buffer.prototype.readUInt8.call({}, 0),
 ];
 for (const run of runs) {
   try {
@@ -2489,6 +2491,7 @@ for (const run of runs) {
     console.log(e.name, e.code, e.message);
   }
 }
+console.log("u8", Buffer.prototype.readUInt8.call(new Uint8Array([7, 8]), 1));
 `,
       "cjs",
     );
@@ -2502,7 +2505,9 @@ for (const run of runs) {
         "Error SC2020 Buffer.of through a stored Buffer value is not supported yet",
         "Error SC2020 Buffer.prototype.map is not supported yet",
         "Error SC2020 Buffer.prototype members keyed by symbols are not supported yet",
+        "ran",
         "Error SC2020 Buffer.prototype.readUInt8 on a receiver that is not a Buffer is not supported yet",
+        "u8 8",
         "",
       ].join("\n"),
     );

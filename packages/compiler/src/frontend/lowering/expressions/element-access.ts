@@ -438,12 +438,21 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       // native collection boxes into the checked-dynamic tree as a handle
       // that answers member reads (and fences a method value that has no
       // lowering).
+      //
+      // The key keeps its VALUE for a dynamic, symbol or dyn-convertible
+      // union key: the checked-dynamic computed-key read applies
+      // ToPropertyKey itself (a symbol reads its symbol property, the
+      // well-known symbols answer as the collection's prototype does), so
+      // stringifying the key here would make `s[key]` throw on a symbol
+      // instead of reading the property JavaScript names.
       const loc = locOf(expr);
-      const key = lowerRecordPropertyKey(
-        lowerer,
-        lowerer.lowerExpr(expr.argumentExpression),
-        expr.argumentExpression,
-      );
+      const rawKey = lowerer.lowerExpr(expr.argumentExpression);
+      const key =
+        rawKey.type.kind === "dyn" ||
+        rawKey.type.kind === "symbol" ||
+        (rawKey.type.kind === "union" && lowerer.dynConvertible(rawKey.type))
+          ? lowerer.coerceToExpected(rawKey, DYN)
+          : lowerRecordPropertyKey(lowerer, rawKey, expr.argumentExpression);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",

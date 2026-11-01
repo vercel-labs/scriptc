@@ -38,11 +38,18 @@ export const MUTABLE_BUFFER_MEMBERS: ReadonlySet<string> = new Set([
  * the lowering hooks set the fact when they pass, and this scan settles it
  * before the first body lowers. */
 export function programMentionsMutableBuffers(lowerer: Lowerer): boolean {
-  for (const sf of lowerer.program.getSourceFiles()) {
+  // The files this lowering walks: the entry and the modules in lowering
+  // order, dependencies included. They are the files the hooks below can fire
+  // in, so they are the files that decide the fact; a white-box test's stub
+  // program answers with the one file it lowered.
+  const files = lowerer.moduleOrder.includes(lowerer.entry)
+    ? lowerer.moduleOrder
+    : [lowerer.entry, ...lowerer.moduleOrder];
+  for (const sf of files) {
     // Only JavaScript: a declaration has no body to lower, and the hooks fire
-    // on the code that lowers, not on every file in the program. A dependency
-    // stays in the scan — under-arming would be a silent divergence, and a
-    // false positive costs only this program's invariant metadata.
+    // on the code that lowers, not on every file in the program. Under-arming
+    // would be a silent divergence, and a false positive costs only this
+    // program's invariant metadata.
     if (sf.isDeclarationFile || !isJsSourceFile(sf)) continue;
     const text = sf.text;
     if (!text.includes("transfer") && !text.includes("resize") && !text.includes("grow")) continue;

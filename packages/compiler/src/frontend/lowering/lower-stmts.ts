@@ -183,6 +183,7 @@ import {
   bindingGenericFnAliasInfoOf,
   bindingGenericFnInfoOf,
   bindingGenericFnNodeOf,
+  genericAliasPresenceStore,
   genericBindingPresenceStore,
   genericBindingStoredValue,
   implicitLocalFnInfoOf,
@@ -6373,10 +6374,10 @@ export function lowerVarDecl(
 
   // `const h = id` — an ALIAS of a generic function: the alias's symbol
   // registers the target's info (calls and pinned values resolve like
-  // the target's own name), the binding has no runtime value, and the
-  // statement emits nothing (collectGlobals skipped module-scope
-  // globals by the same test; block-scoped aliases register here).
-  if (bindingGenericFnAliasInfoOf(lowerer, decl)) return null;
+  // the target's own name) and the binding has no runtime value, so the
+  // statement emits nothing but the flag of a module-scope alias whose
+  // reads can run before it (genericAliasPresenceStore).
+  if (bindingGenericFnAliasInfoOf(lowerer, decl)) return genericAliasPresenceStore(lowerer, decl);
 
   // `const stored = overloadedDeclaration`: no runtime slot is needed;
   // calls project onto the declaration's implementation ABI and value

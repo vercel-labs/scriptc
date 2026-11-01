@@ -62,6 +62,7 @@ import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-mod
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
 import {
+  genericDeclarationBehindValue,
   noteDynamicIdentityComparison,
   notePinnedIdentityComparison,
 } from "../generic-functions.js";
@@ -2677,6 +2678,28 @@ export function lowerStrictEquality(
   // assignable to the other — a tuple-typed listeners() element
   // against a prefix-declared handler): the pointer answers it.
   if (idLeft.type.kind === "func" && idRight.type.kind === "func") {
+    // Two VALUE INSTANCES of one generic declaration are the SAME function
+    // object in JavaScript — the erased closure every unpinned value reads
+    // and each pinned signature's compiled closure are separate functions
+    // here, so the pointer would answer false against Node's true. The
+    // operands' declarations decide it, not their compiled instances.
+    const leftDecl = genericDeclarationBehindValue(lowerer, leftNode, true);
+    if (leftDecl !== null && leftDecl === genericDeclarationBehindValue(lowerer, rightNode, true)) {
+      // JavaScript evaluates both operands, left first, before it compares
+      // them — and a read of a binding still in its temporal dead zone
+      // throws there. The declaration decides the answer, but the reads
+      // keep their place, in that order.
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: idLeft, loc },
+          { kind: "exprStmt", expr: idRight, loc },
+        ],
+        result: boolLit(!negated, loc),
+        type: BOOL,
+        loc,
+      };
+    }
     // Two pins of ONE generic declaration at different signatures are
     // different compiled closures; the whole-program check refuses the
     // compare (checkGenericIdentityPins).

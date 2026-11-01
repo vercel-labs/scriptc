@@ -1142,53 +1142,75 @@ export function lowerFsWriteOptionsCall(
     const arms = unionWriteData!.arms;
     const pathRef = varRef(pathLocal.id, pathLocal.type, loc);
     const dataRef = varRef(dataLocal.id, dataLocal.type, loc);
-    const resultLocal = promiseWriteOptions
-      ? lowerer.declareHiddenLocal("%writeResult", resultType)
-      : null;
+    const narrow = (tag: number, type: IrType): IrExpr => ({
+      kind: "unionNarrow",
+      unionId: unionType.unionId,
+      tag,
+      value: dataRef,
+      type,
+      loc,
+    });
+    const isTag = (tag: number): IrExpr => ({
+      kind: "unionIsTag",
+      unionId: unionType.unionId,
+      tag,
+      negated: false,
+      value: dataRef,
+      type: BOOL,
+      loc,
+    });
+    if (promiseWriteOptions) {
+      // The promise form picks its arm with a `ternary` chain: exactly one
+      // arm evaluates, and the chosen promise reaches the await as an
+      // ordinary expression value. A hidden local declared inside an `if`
+      // arm does not outlive the arm — an awaited promise held in one was
+      // released before the await retained it, a use-after-free that only
+      // the sanitizer lane observed.
+      let picked: IrExpr | null = null;
+      for (let tag = arms.length - 1; tag >= 0; tag--) {
+        const arm = arms[tag]!;
+        const write = armWrite(
+          pathRef,
+          narrow(tag, arm),
+          arm.kind === "bytes" ? "bytes" : "string",
+          mode,
+        );
+        picked =
+          picked === null
+            ? write
+            : {
+                kind: "ternary",
+                cond: isTag(tag),
+                then: write,
+                else_: picked,
+                type: resultType,
+                loc,
+              };
+      }
+      return { kind: "seqExpr", stmts: [], result: picked!, type: resultType, loc };
+    }
+    // The synchronous form has no value to carry out: each arm's write is a
+    // statement, and the last arm is the chain's else.
     let chain: IrStmt[] | null = null;
     for (let tag = arms.length - 1; tag >= 0; tag--) {
       const arm = arms[tag]!;
       const write = armWrite(
         pathRef,
-        {
-          kind: "unionNarrow",
-          unionId: unionType.unionId,
-          tag,
-          value: dataRef,
-          type: arm,
-          loc,
-        },
+        narrow(tag, arm),
         arm.kind === "bytes" ? "bytes" : "string",
         mode,
       );
-      const body: IrStmt[] = resultLocal
-        ? [{ kind: "varDecl", localId: resultLocal.id, init: write, loc }]
-        : [{ kind: "exprStmt", expr: write, loc }];
+      const body: IrStmt[] = [{ kind: "exprStmt", expr: write, loc }];
       chain =
-        chain === null
-          ? body
-          : [
-              {
-                kind: "if",
-                loc,
-                cond: {
-                  kind: "unionIsTag",
-                  unionId: unionType.unionId,
-                  tag,
-                  negated: false,
-                  value: dataRef,
-                  type: BOOL,
-                  loc,
-                },
-                then: body,
-                else_: chain,
-              },
-            ];
+        chain === null ? body : [{ kind: "if", loc, cond: isTag(tag), then: body, else_: chain }];
     }
-    const result: IrExpr = resultLocal
-      ? varRef(resultLocal.id, resultLocal.type, loc)
-      : { kind: "libCall", fn: "console.noop", args: [], type: VOID, loc };
-    return { kind: "seqExpr", stmts: chain ?? [], result, type: resultType, loc };
+    return {
+      kind: "seqExpr",
+      stmts: chain ?? [],
+      result: { kind: "libCall", fn: "console.noop", args: [], type: VOID, loc },
+      type: resultType,
+      loc,
+    };
   };
   // The runtime needs only `mode`, but every source option value is an
   // ordinary JS expression. Stage path/data and then evaluate the option

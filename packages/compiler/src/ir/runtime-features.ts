@@ -1495,13 +1495,6 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
-  /** A record literal asserted to a wider record type answers a partial
-   * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
-   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c, so neither program
-   * links the other's code. */
-  recordViewPartial: rule({
-    expr: (node) => node.kind === "dynCheck" && node.partialView === true,
-  }),
   /** A BigInt typed-array constructor read as a value (BigInt64Array,
    * BigUint64Array): their element kinds, which no double represents, live
    * in the JavaScript object model build (t262-da §J) of scr_bytes.c,
@@ -1684,7 +1677,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
-    recordViewPartial: false,
     bigintBytes: false,
     wasm: false,
     webcrypto: false,

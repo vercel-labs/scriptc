@@ -264,18 +264,13 @@ export function variantsFor(source) {
   // scr_json.c builds one object per flavor (and workers mode): its paths
   // for Node island handles and handle classes call through tables that
   // scr_node_island_handle.c and scr_dyn_handle_class.c install when a
-  // program links them, and its dynamic-tier primitives are always defined.
-  // A program with a partial record assertion (record-views.ts) links the
-  // build whose view slot answers NULL for a field the viewed record does
-  // not declare, so the emitted guard, clone helper and presence test can
-  // stop with the program's message instead of reading a bogus slot; every
-  // other program keeps the default object.
+  // program links them, its dynamic-tier primitives are always defined, and
+  // its view slot answers NULL for a field the viewed record does not
+  // declare (a partial record assertion, record-views.ts), so the emitted
+  // guard, clone helper and presence test stop with the program's message.
+  // A full view holds an offset for every target field, so the NULL case is
+  // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
-    variants.push({
-      id: "record-view-partial",
-      when: { recordViewPartial: true },
-      defines: ["SCR_RECORD_VIEW_PARTIAL"],
-    });
     // An error thrown by island code answers `constructor` from V8 (NI-4),
     // so `e.constructor === TypeError` holds with the island's TypeError.
     // Pushed before the object model twins below, so a program that has both
@@ -285,14 +280,6 @@ export function variantsFor(source) {
       id: "node-island",
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
-    });
-    // A program with both a partial record assertion and Node islands links
-    // the build that carries both defines; the variant with the most
-    // conditions is the one selected.
-    variants.push({
-      id: "record-view-partial-node-island",
-      when: { recordViewPartial: true, nodeIsland: true },
-      defines: ["SCR_RECORD_VIEW_PARTIAL", "SCR_NODE_ISLANDS"],
     });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array

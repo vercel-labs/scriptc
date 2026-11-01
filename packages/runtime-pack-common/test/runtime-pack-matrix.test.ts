@@ -88,13 +88,18 @@ test("scr_lib.c builds once per flavor, whatever the program's features", () => 
 
 test("scr_json builds one object per flavor, plus its object model twin", () => {
   // The JavaScript object model build (t262-da §J) is one column for every
-  // runtime feature only a JavaScript source reaches: the default build gets
-  // one twin, so any combination of features selects a build that carries
-  // the object model's code. scr_json.c has no other build: its Node island
-  // and handle-class paths call through tables, and its view slot answers
-  // NULL for a field a partial record view does not have in every build.
+  // runtime feature only a JavaScript source reaches: each scr_json.c build
+  // gets one twin, so any combination of features selects a build that
+  // carries the object model's code. The unit has no partial record view
+  // build: its view slot answers NULL for a field a partial record view does
+  // not have in every build.
   const variants = variantsFor("scr_json.c");
-  expect(variants.map((variant: { id: string }) => variant.id)).toEqual(["default", "js-om"]);
+  expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
+    "default",
+    "node-island",
+    "js-om",
+    "js-om-node-island",
+  ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
     expect(variant.when.jsObjectModel).toBe(true);
@@ -110,6 +115,29 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
     "SCR_JS_OBJECT_MODEL",
     "SCR_WORKERS",
   ]);
+  // A program that runs a Node island selects the island build, alone and
+  // beside the object model build it may also carry.
+  expect(selected("scr_json.c", { workers: false, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A partial record assertion selects nothing: the view slot answers NULL in
+  // every build, so a program with one keeps the build its other features
+  // name, alone or beside the island and object model builds.
+  expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([]);
+  expect(
+    selected("scr_json.c", { workers: false, nodeIsland: true, recordViewPartial: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      nodeIsland: true,
+      recordViewPartial: true,
+    }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);

@@ -816,6 +816,14 @@ bool scr_dyn_is_array_prototype(const ScrDyn *d) {
   return d && d == scr_builtin_array_prototype;
 }
 
+bool scr_dyn_is_object_prototype(const ScrDyn *d) {
+  return d && d == scr_builtin_object_prototype;
+}
+
+bool scr_dyn_is_error_prototype(const ScrDyn *d) {
+  return d && d == scr_builtin_error_prototype;
+}
+
 bool scr_dyn_array_prototype_element_fence(const ScrDyn *recv) {
   if (!scr_dyn_is_array_prototype(recv)) return false;
   static const char message[] = "Elements on Array.prototype are not supported yet";
@@ -16779,6 +16787,16 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
         "ReferenceError", "EvalError", "URIError", "AggregateError",
     };
     size_t hit = scr_errdyn_find(d, false);
+#ifdef SCR_NODE_ISLANDS
+    /* An error island code threw keeps its own realm's constructor (the
+     * island unit answers it from V8), so the island's TypeError is the
+     * one `e.constructor` names. */
+    if (hit != SIZE_MAX && scr_ni_dyn_ops != NULL &&
+        scr_ni_dyn_ops->error_constructor != NULL) {
+      ScrDyn *island = NULL;
+      if (scr_ni_dyn_ops->error_constructor(scr_errdyn_cache[hit].err, &island)) return island;
+    }
+#endif
     const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
     for (size_t kind = 0; vt && kind < sizeof names / sizeof names[0]; kind++) {
       if (!names[kind]) continue;

@@ -430,6 +430,11 @@ function buildLibFnSignatures() {
      * a promise that adopts a thenable's settlement, or a promise fulfilled
      * with the value. The second argument reads `then` as above. */
     "dyn.promiseResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** `Promise.<s>.call(C, value)` in a JavaScript source (scr_js_
+     * promise_generic.c): the static's name, the `this` constructor and the
+     * one argument the algorithm takes. Answers the capability's promise as
+     * a checked-dynamic value (a foreign C may answer anything). */
+    "promise.genericStatic": { argTypes: [STRING, DYN, DYN], result: DYN },
     /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
      * borrowed; result: an owned string) — the dyn kind's JS answer:
      * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest

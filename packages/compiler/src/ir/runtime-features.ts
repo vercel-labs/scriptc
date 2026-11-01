@@ -105,6 +105,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
   "dyn.promiseResolve",
+  // The generic Promise statics build and settle their capability's promise
+  // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
+  "promise.genericStatic",
   "fs.callbackCall",
   "fs.callbackGlob",
   "fs.callbackValue",
@@ -1126,6 +1129,10 @@ const RUNTIME_FEATURE_RULES = {
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
   }),
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor (scr_js_promise_generic.c): NewPromiseCapability(C), the
+   * C.resolve lookup and the iterator protocol. */
+  promiseGeneric: rule({ fns: ["promise.genericStatic"] }),
   /** EventEmitter and the stream classes as untyped constructor values
    * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
    * unit, render unhandled 'error' payloads through the inspect unit and
@@ -1169,6 +1176,9 @@ const RUNTIME_FEATURE_RULES = {
       // The Boolean prototype's methods run scr_js_wrapper_apply in the
       // same unit, which calls scr_dyn_invoke.
       "wrapper.booleanPrototype",
+      // The generic Promise statics call C's resolve and the iterable's
+      // next/return through scr_dyn_invoke.
+      "promise.genericStatic",
     ],
     // Constant-key reads of Object.prototype member names, and of
     // Array.prototype method names on arrays, answer the inherited member
@@ -1331,6 +1341,9 @@ const RUNTIME_FEATURE_RULES = {
   inspect: rule({
     fns: [
       "global.native",
+      // formatBigInt renders a bigint's digits in Node's form, and the
+      // numericSeparator groups they take are inspect state.
+      "bigint.inspect",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
@@ -1592,6 +1605,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     textCodecDyn: false,
     dnsPromises: false,
     dynAsync: false,
+    promiseGeneric: false,
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,

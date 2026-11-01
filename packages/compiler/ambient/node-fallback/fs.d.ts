@@ -26,10 +26,10 @@ declare module "node:fs" {
   ): void;
   /* The options form carries the mode (applied at CREATION only, like
    * Node — an existing file keeps its permissions) and/or the utf8
-   * encoding spelling. */
+   * encoding spelling; it writes text or raw byte data. */
   export function writeFileSync(
     path: string | URL,
-    data: string,
+    data: string | Uint8Array,
     /* The options-record stance (see http.RequestOptions): an unsupported
      * flag fences by name at the call site; undocumented keys drop like
      * Node. The lowered flags are "w" (truncate-or-create) and "wx"
@@ -50,6 +50,19 @@ declare module "node:fs" {
   export function writeFileSync(fd: number, data: string): void;
   export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
+  /* The options record: `encoding` may only spell the utf8 the runtime
+   * appends; `mode` and any other flag keep their fence, since they change
+   * what an append creates (see the writeFileSync stance). */
+  export function appendFileSync(
+    path: string | URL,
+    data: string,
+    options?: {
+      mode?: number;
+      encoding?: "utf8" | "utf-8";
+      flag?: string;
+      [option: string]: unknown;
+    },
+  ): void;
   export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(

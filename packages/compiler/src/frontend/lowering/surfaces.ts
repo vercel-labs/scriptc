@@ -2301,6 +2301,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // file-descriptor data form.
     writeFileSync: [
       "fs.writeFileSyncBytes",
+      "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
@@ -2355,8 +2356,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode, flag } options forms.
-    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
+    // The string-data and Uint8Array/Buffer-data { mode, flag } options
+    // forms (and the Buffer-data two-argument write).
+    writeFile: [
+      "fsp.writeFileMode",
+      "fsp.writeFileFlags",
+      "fsp.writeFileBytes",
+      "fsp.writeFileBytesFlags",
+    ],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],

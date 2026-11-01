@@ -1552,8 +1552,10 @@ const RUNTIME_FEATURE_RULES = {
     fns: [
       "fs.copyFileFlagsSync",
       "fs.writeFileFlagsSync",
+      "fs.writeFileSyncBytesFlags",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
+      "fsp.writeFileBytesFlags",
     ],
   }),
   /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):

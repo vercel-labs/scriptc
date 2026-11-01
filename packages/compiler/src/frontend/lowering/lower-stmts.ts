@@ -10063,6 +10063,23 @@ function firstPatternProp(
   return firstProp !== undefined ? { firstProp } : {};
 }
 
+/** True when an object assignment pattern's first property reads with a
+ * default (`({ a = 1 } = v)`, `({ a: b = 1 } = v)`). V8 then lets the
+ * keyed read throw ("Cannot read properties of null (reading 'a')")
+ * instead of the pattern's RequireObjectCoercible check, the same way
+ * `firstReadsWithDefault` skips the declaration's check. */
+function firstAssignReadsWithDefault(target: ts.ObjectLiteralExpression): boolean {
+  const first = target.properties.nodes[0];
+  if (first === undefined) return false;
+  if (ts.isShorthandPropertyAssignment(first))
+    return first.objectAssignmentInitializer !== undefined;
+  return (
+    ts.isPropertyAssignment(first) &&
+    ts.isBinaryExpression(first.initializer) &&
+    first.initializer.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  );
+}
+
 /** V8's spelling of a destructuring RHS in its TypeError message
  * ("Cannot destructure 'a' as it is undefined.") — plain identifiers
  * spell their name (parens unwrap), `this`, property chains and
@@ -10269,7 +10286,7 @@ function destructuringAssignInto(
       ts.isBinaryExpression(rhsInner) &&
       rhsInner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       (ts.isObjectLiteralExpression(rhsInner.left) || ts.isArrayLiteralExpression(rhsInner.left));
-    if (!checkedByInner && rhs !== null) {
+    if (!checkedByInner && rhs !== null && !firstAssignReadsWithDefault(target)) {
       const spelling =
         destrSpellingOf(rhs) ??
         (unitSource === "nullT" && isNullLiteralSource(rhs) ? "null" : null);

@@ -4,8 +4,10 @@
 // TypeError before any binding or target assignment. V8 spells the source by
 // form: a bare `null` array source reads "null is not iterable" while a
 // parenthesized one gets the generic runtime wording, a null-typed binding
-// spells its name, and object patterns read "null" / "undefined" / the name.
-// Everything below throws, so every line reports the error it caught.
+// spells its name, an identifier or call spells itself, a defaulted first key
+// reads the property instead, and object patterns read "null" / "undefined" /
+// the name. Everything below throws (except a string source, which is
+// iterable), so every line reports what ran and the error it caught.
 
 const results = [];
 function attempt(label, run) {
@@ -134,4 +136,80 @@ attempt("({ a } = undefinedBinding)", () => {
   return a;
 });
 
+
+attempt("decl-array-null", () => {
+  const [a] = null;
+});
+attempt("decl-array-undefined", () => {
+  const [a] = undefined;
+});
+attempt("decl-array-rest", () => {
+  const [...r] = null;
+});
+attempt("decl-array-call", () => {
+  const f = () => null;
+  const [a] = f();
+});
+attempt("decl-array-property", () => {
+  const o = { x: null };
+  const [a] = o.x;
+});
+attempt("decl-array-string", () => {
+  const [a] = "str";
+  results.push("decl-array-string element: " + String(a));
+});
+attempt("decl-object-empty", () => {
+  const {} = null;
+});
+attempt("decl-object-key", () => {
+  const { x } = null;
+});
+attempt("decl-object-key-undefined", () => {
+  const { x } = undefined;
+});
+attempt("decl-object-default", () => {
+  const { x = 1 } = null;
+});
+attempt("decl-object-computed", () => {
+  const k = "a";
+  const { [k]: y } = null;
+});
+attempt("decl-object-nested-key", () => {
+  const { x: { y } } = null;
+});
+attempt("decl-object-call", () => {
+  const f = () => null;
+  const { x } = f();
+});
+attempt("decl-object-property", () => {
+  const o = { y: null };
+  const { x } = o.y;
+});
+attempt("assign-object-property", () => {
+  const o = { y: null };
+  let x;
+  ({ x } = o.y);
+});
+attempt("assign-array", () => {
+  let a;
+  [a] = null;
+});
+attempt("assign-object", () => {
+  let x;
+  ({ x } = null);
+});
+attempt("assign-object-empty", () => {
+  ({} = null);
+});
+attempt("assign-object-default", () => {
+  let x;
+  ({ x = 1 } = null);
+});
+attempt("nested-object", () => {
+  const [{ a }] = [null];
+});
+attempt("for-of-decl-object-default", () => {
+  for (const { a = 1 } of [null]) {
+  }
+});
 console.log(results.join("\n"));

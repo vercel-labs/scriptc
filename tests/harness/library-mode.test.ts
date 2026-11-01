@@ -66,6 +66,14 @@
  *                           refusal by code or manifest id, and fencing
  *                           an already-refusing surface only adds the
  *                           note (its own code survives)
+ *   K15 export-facades      the entry's exports may be supplied by other
+ *                           modules: an export list over a local import,
+ *                           a renamed named re-export, and a star
+ *                           re-export all resolve to the declaring
+ *                           function's compiled unit, evaluated at the
+ *                           entry's module order and sharing that
+ *                           module's state (SC4002 names a re-exported
+ *                           non-function value as what it is)
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -77,6 +85,9 @@ import { nmDefined } from "./nm-defined.js";
 const repoRoot = join(import.meta.dirname, "../..");
 const fixtureRoot = join(repoRoot, "tests/library-mode");
 const platformTest = process.env["SCRIPTC_PORTABLE_ONLY"] === "1" ? test.skip : test;
+/* The sanitized lane's positive leak control needs a leak checker that runs
+ * by default; Linux's ASan has one. */
+const linuxTest = process.platform === "linux" ? test : test.skip;
 /* The plain and SCRIPTC_SAN=1 suites may run concurrently by design (the
  * suite lock is per flavor) and this suite runs the same ordinary builds in
  * both, so the cache path carries the SUITE flavor — otherwise the two runs
@@ -154,9 +165,9 @@ function buildProbe(
 function runProbe(
   bin: string,
   args: string[] = [],
-): { stdout: string; status: number | null; signal: string | null } {
+): { stdout: string; stderr: string; status: number | null; signal: string | null } {
   const r = spawnSync(bin, args, { encoding: "utf8", timeout: 60_000 });
-  return { stdout: r.stdout ?? "", status: r.status, signal: r.signal };
+  return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status, signal: r.signal };
 }
 
 /** nm over the archive: [definedExternal, undefined] symbol sets, macOS/
@@ -297,6 +308,41 @@ wrap empty: len 2 bytes 60 62
     expect(run.signal).toBeNull();
     expect(run.status).toBe(0);
     expect(run.stdout).toBe(BUFFERS_EXPECTED);
+  });
+
+  /* ── K15: export facades — a re-exported function is an export ───────── */
+
+  test("K15: re-export facades supply the entry's exports (Node order and state)", async () => {
+    const { archive, outDir } = await buildLibrary("reexport", emission);
+    const probe = buildProbe("reexport", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    // "HI?" is the entry's own top-level setSuffix("?") seen through a
+    // re-exported function, and the second call sees the state the probe's
+    // setSuffix(".") left behind: the facade names the SDK's one module
+    // instance, never a copy per export.
+    expect(run.stdout).toBe(
+      `handle: HI?
+handle after setSuffix: OK.
+doubled: 43
+version: sdk-1.0
+`,
+    );
+    // K1 discipline holds through the facade: prefix-carrying definitions
+    // are exactly the declared symbols (no per-export wrapper copies), and
+    // nothing prefix-carrying is left undefined.
+    const { defined, undef } = nmSymbols(archive);
+    expect([...defined].filter((s) => s.startsWith("kr_")).sort()).toEqual([
+      "kr_collect",
+      "kr_doubled",
+      "kr_handle",
+      "kr_init",
+      "kr_set_panic_sink",
+      "kr_set_suffix",
+      "kr_version",
+    ]);
+    expect([...undef].filter((s) => s.startsWith("kr_"))).toEqual([]);
   });
 
   /* ── X509Certificate fields: scr_x509.c rides the archive ────────────── */
@@ -620,12 +666,29 @@ survived, sink_calls=1
   platformTest("K10: K5/K7 under ASan", async () => {
     const { archive, outDir } = await buildLibrary("traps", emission, { sanitize: true });
     const probe = buildProbe("traps", archive, outDir, { sanitize: true });
+    // The sink longjmps out of the entry, so the blocks the trapped call
+    // had live are abandoned rather than unwound — either mode should still
+    // leave LeakSanitizer with nothing to report, and an exit status of 0
+    // is the same fact (it fails the process when it finds a leak).
     const trap = runProbe(probe, ["trap"]);
     expect(trap.status).toBe(0);
+    expect(trap.stderr).not.toContain("LeakSanitizer");
     expect(trap.stdout).toContain("survived, sink_calls=1");
     const thrown = runProbe(probe, ["throw"]);
     expect(thrown.status).toBe(0);
+    expect(thrown.stderr).not.toContain("LeakSanitizer");
     expect(thrown.stdout).toContain("text=[Uncaught Error: kaput");
+  });
+
+  // The abandoned-heap hand-off must leave real leaks reported rather than
+  // turning the checker off to keep the trap modes quiet.
+  linuxTest("K10: LSan stays on in the sanitized lane (a host leak still fails)", async () => {
+    const { archive, outDir } = await buildLibrary("traps", emission, { sanitize: true });
+    const probe = buildProbe("traps", archive, outDir, { sanitize: true });
+    const run = runProbe(probe, ["hostleak"]);
+    expect(run.stdout).toContain("host leak left for LeakSanitizer");
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("LeakSanitizer");
   });
 });
 
@@ -712,7 +775,27 @@ describe("K9: library-mode refusals", () => {
     });
     expect(diags[0]!.code).toBe("SC4002");
     expect(diags[0]!.message).toContain("'nope'");
-    expect(diags[0]!.hint).toContain("exported wrapper function");
+    expect(diags[0]!.hint).toContain("re-export it from another module");
+  });
+
+  test("SC4002: a re-exported value that is not a function", async () => {
+    const dir = join(fixtureRoot, "reexport");
+    const outDir = join(cacheDir, `refusal-reexport-${refusalCounter++}`);
+    mkdirSync(outDir, { recursive: true });
+    const profile = JSON.parse(readFileSync(join(dir, "profile.json"), "utf8"));
+    profile.entry = join(dir, profile.entry);
+    profile.exports = [{ export: "vendor", symbol: "kr_vendor", params: [], returns: "string" }];
+    const profilePath = join(outDir, "profile.json");
+    writeFileSync(profilePath, JSON.stringify(profile));
+    const result = await compileLibrary({ profilePath, outDir });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    // The star re-export reaches ./sdk/version's `vendor` const: the
+    // refusal names what it is and anchors at the declaration that
+    // supplies it, not at the facade.
+    expect(result.diagnostics[0]!.code).toBe("SC4002");
+    expect(result.diagnostics[0]!.message).toContain("exports it as a variable");
+    expect(result.diagnostics[0]!.loc.file).toBe(join(dir, "sdk/version.ts"));
   });
 
   test("SC4003: a parameter outside the marshalling classes", async () => {

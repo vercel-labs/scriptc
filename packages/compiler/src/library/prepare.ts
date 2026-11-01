@@ -43,7 +43,7 @@ import {
   type SidecarIrTypePattern,
 } from "./sidecar.js";
 import { validateSidecar } from "./sidecar-validate.js";
-import type { EntryExportInfo } from "../frontend/lib-exports.js";
+import type { EntryExport } from "../frontend/lib-exports.js";
 import type { ContractFacts } from "../frontend/lib-contract.js";
 import type { LowerResult } from "../frontend/lowering/lowerer.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
@@ -77,10 +77,14 @@ function libClassFits(cls: string, t: IrType): boolean {
 
 /** Resolve the profile's export map against the entry module — SC4002/
  * SC4004/SC4007 from the declaration facts, SC4003 from the lowered IR
- * signatures — and land the library section on the module. */
+ * signatures — and land the library section on the module. The facts come
+ * from the declaration the entry's export table names (directly, through an
+ * export list, or through a re-export facade), and `libExportUnits` names
+ * the unit that declaration lowered to. */
 function resolveLibrarySection(
   profile: LibraryProfile,
-  entryInfo: Map<string, EntryExportInfo>,
+  entryInfo: Map<string, EntryExport>,
+  libExportUnits: ReadonlyMap<string, string>,
   mod: IrModule,
   entryPath: string,
 ): { lib: IrLibSection } | { diagnostics: ScrDiagnostic[] } {
@@ -94,8 +98,18 @@ function resolveLibrarySection(
       diagnostics.push(
         libExportUnresolvedDiag(
           e.export,
-          "the entry module has no exported function declaration by that name",
+          "the entry module exports no value by that name",
           entryLoc,
+        ),
+      );
+      continue;
+    }
+    if (info.kind === "value") {
+      diagnostics.push(
+        libExportUnresolvedDiag(
+          e.export,
+          `the entry module exports it as ${info.what}, not a function declaration`,
+          info.loc,
         ),
       );
       continue;
@@ -108,7 +122,11 @@ function resolveLibrarySection(
       diagnostics.push(libAsyncExportDiag(e.export, info.async ? "async" : "generator", info.loc));
       continue;
     }
-    const fn = fnByName.get(e.export);
+    // The unit that supplies the export: the entry module's own function
+    // for a direct export, the declaring module's tagged unit when the
+    // entry re-exports it.
+    const fnName = libExportUnits.get(e.export) ?? e.export;
+    const fn = fnByName.get(fnName);
     if (fn === undefined) {
       diagnostics.push(
         libExportUnresolvedDiag(
@@ -160,7 +178,7 @@ function resolveLibrarySection(
     if (!bad) {
       const resolvedExport: IrLibSection["exports"][number] = {
         symbol: e.symbol,
-        fnName: e.export,
+        fnName,
         params: e.params,
         returns: e.returns,
       };
@@ -268,7 +286,10 @@ function resolveLibrarySection(
  * contract), tightening the intraprocedural analysis at zero declaration
  * cost. Sidecar-declared slots (record fields, msg arms, helper params
  * and returns) merge into the same config at sidecar build. */
-function libraryIntSlotConfig(profile: LibraryProfile): IntSlotConfig {
+function libraryIntSlotConfig(
+  profile: LibraryProfile,
+  libExportUnits: ReadonlyMap<string, string>,
+): IntSlotConfig {
   const cfg: IntSlotConfig = { fns: new Map(), records: new Map() };
   for (const e of profile.exports) {
     const params = e.params.map((c) => (c === "i64" || c === "u64" ? c : null));
@@ -278,8 +299,12 @@ function libraryIntSlotConfig(profile: LibraryProfile): IntSlotConfig {
     );
     if (params.every((p) => p === null) && ret === null && paramSeeds.every((s) => s === null))
       continue;
+    // The slot config is keyed by the compiled unit (a re-exported export
+    // lives in its declaring module's unit); the paths name the profile's
+    // own export key, which is what a teaching or diagnostic quotes.
+    const fnName = libExportUnits.get(e.export) ?? e.export;
     const slots: FnIntSlots = {
-      fnName: e.export,
+      fnName,
       params,
       paramPaths: e.params.map((c, i) =>
         c === "i64" || c === "u64" ? `exports.${e.export}.params[${i}]` : null,
@@ -288,7 +313,7 @@ function libraryIntSlotConfig(profile: LibraryProfile): IntSlotConfig {
       retPath: ret !== null ? `exports.${e.export}.return` : null,
       paramSeeds,
     };
-    cfg.fns.set(e.export, slots);
+    cfg.fns.set(fnName, slots);
   }
   return cfg;
 }
@@ -474,7 +499,7 @@ export function prepareLibrary(
   });
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
-  let entryInfo: Map<string, EntryExportInfo>;
+  let entryInfo: Map<string, EntryExport>;
   let contractFacts: ContractFacts | null;
   try {
     // Every library refusal leaves through the ask-5 teaching decoration:
@@ -582,7 +607,7 @@ export function prepareLibrary(
       ]);
     }
     if (lowered.module === null) return fail(lowered.diagnostics);
-    entryInfo = fe.entryExports();
+    entryInfo = fe.entryExports(profile.exports.map((e) => e.export));
     sourceTexts = fe.sourceTexts();
   } finally {
     fe.dispose();
@@ -603,7 +628,13 @@ export function prepareLibrary(
   // then the profile's determinism fences (ask 5, SC4008) over the same
   // compiled graph the attestation scan reads: all refused before anything
   // is emitted, so the narrowed library link set below is structural fact.
-  const resolved = resolveLibrarySection(profile, entryInfo, mod, entryPath);
+  const resolved = resolveLibrarySection(
+    profile,
+    entryInfo,
+    lowered.libExportUnits ?? new Map(),
+    mod,
+    entryPath,
+  );
   if ("diagnostics" in resolved) return fail(resolved.diagnostics);
   const asyncSurface = moduleLibAsyncSurface(mod);
   if (asyncSurface !== null) {
@@ -629,7 +660,7 @@ export function prepareLibrary(
   // seed the config here; sidecar-declared slots (record fields, msg
   // arms, helper params/returns) merge in after the projection resolves
   // them below.
-  let intCfg = libraryIntSlotConfig(profile);
+  let intCfg = libraryIntSlotConfig(profile, lowered.libExportUnits ?? new Map());
 
   // The ask-2 contract sidecar rides the same invocation. Identity first
   // (schema §2's worked build_id definition over compiler version, profile

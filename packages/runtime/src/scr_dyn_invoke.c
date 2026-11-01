@@ -1446,7 +1446,16 @@ static ScrDyn *scr_dyn_invoke_impl(
     }
     if ((mid == DYN_M_shift)) {
       if (len == 0) return scr_dyn_retain(scr_dyn_undefined());
-      if (recv->v.arr.sealed) {
+#ifdef SCR_JS_OBJECT_MODEL
+      /* A last element Object.defineProperty made non-configurable refuses
+       * its delete, which comes after every element moved down: the array
+       * keeps the moved elements, as Node's does. */
+      bool undeletable_tail = scr_dyn_arr_has_index(recv, len - 1) &&
+          !scr_dyn_arr_index_configurable(recv, len - 1);
+#else
+      bool undeletable_tail = false;
+#endif
+      if (recv->v.arr.sealed || undeletable_tail) {
         if (recv->v.arr.frozen) {
           static const char message[] = "Cannot assign to read only property";
           scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);

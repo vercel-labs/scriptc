@@ -2084,8 +2084,13 @@ bool scr_dyn_arr_attrs_refuse(const ScrDyn *arr, int op, size_t len, double x, d
           return true;
         }
       }
+    /* A last element that is only non-configurable refuses at its own
+     * delete, which comes after the moves: the mutator moves the elements
+     * and throws there. Only one a frozen array holds (non-writable too)
+     * refuses here, where its writes already would. */
     if (len > 0 && scr_dyn_arr_has_index(arr, len - 1) &&
-        !scr_dyn_arr_index_configurable(arr, len - 1)) {
+        !scr_dyn_arr_index_configurable(arr, len - 1) &&
+        !scr_dyn_arr_index_writable(arr, len - 1)) {
       scr_array_frozen_error(5, len, (double)(len - 1), 0, 0);
       return true;
     }

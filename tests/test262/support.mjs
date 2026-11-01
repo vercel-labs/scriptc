@@ -322,9 +322,185 @@ const earlyErrorCodes = new Set([
   1525, 1526, 1527, 1528, 1529, 1530, 1531, 1532, 1533, 1534, 1535,
   18006, 18011, 18012, 18016, 2300, 2337, 2364, 2451, 2462, 2491, 2523,
   2779, 2804, 17012, 18061,
+  // `arguments` in a class field initializer or static block (ContainsArguments
+  // of Initializer / ClassStaticBlockBody is a static-semantics early error;
+  // the guard keeps the code for an ordinary unresolved name out).
+  2304, 2662,
+  // Grammar and early errors tsc reports as semantic diagnostics, one per line
+  // with the specification rule each one stands for.
+  1054, // a `get` accessor with formal parameters.
+  1104, // `continue` outside an enclosing iteration statement.
+  1105, // `break` outside an enclosing iteration or switch statement.
+  1189, // a `for...in` head declaration with an initializer.
+  1200, // a line terminator between the arrow parameters and `=>`.
+  1210, // a class body is strict code (binding `eval`/`arguments`, legacy octal, `with`).
+  1341, // a class constructor that is an accessor.
+  1368, // a class constructor that is a generator.
+  1451, // a private name outside a class body or outside a private reference.
+  1492, // a `using` / `await using` declaration with a binding pattern.
+  17013, // `new.target` outside any function (only global code, via the guard).
+  18013, // a private name used outside the class that declares it.
+  2335, // `super()` outside a derived-class constructor (older message form).
+  2357, // an update operand that is not a valid assignment target.
+  2405, // a `for...in` head whose left-hand side is not a valid assignment target.
+  2481, // a `var` in a scope that also declares the same name with let/const/using.
+  2660, // `super.x` outside any [[HomeObject]] member (older message form).
+  2699, // a static member named `prototype`.
+  5076, // `??` chained with `&&` / `||` without parentheses.
 ]);
 
-function earlyErrorDiagnostics(source, variant) {
+// Several of those codes also describe a construct that is legal JavaScript
+// elsewhere: the code is broader than the early error it names (a `static`
+// member named `name` is legal, `super.x` in a base-class method is legal, a
+// `for...in` head over a number-typed property is legal). A negative parse
+// test passes only when the diagnostic's own site is the one the
+// specification makes an early error, so those codes carry a site guard. A
+// guard is deliberately conservative: an unrecognised site keeps the refusal.
+const earlyErrorSites = new Map([
+  [1189, forInInitializerIsEarlyError],
+  [2405, forInTargetIsEarlyError],
+  [2304, containsArgumentsIsEarlyError],
+  [2662, containsArgumentsIsEarlyError],
+  [17013, newTargetOutsideFunction],
+  [2335, superCallOutsideDerivedConstructor],
+  [2660, superPropertyOutsideHomeObject],
+  [2699, staticPrototypeIsEarlyError],
+]);
+
+/** The narrowest node whose span contains `position`, with its parents set. */
+function smallestNodeAt(file, position) {
+  let found;
+  const visit = (node) => {
+    if (position < node.getStart(file) || position >= node.end) return;
+    found = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
+/** The class element the member name at `node` belongs to. */
+function enclosingMember(node) {
+  const element = node?.parent;
+  return element && ts.isClassElement(element) ? element : undefined;
+}
+
+function memberNameText(name) {
+  if (!name) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return name.text;
+  return undefined;
+}
+
+// 1189: B.3.5 still allows `for (var binding = initializer in expr)` in sloppy
+// code with a plain binding identifier. Every other for-in initializer is an
+// early error.
+function forInInitializerIsEarlyError(file, variant, diagnostic) {
+  let list = smallestNodeAt(file, diagnostic.start);
+  while (list && !ts.isVariableDeclarationList(list)) list = list.parent;
+  if (!list) return true;
+  const sloppyVar = variant === "sloppy" && (list.flags & ts.NodeFlags.BlockScoped) === 0 &&
+    list.declarations.every((declaration) => ts.isIdentifier(declaration.name));
+  return !sloppyVar;
+}
+
+// 2405: the left-hand side of a `for...in` head must be a valid assignment
+// target. tsc also uses this code for a number-typed property target, which is
+// legal JavaScript.
+function forInTargetIsEarlyError(file, _variant, diagnostic) {
+  let statement = smallestNodeAt(file, diagnostic.start);
+  while (statement && !ts.isForInStatement(statement)) statement = statement.parent;
+  if (!statement) return true;
+  let target = statement.initializer;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  return !(ts.isIdentifier(target) || ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target));
+}
+
+// 2662: `arguments` is an early error only in a class field initializer or a
+// static block, including through nested arrows (ContainsArguments). A
+// computed member name is evaluated in the enclosing scope, not in the
+// initializer, so it stays out. The code itself is the checker's ordinary
+// "cannot find name" report.
+function containsArgumentsIsEarlyError(file, _variant, diagnostic) {
+  let node = smallestNodeAt(file, diagnostic.start);
+  if (!node || !ts.isIdentifier(node) || node.text !== "arguments") return false;
+  for (let parent = node.parent; parent; node = parent, parent = parent.parent) {
+    if (ts.isArrowFunction(parent)) continue;
+    if (ts.isComputedPropertyName(parent)) return false;
+    if (ts.isPropertyDeclaration(parent) || ts.isClassStaticBlockDeclaration(parent)) return true;
+    if (ts.isFunctionLike(parent) || ts.isClassLike(parent) || ts.isSourceFile(parent)) return false;
+  }
+  return false;
+}
+
+// 17013: `new.target` is an early error outside any function. A class field
+// initializer and a static block are function-like for it, and so is an arrow,
+// but a computed member name is evaluated in the enclosing scope.
+function newTargetOutsideFunction(file, _variant, diagnostic) {
+  const node = smallestNodeAt(file, diagnostic.start);
+  for (let parent = node?.parent; parent; parent = parent.parent) {
+    if (ts.isArrowFunction(parent)) continue;
+    if (ts.isPropertyDeclaration(parent)) {
+      const initializer = parent.initializer;
+      if (initializer && diagnostic.start >= initializer.getStart(file) && diagnostic.start < initializer.end) return false;
+      continue;
+    }
+    if (ts.isClassStaticBlockDeclaration(parent) || ts.isFunctionLike(parent)) return false;
+  }
+  return true;
+}
+
+// 2335: `super()` is an early error unless it is lexically inside the
+// constructor of a class with a heritage clause. The same code also names a
+// legal `super.x` in a base-class method, which is a property reference, not a
+// call, so those sites stay out (a property reference outside every member is
+// 2660's early error, guarded below).
+function superCallOutsideDerivedConstructor(file, _variant, diagnostic) {
+  const node = smallestNodeAt(file, diagnostic.start);
+  if (!node || node.kind !== ts.SyntaxKind.SuperKeyword) return false;
+  const call = node.parent;
+  if (!call || !ts.isCallExpression(call) || call.expression !== node) return false;
+  for (let child = call, parent = call.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isArrowFunction(parent)) continue;
+    if (ts.isPropertyDeclaration(parent) || ts.isClassStaticBlockDeclaration(parent)) return true;
+    if (ts.isFunctionLike(parent)) {
+      if (!ts.isConstructorDeclaration(parent)) return true;
+      const owner = parent.parent;
+      return !(ts.isClassLike(owner) && (owner.heritageClauses ?? []).some((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword));
+    }
+  }
+  return true;
+}
+
+/** Whether a `super` reference ascends to a [[HomeObject]]: a class method,
+ * accessor, constructor, field initializer or static block, an object-literal
+ * method, or an arrow inside one of those whose own reference is legal. */
+function superPropertyOutsideHomeObject(file, _variant, diagnostic) {
+  let node = smallestNodeAt(file, diagnostic.start);
+  for (let parent = node?.parent; parent; node = parent, parent = parent.parent) {
+    if (ts.isArrowFunction(parent)) continue;
+    if (ts.isComputedPropertyName(parent)) return true;
+    if (ts.isPropertyDeclaration(parent) || ts.isClassStaticBlockDeclaration(parent)) return false;
+    if (ts.isMethodDeclaration(parent) || ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent) || ts.isConstructorDeclaration(parent)) {
+      return !(ts.isClassLike(parent.parent) || ts.isObjectLiteralExpression(parent.parent));
+    }
+    if (ts.isFunctionLike(parent)) return true;
+    if (ts.isClassLike(parent) || ts.isHeritageClause(parent)) return true;
+  }
+  return true;
+}
+
+// 2699: only a static member named `prototype` is an early error. A static
+// member named `name`, `length`, `caller` or `arguments` is legal JavaScript.
+function staticPrototypeIsEarlyError(file, _variant, diagnostic) {
+  const element = enclosingMember(smallestNodeAt(file, diagnostic.start));
+  if (!element) return false;
+  if ((ts.getCombinedModifierFlags(element) & ts.ModifierFlags.Static) === 0) return false;
+  return memberNameText(element.name) === "prototype";
+}
+
+export function earlyErrorDiagnostics(source, variant) {
   const prepared = prepare(source, false, completion, variant);
   const start = prepared.indexOf(source);
   const end = start + source.length;
@@ -345,7 +521,8 @@ function earlyErrorDiagnostics(source, variant) {
   if (!file) return [];
   return program.getSemanticDiagnostics(file).filter((diagnostic) =>
     earlyErrorCodes.has(diagnostic.code) && diagnostic.start >= start && diagnostic.start < end &&
-    !(variant === "sloppy" && (diagnostic.code === 1214 || diagnostic.code === 1215)));
+    !(variant === "sloppy" && (diagnostic.code === 1214 || diagnostic.code === 1215)) &&
+    (earlyErrorSites.get(diagnostic.code)?.(file, variant, diagnostic) ?? true));
 }
 
 // The compiler's OWN early errors (frontend/early-errors.ts): static
@@ -361,6 +538,14 @@ const ownEarlyErrorCodes = new Set([
   "SC0009",
   "SC0010",
 ]);
+
+// tsc appends a "Did you mean ...?" suggestion to some of its messages, and the
+// compiler under test may append it where tsc does not (or leave it out). The
+// suggestion is an addendum to the same diagnostic, so the containment compares
+// code, start and the message without it.
+function messageCore(message) {
+  return message.replace(/ Did you mean [^?]*\?$/, "");
+}
 
 export function matchesParseNegative(outcome, source, variant = "strict") {
   if (outcome.status !== "compile-refusal") return false;
@@ -382,7 +567,7 @@ export function matchesParseNegative(outcome, source, variant = "strict") {
     reported.code === "SC0001" &&
     reported.loc?.file?.endsWith(variant === "sloppy" ? "/main.cjs" : "/main.js") &&
     reported.loc.start === parsed.start &&
-    reported.message === ts.flattenDiagnosticMessageText(parsed.messageText, "\n"));
+    messageCore(reported.message) === messageCore(ts.flattenDiagnosticMessageText(parsed.messageText, "\n")));
   return parseDiagnostics(source, variant).some(matches) || earlyErrorDiagnostics(source, variant).some(matches);
 }
 

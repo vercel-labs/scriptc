@@ -5,6 +5,7 @@ import { boundedRun } from "../test262/execute.js";
 import {
   compileFailureStatus,
   directory,
+  earlyErrorDiagnostics,
   exclusion,
   matchesParseNegative,
   metadata,
@@ -324,6 +325,61 @@ test("negative parse cases require the compiler's matching source diagnostic", (
       typeOnly,
     ),
   ).toBe(false);
+});
+
+test("an early error only matches the site the specification makes one", () => {
+  const negative = (body: string) =>
+    source("negative: {phase: parse, type: SyntaxError}", `$DONOTEVALUATE();\n${body}`);
+  const admitted = (body: string, variant: "strict" | "sloppy" = "strict") =>
+    earlyErrorDiagnostics(negative(body), variant).map((diagnostic) => diagnostic.code);
+  // Each code below also describes a legal construct somewhere else; the site
+  // guard is what keeps the legal spelling out of the containment.
+  for (const [body, variant, codes] of [
+    ["class C { static prototype; }", "strict", [2699]],
+    ["class C { static name() {} }", "strict", []],
+    ["function f() { super.x; }", "strict", [2660]],
+    ["({ x: super.y });", "strict", [2660]],
+    ["class C { m() { return super.x; } }", "strict", []],
+    ["class C { x = super.y; }", "strict", []],
+    ["class C { constructor() { super(); } }", "strict", [2335]],
+    ["class C extends Object { constructor() { super(); } }", "strict", []],
+    ["for (this in {}) {}", "strict", [2405]],
+    ["var o = { n: 1 }; for (o.n in {}) {}", "strict", []],
+    ["for (var a = 0 in {}) {}", "strict", [1189]],
+    ["for (var a = 0 in {}) {}", "sloppy", []],
+    ["for (const a = 0 in {}) {}", "sloppy", [1189]],
+    ["new.target;", "strict", [17013]],
+    ["class C { x = new.target; }", "strict", []],
+    ["class C { [new.target] = 1; }", "strict", [17013]],
+    ["class C { static { new.target; } }", "strict", []],
+    ["class C { x = arguments; }", "strict", [2304]],
+    ["class C { static { arguments; } }", "strict", [2304]],
+    ["class C { [arguments] = 1; }", "strict", []],
+    ["({ m() { return () => super.x; } });", "strict", []],
+    ["missing;", "strict", []],
+  ] as const) {
+    expect(admitted(body, variant as "strict" | "sloppy"), body).toEqual([...codes]);
+  }
+});
+
+test("a suggestion suffix does not hide the early error it belongs to", () => {
+  const text = source("negative: {phase: parse, type: SyntaxError}", "class C { x = arguments; }");
+  const offset = prepare(text).indexOf("arguments;");
+  const refusal = (message: string) => ({
+    status: "compile-refusal",
+    diagnostics: [{ code: "SC0001", message, loc: { file: "/tmp/main.js", start: offset } }],
+  });
+  expect(matchesParseNegative(refusal("Cannot find name 'arguments'."), text)).toBe(true);
+  expect(
+    matchesParseNegative(
+      refusal("Cannot find name 'arguments'. Did you mean the static member 'C.arguments'?"),
+      text,
+    ),
+  ).toBe(true);
+  expect(
+    matchesParseNegative(refusal("Cannot find name 'arguments'. Did you mean 'x'?"), text),
+  ).toBe(true);
+  expect(matchesParseNegative(refusal("Cannot find name 'argument'."), text)).toBe(false);
 });
 
 test("built-in error assertions are admitted without permitting constructor aliases", () => {

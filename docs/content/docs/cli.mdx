@@ -359,6 +359,8 @@ $ scriptc build app.ts --target-cpu=x86-64-v3 -o app
 
 Loops over typed arrays and numbers gain the most, because LLVM vectorizes them with wider registers. Some loops run slower at a higher level, so measure the program on the machines it will run on.
 
+With `x86-64-v3`, the program's functions are also compiled for the baseline. A function runs its baseline code when its `x86-64-v3` code has vectors of at most 128 bits, none wider, and no rounding or bit counting in a loop, as with [runtime CPU dispatch](#runtime-cpu-dispatch). Its calls still go to the `x86-64-v3` code of the functions it calls. A function keeps its `x86-64-v3` code when its baseline code calls a function that is compiled only for `x86-64-v3`, such as one of the string helpers scriptc adds to the program, because baseline code cannot inline it. The baseline copies make the executable larger and the first build slower.
+
 An executable built for a level runs only on CPUs that support that level. On an older CPU, it crashes with an illegal-instruction signal (`SIGILL`) when it reaches an instruction the CPU lacks. A named level is portable to every machine of that level. `native` selects the highest level the build machine supports, so use it only for executables that run on the machine that built them or on identical machines.
 
 The level applies to the program's own code. The runtime pack keeps its baseline code. Builds for different levels never share cached artifacts, and `baseline` builds are the same as builds without the option.

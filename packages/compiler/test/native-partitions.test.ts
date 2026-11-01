@@ -605,7 +605,9 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       // Copies as --cpu-dispatch emits them: `<name>.base` in #0 and
       // `<name>.v3` in #1. Two callers each, so that every copy is placed by
       // its own name. Each f calls h in its own tier; f and h have 128-bit
-      // vectors, g a 256-bit vector, and s only scalar code.
+      // vectors, g a 256-bit vector, and s only scalar code. t has 128-bit
+      // vectors and calls k, an x86-64-v3 function without copies in #2, as
+      // a --target-cpu=x86-64-v3 build emits its helpers.
       const pairs = 4;
       const copies = (tier: "base" | "v3", group: number): string[] => [
         `define internal void @h.${tier}(ptr %p) #${group} {`,
@@ -633,6 +635,13 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
         "  %y = fadd double %x, 1.0",
         "  ret double %y",
         "}",
+        `define internal void @t.${tier}(ptr %p) #${group} {`,
+        "  %v = load <2 x double>, ptr %p",
+        "  %w = fadd <2 x double> %v, splat (double 5.0)",
+        "  store <2 x double> %w, ptr %p",
+        "  call void @k(ptr %p)",
+        "  ret void",
+        "}",
       ];
       const calls = (result: string): string[] =>
         (["base", "v3"] as const).flatMap((tier) => [
@@ -641,10 +650,15 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
             (_, index) => `  call void @f${index}.${tier}(ptr @sink)`,
           ),
           `  call void @g.${tier}(ptr @sink)`,
+          `  call void @t.${tier}(ptr @sink)`,
           `  %${result}.${tier} = call double @s.${tier}(double 1.0)`,
         ]);
       const source = [
         "@sink = global [4 x double] zeroinitializer",
+        "define internal void @k(ptr %p) #2 {",
+        "  store double 0.0, ptr %p",
+        "  ret void",
+        "}",
         ...copies("base", 0),
         ...copies("v3", 1),
         "define void @other() {",
@@ -657,6 +671,7 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
         "}",
         "attributes #0 = { noinline uwtable }",
         'attributes #1 = { noinline uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" }',
+        'attributes #2 = { noinline uwtable "target-cpu"="x86-64-v3" }',
       ].join("\n");
       // Each function's object and disassembly, by its name without the
       // thin link's `.llvm.<n>` suffix.
@@ -698,6 +713,10 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(at("g.v3").code).toContain("%ymm");
       expect(at("s.v3").code).toMatch(/\svaddsd\s/);
       expect(at("g.base").code).not.toContain("%ymm");
+      // A baseline copy that calls a function defined for x86-64-v3 does not
+      // give its code to the v3 copy.
+      expect(at("t.v3").code).toMatch(/\svaddpd\s/);
+      expect(at("t.base").code).toMatch(/\saddpd\s/);
       // An instrumented build keeps every copy's code: a baseline body would
       // count the v3 copy's executions against the baseline copy.
       const counted = await disassemble(

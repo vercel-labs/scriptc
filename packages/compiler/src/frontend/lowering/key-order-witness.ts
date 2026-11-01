@@ -806,6 +806,26 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * today's table (as a literal with a dropped field does without the
    * kept source). */
   const keptDropShapes = new Set<string>();
+  // ── scope ───────────────────────────────────────────────────────────
+  // Only plain declared-field shapes with a table take part.
+  const inScope = (shape: IrRecordShape | undefined): shape is IrRecordShape =>
+    shape !== undefined &&
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.declaredOrder !== undefined &&
+    !shapeHasAccessorSlots(shape);
+  const tableOf = (shape: IrRecordShape): string[] =>
+    shape.declaredOrder!.filter((k) => !k.startsWith("%") && !isArrayIndex(k));
+  /** Whether a value of the shape may lack the key: an optional field, or
+   * one this program leaves unset, was produced opaquely or deleted. */
+  const maybeAbsent = (id: string, key: string): boolean => {
+    const shape = shapes.get(id);
+    const field = shape?.fields.find((x) => x.name === key);
+    if (!field || !undefinedArmed(field.type)) return false;
+    const f = facts.get(id);
+    if (f === undefined) return true;
+    return f.absent.has(key) || f.runtime || f.opaque || f.deleted.has(key);
+  };
   {
     const early = new Set<string>();
     const earlySeen = new Set<string>();
@@ -879,6 +899,252 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         }
       }
     }
+    // A spread of a union holding several record arms, or a record that can
+    // be absent (`{ ...model, k }` over a discriminated union,
+    // `Partial<X> | undefined`), copies whichever arm the value holds when
+    // the spread runs: the literal's key order is that arm's own key order,
+    // which no static table can name (object-literals.ts marks those
+    // contributors `maybeAbsent`). When an order surface observes the target
+    // shape, the copy keeps its own order as the record's source exactly as
+    // a width spread does — the mirror is the same contributor list, and an
+    // absent source contributes no keys, as the spread copies none.
+    //
+    // The values of some shapes only ever enumerate in their table: every
+    // construction copies in that order and no write, clone, conversion or
+    // earlier kept copy can take another, so a key an arm may lack only ever
+    // drops out of an order the table already names. A site whose whole
+    // target shape proves so pays nothing for a view the runtime would
+    // discard: it keeps the static copy byte for byte.
+    /** Shapes a width copy that drops a key builds: it enumerates through
+     * its source, not the table. */
+    const droppingShapes = new Set<string>();
+    for (const { literal, note } of widthSites)
+      if (note.drops && literal.type.kind === "record") droppingShapes.add(literal.type.shapeId);
+    /** One contributor's possible key lists: the table's order over the
+     * keys it holds, and the keys every value it builds holds, so the rest
+     * may be absent. */
+    interface KeyArm {
+      list: readonly string[];
+      required: Set<string>;
+    }
+    /** The keys every value of `id` holds, out of `list`. */
+    const requiredOf = (id: string, list: readonly string[]): Set<string> => {
+      const absent = facts.get(id)?.absent;
+      const required = new Set<string>();
+      for (const key of list)
+        if (!maybeAbsent(id, key) && absent?.has(key) !== true) required.add(key);
+      return required;
+    };
+    /** Whether every copy a literal can run enumerates in the table's
+     * order: each contributor's own keys follow it, and a key only a later
+     * contributor can add never precedes one an earlier contributor only
+     * may hold. A key no earlier contributor always holds may be absent
+     * there, so that pair must already be in the table's order. */
+    const copiesInTableOrder = (
+      arms: readonly (readonly KeyArm[])[],
+      table: readonly string[],
+    ): boolean => {
+      const rank = new Map(table.map((k, i) => [k, i]));
+      let checks = 0;
+      const inTableOrder = (list: readonly string[]): boolean => {
+        let last = -1;
+        for (const key of list) {
+          const at = rank.get(key);
+          if (at === undefined || at <= last || ++checks > 256) return false;
+          last = at;
+        }
+        return true;
+      };
+      // A key every arm of a contributor holds is present however the copy
+      // runs, so it is settled before the next contributor appends.
+      const settled: Set<string>[] = [];
+      let soFar = new Set<string>();
+      for (const choices of arms) {
+        if (!choices.every((choice) => inTableOrder(choice.list))) return false;
+        const held = new Set<string>();
+        for (const choice of choices)
+          for (const key of choice.required)
+            if (choices.every((other) => other.required.has(key))) held.add(key);
+        settled.push(soFar);
+        soFar = new Set([...soFar, ...held]);
+      }
+      for (let i = 0; i < arms.length; i++) {
+        for (let j = i + 1; j < arms.length; j++) {
+          for (const earlier of arms[i]!) {
+            for (const placed of earlier.list) {
+              if (settled[i]!.has(placed)) continue;
+              for (const later of arms[j]!) {
+                for (const appended of later.list) {
+                  if (placed === appended || settled[j]!.has(appended)) continue;
+                  if (rank.get(placed)! > rank.get(appended)! || ++checks > 256) return false;
+                }
+              }
+            }
+          }
+        }
+      }
+      return true;
+    };
+    /** The shape's table when every key a value of it can hold is declared.
+     * A literal of the shape writes only the keys it names, so its own copy
+     * enumerates them in this order whatever other values of the shape hold. */
+    const declaredTable = (shapeId: string): { table: string[]; keySet: Set<string> } | null => {
+      const shape = shapes.get(shapeId);
+      const fact = facts.get(shapeId);
+      if (shape === undefined || fact === undefined || !inScope(shape)) return null;
+      const table = tableOf(shape);
+      const keySet = new Set(table);
+      for (const key of fact.present) if (!keySet.has(key)) return null;
+      return { table, keySet };
+    };
+    /** The shape's declared table and the facts a copy proof needs of the
+     * shape itself: every key a value of it can hold is declared, and no
+     * write can append a key a value may lack. A copy of a value built
+     * elsewhere needs both, since that value's order is the one it copies. */
+    const shapeTable = (shapeId: string): { table: string[]; keySet: Set<string> } | null => {
+      const declared = declaredTable(shapeId);
+      if (declared === null) return null;
+      const fact = facts.get(shapeId)!;
+      // A write of a key a value may lack appends it, as in Node.
+      if (
+        fact.writes.some(
+          (write) =>
+            write.kind !== "delete" &&
+            declared.keySet.has(write.field) &&
+            maybeAbsent(shapeId, write.field),
+        )
+      )
+        return null;
+      return declared;
+    };
+    /** The arms a spread of the shape can copy: its table when every value
+     * of the shape enumerates so, otherwise none. */
+    const armsOf = (id: string, visiting: Set<string>): KeyArm[] | null => {
+      if (visiting.has(id)) return null;
+      const source = stableTable(id, visiting);
+      if (source === null) return null;
+      return [{ list: source, required: requiredOf(id, source) }];
+    };
+    /** Whether one literal's contributors enumerate in the table's order, so
+     * the static copy it lowers to is already Node's order. A written key
+     * contributes its own place; a spread contributes the source shape's
+     * order, which the static copy only knows when every value of that shape
+     * proves it (armsOf), and an absent source contributes nothing.
+     * `selfSpreads` says the shape's own values are being proven, so a spread
+     * of the shape itself copies the order under proof. */
+    const literalInTableOrder = (
+      shapeId: string,
+      segments: readonly KeyOrderSegment[],
+      table: readonly string[],
+      keySet: ReadonlySet<string>,
+      visiting: Set<string>,
+      selfSpreads: boolean,
+    ): boolean => {
+      visiting.add(shapeId);
+      const arms: KeyArm[][] = [];
+      for (const segment of segments) {
+        if (segment.kind === "opaque") {
+          visiting.delete(shapeId);
+          return false;
+        }
+        if (segment.kind === "key") {
+          if (!keySet.has(segment.name) || isArrayIndex(segment.name)) {
+            visiting.delete(shapeId);
+            return false;
+          }
+          arms.push([
+            {
+              list: [segment.name],
+              required: segment.definite ? new Set([segment.name]) : new Set(),
+            },
+          ]);
+          continue;
+        }
+        // A spread of the shape itself copies the order being proved.
+        const choices =
+          segment.shapeId === shapeId && selfSpreads
+            ? [{ list: table, required: requiredOf(shapeId, table) }]
+            : armsOf(segment.shapeId, visiting);
+        if (choices === null) {
+          visiting.delete(shapeId);
+          return false;
+        }
+        arms.push(
+          segment.maybeAbsent ? [...choices, { list: [], required: new Set<string>() }] : choices,
+        );
+      }
+      visiting.delete(shapeId);
+      return copiesInTableOrder(arms, table);
+    };
+    /** The keys a value of the shape holds, in the shape's table order, when
+     * every value of the shape enumerates so; null when one can take another
+     * order. A same-shape clone (`{ ...r, k }`) copies its source's order
+     * and writes only keys the shape already holds, so it names no order of
+     * its own; a construction this pass does not see (a checked conversion, a
+     * synthesized literal, an opaque producer, a dropping copy) does. */
+    const stableTable = (shapeId: string, visiting: Set<string>): string[] | null => {
+      const own = shapeTable(shapeId);
+      const fact = facts.get(shapeId);
+      if (own === null || fact === undefined) return null;
+      // One declared key and no write outside it leaves nothing to order:
+      // whatever built the value, it can enumerate that key or nothing.
+      if (
+        own.table.length <= 1 &&
+        fact.writes.every((write) => write.kind === "delete" || own.keySet.has(write.field))
+      )
+        return own.table;
+      if (fact.runtime || fact.opaque || fact.pinned || fact.copies.length > 0) return null;
+      if (fact.literals.length === 0) return null;
+      if (
+        convertedShapes.has(shapeId) ||
+        notes.keptSourceShapes.has(shapeId) ||
+        droppingShapes.has(shapeId)
+      )
+        return null;
+      if (visiting.has(shapeId)) return null;
+      const { table, keySet } = own;
+      for (const segments of fact.literals)
+        if (!literalInTableOrder(shapeId, segments, table, keySet, visiting, true)) return null;
+      return table;
+    };
+    for (const { wrapper, literal, note } of widthSites) {
+      if (note.drops || keptWidths.has(wrapper) || literal.type.kind !== "record") continue;
+      if (!early.has(literal.type.shapeId) || !widthKeepable(lowerer, wrapper, note.segments))
+        continue;
+      const segments = notes.literalOf(literal);
+      if (segments === undefined || !segments.some((s) => s.kind === "spread" && s.maybeAbsent))
+        continue;
+      // The static copy here enumerates this literal's keys in the shape's
+      // declaration order, so it is already Node's order when this literal's
+      // own contributors follow the table: a written key holds its own place
+      // and a spread copies its source shape's order, known when every value
+      // of that shape proves it. A fresh literal arm (`labels && { labels }`)
+      // qualifies, as does a same-shape clone. Other values of the shape may
+      // take another order; this literal does not copy them, unless it spreads
+      // the shape itself, whose value was built elsewhere and needs the
+      // shape-level proof.
+      const shapeId = literal.type.shapeId;
+      const target = declaredTable(shapeId);
+      const spreadsSelf = segments.some(
+        (segment) => segment.kind === "spread" && segment.shapeId === shapeId,
+      );
+      if (
+        target !== null &&
+        literalInTableOrder(
+          shapeId,
+          segments,
+          target.table,
+          target.keySet,
+          new Set(),
+          spreadsSelf && stableTable(shapeId, new Set()) !== null,
+        )
+      )
+        continue;
+      keptWidths.add(wrapper);
+      notes.keptSourceShapes.add(shapeId);
+      for (const segment of note.segments)
+        if (segment.kind === "spread") shapesIn(segment.value.type, early, earlySeen);
+    }
     for (const { wrapper, literal, note } of widthSites) {
       if (!keptWidths.has(wrapper) || literal.type.kind !== "record") continue;
       const shapeId = literal.type.shapeId;
@@ -922,16 +1188,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   keepSourceProbes(lowerer, notes, probeSites, keptWidths.size > 0 || keptClones.size > 0);
   keepRecordClones(lowerer, cloneSites, keptClones);
 
-  // ── scope ───────────────────────────────────────────────────────────
-  // Only plain declared-field shapes with a table take part.
-  const inScope = (shape: IrRecordShape | undefined): shape is IrRecordShape =>
-    shape !== undefined &&
-    !shape.tuple &&
-    shape.indexValue === undefined &&
-    shape.declaredOrder !== undefined &&
-    !shapeHasAccessorSlots(shape);
-  const tableOf = (shape: IrRecordShape): string[] =>
-    shape.declaredOrder!.filter((k) => !k.startsWith("%") && !isArrayIndex(k));
   // A checked conversion builds values in their source's own order, which
   // the record-source table reproduces relative to the shape's table. A new
   // table would make every value parsed in today's order keep a source
@@ -965,14 +1221,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   }
 
   // ── presence classes and late-write constraints ─────────────────────
-  const maybeAbsent = (id: string, key: string): boolean => {
-    const shape = shapes.get(id);
-    const field = shape?.fields.find((x) => x.name === key);
-    if (!field || !undefinedArmed(field.type)) return false;
-    const f = facts.get(id);
-    if (f === undefined) return true;
-    return f.absent.has(key) || f.runtime || f.opaque || f.deleted.has(key);
-  };
   /** Edges every value of the shape satisfies whatever its sources'
    * orders are, or "unknown" when late writes make the order depend on
    * the value. */

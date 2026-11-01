@@ -26,13 +26,6 @@ inheritance.ts:55:3 - error SC1090: overriding a method with a different signatu
      |   ^~~~
   56 |     return other.name;
 
-inheritance.ts:80:13 - error SC1090: statically-decided 'instanceof' on computed operands (bind the value to a variable first) are not supported yet
-
-  79 | }
-  80 | console.log(new Point() instanceof Point);
-     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  81 | 
-
 inheritance.ts:89:15 - error SC2004: uses of 'GenericAbstract' inherit the blocker on its declaration
 
   88 | new Impl().usesLimit();

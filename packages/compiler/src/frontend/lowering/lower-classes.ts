@@ -218,7 +218,11 @@ import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
 import { constructionEscape } from "./construction-escapes.js";
 import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
-import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
+import {
+  initializeRuntimeStatics,
+  hasRuntimeStatics,
+  runtimeStaticDefines,
+} from "./class-runtime-statics.js";
 import {
   reflectedClassMethodValue,
   reflectedClassStaticMethodValue,
@@ -317,6 +321,67 @@ function perInstanceMember(node: ts.Node): boolean {
   return !ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword);
 }
 
+/** `Symbol.hasInstance` over the standard global. */
+export function isSymbolHasInstanceKey(lowerer: Lowerer, key: ts.Expression): boolean {
+  let e = key;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    !e.questionDotToken &&
+    ts.isIdentifier(e.expression) &&
+    lowerer.isStdlibGlobal(e.expression, "Symbol") &&
+    ts.isIdentifier(e.name) &&
+    e.name.text === "hasInstance"
+  );
+}
+
+/** The static members keyed by `Symbol.hasInstance`
+ * (`static [Symbol.hasInstance](v) { … }`): defining them on the class
+ * value's own-property table gives `instanceof` its hook (the runtime
+ * consults that table, scr_dyn_has_instance_hook). */
+export function staticHasInstanceHookMembers(
+  lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
+): ts.ClassElement[] {
+  return decl.members.nodes.filter((member) => {
+    const name = (member as { name?: ts.PropertyName }).name;
+    return (
+      name !== undefined &&
+      ts.isComputedPropertyName(name) &&
+      ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+        true &&
+      isSymbolHasInstanceKey(lowerer, name.expression)
+    );
+  });
+}
+
+/** Whether `info` or an ancestor declares a static `Symbol.hasInstance`
+ * member. Node's `instanceof` asks the hook on the constructor (inherited
+ * through the static prototype chain) and uses OrdinaryHasInstance only
+ * when no hook exists. */
+export function classDeclaresHasInstanceHook(info: ClassInfo): boolean {
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    if (current.hasInstanceHook === true) return true;
+  }
+  return false;
+}
+
+/** Whether `expression` reads an element of a JavaScript array whose
+ * compiled storage is checked-dynamic (`const classes = [A, B]`; the
+ * array literal of several class constructors lowers as the checked
+ * array, and an unannotated file-scope binding keeps that layout). */
+function jsCheckedDynamicArrayElement(lowerer: Lowerer, expression: ts.Expression): boolean {
+  if (!ts.isElementAccessExpression(expression)) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expression))) return false;
+  if (!ts.isIdentifier(expression.expression)) return false;
+  const stored =
+    lowerer.peekLocal(expression.expression) ?? lowerer.globalOf(expression.expression);
+  if (!stored) return false;
+  return (
+    stored.type.kind === "dyn" || (stored.type.kind === "array" && stored.type.elem.kind === "dyn")
+  );
+}
+
 export function storedClassValueType(
   lowerer: Lowerer,
   expression: ts.Expression,
@@ -367,6 +432,11 @@ export function storedClassValueType(
   }
   const type = lowerer.typeOf(expression);
   const mapped = lowerer.mapTypeOf(type);
+  // An element of a CHECKED-DYNAMIC JavaScript array (`const classes =
+  // [A, B]`, `both[1]`): the storage holds whichever constructor the array
+  // holds, so tsc's inferred element type — best common type spells the
+  // first — does not name the class the slot holds at run time.
+  if (mapped?.kind === "classval" && jsCheckedDynamicArrayElement(lowerer, expression)) return null;
   if (mapped?.kind === "classval" && !lowerer.classes.has(mapped.className)) {
     for (const signature of lowerer.checker.getConstructSignatures(type)) {
       const constructor = signature.declaration;
@@ -537,6 +607,9 @@ export interface ClassInfo {
   def: IrClassDef;
   expressionInitializationEmitted?: true;
   runtimeStatics?: readonly ts.ClassElement[];
+  /** The class declares its own static `Symbol.hasInstance` member:
+   * `instanceof` asks the hook before OrdinaryHasInstance. */
+  hasInstanceHook?: true;
   /** Direct calls of runtime static methods (directRuntimeStaticCall), by
    * member name. */
   runtimeStaticCalls?: Map<string, GenericFnInfo>;
@@ -4555,7 +4628,17 @@ export function collectClassShapeInner(
       ctorParams.push({ type: DYN, mode: "arguments" });
     }
 
+    // A static `Symbol.hasInstance` member of a class that otherwise keeps
+    // its statics in module storage: the hook only exists if the CLASS
+    // VALUE carries it, so the member joins the runtime property table
+    // (initializeRuntimeStatics). Only the hook members are added; every
+    // other static keeps its current representation.
+    const hasInstanceHooks = staticHasInstanceHookMembers(lowerer, decl);
+    for (const member of hasInstanceHooks) {
+      if (!runtimeStatics.includes(member)) runtimeStatics.push(member);
+    }
     const info: ClassInfo = {
+      ...(hasInstanceHooks.length ? { hasInstanceHook: true as const } : {}),
       ...(runtimeStatics.length || checkedStatics ? { runtimeStatics } : {}),
       ...(runtimePrototypeMembers.length ? { runtimePrototypeMembers } : {}),
       def: {
@@ -5206,10 +5289,19 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
     | { pos: number; kind: "field"; f: ClassInfo["staticFields"][number] }
     | { pos: number; kind: "block"; b: ts.ClassStaticBlockDeclaration };
   const items: Item[] = [
-    // A runtime-statics class initializes its private static fields with
-    // its other initializers (initializeRuntimeStatics).
+    // A runtime-statics class initializes the private static fields its
+    // property table carries with its other initializers
+    // (initializeRuntimeStatics). One whose table carries only its
+    // `Symbol.hasInstance` hook keeps its native initializers here.
     ...info.staticFields
-      .filter((f) => !(info.runtimeStatics && f.name.startsWith("#")))
+      .filter(
+        (f) =>
+          !(
+            info.runtimeStatics &&
+            f.name.startsWith("#") &&
+            runtimeStaticDefines(lowerer, info, f.name)
+          ),
+      )
       .map((f): Item => ({
         pos: ts.tokenStartOfNode(f.initializer),
         kind: "field",
@@ -5919,7 +6011,15 @@ export function lowerClassStaticRead(
     !(ts.isCallExpression(site.parent) && site.parent.expression === site)
   )
     lowerer.noLowering(`Date.${name} read through a class that extends Date`, site);
-  if (hasRuntimeStatics(info) && !found?.field && !name.startsWith("#"))
+  // A statically known member that the class value's table does not carry
+  // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+  // reads its own storage, as it would without the hook.
+  if (
+    hasRuntimeStatics(info) &&
+    !found?.field &&
+    !name.startsWith("#") &&
+    (!found || runtimeStaticDefines(lowerer, info, name))
+  )
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(classValueRef(lowerer, info, receiver), DYN),
@@ -6818,13 +6918,16 @@ function staticCallOn(
     const date = lowerDateStaticCall(lowerer, call, access.name.text);
     if (date) return date;
   }
+  const staticMember = findStaticOn(lowerer, info, access.name.text);
+  // A statically known member that the class value's table does not carry
+  // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+  // calls its own function, as it would without the hook.
   if (
     (hasRuntimeStatics(info) &&
       !access.name.text.startsWith("#") &&
-      !findStaticOn(lowerer, info, access.name.text)?.field) ||
-    (info.callableBase &&
-      !findStaticOn(lowerer, info, access.name.text) &&
-      !findGenericStaticOn(lowerer, info, access.name.text))
+      !staticMember?.field &&
+      (!staticMember || runtimeStaticDefines(lowerer, info, access.name.text))) ||
+    (info.callableBase && !staticMember && !findGenericStaticOn(lowerer, info, access.name.text))
   )
     return {
       kind: "dynInvoke",
@@ -7068,12 +7171,12 @@ function directRuntimeStaticCall(
       c.genericStatics?.has(name) === true
     )
       return null;
-    const runtime = c.runtimeStatics?.find(
-      (element) =>
-        (element as { name?: ts.PropertyName }).name !== undefined &&
-        ts.isIdentifier((element as { name: ts.PropertyName }).name) &&
-        (element as { name: ts.Identifier }).name.text === name,
-    );
+    // A computed name defines the key it folds to, so `static ['m']` in
+    // this class answers for `m` and hides the inherited method.
+    const runtime = c.runtimeStatics?.find((element) => {
+      const elementName = (element as { name?: ts.PropertyName }).name;
+      return elementName !== undefined && classMemberNameOf(lowerer, elementName) === name;
+    });
     if (runtime) {
       if (!ts.isMethodDeclaration(runtime) || !runtime.body) return null;
       declarer = c;
@@ -7274,12 +7377,17 @@ export function lowerClassValueProperty(
   // A runtime-provided class value answers `.name` from its class object;
   // its other statics (`Error.stackTraceLimit`) keep their own lowerings.
   if (info?.def.runtime && member !== "name") return null;
+  const storedMember = info ? findStaticOn(lowerer, info, member) : undefined;
+  // A statically known member that the class value's table does not carry
+  // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+  // reads its own storage, as it would without the hook.
   if (
     info &&
     ((hasRuntimeStatics(info) &&
       !member.startsWith("#") &&
-      !findStaticOn(lowerer, info, member)?.field) ||
-      (info.callableBase && !findStaticOn(lowerer, info, member)))
+      !storedMember?.field &&
+      (!storedMember || runtimeStaticDefines(lowerer, info, member))) ||
+      (info.callableBase && !storedMember))
   )
     return {
       kind: "dynKeyGet",

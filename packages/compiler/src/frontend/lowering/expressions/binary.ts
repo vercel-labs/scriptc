@@ -54,9 +54,9 @@ import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.
 import { lowerElementCompoundParts } from "./element-access.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { storedClassValueType } from "../lower-classes.js";
+import { findStaticOn, storedClassValueType } from "../lower-classes.js";
 import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
-import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { errorToStringCall } from "../error-methods.js";
@@ -658,11 +658,26 @@ export function lowerNativeFunctionAssignment(
   const classType = storedClassValueType(lowerer, target.expression);
   const staticClass =
     classType?.kind === "classval" ? lowerer.classes.get(classType.className) : undefined;
-  if (
-    staticClass &&
+  // The member named by a statically known key: a class whose property
+  // table does not carry it (a class whose only runtime static is its
+  // `Symbol.hasInstance` hook) writes its own storage instead, exactly as
+  // it reads it. A member the class does not declare at all is a property
+  // of the class object, wherever the key comes from.
+  const staticName = ts.isPropertyAccessExpression(target)
+    ? ts.isPrivateIdentifier(target.name)
+      ? null
+      : target.name.text
+    : ts.isStringLiteral(target.argumentExpression)
+      ? target.argumentExpression.text
+      : undefined;
+  const writesThroughTable =
+    staticClass !== undefined &&
     hasRuntimeStatics(staticClass) &&
-    !(ts.isPropertyAccessExpression(target) && ts.isPrivateIdentifier(target.name))
-  ) {
+    staticName !== null &&
+    (staticName === undefined ||
+      findStaticOn(lowerer, staticClass, staticName) === null ||
+      runtimeStaticDefines(lowerer, staticClass, staticName));
+  if (writesThroughTable) {
     return lowerDynMemberAssignment(
       lowerer,
       expr,

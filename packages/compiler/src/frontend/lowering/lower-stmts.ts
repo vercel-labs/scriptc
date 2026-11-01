@@ -6038,17 +6038,20 @@ function evolvingArrayHolderType(lowerer: Lowerer, decl: ts.VariableDeclaration)
   return evolvingArrayHold(lowerer, decl.initializer) === null ? null : DYN;
 }
 
-/** A single static type for an initializer-less JavaScript `let` whose
- * later plain writes all agree. An evolving JS local reads as `undefined`
- * until control flow proves a write, so a scalar slot is sound only when
- * every ordinary use already has that concrete flow type. A write's call
- * counts when its signature is declared in the standard library, whose
- * return types are declared rather than inferred from JavaScript. A
- * closure capture can observe the local before an outer assignment, and
- * the checker leaves captured evolving lets broad: a captured runtime
- * handle (`let child; if (...) child = spawn(...)`) takes the handle or
- * `undefined`, which nested functions read as a checked-dynamic value
- * (closureDynLets), and other captured bindings stay checked-dynamic. */
+/** A single static type for an initializer-less `let` without an
+ * annotation whose later plain writes all agree. An evolving local reads as
+ * `undefined` until control flow proves a write, so a scalar slot is sound
+ * only when every ordinary use already has that concrete flow type (or an
+ * arm of it). A write of `null` or `undefined` joins the written type as an
+ * optional arm (`let stat; try { stat = lstatSync(".") } catch { stat = null }`
+ * holds `Stats | null`). A write's call counts when its signature is
+ * declared in the standard library, whose return types are declared rather
+ * than inferred from JavaScript. A closure capture can observe the local
+ * before an outer assignment, and the checker leaves captured evolving lets
+ * broad: a captured runtime handle (`let child; if (...) child = spawn(...)`)
+ * takes the handle or `undefined`, which nested functions read as a
+ * checked-dynamic value (closureDynLets), and other captured bindings stay
+ * checked-dynamic. */
 export function inferredEvolvingLetType(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -6108,7 +6111,10 @@ export function inferredEvolvingLetType(
       }
       return "skip";
     }
-    if (ts.isBinaryExpression(node)) {
+    // A compound assignment (`x += 1`) reads and rewrites the binding
+    // through an operator this scan does not model; a comparison
+    // (`x === null`) only reads it, and the read check below covers that.
+    if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
       let left = node.left;
       while (ts.isParenthesizedExpression(left)) left = left.expression;
       if (ts.isIdentifier(left) && lowerer.checker.getSymbolAtLocation(left) === symbol) {
@@ -6129,7 +6135,7 @@ export function inferredEvolvingLetType(
           return "stop";
         }
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(node.right));
-        if (!mapped || mapped.kind === "dyn" || mapped.kind === "void" || isUnitType(mapped)) {
+        if (!mapped || mapped.kind === "dyn" || mapped.kind === "void") {
           invalid = true;
           return "stop";
         }
@@ -6156,20 +6162,50 @@ export function inferredEvolvingLetType(
     return undefined;
   };
   ts.walkPreorder(scope, visit);
-  const first = writes[0];
-  if (invalid || first === undefined || !writes.every((write) => typeEquals(write, first)))
-    return null;
+  // A write of an already-unioned value contributes its arms, so a call
+  // declared `Stats | null` reads the same as separate value and unit
+  // writes.
+  const armsOf = (t: IrType): readonly IrType[] =>
+    t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? [t]) : [t];
+  const valueArms: IrType[] = [];
+  const unitArms: IrType[] = [];
+  for (const write of writes) {
+    for (const arm of armsOf(write)) {
+      const seen = isUnitType(arm) ? unitArms : valueArms;
+      if (!seen.some((other) => typeEquals(other, arm))) seen.push(arm);
+    }
+  }
+  const value = valueArms[0];
+  if (invalid || value === undefined || valueArms.length > 1) return null;
+  const arms = [value];
+  if (unitArms.length > 0) {
+    // An evolving local reads as `undefined` before control flow proves a
+    // write, so the optional storage carries that arm as well.
+    arms.push(UNDEFINED_T);
+    for (const unit of unitArms) {
+      if (unit.kind !== "undefinedT") arms.push(unit);
+    }
+  }
+  const storage: IrType =
+    arms.length === 1 ? value : { kind: "union", unionId: lowerer.unions.intern(arms) };
+  // A narrowed read sees an arm, or a sub-union of arms, of the storage.
   if (
     !reads.every((read) => {
       const mapped = lowerer.mapTypeOf(lowerer.typeOf(read));
-      return mapped !== null && typeEquals(mapped, first);
+      return (
+        mapped !== null && armsOf(mapped).every((arm) => arms.some((own) => typeEquals(own, arm)))
+      );
     })
   )
     return null;
-  if (!captured) return first;
-  if (!DYN_HANDLE_KINDS.has(first.kind)) return null;
+  if (!captured) return storage;
+  if (!DYN_HANDLE_KINDS.has(value.kind)) return null;
   lowerer.closureDynLets.add(symbol);
-  return { kind: "union", unionId: lowerer.unions.intern([first, UNDEFINED_T]) };
+  // A nested function can read the binding before the outer assignment:
+  // the optional arm is what the checked-dynamic read of the closure sees.
+  return storage.kind === "union"
+    ? storage
+    : { kind: "union", unionId: lowerer.unions.intern([value, UNDEFINED_T]) };
 }
 
 /** Whether a call's resolved signature is declared in the standard library
@@ -6600,12 +6636,13 @@ export function lowerVarDecl(
     // `let x: number;` — declared, uninitialized. tsc guarantees no read
     // before assignment (TS2454) and rejects uninitialized const (TS1155).
     // Unannotated `let x;` is an evolving `any` — the checked-dynamic
-    // binding fallback (irTypeOf → dynFallbackType).
+    // binding fallback (irTypeOf → dynFallbackType) unless its writes agree
+    // on a type.
     // Undefined-armed unions (`let x: string | undefined;`) are readable
     // immediately (the type covers the unassigned state), so they
     // initialize to the interned undefined arm like an omitted optional.
     let type = lowerer.irTypeOf(decl.name);
-    if (type.kind === "dyn" && isLet && isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+    if (type.kind === "dyn" && isLet && decl.type === undefined) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
     // `var v: void;` / `let x: undefined;` — a unit-only binding rides

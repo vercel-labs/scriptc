@@ -85,6 +85,27 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
   return false;
 }
 
+/** A JavaScript array literal whose inferred element type spells ONE class
+ * constructor while the literal names several (`const classes = [A, B]`:
+ * tsc's best common type is the first element's `typeof A`). The literal
+ * is a fresh array of every constructor it names, so a file-scope binding
+ * holds the checked-dynamic array: the spelled element type would check
+ * each element against A's class key and reject B at module init. */
+export function jsHoldsMixedClassConstructors(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isArrayLiteralExpression(expr)) return false;
+  const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (own?.kind !== "array" || own.elem.kind !== "classval") return false;
+  let mixed = false;
+  for (const element of expr.elements.nodes) {
+    if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) return false;
+    const elementType = lowerer.mapTypeOf(lowerer.typeOf(element));
+    if (elementType?.kind !== "classval") return false;
+    if (elementType.className !== own.elem.className) mixed = true;
+  }
+  return mixed;
+}
+
 /** The literal is the source of an array destructuring: an assignment's
  * right side or a declaration's initializer under an array pattern. */
 function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {

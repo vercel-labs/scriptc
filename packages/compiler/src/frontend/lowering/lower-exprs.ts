@@ -149,7 +149,11 @@ export {
   lowerStrictEquality,
   lowerUnitComparison,
 } from "./expressions/binary.js";
-export { jsHoldsDynObject, lowerArrayLiteral } from "./expressions/array-literals.js";
+export {
+  jsHoldsDynObject,
+  jsHoldsMixedClassConstructors,
+  lowerArrayLiteral,
+} from "./expressions/array-literals.js";
 export {
   lowerElementAccess,
   lowerElementWrite,

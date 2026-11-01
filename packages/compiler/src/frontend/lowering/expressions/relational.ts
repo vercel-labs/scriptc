@@ -48,7 +48,11 @@ import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { partialFieldPresence } from "../partial-assertions.js";
-import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
+import {
+  classDeclaresHasInstanceHook,
+  type ClassInfo,
+  storedClassValueType,
+} from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -594,6 +598,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         );
       }
       const left = lowerer.lowerExpr(expr.left);
+      // The class declares a static `Symbol.hasInstance` hook (its bases
+      // included, through the static prototype chain): Node asks the hook
+      // first and uses OrdinaryHasInstance only when it is absent, so the
+      // test runs the checked-dynamic class test against the class value.
+      if (!targetInfo.def.runtime && classDeclaresHasInstanceHook(targetInfo)) {
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+        return checkedClassInstanceOf(
+          lowerer,
+          lowerer.coerceInto(expr.left, left, DYN),
+          lowerer.coerceToExpected(classValue, DYN),
+          dynInstanceOfRefusal(lowerer, expr),
+          loc,
+        );
+      }
       if (left.type.kind === "dyn") {
         // An untyped binding the checker narrowed to EventEmitter or a
         // stream class (`ReleaseEmitter = EventEmitter` in JavaScript):
@@ -696,11 +714,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           loc,
         });
       }
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
-      );
+      // The answer is static (a standalone operand's runtime class IS its
+      // static class), but the operands are computed: Node evaluates both,
+      // so evaluate them and return the known answer.
+      const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: left, loc },
+          { kind: "exprStmt", expr: classValue, loc },
+        ],
+        result: { kind: "boolLit", value, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      };
     }
     // A builtin global function value read off the global (`parseInt`,
     // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
@@ -811,6 +838,24 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       : test;
   }
   const left = lowerer.lowerExpr(expr.left);
+  // A program class that declares a static `Symbol.hasInstance` hook (its
+  // bases included, through the static prototype chain): Node asks the
+  // hook first and uses OrdinaryHasInstance only when it is absent, so the
+  // test runs the checked-dynamic class test against the class value,
+  // whatever the operand's static type is.
+  if (!target.def.runtime && classDeclaresHasInstanceHook(target)) {
+    const classValue = classValueOperand(lowerer, expr.right, {
+      kind: "classval",
+      className: target.def.name,
+    });
+    return checkedClassInstanceOf(
+      lowerer,
+      lowerer.coerceInto(expr.left, left, DYN),
+      lowerer.coerceToExpected(classValue, DYN),
+      dynInstanceOfRefusal(lowerer, expr),
+      loc,
+    );
+  }
   // `u instanceof Error` on an `unknown` value: the checked-dynamic tree's error encoding
   // (the shape caughtToDyn builds for Error payloads — the reserved
   // "%error" marker) answers the test, so a caught Error passed through
@@ -1035,6 +1080,25 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       type: BOOL,
       loc,
     });
+  }
+  // A program class target: the answer is static (the operand's runtime
+  // class IS its static class), but the operands are computed. Node
+  // evaluates both, so evaluate them and return the known answer.
+  if (target.decl !== null && !target.def.runtime) {
+    const classValue = classValueOperand(lowerer, expr.right, {
+      kind: "classval",
+      className: target.def.name,
+    });
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "exprStmt", expr: left, loc },
+        { kind: "exprStmt", expr: classValue, loc },
+      ],
+      result: { kind: "boolLit", value, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
   }
   lowerer.unsupported(
     "SC1090",

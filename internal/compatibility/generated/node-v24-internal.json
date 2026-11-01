@@ -18723,6 +18723,7 @@
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/console-dir-show-hidden.ts",
           "tests/corpus/console-native-value.js",
           "tests/harness/npm-static.test.ts"
         ]
@@ -18880,7 +18881,8 @@
         "tests": [
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts"
+          "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/console-dir-show-hidden.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19020,7 +19022,8 @@
         "tests": [
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts"
+          "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/console-dir-show-hidden.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19048,7 +19051,8 @@
         "tests": [
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts"
+          "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/console-dir-show-hidden.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101956,6 +101960,7 @@
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/inspect-hidden-properties.cjs",
           "tests/corpus/inspect-max-array-length.ts",
+          "tests/corpus/inspect-max-string-length.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/node24-deep-equality-properties.js",
@@ -103369,6 +103374,7 @@
           "tests/corpus/inspect-max-array-length.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
+          "tests/corpus/inspect-max-string-length.ts",
           "tests/corpus/inspect-hidden-properties.cjs"
         ]
       },
@@ -103397,7 +103403,8 @@
         "tests": [
           "tests/corpus/7526-inspect-options-runtime.ts",
           "tests/corpus/inspect-show-hidden.ts",
-          "tests/corpus/inspect-show-hidden-prototypes.ts"
+          "tests/corpus/inspect-show-hidden-prototypes.ts",
+          "tests/corpus/inspect-max-string-length.ts"
         ]
       },
       "anchorSource": "exact"

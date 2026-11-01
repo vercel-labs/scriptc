@@ -73,6 +73,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.countReset",
   "console.table",
   "console.dirDyn",
+  "console.dirHidden",
   "worker.new",
   "worker.data",
   "worker.parentPort",

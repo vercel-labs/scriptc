@@ -4097,6 +4097,7 @@ function buildLibFnSignatures() {
     "console.clear": { argTypes: [], result: VOID },
     "console.table": { argTypes: [DYN, DYN], result: VOID },
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
+    "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Installs the program's builtin-global lookup (global-values.ts). */
@@ -5129,6 +5130,9 @@ function buildLibFnSignatures() {
     /** The render's maxArrayLength, which the array, Map and Set traversals
      * read: the option applies at every nesting level. */
     "insp.maxArrayLength": { argTypes: [], result: F64 },
+    /** ctx.maxStringLength for the renders that follow; answers the previous
+     * value so the call site can restore it. */
+    "insp.maxStringLength": { argTypes: [F64], result: F64 },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
     // Circular references: the receiver slot is program-dependent (any
     // cycle-capable record/array/map/class type — the insp.error precedent).

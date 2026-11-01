@@ -233,6 +233,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
+  // The buffer views registry (resizable/growable buffers): the program's
+  // %main installs its ops table, and its bytes headers stop being
+  // invariant. Every other program keeps the default bytes objects and
+  // links no part of the unit.
+  unit((u) => u.opts.mutableBuffers === true, "scr_js_buffers.c"),
   unit(
     (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
     "scr_event_target.c",
@@ -256,6 +261,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.nodeIsland === true,
     "scr_async_dyn.c",
   ),
+  // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
+  // the specification's algorithms over the checked-dynamic tier. Their
+  // values adopt through scr_async_dyn.c's thenable path, so the call
+  // selects dynAsync as well.
+  unit((u) => u.opts.promiseGeneric === true, "scr_js_promise_generic.c"),
   // The performance timeline (every perf_hooks user-timing call selects
   // dynAsync, whose unit carries the timeline's buffer warning).
   unit((u) => u.opts.dynAsync, "scr_perf.c"),
@@ -465,9 +475,6 @@ const RUNTIME_DEFINES: readonly {
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
-  // scr_json.c's view slot answers NULL for a field a partial record view
-  // does not have; only a program with a partial assertion selects it.
-  { define: "SCR_RECORD_VIEW_PARTIAL", when: (opts) => opts.recordViewPartial },
   // The JavaScript object model build (t262-da §J): the code the runtime
   // features only a JavaScript source reaches share. Its objects are separate
   // builds selected by runtime-pack-matrix.mjs, so the source build must name

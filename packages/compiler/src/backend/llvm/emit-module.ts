@@ -68,7 +68,12 @@ import { STRING_READ_HELPERS, stringScanDecl, stringScanInline } from "./string-
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { targetCpuAttribute } from "../target-cpu.js";
-import { CPU_LEVEL_INIT_CALL, cpuDispatchAttributes, cpuLevelDefs } from "./cpu-dispatch.js";
+import {
+  CPU_LEVEL_INIT_CALL,
+  cpuCopyAttributes,
+  cpuLevelDefs,
+  targetLevelDefs,
+} from "./cpu-dispatch.js";
 import type { IrFunction } from "../../ir/ir.js";
 import { type FunctionLayout, layoutTierOf } from "./function-layout.js";
 
@@ -113,6 +118,15 @@ function emitFunctionsInChunks(emitter: LlEmitter, chunks: number): string[] {
 export function workerMinFunctions(): number {
   const value = Number(process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] ?? "2000");
   return Number.isFinite(value) && value > 0 ? value : 2000;
+}
+
+/** Whether the worker for `range` exits failing on purpose, from
+ * SCRIPTC_EMIT_WORKER_FAIL (`all`, or one range's index). The self-hosting
+ * driver pins that a failed worker's range falls back to this process and
+ * still emits the serial text. */
+function workerFailureRequested(range: number): boolean {
+  const requested = process.env["SCRIPTC_EMIT_WORKER_FAIL"];
+  return requested === "all" || requested === String(range);
 }
 
 /** A function's estimated emission cost beyond its IR nodes, in nodes:
@@ -170,6 +184,7 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
     if (pid === 0) {
       let code = 1;
       try {
+        if (workerFailureRequested(range)) throw new Error("requested worker failure");
         emitter.journal = new EmitJournal();
         emitter.debug?.record();
         const texts: string[] = [];
@@ -215,7 +230,9 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
         if (first !== pid && other !== undefined) reap(first, other);
         else reap(pid, range);
       }
-      const merged = ended.get(range)!;
+      // A failed range's worker, or one whose files are missing, left null:
+      // this process emits that range itself.
+      const merged = ended.get(range) ?? null;
       ended.delete(range);
       const slice = rangeFunctions(range);
       if (merged !== null && merged.texts.length === slice.length) {
@@ -256,8 +273,9 @@ function readRange(dir: string, range: number): { result: ChunkResult; texts: st
  * and `uwtable` on native targets, so every function has an unwind table
  * entry, including those LLVM infers `nounwind` (profilers and debuggers
  * unwind through them). A group needs one attribute: without any, #0 holds a
- * string attribute that LLVM ignores. Dispatching builds add the x86-64-v3
- * copies' #3 and #4 (cpu-dispatch.ts). */
+ * string attribute that LLVM ignores. Builds with CPU copies add the x86-64-v3
+ * copies' #3 and #4, and for an x86-64-v3 target the baseline copies' #5 and
+ * #6 (cpu-dispatch.ts). */
 function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean): string[] {
   const cpu = targetCpuAttribute(emitter.targetCpu);
   const asan = emitter.sanitizeAttributes ? " sanitize_address" : "";
@@ -267,7 +285,7 @@ function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean)
     `attributes #0 = {${base} }`,
     ...(emitter.usesCoroutines ? [`attributes #1 = {${common} presplitcoroutine${cpu} }`] : []),
     ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline${common}${cpu} }`] : []),
-    ...(emitter.cpuDispatch ? cpuDispatchAttributes(common) : []),
+    ...(emitter.cpuCopies === null ? [] : cpuCopyAttributes(common, emitter.cpuCopies)),
   ];
 }
 
@@ -751,7 +769,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.publishWalkersCache?.defs() ?? []),
     ...emitter.publishedClassNamesDefs(),
     ...(emitter.regions?.moduleDefs() ?? []),
-    ...(emitter.cpuDispatch ? cpuLevelDefs((line) => emitter.declare(line)) : []),
+    ...(emitter.cpuDispatch
+      ? cpuLevelDefs((line) => emitter.declare(line))
+      : emitter.cpuCopies === "target"
+        ? targetLevelDefs()
+        : []),
   ];
   if (emitter.constantNumericTables.size > 0)
     emitter.declare(`declare double @scr_arr_get_number(ptr, double)`);

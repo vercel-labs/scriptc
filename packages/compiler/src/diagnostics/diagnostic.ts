@@ -1195,6 +1195,23 @@ export function noLoweringDiag(
   };
 }
 
+/** A use of a Node 24 global the native runtime does not implement
+ * (host-globals.ts): constructing or calling its constructor value, or
+ * reading one of its members. A bare read compiles and answers the
+ * constructor (host-global-values.ts). Node has the class and its surface,
+ * so answering undefined or refusing to build the module would both
+ * diverge; the reason id lets a Node island run the module instead. */
+export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${name}' is a Node global that native code does not provide`,
+    loc,
+    milestone: "later",
+    hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
+    reason: "host-global",
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's
@@ -1535,9 +1552,10 @@ export function libExportUnresolvedDiag(
     message: `library export '${exportName}' cannot be resolved: ${detail}`,
     loc,
     hint:
-      "the export map may only name function declarations exported directly by the profile's ONE entry module; " +
-      "when a function lives in another module, the entry module declares an exported wrapper function that " +
-      "forwards to it, such as export function handle(msg: string) { return realHandle(msg); }",
+      "the export map may only name exports of the profile's ONE entry module, and the entry module decides " +
+      'where the function lives: re-export it from another module (export { handle } from "./sdk/handler", ' +
+      'or export * from "./sdk/handler"), declare it there and export it through a list (export { handle }), ' +
+      "or declare a forwarding wrapper function",
   };
 }
 

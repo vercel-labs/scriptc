@@ -771,7 +771,7 @@ declare module "crypto" {
    * stance). Every ACCESS bakes as its literal at lowering; the object
    * itself never materializes (bare crypto.constants value uses fence). */
   export interface CryptoConstants {
-    readonly OPENSSL_VERSION_NUMBER: 810549376;
+    readonly OPENSSL_VERSION_NUMBER: 810549392;
     readonly SSL_OP_ALL: 2147485776;
     readonly SSL_OP_ALLOW_NO_DHE_KEX: 1024;
     readonly SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144;

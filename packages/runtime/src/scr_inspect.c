@@ -397,6 +397,7 @@ static SCR_TL double g_break_length = 80; /* ctx.breakLength */
 static SCR_TL double g_compact = 3;  /* ctx.compact: a number, -1 for false */
 static SCR_TL bool g_sorted;         /* ctx.sorted === true */
 static SCR_TL double g_max_array_length = 100; /* ctx.maxArrayLength */
+static SCR_TL double g_max_string_length = 10000; /* ctx.maxStringLength */
 static SCR_TL double g_cur_depth;    /* ctx.currentDepth (last-entered composite) */
 
 /* util.inspect's breakLength, compact, sorted and maxArrayLength for the
@@ -411,6 +412,16 @@ void scr_insp_layout(double break_length, double compact, bool sorted, double ma
 }
 
 double scr_insp_max_array_length(void) { return g_max_array_length; }
+
+/* ctx.maxStringLength: the string values formatPrimitive truncates. Set
+ * for the length of an inspect render, by the static layout wrapper the
+ * lowered calls run in or by the runtime reader; answers the previous
+ * value so a wrapper can restore it. */
+double scr_insp_max_string_length(double value) {
+  double previous = g_max_string_length;
+  g_max_string_length = value;
+  return previous;
+}
 
 static InspFrame *insp_top(void) { return &g_frames[g_nframes - 1]; }
 
@@ -939,11 +950,11 @@ static size_t insp_utf16_offset(const char *data, size_t len, size_t units, bool
   return len;
 }
 
-/* formatPrimitive over a string value under the default options:
- * maxStringLength 10000, then the per-line ` +` continuation when the
- * (truncated) text is longer than 16 chars AND breakLength -
- * indentationLvl - 4, split after each newline; the trailer counts the
- * cut characters. Uses the CURRENT indentation. */
+/* formatPrimitive over a string value under the current maxStringLength
+ * (10000 by default, Infinity for null), then the per-line ` +`
+ * continuation when the (truncated) text is longer than 16 chars AND
+ * breakLength - indentationLvl - 4, split after each newline; the
+ * trailer counts the cut characters. Uses the CURRENT indentation. */
 ScrStr *scr_insp_str(ScrStr *s) {
   InspBuf out = {0};
   const char *data = s->data;
@@ -952,11 +963,12 @@ ScrStr *scr_insp_str(ScrStr *s) {
   char trailer[64] = "";
   char surrogate_tail[4];
   size_t surrogate_tail_len = 0;
-  if (units > 10000) {
-    size_t remaining = units - 10000;
+  if ((double)units > g_max_string_length) {
+    size_t max = (size_t)g_max_string_length;
+    size_t remaining = units - max;
     bool lone_high;
     uint32_t high_cp = 0;
-    byte_len = insp_utf16_offset(data, byte_len, 10000, &lone_high, &high_cp);
+    byte_len = insp_utf16_offset(data, byte_len, max, &lone_high, &high_cp);
     if (lone_high) {
       /* re-encode the kept high surrogate as WTF-8 */
       surrogate_tail[0] = (char)(0xe0 | (high_cp >> 12));
@@ -966,7 +978,7 @@ ScrStr *scr_insp_str(ScrStr *s) {
     }
     snprintf(trailer, sizeof trailer, "... %zu more character%s", remaining,
              remaining > 1 ? "s" : "");
-    units = 10000;
+    units = max;
   }
   /* the (possibly truncated) value as one buffer */
   InspBuf val = {0};
@@ -2550,6 +2562,7 @@ typedef struct {
   double break_length;
   double compact;
   double max_array_length;
+  double max_string_length;
   const ScrDyn *user_options;
   size_t nsaved;  /* the nested-context stack's depth before the call */
   size_t nframes; /* the frame stack's depth before the call */
@@ -2596,6 +2609,7 @@ double scr_insp_custom_call_begin(void) {
   sv->break_length = g_break_length;
   sv->compact = g_compact;
   sv->max_array_length = g_max_array_length;
+  sv->max_string_length = g_max_string_length;
   sv->user_options = g_user_options;
   g_colors = false;
   g_show_hidden = false;
@@ -2604,6 +2618,7 @@ double scr_insp_custom_call_begin(void) {
   g_depth_kind = 1;
   g_depth_number = 0;
   g_user_options = NULL;
+  g_max_string_length = 10000;
   scr_insp_layout(80, 3, false, 100);
   return token;
 }
@@ -2621,6 +2636,7 @@ static InspCallSaved *insp_call_options_restore(size_t depth) {
   g_depth_kind = sv->depth_kind;
   g_depth_number = sv->depth_number;
   g_user_options = sv->user_options;
+  g_max_string_length = sv->max_string_length;
   scr_insp_layout(sv->break_length, sv->compact, sv->sorted, sv->max_array_length);
   return sv;
 }
@@ -2780,7 +2796,7 @@ static ScrDyn *insp_user_options(double depth) {
   insp_opt_set(options, "customInspect", scr_dyn_new_bool(true));
   insp_opt_set(options, "showProxy", scr_dyn_new_bool(false));
   insp_opt_set(options, "maxArrayLength", scr_dyn_new_num(g_max_array_length));
-  insp_opt_set(options, "maxStringLength", scr_dyn_new_num(10000));
+  insp_opt_set(options, "maxStringLength", scr_dyn_new_num(g_max_string_length));
   insp_opt_set(options, "breakLength", scr_dyn_new_num(g_break_length));
   insp_opt_set(options, "compact", g_compact < 0 ? scr_dyn_new_bool(false) : scr_dyn_new_num(g_compact));
   insp_opt_set(options, "sorted", scr_dyn_new_bool(g_sorted));
@@ -3649,16 +3665,18 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
   o->compact = 3;
   o->sorted = false;
   o->max_array_length = 100;
+  o->max_string_length = 10000;
   o->user_options = NULL;
 }
 
 /* inspect(value, options) at the given depth, compact and colors, with
- * the options' breakLength and sorted; the previous layout returns
- * afterwards. +1, or NULL with the exception pending. */
+ * the options' breakLength, sorted and maxStringLength; the previous
+ * layout returns afterwards. +1, or NULL with the exception pending. */
 static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, double depth,
                                 double compact, bool colors) {
   double break_length = g_break_length, saved_compact = g_compact;
   double saved_max_array_length = g_max_array_length;
+  double saved_max_string_length = g_max_string_length;
   bool sorted = g_sorted, saved_colors = g_colors, saved_custom = g_custom_inspect;
   bool saved_hidden = g_show_hidden;
   const char *saved_hidden_surface = g_hidden_surface;
@@ -3675,7 +3693,9 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
   g_depth_kind = o->depth_kind;
   g_depth_number = o->depth_number;
   g_user_options = o->user_options;
+  g_max_string_length = o->max_string_length;
   ScrStr *text = scr_insp_dyn(value, 0, depth);
+  g_max_string_length = saved_max_string_length;
   g_colors = saved_colors;
   g_custom_inspect = saved_custom;
   g_show_hidden = saved_hidden;
@@ -4057,9 +4077,9 @@ static bool insp_depth_option(const ScrDyn *value, ScrInspFormatOptions *o) {
 /* inspect's option keys (inspectDefaultOptions and stylize) over an
  * options object, as `inspect(value, options)` copies them. Options at
  * their defaults, depth, colors, compact (a number or false),
- * breakLength (a number), sorted (a boolean) and maxArrayLength (a
- * non-negative integer or null) lower; other values of the known options
- * throw the SC2020 refusal. */
+ * breakLength (a number), sorted (a boolean), maxArrayLength and
+ * maxStringLength (a non-negative integer or null) lower; other values of
+ * the known options throw the SC2020 refusal. */
 bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o) {
   ScrDyn *view = NULL;
   if (options->kind == SCR_DYN_TYPED_REF) {
@@ -4127,21 +4147,31 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
       goto done;
     }
   }
+  INSP_OPT("maxStringLength");
+  if (present) {
+    if (value->kind == SCR_DYN_NULL) {
+      o->max_string_length = INFINITY;
+    } else if (value->kind == SCR_DYN_NUM && value->v.num >= 0 &&
+               floor(value->v.num) == value->v.num) {
+      o->max_string_length = value->v.num;
+    } else {
+      insp_fmt_fence(o, "with this maxStringLength option has no lowering (maxStringLength must be a non-negative integer or null)");
+      goto done;
+    }
+  }
   /* The options whose non-default values change renderings this runtime
    * does not produce. */
   static const struct {
     const char *key;
-    int kind; /* 0: falsy, 1: true, 2: the number 10000 */
+    int kind; /* 0: falsy, 1: true */
   } fixed[] = {
-      {"showProxy", 0},  {"maxStringLength", 2}, {"getters", 0},
-      {"numericSeparator", 0}, {"stylize", 0},
+      {"showProxy", 0}, {"getters", 0}, {"numericSeparator", 0}, {"stylize", 0},
   };
   for (size_t i = 0; i < sizeof fixed / sizeof *fixed; i++) {
     INSP_OPT(fixed[i].key);
     if (!present) continue;
-    bool at_default = fixed[i].kind == 0   ? !scr_dyn_truthy(value)
-                      : fixed[i].kind == 1 ? value->kind == SCR_DYN_BOOL && value->v.b
-                                           : value->kind == SCR_DYN_NUM && value->v.num == 10000;
+    bool at_default = fixed[i].kind == 0 ? !scr_dyn_truthy(value)
+                                         : value->kind == SCR_DYN_BOOL && value->v.b;
     /* The stylize function a custom inspect function received (options
      * passed back into util.inspect) is the default for its colors. */
     if (!at_default && strcmp(fixed[i].key, "stylize") == 0 && insp_own_stylize(value, o->colors))
@@ -4236,20 +4266,30 @@ ScrStr *scr_insp_format_with_options(ScrDyn *options, ScrDyn *pack) {
   return insp_fmt_pack(pack, &o);
 }
 
+/* A showHidden render of a checked-dynamic value: the walk with the given
+ * surface name (for the refusals whose hidden entries it cannot render),
+ * the %o spec flag, and custom inspection off (custom < 0 keeps the
+ * caller's setting, 0 disables it). */
+ScrStr *scr_insp_dyn_hidden_as(ScrDyn *d, double depth, const char *surface, bool spec, int custom) {
+  bool outer = g_show_hidden;
+  const char *outer_surface = g_hidden_surface;
+  bool outer_spec = g_hidden_spec;
+  g_show_hidden = true;
+  g_hidden_surface = surface;
+  g_hidden_spec = spec;
+  bool previous_custom = custom < 0 ? true : scr_insp_custom_inspect(custom != 0);
+  ScrStr *out = scr_insp_dyn(d, 0, depth);
+  if (custom >= 0) scr_insp_custom_inspect(previous_custom);
+  g_show_hidden = outer;
+  g_hidden_surface = outer_surface;
+  g_hidden_spec = outer_spec;
+  return out;
+}
+
 /* util.format's %o over a dyn value: util.inspect with showHidden at the
  * given depth. */
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth) {
-  bool outer = g_show_hidden;
-  const char *surface = g_hidden_surface;
-  bool spec = g_hidden_spec;
-  g_show_hidden = true;
-  g_hidden_surface = "util.format";
-  g_hidden_spec = true;
-  ScrStr *out = scr_insp_dyn(d, 0, depth);
-  g_show_hidden = outer;
-  g_hidden_surface = surface;
-  g_hidden_spec = spec;
-  return out;
+  return scr_insp_dyn_hidden_as(d, depth, "util.format", true, -1);
 }
 
 /* ── console.table cells ─────────────────────────────────────────────── */

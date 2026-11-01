@@ -1417,9 +1417,8 @@ typedef struct {
   size_t key_len;
   const size_t *offsets;
 } ScrRecordViewSource;
-/* The slot of field `position` of a view. The SCR_RECORD_VIEW_PARTIAL build
- * of scr_json.c, which only a program with a partial record assertion links,
- * answers NULL for a field the viewed record does not declare (record-views.ts). */
+/* The slot of field `position` of a view, or NULL for a field the viewed
+ * record does not declare (a partial record view, record-views.ts). */
 void *scr_record_view_slot(void *view, size_t position);
 void *scr_record_view_field(void *value, size_t offset, size_t position);
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
@@ -1563,6 +1562,15 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
  * Node's brand-check TypeError. +1; `constructor` is the compiled Boolean
  * constructor value. */
 ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
+
+/* Promise statics called with a foreign constructor (`Promise.all.call(C, …)`,
+ * scr_js_promise_generic.c, linked only into programs that make the call):
+ * the specification's algorithms over NewPromiseCapability(C) and
+ * GetPromiseResolve(C). `name` is one of the six statics, `thisArg` its
+ * receiver and `arg` the iterable (the combinators) or the value
+ * (resolve/reject). */
+ScrDyn *scr_js_promise_generic_call(const ScrStr *name, const ScrDyn *thisArg, const ScrDyn *arg);
+
 ScrDyn *scr_dyn_util_type_value(const ScrDyn *value, const ScrStr *probe);
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item);
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
@@ -1686,6 +1694,11 @@ void scr_dyn_key_set_computed_sloppy(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
+/* Expression-position `delete` on a primitive base: ToPropertyKey of the
+ * key, then ToObject's wrapper, whose own non-configurable properties (a
+ * String's indexes and `length`) answer false in sloppy code and throw in
+ * strict code. Both operands BORROWED; returns the delete's answer. */
+bool scr_dyn_primitive_delete(ScrDyn *recv, const ScrDyn *raw_key, bool strict);
 /* Removes the own property `key` of an ordinary object whatever its
  * attributes, as scr_dyn_obj_set_field replaces values. */
 void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key);
@@ -2383,6 +2396,13 @@ ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
  * resolve job, a throwing `then` read rejects, and any other value
  * fulfills. */
 void scr_dyn_promise_resolve_with(ScrPromise *target, ScrDyn *value);
+/* The `then` of a dyn value when it is a thenable (its `then` is a
+ * function), +1, and NULL otherwise or when the read threw (the exception
+ * stays pending). The stance is the resolution procedure's: an object, a
+ * function, a proxy or a typed reference capsule (read through its
+ * materialized view, or through `reader` for a program class instance)
+ * qualifies; every other kind does not. */
+ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);

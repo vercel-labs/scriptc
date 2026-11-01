@@ -73,6 +73,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.countReset",
   "console.table",
   "console.dirDyn",
+  "console.dirHidden",
   "worker.new",
   "worker.data",
   "worker.parentPort",
@@ -148,6 +149,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",
+  "arrayBuffer.newResizable",
+  "sharedArrayBuffer.newGrowable",
   "atomics.op",
   "atomics.wait",
   "atomics.notify",
@@ -570,6 +573,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.classBasePrototype",
   "dyn.classInherit",
   "dyn.classSuper",
+  // Promise.<s>.call(C, …) validates its `this` and runs C's constructor and
+  // resolve — every throw (a non-object this, a non-constructor, a throwing
+  // executor or resolve) rejects the capability or propagates.
+  "promise.genericStatic",
   "dyn.hasKey",
   "dyn.in",
   "child.kill",
@@ -767,6 +774,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackCall",
   "dyn.keyDelete",
   "dyn.keyDeleteComputed",
+  "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
   "dyn.hasKeyComputed",

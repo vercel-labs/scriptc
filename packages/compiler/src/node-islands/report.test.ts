@@ -38,6 +38,7 @@ function edge(from: string | null, to: string): PackageEdge {
     to,
     toDir: `${NM}/${to}`,
     shim: false,
+    loads: true,
     loc: { file: from === null ? "/app/main.ts" : `${NM}/${from}/index.js`, start: 0, end: 1 },
   };
 }

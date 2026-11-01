@@ -1899,6 +1899,43 @@ for (const [label, value] of values) {
     );
   });
 
+  test("console.dir renders showHidden through the checked-dynamic walk and refuses the kinds it has no hidden view of", async () => {
+    // dir is inspect with customInspect: false, so the hidden entries come
+    // from the walk's showHidden state; the kinds without a hidden view
+    // keep their refusal, naming console.dir.
+    const r = await compileAndRun(
+      "console-dir-show-hidden",
+      `const arr: any = [1, 2];
+arr.extra = 3;
+Object.defineProperty(arr, "hidden", { value: 4, enumerable: false });
+console.dir(arr, { showHidden: true });
+console.dir(arr);
+function f(): void {}
+try {
+  console.dir(f, { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+const sab = new SharedArrayBuffer(1);
+try {
+  console.dir(new Uint8Array(sab), { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "[ 1, 2, [length]: 2, extra: 3, [hidden]: 4 ]",
+        "[ 1, 2, extra: 3 ]",
+        "console.dir with showHidden of function values is not supported yet",
+        "console.dir with showHidden of SharedArrayBuffer values is not supported yet",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("showHidden refuses the renders that would expose a SharedArrayBuffer's byte accessors", async () => {
     // Node lists a SharedArrayBuffer's own byteLength, maxByteLength and
     // growable accessors and its toStringTag symbol under showHidden, which

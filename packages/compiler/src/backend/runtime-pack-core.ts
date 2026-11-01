@@ -125,13 +125,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
    * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
    * dynTier. */
   jsObjectModel: boolean;
-  stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
-  /** The program reaches the process output streams' write slot: the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   moduleNamespace: boolean;
@@ -361,9 +357,7 @@ export function effectiveRuntimeFeatures(
     warningReplace: features.warningReplace === true,
     jsObjectModel,
     bigintBytes: features.bigintBytes === true,
-    stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
-    stdioWriteSlot: features.stdioWriteSlot === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     moduleNamespace: features.moduleNamespace === true,

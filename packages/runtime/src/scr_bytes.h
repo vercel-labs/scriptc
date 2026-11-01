@@ -223,6 +223,9 @@ ScrStr *scr_strdec_write(const ScrStr *enc, double pending, const ScrBytes *chun
 ScrStr *scr_strdec_write_dyn(const ScrStr *enc, double pending, const ScrDyn *chunk);
 double scr_strdec_next_dyn(const ScrStr *enc, double pending, const ScrDyn *chunk);
 double scr_strdec_next(const ScrStr *enc, double pending, const ScrBytes *chunk);
+/* write and next in one walk of pending+chunk: the decoded prefix (+1), with
+ * *pending left holding the state that follows it. */
+ScrStr *scr_strdec_stream_write(const ScrStr *enc, const ScrBytes *chunk, double *pending);
 ScrStr *scr_strdec_end(const ScrStr *enc, double pending);
 ScrStr *scr_strdec_encoding(const ScrDyn *enc); /* +1, or NULL with ERR_UNKNOWN_ENCODING pending */
 /* A Buffer encoding name known only at run time, Node's getEncodingOps: the

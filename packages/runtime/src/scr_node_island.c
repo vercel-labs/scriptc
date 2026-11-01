@@ -817,6 +817,10 @@ static void ni_exit(int code) {
 /* An island listener for a process event was added or removed. */
 static void ni_listen(uint32_t event, const char *name, uint32_t listener, int add, int once) {
   (void)once; /* Node's once wrapper removes itself through removeListener */
+  /* Island listeners deliver through the events unit, which cannot name
+   * scr_node_island_emit itself: this unit installs the hook that reaches
+   * it (the first island listener is registered here). */
+  scr_events_set_island_emit(&scr_node_island_emit);
   if (event == SCR_NODE_EVENT_SIGNAL) {
     if (add) {
       ScrStr *s = scr_str_new(name, strlen(name));

@@ -205,8 +205,6 @@ export interface CcOptions {
   /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
    * object model feature the program reaches (t262-da §J). */
   jsObjectModel?: boolean;
-  /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
-  stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
    * (scr_fs_flags.c and that build of scr_fs_cp.c). */
   fsFlags?: boolean;
@@ -214,14 +212,11 @@ export interface CcOptions {
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
-   * stdin.isRaw and server.off. */
+   * stdin.isRaw and server.off (the dyn-async and net units). */
   processExtras?: boolean;
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
-  /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
-   * (the write method as a value, its replacement, run-time-typed chunks). */
-  stdioWriteSlot?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;

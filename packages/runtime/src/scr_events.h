@@ -63,4 +63,12 @@ bool scr_stdin_pending(void);
 void scr_stdin_remove_data(ScrClosure *cb);
 bool scr_stdin_ended(void);
 
+/* Process events island code listens to (the bridge's SCR_NODE_EVENT_* ABI).
+ * Their listeners sit in this unit's registries at their registration
+ * position, and a delivery calls them through the emit hook: this unit
+ * cannot name scr_node_island_emit itself, because every program that uses
+ * process events links it and only an island program links that one. */
+enum { SCR_EVENTS_ISLAND_SIGNAL = 1, SCR_EVENTS_ISLAND_EXIT = 2 };
+void scr_events_set_island_emit(void (*fn)(uint32_t event, uint32_t listener, ScrStr *name, int arg));
+
 #endif /* SCR_EVENTS_H */

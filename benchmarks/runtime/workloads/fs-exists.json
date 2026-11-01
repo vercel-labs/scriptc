@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/fs-exists.ts",
+  "args": [
+    "1"
+  ]
+}

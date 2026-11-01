@@ -11,6 +11,7 @@ import {
 import { voidizedCallback } from "../lower-server.js";
 import { fsStreamCreateExpr } from "./fs-streams.js";
 import {
+  BOOL,
   BYTES_U8,
   DYN,
   F64,
@@ -1338,4 +1339,35 @@ function parseMkdirOptions(
     }
   }
   return { recursive, modeNode };
+}
+
+/** fs.existsSync(path) where the path value is not statically a string: a
+ * Buffer path, an `any`-typed value, or a union of those with strings and the
+ * unit arms. Node answers false for any other value and reports DEP0187
+ * once, which the value form (scr_fs_exists_dyn.c) does; a plain string
+ * argument keeps the typed call. Null for the URL type, which converts to a
+ * string path before the call, and for every union holding an arm the value
+ * form cannot answer.
+ */
+export function lowerFsExistsValueCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const arg = expr.arguments.nodes[0];
+  if (!arg) return null;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(arg));
+  const ok = (arm: IrType | null) =>
+    arm?.kind === "string" || (arm !== null && typeEquals(arm, BYTES_U8));
+  const unit = (arm: IrType | null) =>
+    arm?.kind === "undefinedT" || arm?.kind === "nullT" || arm?.kind === "void";
+  // A null mapped type is `any`/`unknown`: the runtime decides.
+  let value = type === null || type.kind === "dyn" || (type.kind !== "string" && ok(type));
+  if (!value && type?.kind === "union") {
+    const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+    value = arms.some(ok) && arms.every((arm) => ok(arm) || unit(arm));
+  }
+  if (!value) return null;
+  const lowered = lowerer.lowerExprExpecting(arg, DYN);
+  return { kind: "libCall", fn: "fs.existsSyncValue", args: [lowered], type: BOOL, loc };
 }

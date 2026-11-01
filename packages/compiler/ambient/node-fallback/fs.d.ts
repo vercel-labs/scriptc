@@ -50,7 +50,7 @@ declare module "node:fs" {
   export function writeFileSync(fd: number, data: string): void;
   export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
-  export function existsSync(path: string | URL): boolean;
+  export function existsSync(path: string | Uint8Array | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(
     path: string | URL,

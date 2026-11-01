@@ -7051,11 +7051,22 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
 #endif
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
   if (bytes->is_data_view) {
-    /* A DataView has no length or indexed elements. */
+    /* A DataView has no length or indexed elements. Its constructor is the
+     * interned DataView function value — the same one a JavaScript source
+     * reads from the global — so `dv.constructor === DataView` is exact
+     * (t262-dc C3). Only the object model build has that table's users, and
+     * the default build keeps its named refusal. */
     if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
+#ifdef SCR_JS_OBJECT_MODEL
+      ScrStr *name = scr_str_new("DataView", sizeof "DataView" - 1);
+      ScrDyn *ctor = scr_dyn_global_constructor(name);
+      scr_str_release(name);
+      return ctor;
+#else
       static const char message[] = "DataView's constructor through unknown is not supported yet";
       scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
       return NULL;
+#endif
     }
     return scr_dyn_retain(scr_dyn_undefined());
   }

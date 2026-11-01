@@ -10761,22 +10761,41 @@ function lowerObjLitGenericMethodCall(
       // value (`dyn.globalConstructor`) — exactly the identity compared —
       // rather than the reflected-value fence a stdlib global read as a
       // `.call` receiver otherwise reports.
-      const thisIr = !thisArg
+      let thisIr = !thisArg
         ? dynUndefinedExpr(loc)
         : stdlibGlobalNameOf(lowerer, thisArg) === "Promise"
           ? (builtinGlobalValue("Promise", loc, true) ?? lowerer.lowerExprExpecting(thisArg, DYN))
           : lowerer.lowerExprExpecting(thisArg, DYN);
-      return {
+      let valueIr = value ? lowerer.lowerExprExpecting(value, DYN) : dynUndefinedExpr(loc);
+      const callOf = (receiver: IrExpr, iterable: IrExpr): IrExpr => ({
         kind: "libCall",
         fn: "promise.genericStatic",
-        args: [
-          { kind: "strLit", value: stat, type: STRING, loc },
-          thisIr,
-          value ? lowerer.lowerExprExpecting(value, DYN) : dynUndefinedExpr(loc),
-        ],
+        args: [{ kind: "strLit", value: stat, type: STRING, loc }, receiver, iterable],
         type: DYN,
         loc,
+      });
+      // The algorithm reads only the first two arguments, but Node evaluates
+      // every argument of the call before it runs: the receiver and the
+      // iterable first, then each surplus argument, in source order. Hold the
+      // two the unit reads in hidden locals so the surplus arguments'
+      // effects and exceptions happen after them, and drop their values.
+      const surplus = call.arguments.nodes.slice(2);
+      if (surplus.length === 0) return callOf(thisIr, valueIr);
+      const holds: IrStmt[] = [];
+      // Both are lowered into the checked-dynamic slot, so each is a dyn value
+      // a hidden local can hold.
+      const hold = (expr: IrExpr, name: string): IrExpr => {
+        const local = lowerer.declareHiddenLocal(name, expr.type);
+        holds.push({ kind: "varDecl", localId: local.id, init: expr, loc });
+        return varRef(local.id, expr.type, loc);
       };
+      thisIr = hold(thisIr, "%promiseStaticThis");
+      valueIr = hold(valueIr, "%promiseStaticIterable");
+      for (const arg of surplus) {
+        const argIr = lowerer.lowerExprExpecting(arg, DYN);
+        holds.push({ kind: "exprStmt", expr: argIr, loc: locOf(arg) });
+      }
+      return { kind: "seqExpr", stmts: holds, result: callOf(thisIr, valueIr), type: DYN, loc };
     }
   }
   // URLSearchParams method values through Function.prototype.call/apply

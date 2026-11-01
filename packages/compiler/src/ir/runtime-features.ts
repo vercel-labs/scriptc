@@ -105,6 +105,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
   "dyn.promiseResolve",
+  // The generic Promise statics build and settle their capability's promise
+  // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
+  "promise.genericStatic",
   "fs.callbackCall",
   "fs.callbackGlob",
   "fs.callbackValue",
@@ -1173,6 +1176,9 @@ const RUNTIME_FEATURE_RULES = {
       // The Boolean prototype's methods run scr_js_wrapper_apply in the
       // same unit, which calls scr_dyn_invoke.
       "wrapper.booleanPrototype",
+      // The generic Promise statics call C's resolve and the iterable's
+      // next/return through scr_dyn_invoke.
+      "promise.genericStatic",
     ],
     // Constant-key reads of Object.prototype member names, and of
     // Array.prototype method names on arrays, answer the inherited member

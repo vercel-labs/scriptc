@@ -429,3 +429,46 @@ console.log("after sync");
     "close: " + log.join(" | ") + " reason=" + cap.reject.name + " [" + cap.reject.message + "]",
   );
 }
+
+// 16. Surplus arguments: the algorithm reads only the receiver and the
+//     iterable, but every argument evaluates first, in source order, and an
+//     abrupt argument throws before the capability exists.
+{
+  const log = [];
+  const cap = { resolve: null, reject: null };
+  const C = makeCapabilityCtor(log, cap);
+  const iterable = {
+    [Symbol.iterator]() {
+      log.push("iterate");
+      return {
+        next() {
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
+  const sideEffect = function (name) {
+    return function (value) {
+      log.push("arg " + name + "(<" + value + ">)");
+      return value;
+    };
+  };
+  Promise.all.call(C, (log.push("this"), iterable), sideEffect("a")(2), sideEffect("b")(3));
+  console.log("surplus order: " + log.join(" | "));
+
+  const thrown = [];
+  const throwing = makeCapabilityCtor(thrown, { resolve: null, reject: null });
+  try {
+    Promise.all.call(
+      throwing,
+      [1],
+      function () {
+        throw new Error("surplus threw");
+      },
+    );
+  } catch (error) {
+    // The argument throws while the call argument list evaluates, so the
+    // constructor never runs and nothing was logged.
+    console.log("surplus throws: " + error.message + " log=[" + thrown.join(" | ") + "]");
+  }
+}

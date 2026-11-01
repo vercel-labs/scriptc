@@ -205,9 +205,11 @@ test("a target CPU level reaches every function attribute group and nothing else
   const module = moduleFor([call()]);
   const plain = emitLlvmModule(module);
   expect(plain).not.toContain("target-cpu");
-  const v3 = emitLlvmModule(module, { targetCpu: "x86-64-v3" });
-  expect(v3).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" \}$/m);
-  expect(v3.replaceAll(' "target-cpu"="x86-64-v3"', "")).toBe(plain);
+  // x86-64-v3 also gives the program's functions baseline copies
+  // (cpu-dispatch-emission.test.ts); x86-64-v4 changes only the groups.
+  const v4 = emitLlvmModule(module, { targetCpu: "x86-64-v4" });
+  expect(v4).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v4" \}$/m);
+  expect(v4.replaceAll(' "target-cpu"="x86-64-v4"', "")).toBe(plain);
   expect(emitLlvmModule(module, { targetCpu: "baseline" })).toBe(plain);
 });
 

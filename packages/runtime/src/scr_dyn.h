@@ -675,27 +675,30 @@ _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.arr.length) == 72, "v.a
 /* An array's own length. Equal to the dense prefix length `len` unless the
  * JavaScript object model build stored an element past it (see the arr
  * payload's comment). Without that build the field is never touched, and
- * the helper inlines to the same read as before it existed. The emitted
- * keyed read's `length` answer loads the field directly at its offset in
- * that build, which the assert above pins. */
-static inline __attribute__((always_inline)) size_t scr_dyn_arr_length(const ScrDyn *d) {
+ * the macro is the same read the call sites made before it existed. The
+ * emitted keyed read's `length` answer loads the field directly at its
+ * offset in that build, which the assert above pins. */
 #ifdef SCR_JS_OBJECT_MODEL
-  return d->v.arr.length;
+#define scr_dyn_arr_length(d) ((d)->v.arr.length)
 #else
-  return d->v.arr.len;
+#define scr_dyn_arr_length(d) ((d)->v.arr.len)
 #endif
-}
 
 /* Moves the dense prefix, and with it the array's length. A dense mutation
  * only runs while the two agree (a length past the prefix sends the call to
  * the property table), so every dense path keeps them equal: a pop, shift or
- * splice that shrank only `len` would leave a length no element back. */
-static inline __attribute__((always_inline)) void scr_dyn_arr_set_len(ScrDyn *d, size_t len) {
+ * splice that shrank only `len` would leave a length no element back.
+ * Macros rather than functions: without that build they expand to the same
+ * assignments the call sites made before the length existed, so the default
+ * build's code is unchanged. */
 #ifdef SCR_JS_OBJECT_MODEL
-  d->v.arr.length = len;
+#define scr_dyn_arr_set_len(d, n) ((d)->v.arr.length = (n), (d)->v.arr.len = (n))
+/* One shorter, as an expression: the value the prefix and length move to. */
+#define scr_dyn_arr_dec_len(d) ((d)->v.arr.length = --(d)->v.arr.len)
+#else
+#define scr_dyn_arr_set_len(d, n) ((d)->v.arr.len = (n))
+#define scr_dyn_arr_dec_len(d) (--(d)->v.arr.len)
 #endif
-  d->v.arr.len = len;
-}
 
 /* ── layouts ───────────────────────────────────────────────────────────
  * An ordinary object (SCR_DYN_OBJ) is in one of two modes.

@@ -879,11 +879,15 @@ export class LlDyn {
 
   /** The object model build's v.arr.length, one field past region (see the
    * arr payload's comment): the dense prefix unless a far write or a length
-   * assignment moved it. */
+   * assignment moved it. Its offset follows the payload's: 64-bit pointers
+   * put region at +64 and the length at +72, wasm32's 4-byte ones at +48 and
+   * +56 of the payload, +44 absolute. */
   private arrLengthOf(B: BlockBuilder, d: string): string {
     const p = B.tmp();
     const n = B.tmp();
-    B.line(`${p} = getelementptr inbounds i8, ptr ${d}, i64 72 ; ->v.arr.length`);
+    B.line(
+      `${p} = getelementptr inbounds i8, ptr ${d}, i64 ${this.abiOffset(72, 44)} ; ->v.arr.length`,
+    );
     B.line(`${n} = load ${this.S}, ptr ${p}`);
     return n;
   }

@@ -2514,15 +2514,31 @@ export function lowerIntrinsicProperty(
       return lowerer.maybeNarrow(read, expr);
     }
     if (name === "stdout" || name === "stderr") {
-      if (lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind !== "string") {
+      const fn = name === "stdout" ? "spawnRes.stdout" : "spawnRes.stderr";
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      const receiver = lowerer.lowerExpr(expr.expression);
+      // The Buffer capture (no `encoding` option): the same captured
+      // bytes, as the branded u8 view Buffer.from would build — so
+      // toString(), toString("hex"), indexing and isBuffer behave as in
+      // Node.
+      if (mapped?.kind === "bytes") {
+        const text: IrExpr = { kind: "libCall", fn, args: [receiver], type: STRING, loc };
+        const bytes: IrExpr = {
+          kind: "libCall",
+          fn: "buffer.fromStr",
+          args: [text, { kind: "strLit", value: "utf8", type: STRING, loc }],
+          type: BYTES_U8,
+          loc,
+        };
+        return { kind: "libCall", fn: "buffer.brand", args: [bytes], type: BYTES_U8, loc };
+      }
+      if (mapped?.kind !== "string") {
         lowerer.noLowering(
           `spawnSync's ${name} without the "utf8" encoding`,
           expr,
-          'Buffer captures are not representable — call spawnSync(cmd, args, { encoding: "utf8" }) so the outputs are strings',
+          'the capture is a string ({ encoding: "utf8" }) or a Buffer (no encoding)',
         );
       }
-      const receiver = lowerer.lowerExpr(expr.expression);
-      const fn = name === "stdout" ? "spawnRes.stdout" : "spawnRes.stderr";
       return { kind: "libCall", fn, args: [receiver], type: STRING, loc };
     }
     if (name === "error") {

@@ -760,7 +760,7 @@ static bool hp_found(const ScrDyn *value, int depth) {
   if (!value || depth > 64) return false;
   if (value->kind == SCR_DYN_HANDLE) {
     ScrDyn *props = hp_find(value->v.handle.ptr);
-    return props && props->v.obj.len > 0;
+    return props && scr_dyn_obj_count(props) > 0;
   }
   if (value->kind == SCR_DYN_ARR) {
     for (size_t i = 0; i < value->v.arr.len; i++)
@@ -768,7 +768,7 @@ static bool hp_found(const ScrDyn *value, int depth) {
     return false;
   }
   if (value->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < value->v.obj.len; i++) {
+    for (size_t i = 0, n = scr_dyn_obj_count(value); i < n; i++) {
       ScrDynProp p = scr_dyn_obj_prop_at(value, i);
       if (!p.accessor && hp_found(p.value, depth + 1)) return true;
     }

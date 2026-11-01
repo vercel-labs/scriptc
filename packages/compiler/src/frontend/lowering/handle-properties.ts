@@ -146,7 +146,9 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
     else everyName = true;
   };
   for (const sf of spawns ? files : []) {
-    const visit = (node: ts.Node): void => {
+    // Iterative: a whole-file walk must not recurse (a 7000-level
+    // expression is a named deferred fence, not a stack overflow).
+    walkFile(sf, (node) => {
       if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -186,9 +188,8 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
           }
         }
       }
-      ts.forEachChild(node, visit);
-    };
-    visit(sf);
+      return true;
+    });
   }
   known = { written, everyName, any: written.size > 0 || everyName || (spawns && defines) };
   lowerer.childAdditions = known;
@@ -208,6 +209,21 @@ const HANDLE_CLASSES: ReadonlySet<string> = new Set([
   "SharedArrayBuffer",
   "FinalizationRegistry",
 ]);
+
+/** Visits the file's nodes outermost first, iteratively: these censuses
+ * walk every body before reachability is known, and a recursively nested
+ * expression (a 7000-level chain is a named deferred fence at lowering,
+ * not a compiler stack overflow) must not overflow here either. */
+function walkFile(sf: ts.SourceFile, visit: (node: ts.Node) => boolean): void {
+  const stack: ts.Node[] = [sf];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (!visit(node)) return;
+    ts.forEachChild(node, (child) => {
+      stack.push(child);
+    });
+  }
+}
 
 /** The handle class `node`'s checker type names (a union names one only
  * when every constituent is that class), or null. */
@@ -258,43 +274,104 @@ export function programAddsHandleProperties(lowerer: Lowerer): boolean {
     "seal",
     "freeze",
   ]);
-  for (const sf of files) {
-    const visit = (node: ts.Node): void => {
-      if (found) return;
+  // A whole-program census visits every body, reached or not, so no
+  // statement owns the local-class refusal a type query here may trigger
+  // (collectLocalClassForType leaves it reported instead of poisoning the
+  // compile).
+  lowerer.speculativeTypeQueries(() => {
+    for (const sf of files) {
+      walkFile(sf, (node) => {
+        if (
+          ts.isBinaryExpression(node) &&
+          ts.isAssignmentOperator(node.operatorToken.kind) &&
+          (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+          handleClassOf(lowerer, node.left.expression) &&
+          !namesHandleMember(lowerer, node.left)
+        )
+          found = true;
+        else if (
+          ts.isDeleteExpression(node) &&
+          (ts.isPropertyAccessExpression(node.expression) ||
+            ts.isElementAccessExpression(node.expression)) &&
+          handleClassOf(lowerer, node.expression.expression) &&
+          !namesHandleMember(lowerer, node.expression)
+        )
+          found = true;
+        else if (
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) &&
+          (node.expression.expression.text === "Object" ||
+            node.expression.expression.text === "Reflect") &&
+          integrity.has(node.expression.name.text) &&
+          node.arguments.nodes[0] !== undefined &&
+          handleClassOf(lowerer, node.arguments.nodes[0])
+        )
+          found = true;
+        return !found;
+      });
+      if (found) break;
+    }
+  });
+  lowerer.handleAdditions = found;
+  return found;
+}
+
+/** The nodes the own-property census above reads the type of: every
+ * JavaScript write receiver, delete target and integrity-call target, plus
+ * the expression chain `Lowerer.typeOf` walks for a property-access
+ * receiver. `Lowerer.emitReachable` batches their types ahead of
+ * collection so the census makes no per-node checker request inside a
+ * deferred body. */
+export function handlePropertyScanRoots(sourceFiles: readonly ts.SourceFile[]): ts.Node[] {
+  const roots: ts.Node[] = [];
+  const receiver = (e: ts.Expression): void => {
+    for (let n: ts.Expression = e; ;) {
+      roots.push(n);
+      if (
+        ts.isPropertyAccessExpression(n) ||
+        ts.isElementAccessExpression(n) ||
+        ts.isParenthesizedExpression(n) ||
+        ts.isNonNullExpression(n) ||
+        ts.isAsExpression(n)
+      )
+        n = n.expression;
+      else return;
+    }
+  };
+  for (const sf of sourceFiles) {
+    if (sf.isDeclarationFile || !isJsSourceFile(sf)) continue;
+    walkFile(sf, (node) => {
       if (
         ts.isBinaryExpression(node) &&
         ts.isAssignmentOperator(node.operatorToken.kind) &&
-        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
-        handleClassOf(lowerer, node.left.expression) &&
-        !namesHandleMember(lowerer, node.left)
+        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
       )
-        found = true;
+        receiver(node.left.expression);
       else if (
         ts.isDeleteExpression(node) &&
         (ts.isPropertyAccessExpression(node.expression) ||
-          ts.isElementAccessExpression(node.expression)) &&
-        handleClassOf(lowerer, node.expression.expression) &&
-        !namesHandleMember(lowerer, node.expression)
+          ts.isElementAccessExpression(node.expression))
       )
-        found = true;
+        receiver(node.expression.expression);
       else if (
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
         ts.isIdentifier(node.expression.expression) &&
         (node.expression.expression.text === "Object" ||
           node.expression.expression.text === "Reflect") &&
-        integrity.has(node.expression.name.text) &&
-        node.arguments.nodes[0] !== undefined &&
-        handleClassOf(lowerer, node.arguments.nodes[0])
+        (node.expression.name.text === "defineProperty" ||
+          node.expression.name.text === "defineProperties" ||
+          node.expression.name.text === "preventExtensions" ||
+          node.expression.name.text === "seal" ||
+          node.expression.name.text === "freeze") &&
+        node.arguments.nodes[0] !== undefined
       )
-        found = true;
-      if (!found) ts.forEachChild(node, visit);
-    };
-    visit(sf);
-    if (found) break;
+        receiver(node.arguments.nodes[0]);
+      return true;
+    });
   }
-  lowerer.handleAdditions = found;
-  return found;
+  return roots;
 }
 
 /** The typed handle kinds a JavaScript program can hold (Date, ArrayBuffer,

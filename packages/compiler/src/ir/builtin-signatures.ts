@@ -5162,6 +5162,10 @@ function buildLibFnSignatures() {
     "insp.seenPush": { argTypes: [null], result: VOID },
     "insp.refWrap": { argTypes: [null, STRING], result: STRING },
     "insp.circular": { argTypes: [F64], result: STRING },
+    /* Traversal limits: 0 renders a composite, 1 answers its past-depth
+     * placeholder, 2 the interrupted-inspection marker (scr_insp_gate). */
+    "insp.gate": { argTypes: [F64, F64], result: F64 },
+    "insp.interrupted": { argTypes: [STRING], result: STRING },
     /* Whether a closed declared-field record kept the undeclared properties
      * of its checked source (scr_record_source_note): reflective surfaces
      * (inspect, Object.keys/values/entries) then answer through its live

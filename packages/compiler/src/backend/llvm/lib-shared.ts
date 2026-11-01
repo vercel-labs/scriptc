@@ -833,6 +833,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.seenPush": "scr_insp_seen_push",
   "insp.refWrap": "scr_insp_ref_wrap",
   "insp.circular": "scr_insp_circular",
+  "insp.gate": "scr_insp_gate",
+  "insp.interrupted": "scr_insp_interrupted",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
   "record.sourceSpread": "scr_record_source_spread",

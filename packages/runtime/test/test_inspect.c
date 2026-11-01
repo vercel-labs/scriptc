@@ -117,6 +117,38 @@ int main(int argc, char **argv) {
     scr_str_release(result);
   }
   fclose(f);
+  /* Node's output budget (ctx.budget) belongs to one inspect call: a value
+   * whose rendering spends it leaves the next top-level value's rendering
+   * whole. */
+  {
+    size_t big = ((size_t)1 << 27) + 1;
+    char *text = malloc(big);
+    if (!text) return 2;
+    memset(text, 'x', big);
+    ScrStr *entry = scr_str_new(text, big);
+    free(text);
+    ScrStr *base = scr_str_new("", 0);
+    ScrStr *open = scr_str_new("[", 1);
+    ScrStr *close = scr_str_new("]", 1);
+    scr_insp_gate(0, 2);
+    scr_insp_begin(1);
+    scr_insp_entry(entry, false);
+    ScrStr *spent = scr_insp_end(base, open, close, 1, true, false);
+    scr_str_release(spent);
+    scr_str_release(entry);
+    scr_str_release(base);
+    scr_str_release(open);
+    scr_str_release(close);
+    static const char json[] = "[1,[2]]";
+    static const char expected[] = "[ 1, [ 2 ] ]";
+    ScrStr *source = scr_str_new(json, sizeof json - 1);
+    ScrDyn *d = scr_json_parse(source);
+    scr_str_release(source);
+    ScrStr *after = scr_insp_dyn(d, 0, 2);
+    scr_dyn_release(d);
+    check("budget", json, sizeof json - 1, after, expected, sizeof expected - 1);
+    scr_str_release(after);
+  }
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
   return failed ? 1 : 0;
 }

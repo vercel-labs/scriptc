@@ -2704,6 +2704,8 @@ typedef struct ScrHttpConn {
                                     * this idle socket (borrowed), or NULL */
   bool header_overflow; /* client mode: the response head exceeded a bound */
   bool client_errored; /* server: 'clientError' listeners took a parse error; later bytes drop */
+  bool late_error; /* the request carried a Transfer-Encoding that does not
+                    * end in chunked: the parser fails it after 'request' */
   bool res_close_deferred; /* the response finished inside the pump while
                             * the request body was still arriving */
   bool client_mode; /* RESPONSE parsing: status line, EOF bodies */
@@ -3308,6 +3310,12 @@ static void scr_http_conn_end_after_response(ScrHttpConn *conn) {
  * the request when the body completes. */
 static void scr_http_conn_response_finished(ScrHttpConn *conn, bool keep_alive) {
   ScrHttpReq *r = conn->req;
+  /* A deferred parser error (an invalid Transfer-Encoding) is reported
+   * after the handler returns, even when the handler ended the response:
+   * Node's socketOnError destroys the socket before resOnFinish detaches
+   * the request, so the exchange stays attached and the request still
+   * aborts. The error path tears the exchange down. */
+  if (conn->late_error && r != NULL && !r->ended) return;
   bool close = !keep_alive || conn->close_after;
   if (r != NULL && !r->ended && r->gated && !r->flowing) scr_http_req_dump(r);
   if (r != NULL && !r->ended && conn->state != SCR_HTTP_HEAD) {
@@ -3388,6 +3396,8 @@ static void scr_http_req_add_trailer(ScrHttpReq *r, const char *name, size_t nle
   free(lower);
 }
 
+static void scr_http_conn_abort_request(ScrHttpConn *conn);
+
 /* Parser errors answer Node's fixed responses and close: 400 for
  * malformed input, 413 when a chunk's extensions exceed Node's bound, and
  * 431 when a head or trailer block exceeds the field or byte bound. */
@@ -3398,6 +3408,11 @@ static void scr_http_conn_reject(ScrHttpConn *conn, const char *response, size_t
   if (scr_net_sock_bytes_written(conn->sock) == 0) scr_net_sock_write_native(conn->sock, response, len);
   scr_net_sock_end(conn->sock);
   conn->len = 0;
+  /* Node's socketOnError destroys the socket, and socketOnClose's
+   * abortIncoming then destroys an un-ended request with ECONNRESET
+   * "aborted" — even when its response already finished, which is how a
+   * deferred Transfer-Encoding error reaches a handler that answered. */
+  scr_http_conn_abort_request(conn);
   scr_http_conn_drop_request(conn, false);
 }
 
@@ -3416,7 +3431,10 @@ static bool scr_http_conn_client_error(ScrHttpConn *conn, const char *code, cons
   scr_error_set_code(e, code);
   conn->len = 0;
   conn->client_errored = true;
-  scr_http_conn_drop_request(conn, false);
+  /* The exchange stays attached while the listeners run: Node emits
+   * 'clientError' with the request still in state.incoming, so a listener
+   * that closes the socket aborts it ('aborted', then 'error' ECONNRESET
+   * "aborted", then 'close'); the socket's close path drops it. */
   ScrNetL *snap;
   size_t count = scr_net_ls_snapshot(&conn->srv->client_error_ls, &snap);
   scr_dyn_this_push(scr_net_sock_server(conn->sock), SCR_DYNH_NET_SERVER);
@@ -3579,6 +3597,7 @@ static void scr_http_conn_abort_incoming(ScrHttpConn *conn);
 static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *overflow,
                                      ScrHttpParseError *err) {
   const char *buf = conn->buf;
+  conn->late_error = false;
   const char *line_end = memchr(buf, '\r', head_len);
   if (!line_end || line_end + 1 >= buf + head_len || line_end[1] != '\n') return false;
   /* METHOD SP+ request-target SP HTTP/1.x */
@@ -3665,6 +3684,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
     err->code = err->reason = NULL;
     chunked = false;
     content_length = 0;
+    conn->late_error = true;
   }
   if (content_length < 0) content_length = 0;
   bool req_keep_alive = !http10;
@@ -3826,6 +3846,13 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
     } else {
       scr_http_res_write_head(res, 417);
       scr_http_res_end(res);
+      /* Node answers 417 from parserOnIncoming and still reports the
+       * parser's error afterwards, so the connection fails rather than
+       * parsing the bytes behind the head as another request. */
+      if (late.code != NULL) {
+        scr_http_conn_abort_request(conn);
+        scr_http_conn_parse_failed(conn, &late);
+      }
       return true;
     }
   }
@@ -3848,7 +3875,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   }
   if (scr_exc_pending()) return true; /* the loop surfaces it */
   if (late.code != NULL) {
-    scr_http_conn_abort_incoming(conn);
+    scr_http_conn_abort_request(conn);
     scr_http_conn_parse_failed(conn, &late);
     return true;
   }
@@ -4135,30 +4162,39 @@ static void scr_http_conn_eof(void *ctx) {
   conn->len = 0;
 }
 
-/* Node's abortIncoming: a request whose response is unfinished when its
- * connection closes is destroyed with ECONNRESET "aborted". 'aborted'
- * fires now, then the response's 'close', the request's 'error' (with a
- * listener) and its 'close'. A request whose body was read to 'end' is
- * already destroyed and only closes. */
-static void scr_http_conn_abort_incoming(ScrHttpConn *conn) {
+/* Node's abortIncoming for one request: it is destroyed with ECONNRESET
+ * "aborted". 'aborted' fires now, then the response's 'close', the
+ * request's 'error' (with a listener) and its 'close'. A request whose
+ * body was read to 'end' is already destroyed and only closes. This runs
+ * whether or not the response finished: a parser failure can arrive after
+ * the handler answered, and Node destroys the socket before the response
+ * flushes, so 'finish' never fires. */
+static void scr_http_conn_abort_request(ScrHttpConn *conn) {
   ScrHttpReq *req = conn->req;
-  if (req == NULL || conn->res == NULL || conn->res->finished || req->end_consumed ||
-      req->close_emitted || req->destroyed)
-    return;
+  if (req == NULL || req->end_consumed || req->close_emitted || req->destroyed) return;
   req->destroyed = true;
   req->aborted = true;
   /* the later events queue first: an 'aborted' listener can end the
    * response, which detaches it from the connection and queues the
    * request's 'close'; that response never sends its body */
-  ScrHttpRes *res = scr_http_res_retain(conn->res);
-  scr_http_res_mark_unflushed(res);
-  scr_http_queue_res_close(res);
+  ScrHttpRes *res = conn->res != NULL ? scr_http_res_retain(conn->res) : NULL;
+  if (res != NULL) {
+    scr_http_res_mark_unflushed(res);
+    scr_http_queue_res_close(res);
+  }
   scr_http_queue_req_aborted(req);
   scr_http_req_retain(req);
   scr_net_fire0_this(&req->aborted_ls, req, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&req->aborted_ls);
-  scr_http_res_release(res);
+  if (res != NULL) scr_http_res_release(res);
   scr_http_req_release(req);
+}
+
+/* The close-time form: only an unfinished response can still abort its
+ * request (a finished one detached the exchange long ago). */
+static void scr_http_conn_abort_incoming(ScrHttpConn *conn) {
+  if (conn->req == NULL || conn->res == NULL || conn->res->finished) return;
+  scr_http_conn_abort_request(conn);
 }
 
 static void scr_http_conn_closed(void *ctx) {

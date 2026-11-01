@@ -19130,14 +19130,39 @@ static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method
   return NULL;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Both buffers answer their prototypes' methods as values (`typeof ab.resize`
+ * is "function", `ab.transfer === ab.transfer`), which invoke already reaches
+ * by name. Lengths are Node's Function.prototype.length. SharedArrayBuffer has
+ * slice and grow and no resize/transfer: it cannot detach (t262-dc C3). */
+static const ScrDynHandleMethod scr_array_buffer_methods[] = {
+  {"slice", 2, false, NULL},
+  {"resize", 1, false, NULL},
+  {"transfer", 0, false, NULL},
+  {"transferToFixedLength", 0, false, NULL},
+  {NULL, 0, false, NULL},
+};
+static const ScrDynHandleMethod scr_shared_array_buffer_methods[] = {
+  {"slice", 2, false, NULL},
+  {"grow", 1, false, NULL},
+  {NULL, 0, false, NULL},
+};
+#endif
+
 ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
   static const ScrDynHandleOps ops = {
     "ArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+#ifdef SCR_JS_OBJECT_MODEL
+    .methods = scr_array_buffer_methods,
+#endif
   };
   static const ScrDynHandleOps shared_ops = {
     "SharedArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+#ifdef SCR_JS_OBJECT_MODEL
+    .methods = scr_shared_array_buffer_methods,
+#endif
   };
   ScrDynHandleTag tag = view->shared ? SCR_DYNH_SHARED_ARRAY_BUFFER : SCR_DYNH_ARRAY_BUFFER;
   scr_dyn_handle_install(tag, view->shared ? &shared_ops : &ops);

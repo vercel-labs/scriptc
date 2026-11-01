@@ -4723,6 +4723,10 @@ export class Lowerer {
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
     "packageFileMemo",
+    // LIBRARY mode: the unit each root export name seeds is a pure function
+    // of the entry's export table and the signatures collected before any
+    // body lowers, so a pass that asks again computes the same answer.
+    "libExportUnits",
     // NI-5: whether a symbol names an island handle binding depends only on
     // its declaration, so the answer is a memo keyed by symbol.
     "islandHandleBindings",

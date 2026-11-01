@@ -2129,11 +2129,6 @@ export function fenceIntrinsicPrototypeWrite(lowerer: Lowerer, expr: ts.Expressi
   }
 }
 
-/** The same fence for a call-shaped write whose target is a builtin
- * prototype: `Object.defineProperty(X.prototype, "member", d)`,
- * `Object.defineProperties`, and `Object.assign`, whose keys are a literal
- * the fence cannot read. A definition on a member (the interned function
- * object) is an ordinary object write and stays open. */
 /** Whether `key` is a well-known symbol read off the `Symbol` global
  * (`Symbol.replace`), a key no member of the table can be: every member is
  * named by a string, so the key adds an ordinary property rather than
@@ -2146,6 +2141,11 @@ function isWellKnownSymbolKey(lowerer: Lowerer, key: ts.Expression): boolean {
   );
 }
 
+/** The same fence for a call-shaped write whose target is a builtin
+ * prototype: `Object.defineProperty(X.prototype, "member", d)`,
+ * `Object.defineProperties`, and `Object.assign`, whose keys are a literal
+ * the fence cannot read. A definition on a member (the interned function
+ * object) is an ordinary object write and stays open. */
 export function fenceIntrinsicPrototypeWriteCall(
   lowerer: Lowerer,
   target: ts.Expression,

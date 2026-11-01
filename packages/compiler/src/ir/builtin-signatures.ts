@@ -4314,6 +4314,10 @@ function buildLibFnSignatures() {
     "disposable.stackNew": { argTypes: [], result: DYN },
     "disposable.stackIs": { argTypes: [DYN], result: BOOL },
     "disposable.stackUseCallback": { argTypes: [DYN, DYN, DYN], result: BOOL },
+    /** DisposableStack.prototype as a value (a JavaScript source read): the
+     * prototype object the standard library defines, built by the stack's
+     * unit in the JavaScript object model build. */
+    "disposable.stackPrototype": { argTypes: [], result: DYN },
     "dyn.reflectSet": { argTypes: [DYN, DYN, DYN, DYN], result: BOOL },
     "dyn.reflectDefine": { argTypes: [DYN, DYN, DYN], result: BOOL },
     "dyn.abstractEq": { argTypes: [DYN, DYN], result: BOOL },

@@ -1152,6 +1152,11 @@ bool scr_disposable_stack_is(const ScrDyn *value);
 bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
+/* DisposableStack.prototype as a value (+1): one ordinary object per thread
+ * carrying the six members, [Symbol.dispose] and Symbol.toStringTag. Defined
+ * only in the JavaScript object model build (SCR_JS_OBJECT_MODEL), which the
+ * frontend selects for a program that reads the value. */
+ScrDyn *scr_disposable_stack_prototype(void);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 /* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
  * view: replaces the value whatever the attributes copied into the view.

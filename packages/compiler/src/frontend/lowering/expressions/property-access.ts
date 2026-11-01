@@ -2224,6 +2224,38 @@ export function lowerIntrinsicProperty(
     return { kind: "libCall", fn: "dyn.functionApply", args: [], type: DYN, loc: locOf(expr) };
   if (lowerer.stdlibGlobalMember(expr, "Array") === "prototype")
     return { kind: "libCall", fn: "dyn.arrayPrototype", args: [], type: DYN, loc: locOf(expr) };
+  // DisposableStack.prototype as a value, and its members read through it:
+  // the prototype object the language defines (an ordinary object carrying
+  // the stack's methods, [Symbol.dispose] and Symbol.toStringTag, built by
+  // scr_symbol.c in the JavaScript object model build), not a stack. A stack
+  // method CALLED on it is a TypeError, which the checked-dynamic method
+  // dispatch answers because the receiver is not a stack handle.
+  if (lowerer.stdlibGlobalMember(expr, "DisposableStack") === "prototype")
+    return {
+      kind: "libCall",
+      fn: "disposable.stackPrototype",
+      args: [],
+      type: DYN,
+      loc: locOf(expr),
+    };
+  if (
+    ts.isPropertyAccessExpression(expr.expression) &&
+    lowerer.stdlibGlobalMember(expr.expression, "DisposableStack") === "prototype"
+  ) {
+    return {
+      kind: "dynKeyGet",
+      value: {
+        kind: "libCall",
+        fn: "disposable.stackPrototype",
+        args: [],
+        type: DYN,
+        loc: locOf(expr.expression),
+      },
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
   // Date.prototype as a value, and its members read through it: the
   // prototype object the language defines (an ordinary object carrying the
   // interface's methods), not a Date. `Date.prototype.hasOwnProperty("x")`

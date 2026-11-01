@@ -850,3 +850,143 @@ ScrDyn *scr_disposable_stack_new(void) {
   scr_ds_release(s);
   return out;
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* `DisposableStack.prototype` as a value (t262-da J). A JavaScript source
+ * reading the prototype used to reach the standard-library member fence:
+ * the checker types the read as a DisposableStack, and there was no
+ * prototype object to hand out, so `typeof DisposableStack.prototype.use`
+ * and the RequireInternalSlot tests could not compile at all. This builds
+ * the prototype object the language defines — an ordinary object whose
+ * prototype is Object.prototype, carrying the six members as
+ * non-enumerable, writable, configurable data properties, `[Symbol.dispose]`
+ * as the dispose method itself and `Symbol.toStringTag` as the class's
+ * non-writable tag — and answers one object per thread, so every read is the
+ * same object.
+ *
+ * The member values are the stack's own interned method functions
+ * (scr_ds_method_value), which are exactly what `stack.use` reads answer, so
+ * both spellings hand out one function. A method called with a receiver that
+ * is not a stack (the prototype object itself included) reaches the same
+ * dispatch, whose RequireInternalSlot check throws the TypeError the
+ * language answers.
+ *
+ * The code exists only in the JavaScript object model build, so a typed
+ * program's executable is unchanged. */
+static SCR_TL ScrDyn *scr_ds_prototype;
+static SCR_TL ScrDyn *scr_ds_disposed_getter;
+
+static void scr_ds_prototype_cleanup(void) {
+  scr_dyn_release(scr_ds_disposed_getter);
+  scr_ds_disposed_getter = NULL;
+  scr_dyn_release(scr_ds_prototype);
+  scr_ds_prototype = NULL;
+}
+
+/* Defines `value` (borrowed) on `target` under `key` as a data property with
+ * the attributes a built-in prototype member has: non-enumerable, and
+ * writable/configurable as the language says. */
+static void scr_ds_define(ScrDyn *target, ScrDyn *key, ScrDyn *value, bool writable) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
+  if (writable) scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
+  scr_dyn_release(defined);
+  scr_dyn_release(descriptor);
+}
+
+/* scr_ds_define with a string key spelled in the source. */
+static void scr_ds_define_named(ScrDyn *target, const char *name, ScrDyn *value) {
+  ScrStr *key_name = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(key_name); /* retains */
+  scr_str_release(key_name);
+  scr_ds_define(target, key, value, true);
+  scr_dyn_release(key);
+}
+
+/* Defines `value` (borrowed) on `target` under `key` as an accessor property
+ * whose getter is `getter` (borrowed): non-enumerable and configurable, with
+ * no setter, the shape a built-in prototype getter has. */
+static void scr_ds_define_getter(ScrDyn *target, ScrDyn *key, ScrDyn *getter) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "get", 3, scr_dyn_retain(getter));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
+  scr_dyn_release(defined);
+  scr_dyn_release(descriptor);
+}
+
+/* `get DisposableStack.prototype.disposed`: the stack's disposed flag, and
+ * the RequireInternalSlot TypeError for a receiver that is not a stack. */
+static ScrDyn *scr_ds_disposed_getter_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDisposableStack *s = scr_ds_receiver(self, "disposed", true, false);
+  ScrDyn *out = s ? scr_dyn_new_bool(s->disposed) : NULL;
+  scr_dyn_release(self);
+  return out;
+}
+
+static ScrDyn *scr_ds_disposed_getter_value(void) {
+  if (!scr_ds_disposed_getter)
+    scr_ds_disposed_getter = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_ds_disposed_getter_call,
+                                              0, "native:function", "get disposed");
+  return scr_dyn_retain(scr_ds_disposed_getter);
+}
+
+/* A string property key (+1). */
+static ScrDyn *named_key(const char *name) {
+  ScrStr *s = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(s); /* retains */
+  scr_str_release(s);
+  return key;
+}
+
+/* The `Symbol.<description>` key of a well-known symbol, +1. */
+static ScrDyn *scr_ds_symbol_key(const char *description) {
+  ScrStr *name = scr_str_new(description, strlen(description));
+  ScrSym *symbol = scr_sym_well_known(name);
+  scr_str_release(name);
+  ScrDyn *key = scr_dyn_new_symbol(symbol);
+  scr_sym_release(symbol);
+  return key;
+}
+
+ScrDyn *scr_disposable_stack_prototype(void) {
+  if (!scr_ds_prototype) {
+    ScrDyn *prototype = scr_dyn_new_obj();
+    for (unsigned i = 0; i < SCR_DS_M_DISPOSED; i++) {
+      ScrDyn *method = scr_ds_method_value(i);
+      scr_ds_define_named(prototype, scr_ds_method_names[i], method);
+      scr_dyn_release(method);
+    }
+    /* disposed is an accessor: a getter named "get disposed" with length 0. */
+    ScrDyn *getter = scr_ds_disposed_getter_value();
+    ScrDyn *disposed_key = named_key("disposed");
+    scr_ds_define_getter(prototype, disposed_key, getter);
+    scr_dyn_release(disposed_key);
+    scr_dyn_release(getter);
+    /* [Symbol.dispose] is the dispose method itself, as on a stack. */
+    ScrDyn *dispose_key = scr_ds_symbol_key("dispose");
+    ScrDyn *dispose_method = scr_ds_method_value(SCR_DS_M_DISPOSE);
+    scr_ds_define(prototype, dispose_key, dispose_method, true);
+    scr_dyn_release(dispose_method);
+    scr_dyn_release(dispose_key);
+    /* Symbol.toStringTag is the class's tag: readable, not writable. */
+    ScrDyn *tag_key = scr_ds_symbol_key("toStringTag");
+    ScrStr *tag = scr_str_new("DisposableStack", sizeof "DisposableStack" - 1);
+    ScrDyn *tag_value = scr_dyn_new_str(tag); /* retains */
+    scr_str_release(tag);
+    scr_ds_define(prototype, tag_key, tag_value, false);
+    scr_dyn_release(tag_value);
+    scr_dyn_release(tag_key);
+    scr_ds_prototype = prototype;
+    scr_atexit(scr_ds_prototype_cleanup);
+  }
+  return scr_dyn_retain(scr_ds_prototype);
+}
+#endif

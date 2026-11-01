@@ -331,6 +331,10 @@ export function variantsFor(source) {
   // and its default object compiles empty. A program with the fact links
   // the unit at all (OPTIONAL_RUNTIME_SOURCES).
   if (source === "scr_js_buffers.c") withJsObjectModel(variants);
+  // The DisposableStack prototype object as a value (scr_symbol.c) is part of
+  // the same build: its default object keeps only the stack handle, byte for
+  // byte.
+  if (source === "scr_symbol.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects. Its Node island
   // build is not the one these variants name: island output keeps its own

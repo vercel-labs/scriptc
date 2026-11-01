@@ -999,6 +999,9 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "arrayBuffer.newResizable",
   "sharedArrayBuffer.newGrowable",
   "arrayBuffer.armMutable",
+  // The DisposableStack prototype object as a value (scr_symbol.c): the
+  // stack unit's prototype builder exists only in the same build.
+  "disposable.stackPrototype",
 ]);
 
 /** The JavaScript object model build's program facts (t262-da §J): every

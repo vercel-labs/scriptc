@@ -1938,6 +1938,32 @@ console.log(count(require("./lib.cjs")));
 });
 
 describe("builtin constructor values (JS lane)", () => {
+  test("constructing one without a lowering keeps its fence, not a token-spelled TypeError", async () => {
+    // `AsyncResource` has no lowering, so a JavaScript source reads the
+    // import as the identifier chokepoint's identity token: an IR string
+    // whose text Node never produces. A String's construction does throw
+    // "… is not a constructor", but from the token that reports a class
+    // Node constructs as if the program could see the carrier — the wrong
+    // error class AND a fabricated message. The construction keeps the
+    // named refusal instead.
+    const r = await compileAndRun(
+      "builtin-token-construction",
+      `import { AsyncResource } from "node:async_hooks";
+function run() {
+  return new AsyncResource("demo");
+}
+console.log("before");
+run();
+`,
+      "mjs",
+    );
+    expect(r.stdout).toBe("before\n");
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: constructing values other than classes declared in the program is not supported yet \[SC1090 at .*builtin-token-construction\.mjs:3\]\n$/,
+    );
+  });
+
   test("members without a lowering stay refused instead of reading undefined", async () => {
     // Builtin constructors read as interned function values that model only
     // name, length and constructor. Every other static member or prototype

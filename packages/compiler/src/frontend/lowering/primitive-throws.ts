@@ -162,6 +162,32 @@ export function nullishReadTypeError(
   );
 }
 
+/** A builtin identity token, which is NOT a primitive the program can
+ * observe. The identifier chokepoint represents a JavaScript source's
+ * unsupported builtin value (`import { AsyncResource } from
+ * "node:async_hooks"`) as an IR string whose text Node never produces, so
+ * identity flows (`===`, Set membership) agree between spellings; the
+ * binding patterns vet their sources by the same rule. The checker does not
+ * type such a reference as a string — it is `any` for an export the ambient
+ * surface does not declare, or the token's carrier type once the value
+ * leaked into a JavaScript local. The object-coercion lowerings throw
+ * Node's TypeError for a primitive and spell it from the value, which for a
+ * token would report the carrier as if the program could see it
+ * ("AsyncResource is not a constructor" for a class Node constructs), so
+ * those branches leave the site to the reference's own fence instead. */
+export function isBuiltinIdentityToken(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  value: IrExpr,
+): boolean {
+  if (value.type.kind !== "string") return false;
+  function stringLike(t: ts.Type): boolean {
+    if ((t.flags & ts.TypeFlags.StringLike) !== 0) return true;
+    return t.isUnionType() && ts.constituentTypes(t).every(stringLike);
+  }
+  return !stringLike(lowerer.typeOf(node));
+}
+
 /** The statements that evaluate `expr` for its effects alone. A value the
  * IR cannot spell (a unit — JavaScript's null/undefined has no standalone
  * runtime value, so a bare unit literal fails validation) contributes only
@@ -189,7 +215,10 @@ export function lowerDeleteExpression(lowerer: Lowerer, expr: ts.DeleteExpressio
   while (ts.isParenthesizedExpression(target)) target = target.expression;
   if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
     const obj = lowerer.lowerExpr(target.expression);
-    if (isPrimitiveValueType(obj.type)) {
+    if (
+      isPrimitiveValueType(obj.type) &&
+      !isBuiltinIdentityToken(lowerer, target.expression, obj)
+    ) {
       return lowerPrimitiveBaseDelete(lowerer, expr, target, obj, BOOL);
     }
   }

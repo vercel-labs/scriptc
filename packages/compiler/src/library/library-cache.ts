@@ -57,6 +57,7 @@ interface EarlyLibraryCacheStamp {
     x509: boolean;
     copying: boolean;
     textDecoderLegacy: boolean;
+    bigintBytes: boolean;
   };
   integrity: string;
 }
@@ -78,6 +79,7 @@ export interface EarlyLibraryNativeFeatures {
   x509: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  bigintBytes: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }
@@ -137,6 +139,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "x509",
   "copying",
   "textDecoderLegacy",
+  "bigintBytes",
 ] as const satisfies readonly (keyof EarlyLibraryNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeatures {

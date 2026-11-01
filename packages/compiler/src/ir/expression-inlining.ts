@@ -1,5 +1,8 @@
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
+import { type IrNodeIndex, type IrNodeKind, lacksNode } from "./node-index.js";
 import { everyExprChild, everyStmtChild, mapExprChildren, transformStmtList } from "./traverse.js";
+
+const CALL_KINDS: readonly IrNodeKind[] = ["call"];
 
 /** Callee bodies above this many nodes keep their call. */
 const MAX_EXPRESSION_NODES = 32;
@@ -114,8 +117,9 @@ function callsInLoops(body: IrStmt[]): Set<IrExpr> {
  * see the arithmetic on its own counters (`a(i, j)` inside a counted loop
  * over `i` and `j`). Only calls inside loops are inlined: elsewhere the
  * integer analyses gain nothing. The function itself stays for its other
- * uses. */
-export function inlineExpressionFunctions(mod: IrModule): IrModule {
+ * uses. With `nodes`, an index of `mod`, the functions it records without
+ * a call of an expression function are kept unwalked. */
+export function inlineExpressionFunctions(mod: IrModule, nodes?: IrNodeIndex): IrModule {
   const members = new Set((mod.classes ?? []).flatMap((cls) => cls.methods ?? []));
   const expressions = new Map<string, { fn: IrFunction; value: IrExpr }>();
   for (const fn of mod.functions) {
@@ -124,8 +128,17 @@ export function inlineExpressionFunctions(mod: IrModule): IrModule {
     if (value !== null) expressions.set(fn.name, { fn, value });
   }
   if (expressions.size === 0) return mod;
+  const calls = nodes?.scan(CALL_KINDS);
   let changed = false;
   const functions = mod.functions.map((fn) => {
+    if (
+      lacksNode(
+        fn,
+        calls,
+        (node) => node.kind === "call" && node.callee !== fn.name && expressions.has(node.callee),
+      )
+    )
+      return fn;
     const locals = new Map(fn.locals.map((local) => [local.id, local]));
     const inLoops = callsInLoops(fn.body);
     // Each call the rewrite inlines: of an expression function, in a loop,

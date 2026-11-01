@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { contentDigest, fileDigest, NativeCache, openNativeCache } from "./cache.js";
+import { contentDigest, fileDigest, NativeCache, openNativeCache, partsDigest } from "./cache.js";
 
 const directories: string[] = [];
 function directory(): string {
@@ -64,6 +64,19 @@ test("text parts publish one digest-checked entry and oversized reads are misses
   );
   expect(cache.read("frontend", key, bytes!.length)).toEqual(bytes);
   expect(cache.read("frontend", key, bytes!.length - 1)).toBeNull();
+});
+
+test("text parts written by content are named by their digest and read back only intact", () => {
+  const cache = new NativeCache(directory());
+  const parts = ["define void @f() {", "\u00e9😀", "", "}\n"];
+  const digest = cache.writeContentParts("frontend-llvm", generate(parts));
+  expect(digest).toBe(partsDigest(parts));
+  expect(cache.readContent("frontend-llvm", digest!)?.toString("utf8")).toBe(parts.join(""));
+  const length = Buffer.byteLength(parts.join(""));
+  expect(cache.readContent("frontend-llvm", digest!, length - 1)).toBeNull();
+  writeFileSync(join(cache.root, "frontend-llvm", digest!), parts.join("") + " ");
+  expect(cache.readContent("frontend-llvm", digest!)).toBeNull();
+  expect(cache.readContent("frontend-llvm", contentDigest("absent"))).toBeNull();
 });
 
 test("a failed cache publication does not fail the build or replace unrelated files", () => {

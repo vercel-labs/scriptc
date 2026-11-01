@@ -1653,6 +1653,31 @@ export function lowerObjectLiteral(
     (expr.properties.nodes.some((p) => ts.isSpreadAssignment(p)) ||
       expr.properties.nodes.some(isRuntimeComputedKey))
   ) {
+    // A conditional spread needs the value slot's undefined arm to hold its
+    // empty branch. A slot WITHOUT one (a `null | string` header map) takes
+    // the checked-dynamic literal instead, which writes the key only when
+    // the condition holds and validates the result against the target type;
+    // decide BEFORE any contributor lowers (the fallback re-lowers the
+    // whole literal). Reading the slot's own arm (never coercing a unit
+    // into it) keeps a literal that merges statically byte-identical: the
+    // probe would otherwise register a stranding trap the literal never
+    // needs.
+    const slotHoldsUndefined =
+      shape.indexValue.kind === "dyn" ||
+      (shape.indexValue.kind === "union" &&
+        lowerer.armTag(shape.indexValue.unionId, UNDEFINED_T) >= 0);
+    if (
+      !slotHoldsUndefined &&
+      expr.properties.nodes.some(
+        (p) =>
+          ts.isSpreadAssignment(p) &&
+          (conditionalSpreadOf(p.expression) !== null ||
+            andSpreadOf(lowerer, p.expression) !== null),
+      )
+    ) {
+      const conditionalDyn = conditionalFallback();
+      if (conditionalDyn) return conditionalDyn;
+    }
     const contributors: IndexMergeContributor[] = [];
     let mergeable = true;
     for (const prop of expr.properties.nodes) {

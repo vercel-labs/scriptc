@@ -59,12 +59,14 @@ export interface EarlyExecutableNativeFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
   recordViewPartial?: boolean;
+  jsObjectModel?: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;
@@ -88,9 +90,12 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynIntegrityQueries?: boolean;
+  genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
@@ -108,6 +113,8 @@ export interface EarlyExecutableNativeFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source: scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
+  promiseGeneric?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
@@ -129,7 +136,6 @@ export interface EarlyExecutableNativeFeatures {
   textCodecDyn: boolean;
   watch: boolean;
   watchFile: boolean;
-  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -310,6 +316,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "regex",
   "copying",
   "textDecoderLegacy",
+  "bigintBytes",
   "fileHandle",
   "fetch",
   "zlib",
@@ -338,7 +345,6 @@ const BOOLEAN_NATIVE_KEYS = [
   "textCodecDyn",
   "watch",
   "watchFile",
-  "fsBufferBrand",
   "foreignFfi",
   "nodeTest",
   "tls",

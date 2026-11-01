@@ -2,7 +2,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { lowerCheckedPredicateValue } from "../lower-builtin-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { BOOL, F64, STRING, type IrExpr, type IrLibFn } from "../../../ir/ir.js";
+import { BOOL, F64, STRING, type IrExpr, type IrLibFn, type SrcLoc } from "../../../ir/ir.js";
 import { lowerBuiltinValuePreservingUndefined, lowerOptionalNumberPredicate } from "./arguments.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { lowerStaticNumberGlobal } from "../lower-calls.js";
@@ -124,6 +124,15 @@ export function lowerNumberStaticCall(
   return null; // other Number statics land on the member fence
 }
 
+/** `Number.isFinite`, `Number.isNaN`, `Number.isInteger` or
+ * `Number.isSafeInteger` as a function value; null for other members. */
+export function numberPredicateValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
+  const predicate = own(NUMBER_STATIC_PREDICATES, member);
+  return predicate
+    ? lowerCheckedPredicateValue(lowerer, `Number.${member}`, "number", loc, predicate)
+    : null;
+}
+
 /** Property READS on THE `Number` global: the finite constants bake as
  * number literals. NaN/POSITIVE_INFINITY/NEGATIVE_INFINITY and method
  * members as values fall through to the member fence. Null for
@@ -134,15 +143,8 @@ export function lowerNumberStaticProperty(
 ): IrExpr | null {
   const member = lowerer.stdlibGlobalMember(expr, "Number");
   if (member === null) return null;
-  const predicate = own(NUMBER_STATIC_PREDICATES, member);
-  if (predicate)
-    return lowerCheckedPredicateValue(
-      lowerer,
-      `Number.${member}`,
-      "number",
-      locOf(expr),
-      predicate,
-    );
+  const predicate = numberPredicateValue(lowerer, member, locOf(expr));
+  if (predicate) return predicate;
   const value = own(NUMBER_CONSTANTS, member);
   if (value === undefined) return null;
   return { kind: "numLit", value, type: F64, loc: locOf(expr) };

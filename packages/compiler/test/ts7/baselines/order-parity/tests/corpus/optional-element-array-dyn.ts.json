@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/optional-element-array-dyn.ts"
+ ],
+ "diags": []
+}

@@ -21,6 +21,7 @@ function mod(pkg: string | null, file: string, markers: NodeIslandMarker[] = [])
     packageName: pkg,
     markers,
     cjsReads: [],
+    globalReads: [],
     stripProblem: null,
     dropped: false,
   };

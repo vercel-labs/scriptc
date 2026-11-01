@@ -48,7 +48,11 @@ import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { partialFieldPresence } from "../partial-assertions.js";
-import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
+import {
+  classDeclaresHasInstanceHook,
+  type ClassInfo,
+  storedClassValueType,
+} from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -57,9 +61,10 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import { hasGlobalFunctionValue } from "../global-function-values.js";
 import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
-import { NARROW_FIRST, sideEffectFreeOptionValue } from "../surfaces.js";
+import { NARROW_FIRST, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
@@ -539,6 +544,18 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         : undefined;
     if (caught && caughtTarget && !caughtTarget.localClass && !caughtTarget.def.runtime) {
       const classValue = lowerer.lowerExpr(expr.right);
+      // A class that declares a static `Symbol.hasInstance` hook answers
+      // through the hook: the caught payload reaches it as a checked-dynamic
+      // value, exactly as a thrown value reaches Node's hook.
+      if (classDeclaresHasInstanceHook(caughtTarget)) {
+        return checkedClassInstanceOf(
+          lowerer,
+          { kind: "caughtToDyn", value: varRef(caught.id, CAUGHT, loc), type: DYN, loc },
+          lowerer.coerceToExpected(classValue, DYN),
+          dynInstanceOfRefusal(lowerer, expr),
+          loc,
+        );
+      }
       if (caughtTarget.subclasses.length === 0) {
         return {
           kind: "seqExpr",
@@ -593,6 +610,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         );
       }
       const left = lowerer.lowerExpr(expr.left);
+      // The class declares a static `Symbol.hasInstance` hook (its bases
+      // included, through the static prototype chain): Node asks the hook
+      // first and uses OrdinaryHasInstance only when it is absent, so the
+      // test runs the checked-dynamic class test against the class value.
+      if (!targetInfo.def.runtime && classDeclaresHasInstanceHook(targetInfo)) {
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+        return checkedClassInstanceOf(
+          lowerer,
+          lowerer.coerceInto(expr.left, left, DYN),
+          lowerer.coerceToExpected(classValue, DYN),
+          dynInstanceOfRefusal(lowerer, expr),
+          loc,
+        );
+      }
       if (left.type.kind === "dyn") {
         // An untyped binding the checker narrowed to EventEmitter or a
         // stream class (`ReleaseEmitter = EventEmitter` in JavaScript):
@@ -612,6 +643,19 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           );
         }
         const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+        // A checked-dynamic class value (`for (const C of [A, B])`: tsc's
+        // common supertype names the first class, but the slot holds either
+        // class at run time): the test dispatches on the class the value IS,
+        // like any other untyped right-hand side. Using the statically named
+        // class's prototype here answered false for every other class.
+        if (classValue.type.kind === "dyn")
+          return checkedClassInstanceOf(
+            lowerer,
+            left,
+            classValue,
+            dynInstanceOfRefusal(lowerer, expr),
+            loc,
+          );
         return classInstanceOf(lowerer, left, targetInfo, loc, classValue);
       }
       // A union of class instances against a runtime class value (`new K()`
@@ -682,10 +726,33 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           loc,
         });
       }
+      // The answer is static (a standalone operand's runtime class IS its
+      // static class), but the operands are computed: Node evaluates both,
+      // so evaluate them and return the known answer.
+      const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: left, loc },
+          { kind: "exprStmt", expr: classValue, loc },
+        ],
+        result: { kind: "boolLit", value, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      };
+    }
+    // A builtin global function value read off the global (`parseInt`,
+    // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
+    // no prototype to test against, so the test keeps the refusal the
+    // global's identity token answered.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      hasGlobalFunctionValue(stdlibGlobalNameOf(lowerer, expr.right) ?? "")
+    ) {
       lowerer.unsupported(
         "SC1090",
-        expr,
-        "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
+        expr.right,
+        "'instanceof' right-hand sides other than classes declared in the program",
       );
     }
     // A checked-dynamic right-hand side (a constructor read from a table, a
@@ -749,6 +816,23 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // narrowing then types the branches; reads bridge through caughtRead.
   const caughtLocal = lowerer.caughtLocalOf(expr.left);
   if (caughtLocal) {
+    // A class that declares a static `Symbol.hasInstance` hook answers
+    // through the hook whatever the operand's static type: the caught
+    // payload reaches it as a checked-dynamic value, exactly as a thrown
+    // value reaches Node's hook.
+    if (!target.def.runtime && classDeclaresHasInstanceHook(target)) {
+      const classValue = classValueOperand(lowerer, expr.right, {
+        kind: "classval",
+        className: target.def.name,
+      });
+      return checkedClassInstanceOf(
+        lowerer,
+        { kind: "caughtToDyn", value: varRef(caughtLocal.id, CAUGHT, loc), type: DYN, loc },
+        lowerer.coerceToExpected(classValue, DYN),
+        dynInstanceOfRefusal(lowerer, expr),
+        loc,
+      );
+    }
     const caughtInstanceOf = (info: ClassInfo): IrExpr =>
       caughtClassInstanceOf(lowerer, caughtLocal.id, info, loc);
     let test = caughtInstanceOf(target);
@@ -783,6 +867,24 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       : test;
   }
   const left = lowerer.lowerExpr(expr.left);
+  // A program class that declares a static `Symbol.hasInstance` hook (its
+  // bases included, through the static prototype chain): Node asks the
+  // hook first and uses OrdinaryHasInstance only when it is absent, so the
+  // test runs the checked-dynamic class test against the class value,
+  // whatever the operand's static type is.
+  if (!target.def.runtime && classDeclaresHasInstanceHook(target)) {
+    const classValue = classValueOperand(lowerer, expr.right, {
+      kind: "classval",
+      className: target.def.name,
+    });
+    return checkedClassInstanceOf(
+      lowerer,
+      lowerer.coerceInto(expr.left, left, DYN),
+      lowerer.coerceToExpected(classValue, DYN),
+      dynInstanceOfRefusal(lowerer, expr),
+      loc,
+    );
+  }
   // `u instanceof Error` on an `unknown` value: the checked-dynamic tree's error encoding
   // (the shape caughtToDyn builds for Error payloads — the reserved
   // "%error" marker) answers the test, so a caught Error passed through
@@ -1007,6 +1109,25 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       type: BOOL,
       loc,
     });
+  }
+  // A program class target: the answer is static (the operand's runtime
+  // class IS its static class), but the operands are computed. Node
+  // evaluates both, so evaluate them and return the known answer.
+  if (target.decl !== null && !target.def.runtime) {
+    const classValue = classValueOperand(lowerer, expr.right, {
+      kind: "classval",
+      className: target.def.name,
+    });
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "exprStmt", expr: left, loc },
+        { kind: "exprStmt", expr: classValue, loc },
+      ],
+      result: { kind: "boolLit", value, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
   }
   lowerer.unsupported(
     "SC1090",

@@ -667,7 +667,14 @@ static ScrDyn *scr_table_own_value(const ScrDyn *item, const ScrStr *key) {
     uint32_t index;
     if (!scr_table_index_key(key->data, key->len, &index) || index >= len) return NULL;
     if (item->kind == SCR_DYN_ARR) return scr_dyn_retain(item->v.arr.items[index]);
+#ifdef SCR_JS_OBJECT_MODEL
+    /* A row's typed array can be a BigInt view; this build of the unit reads
+     * the element through the typed-array accessor, the default one keeps the
+     * numeric read. */
+    return scr_dyn_bytes_item(item->v.bytes, index);
+#else
     return scr_dyn_new_num(scr_bytes_get(item->v.bytes, (double)index));
+#endif
   }
   return NULL;
 }

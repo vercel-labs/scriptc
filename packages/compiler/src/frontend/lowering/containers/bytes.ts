@@ -371,9 +371,6 @@ function bytesCallbackHelper(
     { id: "n.0", name: "n", type: F64, mutable: false },
     { id: "i.0", name: "i", type: F64, mutable: true },
     { id: "v.0", name: "v", type: F64, mutable: true },
-    ...(method === "map" && lowerer.buffersMutable
-      ? [{ id: "m.0", name: "m", type: F64, mutable: true } as IrLocal]
-      : []),
   ];
   const params: IrParam[] = [
     { localId: "a.0", name: "a", type: bytesT },
@@ -381,17 +378,26 @@ function bytesCallbackHelper(
     ...(hasInit ? [{ localId: "z.0", name: "z", type: resultT }] : []),
   ];
   // A mutable-buffers program's visit runs to the captured length even after
-  // the buffer shrinks under it, where Node's element Get answers undefined
-  // and its element Set is a no-op. The typed model has no undefined in an
-  // element slot, so an out-of-view index keeps the previous element value
-  // and skips the write; the callback still runs.
+  // the buffer shrinks under it, where Node's element Get answers undefined.
+  // The typed model has no undefined in an element slot, so an out-of-view
+  // index reads as NaN, which is what every numeric use of undefined converts
+  // to. The callback still runs, and the result array is independent of the
+  // source, so its element Set always stores.
   const inView = (): IrExpr =>
     lowerer.buffersMutable
       ? { kind: "bin", op: "<", left: i(), right: length(), type: BOOL, loc }
       : boolLit(true, loc);
-  const whenInView = (stmt: IrStmt): IrStmt =>
-    lowerer.buffersMutable ? { kind: "if", cond: inView(), then: [stmt], else_: null, loc } : stmt;
-  const visit: IrStmt[] = [whenInView({ kind: "assign", localId: "v.0", value: at(i()), loc })];
+  const visit: IrStmt[] = lowerer.buffersMutable
+    ? [
+        {
+          kind: "if",
+          cond: inView(),
+          then: [{ kind: "assign", localId: "v.0", value: at(i()), loc }],
+          else_: [{ kind: "assign", localId: "v.0", value: numLit(NaN, loc), loc }],
+          loc,
+        },
+      ]
+    : [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
   let seeded = false;
   const prologue: IrStmt[] = [];
   let epilogue: IrStmt[];
@@ -408,20 +414,7 @@ function bytesCallbackHelper(
         loc,
       });
       const mapped = lowerer.coerceToExpected(callback(), F64);
-      if (lowerer.buffersMutable) {
-        visit.push({ kind: "assign", localId: "m.0", value: mapped, loc });
-        visit.push(
-          whenInView({
-            kind: "bytesSet",
-            arr: acc(),
-            index: i(),
-            value: varRef("m.0", F64, loc),
-            loc,
-          }),
-        );
-      } else {
-        visit.push({ kind: "bytesSet", arr: acc(), index: i(), value: mapped, loc });
-      }
+      visit.push({ kind: "bytesSet", arr: acc(), index: i(), value: mapped, loc });
       if (bytesT.elem === "u8") prologue.push(copyBrand(acc()));
       epilogue = [ret(acc())];
       break;

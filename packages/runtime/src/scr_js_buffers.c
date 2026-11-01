@@ -373,6 +373,14 @@ static ScrDyn *scr_js_buffer_transfer(ScrBytes *owner, bool has_length, double l
     scr_js_buffer_brand_error(label, owner);
     return NULL;
   }
+  /* A Buffer pool slab's ArrayBuffer is untransferable: the slab serves
+   * every Buffer view it handed out, so Node refuses to detach it. */
+  const ScrBytes *storage = owner->backing ? owner->backing : owner;
+  if (storage->untransferable) {
+    static const char message[] = "ArrayBuffer is not detachable and could not be cloned.";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
   ScrJsBufferOwner *state = scr_js_buffer_owner_state(owner, true);
   if (state->detached) {
     scr_js_buffer_detached_error(label);
@@ -556,7 +564,9 @@ static ScrDyn *scr_js_buffer_build(ScrDyn *length_value, ScrDyn *options, bool s
   ScrJsBufferOwner *state = scr_js_buffer_owner_state(owner, true);
   state->capacity = capacity;
   state->resizable = resizable;
-  state->growable = shared;
+  /* Only a maxByteLength makes a SharedArrayBuffer growable: `new
+   * SharedArrayBuffer(2, {})` has a fixed length, as in Node. */
+  state->growable = shared && resizable;
   ScrDyn *result = scr_array_buffer_from_bytes(owner);
   scr_bytes_release(owner);
   return result;

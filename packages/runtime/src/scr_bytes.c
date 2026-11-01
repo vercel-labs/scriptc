@@ -1034,6 +1034,12 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
 void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
 #ifdef SCR_JS_OBJECT_MODEL
   if (!scr_js_typed_method_ok(dst, "set")) return;
+  /* Node validates the source view before the offset: a detached source, or
+   * a fixed-length one whose buffer shrank out from under it, throws. */
+  if (!scr_js_bytes_live(src)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
+    return;
+  }
 #endif
   double t = (offset != offset) ? 0 : trunc(offset);
   if (!(t >= 0) || (double)src->len + t > (double)dst->len) {

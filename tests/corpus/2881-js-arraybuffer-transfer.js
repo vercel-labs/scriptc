@@ -22,3 +22,15 @@ let n = 0;
 const big = new Uint8Array(new ArrayBuffer(4));
 for (let i = 0; i < big.length; i++) { if (i === 1) big.buffer.transfer(); n++; }
 console.log("loop", n, big.length);
+// A Buffer pool slab's ArrayBuffer is not detachable.
+const pooled = Buffer.allocUnsafe(2).buffer;
+try { pooled.transfer(4); } catch (e) { console.log(e.constructor.name, e.message); }
+try { pooled.transferToFixedLength(4); } catch (e) { console.log(e.constructor.name, e.message); }
+// set() answers a detached source before it answers an out-of-range offset.
+const gone = new Uint8Array(new ArrayBuffer(4));
+gone.buffer.transfer();
+try { new Uint8Array(4).set(gone); } catch (e) { console.log(e.constructor.name, e.message); }
+try { new Uint8Array(4).set(gone, 100); } catch (e) { console.log(e.constructor.name, e.message); }
+const target = new Uint8Array(4);
+target.set([1, 2]);
+console.log(target[0], target[1], target[3]);

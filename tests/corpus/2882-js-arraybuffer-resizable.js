@@ -22,3 +22,24 @@ let seen = 0;
 const v = new Uint8Array(new ArrayBuffer(4, { maxByteLength: 4 }));
 v.forEach((x, i) => { if (i === 0) v.buffer.resize(2); seen++; });
 console.log("forEach", seen, v.length);
+// Without maxByteLength a SharedArrayBuffer has a fixed length.
+const fixedSab = new SharedArrayBuffer(2, {});
+console.log(fixedSab.growable);
+try { fixedSab.grow(4); } catch (e) { console.log(e.constructor.name, e.message); }
+// map stores every callback result: its result array does not follow the
+// source, and an index the shrunk source cannot read arrives as undefined.
+const rabMap = new ArrayBuffer(4, { maxByteLength: 8 });
+const trackMap = new Uint8Array(rabMap);
+for (let i = 0; i < 4; i++) trackMap[i] = i + 1;
+const mapped = trackMap.map((x, i) => { if (i === 1) rabMap.resize(2); return x * 10; });
+console.log(mapped.length, mapped[0], mapped[1], mapped[2], mapped[3], trackMap.length);
+const fbuf = new ArrayBuffer(32, { maxByteLength: 64 });
+const fsrc = new Float64Array(fbuf);
+fsrc[0] = 1; fsrc[1] = 2; fsrc[2] = 3; fsrc[3] = 4;
+const fmapped = fsrc.map((x, i) => { if (i === 1) fbuf.resize(8); return x * 10; });
+console.log(fmapped.length, fmapped[0], fmapped[1], fmapped[2] !== fmapped[2]);
+// The same after the source detaches.
+const detachMap = new Uint8Array(new ArrayBuffer(4));
+detachMap[0] = 1; detachMap[1] = 2; detachMap[2] = 3; detachMap[3] = 4;
+const detached = detachMap.map((x, i) => { if (i === 1) detachMap.buffer.transfer(); return x + 1; });
+console.log(detached.length, detached[0], detached[1], detached[2], detached[3]);

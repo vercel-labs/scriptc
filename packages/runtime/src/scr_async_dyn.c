@@ -583,6 +583,8 @@ ScrDyn *scr_unhandled_rejection_error(ScrDyn *reason) {
   return value;
 }
 
+static void scr_uncaught_resume(ScrClosure *self) { (void)self; }
+
 static int scr_uncaught_dispatch(bool from_promise) {
   ScrCaught *caught = scr_exc_take();
   ScrDyn *error = scr_caught_to_dyn(caught);
@@ -607,6 +609,10 @@ static int scr_uncaught_dispatch(bool from_promise) {
   scr_uncaught_sync_hook();
   if (ok && !handled) scr_rethrow(caught);
   scr_caught_release(caught);
+  /* Node's successful uncaught handler schedules an empty Immediate so
+   * interrupted ticks and rejection notifications get another checkpoint.
+   * The scheduler owns and releases this callback in either loop mode. */
+  if (ok && handled) scr_set_immediate(scr_closure_new((void *)scr_uncaught_resume, 0));
   return !ok ? -1 : handled ? 1 : 0;
 }
 
@@ -628,7 +634,7 @@ static bool scr_urj_dispatch(ScrPromise *p) {
 }
 
 /* 'rejectionHandled' delivery — (promise), Node's payload. A listener
- * throw propagates as a pending exception through the attach site. */
+ * throw propagates to the rejection checkpoint that drains the event. */
 static void scr_rjh_dispatch(ScrPromise *p) {
   ScrDyn *boxed = scr_dyn_new_promise(p);
   (void)scr_rej_fire(&scr_rjh_listeners, &scr_nrjh, &boxed, 1);
@@ -747,8 +753,8 @@ static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin) {
   /* A rejection HANDLER marks the source handled at attach (Node's
    * moment; the reaction fiber's await re-marks harmlessly) — this is
-   * also what lets a .catch inside an 'unhandledRejection' listener fire
-   * 'rejectionHandled' immediately at the attach point. */
+   * also what queues 'rejectionHandled' for a late .catch. The checkpoint's
+   * handled-rejection phase delivers it, never the attachment itself. */
   if (onr != NULL) scr_promise_mark_handled(src);
   ScrDynThenPack *a = malloc(sizeof *a);
   if (!a) scr_ad_oom();

@@ -9,7 +9,7 @@ import { EXECUTABLE_RUNTIME_SOURCES } from "../../compiler/src/backend/native-to
 const execFileAsync = promisify(execFile);
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
-test("fiber stacks commit on demand and preserve large frames across suspension", async () => {
+test("promise events retain their roots and fiber stacks preserve suspended frames", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-fiber-stacks-"));
   try {
     const bin = join(dir, "fiber-stacks");

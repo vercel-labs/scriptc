@@ -53,7 +53,7 @@ import {
 import { hostGlobalValue } from "../host-global-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
-import { lowerGlobalValue } from "../lower-global-value.js";
+import { lowerGlobalObjectValue } from "../lower-global-value.js";
 import { expandoMemberRead } from "../lower-expando.js";
 import {
   assertedElementKeepsUndefined,
@@ -280,7 +280,9 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const loc = locOf(expr);
     const read: IrExpr = {
       kind: "dynKeyGet",
-      value: lowerGlobalValue(lowerer, expr.expression),
+      // The receiver is the global object however this spelling reached it,
+      // so its name table is the `globalThis` one, not the read's own type.
+      value: lowerGlobalObjectValue(lowerer, expr.expression, locOf(expr.expression)),
       key: name,
       type: DYN,
       loc,

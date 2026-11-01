@@ -126,3 +126,57 @@ console.log(typeof s["FormData"], (s["FormData"] as any).name);
   expect(result.exitCode).toBe(0);
   expect(result.stdout).toBe(["function WebSocket", "function FormData", ""].join("\n"));
 });
+
+test("a computed read through a cast alias reaches the global name table", async () => {
+  // The receiver is the global object however the cast spells its type, so
+  // the name table is the `globalThis` one: a declared global reaches the
+  // stored global object's refusal instead of answering undefined.
+  for (const [name, source] of [
+    [
+      "cast-computed",
+      `const key: string = "Math";
+console.log(typeof (globalThis as any)[key]);
+`,
+    ],
+    [
+      "alias-computed",
+      `const alias = globalThis;
+const key: string = "Math";
+console.log(typeof (alias as any)[key]);
+`,
+    ],
+  ] as const) {
+    const result = await runProgram(name, source);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("reading globalThis.Math through a stored global object");
+  }
+});
+
+test("a symbol-valued key tests the symbol property", async () => {
+  // A symbol is an identity, not a name: it reaches the global object's
+  // symbol store like any other receiver's, and never the string conversion.
+  const result = await runProgram(
+    "in-symbol",
+    `const sym = Symbol.for("present");
+const scope = globalThis as any;
+scope[sym] = 41;
+const present: any = sym;
+const absent: any = Symbol.for("absent");
+console.log(present in globalThis, absent in globalThis);
+`,
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toBe("true false\n");
+});
+
+test("a host global named by an untyped key still throws", async () => {
+  const result = await runProgram(
+    "in-untyped",
+    `const key: any = "URLPattern";
+console.log(key in globalThis);
+`,
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain(`TypeError: ${missing("URLPattern")}`);
+});

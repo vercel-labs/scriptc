@@ -46,6 +46,7 @@ import { lowerMimeInstanceof } from "../builtins/mime.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
+import { lowerGlobalObjectValue } from "../lower-global-value.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import {
   inOperatorTypeError,
@@ -1710,30 +1711,67 @@ export function lowerInExpression(
     // not define) keeps its existing lowering, byte for byte.
     (inGlobalKey === null || NODE_GLOBALS_WITHOUT_NATIVE.has(inGlobalKey))
   ) {
-    const folded = inGlobalKey;
-    let key: IrExpr;
-    if (folded !== null) {
-      key = { kind: "strLit", value: folded, type: STRING, loc };
-    } else {
-      // JS evaluates the key before the receiver; the receiver is the global
-      // object, whose evaluation has no effects, so lowering the key first is
-      // the whole evaluation order.
-      const lowered = lowerer.lowerExpr(expr.left);
-      key =
-        lowered.type.kind === "string"
-          ? lowered
-          : {
-              kind: "libCall",
-              fn: "dyn.toStringCoerce",
-              args: [lowerer.coerceInto(expr.left, lowered, DYN)],
-              type: STRING,
-              loc,
-            };
-    }
-    return {
+    const installedHas = (key: IrExpr): IrExpr => ({
       kind: "seqExpr",
       stmts: [{ kind: "exprStmt", expr: hostAbsentInstall(loc), loc }],
       result: { kind: "libCall", fn: "dyn.globalHas", args: [key], type: BOOL, loc },
+      type: BOOL,
+      loc,
+    });
+    if (inGlobalKey !== null)
+      return installedHas({ kind: "strLit", value: inGlobalKey, type: STRING, loc });
+    // JS evaluates the key before the receiver; the receiver is the global
+    // object, whose evaluation has no effects, so lowering the key first is
+    // the whole evaluation order.
+    const lowered = lowerer.lowerExpr(expr.left);
+    if (lowered.type.kind === "string") return installedHas(lowered);
+    // A key the type cannot prove to be a string may hold a symbol at
+    // runtime, and a symbol is an identity, not a name: it must reach the
+    // global object's symbol store rather than the string conversion (which
+    // throws for a symbol). The boxed key is stabilized first; the answer is
+    // the same presence query the dynamic path gives.
+    const keyLocal = lowerer.declareHiddenLocal("%inKey", DYN);
+    const boxedKey = varRef(keyLocal.id, DYN, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "exprStmt", expr: hostAbsentInstall(loc), loc },
+        {
+          kind: "varDecl",
+          localId: keyLocal.id,
+          init: lowerer.coerceInto(expr.left, lowered, DYN),
+          loc,
+        },
+      ],
+      result: {
+        kind: "ternary",
+        cond: {
+          kind: "strEq",
+          negated: false,
+          left: { kind: "libCall", fn: "dyn.typeof", args: [boxedKey], type: STRING, loc },
+          right: { kind: "strLit", value: "symbol", type: STRING, loc },
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "libCall",
+          fn: "dyn.hasKeyComputed",
+          args: [lowerGlobalObjectValue(lowerer, expr.right, locOf(expr.right)), boxedKey],
+          type: BOOL,
+          loc,
+        },
+        else_: {
+          kind: "libCall",
+          fn: "dyn.globalHas",
+          args: [
+            { kind: "libCall", fn: "dyn.toStringCoerce", args: [boxedKey], type: STRING, loc },
+          ],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
       type: BOOL,
       loc,
     };

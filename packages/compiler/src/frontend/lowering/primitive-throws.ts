@@ -162,25 +162,37 @@ export function nullishReadTypeError(
   );
 }
 
+/** The text every builtin identity token carries: the identifier chokepoint
+ * and the JavaScript destructuring rule intern `[builtin <name>]`
+ * (identifiers.ts, property-access.ts, global-values.ts, lower-stmts.ts). */
+const BUILTIN_TOKEN_PREFIX = "[builtin ";
+const BUILTIN_TOKEN_SUFFIX = "]";
+
 /** A builtin identity token, which is NOT a primitive the program can
  * observe. The identifier chokepoint represents a JavaScript source's
  * unsupported builtin value (`import { AsyncResource } from
  * "node:async_hooks"`) as an IR string whose text Node never produces, so
- * identity flows (`===`, Set membership) agree between spellings; the
- * binding patterns vet their sources by the same rule. The checker does not
- * type such a reference as a string — it is `any` for an export the ambient
- * surface does not declare, or the token's carrier type once the value
- * leaked into a JavaScript local. The object-coercion lowerings throw
- * Node's TypeError for a primitive and spell it from the value, which for a
- * token would report the carrier as if the program could see it
- * ("AsyncResource is not a constructor" for a class Node constructs), so
- * those branches leave the site to the reference's own fence instead. */
+ * identity flows (`===`, Set membership) agree between spellings. The
+ * object-coercion lowerings throw Node's TypeError for a primitive and
+ * spell it from the value, which for a token would report the carrier as if
+ * the program could see it ("AsyncResource is not a constructor" for a
+ * class Node constructs), so those branches leave the site to the
+ * reference's own fence instead.
+ *
+ * A token is recognized by its interned TEXT, not by its type alone: a
+ * program's own string casts to `any` as readily as an unsupported builtin
+ * export does, and `new ("hello" as any)()` is a Node TypeError to run, not
+ * a lowering fence. The checker test stays as a second condition, so a
+ * string the checker types as a string keeps its Node answer even when it
+ * spells a token. */
 export function isBuiltinIdentityToken(
   lowerer: Lowerer,
   node: ts.Expression,
   value: IrExpr,
 ): boolean {
-  if (value.type.kind !== "string") return false;
+  if (value.kind !== "strLit") return false;
+  if (!value.value.startsWith(BUILTIN_TOKEN_PREFIX)) return false;
+  if (!value.value.endsWith(BUILTIN_TOKEN_SUFFIX)) return false;
   function stringLike(t: ts.Type): boolean {
     if ((t.flags & ts.TypeFlags.StringLike) !== 0) return true;
     return t.isUnionType() && ts.constituentTypes(t).every(stringLike);

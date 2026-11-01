@@ -4417,6 +4417,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const elem = arg ? mapType(arg, ctx) : null;
     return elem ? iterableUnionType(elem, ctx.shapes, unions) : null;
   }
+  // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
+  // types: any object implementing the protocol is assignable, so the value
+  // is checked-dynamic (like the Map/Set iterators above) and `for await`
+  // over it takes the runtime's source-agnostic async-iteration protocol
+  // (lowerForOfDyn): a compiled async generator steps natively, any other
+  // object through its Symbol.asyncIterator, and a synchronous iterable
+  // through its values awaited one by one. An `async *` declaration whose
+  // return annotation is one of these spells the generator it builds, so
+  // function-returns.ts asks mapAsyncGeneratorAnnotation first.
+  if (
+    isStdlibInterface("AsyncIterable") ||
+    isStdlibInterface("AsyncIterableIterator") ||
+    isStdlibInterface("AsyncIterator")
+  )
+    return DYN;
   // IteratorResult<T, TReturn> — the checker's type of `g.next()` (an
   // alias for IteratorYieldResult<T> | IteratorReturnResult<TReturn>):
   // maps to the SAME interned record genResume answers, so `const r =

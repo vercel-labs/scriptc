@@ -69,7 +69,7 @@ import {
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
-import { boolLit, numLit, varRef } from "../../../ir/build.js";
+import { boolLit, numLit, unitSequenceEffects, varRef } from "../../../ir/build.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { lowerShortCircuitAssignment } from "./nullish-assignment.js";
@@ -113,6 +113,20 @@ export function lowerUnitComparison(
   negated: boolean,
   loc: SrcLoc,
 ): IrExpr | null {
+  const comparesUnits = isUnitType(left.type) && isUnitType(right.type);
+  if (comparesUnits) {
+    const leftEffects = unitSequenceEffects(left);
+    const rightEffects = unitSequenceEffects(right);
+    const hasUnitValues = leftEffects !== null && rightEffects !== null;
+    if (hasUnitValues) {
+      const stmts = [...leftEffects, ...rightEffects];
+      const equal = typeEquals(left.type, right.type) !== negated;
+      const result = boolLit(equal, loc);
+      if (stmts.length === 0) return result;
+      const sequence: IrExpr = { kind: "seqExpr", stmts, result, type: BOOL, loc };
+      return sequence;
+    }
+  }
   const unit = left.kind === "unitLit" ? left : right.kind === "unitLit" ? right : null;
   if (!unit) return null;
   const other = unit === left ? right : left;
@@ -233,7 +247,11 @@ function lowerLooseNullCompare(
   const other = lowerPresenceOperand(lowerer, otherNode);
   if (isUnitType(other.type)) {
     // `null == null`, `undefined == null`: units are mutually loose-equal.
-    return { kind: "boolLit", value: !negated, type: BOOL, loc };
+    const result = boolLit(!negated, loc);
+    const stmts = unitSequenceEffects(other);
+    if (!stmts?.length) return result;
+    const sequence: IrExpr = { kind: "seqExpr", stmts, result, type: BOOL, loc };
+    return sequence;
   }
   if (other.type.kind === "dyn") {
     // `v != null` on unknown: one dyn kind test covers both units.

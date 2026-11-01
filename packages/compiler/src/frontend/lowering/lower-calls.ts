@@ -32,7 +32,14 @@ import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
  * own owners; this module selects the applicable call path. */
-import { dynUndefinedExpr, nodeThrowExpr, countedFor, numLit, varRef } from "../../ir/build.js";
+import {
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  countedFor,
+  numLit,
+  unitSequenceEffects,
+  varRef,
+} from "../../ir/build.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { threadsImportOf } from "../threads-import.js";
 import { nodeApiCalleeOf } from "../node-api-import.js";
@@ -3576,14 +3583,19 @@ function lowerObjectPrototypeCall(
   const stmts: IrStmt[] = [];
   let ref: IrExpr = receiver;
   if (isUnitType(receiver.type) || receiver.type.kind === "void") {
-    if (!isSafeToDiscard(receiver)) stmts.push({ kind: "exprStmt", expr: receiver, loc });
+    if (!isSafeToDiscard(receiver)) {
+      const effects: IrStmt[] = unitSequenceEffects(receiver) ?? [
+        { kind: "exprStmt", expr: receiver, loc },
+      ];
+      stmts.push(...effects);
+    }
   } else {
     const local = lowerer.declareHiddenLocal("%objectTagReceiver", receiver.type);
     stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
     ref = varRef(local.id, receiver.type, loc);
   }
   for (const extra of call.arguments.nodes.slice(1)) {
-    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(extra), loc: locOf(extra) });
+    stmts.push(lowerer.lowerExprStatement(extra));
   }
   const result: IrExpr =
     tag === null

@@ -136,7 +136,13 @@ import {
   lowerWebStreamNew,
   lowerWebStreamStaticCall,
 } from "./builtins/web-streams-dyn.js";
-import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import {
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  numLit,
+  unitSequenceEffects,
+  varRef,
+} from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import { iterableSlotValue } from "./iterable-values.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
@@ -12915,13 +12921,14 @@ export class Lowerer {
     // A comma expression ending in a unit literal (`return log(), null`):
     // its effects run first, unchanged, and the unit value takes the
     // destination's representation (a bare unit literal has none).
-    if (
-      expr.kind === "seqExpr" &&
-      expr.result.kind === "unitLit" &&
-      !typeEquals(expr.type, expected)
-    ) {
-      const result = this.coerceToExpected(expr.result, expected);
-      return { ...expr, result, type: result.type };
+    if (expr.kind === "seqExpr") {
+      const convertsUnit = isUnitType(expr.type) && !typeEquals(expr.type, expected);
+      if (convertsUnit) {
+        const result = this.coerceToExpected(expr.result, expected);
+        const type = result.type;
+        const sequence: IrExpr = { ...expr, result, type };
+        return sequence;
+      }
     }
     // A `Promise<module namespace>` widening into `Promise<unknown>`, or
     // into an `unknown` slot: map the payload through the namespace's
@@ -14852,6 +14859,12 @@ export class Lowerer {
         e = this.returnedPromiseAwait(e);
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
+      const unitEffects = unitSequenceEffects(e);
+      if (unitEffects) {
+        const body: IrStmt[] = [...unitEffects, { kind: "return", value: null, loc }];
+        const block: IrStmt = { kind: "block", body, loc };
+        return block;
+      }
       // `return c ? f() : g()` over void calls: a void conditional has no
       // value representation, so its branch selection becomes control flow.
       if (e.kind === "ternary" && e.type.kind === "void") {

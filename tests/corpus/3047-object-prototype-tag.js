@@ -51,8 +51,15 @@ const order = [];
 function receiver() { order.push("receiver"); return 1; }
 function ignored() { order.push("ignored"); return 2; }
 console.log(Object.prototype.toString.call(receiver(), ignored()), order.join(","));
+console.log(Object.prototype.toString.call(void receiver(), ignored()), order.join(","));
+console.log(Object.prototype.toString.call((receiver(), void receiver()), void ignored()), order.join(","));
 try {
   Object.prototype.toString.call(receiver(), (() => { throw new Error("extra"); })());
+} catch (error) {
+  console.log(error.message, order.join(","));
+}
+try {
+  Object.prototype.toString.call(void (() => { order.push("throw"); throw new Error("receiver"); })(), ignored());
 } catch (error) {
   console.log(error.message, order.join(","));
 }

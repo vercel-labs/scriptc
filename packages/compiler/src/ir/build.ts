@@ -26,6 +26,18 @@ export function boolLit(value: boolean, loc: SrcLoc): IrExpr {
   return { kind: "boolLit", value, type: BOOL, loc };
 }
 
+export function unitSequenceEffects(expr: IrExpr): IrStmt[] | null {
+  if (expr.kind === "unitLit") {
+    const stmts: IrStmt[] = [];
+    return stmts;
+  }
+  if (expr.kind !== "seqExpr") return null;
+  const resultEffects = unitSequenceEffects(expr.result);
+  if (resultEffects === null) return null;
+  const stmts = [...expr.stmts, ...resultEffects];
+  return stmts;
+}
+
 /** `for (i.0 = 0; i.0 < bound; i.0++)` over the conventional synthetic
  * index local. The bound expression remains in the condition and is
  * therefore evaluated once per iteration, matching the expanded IR. */

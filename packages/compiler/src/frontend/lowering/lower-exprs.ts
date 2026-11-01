@@ -14,7 +14,14 @@ import {
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { lowerIslandExpr } from "./lower-node-island.js";
 import { lowerAwaitedUniformPromiseAll } from "./builtins/promises.js";
-import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import {
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  unitSequenceEffects,
+  varRef,
+} from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Expression lowering: the expression dispatch (lowerExpr), literals
  * (array/object/regex/template), operators (binary incl. compound targets,
@@ -517,14 +524,17 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // (lowerExprStatement) and void-returning arrow bodies — but here
     // the value is consumed and the effect would need to sequence before
     // it, which no expression shape carries: fence by name.
-    if (sideEffectFreeOptionValue(expr.expression)) {
-      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
-    }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile)",
-    );
+    const result: IrExpr = { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
+    if (sideEffectFreeOptionValue(expr.expression)) return result;
+    const stmts = [lowerer.lowerExprStatement(expr.expression)];
+    const sequence: IrExpr = {
+      kind: "seqExpr",
+      stmts,
+      result,
+      type: UNDEFINED_T,
+      loc,
+    };
+    return sequence;
   }
   if (ts.isTypeOfExpression(expr)) return lowerTypeofExpr(lowerer, expr, loc);
   if (ts.isIdentifier(expr)) return lowerIdentifierExpr(lowerer, expr, loc);
@@ -2216,7 +2226,12 @@ export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): Ir
   // reads that answer them): ToBoolean is constantly false. Units have
   // no effectful producers, so folding the read away loses nothing.
   if (isUnitType(e.type)) {
-    return { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+    const loc = e.loc;
+    const result: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+    const stmts = unitSequenceEffects(e);
+    if (!stmts?.length) return result;
+    const sequence: IrExpr = { kind: "seqExpr", stmts, result, type: BOOL, loc };
+    return sequence;
   }
   lowerer.badType(node, lowerer.typeOf(node));
 }

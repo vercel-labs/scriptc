@@ -1,7 +1,7 @@
 import * as ts from "../ts7/adapter.js";
-import type { IrExpr, IrType, SrcLoc } from "../../ir/ir.js";
+import type { IrExpr, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { BOOL, F64, isUnitType, STRING, typeEquals } from "../../ir/ir.js";
-import { nodeThrowExpr, numLit, strLit } from "../../ir/build.js";
+import { nodeThrowExpr, numLit, strLit, unitSequenceEffects } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 
@@ -42,13 +42,17 @@ export function lowerStaticallyUndefinedArgument(
 /** Preserve an explicitly undefined argument's effects, then use its default. */
 export function defaultAfterUndefined(value: IrExpr, defaultValue: IrExpr): IrExpr {
   if (isSafeToDiscard(value)) return defaultValue;
-  return {
+  const { loc } = value;
+  const { type } = defaultValue;
+  const stmts: IrStmt[] = unitSequenceEffects(value) ?? [{ kind: "exprStmt", expr: value, loc }];
+  const sequence: IrExpr = {
     kind: "seqExpr",
-    stmts: [{ kind: "exprStmt", expr: value, loc: value.loc }],
+    stmts,
     result: defaultValue,
-    type: defaultValue.type,
-    loc: value.loc,
+    type,
+    loc,
   };
+  return sequence;
 }
 
 /** Convert an omitted or supplied string-search value after preserving its effects. */

@@ -30,7 +30,7 @@ import {
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { isJsSourceFile, isNodeEsmFile } from "../../program.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
-import { varRef } from "../../../ir/build.js";
+import { unitSequenceEffects, varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
@@ -318,15 +318,12 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
       : FOLD[operand.type.kind];
   if (folded) {
     const result: IrExpr = { kind: "strLit", value: folded, type: STRING, loc };
-    return isSafeToDiscard(operand)
-      ? result
-      : {
-          kind: "seqExpr",
-          stmts: [{ kind: "exprStmt", expr: operand, loc }],
-          result,
-          type: STRING,
-          loc,
-        };
+    if (isSafeToDiscard(operand)) return result;
+    const stmts: IrStmt[] = unitSequenceEffects(operand) ?? [
+      { kind: "exprStmt", expr: operand, loc },
+    ];
+    const sequence: IrExpr = { kind: "seqExpr", stmts, result, type: STRING, loc };
+    return sequence;
   }
   // A union operand: every arm's typeof answer is static, so the value
   // form is a ternary chain over runtime TAG tests (arms grouped by

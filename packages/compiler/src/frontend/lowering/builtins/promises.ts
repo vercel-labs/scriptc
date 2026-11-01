@@ -3,7 +3,7 @@ import { checkedPromiseAll, thenReader } from "../checked-promise-all.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
-import { countedFor, varRef } from "../../../ir/build.js";
+import { countedFor, unitSequenceEffects, varRef } from "../../../ir/build.js";
 import { arrayValueStore, optionalElementValue, primitiveElement } from "../array-values.js";
 import {
   maybePromiseResolve,
@@ -161,7 +161,8 @@ function lowerTuplePromiseAll(
     : elems.map((e): IrExpr => {
         if (e.kind === "unitLit") return e;
         if (isUnitType(e.type)) {
-          staged.push({ kind: "exprStmt", expr: e, loc });
+          const effects: IrStmt[] = unitSequenceEffects(e) ?? [{ kind: "exprStmt", expr: e, loc }];
+          staged.push(...effects);
           return {
             kind: "unitLit",
             unit: e.type.kind === "nullT" ? "null" : "undefined",
@@ -196,12 +197,13 @@ function lowerTuplePromiseAll(
         type: voidPromise,
         loc,
       };
+      const stmts: IrStmt[] = unitSequenceEffects(e) ?? [{ kind: "exprStmt", expr: e, loc }];
       promise =
-        e.kind === "unitLit"
+        stmts.length === 0
           ? resolved
           : {
               kind: "seqExpr",
-              stmts: [{ kind: "exprStmt", expr: e, loc }],
+              stmts,
               result: resolved,
               type: voidPromise,
               loc,

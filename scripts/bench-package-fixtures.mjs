@@ -167,7 +167,6 @@ const median = (values) => {
 
 /* ── callgrind ──────────────────────────────────────────────────────────── */
 
-const POSITION = /^(?:\*|\+|-)?\d/;
 const FN = /^fn=\((\d+)\)(?:\s+(.*))?$/;
 const CFN = /^cfn=\((\d+)\)(?:\s+(.*))?$/;
 
@@ -181,6 +180,9 @@ function parseProfile(file) {
   const self = new Map();
   const calls = [];
   let current = null;
+  let callee = null;
+  /* The call whose cost lines are still to come: its edge and how many cost
+   * lines belong to it. */
   let pending = null;
   const name = (raw) => {
     const match = FN.exec(raw) ?? CFN.exec(raw);
@@ -189,35 +191,50 @@ function parseProfile(file) {
     if (label) names.set(id, label.trim());
     return names.get(id) ?? `(${id})`;
   };
+  const addSelf = (cost) => {
+    if (current !== null) self.set(current, (self.get(current) ?? 0) + cost);
+  };
   for (const line of text.split("\n")) {
     if (line.startsWith("fn=")) {
       current = name(line);
       if (!self.has(current)) self.set(current, 0);
+      callee = null;
       pending = null;
-    } else if (line.startsWith("cfn=")) {
-      pending = name(line);
-    } else if (line.startsWith("calls=") && pending !== null && current !== null) {
-      /* `calls=<count> <first position> <cost-in-each-event>`: the cost of the
-       * call site is the last field. */
-      const fields = line.slice("calls=".length).trim().split(/\s+/);
-      calls.push({
-        caller: current,
-        callee: pending,
-        count: Number(fields[0]),
-        cost: Number(fields[fields.length - 1] ?? 0),
-      });
-      pending = null;
-    } else if (
-      line.startsWith("events:") ||
-      line.startsWith("summary:") ||
-      line.startsWith("calls=")
-    ) {
       continue;
-    } else if (POSITION.test(line) && current !== null) {
-      const parts = line.split(/\s+/);
-      const cost = Number(parts[parts.length - 1]);
-      if (Number.isFinite(cost)) self.set(current, (self.get(current) ?? 0) + cost);
     }
+    if (line.startsWith("cfn=")) {
+      callee = name(line);
+      pending = null;
+      continue;
+    }
+    if (line.startsWith("calls=")) {
+      /* `calls=<count> <position>...` carries no cost: the count and the
+       * target positions only. The cost of those calls is the cost line(s)
+       * that follow, one per position given. */
+      pending = null;
+      if (callee === null || current === null) continue;
+      const fields = line.slice("calls=".length).trim().split(/\s+/).filter(Boolean);
+      pending = {
+        edge: { caller: current, callee, count: Number(fields[0]), cost: 0 },
+        lines: Math.max(1, fields.length - 1),
+      };
+      continue;
+    }
+    /* A cost line is `<position> <cost...>`, where the position is `*`, a
+     * relative `+N`/`-N`, or an absolute number. */
+    const first = line.split(/\s+/)[0];
+    if (first !== "*" && !/^[+-]?\d+$/.test(first)) continue;
+    const cost = Number(line.trim().split(/\s+/).at(-1));
+    if (!Number.isFinite(cost)) continue;
+    if (pending !== null) {
+      pending.edge.cost += cost;
+      if (--pending.lines === 0) {
+        calls.push(pending.edge);
+        pending = null;
+      }
+      continue;
+    }
+    addSelf(cost);
   }
   const inclusive = new Map(self);
   const totals = new Map();
@@ -242,6 +259,7 @@ const ENTRY_POINTS = [
   {
     kind: "read  dynamic",
     names: [
+      "scr_js_keyed_probe",
       "scr_dyn_obj_read",
       "scr_dyn_obj_get",
       "scr_dyn_typed_ref_key_get",

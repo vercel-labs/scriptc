@@ -100,23 +100,26 @@ function kindIs(host: Host, d: string, kind: number, yes: string, no: string): v
  * SCRIPTC_DEBUG_JS_IC_WAYS=0|1|2 overrides the count for an attribution run,
  * where every access should reach the probe so that the runtime entry points
  * can count it; the value is read once, so one build is one way count. */
-const IC_WAYS_DEBUG: string | undefined = process.env["SCRIPTC_DEBUG_JS_IC_WAYS"];
-
-function inlineWays(): number {
-  if (IC_WAYS_DEBUG === undefined || IC_WAYS_DEBUG === "") return 2;
-  const ways = Number(IC_WAYS_DEBUG);
+/** The attribution way count `SCRIPTC_DEBUG_JS_IC_WAYS` asks for, or null
+ * when the variable is unset. The value changes emitted code, so the build
+ * cache keys on it (executable/executable-cache.ts). */
+export function debugJsIcWays(env: NodeJS.ProcessEnv = process.env): 0 | 1 | 2 | null {
+  const raw = env["SCRIPTC_DEBUG_JS_IC_WAYS"];
+  if (raw === undefined || raw === "") return null;
+  const ways = Number(raw);
   if (ways !== 0 && ways !== 1 && ways !== 2)
-    throw new Error(`SCRIPTC_DEBUG_JS_IC_WAYS must be 0, 1 or 2, got ${IC_WAYS_DEBUG}`);
+    throw new Error(`SCRIPTC_DEBUG_JS_IC_WAYS must be 0, 1 or 2, got ${raw}`);
   return ways;
 }
 
-const INLINE_WAYS: number = inlineWays();
+const IC_WAYS_DEBUG: 0 | 1 | 2 | null = debugJsIcWays();
+const INLINE_WAYS: number = IC_WAYS_DEBUG ?? 2;
 
 /* An attribution run gives an object literal's member stores their own probe
  * entry point, so a profile can split them from other stores. With the
  * variable unset the emitted code calls scr_js_store_probe as before. */
 const LITERAL_PROBE: string =
-  IC_WAYS_DEBUG === undefined ? "scr_js_store_probe" : "scr_js_literal_probe";
+  IC_WAYS_DEBUG === null ? "scr_js_store_probe" : "scr_js_literal_probe";
 const INLINE_PROTO = true;
 
 /** The address of slot `slot` of layout-mode object `d`. */

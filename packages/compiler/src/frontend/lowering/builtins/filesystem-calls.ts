@@ -251,6 +251,31 @@ export function lowerFsNumericOpenCall(
   };
 }
 
+// fs.openSync(path, flags[, mode]) with Node's string flags: the runtime
+// selects the O_* bits from the flag text, and mode is the creation mode
+// open(2) applies when the file is created. An omitted mode passes Node's
+// 0o666 default, so every call reaches the runtime with three arguments.
+export function lowerFsOpenCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (
+    expr.arguments.nodes.length < 2 ||
+    expr.arguments.nodes.length > 3 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
+  )
+    lowerer.noLowering("openSync with this argument shape", expr);
+  const mode = expr.arguments.nodes[2];
+  return {
+    kind: "libCall",
+    fn: "fs.openSync",
+    args: [
+      lowerFsPath(lowerer, expr.arguments.nodes[0]!),
+      lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING),
+      mode ? lowerer.lowerExprExpecting(mode, F64) : numLit(0o666, loc),
+    ],
+    type: F64,
+    loc,
+  };
+}
+
 // fs/promises.open(path[, flags[, mode]]) — string flags and numeric
 // creation mode, with Node's "r"/0o666 defaults. The runtime wraps
 // the descriptor in a shared FileHandle and settles/rejects exactly

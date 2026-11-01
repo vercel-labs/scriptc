@@ -1376,10 +1376,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       "realpathSync.native": { fn: "fs.realpathNativeSync", params: [STRING], result: STRING },
       // The fd pair behind spawn's fd-stdio form (the daemon-log idiom:
       // openSync(logPath, "a") → spawn stdio ["ignore", fd, fd] →
-      // closeSync). String flags use the established two-argument path;
-      // inline numeric O_* expressions route through openNumericSync, with
-      // an optional creation mode as the third argument.
-      openSync: { fn: "fs.openSync", params: [STRING, STRING], result: F64 },
+      // closeSync). Both forms take an optional creation mode as the third
+      // argument; inline numeric O_* expressions route through
+      // openNumericSync.
+      openSync: { fn: "fs.openSync", params: [STRING, STRING, F64], result: F64 },
       // The buffer forms (fd, buffer, offset, length[, position]). The
       // lowering completes an omitted or literal-null position to -1 (the
       // runtime's current-offset sentinel); numeric positions read without

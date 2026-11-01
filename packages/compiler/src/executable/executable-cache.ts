@@ -67,14 +67,11 @@ export interface EarlyExecutableNativeFeatures {
   wasm?: boolean;
   warningReplace?: boolean;
   jsObjectModel?: boolean;
-  stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
-  /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
-  stdioWriteSlot?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;

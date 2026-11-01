@@ -4783,3 +4783,17 @@ double scr_bytes_compare_chk(const ScrBytes *src, const ScrDyn *target,
    * now-known-good numbers (a no-op) and keeps one comparison core. */
   return scr_bytes_compare(src, t, 4, tsv, tev, ssv, sev);
 }
+
+/* One streaming step through the decoder above: decoder.write over the chunk
+ * and the packed state that follows it, from a single walk of pending+chunk.
+ * process.stdin's setEncoding (scr_events.c) threads the state across reads
+ * through this, keeping the encoding and the state as values it never
+ * unpacks. Kept at the end of the unit so the functions before it keep their
+ * constant-pool numbering. */
+ScrStr *scr_strdec_stream_write(const ScrStr *enc, const ScrBytes *chunk, double *pending) {
+  SCR_BYTES_SNAPSHOT(chunk);
+  double hold = 0;
+  ScrStr *text = scr_strdec_step(enc, *pending, chunk, true, &hold);
+  *pending = hold;
+  return text;
+}

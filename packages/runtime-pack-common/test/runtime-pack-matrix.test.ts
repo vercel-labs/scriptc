@@ -24,36 +24,20 @@ function selected(
   return matches[0];
 }
 
-test("the typed stdio write slot selects the events build that carries it", () => {
-  const plain = { stdioExtended: false, nodeIsland: false, workers: false };
-  // Alone, the write slot selects its own build.
-  expect(selected("scr_events.c", { ...plain, stdioWriteSlot: true }).defines).toEqual([
-    "SCR_STDIO_WRITE_SLOT",
+test("scr_events.c builds once per flavor, whatever the program's features", () => {
+  // The stdio extensions, the process extras, the typed write slot and the
+  // island listeners all live in the one build; only workers needs its own.
+  const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_events.c");
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  const plain = { workers: false, nodeIsland: false, processExtras: false };
+  expect(selected("scr_events.c", plain).defines).toEqual([]);
+  // The features the other units still key on select nothing here.
+  expect(
+    selected("scr_events.c", { ...plain, nodeIsland: true, processExtras: true }).defines,
+  ).toEqual([]);
+  expect(selected("scr_events.c", { ...plain, workers: true, nodeIsland: true }).defines).toEqual([
+    "SCR_WORKERS",
   ]);
-  // Beside the other events features it keeps each one's defines.
-  expect(
-    selected("scr_events.c", { ...plain, stdioExtended: true, stdioWriteSlot: true }).defines,
-  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"]);
-  expect(
-    selected("scr_events.c", { ...plain, nodeIsland: true, stdioWriteSlot: true }).defines,
-  ).toEqual(["SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"]);
-  expect(
-    selected("scr_events.c", {
-      ...plain,
-      stdioExtended: true,
-      nodeIsland: true,
-      stdioWriteSlot: true,
-    }).defines,
-  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"]);
-  // A program that never reaches the write slot keeps the old object.
-  expect(
-    selected("scr_events.c", {
-      ...plain,
-      stdioExtended: true,
-      nodeIsland: true,
-      stdioWriteSlot: false,
-    }).defines,
-  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"]);
 });
 
 test("web streams and Node islands select an async build that defines both", () => {

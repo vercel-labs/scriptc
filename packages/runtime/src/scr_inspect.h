@@ -4,6 +4,7 @@
 #define SCR_INSPECT_H
 
 #include "scr_bytes.h"
+#include "scr_bigint.h"
 
 /* ── util.inspect (scr_inspect.c — linked ONLY when the program calls
  * util.inspect/format; see native-toolchain.ts) ─────────────────────────────────────
@@ -21,6 +22,11 @@
  * indentation. Empty composites and depth placeholders never touch the
  * stack (the frontend emits their literals directly). */
 ScrStr *scr_insp_f64(double x);   /* JS ToString, except -0 → "-0" */
+/* formatBigInt: the decimal digits and the trailing n (+1). */
+ScrStr *scr_insp_bigint(ScrBigInt *value);
+/* ctx.numericSeparator for the renders that follow; answers the previous
+ * value so a wrapper can restore it. */
+bool scr_insp_numeric_separator(bool enabled);
 ScrStr *scr_insp_str(ScrStr *s);  /* the quoting ladder + line splitting */
 ScrStr *scr_insp_regex(ScrRegex *re);  /* /source/flags */
 /* A Date (its time value): toISOString(), or "Invalid Date" for NaN (+1). */
@@ -75,6 +81,7 @@ typedef struct ScrInspFormatOptions {
   double compact; /* -1 for false */
   bool sorted;
   double max_array_length; /* Infinity for null */
+  bool numeric_separator;
   /* The options object, when it holds keys inspect does not read: custom
    * inspect functions receive them (borrowed; NULL otherwise). */
   const ScrDyn *user_options;

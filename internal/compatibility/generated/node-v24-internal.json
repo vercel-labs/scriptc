@@ -101956,6 +101956,7 @@
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/inspect-hidden-properties.cjs",
           "tests/corpus/inspect-max-array-length.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/node24-deep-equality-properties.js",
@@ -103143,7 +103144,8 @@
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
-          "tests/corpus/7521-util-format-runtime.cjs"
+          "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/inspect-numeric-separator.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103173,7 +103175,8 @@
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
-          "tests/corpus/7521-util-format-runtime.cjs"
+          "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/inspect-numeric-separator.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103369,6 +103372,7 @@
           "tests/corpus/inspect-max-array-length.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-hidden-properties.cjs"
         ]
       },

@@ -165,8 +165,9 @@ function buildProbe(
 function runProbe(
   bin: string,
   args: string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
 ): { stdout: string; stderr: string; status: number | null; signal: string | null } {
-  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 60_000 });
+  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 60_000, env });
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status, signal: r.signal };
 }
 
@@ -681,11 +682,18 @@ survived, sink_calls=1
   });
 
   // The abandoned-heap hand-off must leave real leaks reported rather than
-  // turning the checker off to keep the trap modes quiet.
+  // turning the checker off to keep the trap modes quiet. The sanitized
+  // lanes otherwise run with detect_leaks=0 (the RC audit owns leak
+  // detection there, and the plain lane builds sanitized probes too), and a
+  // probe inherits it; this control is the positive one, so it asks
+  // LeakSanitizer on explicitly instead of inheriting the lane's setting.
   linuxTest("K10: LSan stays on in the sanitized lane (a host leak still fails)", async () => {
     const { archive, outDir } = await buildLibrary("traps", emission, { sanitize: true });
     const probe = buildProbe("traps", archive, outDir, { sanitize: true });
-    const run = runProbe(probe, ["hostleak"]);
+    const run = runProbe(probe, ["hostleak"], {
+      ...process.env,
+      ASAN_OPTIONS: "detect_leaks=1",
+    });
     expect(run.stdout).toContain("host leak left for LeakSanitizer");
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain("LeakSanitizer");

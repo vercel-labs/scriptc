@@ -226,6 +226,8 @@ import {
   boxedHandleReceiver,
   lowerChildMethodValue,
   lowerChildPropertyCall,
+  lowerHandleMemberCall,
+  refuseShadowedImplicitReader,
 } from "./handle-properties.js";
 import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
@@ -1651,6 +1653,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const intrinsic =
       // Checked-dynamic stream slots dispatch per value (dyn-streams.ts).
       lowerDynStreamMemberCall(lowerer, expr, expr.expression) ??
+      // A class member the program's JavaScript shadows on a typed handle
+      // (`d.getTime = () => 42; d.getTime()`): the own property's call on
+      // the handle's checked-dynamic box, before the typed method lowerings
+      // below claim the name (handle-properties.ts).
+      lowerHandleMemberCall(lowerer, expr, expr.expression) ??
       fenceNodeModuleMutationCall(lowerer, expr, expr.expression) ??
       // `f.apply(thisArg, args)` forwarding a fixed argument tuple (typed
       // `arguments`, a tuple rest parameter): a direct call.
@@ -2056,6 +2063,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const memberName = ts.isNumericLiteral(expr.expression.argumentExpression)
       ? String(Number(expr.expression.argumentExpression.text))
       : expr.expression.argumentExpression.text;
+    // `d["getTime"]()` over a typed handle whose member the program shadows:
+    // the own property's call on the checked-dynamic box, before the typed
+    // member lowering below claims the name (handle-properties.ts).
+    const shadowed = lowerHandleMemberCall(lowerer, expr, expr.expression, memberName);
+    if (shadowed) return shadowed;
     const receiverType = lowerer.mapTypeOf(lowerer.typeOf(expr.expression.expression));
     if (receiverType?.kind === "object") {
       const info = lowerer.classes.get(receiverType.className);
@@ -2645,9 +2657,13 @@ function lowerNumberConstructorValue(
     };
   const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
   if (optionalNumber) return optionalNumber;
-  // A Date's number hint answers its time value.
-  if (arg.type.kind === "date")
+  // A Date's number hint answers its time value. The number hint reads
+  // valueOf, which the program may have replaced with an own property this
+  // typed path cannot see.
+  if (arg.type.kind === "date") {
+    refuseShadowedImplicitReader(lowerer, argNode, arg.type, "valueOf", "number conversion");
     return { kind: "libCall", fn: "date.valueOf", args: [arg], type: F64, loc };
+  }
   // A program class instance converts through its own methods.
   const classNumber = classToNumberConversion(lowerer, arg, argNode);
   if (classNumber) return classNumber;
@@ -3094,8 +3110,7 @@ function lowerObjectOwnMethodCall(
     const receiver = tryLowerExpression(lowerer, access.expression);
     // A typed handle in a program that adds properties to handles answers
     // from its own property table (scr_dyn_handle_props.c).
-    if (receiver?.type.kind !== "dyn" && !boxedHandleReceiver(lowerer, access.expression, receiver))
-      return null;
+    if (receiver?.type.kind !== "dyn" && !boxedHandleReceiver(lowerer, receiver)) return null;
   }
   return lowerObjectOwnCall(
     lowerer,
@@ -3162,7 +3177,7 @@ function lowerObjectOwnCall(
   }
   // A typed handle in a program that adds properties to handles answers
   // from its own property table (scr_dyn_handle_props.c).
-  const handleBox = boxedHandleReceiver(lowerer, receiverNode ?? call, receiverRef);
+  const handleBox = boxedHandleReceiver(lowerer, receiverRef);
   const rawKey = keyNode ? lowerer.lowerExpr(keyNode) : null;
   let keyRef: IrExpr | null = rawKey;
   if (rawKey && (isUnitType(rawKey.type) || rawKey.type.kind === "void")) {
@@ -9089,7 +9104,7 @@ function lowerObjectStaticCall(
     // A typed handle target in a program that adds properties to handles:
     // its property table answers (scr_dyn_handle_props.c).
     if (target && target.type.kind !== "dyn") {
-      const boxed = boxedHandleReceiver(lowerer, targetNode, target);
+      const boxed = boxedHandleReceiver(lowerer, target);
       if (boxed) target = boxed;
     }
     if (!target || (target.type.kind !== "dyn" && !isUnitType(target.type) && !descriptorPrimitive))
@@ -9181,7 +9196,7 @@ function lowerObjectStaticCall(
     // A typed handle target in a program that adds properties to handles:
     // its property table answers (scr_dyn_handle_props.c).
     if (target && target.type.kind !== "dyn") {
-      const boxed = boxedHandleReceiver(lowerer, call.arguments.nodes[0]!, target);
+      const boxed = boxedHandleReceiver(lowerer, target);
       if (boxed) target = boxed;
     }
     if (target?.type.kind === "dyn") {
@@ -9242,7 +9257,7 @@ function lowerObjectStaticCall(
     // answer (scr_dyn_handle_props.c). The queries are the hook-carrying
     // entries; with the table installed they answer from it.
     {
-      const boxed = boxedHandleReceiver(lowerer, call.arguments.nodes[0]!, value);
+      const boxed = boxedHandleReceiver(lowerer, value);
       if (boxed) {
         const operation = {
           preventExtensions: "dyn.preventExtensions",
@@ -9341,7 +9356,7 @@ function lowerObjectStaticCall(
     // A typed handle in a program that adds properties to handles: the
     // table holds the integrity state (scr_dyn_handle_props.c).
     {
-      const boxed = boxedHandleReceiver(lowerer, argNode, probed);
+      const boxed = boxedHandleReceiver(lowerer, probed);
       if (boxed)
         return { kind: "libCall", fn: "dyn.isFrozen", args: [boxed], type: BOOL, loc: locOf(call) };
     }
@@ -9402,7 +9417,7 @@ function lowerObjectStaticCall(
     // A typed handle in a program that adds properties to handles freezes
     // its own property table (scr_dyn_handle_props.c).
     {
-      const boxed = boxedHandleReceiver(lowerer, argNode, value);
+      const boxed = boxedHandleReceiver(lowerer, value);
       if (boxed)
         return { kind: "libCall", fn: "dyn.freeze", args: [boxed], type: DYN, loc: locOf(call) };
     }
@@ -9701,7 +9716,7 @@ function lowerObjectStaticCall(
     const isArray = probed?.type.kind === "array" && lowerer.dynConvertible(probed.type);
     // A typed handle in a program that adds properties to handles reads its
     // own property table through the checked-dynamic walk.
-    const isHandle = probed ? boxedHandleReceiver(lowerer, argNode, probed) : null;
+    const isHandle = probed ? boxedHandleReceiver(lowerer, probed) : null;
     if (
       isDyn ||
       isPrimitive ||

@@ -2380,7 +2380,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
   // `m[k] = v` over a typed handle in JavaScript: a property table entry
   // of the handle (scr_dyn_handle_props.c).
   {
-    const boxed = boxedHandleReceiver(lowerer, expr, checkedReceiver);
+    const boxed = boxedHandleReceiver(lowerer, checkedReceiver);
     if (boxed)
       return lowerHandlePropertyWrite(
         lowerer,

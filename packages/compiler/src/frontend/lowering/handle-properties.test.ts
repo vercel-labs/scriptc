@@ -22,7 +22,10 @@ test("renames a libCall the IR reaches from several statements once", () => {
   const use: IrStmt = { kind: "exprStmt", expr: call, loc };
   const functions = [fn(ENTRY_NAME, [use, use]), fn("helper", [use])];
   applyHandleProperties(
-    { writesOntoChildren: true, handleAdditions: false } as unknown as Lowerer,
+    {
+      writesOntoChildren: true,
+      handleAdditions: { grants: new Map(), any: false },
+    } as unknown as Lowerer,
     functions,
   );
   expect(call).toMatchObject({ kind: "libCall", fn: "child.propsDefine" });

@@ -30,7 +30,9 @@ import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
 import {
+  TYPED_HANDLE_KINDS,
   boxedHandleReceiver,
+  handleMemberGranted,
   lowerChildPropertyWrite,
   lowerHandlePropertyWrite,
 } from "./handle-properties.js";
@@ -8165,7 +8167,7 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   // A typed handle in a program that adds properties to handles: the
   // delete removes an entry of its property table (scr_dyn_handle_props.c).
   {
-    const boxed = boxedHandleReceiver(lowerer, target, obj);
+    const boxed = boxedHandleReceiver(lowerer, obj);
     if (boxed) {
       const strict = { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc } as const;
       if (ts.isElementAccessExpression(target)) {
@@ -9511,14 +9513,19 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           if (recv?.type.kind === "child" && isJsSourceFile(ts.getSourceFileOfNode(expr)))
             return lowerChildPropertyWrite(lowerer, recv, expr.left, expr.right, locOf(expr));
           // `m.label = 1` over a typed handle in JavaScript: an undeclared
-          // member name is a property table entry (scr_dyn_handle_props.c).
+          // member name is a property table entry, and so is a member name
+          // the program shadows (scr_dyn_handle_props.c). The grant query
+          // (a whole-program census) waits for a handle-typed receiver.
           if (
             !lowerer.checker.getPropertyOfType(
               lowerer.typeOf(expr.left.expression),
               expr.left.name.text,
-            )
+            ) ||
+            (recv !== null &&
+              TYPED_HANDLE_KINDS.has(recv.type.kind) &&
+              handleMemberGranted(lowerer, expr.left.expression, expr.left.name.text))
           ) {
-            const boxed = boxedHandleReceiver(lowerer, expr.left, recv);
+            const boxed = boxedHandleReceiver(lowerer, recv);
             if (boxed)
               return lowerHandlePropertyWrite(
                 lowerer,

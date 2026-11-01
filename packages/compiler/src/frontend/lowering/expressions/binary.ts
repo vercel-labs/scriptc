@@ -88,6 +88,7 @@ import {
   lowerRuntimeConstructorIs,
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
+import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
 import { withUnitArm } from "../../type-mapper.js";
@@ -726,10 +727,14 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
   if (e.type.kind === "searchParams")
     return { kind: "libCall", fn: "sp.toString", args: [e], type: STRING, loc: e.loc };
   // String(date) / `${date}` / "" + date: Date's ToPrimitive prefers
-  // toString().
-  if (e.type.kind === "date")
+  // toString(), which the program may have replaced with an own property
+  // this typed path cannot see.
+  if (e.type.kind === "date") {
+    refuseShadowedImplicitReader(lowerer, node, e.type, "toString", "string conversion");
     return { kind: "libCall", fn: "date.toString", args: [e], type: STRING, loc: e.loc };
+  }
   if (e.type.kind === "regex") {
+    refuseShadowedImplicitReader(lowerer, node, e.type, "toString", "string conversion");
     return {
       kind: "regexIntrinsic",
       method: "toString",
@@ -1521,6 +1526,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       deferredSlotOr(lowerer, lowerer.lowerExpr(expr.right)),
       op === ts.SyntaxKind.ExclamationEqualsToken,
       loc,
+      expr,
     );
     if (loose) return loose;
     lowerer.unsupported(
@@ -2402,6 +2408,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       // mutates the left Date (`a < (a.setTime(t), b)`) is seen: with such
       // a right operand, both Dates bind first and their times read after.
       if (left.type.kind === "date" && right.type.kind === "date") {
+        // The number hint reads valueOf, which the program may have replaced
+        // with an own property this typed path cannot see.
+        refuseShadowedImplicitReader(lowerer, expr, left.type, "valueOf", "comparison");
         const time = (d: IrExpr): IrExpr => ({
           kind: "libCall",
           fn: "date.getTime",

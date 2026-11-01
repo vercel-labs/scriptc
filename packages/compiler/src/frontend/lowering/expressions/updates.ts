@@ -43,6 +43,7 @@ import {
   VOID,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
@@ -143,6 +144,12 @@ function booleanToNumber(value: IrExpr, loc: SrcLoc): IrExpr {
 
 export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpression): IrExpr {
   const loc = locOf(expr);
+  // Unary plus and minus convert with ToNumber, whose number hint reads the
+  // Date's valueOf; a program that replaces it needs the dynamic path.
+  const dateNumber = (value: IrExpr): IrExpr => {
+    refuseShadowedImplicitReader(lowerer, expr.operand, value.type, "valueOf", "number conversion");
+    return dateTimeValue(value, loc);
+  };
   switch (expr.operator) {
     case ts.SyntaxKind.MinusToken: {
       const raw = lowerer.lowerExpr(expr.operand);
@@ -155,7 +162,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
         raw.type.kind === "bool"
           ? booleanToNumber(raw, loc)
           : raw.type.kind === "date"
-            ? dateTimeValue(raw, loc)
+            ? dateNumber(raw)
             : coercedUnion(lowerer, raw.type)
               ? ({
                   kind: "libCall",
@@ -197,7 +204,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       }
       if (raw.type.kind === "bool") return booleanToNumber(raw, loc);
       // A Date's number hint answers its time value.
-      if (raw.type.kind === "date") return dateTimeValue(raw, loc);
+      if (raw.type.kind === "date") return dateNumber(raw);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
       const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);

@@ -4,7 +4,7 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { lowerToNumberArguments } from "../lower-exprs.js";
 import { programDeclaresDateClass } from "./date-classes.js";
-import { programAddsHandleProperties } from "../handle-properties.js";
+import { programAddsHandleProperties, refuseShadowedImplicitReader } from "../handle-properties.js";
 import {
   BOOL,
   DATE_T,
@@ -462,7 +462,12 @@ export function lowerDateToPrimitiveCall(
     raw.type.kind === "dyn"
       ? { kind: "libCall", fn: "date.checkedValue", args: [raw], type: DATE_T, loc }
       : raw;
-  return text === "number"
-    ? { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc }
-    : { kind: "libCall", fn: "date.toString", args: [date], type: STRING, loc };
+  if (text === "number") {
+    refuseShadowedImplicitReader(lowerer, call, DATE_T, "valueOf", "ToPrimitive");
+    return { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc };
+  }
+  // The string and default hints read toString, which the program may have
+  // replaced with an own property this typed path cannot see.
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "toString", "ToPrimitive");
+  return { kind: "libCall", fn: "date.toString", args: [date], type: STRING, loc };
 }

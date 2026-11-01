@@ -2975,6 +2975,7 @@ function buildLibFnSignatures() {
     // The install call's argument is 1 when the program adds properties to
     // children (the child unit's wrapped ops), 0 otherwise.
     "handle.propsInstall": { argTypes: [F64], result: VOID },
+    "handle.propsGrant": { argTypes: [STRING], result: VOID },
     "handle.propsDefineProps": { argTypes: [DYN, DYN], result: DYN },
     "handle.propsGuard": { argTypes: [DYN, STRING], result: DYN },
     "handle.propsGuardList": { argTypes: [arrayOf(DYN), STRING], result: arrayOf(DYN) },

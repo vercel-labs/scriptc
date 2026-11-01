@@ -2047,7 +2047,7 @@ export function lowerInExpression(
     // keys and the class's members answer from its property table
     // (scr_dyn_handle_props.c).
     {
-      const boxed = boxedHandleReceiver(lowerer, expr.right, recv);
+      const boxed = boxedHandleReceiver(lowerer, recv);
       if (boxed) return { kind: "dynHasKey", key, value: boxed, type: BOOL, loc };
     }
     lowerer.unsupported(

@@ -1200,7 +1200,7 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
-  handleProps: rule({ fns: ["handle.propsInstall"] }),
+  handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
   /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */

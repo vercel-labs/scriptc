@@ -1222,6 +1222,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.promiseAny": "scr_dyn_promise_any",
   "dyn.promiseResolve": "scr_dyn_promise_resolve",
   "handle.propsInstall": "scr_dyn_handle_props_install",
+  "handle.propsGrant": "scr_dyn_handle_props_grant",
   "handle.propsDefineProps": "scr_dyn_define_props_hp",
   "handle.propsGuard": "scr_dyn_handle_props_guard",
   "handle.propsGuardList": "scr_dyn_handle_props_guard_list",

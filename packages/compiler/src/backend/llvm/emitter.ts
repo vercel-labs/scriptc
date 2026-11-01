@@ -2535,7 +2535,18 @@ export class LlEmitter {
       },
       classSubtypes: (name) => this.classSubtypes(name),
       classValueSubtypes: (name) => {
-        const target = this.classMetaOf(name).def;
+        // A classval may name a class with no lowering at all: a JS
+        // instance field initializer's per-evaluation class expression
+        // whose private-brand refusal SC1090 is deferred to a runtime
+        // fence keeps its inert-but-valid `classval` storage (the
+        // validator allows it, and every class value is the
+        // class-independent ScrClassObj *). No such class can be
+        // constructed or subclassed, so no subtype converts into it and
+        // the runtime class check rejects every value — the same answer
+        // a registered class with no subtypes gives.
+        const meta = this.classMeta.get(name);
+        if (meta === undefined) return [];
+        const target = meta.def;
         return this.classSubtypes(name).filter(
           (sub) =>
             sub !== target.name &&

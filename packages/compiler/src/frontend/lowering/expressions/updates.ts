@@ -53,7 +53,6 @@ import { expandoWritableTarget } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
-import { partialFieldWriteError } from "../partial-assertions.js";
 import { errorPropertyWrite } from "../error-methods.js";
 import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -947,57 +946,6 @@ export function fieldSetStmt(
       ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
       loc,
     };
-  // A field some partial record assertion leaves unwritten (a partial
-  // record view, partial-assertions.ts): a view cannot grow a slot the
-  // asserted literal never wrote, so the write throws the catchable
-  // TypeError (Node would add the property — a documented divergence). The
-  // receiver and the value are evaluated first, as JavaScript does, and the
-  // presence test runs where the write would.
-  const refused = partialFieldWriteError(lowerer, target.shapeId, target.field, loc);
-  if (refused !== null) {
-    const obj = target.obj;
-    const saved = isSafeToRepeat(value)
-      ? null
-      : lowerer.declareHiddenLocal("%partialWriteValue", value.type);
-    // The receiver is saved whenever the value is: a right side can
-    // reassign the variable the receiver reads.
-    const stable =
-      isSafeToRepeat(obj) && saved === null
-        ? null
-        : lowerer.declareHiddenLocal("%partialWrite", obj.type);
-    const ref = stable ? varRef(stable.id, obj.type, loc) : obj;
-    const written = saved ? varRef(saved.id, value.type, loc) : value;
-    return {
-      kind: "block",
-      body: [
-        ...(stable ? [{ kind: "varDecl" as const, localId: stable.id, init: obj, loc }] : []),
-        ...(saved ? [{ kind: "varDecl" as const, localId: saved.id, init: value, loc }] : []),
-        {
-          kind: "if",
-          cond: {
-            kind: "recordHas",
-            obj: ref,
-            shapeId: target.shapeId,
-            field: target.field,
-            type: BOOL,
-            loc,
-          },
-          then: [],
-          else_: [{ kind: "exprStmt", expr: refused, loc }],
-          loc,
-        },
-        {
-          kind: "recordSet",
-          obj: ref,
-          shapeId: target.shapeId,
-          field: target.field,
-          value: written,
-          loc,
-        },
-      ],
-      loc,
-    };
-  }
   return {
     kind: "recordSet",
     obj: target.obj,

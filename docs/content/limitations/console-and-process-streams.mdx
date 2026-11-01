@@ -17,7 +17,7 @@ Other stored console APIs, custom `Console` instances, and console mutation are 
 
 JavaScript and TypeScript can store `process.stdin`, `stdout`, and `stderr`, replace output `write` methods, and call saved methods with their stream receiver.
 A replaced `write` method does not receive console's error-callback argument.
-Input supports data/end/error listeners, pause/resume, buffered reads, and TTY raw mode.
+Input supports data/end/error/readable listeners, pause/resume, buffered reads with `read(size)` and `readableLength`, and TTY raw mode.
 Output writes are synchronous, with successful callbacks on the next-tick queue; queued backpressure is not modeled.
 Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is false, `writableHighWaterMark` is 65536, and `'drain'` never fires, so drain listeners register silently and `events.once(process.stdout, "drain")` stays pending, as it does in Node when no write returned false.
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.

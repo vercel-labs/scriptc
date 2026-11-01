@@ -90,6 +90,9 @@ export interface CcOptions {
   /** The program uses node:zlib's Brotli forms (with zlib): compiles
    * scr_brotli.c and links the vendored brotli archive. */
   brotli?: boolean;
+  /** The program uses node:zlib's zstd forms (with zlib): compiles
+   * scr_zstd.c and links the vendored zstd objects. */
+  zstd?: boolean;
   /** The program uses an Intl form that only ICU can answer (the `icu.*`
    * libCalls: default-locale number/date formats, word segmentation):
    * compiles scr_intl.c and links the ICU archive, and the
@@ -186,6 +189,10 @@ export interface CcOptions {
   /** A standard library prototype object read as a value in a JavaScript
    * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`: compiles
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c. */
+  hostAbsentGlobals?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */

@@ -378,7 +378,7 @@ export function lowerTernary(
       (thenRaw.type.kind === "dyn" || elseRaw.type.kind === "dyn") &&
       lowerer.dynConvertible(thenRaw.type) &&
       lowerer.dynConvertible(elseRaw.type);
-    const type =
+    let type =
       callableJoin || checkedJsJoin
         ? DYN
         : thenRaw.type.kind === "array" && typeEquals(thenRaw.type, elseRaw.type)
@@ -386,6 +386,26 @@ export function lowerTernary(
           : dynJoin
             ? DYN
             : (anyJoin ?? (useCtx && ctxMapped ? ctxMapped : lowerer.irTypeOf(expr)));
+    // An arm the checker types at the join can still hold an absent value
+    // at run time (`flag ? empty.a : empty.b`): an unchecked key or element
+    // read whose storage carries the undefined arm. The join keeps that
+    // arm, so the ternary's result represents the missing value instead of
+    // coercing it into the checker's narrower type. The absent-capable
+    // origin is part of the test: an arm holding a declared optional that
+    // the ternary's own guard proved present (`h.via === undefined ? "-" :
+    // h.via`) is not an unchecked read, and its narrowed join stands.
+    const admitsUndefined = (t: IrType): boolean =>
+      t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
+    if (
+      !admitsUndefined(type) &&
+      ((lowerer.isRuntimeOptionalOrigin(expr.whenTrue) &&
+        lowerer.runtimeOptionalWidening(thenRaw.type, type) !== null) ||
+        (lowerer.isRuntimeOptionalOrigin(expr.whenFalse) &&
+          lowerer.runtimeOptionalWidening(elseRaw.type, type) !== null))
+    ) {
+      const widened = lowerer.runtimeOptionalType(type);
+      if (admitsUndefined(widened)) type = widened;
+    }
     // Each arm flows into the ternary's type through the slot-coercion
     // path: union arms wrap, dyn slots reject the non-dyn arm with
     // SC1101, mismatched record shapes get SC2002; coerceInto is
@@ -1128,8 +1148,24 @@ export function runtimeOptionalReceiverRead(
     // array mutation can leave any of the stored tags in the slot. Use
     // the checked helper so every other arm, including undefined, remains
     // a catchable TypeError rather than an unchecked payload read.
-    const helper = lowerer.narrowedArmHelper(local.type.unionId, narrowed, loc);
-    if (!helper) {
+    let extraction: { helper: string; target: IrType } | null = null;
+    const direct = lowerer.narrowedArmHelper(local.type.unionId, narrowed, loc);
+    if (direct) extraction = { helper: direct, target: narrowed };
+    else if (narrowedNode !== expr) {
+      // An erased wrapper types the WRAPPER, not the capture: `x as T`
+      // names T even where the checker's flow type at `x` itself proves
+      // one stored arm. Node erases the wrapper and the value keeps its
+      // stored layout, which is what the two-arm path reads through
+      // (maybeNarrow, below). Take that proved arm here too instead of
+      // refusing every capture whose storage has several arms.
+      const flow = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      const helper =
+        flow && !isUnitType(flow) && lowerer.armTag(local.type.unionId, flow) >= 0
+          ? lowerer.narrowedArmHelper(local.type.unionId, flow, loc)
+          : null;
+      if (flow && helper) extraction = { helper, target: flow };
+    }
+    if (!extraction) {
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -1137,7 +1173,12 @@ export function runtimeOptionalReceiverRead(
       );
     }
     return holeGuarded(
-      lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), narrowed, loc),
+      lowerer.checkedNarrowCall(
+        extraction.helper,
+        varRef(local.id, local.type, loc),
+        extraction.target,
+        loc,
+      ),
     );
   }
   // A predicate can strengthen a record's fields or narrow a base class

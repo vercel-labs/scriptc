@@ -738,6 +738,12 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onData",
   "stdin.onEnd",
   "stdin.onError",
+  "stdin.onReadable",
+  "stdin.pause",
+  "stdin.resume",
+  "stdin.isPaused",
+  "stdin.readableLength",
+  "stdin.read",
   // node:readline rides the stdin unit (scr_readline.c links beside
   // scr_events.c under the same gate).
   "rl.checkCompleter",
@@ -1158,6 +1164,11 @@ const RUNTIME_FEATURE_RULES = {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
   stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
+  /** The dynamic global object's answer for the Node globals the native
+   * runtime does not implement (scr_global_host_absent.c, plus the
+   * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
+   * the global object, or `… in globalThis` (host-globals.ts). */
+  hostAbsentGlobals: rule({ fns: ["global.hostAbsent", "dyn.globalHas"] }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -1599,6 +1610,9 @@ const RUNTIME_FEATURE_RULES = {
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
   brotli: rule({ fns: ["zlib.brotliInstall"] }),
+  /** node:zlib's zstd forms: zlib.zstdInstall, which %main calls when the
+   * program uses zstd (scr_zstd.c). */
+  zstd: rule({ fns: ["zlib.zstdInstall"] }),
 };
 
 type RuntimeFeatureName = keyof typeof RUNTIME_FEATURE_RULES;
@@ -1629,6 +1643,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
+    hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
@@ -1703,6 +1718,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webcrypto: false,
     zlib: false,
     brotli: false,
+    zstd: false,
   };
 }
 

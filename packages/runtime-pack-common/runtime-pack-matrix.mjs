@@ -134,6 +134,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
+  ["scr_zstd.c", all("zlib", "zstd")],
   // Intl over ICU (scr_intl.c): the default-locale number/date formats and
   // word segmentation, over the packed ICU archive and its data file.
   // Every engine-free Intl form (the en-US fast paths, default grapheme
@@ -248,6 +249,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // The dynamic global object's answer for the Node globals the native runtime
+  // does not implement (host-globals.ts): the compiler hands over its derived
+  // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
+  // instead of answering undefined.
+  ["scr_global_host_absent.c", "hostAbsentGlobals"],
 ];
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
@@ -547,6 +553,17 @@ export function variantsFor(source) {
       defines: ["SCR_YIN"],
     });
   }
+  // A program that reads the global object through a computed key or asks
+  // `… in globalThis` arms the runtime check for the Node globals the native
+  // runtime does not implement (scr_global_host_absent.c). Every other
+  // program keeps the default object, byte for byte.
+  if (source === "scr_node_builtin.c") {
+    variants.push({
+      id: "host-absent-globals",
+      when: { hostAbsentGlobals: true },
+      defines: ["SCR_GLOBAL_HOST_ABSENT"],
+    });
+  }
   return variants;
 }
 
@@ -565,6 +582,7 @@ export function createRuntimePackMatrix({
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];

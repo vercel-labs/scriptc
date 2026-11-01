@@ -3806,6 +3806,18 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.zlib.createZstdCompress",
+      "kind": "node-builtin",
+      "name": "zlib.createZstdCompress",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.createZstdDecompress",
+      "kind": "node-builtin",
+      "name": "zlib.createZstdDecompress",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.zlib.deflate",
       "kind": "node-builtin",
       "name": "zlib.deflate",
@@ -3887,6 +3899,30 @@
       "id": "node-builtin.zlib.unzipSync",
       "kind": "node-builtin",
       "name": "zlib.unzipSync",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.zstdCompress",
+      "kind": "node-builtin",
+      "name": "zlib.zstdCompress",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.zstdCompressSync",
+      "kind": "node-builtin",
+      "name": "zlib.zstdCompressSync",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.zstdDecompress",
+      "kind": "node-builtin",
+      "name": "zlib.zstdDecompress",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.zlib.zstdDecompressSync",
+      "kind": "node-builtin",
+      "name": "zlib.zstdDecompressSync",
       "status": "static"
     },
     {

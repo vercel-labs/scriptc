@@ -33,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls" | "icu";
+  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -112,6 +112,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c). */
   stdlibPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`
+   * (scr_global_host_absent.c). */
+  hostAbsentGlobals?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -137,6 +140,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   stdioWriteSlot: boolean;
   nodeIsland: boolean;
   brotli: boolean;
+  zstd: boolean;
   moduleNamespace: boolean;
   moduleNamespaceDyn: boolean;
   primitiveWrapper: boolean;
@@ -358,6 +362,7 @@ export function effectiveRuntimeFeatures(
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
+    hostAbsentGlobals: features.hostAbsentGlobals === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinPrototypeValue: features.builtinPrototypeValue === true,
     computedRequire: features.computedRequire === true,
@@ -370,6 +375,7 @@ export function effectiveRuntimeFeatures(
     stdioWriteSlot: features.stdioWriteSlot === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
+    zstd: features.zstd === true,
     moduleNamespace: features.moduleNamespace === true,
     moduleNamespaceDyn: features.moduleNamespaceDyn === true,
     primitiveWrapper: features.primitiveWrapper === true,

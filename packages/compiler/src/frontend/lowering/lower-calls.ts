@@ -10058,6 +10058,17 @@ function lowerObjectStaticCall(
         if (typeEquals(vt, valueT)) return value;
         if (valueT.kind === "dyn" && lowerer.dynConvertible(vt))
           return lowerer.coerceToExpected(value, DYN);
+        if (valueT.kind === "union" && vt.kind === "union") {
+          // A field union that is a PROPER SUBSET of the element union
+          // (`{ accent: number | string; scrollbarThumb: number | string
+          // | undefined }` enumerates as `[string, number | string |
+          // undefined][]`): every arm the field can hold is an arm of the
+          // element union, so the box re-tags onto it — the same runtime
+          // value under the element union's tag numbering.
+          return lowerer.unionRetagMappable(vt.unionId, valueT.unionId)
+            ? lowerer.coerceToExpected(value, valueT)
+            : null;
+        }
         if (valueT.kind === "union" && vt.kind !== "union") {
           const tag = lowerer.armTag(valueT.unionId, vt);
           if (tag >= 0) {
@@ -10104,7 +10115,11 @@ function lowerObjectStaticCall(
           } else {
             return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
           }
-        } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
+        } else if (
+          valueT?.kind !== "dyn" &&
+          !typeEquals(f.type, valueT ?? f.type) &&
+          !(valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId))
+        ) {
           return `field '${f.name}' is a union that cannot re-tag into the result element type`;
         }
       }

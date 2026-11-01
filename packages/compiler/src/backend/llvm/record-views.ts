@@ -21,9 +21,12 @@
  * with the wider record B it was asserted to, though A lacks some of B's
  * fields. The view is a B value whose record-source entry names A, with
  * the sentinel SIZE_MAX for every B field A does not declare: a slot lookup
- * answers NULL there (scr_record_view_slot), so a presence test answers false
- * and an address lookup stops the program. The frontend's checked reads of
- * those fields throw their TypeError first. */
+ * answers NULL there (scr_record_view_slot), so a presence test asks the
+ * view's extra-property store and an address lookup stops the program.
+ * A write to such a field lands in that store (scr_record_view_extra_set),
+ * and a read converts it back to the field type, so a view grows the
+ * properties a program writes; the frontend's checked read of a field
+ * nothing wrote throws its TypeError first. */
 import {
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -89,11 +92,11 @@ const LEAF_KINDS: ReadonlySet<IrType["kind"]> = new Set([
   "void",
 ]);
 
-function plainShape(shape: IrRecordShape): boolean {
+function plainShape(shape: IrRecordShape, allowEmpty = false): boolean {
   return (
     !shape.tuple &&
     !shape.indexValue &&
-    shape.fields.length > 0 &&
+    (allowEmpty || shape.fields.length > 0) &&
     !isDirentShape(shape) &&
     !shapeHasAccessorSlots(shape) &&
     shapeKeyOrders(shape).length === 1 &&
@@ -242,7 +245,10 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   for (const pair of partialPairs) {
     const target = shapes.get(pair.target);
     const source = shapes.get(pair.source);
-    if (!target || !source || !plainShape(target) || !plainShape(source)) continue;
+    // The source of a partial pair may declare no field at all (an empty
+    // literal asserted to a wider type): every target field is then the
+    // view's to keep.
+    if (!target || !source || !plainShape(target) || !plainShape(source, true)) continue;
     if (target.freezable === true || source.freezable === true) continue;
     if (options.traced(pair.target) || options.excluded(pair.target)) continue;
     if (covers(source, target)) continue;

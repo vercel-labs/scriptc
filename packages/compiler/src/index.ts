@@ -621,6 +621,12 @@ function profileMatchField(object: NativeProgramObject | null): {
   return object?.profileMatch === undefined ? {} : { profileMatch: object.profileMatch };
 }
 
+/** The partitions a divided module's executable was linked from, for its
+ * executable cache entry (executable/executable-cache.ts). */
+function partitionsField(object: NativeProgramObject | null): { partitions?: number } {
+  return object?.partitions === undefined ? {} : { partitions: object.partitions };
+}
+
 function withCompileWarnings<T extends CompileRequestResult>(
   result: T,
   sink: CompileWarningSink,
@@ -665,11 +671,15 @@ function executableNativeFeatures(
   optimization: NativeOptimization,
   largePages: boolean,
 ): EarlyExecutableNativeFeatures {
-  return {
+  const features = {
     backend,
     ...optimizationField(optimization),
     ...executableLinkFeatures(mod, largePages),
   };
+  // The executable cache record spells every boolean key (BOOLEAN_NATIVE_KEYS
+  // in executable-cache.ts), and mutableBuffers is optional in the link
+  // features so that a program without the fact keeps its link identity.
+  return { ...features, mutableBuffers: features.mutableBuffers === true };
 }
 
 /** Install the run-time data files of the selected runtime pack beside an
@@ -810,8 +820,8 @@ async function compileExecutableNative(
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
-    ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
+    ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -832,6 +842,7 @@ async function compileExecutableNative(
     dc: features.dc,
     dynAsync: features.dynAsync,
     ...(features.dynTier ? { dynTier: true } : {}),
+    ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
@@ -904,6 +915,10 @@ interface NativeProgramObject {
   linkPath: string;
   /** Further partition objects linked after linkPath. */
   partitionPaths: string[];
+  /** The partitions the helper compiled: one for a module small enough to
+   * stay whole (nativeProgramPartitions). Absent when the link took one
+   * object the helper did not compile from partitions. */
+  partitions?: number;
   artifactPath: string;
   dependencies: NativeArtifactDependency[];
   profileMatch?: NativeProfileMatch;
@@ -937,9 +952,13 @@ async function emitNativeProgramObject(
       partitions,
       ...(profile === undefined ? {} : { profile }),
     });
+    // A divided module's count depends on the host's thread count, which chose
+    // it, so the executable cache entry records the count a later build
+    // compares again (executable/executable-cache.ts).
     return {
       linkPath,
       partitionPaths: artifact.outputPaths.slice(1),
+      ...(single ? {} : { partitions }),
       artifactPath,
       dependencies: artifact.dependencies,
       ...(artifact.profileMatch === undefined ? {} : { profileMatch: artifact.profileMatch }),
@@ -2181,6 +2200,7 @@ async function compileTracked(
                 nativeDependencies: dependencies,
                 frontend: earlyHit.frontend,
                 ...profileMatchField(nativeProgramObject),
+                ...partitionsField(nativeProgramObject),
               });
             },
         nativeProgramObject?.partitionPaths,
@@ -2332,6 +2352,7 @@ async function compileTracked(
               ...performanceWarnings(warningSink),
               ...islandFields(warningSink),
               ...profileMatchField(nativeProgramObject),
+              ...partitionsField(nativeProgramObject),
             });
             publishedExecutable = true;
           },
@@ -2355,6 +2376,7 @@ async function compileTracked(
         ...performanceWarnings(warningSink),
         ...islandFields(warningSink),
         ...profileMatchField(nativeProgramObject),
+        ...partitionsField(nativeProgramObject),
       }).catch(() => undefined);
     }
   } catch (err) {
@@ -2435,6 +2457,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     dynInvoke: features.dynInvoke,
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
+    mutableBuffers: features.mutableBuffers,
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
   };
 }
@@ -2532,6 +2555,7 @@ async function compileLibraryNative(
     dynInvoke: features.dynInvoke,
     ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(features.dynTier === true ? { dynTier: true } : {}),
+    ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

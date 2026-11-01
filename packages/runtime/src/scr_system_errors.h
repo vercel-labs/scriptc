@@ -22,7 +22,7 @@
 #ifndef SCR_NODE_UV_ERRNO_H_
 #define SCR_NODE_UV_ERRNO_H_
 
-/* Node v24.22.0, commit f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93.
+/* Node v24.22.1, commit d01285110044365f0ad4fec24482a585646640e2.
  * libuv errno values and messages are part of node:util's observable API.
  * Kept independent of libuv so native binaries need no additional library. */
 #include <errno.h>

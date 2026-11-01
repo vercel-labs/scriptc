@@ -282,6 +282,29 @@ export function keepsInitializerLayout(
   return copies(lowerer, actual, declared);
 }
 
+/** Whether a binding typed `declared` keeps the checked-dynamic
+ * value its assertion of an existing value lowered to, instead of converting
+ * it. An index-signature type keeps the keys it does not declare in an
+ * overflow map, and a conversion builds one of its own: a copy would take
+ * every write through the binding with it, so the binding would not be the
+ * object the assertion names. */
+export function keepsCheckedDynamicValue(
+  lowerer: Lowerer,
+  initializer: ts.Expression | undefined,
+  actual: IrType,
+  declared: IrType | null,
+): boolean {
+  if (initializer === undefined) return false;
+  if (actual.kind !== "dyn" || declared?.kind !== "record") return false;
+  if (lowerer.shapes.get(declared.shapeId)?.indexValue === undefined) return false;
+  let e = initializer;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isAsExpression(e) && !ts.isTypeAssertion(e) && !ts.isSatisfiesExpression(e)) return false;
+  e = e.expression;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return namesExistingValue(e) || ts.isCallExpression(e);
+}
+
 /** Records that the const `decl` keeps its initializer's layout, so calls
  * that pass it bind the initializer's type (preservedLayoutOf). */
 export function notePreservedLayout(lowerer: Lowerer, decl: ts.VariableDeclaration): void {

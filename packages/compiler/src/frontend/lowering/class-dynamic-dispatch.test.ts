@@ -25,6 +25,13 @@ const fn = (name: string, body: IrStmt[]): IrFunction => ({
   body,
   loc,
 });
+/** The class key of a table branch, whether the branch sits in the chain or
+ * in a dispatch case. */
+function branchKey(stmt: IrStmt | undefined): string | null {
+  if (stmt?.kind !== "if" || stmt.cond.kind !== "libCall") return null;
+  const key = stmt.cond.fn === "dyn.typedRefIs" ? stmt.cond.args[1] : undefined;
+  return key?.kind === "strLit" ? key.value : null;
+}
 function context() {
   const liftedFns: IrFunction[] = [];
   const lowerer = {
@@ -400,6 +407,177 @@ test("the untyped read-only bag selects classes as the bag dispatch does, withou
   expect(text(bag.body)).toContain('"kind":"fieldSet"');
   expect(text(read.body)).not.toContain('"kind":"fieldSet"');
   expect(text(read.body)).toContain('"className":"Widget","field":"%dynProperties"');
+});
+
+test("indexes a class table's branches on the receiver's class key at sixty-four or more classes", () => {
+  const { lowerer, liftedFns } = context();
+  const names = Array.from({ length: 64 }, (_, i) => `Class${i}`);
+  for (const name of names)
+    lowerer.classes.set(name, {
+      def: { name, fields: [] },
+      fields: new Map(),
+      methods: new Map(),
+      subclasses: [],
+      base: null,
+    } as unknown as ClassInfo);
+  const target = fn(
+    "target",
+    names.map((name) =>
+      statement({
+        kind: "call",
+        callee: "%dyn.class.properties",
+        args: [
+          {
+            kind: "dynFrom",
+            value: {
+              kind: "varRef",
+              localId: "instance",
+              type: { kind: "object", className: name },
+              loc,
+            },
+            type: DYN,
+            loc,
+          },
+        ],
+        type: DYN,
+        loc,
+      }),
+    ),
+  );
+  const dispatch = new ClassDynamicDispatch();
+  expect(dispatch.process(lowerer, [target, ...liftedFns])).toBe(true);
+  const bag = liftedFns.find((item) => item.name === "%dyn.class.properties")!;
+  dispatch.finalize(lowerer);
+  const dispatchSwitch = bag.body.find((stmt) => stmt.kind === "switch");
+  expect(dispatchSwitch).toMatchObject({
+    kind: "switch",
+    disc: { kind: "libCall", fn: "dyn.classHash" },
+  });
+  if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
+  // The table's first two classes stay in the chain ahead of the switch and
+  // hold no case of their own.
+  const at = bag.body.indexOf(dispatchSwitch);
+  const aheadKeys = bag.body
+    .slice(0, at)
+    .flatMap((stmt) => (branchKey(stmt) === null ? [] : [branchKey(stmt)]));
+  expect(aheadKeys).toHaveLength(2);
+  expect(dispatchSwitch.cases).toHaveLength(names.length - 2);
+  const hashes = dispatchSwitch.cases.map(({ test }) => JSON.stringify(test));
+  expect(new Set(hashes).size).toBe(names.length - 2);
+  // Each case keeps its branch, guarded by the branch's own key test.
+  const keys = dispatchSwitch.cases.map(({ body }) => {
+    const branch = body[0];
+    if (branch?.kind !== "if" || branch.cond.kind !== "libCall") return null;
+    return branch.cond.fn === "dyn.typedRefIs" ? branch.cond.args[1] : null;
+  });
+  expect(new Set(keys.map((key) => JSON.stringify(key)))).toEqual(
+    new Set(
+      names
+        .map((name) => `object:${name}`)
+        .filter((key) => !aheadKeys.includes(key))
+        .map((key) => JSON.stringify(literal(key))),
+    ),
+  );
+});
+
+test("keeps two classes whose keys hash alike in one case, in order", () => {
+  const { lowerer, liftedFns } = context();
+  const names = [...Array.from({ length: 62 }, (_, i) => `Class${i}`), "AlphaThing", "BravoThing"];
+  for (const name of names)
+    lowerer.classes.set(name, {
+      def: { name, fields: [] },
+      fields: new Map(),
+      methods: new Map(),
+      subclasses: [],
+      base: null,
+    } as unknown as ClassInfo);
+  const target = fn(
+    "target",
+    names.map((name) =>
+      statement({
+        kind: "call",
+        callee: "%dyn.class.properties",
+        args: [
+          {
+            kind: "dynFrom",
+            value: {
+              kind: "varRef",
+              localId: "instance",
+              type: { kind: "object", className: name },
+              loc,
+            },
+            type: DYN,
+            loc,
+          },
+        ],
+        type: DYN,
+        loc,
+      }),
+    ),
+  );
+  const dispatch = new ClassDynamicDispatch();
+  expect(dispatch.process(lowerer, [target, ...liftedFns])).toBe(true);
+  const bag = liftedFns.find((item) => item.name === "%dyn.class.properties")!;
+  const chainKeys = bag.body.flatMap((stmt) => (branchKey(stmt) === null ? [] : [branchKey(stmt)]));
+  dispatch.finalize(lowerer);
+  const dispatchSwitch = bag.body.find((stmt) => stmt.kind === "switch");
+  if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
+  /* `object:AlphaThing` and `object:BravoThing` have the same length and end
+   * in the same four bytes, so the dispatch cannot separate them: one case
+   * holds both branches and their own key tests pick between them, which
+   * keeps every class reachable. The run's first two classes stay in the
+   * chain ahead of the switch and hold no case of their own. */
+  expect(dispatchSwitch.cases).toHaveLength(names.length - 3);
+  const shared = dispatchSwitch.cases.filter(({ body }) => body.length === 2);
+  expect(shared).toHaveLength(1);
+  const sharedKeys = shared[0]!.body.map(branchKey);
+  const collided = chainKeys.filter(
+    (key) => key === "object:AlphaThing" || key === "object:BravoThing",
+  );
+  expect(sharedKeys).toEqual(collided);
+  expect(collided).toHaveLength(2);
+});
+
+test("keeps the class chain below sixty-four classes", () => {
+  const { lowerer, liftedFns } = context();
+  const names = Array.from({ length: 63 }, (_, i) => `Class${i}`);
+  for (const name of names)
+    lowerer.classes.set(name, {
+      def: { name, fields: [] },
+      fields: new Map(),
+      methods: new Map(),
+      subclasses: [],
+      base: null,
+    } as unknown as ClassInfo);
+  const target = fn(
+    "target",
+    names.map((name) =>
+      statement({
+        kind: "call",
+        callee: "%dyn.class.properties",
+        args: [
+          {
+            kind: "dynFrom",
+            value: {
+              kind: "varRef",
+              localId: "instance",
+              type: { kind: "object", className: name },
+              loc,
+            },
+            type: DYN,
+            loc,
+          },
+        ],
+        type: DYN,
+        loc,
+      }),
+    ),
+  );
+  const dispatch = new ClassDynamicDispatch();
+  expect(dispatch.process(lowerer, [target, ...liftedFns])).toBe(true);
+  const bag = liftedFns.find((item) => item.name === "%dyn.class.properties")!;
+  dispatch.finalize(lowerer);
+  expect(bag.body.some((stmt) => stmt.kind === "switch")).toBe(false);
 });
 
 test("normalizes base capsules before dispatching each derived member once", () => {

@@ -64,13 +64,6 @@ mixins.ts:35:13 - error SC2004: uses of 'a' inherit the blocker on its declarati
 
   hint: the declaration of 'a' did not compile — fix the diagnostic reported there and these sites clear with it
 
-mixins.ts:41:20 - error SC1090: generic functions as values without a pinned concrete signature (annotate the destination — e.g. 'const f: (x: number) => number = M' — instantiate explicitly ('M<number>'), or call 'M' directly) is not supported yet
-
-  40 | const held = M;
-  41 | console.log(typeof held);
-     |                    ^~~~
-  42 | 
-
 mixins.ts:48:17 - error SC1090: mixin constructors whose rest parameter does anything but forward (`super(...args)` as the first statement is the compiled shape) is not supported yet (instantiating mixin 'Sneaky' over 'Base')
 
   47 |     argc: number;

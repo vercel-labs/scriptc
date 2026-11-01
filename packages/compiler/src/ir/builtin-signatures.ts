@@ -254,6 +254,11 @@ function buildLibFnSignatures() {
      * arguments; other receiver representations retain a runtime refusal. */
     "dyn.keyDelete": { argTypes: [DYN, STRING, BOOL], result: VOID },
     "dyn.keyDeleteComputed": { argTypes: [DYN, DYN, BOOL], result: VOID },
+    /** `delete` on a primitive base: ToPropertyKey of the key, then the
+     * ToObject wrapper's own properties (a String's indexes and `length`
+     * answer false in sloppy code and throw in strict code). Borrows both
+     * operands; answers the delete's value. */
+    "dyn.primitiveDelete": { argTypes: [DYN, DYN, BOOL], result: BOOL },
     "dyn.reflectDeleteProperty": { argTypes: [DYN, DYN], result: BOOL },
     /** Reflect.has's target check: Node's TypeError for a primitive. */
     "dyn.reflectHasTarget": { argTypes: [DYN], result: VOID },
@@ -272,6 +277,11 @@ function buildLibFnSignatures() {
      * whose fallback handles every other value. The key is a literal. */
     "dyn.typedRefKeyIs": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.classIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** A generated class table's indexed dispatch: the receiver's class key
+     * folded to the case it selects, or -1 for a value that is not a capsule
+     * or whose key is shorter than four bytes. The table switches on it and
+     * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
+    "dyn.classHash": { argTypes: [DYN], result: F64 },
     /** Destructuring pack over a dyn source — `const [a, b] = d`, a
      * destructured dyn callback param (args: the source and the STATIC
      * TypeError spelling, "" when the source has none — both borrowed;
@@ -430,6 +440,11 @@ function buildLibFnSignatures() {
      * a promise that adopts a thenable's settlement, or a promise fulfilled
      * with the value. The second argument reads `then` as above. */
     "dyn.promiseResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** `Promise.<s>.call(C, value)` in a JavaScript source (scr_js_
+     * promise_generic.c): the static's name, the `this` constructor and the
+     * one argument the algorithm takes. Answers the capability's promise as
+     * a checked-dynamic value (a foreign C may answer anything). */
+    "promise.genericStatic": { argTypes: [STRING, DYN, DYN], result: DYN },
     /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
      * borrowed; result: an owned string) — the dyn kind's JS answer:
      * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest
@@ -1355,17 +1370,18 @@ function buildLibFnSignatures() {
     "fs.statfsSync": { argTypes: [DYN, DYN], result: DYN },
     "fs.readlinkSyncStr": { argTypes: [DYN, DYN], result: STRING },
     "fs.readlinkSyncBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
-    /** fs.openSync(path, flags) → the raw fd as f64; fs.readSync/fs.writeSync
-     * over Buffer windows perform sequential I/O when position is -1 and
-     * offset-preserving positioned I/O otherwise; fs.writeStrSync is the
-     * utf8 string twin; and fs.closeSync(fd) closes the descriptor. This is
-     * the fd slice behind spawn/log-processing forms.
+    /** fs.openSync(path, flags, mode) → the raw fd as f64; fs.readSync/
+     * fs.writeSync over Buffer windows perform sequential I/O when position
+     * is -1 and offset-preserving positioned I/O otherwise; fs.writeStrSync
+     * is the utf8 string twin; and fs.closeSync(fd) closes the descriptor.
+     * This is the fd slice behind spawn/log-processing forms.
      * flags is Node's string
      * grammar ("r", "w", "a" and the +/x variants; unknown flags throw
-     * Node's ERR_INVALID_ARG_VALUE TypeError text). All throw Node-shaped
-     * fs errors (openSync ENOENT/EACCES..., readSync EBADF/range errors,
-     * closeSync EBADF). */
-    "fs.openSync": { argTypes: [STRING, STRING], result: F64 },
+     * Node's ERR_INVALID_ARG_VALUE TypeError text), and mode is open(2)'s
+     * creation mode (Node's 0o666 default, ERR_OUT_OF_RANGE outside
+     * 0..0xFFFFFFFF). All throw Node-shaped fs errors (openSync
+     * ENOENT/EACCES..., readSync EBADF/range errors, closeSync EBADF). */
+    "fs.openSync": { argTypes: [STRING, STRING, F64], result: F64 },
     "fs.openNumericSync": { argTypes: [STRING, F64, F64], result: F64 },
     "fs.readSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
     "fs.readSyncDyn": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
@@ -4087,6 +4103,7 @@ function buildLibFnSignatures() {
     "console.clear": { argTypes: [], result: VOID },
     "console.table": { argTypes: [DYN, DYN], result: VOID },
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
+    "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Installs the program's builtin-global lookup (global-values.ts). */
@@ -4208,6 +4225,15 @@ function buildLibFnSignatures() {
     "sharedArrayBuffer.new": { argTypes: [DYN], result: DYN },
     "sharedArrayBuffer.is": { argTypes: [DYN], result: BOOL },
     "arrayBuffer.new": { argTypes: [DYN], result: DYN },
+    /** `new ArrayBuffer(len, { maxByteLength })` in a JavaScript source
+     * (t262-dc C2): the maxByteLength reserved up front, the visible length
+     * len. */
+    "arrayBuffer.newResizable": { argTypes: [DYN, DYN], result: DYN },
+    /** `new SharedArrayBuffer(len, { maxByteLength })`: the same, growable. */
+    "sharedArrayBuffer.newGrowable": { argTypes: [DYN, DYN], result: DYN },
+    /** The %main prologue call that arms scr_js_buffers's views registry
+     * (buffers.ts): never throws, never answers. */
+    "arrayBuffer.armMutable": { argTypes: [], result: VOID },
     "ffi.argument": { argTypes: [DYN, STRING], result: DYN },
     "ffi.memoryModule": { argTypes: [DYN], result: DYN },
     "intl.segmenterNew": { argTypes: [], result: DYN },
@@ -5119,6 +5145,9 @@ function buildLibFnSignatures() {
     /** The render's maxArrayLength, which the array, Map and Set traversals
      * read: the option applies at every nesting level. */
     "insp.maxArrayLength": { argTypes: [], result: F64 },
+    /** ctx.maxStringLength for the renders that follow; answers the previous
+     * value so the call site can restore it. */
+    "insp.maxStringLength": { argTypes: [F64], result: F64 },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
     // Circular references: the receiver slot is program-dependent (any
     // cycle-capable record/array/map/class type — the insp.error precedent).

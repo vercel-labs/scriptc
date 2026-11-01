@@ -103,11 +103,21 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
   ["scr_js_object.c", "dynTier"],
+  // Mutable ArrayBuffers (t262-dc C1/C2): the views registry that recomputes
+  // every view's length when a buffer resizes, grows or detaches, and the
+  // operations themselves. A JavaScript source with the `mutableBuffers`
+  // fact arms it at the top of %main (arrayBuffer.armMutable); every other
+  // program keeps the base units' hooks NULL and links no registry.
+  ["scr_js_buffers.c", "mutableBuffers"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
     any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
   ],
+  // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
+  // the specification's algorithms over the checked-dynamic tier. Its
+  // feature also selects dynInvoke and dynAsync, whose units it calls.
+  ["scr_js_promise_generic.c", "promiseGeneric"],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -260,18 +270,13 @@ export function variantsFor(source) {
   // scr_json.c builds one object per flavor (and workers mode): its paths
   // for Node island handles and handle classes call through tables that
   // scr_node_island_handle.c and scr_dyn_handle_class.c install when a
-  // program links them, and its dynamic-tier primitives are always defined.
-  // A program with a partial record assertion (record-views.ts) links the
-  // build whose view slot answers NULL for a field the viewed record does
-  // not declare, so the emitted guard, clone helper and presence test can
-  // stop with the program's message instead of reading a bogus slot; every
-  // other program keeps the default object.
+  // program links them, its dynamic-tier primitives are always defined, and
+  // its view slot answers NULL for a field the viewed record does not
+  // declare (a partial record assertion, record-views.ts), so the emitted
+  // guard, clone helper and presence test stop with the program's message.
+  // A full view holds an offset for every target field, so the NULL case is
+  // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
-    variants.push({
-      id: "record-view-partial",
-      when: { recordViewPartial: true },
-      defines: ["SCR_RECORD_VIEW_PARTIAL"],
-    });
     // An error thrown by island code answers `constructor` from V8 (NI-4),
     // so `e.constructor === TypeError` holds with the island's TypeError.
     // Pushed before the object model twins below, so a program that has both
@@ -281,14 +286,6 @@ export function variantsFor(source) {
       id: "node-island",
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
-    });
-    // A program with both a partial record assertion and Node islands links
-    // the build that carries both defines; the variant with the most
-    // conditions is the one selected.
-    variants.push({
-      id: "record-view-partial-node-island",
-      when: { recordViewPartial: true, nodeIsland: true },
-      defines: ["SCR_RECORD_VIEW_PARTIAL", "SCR_NODE_ISLANDS"],
     });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
@@ -328,6 +325,12 @@ export function variantsFor(source) {
     // default object, byte for byte.
     withJsObjectModel(variants);
   }
+  // The mutable-buffers registry (t262-dc C1/C2) is part of the JavaScript
+  // object model build: its tables and the ScrJsBufferOps contract it fills
+  // exist only there (SCR_JS_OBJECT_MODEL), so the unit selects that build
+  // and its default object compiles empty. A program with the fact links
+  // the unit at all (OPTIONAL_RUNTIME_SOURCES).
+  if (source === "scr_js_buffers.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects. Its Node island
   // build is not the one these variants name: island output keeps its own

@@ -134,6 +134,7 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { versionUnionArmLoops } from "../../ir/union-arm-loops.js";
 import { unitSafeFunctions } from "./string-unit-versions.js";
 import { stringScanInline } from "./string-reads.js";
 import {
@@ -173,7 +174,7 @@ import {
   bridgePlainUnwindCalls,
   unwindAbiFunctions,
 } from "./unwind-abi.js";
-import { cloneForCpuDispatch } from "./cpu-dispatch.js";
+import { cloneForCpuDispatch, type CpuCopies } from "./cpu-dispatch.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -783,25 +784,28 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // an earlier pass rewrote, which the index does not record.
   const nodes = new IrNodeIndex(mod);
   rounds.nodes = nodes;
-  const passed = versionParameters(
-    addRecordResultEntries(
-      scalarizeLiteralResults(
-        scalarizeNumericRecords(
-          specializeCallbackCalls(
-            specializeNumericCalls(
-              pairRowSums(
-                jamSaturatingLoops(
-                  inlineArraysPass(
-                    options,
-                    inlineExpressionFunctions(
-                      foldConstantGlobals(
-                        copyStableCaptures(
-                          resolveSelfCaptures(
-                            hoistFinalFieldReads(
-                              freezeInitOnlyGlobals(
-                                holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(
-                                    runPairedWhileLoopsAsFor(mod, nodes),
+  const passed = versionUnionArmLoops(
+    versionParameters(
+      addRecordResultEntries(
+        scalarizeLiteralResults(
+          scalarizeNumericRecords(
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                pairRowSums(
+                  jamSaturatingLoops(
+                    inlineArraysPass(
+                      options,
+                      inlineExpressionFunctions(
+                        foldConstantGlobals(
+                          copyStableCaptures(
+                            resolveSelfCaptures(
+                              hoistFinalFieldReads(
+                                freezeInitOnlyGlobals(
+                                  holdCharLocalsAsUnits(
+                                    dropUnwrittenPropertyBags(
+                                      runPairedWhileLoopsAsFor(mod, nodes),
+                                      nodes,
+                                    ),
                                     nodes,
                                   ),
                                   nodes,
@@ -816,19 +820,19 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                         ),
                         nodes,
                       ),
-                      nodes,
                     ),
+                    nodes,
                   ),
                   nodes,
                 ),
+                mangleFunction,
                 nodes,
               ),
               mangleFunction,
               nodes,
             ),
-            mangleFunction,
-            nodes,
           ),
+          nodes,
         ),
         nodes,
       ),
@@ -1472,6 +1476,9 @@ export class LlEmitter {
   readonly sanitizeAttributes: boolean;
   /** LlvmTargetOptions.cpuDispatch, where it applies. */
   readonly cpuDispatch: boolean;
+  /** How the program's functions are copied (cpu-dispatch.ts): for runtime
+   * dispatch, for an x86-64-v3 `targetCpu` ("target"), or not at all. */
+  readonly cpuCopies: CpuCopies | null;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -2241,13 +2248,17 @@ export class LlEmitter {
     this.nodeIslandModuleData = options.nodeIslandModuleData ?? null;
     this.targetCpu = options.targetCpu;
     this.sanitizeAttributes = options.sanitizeAttributes !== false;
-    this.cpuDispatch =
-      options.cpuDispatch === true &&
-      options.targetCpu === undefined &&
+    const copyable =
       !this.wasi &&
       mod.lib === undefined &&
       this.debug === null &&
       /^(x86_64|amd64|x64)\b/.test(options.targetTriple || process.arch);
+    this.cpuDispatch = options.cpuDispatch === true && options.targetCpu === undefined && copyable;
+    this.cpuCopies = this.cpuDispatch
+      ? "dispatch"
+      : options.targetCpu === "x86-64-v3" && copyable
+        ? "target"
+        : null;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -2888,7 +2899,7 @@ export class LlEmitter {
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    const out = this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    const out = this.cpuCopies === null ? bridged : cloneForCpuDispatch(bridged, this.cpuCopies);
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 

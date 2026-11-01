@@ -1061,6 +1061,85 @@ test("a program module that runs in an island is never a deferral candidate", as
   }
 }, 300_000);
 
+// A use of a Node 24 global native code does not provide is the one runtime
+// refusal JavaScript defers honestly: the statement throws where it is
+// reached (SC2020, host-global), so a package that keeps such a path inside
+// a function body keeps compiling natively (jose's CompressionStream). Only
+// a use in module code, which throws before the module finishes evaluating,
+// makes the package a Node island. Needs no libnode pack: the native build
+// links without one, and the island build stops before linking without one.
+test("a host-global fence inside a function body keeps its package native", async () => {
+  const dir = join(outDir, "host-global-fence");
+  rmSync(dir, { recursive: true, force: true });
+  const writePackage = (name: string, body: string): void => {
+    const at = join(dir, "node_modules", name);
+    mkdirSync(at, { recursive: true });
+    writeFileSync(
+      join(at, "package.json"),
+      JSON.stringify({ name, version: "1.0.0", type: "module", exports: "./index.js" }),
+    );
+    writeFileSync(join(at, "index.js"), body);
+    writeFileSync(
+      join(at, "index.d.ts"),
+      "export declare const api: { probe(): unknown; answer(): string };\n",
+    );
+  };
+  const entry = (name: string): string => {
+    const file = join(dir, `${name}.mjs`);
+    writeFileSync(file, `import { api } from "${name}";\nconsole.log(api.answer());\n`);
+    return file;
+  };
+  // The exported object reaches `probe` at module load, so its body is
+  // lowered and fenced; a program that never calls it still runs.
+  writePackage(
+    "fenced-body",
+    [
+      "function probe() {",
+      "  return new FormData();",
+      "}",
+      "function answer() {",
+      '  return "native";',
+      "}",
+      "export const api = { probe, answer };",
+      "",
+    ].join("\n"),
+  );
+  writePackage(
+    "fenced-module",
+    [
+      "const eager = new FormData();",
+      "function probe() {",
+      "  return typeof eager;",
+      "}",
+      "function answer() {",
+      '  return "native";',
+      "}",
+      "export const api = { probe, answer };",
+      "",
+    ].join("\n"),
+  );
+  const native = await compile(entry("fenced-body"), {
+    outPath: join(dir, "fenced-body"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(native.ok ? [] : native.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  if (!native.ok) return;
+  expect((native.warnings ?? []).map((d) => d.code)).not.toContain("SC8001");
+  expect(await run(native.binaryPath, [])).toEqual({ stdout: "native\n", stderr: "", code: 0 });
+
+  const islanded = await compile(entry("fenced-module"), {
+    outPath: join(dir, "fenced-module"),
+    outDir: dir,
+    sanitize,
+  });
+  if (islanded.ok)
+    expect(
+      (islanded.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message),
+    ).toEqual([expect.stringContaining("'fenced-module@1.0.0' runs in a Node island")]);
+  else expect(islanded.diagnostics.map((d) => d.code)).toContain("SC8005");
+}, 300_000);
+
 // Lowering checks every argument and result type for JSON data; IR output
 // needs no libnode pack.
 test("recursive JSON types cross into Node", async () => {

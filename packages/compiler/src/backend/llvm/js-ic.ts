@@ -357,7 +357,7 @@ function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
   const receiver = helper.params[0]?.localId;
   if (receiver === undefined || helper.params.length !== 1) return [];
   const reads = new Map<string, CapsuleRead | null>();
-  for (const stmt of helper.body) {
+  for (const stmt of tableBranches(helper.body)) {
     if (normalizes(stmt, receiver)) continue;
     if (stmt.kind !== "if" || stmt.else_ !== null) break;
     if (notCapsule(stmt.cond, receiver)) continue;
@@ -383,6 +383,28 @@ function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
     if (same) out.push(read);
   }
   return out;
+}
+
+/** A class table's branches in the order a receiver that matches none of
+ * them reaches their guards: the statements of the body, with a
+ * `dyn.classHash` switch replaced by its cases' branches. A capsule whose
+ * key is a branch's selects that case, whose guard is then true, so the
+ * site can treat the branches as the chain they were lowered from. */
+function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
+  if (!body.some(isClassHashSwitch)) return body;
+  const branches: IrStmt[] = [];
+  for (const stmt of body) {
+    if (isClassHashSwitch(stmt))
+      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
+    else branches.push(stmt);
+  }
+  return branches;
+}
+
+/** The switch the compiler builds over a generated class table's branches
+ * (frontend/lowering/class-dynamic-dispatch.ts). */
+function isClassHashSwitch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
+  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
 }
 
 /** `p = %dyn.class.normalize(p)`. */
@@ -447,7 +469,7 @@ function normalizationTargets(host: Host): Map<string, string[]> | null {
   if (normalize === undefined) return targets;
   const value = normalize.params[0]?.localId;
   if (value === undefined) return null;
-  for (const stmt of normalize.body) {
+  for (const stmt of tableBranches(normalize.body)) {
     if (stmt.kind === "return") {
       if (stmt.value !== null && isLocal(stmt.value, value)) continue;
       return null;
@@ -613,7 +635,7 @@ export function capsuleCallSite(
   if (resolved === null) return null;
   const branches = new Map<string, CapsuleCall | null>();
   const self = params[0]!.localId;
-  for (const stmt of helper.body) {
+  for (const stmt of tableBranches(helper.body)) {
     if (normalizes(stmt, self)) continue;
     if (stmt.kind !== "if" || stmt.else_ !== null) break;
     if (notCapsule(stmt.cond, self) || classObjectTest(stmt.cond, self)) continue;
@@ -647,7 +669,7 @@ export function capsuleCallSite(
 function callbackKeys(callback: IrFunction): Set<string> | null {
   const value = callback.params[0]!.localId;
   const keys = new Set<string>();
-  const body = callback.body;
+  const body = tableBranches(callback.body);
   for (let i = 0; i < body.length; i++) {
     const stmt = body[i]!;
     if (normalizes(stmt, value)) continue;

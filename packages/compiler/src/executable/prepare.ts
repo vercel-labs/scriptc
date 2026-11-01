@@ -1001,12 +1001,14 @@ function preflightIslands(
 /** Packages compiled natively with runtime fences (refusals deferred to the
  * operation that reaches them) that should run in islands instead: those
  * with a fence that surely fires (one in top-level module code, which runs
- * when the module evaluates) or that itself needs the runtime (R1). Other
- * fences stay deferred refusals until decision 8 (D6) retires them, so
- * typed packages like jose stay native. With `requireFence` false (after a
- * failed build) the package's island class by NI-2's report decides
- * instead: runtime (R1) or object-model (R2). `--node-islands=auto` only;
- * null for none. */
+ * when the module evaluates) or that itself needs the runtime (R1) — a use
+ * of a Node 24 global native code does not provide excepted, since its
+ * fence throws honestly where it is reached. Other fences stay deferred
+ * refusals until decision 8 (D6) retires them, so typed packages like jose
+ * stay native. With `requireFence` false (after a failed build) the
+ * package's island class by NI-2's report decides instead: runtime (R1) or
+ * object-model (R2), a host-global fence again excepted. `--node-islands=auto`
+ * only; null for none. */
 function fenceIslands(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -1035,8 +1037,15 @@ function fenceIslands(
     if (at === null || !compiled.has(at.name) || known.has(at.name)) continue;
     if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
     // A fence in top-level module code throws when the module evaluates:
-    // it counts like one that needs the runtime.
-    const runtime = d.moduleInit === true || classifyDiagnostic(d, "fence").class === "runtime";
+    // it counts like one that needs the runtime. A use of a Node 24 global
+    // native code does not provide is the one runtime refusal JavaScript
+    // defers honestly (SC2020, host-global): the statement throws where it
+    // is reached, so inside a function body it stays a deferred refusal
+    // like a gap fence, and a package that keeps such a path on one branch
+    // (jose's CompressionStream) keeps compiling natively.
+    const reason = classifyDiagnostic(d, "fence");
+    const runtime =
+      d.moduleInit === true || (reason.class === "runtime" && reason.reason !== "host-global");
     fenced.set(at.name, (fenced.get(at.name) ?? false) || runtime);
     if (runtime) sure?.add(at.name);
   }
@@ -1061,9 +1070,17 @@ function fenceIslands(
     // With fences (requireFence), only fences that surely fire count: a
     // gap fence inside a function body may never run (jose's typed paths
     // stay native, DECISIONS.md 2026-10-21). After a failed build
-    // (!requireFence), the package's report class decides.
+    // (!requireFence), the package's report class decides — a host-global
+    // fence excepted, for it never explains a failure and islanding the
+    // package for it would only add a Node requirement.
     if (requireFence && !runtimeFence) continue;
-    if (!runtimeFence && island.class !== "runtime" && island.class !== "object-model") continue;
+    if (
+      !runtimeFence &&
+      !island.reasons.some(
+        (r) => (r.class === "runtime" || r.class === "object-model") && r.reason !== "host-global",
+      )
+    )
+      continue;
     grown.set(island.package, {
       name: island.package,
       version: island.version,

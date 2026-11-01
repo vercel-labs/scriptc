@@ -238,6 +238,10 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless shape inference types the program's own JavaScript
    * (SCRIPTC_INFER_JS=1, frontend/js-inference.ts). */
   jsInference?: true;
+  /** Omitted unless SCRIPTC_DEBUG_JS_IC_WAYS asks for an attribution build,
+   * which emits a different number of inline cache ways
+   * (backend/llvm/js-ic.ts). */
+  jsIcWays?: 0 | 1 | 2;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -415,6 +419,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.heapCensus ? ["heap-census"] : []),
     ...(options.shapeOverlay ? ["shape-overlay"] : []),
     ...(options.jsInference ? ["js-inference"] : []),
+    ...(options.jsIcWays !== undefined ? [`js-ic-ways:${options.jsIcWays}`] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -468,6 +473,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.heapCensus) hash.update("heap-census\0");
   if (options.shapeOverlay) hash.update("shape-overlay\0");
   if (options.jsInference) hash.update("js-inference\0");
+  if (options.jsIcWays !== undefined) hash.update(`js-ic-ways:${options.jsIcWays}\0`);
   hash
     .update(
       options.npmStatic === null

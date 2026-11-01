@@ -27,6 +27,7 @@
  * scriptc-perf/results/design-decl-boundary/DESIGN.md. */
 
 import * as ts from "./ts7/adapter.js";
+import { ZodJsonPlanner } from "./zod-json.js";
 import { declarationSelector, originAt } from "./lowering/decl-origin.js";
 
 /** Per user file, the origin (lowering/decl-origin.ts) of each boundary
@@ -548,6 +549,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
   const printer = new TypePrinter(declChecker);
   const plan: string[] = [];
   const edits = new Map<string, Edit[]>();
+  const zodJson = new ZodJsonPlanner(input.declProgram, input.jsProgram, input.userFiles);
 
   const typeAt = (checker: ts.TypeChecker, node: ts.Node): ts.Type | null => {
     try {
@@ -1000,10 +1002,27 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       const candidate = exprCandidates.get(e)!;
       const alias = candidate === "any" ? "any" : printer.project(candidate);
       if (alias === null) continue;
+      // `S.parse(JSON.parse(text))` with a statically known zod schema: the
+      // speculative JSON shape (zod-json.ts) instead of the cast.
+      const twin = twins.get(e);
+      const zodSite =
+        twin === undefined
+          ? null
+          : zodJson.plan(twin, alias, (from, to) =>
+              "\n".repeat(jsSf.text.slice(from, to).split("\n").length - 1),
+            );
+      if (zodSite !== null) {
+        for (const edit of zodSite.edits)
+          fileEdits.push({ start: edit.start, end: edit.end, text: edit.text });
+        fileEdits.push({ start: jsSf.text.length, end: jsSf.text.length, text: zodSite.helper });
+        plan.push(
+          `${file}:${ts.tokenStartOfNode(e)}: zod JSON shape for ${jsSf.text.slice(ts.tokenStartOfNode(e), Math.min(e.end, ts.tokenStartOfNode(e) + 60)).replace(/\s+/g, " ")}`,
+        );
+        continue;
+      }
       // Only casts to a projected alias are boundary casts the lowering
       // counts (an `as any` cast is not one), so only they take a slot.
       if (candidate !== "any") {
-        const twin = twins.get(e);
         fileOrigins.push(twin === undefined ? null : castOrigin(declChecker, twin, candidate));
       }
       const start = ts.tokenStartOfNode(e);

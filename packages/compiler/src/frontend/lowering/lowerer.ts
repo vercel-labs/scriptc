@@ -14381,6 +14381,11 @@ export class Lowerer {
   ): boolean {
     if (typeEquals(from, to)) return true;
     if (to.inner.kind === "void") return from.inner.kind !== "void";
+    // A module namespace widens into a checked-dynamic payload: both settle
+    // the module's namespace object (coerceToExpected routes the value
+    // through moduleNamespacePromiseDynValue). The joint payload of several
+    // namespace-valued promise arms is exactly this dyn (mergePromiseArms).
+    if (from.inner.kind === "moduleNs" && to.inner.kind === "dyn") return true;
     return (
       this.dynConvertible(from) &&
       canDynCheckTo(

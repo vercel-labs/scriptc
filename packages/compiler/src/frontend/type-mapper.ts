@@ -9207,6 +9207,14 @@ function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
   // Every arm is the undefined unit: the promise never settles a value,
   // exactly `Promise<void>`.
   if (payload.every((arm) => arm.kind === "undefinedT")) payload.length = 0;
+  // SEVERAL MODULE NAMESPACES are ONE checked-dynamic payload: a namespace
+  // has no union tag (its value is the module's namespace object, built by
+  // the same dynamic box a bare namespace value crosses as), so JavaScript
+  // cannot tell the merged arms apart — `then((m) => …)` reads a namespace
+  // object either way. The joint payload is that object, exactly what
+  // `Promise<unknown>` settles here (moduleNamespacePromiseDynValue).
+  else if (payload.length > 1 && payload.every((arm): boolean => arm.kind === "moduleNs"))
+    payload.splice(0, payload.length, DYN);
   // One payload arm is that arm itself (a regex or a promise payload has a
   // promise slot but no union arm); a JOINT payload is a union, so its arms
   // need union homes.

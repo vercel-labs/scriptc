@@ -89,17 +89,20 @@ test("Set elements and Map keys over identity arms keep their pointer representa
       mutable: false,
     },
     { id: "%g.t", name: "t", type: { kind: "set", elem: union("su") } as IrType, mutable: false },
+    { id: "%g.f", name: "f", type: { kind: "set", elem: union("fu") } as IrType, mutable: false },
   ];
   const unions: IrUnionDef[] = [
     { id: "au", arms: [a, UNDEFINED_T] },
     { id: "abnu", arms: [a, b, NULL_T, UNDEFINED_T] },
     { id: "su", arms: [{ kind: "string" }, UNDEFINED_T] },
+    { id: "fu", arms: [{ kind: "func", params: [F64], ret: F64 }, UNDEFINED_T] },
   ];
   const program = new NullableUnions(module(unions, { globals }));
   expect(program.single("au")).not.toBeNull();
   expect(program.shapes("abnu")).toMatchObject({ unitTag: 3, nullTag: 2 });
-  // Strings compare by value: such keys stay boxed.
+  // Strings compare by value, and functions by identity root: such keys stay boxed.
   expect(program.get("su")).toBeNull();
+  expect(program.get("fu")).toBeNull();
   // Library builds keep them boxed.
   const library = new NullableUnions(
     module(unions, { globals, lib: { exports: [] } as unknown as NonNullable<IrModule["lib"]> }),

@@ -114,7 +114,7 @@ for (const backend of ["llvm"] as const) {
       };
       const none = featureCalls
         .map(([feature]) => feature)
-        .concat(["regex", "copying", "fileHandle", "fsBufferBrand"]);
+        .concat(["regex", "copying", "fileHandle"]);
       check("empty module", empty(), [], none);
       for (const [feature, fn] of featureCalls) {
         const module = empty();
@@ -166,21 +166,6 @@ for (const backend of ["llvm"] as const) {
         loc,
       });
       check("copying intrinsic", copying, ["copying"]);
-      // scr_lib.c brands a typed file read only for a program that can
-      // observe the brand: the read alone keeps the default object.
-      const brand = empty();
-      brand.functions[0]!.body.push(
-        { kind: "exprStmt", expr: lib("fs.readFileSyncBytes"), loc },
-        { kind: "exprStmt", expr: lib("buffer.isBranded"), loc },
-      );
-      check("fs buffer brand", brand, ["fsBufferBrand"]);
-      const unbrandedRead = empty();
-      unbrandedRead.functions[0]!.body.push({
-        kind: "exprStmt",
-        expr: lib("fs.readFileSyncBytes"),
-        loc,
-      });
-      check("fs read without an observation", unbrandedRead, [], ["fsBufferBrand"]);
       const handle = empty();
       const handleType: IrType = { kind: "promise", inner: { kind: "fileHandle" } };
       handle.functions[0]!.locals.push({

@@ -25,7 +25,7 @@ assert.strictEqual(maybe, box); // union operand with an object arm — narrow f
 
 const unk: unknown = JSON.parse("{}");
 assert.strictEqual(unk, { n: 1 }); // strict + composite static side: reference identity does not survive the unknown boundary
-assert.deepStrictEqual(unk, new Uint8Array([1])); // bytes static side: the dyn copy cannot carry the brand
+assert.deepStrictEqual(unk, new Uint8Array([1]) as ArrayBufferView); // bytes static side whose constructor the type does not name
 assert.deepStrictEqual(unk, new Map<string, number>()); // not dyn-convertible
 
 assert.deepStrictEqual([1, 2], ["a", "b"]); // different static types

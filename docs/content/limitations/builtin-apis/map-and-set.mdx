@@ -6,7 +6,8 @@
   Stored `keys()`, `values()`, and `entries()` iterators compile, retain element identity, and observe live collection mutations until exhausted.
   They support `.next()`, `for...of`, array spreads, and mapper-less `Array.from`.
   They also support the iterator helper methods, such as `.map()` and `.take()`.
-  Detached collection methods are unsupported.
+  JavaScript sources compile a method value read from Set, Map, WeakMap, or WeakSet: calling it with `.call` applies the method to that receiver and throws Node's brand-check TypeError when the receiver is not the matching collection.
+  Typed sources still refuse a method read as a value with SC1090.
   Constructing a Map, Set, WeakMap or WeakSet, or calling `Object.fromEntries`, with a checked-dynamic iterable (a native iterator, a generator, or an object with a `Symbol.iterator` method) takes all of its values before adding the first one.
   When an entry of a Map seed is not an object, the TypeError comes after the iterable is exhausted; Node closes the iterator at that entry.
   The Set composition methods (`union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`) accept a Set of the same element type or a Map keyed by it; other set-like arguments are unsupported.

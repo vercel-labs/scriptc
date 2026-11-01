@@ -60,6 +60,8 @@ export const BASE_RUNTIME_SOURCES = [
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
+  // The call-time parameter bind of a generator (fn.generator.bindAtCall).
+  ["scr_gen_bind.c", "genBind"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
@@ -179,6 +181,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  // Object.isExtensible and Object.isSealed of a value typed dynamically; a
+  // unit of its own so scr_json.c keeps its layout for every other program.
+  ["scr_dyn_integrity.c", "dynIntegrityQueries"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
@@ -235,63 +240,49 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
+/** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
+ * object model features reach (t262-da §J). Every such feature is inert
+ * until its own runtime state exists, so one build carries all of them. */
+function withJsObjectModel(variants) {
+  for (const { id, when, defines } of variants.slice()) {
+    const suffix = id === "default" ? "" : `-${id}`;
+    variants.push({
+      id: `js-om${suffix}`,
+      when: { ...when, jsObjectModel: true },
+      defines: [...defines, "SCR_JS_OBJECT_MODEL"],
+    });
+  }
+  return variants;
+}
+
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
-  // Programs with dynamic-tier code link the build that exports the
-  // primitives the tier's inline caches use (two-tier design S4); every
-  // other program links the ordinary object, byte for byte.
+  // scr_json.c builds one object per flavor (and workers mode): its paths
+  // for Node island handles and handle classes call through tables that
+  // scr_node_island_handle.c and scr_dyn_handle_class.c install when a
+  // program links them, and its dynamic-tier primitives are always defined.
+  // A program with a partial record assertion (record-views.ts) links the
+  // build whose view slot answers NULL for a field the viewed record does
+  // not declare, so the emitted guard, clone helper and presence test can
+  // stop with the program's message instead of reading a bogus slot; every
+  // other program keeps the default object.
   if (source === "scr_json.c") {
-    variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
-    // Dynamic operations on Node island handles (typeof, calls, `in`,
-    // delete, Object.keys) route to scr_node_island_handle.c.
     variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
+      id: "record-view-partial",
+      when: { recordViewPartial: true },
+      defines: ["SCR_RECORD_VIEW_PARTIAL"],
     });
-    variants.push({
-      id: "dyn-tier-node-island",
-      when: { dynTier: true, nodeIsland: true },
-      defines: ["SCR_JS_TIER", "SCR_NODE_ISLANDS"],
-    });
-    // Programs with web streams: instanceof over their classes' handles.
-    variants.push({
-      id: "handle-classes",
-      when: { webStreams: true },
-      defines: ["SCR_HANDLE_CLASSES"],
-    });
-    variants.push({
-      id: "dyn-tier-handle-classes",
-      when: { dynTier: true, webStreams: true },
-      defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES"],
-    });
-    // Both: the variant with the most conditions is chosen, so programs
-    // with web streams and Node islands need the builds that define both.
-    variants.push({
-      id: "handle-classes-node-island",
-      when: { webStreams: true, nodeIsland: true },
-      defines: ["SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
-    });
-    variants.push({
-      id: "dyn-tier-handle-classes-node-island",
-      when: { dynTier: true, webStreams: true, nodeIsland: true },
-      defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
-    });
-    // A program with a partial record assertion (record-views.ts) links the
-    // build whose view slot answers NULL for a field the viewed record does
-    // not declare, so the emitted guard, clone helper and presence test can
-    // stop with the program's message instead of reading a bogus slot. The
-    // selector takes the variant with the most conditions, so each of the
-    // builds above needs its counterpart; every other program keeps the
-    // default object, byte for byte.
-    for (const { id, when, defines } of variants.slice()) {
-      const suffix = id === "default" ? "" : `-${id}`;
-      variants.push({
-        id: `record-view-partial${suffix}`,
-        when: { ...when, recordViewPartial: true },
-        defines: [...defines, "SCR_RECORD_VIEW_PARTIAL"],
-      });
-    }
+    // The JavaScript object model build (t262-da §J): every runtime feature
+    // reached only from JavaScript-source facts — builtin intrinsics, array
+    // attributes, BigInt views, handle property tables, buffer views —
+    // shares SCR_JS_OBJECT_MODEL instead of adding a variant column of its
+    // own. jsObjectModel implies dynTier, so such a program links the
+    // dynamic tier's units as well, and each feature's code is inert until
+    // its own runtime state exists. #2701 made this unit one
+    // build per flavor, so every variant here already carries the dynamic
+    // tier's primitives and each one gets its object model twin. Every other
+    // program keeps the default object, byte for byte.
+    withJsObjectModel(variants);
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
@@ -312,29 +303,25 @@ export function variantsFor(source) {
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
     });
+    // The BigInt element kinds and their element accessors are part of the
+    // JavaScript object model build (t262-da §J): a BigInt view's program
+    // has jsObjectModel, so it selects the object model build beside the
+    // TextDecoder legacy one when it has both. Every other program keeps the
+    // default object, byte for byte.
+    withJsObjectModel(variants);
   }
-  // fs.watchFile's poll needs a path stat that reports the errno (its failed
-  // poll IS a reportable event). The Stats snapshot is private to scr_lib.c,
-  // so the two entry points live in a build of that unit only programs that
-  // poll link; every other program keeps the default object, byte for byte.
-  if (source === "scr_lib.c") {
-    variants.push({
-      id: "fs-watch-file",
-      when: { watchFile: true },
-      defines: ["SCR_FS_WATCH_FILE"],
-    });
-    // Node answers a Buffer from a file read, and its brand is observable
-    // (Buffer.isBuffer, instanceof, inspect): a program that can observe it
-    // links the build that sets it. Combined with every variant above so a
-    // program that also polls keeps scr_watch_file's stat entry points
-    // (selectVariant takes the variant with the most conditions).
-    for (const { id, when, defines } of variants.slice()) {
-      variants.push({
-        id: `${id}-fs-buffer-brand`,
-        when: { ...when, fsBufferBrand: true },
-        defines: [...defines, "SCR_FS_BUFFER_BRAND"],
-      });
-    }
+  // util.inspect prints a BigInt typed array by reading its elements as
+  // BigInts, whichever build of the unit the program selects. Its Node island
+  // build is not the one these variants name: island output keeps its own
+  // object.
+  if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
+    withJsObjectModel(variants);
+  }
+  // console.table reads the cells of a row's typed array, so a BigInt view
+  // needs the element accessor that answers BigInts. The default object keeps
+  // the numeric read, byte for byte.
+  if (source === "scr_console_native.c") {
+    withJsObjectModel(variants);
   }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
@@ -367,6 +354,17 @@ export function variantsFor(source) {
       defines: ["SCR_FS_FLAGS"],
     });
   }
+  // spawnSync's and the exec/execFile callback form's cwd/input/shell
+  // entries (SCR_CHILD_CP_OPTIONS) live in a build of scr_child.c of their
+  // own, so a program that never passes those options keeps the default
+  // object, byte for byte.
+  if (source === "scr_child.c") {
+    variants.push({
+      id: "cp-options",
+      when: { childOptionExt: true },
+      defines: ["SCR_CHILD_CP_OPTIONS"],
+    });
+  }
   // server.off / removeListener: the listener-removal entry, in a build of
   // its own so a program that never removes a listener keeps the default.
   if (source === "scr_net.c") {
@@ -377,9 +375,9 @@ export function variantsFor(source) {
     });
   }
   // Programs with web streams link the promise unit with native promise
-  // reactions, the builtin-class unit whose instanceof knows their classes
-  // (as scr_json.c's does above), and the fetch unit that takes their
-  // streams as bodies; every other program keeps the default objects.
+  // reactions, the builtin-class unit whose instanceof knows their classes,
+  // and the fetch unit that takes their streams as bodies; every other
+  // program keeps the default objects.
   if (source === "scr_async.c") {
     variants.push({
       id: "native-reactions",

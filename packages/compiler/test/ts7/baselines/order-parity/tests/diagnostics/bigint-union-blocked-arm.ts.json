@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/bigint-union-blocked-arm.ts"
+ ],
+ "diags": []
+}

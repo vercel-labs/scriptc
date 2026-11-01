@@ -254,8 +254,8 @@ direct(new Base());
         "true TypeError: Value is not an instance of 'Sub'",
         "true TypeError: Value is not an instance of 'Sub'",
         "ok 0",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
         "",
       ].join("\n"),
     );
@@ -2349,6 +2349,7 @@ const attempts: Array<() => string> = [
   () => util.format(o, { a: 1 }),
   () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
   () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
+  () => util.formatWithOptions({ maxArrayLength: 1.5 }, [1, 2]),
   () => util.formatWithOptions({ compact: true }, [1, 2]),
 ];
 for (const attempt of attempts) {
@@ -2367,7 +2368,8 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
       "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
         "Error SC2020 util.format %o of objects renders hidden properties, which have no lowering; use %O\n" +
         "Error SC2020 colored inspect output of Error values has no lowering\n" +
-        "Error SC2020 util.formatWithOptions with the maxArrayLength option has no lowering\n" +
+        "[ 1, ... 1 more item ]\n" +
+        "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
         "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
         "{ a: 1 } [ 1, 2 ]\n",
     );
@@ -2462,7 +2464,8 @@ console.log(words.length);
 // cannot answer as Node does throw SC2020: calling or constructing it
 // through the value (Node reports DEP0005 by the caller's location), its
 // prototype as a whole, copyBytesFrom and of, and Buffer.prototype members
-// that are inherited, symbol-keyed or called on other receivers.
+// that are inherited, symbol-keyed or called on a receiver that is neither
+// a Buffer nor a Uint8Array.
 describe("Buffer value refusals", () => {
   test("unmodeled Buffer value forms throw SC2020", async () => {
     const r = await compileAndRun(
@@ -2478,6 +2481,7 @@ const runs = [
   () => Buffer.prototype.map,
   () => Buffer.prototype[Symbol.iterator],
   () => Buffer.prototype.readUInt8.call(new Uint8Array(2), 0),
+  () => Buffer.prototype.readUInt8.call({}, 0),
 ];
 for (const run of runs) {
   try {
@@ -2487,6 +2491,7 @@ for (const run of runs) {
     console.log(e.name, e.code, e.message);
   }
 }
+console.log("u8", Buffer.prototype.readUInt8.call(new Uint8Array([7, 8]), 1));
 `,
       "cjs",
     );
@@ -2500,7 +2505,9 @@ for (const run of runs) {
         "Error SC2020 Buffer.of through a stored Buffer value is not supported yet",
         "Error SC2020 Buffer.prototype.map is not supported yet",
         "Error SC2020 Buffer.prototype members keyed by symbols are not supported yet",
+        "ran",
         "Error SC2020 Buffer.prototype.readUInt8 on a receiver that is not a Buffer is not supported yet",
+        "u8 8",
         "",
       ].join("\n"),
     );

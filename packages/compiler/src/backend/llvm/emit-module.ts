@@ -504,6 +504,16 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesFetch = runtimeFeatures.fetch;
   // URL programs give the host parser the IDNA unit's ToASCII.
   const usesUrlIdna = runtimeFeatures.urlIdna;
+  // Programs whose checked-dynamic reads answer Buffer.prototype methods by
+  // name fill scr_bytes_dyn.c's member hook; the hook's table links every
+  // scr_dyn_invoke_buffer entry, so only these programs install it.
+  const usesDynBufferMembers = runtimeFeatures.dynBufferMembers;
+  // Buffer.prototype as a value registers Symbol(nodejs.util.inspect.custom)
+  // through the symbol unit's Symbol.for, which only these programs install.
+  const usesBufferPrototypeObject = runtimeFeatures.bufferPrototypeObject;
+  // Programs that read Symbol.toPrimitive install ToNumber's
+  // Symbol.toPrimitive step; the others do not link it.
+  const usesToPrimitiveNumber = runtimeFeatures.toPrimitiveNumber;
   const snapshotsTlsCa = runtimeFeatures.tls || runtimeFeatures.tlsCa;
   // The process verdict has the same precedence as the C reference
   // emitter: node:test owns the final status when present; otherwise an
@@ -571,6 +581,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
+  if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
+  if (usesBufferPrototypeObject) emitter.declare(`declare void @scr_sym_for_install()`);
+  if (usesToPrimitiveNumber) emitter.declare(`declare void @scr_dyn_to_primitive_number_install()`);
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
@@ -1192,10 +1205,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
     for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
-    out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
+    // A metadata table for a large program holds more lines than one call
+    // can take as arguments: append each table's lines one at a time.
+    for (const line of functionAttributes(emitter, hasNoInlineRecordClone)) out.push(line);
     out.push(``);
-    out.push(...emitter.fieldAliasMetadata());
-    out.push(...loopUnrollMetadata(out));
+    for (const line of emitter.fieldAliasMetadata()) out.push(line);
+    for (const line of loopUnrollMetadata(out)) out.push(line);
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
   }
@@ -1244,6 +1259,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
     ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
+    ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
+    ...(usesBufferPrototypeObject ? [`  call void @scr_sym_for_install()`] : []),
+    ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
@@ -1350,13 +1368,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ``,
   );
   for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
-  out.push(
-    // The sanitized lane's -fsanitize=address link instruments the
-    // functions marked sanitize_address (the runtime TUs get theirs from
-    // clang).
-    ...functionAttributes(emitter, hasNoInlineRecordClone),
-    ``,
-  );
+  // The sanitized lane's -fsanitize=address link instruments the functions
+  // marked sanitize_address (the runtime TUs get theirs from clang).
+  for (const line of functionAttributes(emitter, hasNoInlineRecordClone)) out.push(line);
+  out.push(``);
   if (emitter.mod.workers) {
     out.push(
       `declare void @scr_context_cleanup()`,
@@ -1379,8 +1394,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       `}`,
     );
   }
-  out.push(...emitter.fieldAliasMetadata());
-  out.push(...loopUnrollMetadata(out));
+  for (const line of emitter.fieldAliasMetadata()) out.push(line);
+  for (const line of loopUnrollMetadata(out)) out.push(line);
   if (emitter.debug !== null) out.push(emitter.debug.render());
   return out;
 }

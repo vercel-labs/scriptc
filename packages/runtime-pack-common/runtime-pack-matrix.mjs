@@ -323,6 +323,17 @@ export function variantsFor(source) {
   if (source === "scr_console_native.c") {
     withJsObjectModel(variants);
   }
+  // Date.prototype's annexB getYear/setYear in the checked-dynamic dispatch
+  // are part of the JavaScript object model build (t262-da §J):
+  // jsObjectModelFact ORs the dateAnnexB fact into jsObjectModel, so a
+  // program that calls either name dynamically selects that build. scr_lib.c
+  // builds once per flavor (no fs variants since #2765), so its object model
+  // twin is the unit's second object, one per variant; every later feature
+  // sharing the build adds code to these objects and no variants. Every
+  // other program keeps the default object, byte for byte.
+  if (source === "scr_lib.c") {
+    withJsObjectModel(variants);
+  }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
   if (source === "scr_async_dyn.c") {

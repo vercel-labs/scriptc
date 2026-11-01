@@ -31,6 +31,9 @@ const TIME_VALUE_METHODS = new Set([
   "getMilliseconds",
   "getUTCMilliseconds",
   "getTimezoneOffset",
+  // The annexB accessor reads the local year like getFullYear (dates.ts
+  // subtracts 1900), so the binding can keep its time value.
+  "getYear",
 ]);
 
 const RELATIONAL = new Set([

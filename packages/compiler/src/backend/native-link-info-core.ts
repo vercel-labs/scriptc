@@ -174,6 +174,12 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
+  /** A checked-dynamic Date call site reaches Date.prototype's annexB
+   * getYear/setYear. Its runtime code lives in the JavaScript object model
+   * build (t262-da §J): jsObjectModelFact ORs this fact into jsObjectModel,
+   * so the fact selects no build of its own. Typed programs, which lower
+   * both calls themselves, never set it. */
+  dateAnnexB?: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;

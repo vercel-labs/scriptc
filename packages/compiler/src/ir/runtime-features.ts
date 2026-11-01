@@ -984,6 +984,31 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fileHandle.readFileBytes",
 ]);
 
+/** dateAnnexB's condition as a scan over the module: a dynamic call of
+ * getYear or setYear, or a dynamic member read of one of the two names (a
+ * method value taken off a Date, or off `Date.prototype`, which interns the
+ * same dispatch function). Both reach scr_lib.c's Date dispatch, which
+ * answers them only in the SCR_JS_OBJECT_MODEL build (t262-da §J);
+ * jsObjectModelFact ORs this fact into jsObjectModel, so the program selects
+ * that build. A program that merely reads the Date prototype object for
+ * other members keeps the default. */
+function dateAnnexBScan(): RuleScan {
+  let named = false;
+  const isAnnexBName = (name: string): boolean => name === "getYear" || name === "setYear";
+  return {
+    expr: (node) => {
+      if (node.kind === "dynInvoke" && isAnnexBName(node.method)) named = true;
+      else if (
+        node.kind === "dynKeyGet" &&
+        node.key.kind === "strLit" &&
+        isAnnexBName(node.key.value)
+      )
+        named = true;
+    },
+    result: () => named,
+  };
+}
+
 /** The entries that need the JavaScript object model build (t262-da §J):
  * the runtime code a JavaScript source reaches for builtin intrinsics,
  * array attributes, BigInt views, handle property tables and buffer views
@@ -994,14 +1019,17 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]
 
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
- * (BigInt views today, array attributes and handle property tables next), so
- * pack selection and the source build (RUNTIME_DEFINES, the library's
- * cflags) agree on when the build is on. */
+ * (BigInt views and Date's annexB accessors today, array attributes and
+ * handle property tables next), so pack selection and the source build
+ * (RUNTIME_DEFINES, the library's cflags) agree on when the build is on. */
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  dateAnnexB?: boolean;
 }): boolean {
-  return features.jsObjectModel === true || features.bigintBytes === true;
+  return (
+    features.jsObjectModel === true || features.bigintBytes === true || features.dateAnnexB === true
+  );
 }
 
 /** One rule per runtime feature, sorted by name. A new feature is an
@@ -1071,6 +1099,12 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "arrIntrinsic" && COPYING_ARR_METHODS.has(node.method)) ||
       (node.kind === "bytesIntrinsic" && COPYING_BYTES_METHODS.has(node.method)),
   }),
+  /** Date.prototype's annexB accessors reached through the checked-dynamic
+   * dispatch: getYear and setYear called or read as method values on a
+   * dynamic receiver. They live in the shared SCR_JS_OBJECT_MODEL build
+   * (jsObjectModelFact ORs this fact in), so the fact adds no build column
+   * of its own. Typed code lowers both itself and never sets the fact. */
+  dateAnnexB: rule({ scan: dateAnnexBScan }),
   dc: rule({ prefixes: ["dc."] }),
   /** dns.lookup lives in the dgram unit. */
   dgram: rule({ prefixes: ["dgram.", "dns."], types: ["dgramSocket"] }),
@@ -1593,6 +1627,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childProcess: false,
     cipher: false,
     copying: false,
+    dateAnnexB: false,
     dc: false,
     dgram: false,
     dgramDyn: false,

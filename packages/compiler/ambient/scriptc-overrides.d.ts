@@ -71,6 +71,15 @@ interface PromiseConstructor {
   };
 }
 
+/* Annex B's Date accessors (B.2.3.1 getYear, B.2.3.2 setYear). TypeScript's
+ * lib omits both; the lowerer answers them (builtins/dates.ts), and a merge
+ * makes the typed call sites reach it. getYear is the local full year less
+ * 1900; setYear takes a year, mapping 0-99 to 1900 + the year. */
+interface Date {
+  getYear(): number;
+  setYear(year: number): number;
+}
+
 /* Carriers of the types the lowerer gives untyped JavaScript collections
  * whose uses prove them (js-collection-types.ts). Nothing reads them at run
  * time. */

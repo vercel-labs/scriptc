@@ -3,6 +3,7 @@ import { IR_VERSION } from "./serialize.js";
 import { DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
+  jsObjectModelFact,
   moduleRuntimeFeatures,
   moduleUsesHttp2,
   moduleUsesTlsCa,
@@ -238,6 +239,49 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(true);
     for (const key of ["length", "name", "nope"])
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
+  });
+
+  test("gates the Date annexB dispatch on a dynamic getYear/setYear use", () => {
+    const dyn = { kind: "varRef" as const, localId: "date", type: DYN, loc };
+    const memberRead = (name: string) => ({
+      kind: "exprStmt" as const,
+      loc,
+      expr: {
+        kind: "dynKeyGet" as const,
+        value: dyn,
+        key: { kind: "strLit" as const, value: name, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+    });
+    // Reading the prototype for its other members keeps the default object.
+    const other = module();
+    other.functions[0]!.body.push(memberRead("getFullYear"), memberRead("toISOString"));
+    expect(moduleRuntimeFeatures(other).dateAnnexB).toBe(false);
+    // A method value taken off a Date or Date.prototype dispatches by name.
+    const read = module();
+    read.functions[0]!.body.push(memberRead("getYear"));
+    expect(moduleRuntimeFeatures(read).dateAnnexB).toBe(true);
+    // A dynamic call names the method the dispatch receives.
+    const invoked = module();
+    invoked.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynInvoke",
+        recv: dyn,
+        method: "setYear",
+        calleeName: "setYear",
+        args: [],
+        type: DYN,
+        loc,
+      },
+    });
+    // The fact ORs into the JavaScript object model build (t262-da §J), so
+    // a program that reaches them links that build of scr_lib.c rather than
+    // a variant column of its own.
+    expect(jsObjectModelFact(moduleRuntimeFeatures(invoked))).toBe(true);
+    expect(jsObjectModelFact(moduleRuntimeFeatures(other))).toBe(false);
   });
 
   test("the JavaScript object model build owns no entry yet", () => {

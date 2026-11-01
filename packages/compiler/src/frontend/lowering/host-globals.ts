@@ -64,17 +64,29 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
 export function hostGlobalNameOfIdentifier(lowerer: Lowerer, id: ts.Identifier): string | null {
   const name = id.text;
   if (!NODE_GLOBALS_WITHOUT_NATIVE.has(name)) return null;
-  const symbol = lowerer.checker.getSymbolAtLocation(id);
-  if (symbol === undefined) return name;
+  // `{ WebSocket }` reads the binding through the object literal's property:
+  // the identifier's own symbol is that property, so the value the shorthand
+  // copies is resolved here (resolveValueSymbol reads the checker's
+  // shorthand-value symbol).
+  const symbol = lowerer.resolveValueSymbol(id);
+  if (symbol === null) return name;
   // An import (or require alias) of the same name is the program's binding
   // of somebody else's value, never the global.
   if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) return null;
   const declarations = symbol.declarations ?? [];
   if (declarations.length === 0) return null;
+  // Type-world partners declare no value: lib.dom and @types/node write
+  // `interface WebSocket` beside `declare var WebSocket`, and that merged
+  // symbol is still the global. Only the value declarations decide — a
+  // symbol with none is a type (a read of it is a type error elsewhere).
+  const valueDeclarations = declarations.filter(
+    (decl) => !ts.isInterfaceDeclaration(decl) && !ts.isTypeAliasDeclaration(decl),
+  );
+  if (valueDeclarations.length === 0) return null;
   const ambient = (decl: ts.Node): boolean =>
     ts.getSourceFileOfNode(decl).isDeclarationFile ||
     (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Ambient) !== 0;
-  const declaresGlobal = declarations.every((decl) => {
+  const declaresGlobal = valueDeclarations.every((decl) => {
     if (ts.isVariableDeclaration(decl)) return decl.initializer === undefined && ambient(decl);
     if (ts.isFunctionDeclaration(decl) || ts.isClassDeclaration(decl)) return ambient(decl);
     return false;

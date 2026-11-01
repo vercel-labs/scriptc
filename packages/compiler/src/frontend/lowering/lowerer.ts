@@ -143,6 +143,7 @@ import { lowerBuiltinCall } from "./builtin-calls.js";
 import { CoercionState } from "./coercions/state.js";
 import {
   widthLiftPlan,
+  checkedWidthLift,
   unitOnlyElem,
   recordWidthPlan,
   describeRecordWidthBlocker,
@@ -13482,6 +13483,13 @@ export class Lowerer {
 
   widthLiftPlan(src: IrType, dst: IrType): WidthLift | null {
     return widthLiftPlan(this, src, dst);
+  }
+
+  /** The checked widening, by name (see checkedWidthLift): only the written
+   * predicate's element conversion asks for it, so widthLiftPlan's answers
+   * — and every program that already converts — stay as they are. */
+  checkedWidthLift(src: IrType, dst: IrType): WidthLift | null {
+    return checkedWidthLift(this, src, dst);
   }
 
   unitOnlyElem(t: IrType): boolean {

@@ -22,6 +22,20 @@ export type WidthLift =
       absent: { tag: number; arm: IrType };
     }
   | { how: "width" }
+  /** A record into a WIDER record that declares REQUIRED members the
+   * source's type lacks (`{ role: string }` into a system message whose
+   * `content` and `timestamp` are required, the shape a user type
+   * predicate hands a value): no field list can be copied, because the
+   * destination's members have no source slot. The CHECKED widening
+   * instead — a live capsule of the source record checked against the
+   * destination, which reads the properties the source kept beside its
+   * declared fields (a width copy links to its source; a checked record
+   * keeps its source properties) and throws the catchable TypeError when
+   * the value genuinely lacks them. Asked for BY NAME by the conversion
+   * that refused (lowerer.checkedWidthLift, filter-predicates.ts): it is
+   * not an answer of widthLiftPlan, whose speculative callers would build
+   * existing programs' code around it. */
+  | { how: "checkedWiden" }
   /** A record into a record whose destination declares an index
    * signature: the overflow CAPTURE reshape (declared fields copy off the
    * source in declaration order, every other source field keys into the

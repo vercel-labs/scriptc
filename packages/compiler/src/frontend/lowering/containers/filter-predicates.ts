@@ -75,11 +75,10 @@ export function checkedFilterNarrowing(
  * receiver's record element has no slot for, or null when there are none
  * (or when the pair is not a plain record narrowing).
  *
- * An element narrowed when it was STORED (`const messages: { role: string }[]
- * = [wider, ...]` copies each wider object into the element's layout) lost
- * those fields before the filter ran: the predicate cannot make them real,
- * so the narrowing stays refused with this reason instead of a generic
- * missing-conversion report. */
+ * A member the element lacks has no slot to copy, and the checked widening
+ * (width-lift.ts) covers only pairs whose element fields are target fields
+ * with equal types; a pair it declines stays refused with this reason instead
+ * of a generic missing-conversion report. */
 export function supersetGuardFields(
   lowerer: Lowerer,
   from: IrType,
@@ -167,6 +166,7 @@ function conversionBody(
   to: IrType,
   typeText: string,
   loc: SrcLoc,
+  fromUnionArm = false,
 ): IrStmt[] | null {
   if (typeEquals(from, to)) return [{ kind: "return", value: input, loc }];
   if (from.kind === "dyn")
@@ -193,8 +193,17 @@ function conversionBody(
     // `textSignature` and a `type`): the target's members are a subset of
     // the source's, each read and converted, and the copy keeps the
     // source's keys in the source's order. A member the source lacks has
-    // no slot to read, so it stays refused.
-    if (target.fields.length > source.fields.length) return null;
+    // no slot to read, so a field-list copy cannot hold it — the checked
+    // widening can (width-lift.ts): the element crosses as a live capsule
+    // and the target is checked against it, which reads the properties the
+    // element kept beside its declared fields (a width copy's source, a
+    // checked record's source note) and throws the catchable TypeError of
+    // a checked extraction when it genuinely lacks one.
+    if (target.fields.length > source.fields.length) {
+      const lift = fromUnionArm ? null : lowerer.checkedWidthLift(from, to);
+      if (lift === null) return null;
+      return [{ kind: "return", value: lowerer.applyWidthLift(lift, input, to, loc), loc }];
+    }
     const fields: { name: string; value: IrExpr }[] = [];
     for (const field of target.fields) {
       const own = source.fields.find((f) => f.name === field.name);
@@ -285,7 +294,11 @@ function unionConversion(
         type: arm,
         loc,
       };
-      const converted = conversionBody(lowerer, narrowedArm, arm, to, typeText, loc);
+      // An ARM's conversion never takes the checked widening: the arm and
+      // the target may share every field's storage type while their
+      // discriminants differ (a `kind: "image"` arm has no `window`), and
+      // an arm the target cannot be read from keeps its tag-checked throw.
+      const converted = conversionBody(lowerer, narrowedArm, arm, to, typeText, loc, true);
       if (converted === null) continue;
       recordArmConversions++;
       body.push({

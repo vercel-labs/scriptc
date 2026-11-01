@@ -348,6 +348,21 @@ export function applyWidthLift(
     }
     case "dynOut":
       return { kind: "dynCheck", value, type: dst, loc };
+    case "checkedWiden": {
+      if (dst.kind !== "record" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: checkedWiden lift shape");
+      // The value's own properties cross as a live capsule (dynFrom
+      // liveRef), so the check reads what the record kept beside its
+      // declared fields — a width copy's source, a checked record's
+      // source note — and throws only when the value genuinely lacks a
+      // required destination member.
+      return {
+        kind: "dynCheck",
+        value: { kind: "dynFrom", value, liveRef: true, type: DYN, loc },
+        type: dst,
+        loc,
+      };
+    }
     case "upcast": {
       if (dst.kind !== "object" || value.type.kind !== "object")
         throw new InternalCompilerError("lowerer bug: upcast lift shape");

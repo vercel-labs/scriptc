@@ -7190,7 +7190,11 @@ function inferredOptionalRecordType(
  * call (lower-calls.ts, JavaScript sources only). Its result is whatever `C`
  * constructed, so a binding the checker typed `Promise<T>` holds it as dyn. */
 function isJsPromiseStaticCall(value: IrExpr): boolean {
-  return value.kind === "libCall" && value.fn === "promise.genericStatic";
+  // Surplus arguments evaluate as statements before the call, so the
+  // initializer is a sequence expression whose result is the call.
+  let result = value;
+  while (result.kind === "seqExpr") result = result.result;
+  return result.kind === "libCall" && result.fn === "promise.genericStatic";
 }
 
 function lowerVariableInitializer(

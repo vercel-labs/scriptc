@@ -471,4 +471,14 @@ console.log("after sync");
     // constructor never runs and nothing was logged.
     console.log("surplus throws: " + error.message + " log=[" + thrown.join(" | ") + "]");
   }
+
+  // A binding the checker types Promise<T> keeps the constructed foreign
+  // instance as dyn: its tag is not part of a native promise, so a typed
+  // slot would read undefined and lose the value.
+  const held = [];
+  const Holder = makeCapabilityCtor(held, { resolve: null, reject: null });
+  const heldStatic = Promise.all.call(Holder, iterable, sideEffect("c")(4));
+  console.log(
+    "surplus binding: tag=" + heldStatic.tag + " instanceof=" + (heldStatic instanceof Holder),
+  );
 }

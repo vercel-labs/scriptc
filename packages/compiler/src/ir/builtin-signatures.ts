@@ -4354,6 +4354,7 @@ function buildLibFnSignatures() {
     "dyn.reflectPreventExtensions": { argTypes: [DYN], result: BOOL },
     "dyn.reflectIsExtensible": { argTypes: [DYN], result: BOOL },
     "dyn.reflectConstruct": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "dyn.reflectConstructDefault": { argTypes: [DYN, DYN], result: DYN },
     "dyn.seal": { argTypes: [DYN], result: DYN },
     "dyn.isSealed": { argTypes: [DYN], result: BOOL },
     /** Object.isExtensible / Object.isSealed of a value whose kind is known

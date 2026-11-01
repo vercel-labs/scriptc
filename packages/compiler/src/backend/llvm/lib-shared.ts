@@ -1868,6 +1868,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.reflectPreventExtensions": "scr_dyn_reflect_prevent_extensions",
   "dyn.reflectIsExtensible": "scr_dyn_reflect_is_extensible",
   "dyn.reflectConstruct": "scr_dyn_reflect_construct",
+  "dyn.reflectConstructDefault": "scr_dyn_reflect_construct_default",
   "dyn.seal": "scr_dyn_seal",
   "dyn.isSealed": "scr_dyn_is_sealed",
   "dyn.isSealedQuery": "scr_dyn_is_sealed_query",

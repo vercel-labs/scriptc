@@ -1,4 +1,4 @@
-import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
@@ -229,6 +229,9 @@ export function lowerReflectCall(
   // construction. An ordinary constructor builds its instance from its
   // `prototype`, a Proxy runs its construct trap, and argsList is
   // CreateListFromArrayLike — any object with a length, not only an array.
+  // The two forms are separate entry points: newTarget defaults to the
+  // target only when the argument is left out, so a written `undefined`
+  // reaches the constructor check and throws.
   if (
     reflectMember === "construct" &&
     (call.arguments.nodes.length === 2 || call.arguments.nodes.length === 3) &&
@@ -236,13 +239,25 @@ export function lowerReflectCall(
   ) {
     const loc = locOf(call);
     const [target, argsList, newTarget] = call.arguments.nodes;
+    if (newTarget === undefined) {
+      return {
+        kind: "libCall",
+        fn: "dyn.reflectConstructDefault",
+        args: [
+          lowerer.lowerExprExpecting(target!, DYN),
+          lowerer.lowerExprExpecting(argsList!, DYN),
+        ],
+        type: DYN,
+        loc,
+      };
+    }
     return {
       kind: "libCall",
       fn: "dyn.reflectConstruct",
       args: [
         lowerer.lowerExprExpecting(target!, DYN),
         lowerer.lowerExprExpecting(argsList!, DYN),
-        newTarget ? lowerer.lowerExprExpecting(newTarget, DYN) : dynUndefinedExpr(loc),
+        lowerer.lowerExprExpecting(newTarget, DYN),
       ],
       type: DYN,
       loc,

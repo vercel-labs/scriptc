@@ -1521,6 +1521,7 @@ const RUNTIME_FEATURE_RULES = {
       "dyn.reflectPreventExtensions",
       "dyn.reflectIsExtensible",
       "dyn.reflectConstruct",
+      "dyn.reflectConstructDefault",
     ],
   }),
   /** Module namespace objects as checked-dynamic values

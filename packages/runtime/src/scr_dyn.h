@@ -1349,9 +1349,12 @@ ScrDyn *scr_dyn_reflect_get_prototype(ScrDyn *target);
 bool scr_dyn_reflect_set_prototype(ScrDyn *target, ScrDyn *prototype);
 bool scr_dyn_reflect_prevent_extensions(ScrDyn *target);
 bool scr_dyn_reflect_is_extensible(ScrDyn *target);
-/* Reflect.construct(target, argsList, newTarget): newTarget is undefined
- * for the two-argument form. */
+/* Reflect.construct(target, argsList, newTarget): the three-argument form.
+ * newTarget is a constructor, and only a constructor: a written `undefined`
+ * throws, where leaving the argument out uses the target. */
 ScrDyn *scr_dyn_reflect_construct(ScrDyn *target, ScrDyn *arguments_list, ScrDyn *new_target);
+/* The two-argument form: newTarget defaults to the target. */
+ScrDyn *scr_dyn_reflect_construct_default(ScrDyn *target, ScrDyn *arguments_list);
 #endif
 /* Retains the native view, preserving identity and its shared backing
  * allocation across the checked-dynamic boundary. Borrows b. */

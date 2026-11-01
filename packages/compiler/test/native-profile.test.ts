@@ -626,6 +626,34 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
     },
   );
 
+  test.runIf(profileLinker !== null)(
+    "a partitioned build weighs every partition by the whole profile",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-partition-counts-"));
+      dirs.push(dir);
+      const { profile } = await collect(dir, program(), 1, "counts");
+      const report = (stdout: string) => JSON.parse(stdout.trim().split("\n").at(-1)!).profile;
+      // The one module build weighs the annotated functions once. A build with
+      // four partitions weighs them on separate threads, so a partition that
+      // read the profile's totals while another was still adding them up would
+      // report fewer counts than the whole profile holds.
+      const single = await emitReporting(dir, program(), {
+        outputs: 1,
+        name: "single",
+        use: profile,
+      });
+      const partitioned = await emitReporting(dir, program(), {
+        outputs: 4,
+        name: "partitioned",
+        use: profile,
+      });
+      expect(report(single.stdout).annotated_counts).toBeGreaterThan(0);
+      expect(report(partitioned.stdout).annotated_counts).toBe(
+        report(single.stdout).annotated_counts,
+      );
+    },
+  );
+
   test("merge-profiles reports an input that is not a profile", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-merge-error-"));
     dirs.push(dir);

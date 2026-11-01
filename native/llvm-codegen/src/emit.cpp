@@ -460,22 +460,29 @@ void reportProfileMatch(const ProfileMatch &Match) {
 StringMap<uint64_t> ProfileCounts;
 std::string ProfileCountsPath;
 bool ProfileCountsLoaded = false;
+// A multi-partition emit weighs its partitions on threads, so each of them
+// asks for the totals while the others may be filling them. The lock makes the
+// first asker read the profile and the others wait for a complete map, which
+// then stays unchanged until the next emit resets it on one thread.
+std::mutex ProfileCountsMutex;
 
 void resetProfileCounts() {
+  std::lock_guard<std::mutex> Lock(ProfileCountsMutex);
   ProfileCounts.clear();
   ProfileCountsPath.clear();
   ProfileCountsLoaded = false;
 }
 
 const StringMap<uint64_t> &profileCounts(const std::string &Path) {
+  std::lock_guard<std::mutex> Lock(ProfileCountsMutex);
   if (ProfileCountsLoaded && ProfileCountsPath == Path) return ProfileCounts;
   ProfileCounts.clear();
   ProfileCountsPath = Path;
-  ProfileCountsLoaded = true;
   Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
       IndexedInstrProfReader::create(Path, *vfs::getRealFileSystem());
   if (!Reader) {
     consumeError(Reader.takeError());
+    ProfileCountsLoaded = true;
     return ProfileCounts;
   }
   for (const NamedInstrProfRecord &Record : **Reader) {
@@ -485,6 +492,9 @@ const StringMap<uint64_t> &profileCounts(const std::string &Path) {
     ProfileCounts[Record.Name] += Sum;
   }
   consumeError((*Reader)->getError());
+  // Published last, under the lock, so no thread can take the map as complete
+  // before it is.
+  ProfileCountsLoaded = true;
   return ProfileCounts;
 }
 

@@ -1042,6 +1042,11 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
+  /** scr_async_disposable_stack.c, the `await using` stack: a program that
+   * constructs an AsyncDisposableStack. Its disposal awaits through the
+   * dyn-async unit and reads each resource's disposal method through the
+   * symbol unit, which the fact selects too (see the end of the scan). */
+  asyncDisposableStack: rule({ prefixes: ["disposable.async"] }),
   /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
    * produce bigint values. */
   bigint: rule({
@@ -1639,6 +1644,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
   return {
     assert: false,
     asyncContext: false,
+    asyncDisposableStack: false,
     bigint: false,
     bigstats: false,
     childProcess: false,
@@ -1829,6 +1835,13 @@ function scanRuntimeFeatures(
   // scr_dyn_function_apply), so the fact links it: a JavaScript source can
   // read an intrinsic without dispatching anything of its own (t262-da A1).
   if (!features.dynInvoke && features.jsObjectModel) features.dynInvoke = true;
+  // AsyncDisposableStack's unit awaits through the dyn-async helpers
+  // (scr_async_dyn.c) and reads each resource's [Symbol.asyncDispose] and
+  // [Symbol.dispose] through scr_symbol.c, so its fact links both.
+  if (features.asyncDisposableStack) {
+    features.dynAsync = true;
+    features.symbol = true;
+  }
   return features;
 }
 

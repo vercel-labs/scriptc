@@ -131,6 +131,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
    * JavaScript source resizes, grows or detaches an ArrayBuffer. */
   mutableBuffers?: boolean;
+  /** AsyncDisposableStack (scr_async_disposable_stack.c): selected when a
+   * JavaScript source constructs one. */
+  asyncDisposableStack?: boolean;
   /** The builtin intrinsic graph (scr_js_intrinsics.c, t262-da A1): the raw
    * program fact, so a BigInt-view program's object model build does not
    * drag the graph in. */
@@ -373,6 +376,7 @@ export function effectiveRuntimeFeatures(
     warningReplace: features.warningReplace === true,
     jsObjectModel,
     mutableBuffers: features.mutableBuffers === true,
+    asyncDisposableStack: features.asyncDisposableStack === true,
     // The raw program fact, not the jsObjectModel union above: a BigInt
     // typed array holds the object model build but reads no intrinsic.
     intrinsicObjects: features.intrinsicObjects === true,

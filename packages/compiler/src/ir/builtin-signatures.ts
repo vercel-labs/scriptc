@@ -4344,6 +4344,12 @@ function buildLibFnSignatures() {
     "disposable.stackNew": { argTypes: [], result: DYN },
     "disposable.stackIs": { argTypes: [DYN], result: BOOL },
     "disposable.stackUseCallback": { argTypes: [DYN, DYN, DYN], result: BOOL },
+    /** AsyncDisposableStack (scr_async_disposable_stack.c): a new stack
+     * handle, and whether a value is one. Its members, disposeAsync
+     * included, are function values and getters of the handle. */
+    "disposable.asyncStackNew": { argTypes: [], result: DYN },
+    "disposable.asyncStackIs": { argTypes: [DYN], result: BOOL },
+    "disposable.asyncStackUseCallback": { argTypes: [DYN, DYN, DYN], result: BOOL },
     "dyn.reflectSet": { argTypes: [DYN, DYN, DYN, DYN], result: BOOL },
     "dyn.reflectDefine": { argTypes: [DYN, DYN, DYN], result: BOOL },
     "dyn.abstractEq": { argTypes: [DYN, DYN], result: BOOL },

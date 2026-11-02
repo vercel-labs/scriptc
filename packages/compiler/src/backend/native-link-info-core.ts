@@ -47,6 +47,12 @@ export interface NativeLinkFeatures {
    * (jsObjectModelFact), so it selects no build column of its own. Absent
    * for every other program, so their objects stay identical. */
   mutableBuffers?: boolean;
+  /** A JavaScript source constructs an AsyncDisposableStack
+   * (frontend/lowering/builtins/async-disposable-stack.ts): compiles
+   * scr_async_disposable_stack.c, the `await using` stack whose disposeAsync
+   * awaits each resource. Absent for every other program, so their objects
+   * stay identical. */
+  asyncDisposableStack?: boolean;
   /** The program reads a builtin intrinsic object (`X.prototype`, a builtin
    * constructor as a value) from a JavaScript source: links
    * scr_js_intrinsics.c, the whole intrinsic graph (t262-da A1). Split from

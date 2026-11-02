@@ -36,6 +36,7 @@ const features = {
   warningReplace: false,
   jsObjectModel: false,
   intrinsicObjects: false,
+  asyncDisposableStack: false,
   stdioExtended: false,
   streamWriteErrors: false,
   stdioWriteSlot: false,

@@ -22,6 +22,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     mutableBuffers: features.mutableBuffers,
+    ...(features.asyncDisposableStack ? { asyncDisposableStack: true } : {}),
     // The builtin intrinsic graph (t262-da A1) links only for a program that
     // reads those objects from a JavaScript source. The raw fact, not the
     // bigintBytes union: a typed program that constructs a BigInt typed array

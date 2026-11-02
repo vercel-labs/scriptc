@@ -1,0 +1,15 @@
+generic-capture-index-signature.ts:9:17 - error SC1090: generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of 'inner' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope) are not supported yet (instantiating 'outer' with <number>)
+
+   8 |   const table: { [key: string]: T } = {};
+   9 |   const inner = <U>(x: U): string => `${String(x)}${String(table["k"])}`;
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 |   return inner(3);
+
+generic-capture-index-signature.ts:10:10 - error SC2004: uses of 'inner' inherit the blocker on its declaration (instantiating 'outer' with <number>)
+
+   9 |   const inner = <U>(x: U): string => `${String(x)}${String(table["k"])}`;
+  10 |   return inner(3);
+     |          ^~~~~
+  11 | }
+
+  hint: the declaration of 'inner' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8763-runtime-optional-capture-read/records.ts",
+  "<repo>/tests/corpus/8763-runtime-optional-capture-read/main.ts"
+ ],
+ "diags": []
+}

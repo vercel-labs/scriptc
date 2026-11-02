@@ -215,6 +215,14 @@ static ScrDyn *scr_global_get(void *handle, const char *key, size_t length) {
   (void)handle;
   ScrDyn *own = scr_global_own ? scr_dyn_obj_get(scr_global_own, key, length) : NULL;
   if (own) return scr_dyn_retain(own);
+#ifdef SCR_GLOBAL_HOST_ABSENT
+  /* A Node global the native runtime does not implement (host-globals.ts):
+   * Node has the value, so a computed read must not answer undefined. The
+   * program's own properties above still shadow it. NULL is this ops table's
+   * "exception pending" answer (the builtin lookup below answers it the same
+   * way). */
+  if (scr_global_host_absent_check(key, length)) return NULL;
+#endif
   if ((length == 10 && memcmp(key, "globalThis", length) == 0) ||
       (length == 6 && memcmp(key, "global", length) == 0))
     return scr_dyn_retain(scr_global_box);

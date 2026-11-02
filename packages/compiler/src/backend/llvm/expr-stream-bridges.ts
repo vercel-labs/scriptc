@@ -1185,10 +1185,18 @@ export function streamTypedRefMaterializeAdapter(
       // A copy linked to its source (IrModule.recordLinks) views as its
       // composed record: the field operations below answer the declared
       // fields from the copy, and the view the source's other properties.
+      // The composed record's live view boxes its records live, and it
+      // holds the copy's own nested records, so writes through the view's
+      // nested records reach the copy's.
       emitLinkedRecordBranches(host.shapeHost, B, t.shapeId, "%p", (sourceT, composed) => {
         const view = B.tmp();
-        B.line(`${view} = call ptr @${host.dyn.toDynHelper(sourceT)}(ptr ${composed})`);
-        return `ret ptr ${view}`;
+        B.line(`${view} = call ptr @${host.liveDynRefAdapter(sourceT).snapshot}(ptr ${composed})`);
+        // The composed record keeps what its source kept (a spread's other
+        // keys), which rejoins the view in their own-key positions.
+        host.declare(`declare ptr @scr_record_source_apply(ptr, ptr)`);
+        const merged = B.tmp();
+        B.line(`${merged} = call ptr @scr_record_source_apply(ptr ${view}, ptr ${composed})`);
+        return `ret ptr ${merged}`;
       });
       host.declare(`declare ptr @scr_dyn_new_obj()`);
       host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);

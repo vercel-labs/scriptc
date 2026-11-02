@@ -216,6 +216,7 @@ import { collectContractAnnotations, type ContractAnnotations } from "../contrac
 import { sanitizeUnregisteredClassTypes } from "./sanitize-class-types.js";
 import { UnregisteredClassTypes } from "./unregistered-class-types.js";
 import type { WidthLift } from "./width-lift.js";
+import type { UnionClassRoute } from "./union-retag.js";
 import {
   bindingInContext,
   captureContextBinding,
@@ -7293,15 +7294,31 @@ export class Lowerer {
     };
     /** `r.name` where the name resolves to the receiver's index signature. */
     const isRecordIndexPropertyRead = (e: ts.PropertyAccessExpression): boolean => {
-      // A name that resolves to a declared member is not an index read, and
-      // only a receiver with an index signature maps to an indexed record.
-      if (symbolOf(e.name)) return false;
-      const receiverType = this.typeOf(e.expression);
-      if (this.checker.getIndexInfosOfType(receiverType).length === 0) return false;
-      const receiver = this.mapTypeOf(receiverType);
+      // A name that resolves to a declared member is a member read, and only
+      // a receiver with an index signature maps to an indexed record. The
+      // name's own symbol separates the two spellings: a mapped
+      // `Record<string, V>` answers no declaration at all, while a named
+      // object type answers the index signature's symbol, whose declaration
+      // is that signature. Reading the receiver's type instead would ask the
+      // checker about a node inside a body lowered only for coverage, which
+      // the batch prefetch covers and an extra individual query does not.
+      const nameSymbol = symbolOf(e.name);
+      const answersIndexSignature =
+        nameSymbol === null ||
+        (nameSymbol.declarations ?? []).some((decl) => ts.isIndexSignatureDeclaration(decl));
+      if (!answersIndexSignature) return false;
+      const receiver = this.mapTypeOf(this.typeOf(e.expression));
       if (receiver?.kind !== "record") return false;
       const shape = this.shapes.get(receiver.shapeId);
       if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn")
+        return false;
+      // A slot whose value type already admits undefined tells the checker
+      // itself that a key can be missing (`{ [name: string]: string |
+      // undefined }` in the http-header shape), so the read hides nothing.
+      if (
+        shape.indexValue.kind === "union" &&
+        this.armTag(shape.indexValue.unionId, UNDEFINED_T) >= 0
+      )
         return false;
       if (shape.fields.some((field) => field.name === e.name.text)) return false;
       const read = this.mapTypeOf(this.typeOf(e));
@@ -13499,6 +13516,7 @@ export class Lowerer {
         expected.unionId,
         expr.loc,
         undefined,
+        undefined,
         true,
       );
       if (checkedHelper) {
@@ -13841,9 +13859,10 @@ export class Lowerer {
     toId: string,
     loc: SrcLoc,
     trappable?: ReadonlySet<number>,
+    classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
     checked = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, checked);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {

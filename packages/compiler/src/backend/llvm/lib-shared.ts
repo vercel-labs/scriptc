@@ -308,6 +308,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.dirDyn": "scr_console_dir_dyn",
   "console.dirHidden": "scr_console_dir_hidden",
   "global.native": "scr_global_native",
+  "global.hostAbsent": "scr_global_host_absent_install",
+  "dyn.globalHas": "scr_global_host_absent_has",
   "global.installValues": "scr_global_values_install",
   "dyn.installBuiltinStatics": "scr_builtin_statics_install",
   "global.forInObject": "scr_global_for_in_object",
@@ -321,6 +323,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "module.namespaceValue": "scr_module_namespace_value",
   "module.namespaceDyn": "scr_module_namespace_dyn_value",
   "wrapper.new": "scr_js_wrapper_new",
+  "iterator.prototype": "scr_js_iterator_prototype",
+  "iterator.constructor": "scr_js_iterator_constructor",
+  "iterator.construct": "scr_js_iterator_construct",
+  "iterator.from": "scr_js_iterator_from",
+  "iterator.instanceOf": "scr_js_iterator_instance_of",
   "wrapper.toObject": "scr_js_wrapper_to_object",
   "wrapper.instanceOf": "scr_js_wrapper_instance_of",
   "wrapper.objectTag": "scr_js_wrapper_object_tag",
@@ -718,6 +725,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "zlib.inflateSync": "scr_zlib_inflate",
   "zlib.crc32": "scr_zlib_crc32",
   "zlib.brotliInstall": "scr_brotli_install",
+  "zlib.zstdInstall": "scr_zstd_install",
   // The CA-store unit. get/set throw (an unknown type name, a
   // certificate-free set) and take the generic path's pending check.
   "tlsca.root": "scr_tls_ca_root",
@@ -817,6 +825,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.layout": "scr_insp_layout",
   "insp.maxArrayLength": "scr_insp_max_array_length",
   "insp.maxStringLength": "scr_insp_max_string_length",
+  "insp.getters": "scr_insp_getters",
+  "insp.gettersMode": "scr_insp_getters_mode",
+  "insp.accessorValue": "scr_insp_accessor_result",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
@@ -825,6 +836,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.mark": "scr_insp_mark",
   "insp.unwind": "scr_insp_unwind",
   "insp.nestedEnd": "scr_insp_nested_end",
+  "insp.nestedRestore": "scr_insp_nested_restore",
   // Circular references over cycle-capable composites (Node's
   // seen/circular machinery — none of these throw; refWrap borrows its
   // string and answers +1).
@@ -1374,6 +1386,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "event.broadcastInstall": "scr_et_broadcast_install",
   "process.stdinDestroy": "scr_process_stdin_destroy",
   "process.stdinSetRawMode": "scr_process_stdin_set_raw_mode",
+  "stdin.pause": "scr_stdin_pause",
+  "stdin.resume": "scr_stdin_resume",
+  "stdin.isPaused": "scr_stdin_is_paused",
+  "stdin.readableLength": "scr_stdin_readable_length",
   // node:events EventEmitter (scr_events_emitter.c): receivers borrowed,
   // chaining forms answer the receiver +1 (Node's `return this`). The
   // registration/removal family and emitError are may-throw (meta
@@ -1708,6 +1724,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.serverMaxHeaderSize": "scr_http_server_max_header_size",
   "http.clientMaxHeaderSize": "scr_http_client_max_header_size",
   "http.clientSignalCheck": "scr_http_client_signal_check",
+  "http.clientProtocolCheck": "scr_http_client_protocol_check",
+  "http.clientProtocolCheckAgent": "scr_http_client_protocol_check_agent",
   "https.nextServername": "scr_https_set_next_servername",
   "http.clientAbort": "scr_http_client_abort",
   "http.clientAborted": "scr_http_client_aborted",
@@ -1992,6 +2010,13 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // object as process.stdio and call back from a nextTick.
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  // stdin.resume() and stdin.read() start the runtime's stdin watch (a
+  // resumed stream, a read demand above the held input, or a parked
+  // for-await), which the loop services until end-of-input: without the
+  // loop a program that only waits for input exits at once instead of at
+  // EOF, as Node's does.
+  "stdin.resume",
+  "stdin.read",
   "fetch.start",
   "fetch.input",
   "fetch.function",
@@ -2155,6 +2180,10 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "http.requestUrlDyn",
+  "http.requestUrlDynCb",
+  "https.requestUrlDyn",
+  "https.requestUrlDynCb",
   "https.request",
   "https.requestCb",
   "https.requestUrl",

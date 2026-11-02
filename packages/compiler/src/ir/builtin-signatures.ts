@@ -676,6 +676,27 @@ function buildLibFnSignatures() {
     /** process.stdin.on/once('keypress', cb) (scr_readline_tty.c): cb is the
      * listener as a checked-dynamic function, called with (str, key). */
     "stdin.onKeypress": { argTypes: [DYN, BOOL], result: VOID },
+    /** process.stdin.on/once("readable", cb): the paused-mode event —
+     * input stays buffered for read(), and the listener (no parameters)
+     * runs on the next tick when input arrives while a read wanted more,
+     * and once at EOF. Like a 'data' listener it keeps the loop alive
+     * until EOF. Never throws. */
+    "stdin.onReadable": { argTypes: [{ kind: "func", params: [], ret: VOID }, BOOL], result: VOID },
+    /** process.stdin.pause()/resume(): Node's flowing flag. Buffered
+     * input stops reaching 'data' listeners while paused and flows again
+     * on resume. */
+    "stdin.pause": { argTypes: [], result: VOID },
+    "stdin.resume": { argTypes: [], result: VOID },
+    /** process.stdin.isPaused() — true in paused mode, which a 'readable'
+     * listener pins. */
+    "stdin.isPaused": { argTypes: [], result: BOOL },
+    /** process.stdin.readableLength — bytes buffered for read(). */
+    "stdin.readableLength": { argTypes: [], result: F64 },
+    /** process.stdin.read([size]): args [all bool, size]. Readable#read's
+     * size coercion (parseInt, NaN reads everything held, non-positive
+     * reads nothing) and its ERR_OUT_OF_RANGE above 1 GiB; the result is
+     * the `Uint8Array | null` union (the emitter constructs it). */
+    "stdin.read": { argTypes: [BOOL, F64], result: VOID },
     /** The for-await chunk source over process.stdin: no args, result
      * Promise<Uint8Array> (+1). Fulfills with the next arrived chunk; the
      * EMPTY bytes value is the done sentinel (POSIX reads never deliver
@@ -2372,6 +2393,11 @@ function buildLibFnSignatures() {
     "http.clientSignal": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     /** options.signal checked before the request is built (ERR_INVALID_ARG_TYPE). */
     "http.clientSignalCheck": { argTypes: [DYN], result: VOID },
+    /** options.protocol checked before the request is built: the declared
+     * scheme against the agent's (the calling module's when the options
+     * carry no Agent value). MAY THROW ERR_INVALID_PROTOCOL. */
+    "http.clientProtocolCheck": { argTypes: [DYN, BOOL], result: VOID },
+    "http.clientProtocolCheckAgent": { argTypes: [DYN, BOOL, DYN], result: VOID },
     /** https.request's servername option, stored for the construction call
      * that follows: the TLS name sent and verified, and part of the pooled
      * socket key. The "https." prefix keeps the TLS unit linked. */
@@ -2416,6 +2442,13 @@ function buildLibFnSignatures() {
     "http.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     "https.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
     "https.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    /** request/get with a URL and an options record: Node's
+     * `{...urlToHttpOptions(new URL(url)), ...options}` merge at run time,
+     * then the walk above. Args (url, options, autoEnd[, cb]). MAY THROW. */
+    "http.requestUrlDyn": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "http.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDyn": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     /** The paused-mode demux surface (portless's first-byte TLS peek:
      * once('readable') + read(1) + unshift + emit('connection')).
      * sockOnReadable registers a zero-param listener (a consumer: arrived
@@ -3625,6 +3658,8 @@ function buildLibFnSignatures() {
      * receivers are borrowed. */
     /** Connects scr_brotli.c to the zlib engine (%main, before any module). */
     "zlib.brotliInstall": { argTypes: [], result: VOID },
+    /** Connects scr_zstd.c the same way. */
+    "zlib.zstdInstall": { argTypes: [], result: VOID },
     "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
     "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
     /** `stream instanceof zlib.Gzip`: the borrowed stream and the class's
@@ -3891,6 +3926,14 @@ function buildLibFnSignatures() {
      * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
      * constructor values for the prototypes' `constructor`. */
     "wrapper.new": { argTypes: [F64, DYN, DYN, DYN, DYN], result: DYN },
+    /** %Iterator.prototype% and %Iterator% (scr_js_iterator.c), `new
+     * Iterator()` (always the abstract-class TypeError), Iterator.from over
+     * a checked value, and OrdinaryHasInstance(%Iterator%, value). */
+    "iterator.prototype": { argTypes: [], result: DYN },
+    "iterator.constructor": { argTypes: [], result: DYN },
+    "iterator.construct": { argTypes: [], result: DYN },
+    "iterator.from": { argTypes: [DYN], result: DYN },
+    "iterator.instanceOf": { argTypes: [DYN], result: BOOL },
     /** ToObject (scr_js_wrapper_to_object): a wrapper for a primitive, the
      * value for an object, a fresh object for null/undefined; then the
      * three constructor values. */
@@ -4106,6 +4149,12 @@ function buildLibFnSignatures() {
     "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
+    /** Arms the runtime check for the Node globals the native runtime does not
+     * implement (host-globals.ts): the compiler's derived name table. */
+    "global.hostAbsent": { argTypes: [arrayOf(STRING)], result: VOID },
+    /** `key in globalThis`: the host-global check, then the global object's
+     * own presence answer (scr_global_host_absent.c). */
+    "dyn.globalHas": { argTypes: [STRING], result: BOOL },
     /** Installs the program's builtin-global lookup (global-values.ts). */
     "global.installValues": { argTypes: [DYN], result: VOID },
     /** Installs the program's static-member lookup for builtin constructor
@@ -5148,6 +5197,17 @@ function buildLibFnSignatures() {
     /** ctx.maxStringLength for the renders that follow; answers the previous
      * value so the call site can restore it. */
     "insp.maxStringLength": { argTypes: [F64], result: F64 },
+    /** ctx.getters for the renders that follow: whether an accessor
+     * property's getter runs (0 the labels only, 1 every getter, 2 the
+     * getters without a setter, 3 the getters with one); answers the previous
+     * value so the call site can restore it. */
+    "insp.getters": { argTypes: [F64], result: F64 },
+    /** The current ctx.getters, which the interned per-type helpers read: the
+     * option is run-time state shared by every call site. */
+    "insp.gettersMode": { argTypes: [], result: F64 },
+    /** An invoked accessor property's value, by the result's kind:
+     * `[Label: <primitive>]` or `[Label] <object>`. */
+    "insp.accessorValue": { argTypes: [DYN, STRING, F64, F64], result: STRING },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
     // Circular references: the receiver slot is program-dependent (any
     // cycle-capable record/array/map/class type — the insp.error precedent).
@@ -5200,6 +5260,8 @@ function buildLibFnSignatures() {
      * `prefix inner` re-indented at the caller's level (+1). */
     "insp.nestedBegin": { argTypes: [], result: VOID },
     "insp.nestedEnd": { argTypes: [STRING, STRING], result: STRING },
+    /** nestedEnd's restore alone: the caller's context returns. */
+    "insp.nestedRestore": { argTypes: [], result: VOID },
     /** Around a top-level render that an inspection refusal can end: mark
      * records the inspector's frame and nesting depth, unwind (in the
      * render's finally) closes what the render left open above it. */

@@ -26,6 +26,7 @@ import {
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError, newFnCtx } from "./lowerer.js";
 import { classMethodValue } from "./class-method-values.js";
+import { iteratorPrototypeExpr } from "./iterator-prototype.js";
 
 /** Data added to a top-level class prototype has shared identity and remains
  * separate from instance fields. Allocate lazily so inheritance and module
@@ -52,21 +53,25 @@ export function classPrototypeData(
             loc,
           };
     const base: IrExpr | null = info.callableBase
-      ? {
-          kind: "libCall",
-          fn: "dyn.classBasePrototype",
-          args: [
-            {
-              kind: "libCall",
-              fn: "dyn.getPrototype",
-              args: [{ kind: "dynFrom", value, type: DYN, loc }],
-              type: DYN,
-              loc,
-            },
-          ],
-          type: DYN,
-          loc,
-        }
+      ? info.callableBase.iterator
+        ? // `class extends Iterator` in JavaScript: the base prototype is
+          // the runtime's live %Iterator.prototype%, not a native class's.
+          iteratorPrototypeExpr(loc)
+        : {
+            kind: "libCall",
+            fn: "dyn.classBasePrototype",
+            args: [
+              {
+                kind: "libCall",
+                fn: "dyn.getPrototype",
+                args: [{ kind: "dynFrom", value, type: DYN, loc }],
+                type: DYN,
+                loc,
+              },
+            ],
+            type: DYN,
+            loc,
+          }
       : info.base && !info.base.builtinError
         ? classPrototypeData(lowerer, info.base, loc, {
             kind: "dynCheck",

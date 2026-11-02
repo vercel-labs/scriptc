@@ -70,8 +70,8 @@ function pick(a: string | number, b: number | boolean): boolean {
 }
 const picked = pick(1, 2);
 
-// Related classes may store one object under different union tags. A
-// structural arm beside them leaves no identity-preserving comparison.
+// A union of a class, its subclass and a structural member stores the base
+// class, so comparisons of its values keep identity.
 class FenceBase {
   id = 1;
 }

@@ -1181,6 +1181,12 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+#ifdef SCR_JS_OBJECT_MODEL
+/* That table as the object model build reaches it: this unit installs the
+ * hook when a program links both builds, and scr_json.c keeps its named
+ * refusal where it is NULL. */
+extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
+#endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
@@ -1416,10 +1422,21 @@ typedef struct {
   const char *key;
   size_t key_len;
   const size_t *offsets;
+  /* The source record's declared names in declaration order, as strided
+   * tables: what a partial view needs to keep the properties a write adds
+   * to a field the source does not declare. */
+  const char *names;
+  const char *lens;
+  size_t name_stride, len_stride, count;
 } ScrRecordViewSource;
 /* The slot of field `position` of a view, or NULL for a field the viewed
  * record does not declare (a partial record view, record-views.ts). */
 void *scr_record_view_slot(void *view, size_t position);
+/* A partial view's field the viewed record does not declare: the property
+ * a write added for it (borrowed), or NULL. */
+ScrDyn *scr_record_view_extra(void *view, const char *name, size_t name_len);
+/* Adds or replaces that property; consumes one reference. */
+void scr_record_view_extra_set(void *view, const char *name, size_t name_len, ScrDyn *value);
 void *scr_record_view_field(void *value, size_t offset, size_t position);
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
                           const char *key, size_t key_len, void *(*alloc)(void));
@@ -1571,6 +1588,16 @@ ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
  * (resolve/reject). */
 ScrDyn *scr_js_promise_generic_call(const ScrStr *name, const ScrDyn *thisArg, const ScrDyn *arg);
 
+/* %Iterator%, %Iterator.prototype% and Iterator.from (scr_js_iterator.c,
+ * linked only into programs that reach them): the live prototype holds
+ * the interned helper methods every iterator answers; `new Iterator()`
+ * throws the abstract-class TypeError; instance_of is
+ * OrdinaryHasInstance(%Iterator%, value). All arguments borrowed. */
+ScrDyn *scr_js_iterator_prototype(void);
+ScrDyn *scr_js_iterator_constructor(void);
+ScrDyn *scr_js_iterator_construct(void);
+ScrDyn *scr_js_iterator_from(ScrDyn *value);
+bool scr_js_iterator_instance_of(ScrDyn *value);
 ScrDyn *scr_dyn_util_type_value(const ScrDyn *value, const ScrStr *probe);
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item);
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
@@ -1709,6 +1736,15 @@ void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol);
  * object answers it; its symbol-keyed properties are the global object's
  * (scr_node_builtin.c). */
 ScrDyn *scr_global_object(void);
+/* The Node globals the native runtime does not implement (host-globals.ts):
+ * the compiler hands over its derived name table (idempotent, first install
+ * stands), and the dynamic global object's read and `in` answers throw Node's
+ * TypeError for exactly those names (scr_global_host_absent.c). */
+void scr_global_host_absent_install(ScrArr *names);
+/* True when the name is one of them — the error is pending in that case. */
+bool scr_global_host_absent_check(const char *key, size_t length);
+/* `key in <global object>`: the check above, then the global object's answer. */
+bool scr_global_host_absent_has(ScrStr *key);
 /* The program's builtin-global lookup, a dyn function (borrowed); the first
  * installation stands. */
 void scr_global_values_install(ScrDyn *lookup);

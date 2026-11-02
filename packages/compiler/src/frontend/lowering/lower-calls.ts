@@ -1,3 +1,4 @@
+import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
   arrayClassMemberOwner,
@@ -139,6 +140,7 @@ import {
   lowerHelperReturnCall,
   lowerIteratorFromCall,
   lowerIteratorHelperCall,
+  lowerWidenedIteratorHelperCall,
 } from "./containers/iterator-helpers.js";
 import {
   lowerObjectAssignIndexShape,
@@ -155,6 +157,7 @@ import {
   lowerBytesStaticCall,
 } from "./containers/bytes.js";
 import {
+  EXTRA_STRING_METHODS,
   lowerRegexMethodCall,
   lowerStringIndexCall,
   lowerStringMethodCall,
@@ -163,6 +166,7 @@ import {
   isDynPrimitiveKindMethod,
   lowerDynPrimitiveMethodCall,
   lowerExtraNumberMethodCall,
+  lowerExtraStringMethodCall,
 } from "./containers/string-and-regexp.js";
 import { createRequireSpecOf } from "./builtins/module-bindings.js";
 import {
@@ -1842,6 +1846,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // (untyped in fallback builds, so before the dyn receiver path) or
       // webcrypto.
       lowerWebCryptoMethodCall(lowerer, expr, expr.expression) ??
+      // A helper call on a JavaScript binding reassigned with a helper
+      // stage (`let it = g(); it = it.filter(...)`): the binding holds the
+      // checked value, and the dyn receiver path would read `filter` as
+      // Array.prototype's. Before it, so the runtime's helper answers.
+      lowerWidenedIteratorHelperCall(lowerer, expr) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
       lowerDynReceiverMethodCall(lowerer, expr, expr.expression) ??
@@ -3664,12 +3673,17 @@ function lowerStringPrototypeCall(
   if (access.name.text !== "call" || !ts.isPropertyAccessExpression(access.expression)) return null;
   const methodAccess = access.expression;
   const prototypeAccess = methodAccess.expression;
+  // The Annex B CreateHTML methods, substr, concat and the locale-cased pair
+  // lower only as EXTRA_STRING_METHODS; a `.call` reaches the same lowering
+  // with the receiver as its first argument.
+  const extraMethod = EXTRA_STRING_METHODS.has(methodAccess.name.text);
   if (
     !ts.isPropertyAccessExpression(prototypeAccess) ||
     prototypeAccess.name.text !== "prototype" ||
     !ts.isIdentifier(prototypeAccess.expression) ||
     prototypeAccess.expression.text !== "String" ||
-    (!Object.hasOwn(STR_METHODS, methodAccess.name.text) &&
+    (!extraMethod &&
+      !Object.hasOwn(STR_METHODS, methodAccess.name.text) &&
       !STRING_INDEX_METHODS.has(methodAccess.name.text)) ||
     !lowerer.isStdlibMember(methodAccess)
   )
@@ -3679,9 +3693,11 @@ function lowerStringPrototypeCall(
   const indexMethod = STRING_INDEX_METHODS.has(methodAccess.name.text)
     ? (methodAccess.name.text as "at" | "codePointAt")
     : null;
-  const resultType = indexMethod
-    ? lowerer.withUndefinedArmOf(indexMethod === "at" ? STRING : F64)
-    : entry?.result;
+  const resultType = extraMethod
+    ? STRING
+    : indexMethod
+      ? lowerer.withUndefinedArmOf(indexMethod === "at" ? STRING : F64)
+      : entry?.result;
   if (!resultType) return null;
   const method =
     methodAccess.name.text === "trimStart"
@@ -3752,6 +3768,27 @@ function lowerStringPrototypeCall(
         false));
   // Other methods convert object receivers before lowering their arguments;
   // padding uses a helper that delays conversion until every argument is ready.
+  if (extraMethod) {
+    // Only the receivers the typed extra-method lowering already accepts: a
+    // scalar converts without running code, and the checked-dynamic receiver
+    // took the branch above. An object receiver's ToString can run user code,
+    // which `Function.call` orders after every argument, so it keeps its fence.
+    if (!scalar) {
+      lowerer.noLowering(
+        `String.prototype.${methodAccess.name.text}.call with ${lowerer.fmt(receiverType)} receivers`,
+        call,
+      );
+    }
+    const receiver = lowerer.ensureString(receiverValue, receiverNode);
+    return lowerExtraStringMethodCall(
+      lowerer,
+      call,
+      methodAccess.name.text,
+      receiver,
+      receiverNode,
+      call.arguments.nodes.slice(1),
+    );
+  }
   const objectWithoutMethodArgs =
     entry?.maxArgs === 0 &&
     call.arguments.nodes.length === 1 &&
@@ -8281,6 +8318,11 @@ function lowerIteratorStaticFence(
   if (!lowerer.isStdlibMember(access)) return null;
   const from = lowerIteratorFromCall(lowerer, call, access);
   if (from) return from;
+  // Any other argument in JavaScript: the runtime's Iterator.from.
+  if (access.name.text === "from" && !call.questionDotToken && !access.questionDotToken) {
+    const dynamic = lowerIteratorFromDyn(lowerer, call);
+    if (dynamic) return dynamic;
+  }
   lowerer.noLowering(
     `Iterator.${access.name.text}`,
     call,
@@ -10058,6 +10100,17 @@ function lowerObjectStaticCall(
         if (typeEquals(vt, valueT)) return value;
         if (valueT.kind === "dyn" && lowerer.dynConvertible(vt))
           return lowerer.coerceToExpected(value, DYN);
+        if (valueT.kind === "union" && vt.kind === "union") {
+          // A field union that is a PROPER SUBSET of the element union
+          // (`{ accent: number | string; scrollbarThumb: number | string
+          // | undefined }` enumerates as `[string, number | string |
+          // undefined][]`): every arm the field can hold is an arm of the
+          // element union, so the box re-tags onto it — the same runtime
+          // value under the element union's tag numbering.
+          return lowerer.unionRetagMappable(vt.unionId, valueT.unionId)
+            ? lowerer.coerceToExpected(value, valueT)
+            : null;
+        }
         if (valueT.kind === "union" && vt.kind !== "union") {
           const tag = lowerer.armTag(valueT.unionId, vt);
           if (tag >= 0) {
@@ -10104,7 +10157,11 @@ function lowerObjectStaticCall(
           } else {
             return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
           }
-        } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
+        } else if (
+          valueT?.kind !== "dyn" &&
+          !typeEquals(f.type, valueT ?? f.type) &&
+          !(valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId))
+        ) {
           return `field '${f.name}' is a union that cannot re-tag into the result element type`;
         }
       }

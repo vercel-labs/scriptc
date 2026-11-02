@@ -9,6 +9,7 @@ import {
   planRecordUnionLift,
   planRecordUnionWrap,
   buildRecordUnionWrap,
+  type UnionClassRoute,
 } from "../union-retag.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -61,23 +62,58 @@ export function narrowedRetagHelper(
   loc: SrcLoc,
 ): string | null {
   const from = lowerer.unions.get(fromId);
-  if (!from || !lowerer.unions.get(toId)) return null;
+  const to = lowerer.unions.get(toId);
+  if (!from || !to) return null;
   const siteT = lowerer.mapTypeOf(lowerer.typeOf(node));
   if (!siteT) return null;
   const siteArms = siteT.kind === "union" ? lowerer.unions.get(siteT.unionId)?.arms : [siteT];
   if (!siteArms || siteArms.length === 0) return null;
   const allowed = new Set<number>();
+  const classRoutes = new Map<number, UnionClassRoute[]>();
   for (const a of siteArms) {
     const fi = lowerer.armTag(fromId, a);
-    if (fi < 0) return null; // not a narrowing of the source union
-    allowed.add(fi);
+    if (fi >= 0) {
+      allowed.add(fi);
+      continue;
+    }
+    // The mapper stores a subclass beside its base as the base (`Animal |
+    // Dog` is `Animal`), so a site narrowed to the subclass names no source
+    // arm. The destination must hold the subclass, and the source arm that
+    // stores it is the one whose class it descends from: that arm's payload
+    // is class-tested and viewed as the subclass.
+    if (a.kind !== "object") return null; // not a narrowing of the source union
+    const toTag = lowerer.armTag(toId, a);
+    if (toTag < 0) return null;
+    let stored = false;
+    for (let i = 0; i < from.arms.length; i++) {
+      const arm = from.arms[i]!;
+      if (arm.kind !== "object") continue;
+      if (a.className === arm.className || !lowerer.isSubclassOf(a.className, arm.className))
+        continue;
+      stored = true;
+      const routes = classRoutes.get(i) ?? [];
+      routes.push({ tag: toTag, arm: a });
+      classRoutes.set(i, routes);
+    }
+    if (!stored) return null;
   }
+  // A source arm the site still allows exactly keeps its plain route: the
+  // value can be a plain instance of that class, which no subclass test
+  // selects.
+  for (const tag of allowed) classRoutes.delete(tag);
+  // Most-derived first, so a site allowing both a subclass and its
+  // descendant tests the narrower class interval before the wider one.
+  const depth = (arm: UnionClassRoute["arm"]): number =>
+    to.arms.filter(
+      (other) => other.kind === "object" && lowerer.isSubclassOf(arm.className, other.className),
+    ).length;
+  for (const routes of classRoutes.values()) routes.sort((x, y) => depth(y.arm) - depth(x.arm));
   const trappable = new Set<number>();
   from.arms.forEach((_, i) => {
-    if (!allowed.has(i)) trappable.add(i);
+    if (!allowed.has(i) && !classRoutes.has(i)) trappable.add(i);
   });
-  if (trappable.size === 0) return null; // nothing stranded: the plain re-tag already declined
-  return lowerer.unionRetagHelper(fromId, toId, loc, trappable);
+  if (trappable.size === 0 && classRoutes.size === 0) return null; // nothing stranded: the plain re-tag already declined
+  return lowerer.unionRetagHelper(fromId, toId, loc, trappable, classRoutes);
 }
 
 /** A union conversion whose source arms include an object type with a
@@ -325,12 +361,20 @@ export function unionRetagHelper(
   toId: string,
   loc: SrcLoc,
   trappable?: ReadonlySet<number>,
+  classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   checked = false,
 ): string | null {
   const from = lowerer.unions.get(fromId);
   const to = lowerer.unions.get(toId);
   if (!from || !to) return null;
-  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}${checked ? ":checked" : ""}`;
+  const routeKey =
+    classRoutes === undefined
+      ? ""
+      : [...classRoutes]
+          .sort((a, b) => a[0] - b[0])
+          .map(([tag, routes]) => `${tag}>${routes.map((route) => route.tag).join(".")}`)
+          .join(";");
+  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}${checked ? ":checked" : ""}`;
   const cached = lowerer.coercions.copyRetags.get(request);
   if (
     cached &&
@@ -348,6 +392,7 @@ export function unionRetagHelper(
     (id) => lowerer.shapes.get(id),
     (src, dst) => lowerer.widthLiftPlan(src, dst),
     trappable,
+    classRoutes,
     checked ? (src, dst) => lowerer.checkedWidthLift(src, dst) : undefined,
   );
   if (plan === null) return null;
@@ -358,7 +403,7 @@ export function unionRetagHelper(
   plan.forEach((arm, tag) => {
     if (arm.kind === "trap") stranded.push(tag);
   });
-  const key = `${fromId}:${toId}:${stranded.join(".")}${checked ? ":checked" : ""}`;
+  const key = `${fromId}:${toId}:${stranded.join(".")}:${routeKey}${checked ? ":checked" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
   const name = existing ?? keyedHelperName(lowerer, "%union.retag", key);
   if (!existing) {
@@ -381,6 +426,7 @@ export function unionRetagHelper(
     plan.every(
       (arm) =>
         arm.kind === "trap" ||
+        arm.kind === "classRoute" ||
         (arm.kind === "direct"
           ? arm.route.lift.how === "copy"
           : arm.routes.every((route) => route.lift.how === "copy")),

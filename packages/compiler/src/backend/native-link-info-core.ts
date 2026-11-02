@@ -79,9 +79,14 @@ export interface NativeLinkFeatures {
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
   promiseGeneric?: boolean;
+  /** %Iterator% and %Iterator.prototype% as values link
+   * scr_js_iterator.c; absent (false) otherwise. */
+  iteratorProto?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
+  /** node:zlib's zstd forms: scr_zstd.c and the vendored zstd archive. */
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -140,6 +145,10 @@ export interface NativeLinkFeatures {
    * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
    * (false) otherwise, so other programs keep their exact link line. */
   stdlibPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`, links
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c; absent (false) otherwise. */
+  hostAbsentGlobals?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

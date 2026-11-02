@@ -262,6 +262,64 @@ function propertyFunctionName(lowerer: Lowerer, name: ts.PropertyName): string |
   return null;
 }
 
+/** `{ __proto__: value }` (B.3.1): sets the literal's prototype when the
+ * value is an object, a function or null, and does nothing for any other
+ * primitive — unlike Object.setPrototypeOf, which throws. Interned once. */
+function protoLiteralHelper(lowerer: Lowerer, loc: SrcLoc): string {
+  const key = "%dyn.protoLiteral";
+  const existing = lowerer.builtinCallableValueFns.get(key);
+  if (existing !== undefined) return existing;
+  const name = keyedHelperName(lowerer, key, "proto");
+  lowerer.builtinCallableValueFns.set(key, name);
+  const value = (): IrExpr => varRef("value.0", DYN, loc);
+  type PrimitiveTest = "string" | "number" | "boolean" | "undefined" | "symbol" | "bigint";
+  const test = (kind: PrimitiveTest): IrExpr => ({
+    kind: "dynTest",
+    test: kind,
+    value: value(),
+    type: BOOL,
+    loc,
+  });
+  let primitive: IrExpr = test("string");
+  for (const kind of ["number", "boolean", "undefined", "symbol", "bigint"] as PrimitiveTest[])
+    primitive = { kind: "logical", op: "||", left: primitive, right: test(kind), type: BOOL, loc };
+  lowerer.liftedFns.push({
+    name,
+    params: [
+      { localId: "object.0", name: "object", type: DYN },
+      { localId: "value.0", name: "value", type: DYN },
+    ],
+    returnType: VOID,
+    locals: [
+      { id: "object.0", name: "object", type: DYN, mutable: false },
+      { id: "value.0", name: "value", type: DYN, mutable: false },
+    ],
+    body: [
+      {
+        kind: "if",
+        cond: { kind: "unary", op: "!", operand: primitive, type: BOOL, loc },
+        then: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.setPrototype",
+              args: [varRef("object.0", DYN, loc), value()],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+    ],
+    loc,
+  });
+  return name;
+}
+
 /** The runtime-keyed JS object literal (a computed key that doesn't fold):
  * builds a dyn object member-by-member. Keys evaluate before their values,
  * properties in source order — JS's object-literal evaluation exactly.
@@ -328,20 +386,43 @@ export function lowerDynObjectLiteral(
       !ts.isComputedPropertyName(prop.name) &&
       prop.name.text === "__proto__"
     ) {
-      if (prop.initializer.kind !== ts.SyntaxKind.NullKeyword)
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          "object-literal prototypes other than null (use Object.setPrototypeOf)",
-        );
       flushFields();
       acc ??= { kind: "dynObjLit", fields: [], type: DYN, loc };
+      const value = lowerer.lowerExprExpecting(prop.initializer, DYN);
+      // B.3.1: a null value sets the prototype; an object or function does
+      // too, through the guarded helper (scr_dyn_set_prototype throws for
+      // primitives, where B.3.1 silently ignores the value).
+      if (prop.initializer.kind === ts.SyntaxKind.NullKeyword) {
+        acc = {
+          kind: "libCall",
+          fn: "dyn.setPrototype",
+          args: [acc, value],
+          type: DYN,
+          loc: locOf(prop),
+        };
+        continue;
+      }
+      const local = lowerer.declareHiddenLocal("%protoLiteral", DYN);
+      const object: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
       acc = {
-        kind: "libCall",
-        fn: "dyn.setPrototype",
-        args: [acc, lowerer.lowerExprExpecting(prop.initializer, DYN)],
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: local.id, init: acc, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: protoLiteralHelper(lowerer, loc),
+              args: [object, value],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: object,
         type: DYN,
-        loc: locOf(prop),
+        loc,
       };
       continue;
     }
@@ -893,6 +974,24 @@ export function lowerObjectLiteral(
    * whole union, so its contextual type cannot choose the layout. */
   exact = false,
 ): IrExpr {
+  // `__proto__: v` sets the literal's [[Prototype]] as the literal is built.
+  // A record is a native struct with no dynamic prototype slot, so a
+  // JavaScript literal that carries one builds as a checked-dynamic object,
+  // which models the prototype chain like every other JS object. A bare
+  // `__proto__: null` keeps its existing route (both representations model
+  // a null prototype, and the checked-dynamic one is the only one anyway).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    expr.properties.nodes.some(
+      (prop) =>
+        ts.isPropertyAssignment(prop) &&
+        !ts.isComputedPropertyName(prop.name) &&
+        prop.name.text === "__proto__" &&
+        prop.initializer.kind !== ts.SyntaxKind.NullKeyword,
+    )
+  ) {
+    return lowerDynObjectLiteral(lowerer, expr);
+  }
   // A spread of an untyped (`any`) source into a typed slot: TypeScript
   // types such a literal `any`, and the copy holds whatever own properties
   // the source has at runtime. Build it as a checked-dynamic object, then

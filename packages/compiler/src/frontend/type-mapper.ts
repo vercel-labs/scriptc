@@ -1615,6 +1615,13 @@ export interface TypeMapperCtx {
    * a hook rather than a field so that copies of the context made inside a
    * binding scope keep following the lowerer's current scope. */
   typeMemoFor?: () => Map<number, IrType>;
+  /** Mappings that read no generic-instantiation scope state
+   * (noteScopeSensitiveMapping): the answer is the one every binding scope
+   * gives, so every scope and the top level may answer from it. Consulted
+   * after the context's own memo, never instead of it — the top level's
+   * typeMemo also holds answers that DID read an unbound type parameter and
+   * are therefore only good outside bindings. */
+  typeMemoShared?: Map<number, IrType>;
   canMemoizeType?: () => boolean;
   /** True for files the Lowerer actually compiles (its module order). A
    * class type can reach the entry through the TYPE world alone — a jsdoc
@@ -1717,6 +1724,40 @@ let mapTypeDepth = 0;
  * a bump between entry and exit stays fenced (recursive generic-open types
  * stay fenced instead of interning a per-context-wrong shape). */
 let contextResolutions = 0;
+
+/** Bumped whenever a mapping reads state that only a generic-INSTANTIATION
+ * scope installs: a type-parameter binding (the Lowerer's resolver hooks,
+ * consulted whether or not bindings are installed right now — the same
+ * checker type parameter answers differently with and without them), the
+ * instance's result class, or the local-class instantiation stack. The
+ * answer of such a mapping can differ from one instance to the next, so it
+ * stays in that scope's memo (Lowerer.currentTypeMemo). A mapping that reads
+ * none of it is the answer every scope gives, and may serve all of them
+ * (TypeMapperCtx.typeMemoShared). */
+let scopeSensitivity = 0;
+
+/** Notes that the mapping in progress read generic-instantiation scope state. */
+export function noteScopeSensitiveMapping(): void {
+  scopeSensitivity++;
+}
+
+/** SCRIPTC_TYPE_MEMO_VERIFY=1: every hit on a shared (scope-independent)
+ * memo entry is recomputed from scratch in the scope that took it and
+ * compared. A mismatch is a miscompile the sharing would have introduced,
+ * so the mode throws instead of quietly recomputing: it exists to prove the
+ * sharing on a corpus, never to rescue it at run time. `=stats` also prints
+ * how many hits it checked when the process exits. */
+const verifyMemoMode = process.env["SCRIPTC_TYPE_MEMO_VERIFY"] ?? "";
+const verifySharedTypeMemo = verifyMemoMode === "1" || verifyMemoMode === "stats";
+let verifiedSharedHits = 0;
+if (verifyMemoMode === "stats") {
+  process.on("exit", () => {
+    process.stderr.write(`[type-memo] verified ${verifiedSharedHits} shared memo hits\n`);
+  });
+}
+/** Set while verifying, so the recomputation bypasses every memo and does
+ * not verify itself. */
+let bypassTypeMemo = false;
 
 /** node:url's legacy record interfaces: url.parse()'s Url instance (and
  * its two query-typed refinements), url.format()'s UrlObject input, the
@@ -2171,11 +2212,32 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // arm (emptyLiteralArm) and to the checked-dynamic value elsewhere: the two
   // answers keep separate memo entries. Type ids are non-negative integers.
   const memoKey = memoizable ? typeId * 2 + (ctx.emptyLiteralArm ? 1 : 0) : null;
-  if (memoKey !== null) {
-    const memo = (ctx.typeMemoFor?.() ?? ctx.typeMemo)?.get(memoKey);
-    if (memo !== undefined) return memo;
+  /** The memo of the binding context this frame started in: the scope's own
+   * inside generic bindings, the lowerer's top-level memo outside them. */
+  let contextMemo: Map<number, IrType> | undefined;
+  if (memoKey !== null && !bypassTypeMemo) {
+    contextMemo = ctx.typeMemoFor?.() ?? ctx.typeMemo;
+    const own = contextMemo?.get(memoKey);
+    if (own !== undefined) {
+      // The scope's own memo also holds answers this scope's bindings shaped
+      // (they were written here, not shared). Taking one re-reads that
+      // scope state just as mapping the type would, so the frame that took it
+      // is scope-specific too: without this the parent could enter the shared
+      // memo and serve this instance's representation to every later one.
+      if (ctx.typeMemoShared?.get(memoKey) !== own) noteScopeSensitiveMapping();
+      return own;
+    }
+    const shared = ctx.typeMemoShared;
+    if (shared !== undefined && shared !== contextMemo) {
+      const hit = shared.get(memoKey);
+      if (hit !== undefined) {
+        if (verifySharedTypeMemo && topLevel) verifySharedMapping(type, ctx, hit);
+        return hit;
+      }
+    }
   }
   const sensitivityAtEntry = contextResolutions;
+  const scopeReadsAtEntry = scopeSensitivity;
   mapTypeDepth++;
   try {
     let mapped: IrType | null;
@@ -2230,6 +2292,7 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       mapped !== null &&
       memoKey !== null &&
       topLevel &&
+      !bypassTypeMemo &&
       contextResolutions === sensitivityAtEntry &&
       ctx.erasingSignature === undefined &&
       (ctx.canMemoizeType?.() ?? true)
@@ -2237,12 +2300,50 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // Read the hook again rather than reusing the entry's memo: the write
       // condition rechecks the binding context, and a hook is what keeps a
       // context copy made inside a binding scope pointed at that scope.
-      (ctx.typeMemoFor?.() ?? ctx.typeMemo)?.set(memoKey, mapped);
+      const liveMemo = ctx.typeMemoFor?.() ?? ctx.typeMemo;
+      // A scope that changed mid-frame cannot own this answer. (It cannot
+      // happen today; the identity check keeps it a proof rather than an
+      // assumption.)
+      if (liveMemo === contextMemo) {
+        liveMemo?.set(memoKey, mapped);
+        // An answer that read no scope state is every scope's answer, so it
+        // also serves the shared memo — including the scopes entered later.
+        const shared = ctx.typeMemoShared;
+        if (shared !== undefined && shared !== liveMemo && scopeSensitivity === scopeReadsAtEntry)
+          shared.set(memoKey, mapped);
+      }
     }
     return mapped;
   } finally {
     mapTypeDepth--;
   }
+}
+
+/** SCRIPTC_TYPE_MEMO_VERIFY: recomputes a shared memo entry in the scope
+ * that just took it and fails loudly when the two answers disagree. The
+ * recalculation runs with every memo bypassed and restores the mapping
+ * counters it moves, so the observation leaves the mapping it observes
+ * unchanged. */
+function verifySharedMapping(type: ts.Type, ctx: TypeMapperCtx, shared: IrType): void {
+  const resolutions = contextResolutions;
+  const scopeReads = scopeSensitivity;
+  bypassTypeMemo = true;
+  let recomputed: IrType | null;
+  try {
+    recomputed = mapTypeEntry(type, ctx);
+  } finally {
+    bypassTypeMemo = false;
+    contextResolutions = resolutions;
+    scopeSensitivity = scopeReads;
+  }
+  const wanted = recomputed === null ? "<unmapped>" : typeKey(recomputed);
+  verifiedSharedHits++;
+  if (typeKey(shared) === wanted) return;
+  throw new InternalCompilerError(
+    `shared type memo entry does not match a fresh mapping: type ` +
+      `${checkerTypeDescription(type, ctx)} answered ${typeKey(shared)} from the shared ` +
+      `memo and ${wanted} when remapped in its scope`,
+  );
 }
 
 /** Local class types need the enclosing specialization's registered layout.

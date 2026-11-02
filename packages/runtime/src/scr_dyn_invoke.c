@@ -1259,6 +1259,41 @@ static ScrDyn *scr_dyn_invoke_impl(
       scr_str_release(unit);
       return r;
     }
+    if (mid == DYN_M_replace) {
+      /* String.prototype.replace: searchValue is a RegExp or coerced with
+       * ToString, and a replaceValue that is not callable coerces with
+       * ToString before any matching, so an object converting to another
+       * object raises Node's ToPrimitive TypeError here (a replacement
+       * whose toString answers a function is the Sputnik example). A
+       * function replacement has no lowering in this unit, and the match
+       * loop over a native RegExp lives in the regex unit, which a program
+       * without a regex does not link: both keep the tier's loud refusal,
+       * after the conversions Node performs. `rep` and the coerced search
+       * value are +1; the result is +1. */
+      ScrDyn *search = argc ? args[0] : scr_dyn_undefined();
+      ScrDyn *replace = argc > 1 ? args[1] : scr_dyn_undefined();
+      if (replace->kind == SCR_DYN_FUNC) {
+        dyn_throw_unsupported("String", method);
+        return NULL;
+      }
+      ScrStr *rep = scr_dyn_string_coerce_js(replace);
+      if (!rep) return NULL;
+      ScrStr *out = NULL;
+      if (search->kind == SCR_DYN_HANDLE && search->v.handle.tag == SCR_DYNH_REGEXP) {
+        dyn_throw_unsupported("String", method);
+      } else if (search->kind == SCR_DYN_STR) {
+        out = scr_str_replace_literal(s, search->v.str, rep, false);
+      } else {
+        ScrStr *needle = scr_dyn_string_coerce_js(search);
+        out = needle ? scr_str_replace_literal(s, needle, rep, false) : NULL;
+        if (needle) scr_str_release(needle);
+      }
+      scr_str_release(rep);
+      if (!out) return NULL;
+      ScrDyn *result = scr_dyn_new_str(out); /* retains */
+      scr_str_release(out);
+      return result;
+    }
     if ((mid == DYN_M_concat) ||
         (mid == DYN_M_indexOf) || (mid == DYN_M_lastIndexOf) ||
         (mid == DYN_M_includes)) {
@@ -1911,11 +1946,15 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
       } else if (strict) result = scr_dyn_retain(receiver);
       else {
+        /* String's generic members coerce the receiver with ToString, then
+         * run on the string. The dispatch answers the ones this unit
+         * implements (slice, replace); the rest keep the tier's refusal. */
         ScrStr *text = scr_dyn_string_coerce_js(receiver);
         if (text) {
           ScrDyn *string = scr_dyn_new_str(text);
           scr_str_release(text);
-          if (!strcmp(method->data, "slice")) result = scr_dyn_invoke(string, method->data, args, argc, method->data);
+          if (!strcmp(method->data, "slice") || !strcmp(method->data, "replace"))
+            result = scr_dyn_invoke(string, method->data, args, argc, method->data);
           else dyn_throw_unsupported("String", method->data);
           scr_dyn_release(string);
         }

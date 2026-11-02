@@ -211,6 +211,10 @@ export function scanDivergences(
   for (const { decl, source, type } of castDecls) {
     // An assertion of the global object keeps that object: no copy.
     if (keptIdentityAssertion(lowerer, decl.initializer!) !== undefined) continue;
+    // The assertion kept the value's storage (`tagged as Labeled`, a union
+    // arm extracted for a projection): the binding holds the object itself,
+    // so there is no copy to report (lowerVarDecl marks the kept node).
+    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
     const name = (decl.name as ts.Identifier).text;
     const scope = enclosingScope(decl);
     if (scope === undefined) continue;
@@ -393,6 +397,49 @@ export function scanDivergences(
   }
 
   return out;
+}
+
+/** Whether the binding `decl` declares is used in a way a field copy would
+ * change: something writes through it, or compares it with `===`/`!==`. Only
+ * such a binding needs the value's own storage; a read-only view is equal
+ * either way and keeps the copy the width-copy report names. A `let` or `var`
+ * binding is left alone: it can be reassigned, so its declared layout stands. */
+export function bindingIdentityUse(decl: ts.VariableDeclaration): boolean {
+  if (!ts.isIdentifier(decl.name)) return false;
+  const flags = ts.getCombinedNodeFlags(decl);
+  if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Let) !== 0) return false;
+  const scope = enclosingScope(decl);
+  if (scope === undefined) return false;
+  return identityUse(scope, decl.name.text, decl.end) !== null;
+}
+
+/** The first WRITE through the binding `decl` declares, after its own
+ * declaration, or null. The evidence a copied binding is observable
+ * through (the same scan the width-copy warning reports from). */
+export function bindingWrite(decl: ts.VariableDeclaration): string | null {
+  if (!ts.isIdentifier(decl.name)) return null;
+  const scope = enclosingScope(decl);
+  if (scope === undefined) return null;
+  const use = identityUse(scope, decl.name.text, decl.end);
+  return use?.kind === "write" ? use.text : null;
+}
+
+/** The copy an assertion of an EXISTING object into a record view builds
+ * (`const v = x as View`), or null when the assertion keeps the value it
+ * views (the view is a projection the value already presents, an unknown
+ * view, a class protocol, ...). The same predicate the width-copy warning
+ * reports from, so a refused program is one that warning would have
+ * reported. */
+export function assertionViewCopy(
+  lowerer: Lowerer,
+  initializer: ts.Expression,
+): { source: string; target: string } | null {
+  const cast = castView(initializer);
+  if (cast === null) return null;
+  // An assertion of the global object keeps that object (assertion-identity.ts),
+  // so its binding holds the global object rather than a copy.
+  if (keptIdentityAssertion(lowerer, initializer) !== undefined) return null;
+  return safely(() => widthCopyBetween(lowerer, cast.source, cast.type)) ?? null;
 }
 
 /** A checker query that fails here only loses a warning. */

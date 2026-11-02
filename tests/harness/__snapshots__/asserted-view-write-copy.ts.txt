@@ -1,0 +1,38 @@
+asserted-view-write-copy.ts:12:7 - error SC1090: writing 'widened.extra' through 'widened', a copy of the 'Base' value the assertion views as '{ a: number; extra?: string | undefined; }' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+
+  11 | // File scope: the copy would live in the module binding.
+  12 | const widened = base as { a: number; extra?: string };
+     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | widened.extra = "x";
+
+asserted-view-write-copy.ts:17:9 - error SC1090: writing 'local.extra' through 'local', a copy of the 'Base' value the assertion views as '{ a: number; extra?: string | undefined; }' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+
+  16 | function widen(b: Base): void {
+  17 |   const local = b as { a: number; extra?: string };
+     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  18 |   local.extra = "y";
+
+asserted-view-write-copy.ts:18:3 - error SC2004: uses of 'local' inherit the blocker on its declaration
+
+  17 |   const local = b as { a: number; extra?: string };
+  18 |   local.extra = "y";
+     |   ^~~~~
+  19 | }
+
+  hint: the declaration of 'local' did not compile — fix the diagnostic reported there and these sites clear with it
+
+asserted-view-write-copy.ts:23:9 - error SC1090: writing 'view.extra' through 'view', a copy of the 'Base | { a: number; b: number; }' value the assertion views as '{ extra?: string | undefined; }' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+
+  22 | function widenUnion(u: Base | { a: number; b: number }): void {
+  23 |   const view = u as { extra?: string };
+     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  24 |   view.extra = "z";
+
+asserted-view-write-copy.ts:24:3 - error SC2004: uses of 'view' inherit the blocker on its declaration
+
+  23 |   const view = u as { extra?: string };
+  24 |   view.extra = "z";
+     |   ^~~~
+  25 | }
+
+  hint: the declaration of 'view' did not compile — fix the diagnostic reported there and these sites clear with it

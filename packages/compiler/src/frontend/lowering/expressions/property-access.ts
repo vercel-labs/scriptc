@@ -5019,6 +5019,25 @@ export function fieldTarget(
       lowerer.lowerExpr(access.expression),
     );
   }
+  // A member the checker ADMITS on a receiver that has no static layout: a
+  // write through an assertion on a checked-dynamic value (a caught binding
+  // — `(error as { headers?: Headers }).headers = undefined`). Node erases
+  // the assertion, so the write lands on the runtime object as an own
+  // property; the checked-dynamic keyed write sets exactly that, and the
+  // class-typed value converts at the write like every other dyn→static edge.
+  if (receiverIr?.kind === "dyn" && !readOnlyAccess(access)) {
+    // The assertion itself may be unrepresentable (a class member on a
+    // structural view); it is erased at runtime, so address the operand.
+    const writeOperand = assertionOperand(access);
+    const admitted = lowerer.mapTypeOf(lowerer.typeOf(access));
+    if (writeOperand && admitted && admitted.kind !== "void")
+      return {
+        container: "dynamic",
+        obj: lowerer.coerceToExpected(lowerer.lowerExpr(writeOperand), DYN),
+        field: access.name.text,
+        fieldType: admitted,
+      };
+  }
   // A member the checker ADMITS but the stored layout cannot hold. The
   // constraint of a type parameter declares it (a generic options bag read
   // through an `"sessionId" in options` guard, or `options?.apiKey` with the

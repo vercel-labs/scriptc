@@ -6701,13 +6701,22 @@ function runtimeRequestOptions(
  * a RequestOptions value is not callable. */
 function isResponseCallback(lowerer: Lowerer, node: ts.Expression): boolean {
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return true;
-  const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+  const type = lowerer.typeOf(node);
   // An untyped value stays on the callback side: Node decides
   // `typeof options === 'function'` at run time, and the two-argument URL
   // call has always taken an untyped callback (`http.get(url, cb)` with
   // `cb: any`). The options form needs a value the lowering can hand to
   // the merge, which an untyped value is not.
-  return t === null || t.kind === "func" || t.kind === "dyn";
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  // A callable value is the callback (a function-typed variable, or a union
+  // whose callable arm the checker widens). Everything else the mapper calls
+  // a function is one too.
+  if (lowerer.checker.getCallSignatures(type).length > 0) return true;
+  const t = lowerer.mapTypeOf(type);
+  // An OBJECT-SHAPED value is the options record: `RequestOptions` maps to
+  // the checked-dynamic value, which the URL-form merge reads. A value with
+  // no lowering type keeps the callback path it had.
+  return t === null || t.kind === "func";
 }
 
 /** The options value of request(url, options[, cb]) as the checked-dynamic

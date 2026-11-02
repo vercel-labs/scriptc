@@ -265,7 +265,7 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
     )
       answering.add(helper.fn.name);
   }
-  for (const finalize of lowerer.linkedHelperFinalizers) finalize();
+  for (const finalize of lowerer.linkedHelperFinalizers) finalize(sourced);
   // The module's functions already hold the helpers lifted before.
   functions.push(...lowerer.liftedFns.slice(lifted));
   restoreStringConversions(lowerer, functions, answering);

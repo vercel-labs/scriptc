@@ -1,0 +1,63 @@
+rest-index-signature-fences.ts:15:11 - error SC1031: destructuring with computed keys that do not fold to one property name is not supported yet
+
+  14 | function computedSibling(h: H, key: string): void {
+  15 |   const { [key]: taken, ...rest } = h;
+     |           ^~~~~~~~~~~~
+  16 |   console.log(taken, rest);
+
+rest-index-signature-fences.ts:16:15 - error SC2004: uses of 'taken' inherit the blocker on its declaration
+
+  15 |   const { [key]: taken, ...rest } = h;
+  16 |   console.log(taken, rest);
+     |               ^~~~~
+  17 | }
+
+  hint: the declaration of 'taken' did not compile — fix the diagnostic reported there and these sites clear with it
+
+rest-index-signature-fences.ts:25:11 - error SC1031: rest bindings over index-signature sources that declare an integer-like field name (JS orders integer keys first, across the declared and overflow keys) is not supported yet
+
+  24 | function declaredIntegerField(source: IntegerField): void {
+  25 |   const { ...rest } = source;
+     |           ^~~~~~~
+  26 |   console.log(rest);
+
+rest-index-signature-fences.ts:26:15 - error SC2004: uses of 'rest' inherit the blocker on its declaration
+
+  25 |   const { ...rest } = source;
+  26 |   console.log(rest);
+     |               ^~~~
+  27 | }
+
+  hint: the declaration of 'rest' did not compile — fix the diagnostic reported there and these sites clear with it
+
+rest-index-signature-fences.ts:30:14 - error SC1031: rest bindings packing an index-signature source into the closed rest type '{ b: number | undefined }' (its undeclared keys have no slot) is not supported yet (instantiating 'closedRest' with <{ a: string | undefined; b: number | undefined; [key: string]: unknown }>)
+
+  29 | function closedRest<T extends K>(item: T): void {
+  30 |   const { a, ...rest } = item;
+     |              ^~~~~~~
+  31 |   console.log(a, rest);
+
+rest-index-signature-fences.ts:31:18 - error SC2004: uses of 'rest' inherit the blocker on its declaration (instantiating 'closedRest' with <{ a: string | undefined; b: number | undefined; [key: string]: unknown }>)
+
+  30 |   const { a, ...rest } = item;
+  31 |   console.log(a, rest);
+     |                  ^~~~
+  32 | }
+
+  hint: the declaration of 'rest' did not compile — fix the diagnostic reported there and these sites clear with it
+
+rest-index-signature-fences.ts:41:14 - error SC1031: the rest field 'a' the source's shape does not carry is not supported yet
+
+  40 |   };
+  41 |   const { b, ...rest } = source;
+     |              ^~~~~~~
+  42 |   console.log(b, rest);
+
+rest-index-signature-fences.ts:42:18 - error SC2004: uses of 'rest' inherit the blocker on its declaration
+
+  41 |   const { b, ...rest } = source;
+  42 |   console.log(b, rest);
+     |                  ^~~~
+  43 | }
+
+  hint: the declaration of 'rest' did not compile — fix the diagnostic reported there and these sites clear with it

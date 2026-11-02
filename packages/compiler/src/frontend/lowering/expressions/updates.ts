@@ -1247,9 +1247,11 @@ function lowerOptionalStringRead(
     return helper ? lowerer.checkedNarrowCall(helper, stable, STRING, loc) : stringArm();
   }
   // An absent value appends its ToString, which is a string only when the
-  // right operand is one too (`undefined + 1` is NaN in JavaScript).
+  // right operand is one too (`undefined + 1` is NaN in JavaScript). Any
+  // other right side keeps the union read for the compound below, which
+  // takes the value already evaluated here: a getter runs once.
   if (rhsNode === null || lowerer.mapTypeOf(lowerer.typeOf(rhsNode))?.kind !== "string")
-    return read;
+    return stable;
   return {
     kind: "ternary",
     cond: {

@@ -15,6 +15,7 @@ import {
   pruneCache,
   publishCachedFile,
 } from "../build-cache.js";
+import { jsObjectModelFact } from "../../ir/runtime-features.js";
 import { type LibArchiveOptions } from "./contracts.js";
 import { clearCcCaches, ensureRuntimeObjects, stageRuntimeObjects } from "./runtime-objects.js";
 import { runtimeSrcDir, LIB_RUNTIME_SOURCES, runtimeFingerprint } from "./runtime-inputs.js";
@@ -90,6 +91,12 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   const sanitize = opts.sanitize ?? false;
   const optimization = opts.optimization ?? "release";
   const regex = opts.regex ?? false;
+  // The archive's object model build (jsObjectModelFact: the same union the
+  // pack selects on). scr_json.c's object model asks the intrinsic graph what
+  // it filled (t262-da A1), so the graph unit rides this condition with the
+  // define: the archive never carries the intrinsicObjects fact, so the unit
+  // compiles its fill stub.
+  const objectModelBuild = jsObjectModelFact(opts);
   const sources = [
     ...LIB_RUNTIME_SOURCES,
     // win32 targets compile the libc-shim TU into the archive (stpcpy,
@@ -114,10 +121,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.dynInvoke && opts.dynBuffer ? ["scr_bytes_dyn.c"] : []),
     ...(opts.dynTier === true ? ["scr_js_value.c", "scr_js_object.c"] : []),
     // The builtin intrinsic graph (t262-da A1): the archive carries it when
-    // the program names the object model build, exactly like the pack. The
-    // graph itself needs the intrinsicObjects fact, which the archive never
-    // carries; this build is the fill stub scr_json.c's object model asks.
-    ...(opts.jsObjectModel === true || opts.bigintBytes === true ? ["scr_js_intrinsics.c"] : []),
+    // the program names the object model build, exactly like the pack (see
+    // objectModelBuild above).
+    ...(objectModelBuild ? ["scr_js_intrinsics.c"] : []),
     // The buffer views registry: only a program that resizes, grows or
     // detaches a buffer installs its ops table.
     ...(opts.mutableBuffers === true ? ["scr_js_buffers.c"] : []),
@@ -141,9 +147,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // The program's unit reads the JavaScript object model build
     // (t262-da §J): the archive's bytes and json units must carry it too, so
     // the program names the same build the pack matrix selects.
-    ...(opts.jsObjectModel || opts.bigintBytes || opts.mutableBuffers
-      ? ["-DSCR_JS_OBJECT_MODEL"]
-      : []),
+    ...(objectModelBuild ? ["-DSCR_JS_OBJECT_MODEL"] : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),

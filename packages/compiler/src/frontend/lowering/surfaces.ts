@@ -1018,6 +1018,14 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     valueParams: [{ mode: "required", type: STRING, name: "path" }],
     checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
   },
+  // Node's deprecated alias of toNamespacedPath (the same function object).
+  _makeLong: {
+    fn: "path.toNamespacedPath",
+    params: [STRING],
+    result: STRING,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
+  },
   matchesGlob: {
     fn: "path.matchesGlob",
     params: [STRING, STRING],
@@ -1110,6 +1118,14 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     ],
   },
   toNamespacedPath: {
+    fn: "path.win32ToNamespacedPath",
+    params: [STRING],
+    result: STRING,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [true], result: DYN },
+  },
+  // Node's deprecated alias of toNamespacedPath (the same function object).
+  _makeLong: {
     fn: "path.win32ToNamespacedPath",
     params: [STRING],
     result: STRING,
@@ -2406,8 +2422,18 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     isatty: ["process.isTTYValue"],
   },
   os: {
-    // lowerOsUserInfoCall assembles the record from scalar libCalls.
-    userInfo: ["os.userHomedir", "os.userShell", "os.userUid", "os.userGid"],
+    // lowerOsUserInfoCall assembles the record from scalar libCalls: one
+    // snapshot call and the passwd fields, as text and as Buffers.
+    userInfo: [
+      "os.userInfoBegin",
+      "os.userHomedir",
+      "os.userHomedirBuf",
+      "os.userShell",
+      "os.userShellBuf",
+      "os.userNameBuf",
+      "os.userUid",
+      "os.userGid",
+    ],
     // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
     cpus: ["os.cpusModel", "os.cpusField"],
   },

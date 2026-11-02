@@ -87,6 +87,12 @@ ScrUrl *scr_url_from_path_platform(ScrStr *path, bool windows); /* +1; explicit 
 ScrStr *scr_url_to_path_w32(ScrUrl *u);      /* +1, or throws */
 ScrUrl *scr_url_from_path_w32(ScrStr *path); /* +1, or throws */
 
+/* URL.revokeObjectURL(id): the id is already coerced to a string. A
+ * compiled program registers no blob URLs, so Node's registry lookup
+ * always misses and the call answers undefined; the argument is borrowed
+ * (the caller releases it). */
+void scr_url_revoke_object_url(ScrStr *id);
+
 /* ── URLSearchParams (scr_url.c) ─────────────────────────────────────
  * A refcounted, MUTABLE ordered list of decoded (name, value) pairs —
  * the WHATWG application/x-www-form-urlencoded surface. Standalone

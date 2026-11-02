@@ -1619,6 +1619,12 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.path._makeLong",
+      "kind": "node-builtin",
+      "name": "path._makeLong",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.path.basename",
       "kind": "node-builtin",
       "name": "path.basename",
@@ -1685,6 +1691,12 @@
       "name": "path/posix",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.path.posix._makeLong",
+      "kind": "node-builtin",
+      "name": "path/posix._makeLong",
+      "status": "static"
     },
     {
       "id": "node-builtin.path.posix.basename",
@@ -1803,6 +1815,12 @@
       "name": "path/win32",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.path.win32._makeLong",
+      "kind": "node-builtin",
+      "name": "path/win32._makeLong",
+      "status": "static"
     },
     {
       "id": "node-builtin.path.win32.basename",

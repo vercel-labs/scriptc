@@ -226,8 +226,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // member runs exactly once, as the options object's evaluation does.
   let inputRead: { id: string; init: IrExpr } | null = null;
   // The options whose values reach the call, in source order: the
-  // extended entry point's prelude evaluates them in this order.
-  const optionOrder: ("timeout" | "cwd" | "env" | "input")[] = [];
+  // extended entry point's prelude evaluates them in this order. `stdio`
+  // stands for a tuple whose slots resolve at the call.
+  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input")[] = [];
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -288,6 +289,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         return;
       }
       if (ts.isArrayLiteralExpression(node) && node.elements.nodes.length === 3) {
+        let slotRuntime = false;
         node.elements.nodes.forEach((el, i) => {
           const et = lowerer.typeOf(el);
           if (!et.isStringLiteralType()) {
@@ -303,10 +305,14 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
               stdinModeRuntime = true;
             } else if (i === 1) outMode = chain;
             else errMode = chain;
+            slotRuntime = true;
             return;
           }
           modeOf(et.value, i as 0 | 1 | 2);
         });
+        // A slot that resolves at the call is read where the member sits
+        // among the other options, before the members written after it run.
+        if (slotRuntime) optionOrder.push("stdio");
         return;
       }
       // A runtime string whose TYPE pins every possible value to the
@@ -520,7 +526,10 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     // options in source order, each into a hidden local the call reads, so
     // an earlier option that changes a later one's value (a getter, a call)
     // is seen as in Node. A union `input` lands in the hidden local its tag
-    // test and its value share. Literals need no local.
+    // test and its value share, and a union stdio slot is read where its
+    // member sits, so a side effect in a later member (the `input`
+    // expression, say) cannot change the mode the call already chose.
+    // Literals need no local.
     const prelude: IrStmt[] = [];
     const bind = (name: string, value: IrExpr): IrExpr => {
       if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
@@ -535,11 +544,19 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     let cwdArg = cwd;
     let inputArg = input;
     let envArg = envPairs;
+    let stdinModeArg = inMode;
+    let outModeArg = outMode;
+    let errModeArg = errMode;
     for (const option of optionOrder) {
       if (option === "timeout") timeoutArg = bind("%spawnSyncTimeout", timeout);
       else if (option === "cwd") cwdArg = bind("%spawnSyncCwd", cwd);
       else if (option === "env" && envPairs !== null) envArg = bind("%spawnSyncEnv", envPairs);
-      else if (option === "input") {
+      else if (option === "stdio") {
+        // Each slot runs once, left to right as the array literal does.
+        stdinModeArg = bind("%spawnSyncStdinMode", inMode);
+        outModeArg = bind("%spawnSyncStdoutMode", outMode);
+        errModeArg = bind("%spawnSyncStderrMode", errMode);
+      } else if (option === "input") {
         if (inputRead !== null)
           prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
         else inputArg = bind("%spawnSyncInput", input);
@@ -549,12 +566,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     // twice: once as the mode argument, once in the `has_input` test. The
     // slot's expression can have side effects (a getter, a call), and two
     // reads can answer differently — a second "ignore" would drop the input
-    // the first "pipe" asked to pipe. One read lands in the hidden local both
-    // uses share. With no `input`, the false `has_input` short-circuits the
-    // test, so the mode argument is the only read.
-    const noInput = hasInput.kind === "boolLit" && !hasInput.value;
-    const stdinModeArg =
-      stdinModeRuntime && !noInput ? bind("%spawnSyncStdinMode", inMode) : inMode;
+    // the first "pipe" asked to pipe. Both uses read the local bound at the
+    // stdio member. With no `input`, the false `has_input` short-circuits
+    // the test.
     const hasInputArg: IrExpr = stdinModeRuntime
       ? {
           kind: "logical",
@@ -583,8 +597,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         timeoutArg,
         killSignal,
         stdinModeArg,
-        outMode,
-        errMode,
+        outModeArg,
+        errModeArg,
         cwdArg,
         inputArg,
         hasInputArg,

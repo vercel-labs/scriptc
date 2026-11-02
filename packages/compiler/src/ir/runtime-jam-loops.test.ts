@@ -381,6 +381,59 @@ test("leaves loops whose body is not the jammable shape alone", () => {
       },
     ]),
   );
+  // A library call runs code the same way: `emitter.emit` calls its
+  // listeners synchronously, and they may change what the second copy's
+  // loop has already read.
+  reject(
+    nestWithCounter(countdown(), [
+      {
+        loc,
+        kind: "exprStmt",
+        expr: { loc, kind: "libCall", fn: "emitter.emit", args: [ref("m")], type: VOID },
+      },
+    ]),
+  );
+  // So does an in-place sort: the runtime hands its comparator control
+  // between the two copies' loops.
+  reject(
+    nestWithCounter(countdown(), [
+      {
+        loc,
+        kind: "exprStmt",
+        expr: {
+          loc,
+          kind: "bytesIntrinsic",
+          method: "sortCompare",
+          receiver: { loc, kind: "varRef", localId: "cr", type: BYTES },
+          args: [{ loc, kind: "varRef", localId: "m", type: F64 }],
+          type: BYTES,
+        },
+      },
+    ]),
+  );
+  // A promise executor runs when the promise is made, and an array sort
+  // runs its comparator, so both leave `post` no more code-free.
+  reject(
+    nestWithCounter(countdown(), [
+      decl("p", { loc, kind: "newPromise", executor: ref("m"), type: F64 }),
+    ]),
+  );
+  reject(
+    nestWithCounter(countdown(), [
+      {
+        loc,
+        kind: "exprStmt",
+        expr: {
+          loc,
+          kind: "arrIntrinsic",
+          method: "sortDense",
+          receiver: { loc, kind: "varRef", localId: "m", type: { kind: "array", elem: F64 } },
+          args: [ref("m")],
+          type: { kind: "array", elem: F64 },
+        },
+      },
+    ]),
+  );
   // `post` holds no control transfer.
   reject(nestWithCounter(countdown(), [{ loc, kind: "break" }]));
   // A call in a `post` statement's condition runs before the second copy's
@@ -409,6 +462,47 @@ test("leaves loops whose body is not the jammable shape alone", () => {
   // The same loop without a memory read is still paired.
   const unread = moduleOf(storing(false));
   expect(jamRuntimeCountLoops(unread)).not.toBe(unread);
+  // A typed-array method writes element storage the same way a `bytesSet`
+  // does: the second copy's loop may read what the fill overwrites.
+  const fillPost = (read: boolean): IrStmt[] => [
+    decl("acc", num(0)),
+    forLoop("x", num(10), 2, [
+      decl("a", bin("*", ref("x"), num(3))),
+      ...(read ? [decl("v", get(ref("x")))] : []),
+      decl("m", num(0)),
+      decl("i", num(0)),
+      countdown(),
+      {
+        loc,
+        kind: "exprStmt",
+        expr: {
+          loc,
+          kind: "bytesIntrinsic",
+          method: "fillNum",
+          receiver: { loc, kind: "varRef", localId: "cr", type: BYTES },
+          args: [num(0)],
+          type: BYTES,
+        },
+      },
+    ]),
+  ];
+  reject(fillPost(true));
+  // Without an earlier memory read the fill still pairs: the copies' stores
+  // run in their original order.
+  const unreadFill = moduleOf(fillPost(false));
+  expect(jamRuntimeCountLoops(unreadFill)).not.toBe(unreadFill);
+  // Reading a typed array in `post` stores nothing, so it still pairs.
+  const reading = moduleOf([
+    decl("acc", num(0)),
+    forLoop("x", num(10), 2, [
+      decl("a", bin("*", ref("x"), num(3))),
+      decl("m", num(0)),
+      decl("i", num(0)),
+      countdown(),
+      set("acc", bin("+", ref("acc"), get(ref("x")))),
+    ]),
+  ]);
+  expect(jamRuntimeCountLoops(reading)).not.toBe(reading);
   // The second copy's condition is tested before the first fold, so a
   // condition that reads a range the fold stores rules the pairing out.
   const memoryCond = (read: boolean): IrStmt[] => {

@@ -1,5 +1,6 @@
 import {
   BOOL,
+  type IrBytesIntrinsicMethod,
   type IrExpr,
   type IrFunction,
   type IrLocal,
@@ -61,7 +62,10 @@ const PLAIN_STATEMENTS = new Set<IrStmt["kind"]>([
 ]);
 
 /** Expressions that can run code: they may read and change anything, so a
- * later copy's `pre` and loop cannot run before them. */
+ * later copy's `pre` and loop cannot run before them. Every `libCall` is
+ * one here: some (`emitter.emit`, the timer and fs callbacks) call back
+ * into the program, and telling those from the inert members is the
+ * library's business, not this pass's. `newPromise` runs its executor. */
 const CALLS = new Set<IrExpr["kind"]>([
   "call",
   "ffiCall",
@@ -72,7 +76,54 @@ const CALLS = new Set<IrExpr["kind"]>([
   "dynCall",
   "dynInvoke",
   "genResume",
+  "libCall",
+  "newPromise",
 ]);
+
+/** The bytesIntrinsic methods that write their receiver's (or, for `copy`,
+ * the target's) element storage. */
+const BYTES_METHOD_STORES: ReadonlySet<IrBytesIntrinsicMethod> = new Set([
+  "copyWithin",
+  "sortNumeric",
+  "sortCompare",
+  "setFrom",
+  "setFromDyn",
+  "fill",
+  "fillNum",
+  "fillStr",
+  "fillElem",
+  "copy",
+  "swap16",
+  "swap32",
+  "swap64",
+  "writeNum",
+  "writeNumVar",
+  "writeStr",
+  "dvSetUint8",
+  "dvSetInt8",
+  "dvSetUint16",
+  "dvSetInt16",
+  "dvSetUint32",
+  "dvSetInt32",
+  "dvSetFloat16",
+  "dvSetFloat32",
+  "dvSetFloat64",
+]);
+
+/** Whether `e` runs code: a call, or the sort intrinsics whose comparator
+ * the runtime invokes. */
+function runsCode(e: IrExpr): boolean {
+  if (CALLS.has(e.kind)) return true;
+  if (e.kind === "bytesIntrinsic") return e.method === "sortCompare";
+  if (e.kind === "arrIntrinsic") return e.method === "sortValues" || e.method === "sortDense";
+  return false;
+}
+
+/** Whether `e` writes element storage through a typed-array/Buffer method
+ * (`arr.fill(0)`, an in-place sort, a DataView setter). */
+function storesBytes(e: IrExpr): boolean {
+  return e.kind === "bytesIntrinsic" && BYTES_METHOD_STORES.has(e.method);
+}
 
 type InnerLoop = IrStmt & ({ kind: "for" } | { kind: "while" } | { kind: "doWhile" });
 
@@ -211,7 +262,7 @@ function innerStatements(
 
 /** Whether `list` holds no expression that can run code. */
 function noCalls(list: readonly IrStmt[]): boolean {
-  return everyStmtList(list as IrStmt[], { expr: (e) => !CALLS.has(e.kind), stmt: () => true });
+  return everyStmtList(list as IrStmt[], { expr: (e) => !runsCode(e), stmt: () => true });
 }
 
 /** `post`: statements between the two copies' loops and their results,
@@ -235,10 +286,12 @@ function readsMemory(list: readonly IrStmt[]): boolean {
   });
 }
 
-/** Whether `list` holds a memory store at any depth. */
+/** Whether `list` holds a memory store at any depth: a storing statement,
+ * or a typed-array method such as `fill` that writes element storage
+ * through an expression rather than a `bytesSet`. */
 function hasStore(list: readonly IrStmt[]): boolean {
   return !everyStmtList(list as IrStmt[], {
-    expr: () => true,
+    expr: (e) => !storesBytes(e),
     stmt: (s) => !MEMORY_STORES.has(s.kind),
   });
 }

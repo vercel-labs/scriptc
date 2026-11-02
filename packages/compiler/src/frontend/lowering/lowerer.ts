@@ -561,7 +561,7 @@ import { bodyReadsArguments } from "../arguments-usage.js";
 import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-arguments.js";
 import { bodyReturnType, declaredReturnType, widensReducedRecords } from "./function-returns.js";
 import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
-import { lowerFfiCall, validateFfiImports } from "./native-ffi.js";
+import { lowerFfiCall, validateFfiImports, type FfiValidationResult } from "./native-ffi.js";
 import {
   isTopLevelFnSymbol,
   lowerNestedFunctionDecl,
@@ -1314,6 +1314,18 @@ function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnosti
   }
 }
 
+/** A pass's result a replacing pass drops to before it lowers: the replacing
+ * pass overwrites it before anything reads it, so the replaced pass's IR
+ * does not stay reachable through the end of the pipeline. */
+function releasedLowerResult(): LowerResult {
+  return {
+    module: null,
+    diagnostics: [],
+    runtimeFences: [],
+    stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+  };
+}
+
 function lowerToIrWithIslands(
   program: ts.Program,
   entry: ts.SourceFile,
@@ -1383,66 +1395,88 @@ function lowerToIrWithIslands(
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const tierMode = options.tierMode ?? "auto";
   const runtimeOptionalReport = options.tierReport !== undefined;
-  const validation = new Lowerer(program, entry, moduleOrder, {
-    frontendServices: options.frontendServices,
-    projectCheckJs: options.projectCheckJs ?? false,
-    targetPlatform,
-    startupCrash,
-    inlineRequireCycleCalls,
-    dynamicImportRejections: options.dynamicImportRejections,
-    ffiImports,
-    libraryCallbacks,
-    forkTargets,
-    workerTargets,
-    externalTypes,
-    externalTypeSpecifiersByFile,
-    tierMode,
-    runtimeOptionalReport,
-  });
-  const ffiValidation = validateFfiImports(validation);
-  timing("ffi-validate");
-  // Reachability must use the same exact-symbol ownership as FFI validation.
-  // Otherwise a local function shadowing a configured ambient name is mistaken for FFI
-  // while computing reachability, even though ordinary lowering would
-  // correctly handle it as TypeScript. FFI-free builds reuse the validation
-  // lowerer because validation is an immediate no-op there.
-  const reachableEmit =
-    ffiImports.length === 0
-      ? validation
-      : new Lowerer(program, entry, moduleOrder, {
-          frontendServices: options.frontendServices,
-          projectCheckJs: options.projectCheckJs ?? false,
-          targetPlatform,
-          startupCrash,
-          inlineRequireCycleCalls,
-          dynamicImportRejections: options.dynamicImportRejections,
-          ffiImports,
-          libraryCallbacks,
-          forkTargets,
-          workerTargets,
-          externalTypes,
-          externalTypeSpecifiersByFile,
-          tierMode,
-          runtimeOptionalReport,
-          ffiBindingSymbols: ffiValidation.symbolsByName,
-        });
-  for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
-  for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
-  const emitted = reachableEmit.emitReachable(options.libRoots, options.unitStore ?? null);
-  let { reachable } = emitted;
-  let result = emitted.result;
-  let resultLowerer = reachableEmit;
+  // This pass is released through `pushDownEmit` once a relower replaces it:
+  // a Lowerer's mapper, unit and symbol tables are the round's largest
+  // allocation next to the IR it emits, and the interpreter keeps a dead
+  // local's slot until the function returns, so the losing pass is cleared
+  // by name rather than left to the end of the round.
+  let pushDownEmit: Lowerer | null;
+  let ffiValidation: FfiValidationResult;
+  {
+    const validation = new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      targetPlatform,
+      startupCrash,
+      inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      runtimeOptionalReport,
+    });
+    ffiValidation = validateFfiImports(validation);
+    timing("ffi-validate");
+    // Reachability must use the same exact-symbol ownership as FFI validation.
+    // Otherwise a local function shadowing a configured ambient name is mistaken for FFI
+    // while computing reachability, even though ordinary lowering would
+    // correctly handle it as TypeScript. FFI-free builds reuse the validation
+    // lowerer because validation is an immediate no-op there, and that reuse
+    // is what keeps this validation lowerer off the arena budget.
+    pushDownEmit =
+      ffiImports.length === 0
+        ? validation
+        : new Lowerer(program, entry, moduleOrder, {
+            frontendServices: options.frontendServices,
+            projectCheckJs: options.projectCheckJs ?? false,
+            targetPlatform,
+            startupCrash,
+            inlineRequireCycleCalls,
+            dynamicImportRejections: options.dynamicImportRejections,
+            ffiImports,
+            libraryCallbacks,
+            forkTargets,
+            workerTargets,
+            externalTypes,
+            externalTypeSpecifiersByFile,
+            tierMode,
+            runtimeOptionalReport,
+            ffiBindingSymbols: ffiValidation.symbolsByName,
+          });
+  }
+  for (const d of extraModuleCycleDiags) pushDownEmit.pushDiag(d);
+  for (const d of ffiValidation.diagnostics) pushDownEmit.pushDiag(d);
+  // The push-down pass's reachable set and IR are held in these two
+  // variables, not in the emitted value, so a relower that wins can replace
+  // them without the previous pass's IR staying reachable through a
+  // surviving object.
+  let { reachable, result } = pushDownEmit.emitReachable(
+    options.libRoots,
+    options.unitStore ?? null,
+  );
+  let resultLowerer: Lowerer = pushDownEmit;
   timing("reachable-emit", { reachable: reachable.size });
   // The general stream representation (TypeMapperCtx.generalNodeStreams)
   // is a per-program decision: only a program whose reachable code moved
   // a general stream into a stdio-represented stream slot lowers again
   // with it. Every other program keeps the single pass above unchanged.
-  const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
+  const generalNodeStreams = pushDownEmit.requiresGeneralNodeStreams;
   // Checked-dynamic stream slots (dyn-streams.ts) are a further per-program
   // decision under the general representation: only a program that moves an
   // untyped value into a stream slot lowers again with them.
-  let dynNodeStreams = reachableEmit.requiresDynNodeStreams;
+  let dynNodeStreams = pushDownEmit.requiresDynNodeStreams;
   const streamPass = (dyn: boolean): Lowerer => {
+    // The stream pass always replaces the pass the comparison kept, and the
+    // whole-slot flag is the only thing it reads from that pass. Taking the
+    // flag first lets this frame reset the reachable set and the result
+    // before the new pass emits, so the replaced pass's IR is not live
+    // across the emit; the caller drops its own reference to the replaced
+    // pass when this returns (`pushDownEmit = null`).
+    const wholeSlotDegradation = resultLowerer.wholeSlotDegradation;
     const general = new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
@@ -1461,14 +1495,16 @@ function lowerToIrWithIslands(
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
       ...(dyn ? { dynNodeStreams: true } : {}),
-      ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...(wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
+    resultLowerer = general;
+    reachable = new Set();
+    result = releasedLowerResult();
     const generalEmitted = general.emitReachable(options.libRoots);
     reachable = generalEmitted.reachable;
     result = generalEmitted.result;
-    resultLowerer = general;
     timing(dyn ? "dyn-streams-relower" : "general-streams-relower", { reachable: reachable.size });
     return general;
   };
@@ -1541,7 +1577,11 @@ function lowerToIrWithIslands(
   // when the program still fails, the emit runs once more with every
   // degraded type held whole, and the pass with fewer errors wins (ties
   // keep push-down). A program that compiles never takes this path.
-  if (result.diagnostics.length > 0 && reachableEmit.hasPartialDegradedTypes()) {
+  //
+  // The relower lives in its own frame and returns only whether it won, so
+  // when it loses its Lowerer and result are released at once: a pass that
+  // cannot win must not overlap the next pass's tables and IR.
+  const wholeSlotWins = (): boolean => {
     const whole = new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
@@ -1562,15 +1602,22 @@ function lowerToIrWithIslands(
     for (const d of extraModuleCycleDiags) whole.pushDiag(d);
     for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
     const wholeEmitted = whole.emitReachable(options.libRoots);
-    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
+    const won = wholeEmitted.result.diagnostics.length < result.diagnostics.length;
+    if (won) {
       reachable = wholeEmitted.reachable;
       result = wholeEmitted.result;
       resultLowerer = whole;
     }
     timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
+    return won;
+  };
+  if (result.diagnostics.length > 0 && pushDownEmit.hasPartialDegradedTypes()) {
+    // A whole-slot win replaces push-down in every comparison it enters, so
+    // release the push-down pass here rather than at the end of the round.
+    if (wholeSlotWins()) pushDownEmit = null;
   }
   if (generalNodeStreams) {
-    if (decidedStream !== null && resultLowerer === reachableEmit) {
+    if (decidedStream !== null && pushDownEmit !== null) {
       // Push-down won (the whole-slot pass ran no better, or did not run):
       // the stream pass the retry decision above ran is the pass this
       // pipeline would run, so it is reused instead of lowered again.
@@ -1578,13 +1625,19 @@ function lowerToIrWithIslands(
       result = decidedStream.result;
       resultLowerer = decidedStream.lowerer;
       dynNodeStreams = decidedStream.dyn;
+      pushDownEmit = null;
       timing("stream-relower-reused", { reachable: reachable.size });
     } else {
+      // The stream pass replaces whichever pass the comparison above kept;
+      // the retry decision's stream pass (if any) could not win and its IR
+      // is released before this one allocates.
+      decidedStream = null;
       const general = streamPass(dynNodeStreams);
       if (!dynNodeStreams && general.requiresDynNodeStreams) {
         dynNodeStreams = true;
         streamPass(true);
       }
+      pushDownEmit = null;
     }
   }
   // A generic class-rest support decision can depend on record metadata

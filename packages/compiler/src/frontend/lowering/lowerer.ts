@@ -14583,6 +14583,35 @@ export class Lowerer {
     );
   }
 
+  /** Whether a property the static type does not declare can be read and
+   * written through the checked-dynamic layer with JavaScript identity: an
+   * array (the native array's named-property table, which its checked view
+   * refreshes from and commits to) or a record with fields or an index
+   * signature (its live view keeps the properties the record cannot
+   * store). The predicate is the dyn coercion's `liveReference`, so a
+   * property added through one conversion is visible through every later
+   * one. Kinds whose conversion copies (bytes) or boxes (handles,
+   * functions, class values) are excluded: the property would land in a
+   * copy or need the handle's own table, and they keep their fences. A
+   * builtin value (`TextEncoder`, a URL, ...) is typed as a record with an
+   * internal slot, but the checked-dynamic layer holds it as a handle and
+   * refuses a property set on it, so the slot excludes it here too. */
+  jsDynamicMemberTarget(t: IrType): boolean {
+    if (t.kind === "array") return true;
+    if (t.kind === "record") {
+      const shape = this.shapes.get(t.shapeId);
+      if (!shape || shape.fields.some((f) => f.name.startsWith("%"))) return false;
+      return shape.fields.length > 0 || shape.indexValue !== undefined;
+    }
+    if (t.kind === "union") {
+      const def = this.unions.get(t.unionId);
+      return (
+        !!def && def.arms.every((a) => a.kind === "undefinedT" || this.jsDynamicMemberTarget(a))
+      );
+    }
+    return false;
+  }
+
   /** True when a static type converts to a dyn value (the dynFrom
    * walker's domain): JSON-safe, bytes<u8> (Uint8Array/Buffer — the checked-dynamic tree's
    * bytes kind, payload copied; stdin chunks into unknown-typed helpers),

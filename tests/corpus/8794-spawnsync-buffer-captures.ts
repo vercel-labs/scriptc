@@ -7,7 +7,7 @@
 // The `formatSpawnFailure` shape real code uses — result.stderr?.toString()
 // .trim() — is the trimmed stderr. With { encoding: "utf8" } the same
 // fields stay strings.
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 
 const ok = spawnSync("/bin/sh", ["-c", "printf 'alpha\\n'; printf 'beta\\n' 1>&2"]);
 console.log("status", ok.status, "signal", String(ok.signal));
@@ -50,3 +50,15 @@ console.log("mutated2", JSON.stringify(captured.toString()));
 // An explicit encoding keeps the string representation.
 const text = spawnSync("sh", ["-c", "printf 'plain\\n'"], { encoding: "utf8" });
 console.log("text", typeof text.stdout, JSON.stringify(text.stdout));
+
+// util.inspect of a capture prints the raw bytes (`<Buffer 61 62 63>`), not
+// a decoded string.
+const inspected = spawnSync("/bin/sh", ["-c", "printf 'abc\\000d'"]);
+console.log("inspect", inspected.stdout);
+
+// pi's formatSpawnFailure shape: the capture arrives as a typed PARAMETER
+// (`SpawnSyncReturns<Buffer>`), not as the call's own result expression.
+function formatSpawnFailure(result: SpawnSyncReturns<Buffer>): string {
+  return `exit ${String(result.status)}: ${result.stderr?.toString().trim() ?? ""}`;
+}
+console.log("param", formatSpawnFailure(failed));

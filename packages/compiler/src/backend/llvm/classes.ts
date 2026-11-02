@@ -1324,8 +1324,8 @@ export function emitClassShapes(
         // An Array subclass instance's destroy releases its fields plainly
         // (it takes no chain length).
         // A tree class's destroy releases each child through the child's
-        // public release, which destroys that child's subtree in turn
-        // (through the runtime's bounded worklist): a direct call would
+        // public release, which destroys that child's subtree in turn under
+        // the runtime's depth budget (scr_rc_destroy): a direct call would
         // need a chain length the tree destroy does not keep.
         const direct =
           bounded && !meta.tree && cls.arrayElem === undefined
@@ -1378,9 +1378,9 @@ export function emitClassShapes(
       // reaches. The teardown is one loop over the subtree when the class's
       // reference fields are all its own type (treeTeardownDefinitions);
       // otherwise each child goes through its own public release, which
-      // recurses one level on the stack and more through the runtime's
-      // bounded worklist (scr_rc_destroy, scr_cycle.c), so a deep chain
-      // costs heap rather than stack.
+      // recurses one level per node, and those releases enter the runtime's
+      // depth budget (scr_rc_destroy, scr_cycle.c) so a chain past the
+      // budget costs heap rather than stack.
       defs.push(
         `define internal ptr @${mangleClassRetain(cls.name)}(ptr %o) ${FN_ATTRS} { ; retain ${cls.name} (a tree: its owner is unique)`,
         `entry:`,
@@ -1404,6 +1404,13 @@ export function emitClassShapes(
       // (arenas.ts, arenaTreeClasses): the drop reclaims them together, so
       // the teardown has nothing to walk or free.
       const adopted = host.arenaClasses?.has(cls.name) === true;
+      // The recursive teardown reaches one destructor per node through the
+      // public release, so that release has to enter the runtime's depth
+      // budget: past SCR_DESTROY_DEPTH the runtime queues the subtree
+      // instead of consuming the native stack. The iterative teardown never
+      // recurses, and an adopted tree's destroy is empty.
+      const budgeted = !loop && !adopted;
+      if (budgeted) host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
       defs.push(
         ...(adopted
           ? [
@@ -1429,7 +1436,9 @@ export function emitClassShapes(
         `  %isnull = icmp eq ptr %o, null`,
         `  br i1 %isnull, label %done, label %free`,
         `free:`,
-        `  call void @${destroy}(ptr %o)`,
+        budgeted
+          ? `  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`
+          : `  call void @${destroy}(ptr %o)`,
         `  br label %done`,
         `done:`,
         `  ret void`,

@@ -269,6 +269,69 @@ console.log(total);
   const destroy = functionBody(llvm, "sc_release_Cell_destroy_it");
   expect(destroy).toMatch(/^it\.done:\n {2}%sgf\.none = icmp eq ptr %it\.ch\.h, null/m);
   expect(destroy.slice(destroy.indexOf("it.done:"))).not.toContain("%it.ha");
+  // The walking teardown never recurses, so the release calls it directly
+  // and pays no runtime depth budget.
+  const release = functionBody(llvm, "sc_release_Cell");
+  expect(release).toContain("call void @sc_release_Cell_destroy(ptr %o)");
+  expect(release).not.toContain("scr_rc_destroy");
+});
+
+test("a heap tree torn down one node at a time enters the runtime depth budget", async () => {
+  // A node whose reference fields do not lead the struct cannot use the
+  // walking teardown: its destroy releases each child through the child's
+  // public release, which recurses one destructor per node. The string
+  // chain keeps the group open, so the class keeps the heap path, and the
+  // release has to enter the runtime's depth budget instead of recursing
+  // on the native stack. An adopted tree is exempt: its destroy is empty.
+  const llvm = await llvmFor(`
+class Node {
+  value: number;
+  a: Node | null;
+  b: Node | null;
+  c: Node | null;
+  constructor(value: number, a: Node | null, b: Node | null, c: Node | null) {
+    this.value = value;
+    this.a = a;
+    this.b = b;
+    this.c = c;
+  }
+}
+function build(n: number): Node {
+  if (n === 0) return new Node(0, null, null, null);
+  return new Node(n, build(n - 1), null, null);
+}
+function probe(n: number): number {
+  const root = build(n);
+  return root.value + 1;
+}
+interface Item {
+  label: string;
+  next: Item | null;
+}
+function chain(labels: string[], n: number): Item {
+  if (n === 0) return { label: labels[0]!, next: null };
+  return { label: labels[n % labels.length]!, next: chain(labels, n - 1) };
+}
+function length(item: Item): number {
+  if (item.next === null) return item.label.length;
+  return item.label.length + length(item.next);
+}
+const labels = ["a", "bb"];
+let total = 0;
+for (let i = 0; i < 4; i++) total += length(chain(labels, 5 + i)) + probe(i + 1);
+console.log(total);
+`);
+  // The headerless layout, on the heap: the value leads, so the class keeps
+  // the recursive teardown.
+  expect(llvm).toContain("%sc_o_Node = type { i32, ptr, ptr, ptr }");
+  expect(llvm).toContain("@scr_arena_open(");
+  expect(llvm).not.toContain("its nodes are the arena's");
+  const destroy = functionBody(llvm, "sc_release_Node_destroy");
+  expect(destroy).not.toContain("%it.");
+  expect(destroy).toContain("call void @sc_release_Node(ptr %v0)");
+  const release = functionBody(llvm, "sc_release_Node");
+  expect(release).toContain("call void @scr_rc_destroy(ptr %o, ptr @sc_release_Node_destroy)");
+  expect(llvm).toContain("declare void @scr_rc_destroy(ptr, ptr)");
 });
 
 test("a node a function builds inside a temporary expression keeps the counted layout", async () => {

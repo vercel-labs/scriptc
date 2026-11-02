@@ -1,12 +1,12 @@
 scriptc coverage tests/coverage-fixtures/width-copies.ts
 
-  statements analyzed   14
-  compile statically    14  (100%)
+  statements analyzed   17
+  compile statically    17  (100%)
     in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   fully static — all analyzed statements compile to native code.
 
-  differs from Node   5 sites (compiles; the native program can behave differently)
+  differs from Node   6 sites (compiles; the native program can behave differently)
       ×1  SC6001  passing a 'Tagged' where 'Noted' is expected copies the object (converting to a record type with other properties compiles as a field copy): the write to 'target.label' updates only the copy, while u…
           at tests/coverage-fixtures/width-copies.ts:21:10
           hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
@@ -16,6 +16,9 @@ scriptc coverage tests/coverage-fixtures/width-copies.ts
       ×1  SC6001  asserting a 'Tagged' as 'Labeled' copies the object (converting to a record type with other properties compiles as a field copy): the write to 'asserted.label' updates only the copy, while under Node…
           at tests/coverage-fixtures/width-copies.ts:28:18
           hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
+      ×1  SC6001  asserting a 'TextBlock | ThinkingBlock' as '{ text: string; }' copies the object (converting to a record type with other properties compiles as a field copy): the write to 'block.text' updates only t…
+          at tests/coverage-fixtures/width-copies.ts:51:15
+          hint: declare the parameter or binding with the value's full type ('TextBlock | ThinkingBlock'), or make the shape a class — class instances keep their identity when passed as a base class
       ×1  SC6001  storing a 'Tagged' in a 'Labeled' binding copies the object (converting to a record type with other properties compiles as a field copy): the write to 'later.label' updates only the copy, while under…
           at tests/coverage-fixtures/width-copies.ts:33:9
           hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class

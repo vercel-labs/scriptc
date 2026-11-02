@@ -37,3 +37,16 @@ later.label = "assigned";
 const list: Labeled[] = [tagged];
 for (const item of list) item.label = "element";
 console.log(tagged.label);
+
+// A union narrowed by an assertion copies the arm it selects.
+interface TextBlock {
+  type: "text";
+  text: string;
+}
+interface ThinkingBlock {
+  type: "thinking";
+  thinking: string;
+}
+const blocks: (TextBlock | ThinkingBlock)[] = [{ type: "text", text: "a" }];
+const block = blocks[0] as { text: string };
+block.text = "b";

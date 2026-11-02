@@ -20,6 +20,7 @@ import {
   widthCopyDivergenceDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
+import { typeEquals } from "../../ir/ir.js";
 import { isCollationCovered } from "./collation-repertoire.js";
 import type { Lowerer } from "./lowerer.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
@@ -669,7 +670,11 @@ function widthCopyBetween(
   const t = checker.getTypeFromTypeNode(targetNode);
   if (!isPlainRecordType(checker, t)) return null;
   const classSource = isProgramClassType(checker, s);
-  if (!classSource && !isPlainRecordType(checker, s)) return null;
+  // A union of plain records, such as `TextBlock | ThinkingBlock` narrowed by
+  // an assertion, copies the arm it selects just like a single record.
+  const plainSource = isPlainRecordType(checker, s);
+  const arms = !classSource && !plainSource ? recordArms(checker, s) : null;
+  if (!classSource && !plainSource && arms === null) return null;
   // A class-backed protocol view keeps the original value.
   if (lowerer.classImplementedProtocol(t)) return null;
   const sourceProps = checker.getPropertiesOfType(s);
@@ -677,6 +682,20 @@ function widthCopyBetween(
     // Accessor members write through to captured state, so a copy of them
     // still observes the same writes: no divergence to report.
     const accessor = ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor;
+    const hasAccessor = (type: ts.Type): boolean =>
+      checker.getPropertiesOfType(type).some((p) => (p.flags & accessor) !== 0);
+    if (arms !== null) {
+      if (arms.some(hasAccessor)) return null;
+      // Only an arm that already has the target's layout may keep it.
+      const targetIr = lowerer.mapTypeOf(t);
+      if (targetIr !== null) {
+        for (const arm of arms) {
+          const armIr = lowerer.mapTypeOf(arm);
+          if (armIr !== null && typeEquals(armIr, targetIr)) return null;
+        }
+      }
+      return { source: checker.typeToString(s), target: checker.typeToString(t) };
+    }
     if (sourceProps.some((p) => (p.flags & accessor) !== 0)) return null;
     const sourceNames = new Set(sourceProps.map((p) => ts.symbolName(p)));
     const targetNames = checker.getPropertiesOfType(t).map((p) => ts.symbolName(p));
@@ -684,6 +703,16 @@ function widthCopyBetween(
       return null;
   }
   return { source: checker.typeToString(s), target: checker.typeToString(t) };
+}
+
+/** The members of a union whose every member is a plain record; a union with
+ * any other member (class, function, primitive, ...) is not a bag of records. */
+function recordArms(checker: ts.TypeChecker, type: ts.Type): ts.Type[] | null {
+  if (!type.isUnionType()) return null;
+  const arms = [...ts.constituentTypes(type)];
+  if (arms.length === 0) return null;
+  for (const arm of arms) if (!isPlainRecordType(checker, arm)) return null;
+  return arms;
 }
 
 function isProgramClassType(checker: ts.TypeChecker, type: ts.Type): boolean {

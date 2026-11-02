@@ -97,7 +97,10 @@ test("divergences report as warnings, never as blockers", async () => {
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
+  // The last site narrows a union of records: the assertion selects an arm and
+  // the binding receives a copy of it.
   expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
+    "SC6001",
     "SC6001",
     "SC6001",
     "SC6001",

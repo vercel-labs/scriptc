@@ -139,6 +139,11 @@ typedef struct ScrNiDynOps {
   int (*instance_of)(ScrDyn *value, ScrDyn *ctor);
   ScrDyn *(*to_primitive)(const ScrDyn *self, int hint);
   bool (*is_function)(const ScrDyn *value);
+  /* The `constructor` of an error island code threw, answered by V8 (+1 in
+   * *out): an error keeps its realm's constructor, so a native
+   * `e.constructor === TypeError` holds with the island's TypeError. 1 for
+   * an island error, 0 for any other. */
+  int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

@@ -28,14 +28,17 @@ const entry = join(root, "tests/fixtures/self-hosting/llvm-emitter.ts");
 const execFileAsync = promisify(execFile);
 const runOptions = { cwd: root, timeout: 60_000, maxBuffer: 256 * 1024 * 1024 };
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
-// Under ASan every allocation records its stack, which makes the emitter
-// several times slower than the plain build. Emitting its own module (tens
-// of megabytes of LLVM) then needs more room than the plain lane on shared
-// runners; the limits still stop a stage that hangs.
-const emitTimeout = sanitize ? 900_000 : 300_000;
-// The plain lane allows 30 minutes for the full bootstrap when other corpus
-// jobs share the same machine.
-const testTimeout = sanitize ? 2_400_000 : 1_800_000;
+// The bootstrap builds the compiler once and then emits the compiler's own
+// module twice: 435 MB of IR to 269 MB of LLVM each time. On one idle core
+// the plain native emitter emits it in 91 s (0.4 s read, 15 s decode, 75 s
+// emission) and the ASan build in 252 s; the fixed point takes 395 s plain
+// and 811 s sanitized. CI runners run these steps at more than three times
+// that rate, which is what carried the old 300 s and 900 s per-stage bounds
+// and the matching test budgets. Each bound here allows about twice the CI
+// time and still stops a stage that hangs.
+const seedTimeout = sanitize ? 1_200_000 : 900_000;
+const emitTimeout = sanitize ? 1_800_000 : 600_000;
+const testTimeout = sanitize ? 5_400_000 : 3_600_000;
 const generatedProgram = "scriptc-generated-v1";
 
 function programStderr(stderr: Buffer): string {
@@ -158,7 +161,7 @@ function buildSeed(): Promise<IrModule> {
         backend,
         sanitize ? "1" : "0",
       ],
-      { ...runOptions, timeout: 600_000 },
+      { ...runOptions, timeout: seedTimeout },
     );
     const built = JSON.parse(stdout) as Awaited<ReturnType<typeof compile>>;
     if (!built.ok)

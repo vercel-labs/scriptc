@@ -5,4 +5,5 @@
   Each output chunk is its own Buffer rather than a slice of a shared chunk-size buffer.
   `zlib.constants` members and their module-level copies read as Node's values.
   The Brotli one-shots `brotliCompress` and `brotliDecompress` and their `Sync` forms, and the `BrotliCompress` and `BrotliDecompress` streams, accept Node's options, including `params` and `dictionary`, and produce the same bytes as Node.
-  `util.inspect` and Zstd compression are unsupported.
+  The zstd one-shots `zstdCompress` and `zstdDecompress` and their `Sync` forms, and the `ZstdCompress` and `ZstdDecompress` streams, accept Node's options, including `params`, `dictionary`, `pledgedSrcSize`, and `rejectGarbageAfterEnd`, and produce the same frames as Node.
+  `util.inspect` is unsupported.

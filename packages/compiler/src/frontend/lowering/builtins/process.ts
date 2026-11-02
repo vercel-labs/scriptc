@@ -29,6 +29,7 @@ import {
   canBoxFuncIntoDyn,
   funcOf,
   isUnitType,
+  typeKey,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
 import { builtinFunctionValue } from "../lower-exprs.js";
@@ -242,7 +243,7 @@ export function programPatchesStdio(lowerer: Lowerer): boolean {
 /** The pinned Node release the runtime reports as process.versions.node
  * (packages/runtime/src/scr_lib.c SCR_NODE_COMPAT_VERSION, kept equal to
  * internal/compatibility/node-v24.json by test/node-pin.test.ts). */
-export const NODE_COMPAT_VERSION = "24.22.0";
+export const NODE_COMPAT_VERSION = "24.22.1";
 
 /** Method calls on first-class process-stream receivers (procStream —
  * a WritableStream-typed value like prefixStream's `output` param):
@@ -439,6 +440,12 @@ export function lowerProcessStreamProperty(
       type: DYN,
       loc: locOf(expr),
     };
+  }
+  // process.stdin.readableLength: the bytes waiting in the read buffer
+  // (Node's Readable#readableLength). Only stdin has the readable side;
+  // its held input is the runtime's buffer.
+  if (direct === "stdin" && member === "readableLength") {
+    return { kind: "libCall", fn: "stdin.readableLength", args: [], type: F64, loc: locOf(expr) };
   }
   if (
     member !== "isTTY" &&
@@ -1072,6 +1079,96 @@ export function lowerProcessMethodCall(
     }
     return { kind: "libCall", fn: "process.stdinSetRawMode", args: [mode], type: VOID, loc };
   }
+  // process.stdin.pause() / resume() / isPaused() / read([size]): the
+  // readable side of the stream, Node's paused-mode surface. pause() and
+  // resume() set the flowing flag (input arrives buffered for read() and
+  // the 'readable' event while paused, and reaches 'data' listeners
+  // again on resume); Node answers `this`, and that composition has no
+  // lowering, so statement position is required. isPaused() answers the
+  // flag — true while a 'readable' listener pins paused mode. read()
+  // takes held input with Node's size coercion (truncation, "read all"
+  // for NaN, nothing for a non-positive size, ERR_OUT_OF_RANGE above
+  // 1 GiB) and answers `Uint8Array | null`. A JavaScript file the checker
+  // does not type keeps the stream object's untyped members: its dyn read()
+  // answers a value whose own methods (Buffer#toString(encoding)) still
+  // lower, which a `Uint8Array | null` union cannot.
+  if (
+    !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    ts.isPropertyAccessExpression(access.expression) &&
+    lowerer.stdlibGlobalMember(access.expression, "process") === "stdin"
+  ) {
+    const loc = locOf(call);
+    const member = access.name.text;
+    const args = call.arguments.nodes;
+    if (member === "pause" || member === "resume") {
+      if (args.length !== 0) {
+        lowerer.noLowering(`stdin.${member} with ${args.length} arguments`, call);
+      }
+      if (!ts.isExpressionStatement(call.parent) && !ts.isArrowFunction(call.parent)) {
+        lowerer.unsupported(
+          "SC1090",
+          call,
+          `using the result of stdin.${member}() (the ReadStream chain — call it as its own statement)`,
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: member === "pause" ? "stdin.pause" : "stdin.resume",
+        args: [],
+        type: VOID,
+        loc,
+      };
+    }
+    if (member === "isPaused") {
+      if (args.length !== 0) {
+        lowerer.noLowering(`stdin.isPaused with ${args.length} arguments`, call);
+      }
+      return { kind: "libCall", fn: "stdin.isPaused", args: [], type: BOOL, loc };
+    }
+    if (member === "read") {
+      if (args.length > 1) {
+        lowerer.noLowering(
+          `stdin.read with ${args.length} arguments`,
+          call,
+          "the supported form is read([size])",
+        );
+      }
+      if (args.some(ts.isSpreadElement)) {
+        lowerer.noLowering("stdin.read with a spread argument", call);
+      }
+      const sizeNode = args[0];
+      // read(undefined) is read(), as in Node: the undefined size reads
+      // everything held rather than coercing through a number. A size
+      // argument written out still evaluates — Node evaluates every
+      // argument before the call, so its side effects and throws are the
+      // read's — it just contributes 0.
+      const all =
+        sizeNode === undefined || (lowerer.typeOf(sizeNode).flags & ts.TypeFlags.Undefined) !== 0;
+      const size: IrExpr = !all
+        ? lowerer.lowerExprExpecting(sizeNode!, F64)
+        : sizeNode === undefined
+          ? numLit(0, loc)
+          : {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: lowerer.lowerExpr(sizeNode), loc }],
+              result: numLit(0, loc),
+              type: F64,
+              loc,
+            };
+      // The interner's identity is the typeKey-SORTED arm list.
+      const arms: IrType[] = [BYTES_U8, { kind: "nullT" }];
+      arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      const type: IrType = { kind: "union", unionId: lowerer.unions.intern(arms) };
+      const read: IrExpr = {
+        kind: "libCall",
+        fn: "stdin.read",
+        args: [boolLit(all, loc), size],
+        type,
+        loc,
+      };
+      return lowerer.maybeNarrow(read, call);
+    }
+  }
   // process.stdout/stderr.on("drain", fn) and its spellings: Node emits
   // 'drain' only after a write() returned false, and these writes are
   // synchronous (they never return false), so the listener can never run.
@@ -1211,11 +1308,17 @@ export function lowerProcessMethodCall(
     }
     const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
-    if (event !== "data" && event !== "end" && event !== "error" && event !== "keypress") {
+    if (
+      event !== "data" &&
+      event !== "end" &&
+      event !== "error" &&
+      event !== "readable" &&
+      event !== "keypress"
+    ) {
       lowerer.noLowering(
         `stdin.${access.name.text}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         call.arguments.nodes[0]!,
-        '"data", "end", "error", and "keypress" are the supported stdin events (as literals)',
+        '"data", "end", "error", "readable", and "keypress" are the supported stdin events (as literals)',
       );
     }
     if (!resultIsDiscarded(call)) {
@@ -1258,15 +1361,21 @@ export function lowerProcessMethodCall(
       }
       return { kind: "libCall", fn: "stdin.onData", args: [cb, onceArg], type: VOID, loc };
     }
-    if (event === "end") {
+    if (event === "end" || event === "readable") {
       if (param !== undefined) {
         lowerer.unsupported(
           "SC1090",
           call.arguments.nodes[1]!,
-          "end listeners with parameters (use ())",
+          `${event} listeners with parameters (use ())`,
         );
       }
-      return { kind: "libCall", fn: "stdin.onEnd", args: [cb, onceArg], type: VOID, loc };
+      return {
+        kind: "libCall",
+        fn: event === "end" ? "stdin.onEnd" : "stdin.onReadable",
+        args: [cb, onceArg],
+        type: VOID,
+        loc,
+      };
     }
     if (param !== undefined && !(param.kind === "object" && param.className === "%Error")) {
       lowerer.unsupported(

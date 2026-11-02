@@ -82,7 +82,7 @@ static bool scr_http_timeout_valid(double ms) {
   return false;
 }
 
-/* Node v24.22.0's STATUS_CODES table, shared by the module export and the
+/* Node v24.22.1's STATUS_CODES table, shared by the module export and the
  * default ServerResponse reason phrase. */
 static const struct { int code; const char *reason; } scr_http_status_codes_table[] = {
   {100, "Continue"}, {101, "Switching Protocols"}, {102, "Processing"},
@@ -6749,6 +6749,41 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
                                  wrap_ctx, pool_key, socket_path);
 }
 
+/* http.request's `protocol` option before the request is built: Node's
+ * ClientRequest compares the declared scheme against the agent's (the
+ * calling module's when the options carry no Agent value) and throws
+ * ERR_INVALID_PROTOCOL before it dials. A falsy value means "the agent's",
+ * so there is nothing to check; every other value coerces for the
+ * message, as Node's template does. Borrows the option value and the
+ * agent value. */
+static void scr_http_client_protocol_check_impl(const ScrDyn *protocol, bool secure,
+                                                 const ScrDyn *agent) {
+  if (protocol == NULL || !scr_dyn_truthy(protocol)) return;
+  if (agent != NULL && agent->kind == SCR_DYN_HANDLE && agent->v.handle.tag == SCR_DYNH_HTTP_AGENT)
+    secure = ((ScrHttpAgent *)agent->v.handle.ptr)->secure;
+  const char *expected = secure ? "https:" : "http:";
+  ScrStr *p = scr_dyn_string_coerce_js(protocol);
+  if (p == NULL) return; /* the coercion threw (a symbol, say) */
+  if (p->len != strlen(expected) || memcmp(p->data, expected, p->len) != 0) {
+    char msg[192];
+    int n = snprintf(msg, sizeof msg, "Protocol \"%.*s\" not supported. Expected \"%s\"",
+                     (int)(p->len < 64 ? p->len : 64), p->data, expected);
+    scr_str_release(p);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_PROTOCOL");
+    return;
+  }
+  scr_str_release(p);
+}
+
+void scr_http_client_protocol_check(const ScrDyn *protocol, bool secure) {
+  scr_http_client_protocol_check_impl(protocol, secure, NULL);
+}
+
+void scr_http_client_protocol_check_agent(const ScrDyn *protocol, bool secure,
+                                           const ScrDyn *agent) {
+  scr_http_client_protocol_check_impl(protocol, secure, agent);
+}
+
 /* The agents fetch() dispatches through, like undici's global dispatcher:
  * keep-alive connections per origin with no socket limit and no timeout on
  * a request in flight; an idle connection closes after 4 s, or the server's
@@ -8011,10 +8046,27 @@ void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d) {
  * result +1 or NULL with the exception pending. */
 #include "scr_url_internal.h"
 
-bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, ScrStr **host_out /*+1*/,
-                         double *port_out, ScrStr **path_out /*+1*/) {
+/* The URL forms' credentials fence, shared with the URL+options merge
+ * below. `api` names the calling entry point ("https.request"). */
+static void scr_http_req_url_credentials_fail(const char *api) {
+  scr_http_req_opts_fence(
+      api, "auth",
+      "a URL's username and password are not sent; put the Authorization header in headers");
+}
+
+bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
+                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/) {
   ScrUrl *u = scr_url_new(url);
   if (!u) return false; /* Invalid URL pending */
+  /* A URL's username and password become Node's `auth` option, which sets
+   * the Authorization header. This client sets none of the auth shapes, so
+   * credentials in the URL are a fence rather than a request that quietly
+   * leaves them off. */
+  if (u->userinfo->len > 0) {
+    scr_http_req_url_credentials_fail(api);
+    scr_url_release(u);
+    return false;
+  }
   /* The scheme is checked against the MODULE the call came from, not read
    * off the URL: http.get('https://…') is Node's ERR_INVALID_PROTOCOL, not
    * an implicit upgrade to https. Hence `secure` as a parameter. */
@@ -8056,9 +8108,9 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
   ScrStr *host;
   ScrStr *path;
   double port;
-  if (!scr_http_url_parts(url, false, &host, &port, &path)) {
+  if (!scr_http_url_parts(url, false, "http.request", &host, &port, &path)) {
     if (cb) scr_closure_release(cb);
-    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL pending */
+    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL / credentials pending */
   }
   ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0); /* request_impl reads the pairs array */
   ScrHttpClientReq *c = scr_http_request_ex(host, port, path, method, 0, pairs, auto_end,
@@ -8527,5 +8579,52 @@ ScrHttpClientReq *scr_http_request_dyn(const ScrDyn *opts /*borrowed*/, bool aut
   }
   ScrHttpClientReq *c = scr_http_req_opts_send(&o, auto_end, cb, fn, add_abort, NULL, NULL, NULL);
   scr_http_req_opts_free(&o);
+  return c;
+}
+
+/* The options record a URL+options call reads, built as Node builds it:
+ * `{ ...urlToHttpOptions(new URL(url)), ...options }`. The URL is parsed
+ * fresh here (an unparsable input throws scr_url_new's catchable "Invalid
+ * URL", and credentials fence), every URL field arrives with Node's own
+ * meaning (hostname without IPv6 brackets, port only when the URL has one,
+ * path as pathname plus search), and the options' own members then replace
+ * the URL's through Object.assign — the spread's order, so `protocol` for
+ * one can override the URL's scheme, exactly Node's merge. +1, or NULL with
+ * the exception pending; `api` names the calling entry point. */
+ScrDyn *scr_http_url_req_options(ScrStr *url /*borrowed*/, const ScrDyn *opts /*borrowed*/,
+                                 const char *api) {
+  ScrUrl *u = scr_url_new(url);
+  if (u == NULL) return NULL; /* Invalid URL pending */
+  if (u->userinfo->len > 0) {
+    scr_http_req_url_credentials_fail(api);
+    scr_url_release(u);
+    return NULL;
+  }
+  ScrDyn *merged = scr_url_to_http_options(u);
+  scr_url_release(u);
+  if (merged == NULL) return NULL; /* a URL component read threw */
+  if (opts != NULL && opts->kind != SCR_DYN_UNDEF && opts->kind != SCR_DYN_NULL) {
+    ScrDyn *assigned = scr_dyn_assign(merged, opts);
+    scr_dyn_release(merged);
+    merged = assigned;
+  }
+  return merged;
+}
+
+/* http.request/http.get(url[, options][, cb]) — the URL-string form whose
+ * options value the compiler cannot see into (or that carries Node's
+ * merge semantics the literal path does not model). The merged record then
+ * takes the same runtime walk as the options form. */
+ScrHttpClientReq *scr_http_request_url_dyn(ScrStr *url /*borrowed*/,
+                                           const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                           ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                           ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)) {
+  ScrDyn *merged = scr_http_url_req_options(url, opts, "http.request");
+  if (merged == NULL) {
+    if (cb) scr_closure_release(cb);
+    return NULL;
+  }
+  ScrHttpClientReq *c = scr_http_request_dyn(merged, auto_end, cb, fn, add_abort);
+  scr_dyn_release(merged);
   return c;
 }

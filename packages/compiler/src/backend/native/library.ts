@@ -113,6 +113,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.dynInvoke ? ["scr_dyn_invoke.c"] : []),
     ...(opts.dynInvoke && opts.dynBuffer ? ["scr_bytes_dyn.c"] : []),
     ...(opts.dynTier === true ? ["scr_js_value.c", "scr_js_object.c"] : []),
+    // The buffer views registry: only a program that resizes, grows or
+    // detaches a buffer installs its ops table.
+    ...(opts.mutableBuffers === true ? ["scr_js_buffers.c"] : []),
     ...(opts.zlib ? ["scr_zlib.c"] : []),
     ...(opts.x509 ? ["scr_x509.c"] : []),
     ...(opts.copying ? ["scr_copying.c"] : []),
@@ -133,7 +136,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // The program's unit reads the JavaScript object model build
     // (t262-da §J): the archive's bytes and json units must carry it too, so
     // the program names the same build the pack matrix selects.
-    ...(opts.jsObjectModel || opts.bigintBytes ? ["-DSCR_JS_OBJECT_MODEL"] : []),
+    ...(opts.jsObjectModel || opts.bigintBytes || opts.mutableBuffers
+      ? ["-DSCR_JS_OBJECT_MODEL"]
+      : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),

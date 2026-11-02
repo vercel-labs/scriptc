@@ -78,6 +78,14 @@ const get = (index: IrExpr): IrExpr => ({
   type: F64,
   invalidNaN: true,
 });
+const FN = { kind: "func", params: [], ret: F64 } as const;
+const closureOf = (captures: string[]): IrExpr => ({
+  loc,
+  kind: "closure",
+  fnName: "%fn.0",
+  captures,
+  type: FN,
+});
 const store = (index: IrExpr, value: IrExpr): IrStmt => ({
   loc,
   kind: "bytesSet",
@@ -281,6 +289,44 @@ test("gives each copy its own locals and runs the two inner loops through live f
   expect(fresh.every((local) => renamed(local.id))).toBe(true);
   // `acc` lives across iterations, so both folds write the same local.
   expect(fresh.some((local) => local.id === copyOf("acc", 0))).toBe(false);
+});
+
+test("gives a `post` closure the copy's box for the local it captures", () => {
+  // `s` is boxed because `post` closes over it: every iteration gets a box
+  // of its own, so each copy's closure must capture the copy's box, the one
+  // its declaration initializes.
+  const body = [
+    decl("acc", num(0)),
+    forLoop("x", num(10), 2, [
+      decl("s", bin("*", ref("x"), num(10))),
+      decl("i", num(0)),
+      whileLoop(bin("<", ref("i"), num(3)), [set("i", bin("+", ref("i"), num(1)))]),
+      set("g", closureOf(["s", "acc"])),
+    ]),
+  ];
+  const mod = moduleOf(body, { s: { boxed: true }, g: { type: FN } });
+  const block = jammed(mod);
+  const pair = block.body[2] as IrStmt & { kind: "while" };
+  const folds = pair.body.filter(
+    (s): s is IrStmt & { kind: "assign" } => s.kind === "assign" && s.localId === "g",
+  );
+  expect(folds.map((s) => s.value)).toEqual([
+    closureOf([copyOf("s", 0), "acc"]),
+    closureOf([copyOf("s", 1), "acc"]),
+  ]);
+  // A binding declared outside the loop is one box both copies share: only
+  // the iteration's own locals are renamed, so no copy names the original
+  // `s`, whose declaration is the tail's.
+  for (const fold of folds)
+    expect((fold.value as IrExpr & { kind: "closure" }).captures).not.toContain("s");
+  const locals = jamRuntimeCountLoops(mod).functions[0]!.locals;
+  const fresh = locals.filter(
+    (local) => local.id === copyOf("s", 0) || local.id === copyOf("s", 1),
+  );
+  expect(fresh.map((local) => local.boxed)).toEqual([true, true]);
+  const tail = block.body[3] as IrStmt & { kind: "for" };
+  const original = body[1] as IrStmt & { kind: "for" };
+  expect(tail.body).toEqual(original.body);
 });
 
 test("starts a `while` copy from its condition and a `for` copy from its condition after the init", () => {

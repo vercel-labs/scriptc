@@ -538,6 +538,13 @@ function emitJam(
         const to = rename[copy]!.get(e.localId);
         return to === undefined ? e : { ...e, localId: to };
       }
+      // A closure captures its creating function's boxes: the copy's closure
+      // must hold the copy's box, or it would read the original local, which
+      // the pair's declaration no longer initializes.
+      if (e.kind === "closure") {
+        const captures = e.captures.map((id) => rename[copy]!.get(id) ?? id);
+        return captures.every((id, at) => id === e.captures[at]) ? e : { ...e, captures };
+      }
       return e;
     };
   const renameStmt =

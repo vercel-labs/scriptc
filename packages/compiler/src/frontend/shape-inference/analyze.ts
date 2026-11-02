@@ -740,6 +740,9 @@ class Analyzer {
    * a.length; i++) a[i]`): undefined joins them only if the array turns
    * out unsafe (finish). */
   private readonly guardedIndexReads: { recv: Atom; dst: number; done: boolean }[] = [];
+  /** Pattern elements read from array literals long enough at creation
+   * (positionalUndefined): undefined joins once the array may shrink. */
+  private readonly positionalReads: { recv: Atom; dst: number; done: boolean }[] = [];
   private readonly boundsMemo = new Map<Node, boolean>();
   dictProto(d: Atom): number {
     let id = this.dictProtos.get(d);
@@ -1895,13 +1898,41 @@ class Analyzer {
         if (ts.isBindingElement(el)) {
           const b = this.binding(el);
           if (el.dotDotDotToken !== undefined) this.add(b, this.top);
-          else this.iterateInto(src, b, el, i);
+          else {
+            this.iterateInto(src, b, el, i);
+            this.positionalUndefined(src, b, i);
+          }
           if (el.initializer !== undefined) this.edge(this.expr(el.initializer), b);
           if (el.name !== undefined) this.bindPattern(el.name, b);
         }
         i++;
       }
     }
+  }
+
+  /** A pattern's element at `index` reads undefined past the end of the
+   * value it destructures, except from an array literal with more elements
+   * and no spread or hole that nothing shrinks (`pop`, `shift`, `splice`,
+   * a `length` write, `delete`, code the analysis does not model). */
+  positionalUndefined(src: number, dst: number, index: number): void {
+    this.on(src, (a) => {
+      if (a.kind === "array" && a.node !== undefined && ts.isArrayLiteralExpression(a.node)) {
+        const elements = list(a.node.elements);
+        if (
+          elements.length > index &&
+          !elements.some((e) => ts.isSpreadElement(e) || e.kind === ts.SyntaxKind.OmittedExpression)
+        ) {
+          this.positionalReads.push({ recv: a, dst, done: false });
+          return;
+        }
+      }
+      if (
+        a.kind === "array" ||
+        a.kind === "collection" ||
+        (a.kind === "prim" && a.label === "string")
+      )
+        this.add(dst, this.prim("undefined"));
+    });
   }
 
   /** Element values of an iterable. */
@@ -2610,9 +2641,11 @@ class Analyzer {
     if (op >= ts.SyntaxKind.FirstCompoundAssignment && op <= ts.SyntaxKind.LastCompoundAssignment) {
       const lv = this.expr(e.left);
       const rv = this.expr(e.right);
-      // Arithmetic on bigints answers bigints; `+=` may also concatenate.
-      const result = this.numericResult([lv, rv]);
-      if (op === ts.SyntaxKind.PlusEqualsToken) this.add(result, this.prim("string"));
+      // Arithmetic on bigints answers bigints; `+=` adds as `+` does.
+      const result =
+        op === ts.SyntaxKind.PlusEqualsToken
+          ? this.plusResult(lv, rv)
+          : this.numericResult([lv, rv]);
       this.assignTo(e.left, result);
       return result;
     }
@@ -2646,26 +2679,8 @@ class Analyzer {
         if (op === ts.SyntaxKind.InKeyword)
           this.ops.push({ kind: "computedRead", recv: r, name: null, node: e });
         return this.constNode(this.prim("boolean"));
-      case ts.SyntaxKind.PlusToken: {
-        const n = this.newNode();
-        const strOrNum = (a: Atom): void => {
-          this.add(
-            n,
-            a.kind === "prim" && a.label === "number" ? this.prim("number") : this.prim("string"),
-          );
-          if (
-            a.kind === "prim" &&
-            (a.label === "boolean" || a.label === "null" || a.label === "undefined")
-          )
-            this.add(n, this.prim("number"));
-          if (a.kind === "top") this.add(n, this.prim("number"));
-          if (a.kind === "top" || (a.kind === "prim" && a.label === "bigint"))
-            this.add(n, this.prim("bigint"));
-        };
-        this.on(l, strOrNum);
-        this.on(r, strOrNum);
-        return n;
-      }
+      case ts.SyntaxKind.PlusToken:
+        return this.plusResult(l, r);
       default:
         return this.numericResult([l, r]);
     }
@@ -4119,6 +4134,38 @@ class Analyzer {
     return out;
   }
 
+  /** The values of `l + r`: a string when either operand may convert to
+   * one (a string, an object, an unknown value), a number when both may
+   * convert to numbers (numbers, booleans, null, undefined), and a bigint
+   * when both may be bigints. */
+  plusResult(l: number, r: number): number {
+    const n = this.newNode();
+    const numeric = [false, false];
+    const big = [false, false];
+    const side =
+      (i: number) =>
+      (a: Atom): void => {
+        const top = a.kind === "top";
+        const prim = a.kind === "prim" ? a.label : null;
+        if (top || prim === null || prim === "string" || prim === "symbol")
+          this.add(n, this.prim("string"));
+        if (
+          top ||
+          prim === "number" ||
+          prim === "boolean" ||
+          prim === "null" ||
+          prim === "undefined"
+        )
+          numeric[i] = true;
+        if (top || prim === "bigint") big[i] = true;
+        if (numeric[0] && numeric[1]) this.add(n, this.prim("number"));
+        if (big[0] && big[1]) this.add(n, this.prim("bigint"));
+      };
+    this.on(l, side(0));
+    this.on(r, side(1));
+    return n;
+  }
+
   /** The result of arithmetic over the operands: a number, or a bigint
    * where an operand may be one. */
   numericResult(operands: number[]): number {
@@ -4144,6 +4191,18 @@ class Analyzer {
             if (a.kind === "array") this.unsafeArrays.add(a);
       for (const g of this.guardedIndexReads)
         if (!g.done && this.unsafeArrays.has(g.recv)) {
+          g.done = true;
+          this.add(g.dst, this.prim("undefined"));
+        }
+      const shrunk = new Set<Atom>();
+      for (const o of this.ops)
+        if (o.kind === "read" && (o.name === "pop" || o.name === "shift" || o.name === "splice"))
+          for (const a of this.nodes[o.recv]!.atoms) if (a.kind === "array") shrunk.add(a);
+      for (const g of this.positionalReads)
+        if (
+          !g.done &&
+          (this.unsafeArrays.has(g.recv) || shrunk.has(g.recv) || this.escaped.has(g.recv))
+        ) {
           g.done = true;
           this.add(g.dst, this.prim("undefined"));
         }

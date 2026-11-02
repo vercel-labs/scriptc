@@ -45,11 +45,23 @@ const programs = [
   "8410-dynamic-class-instance-reads.js",
   // Fields read before the constructor stores them.
   "inferred-field-before-assignment.js",
+  // `+` and `+=` results by operand types.
+  "inferred-plus-results.js",
+  // Pattern elements past the end of the array they destructure.
+  "inferred-partial-destructuring.mjs",
+  // Module-level records and arrays typed by the overlay, shared by functions.
+  "inferred-module-containers.mjs",
+  // Bindings the overlay cannot type: their values stay dynamic.
+  "5178-forin-keys-js.js",
+  "inferred-record-return.mjs",
+  "opentui-byte-queue.js",
+  // A literal storing a parameter the program's JSDoc types.
+  "js-inferred-object-values.js",
+  // Functions called through an untyped member keep their arguments' identity.
+  "weak-map-fresh-array.js",
+  // Destructuring a typed union with null and several data arms.
+  "destructure-untyped-source-null.js",
 ];
-
-// Programs where the overlay types nothing: the proxy receiver makes the
-// class's methods ⊤, and the computed key keeps its read.
-const untyped = new Set(["js-callable-proxy.js", "4090-computed-key-tdz.js"]);
 
 async function run(
   file: string,
@@ -89,9 +101,8 @@ test.each(programs)("%s matches Node with inference on", { timeout: 900_000 }, a
     run(result.binaryPath, [], dirname(entry)),
     run(process.execPath, [entry], dirname(entry)),
   ]);
-  // The overlay typed the program's own files, except where every value
-  // involved stays untyped.
-  expect((result.warnings ?? []).some((w) => w.code === "SC6103")).toBe(!untyped.has(name));
+  // The overlay typed the program's own files.
+  expect((result.warnings ?? []).some((w) => w.code === "SC6103")).toBe(true);
   expect(built.stdout).toBe(node.stdout);
   expect(built.code).toBe(node.code);
 });

@@ -4,7 +4,8 @@
 // kind, a getter that throws, a result whose custom inspector throws, a
 // getter's result under a depth budget, an array's accessors (called with
 // the array as `this`), an inspection a getter runs (starting from the
-// default options), and console.dir. Node is the oracle.
+// default options), console.dir, and a typed array's and a DataView's
+// accessors (called with the view as `this`). Node is the oracle.
 "use strict";
 const util = require("node:util");
 
@@ -112,3 +113,36 @@ const inspecting = {
 };
 console.log(util.inspect(inspecting, { getters: true }));
 console.log(util.inspect(inspecting, { getters: "get", depth: 4 }));
+
+// An accessor on a typed array or a DataView is called with the view as
+// `this` too, and its answer carries the same label forms.
+const nums = new Uint8Array([3, 4]);
+Reflect.defineProperty(nums, "sum", {
+  get() {
+    return this.length + this[0] + this[1];
+  },
+  enumerable: true,
+  configurable: true,
+});
+console.log(util.inspect(nums, { getters: true }));
+console.log(util.inspect(nums));
+console.log(util.inspect({ nums }, { getters: true }));
+console.log(util.formatWithOptions({ getters: true }, "%O", nums));
+const view = new DataView(new ArrayBuffer(4));
+Reflect.defineProperty(view, "twice", {
+  get() {
+    return this.byteLength * 2;
+  },
+  enumerable: true,
+  configurable: true,
+});
+console.log(util.inspect({ view }, { getters: true }));
+const badNums = new Uint8Array([5]);
+Reflect.defineProperty(badNums, "bad", {
+  get() {
+    throw { code: 4 };
+  },
+  enumerable: true,
+  configurable: true,
+});
+console.log(util.inspect(badNums, { getters: true }));

@@ -4,8 +4,9 @@
 // or a function-like value), a getter that throws, a result whose custom
 // inspector throws, results under the depth options, a circular reference
 // through a getter, a getter that inspects a value of its own (the inner
-// inspection starting from the default options), console.dir and
-// formatWithOptions. Node is the oracle.
+// inspection starting from the default options), console.dir,
+// formatWithOptions, and an accessor on a typed array (called with the view
+// as `this`). Node is the oracle.
 import * as util from "node:util";
 
 const inner: { x: number } = { x: 1 };
@@ -137,3 +138,15 @@ console.log(util.inspect({ wrap: badResult }, { getters: true }));
 
 console.dir(combo, { getters: true });
 console.log(util.formatWithOptions({ getters: true }, "%O", mixed));
+
+// An accessor on a typed array is called with the view as `this`, as one on
+// a record is. (A getter declared in an object literal can't name `this`
+// here yet, so the accessor is defined from a function expression.)
+const nums = new Uint8Array([3, 4]);
+const sum = function (this: Uint8Array): number {
+  return this.length + this[0] + this[1];
+};
+Reflect.defineProperty(nums, "sum", { get: sum, enumerable: true, configurable: true });
+console.log(util.inspect(nums, { getters: true }));
+console.log(util.inspect(nums));
+console.log(util.inspect({ nums }, { getters: true }));

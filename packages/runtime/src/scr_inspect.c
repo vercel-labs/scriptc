@@ -1064,12 +1064,28 @@ static ScrStr *insp_accessor_value(const ScrDynProp *ent, ScrDyn *owner, double 
 static bool insp_fmt_object(const ScrDyn *value);
 static void insp_key_into(InspBuf *b, const char *key, size_t len);
 
+/* The value a view's accessor receives as `this`: the checked-dynamic
+ * handle the walk holds for it, or a box of the view when the render has
+ * only the native one. `*owned` tells the caller to release it. */
+static ScrDyn *insp_view_this(const ScrBytes *b, ScrDyn *box, bool *owned) {
+  if (box) {
+    *owned = false;
+    return box;
+  }
+  *owned = true;
+  return scr_dyn_new_bytes(b);
+}
+
 /* Slot k's `key: value` entry when it shows (an enumerable one, or any
  * under showHidden; a hidden string key renders in brackets, or bare when
  * the Render copies the properties onto a plain object first, as Buffer's
- * custom inspect does), else NULL. */
-static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, double depth,
-                                  bool bracket_hidden) {
+ * custom inspect does), else NULL. A NULL with an exception pending is an
+ * entry whose rendering threw, which ends the inspection with it. `b` is
+ * the value the properties belong to and `box` its checked-dynamic handle
+ * when the walk holds one: a getter runs with that value as `this`, not
+ * with the property table. */
+static ScrStr *insp_view_property(ScrDyn *props, const ScrBytes *b, ScrDyn *box, size_t k,
+                                  double recurse, double depth, bool bracket_hidden) {
   ScrDynProp found;
   const ScrDynProp *ent = NULL;
   ScrStr *key = NULL;
@@ -1082,8 +1098,15 @@ static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, doubl
     if (ent && (ent->enumerable || g_show_hidden)) key = scr_insp_dyn(symbol, recurse, depth);
   }
   if (!ent || !(ent->enumerable || g_show_hidden)) return NULL;
-  ScrStr *val = ent->accessor ? insp_accessor_value(ent, props, recurse, depth)
-                              : scr_insp_dyn(ent->value, recurse, depth);
+  ScrStr *val;
+  if (!ent->accessor) {
+    val = scr_insp_dyn(ent->value, recurse, depth);
+  } else {
+    bool owned = false;
+    ScrDyn *self = insp_view_this(b, box, &owned);
+    val = insp_accessor_value(ent, self, recurse, depth);
+    if (owned) scr_dyn_release(self);
+  }
   if (!val) {
     scr_str_release(key);
     return NULL;
@@ -1118,7 +1141,7 @@ static size_t insp_view_property_count(ScrDyn *props) {
  * INSPECT_MAX_BYTES (50); renders fully at any depth (custom inspection
  * runs before the depth check in Node). u8 element kind only (the
  * frontend fences the rest). */
-ScrStr *scr_insp_buffer(ScrBytes *b) {
+static ScrStr *insp_buffer_body(ScrBytes *b, ScrDyn *box) {
   SCR_BYTES_SNAPSHOT(b);
   InspBuf out = {0};
   ib_cstr(&out, "<Buffer ");
@@ -1140,8 +1163,12 @@ ScrStr *scr_insp_buffer(ScrBytes *b) {
    * an object at depth 0 (Buffer's custom inspect). */
   bool first = true;
   for (size_t k = 0; k < insp_view_property_slots(b->properties); k++) {
-    ScrStr *entry = insp_view_property(b->properties, k, 1, 2, false);
-    if (!entry) continue;
+    ScrStr *entry = insp_view_property(b->properties, b, box, k, 1, 2, false);
+    if (!entry) {
+      /* An entry that threw ends the inspection with its exception. */
+      if (scr_exc_pending()) return NULL;
+      continue;
+    }
     if (!first || b->len) ib_cstr(&out, ", ");
     first = false;
     ib_bytes(&out, entry->data, entry->len);
@@ -1150,6 +1177,8 @@ ScrStr *scr_insp_buffer(ScrBytes *b) {
   ib_char(&out, '>');
   return ib_take(&out);
 }
+
+ScrStr *scr_insp_buffer(ScrBytes *b) { return insp_buffer_body(b, NULL); }
 
 /* Node's showHidden render of `kind` lists hidden entries this inspector
  * does not render; the call throws an SC2020 Error naming the surface
@@ -1236,7 +1265,8 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
 /* DataView: formatValue's `DataView { [byteLength], [byteOffset],
  * [buffer] }`, the buffer rendered one level deeper. `[DataView]` beyond
  * depth. */
-static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double depth) {
+static ScrStr *insp_data_view_body(const ScrBytes *b, double recurse, double depth,
+                                   ScrDyn *box) {
   if (recurse > depth) return scr_str_new("[DataView]", 10);
   if (insp_hidden_shared_view(b)) return scr_str_new("", 0);
   const ScrBytes *owner = b->backing ? b->backing : b;
@@ -1260,8 +1290,12 @@ static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double dept
   scr_insp_entry(entry, false);
   scr_str_release(entry);
   for (size_t k = 0; k < insp_view_property_slots(b->properties); k++) {
-    entry = insp_view_property(b->properties, k, recurse + 1, depth, true);
-    if (!entry) continue;
+    entry = insp_view_property(b->properties, b, box, k, recurse + 1, depth, true);
+    if (!entry) {
+      /* An entry that threw ends the inspection with its exception. */
+      if (scr_exc_pending()) return NULL;
+      continue;
+    }
     scr_insp_entry(entry, false);
     scr_str_release(entry);
   }
@@ -1273,6 +1307,10 @@ static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double dept
   scr_str_release(b0);
   scr_str_release(b1);
   return out;
+}
+
+static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double depth) {
+  return insp_data_view_body(b, recurse, depth, NULL);
 }
 
 static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth);
@@ -2584,7 +2622,8 @@ static ScrStr *insp_backing_buffer(const ScrBytes *b) {
 /* A numeric typed array (not a Buffer): `Uint8Array(n) [ ... ]` with
  * Node's maxArrayLength and array grid, `[Uint8Array]` past the depth
  * limit. Borrows b; +1. */
-ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
+static ScrStr *insp_typed_array_body(ScrBytes *b, double recurse, double depth,
+                                     ScrDyn *box) {
   char prefix[48];
   int pn = snprintf(prefix, sizeof prefix, "%s(%zu) [", scr_bytes_elem_name(b->elem), b->len);
   /* Named properties follow the elements as `key: value` entries. */
@@ -2654,8 +2693,12 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
     entries += 5;
   }
   for (size_t k = 0; nprops && k < insp_view_property_slots(props); k++) {
-    ScrStr *entry = insp_view_property(props, k, recurse + 1, depth, true);
-    if (!entry) continue;
+    ScrStr *entry = insp_view_property(props, b, box, k, recurse + 1, depth, true);
+    if (!entry) {
+      /* An entry that threw ends the inspection with its exception. */
+      if (scr_exc_pending()) return NULL;
+      continue;
+    }
     /* Node's grouping pads by the element at the entry's output position. */
     scr_insp_entry(entry, entries < b->len);
     scr_str_release(entry);
@@ -2675,6 +2718,10 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   scr_str_release(b0);
   scr_str_release(b1);
   return out;
+}
+
+ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
+  return insp_typed_array_body(b, recurse, depth, NULL);
 }
 
 /* ── custom inspect functions (util.inspect.custom) ──────────────────────
@@ -3775,12 +3822,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_BYTES: {
       ScrBytes *b = d->v.bytes;
       if (b->is_data_view && g_colors) return insp_colors_fence("DataView values");
-      if (b->is_data_view) return scr_insp_data_view(b, recurse, depth);
+      if (b->is_data_view) return insp_data_view_body(b, recurse, depth, d);
       if (d->buffer) {
         /* Buffer-flavored (a stream chunk): Node's <Buffer ..> form. */
-        return scr_insp_buffer(b);
+        return insp_buffer_body(b, d);
       }
-      return scr_insp_typed_array(b, recurse, depth);
+      return insp_typed_array_body(b, recurse, depth, d);
     }
   }
   return scr_str_new("undefined", 9); /* unreachable */

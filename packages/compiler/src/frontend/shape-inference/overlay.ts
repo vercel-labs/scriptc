@@ -22,6 +22,7 @@ import * as ts from "../ts7/adapter.js";
 import type { Atom } from "./domain.js";
 import { isPackageJsFile, type Op, type ShapeAnalysis } from "./analyze.js";
 import type { SiteVerdict } from "./report.js";
+import { jsInferenceEnabled } from "../js-inference.js";
 
 export interface ShapeOverlay {
   /** Rewritten text per package file. */
@@ -149,6 +150,7 @@ export function planShapeOverlay(
   verdicts: readonly SiteVerdict[],
   packageFiles: readonly ts.SourceFile[],
   exclusions: OverlayExclusions = NO_EXCLUSIONS,
+  held: ReadonlySet<Atom> = new Set(),
 ): ShapeOverlayPlan {
   // Debugging: SCRIPTC_DEBUG_SHAPE_FIELD=name prints that field's values per atom.
   const debugField = process.env["SCRIPTC_DEBUG_SHAPE_FIELD"];
@@ -173,7 +175,29 @@ export function planShapeOverlay(
       if (a.kind === "instance" && a.node !== undefined && !isPackageJsFile(a.node.getSourceFile()))
         reflectedInstances.add(a);
   }
-  const dynHeld = dynHeldSites(analysis, verdicts);
+  const dynHeld = dynHeldSites(analysis, verdicts, held);
+  // Objects and arrays that reach a position of the program's own files the
+  // overlay leaves untyped (a binding, parameter, result, field or element
+  // whose values print as no type, or one the program's JSDoc types): the
+  // lowering holds them in the dynamic representation there, so typing their
+  // literal sites would make that position hold a copy.
+  const untyped = new Set<Atom>();
+  // A literal of the program's own files that stores a parameter its
+  // JSDoc types reads the parameter at that type, which the values passed
+  // need not match: the literal stays dynamic.
+  if (jsInferenceEnabled())
+    for (const v of verdicts) {
+      const node = v.site.node;
+      if (!isPackageJsFile(node.getSourceFile()) && storesDocumentedParameter(node))
+        untyped.add(v.site.atom);
+    }
+  // Functions and classes that reach such a position are called through the
+  // dynamic representation: their parameters and results stay untyped, so
+  // the values passed in keep their identity.
+  const dynCalled = new Set<ts.Node>();
+  for (const a of held)
+    if ((a.kind === "function" || a.kind === "class") && a.node !== undefined)
+      dynCalled.add(a.node);
   // Records and arrays print only for sites whose objects never escape: a
   // native record that reached untyped code would be seen as a copy.
   const siteKeys = new Map<Atom, { keys: string[]; optional: Set<string> }>();
@@ -221,6 +245,9 @@ export function planShapeOverlay(
   }
   for (const sf of packageFiles) {
     if (exclusions.files.has(sf.fileName)) continue;
+    // One of the program's own files (inference for the program's
+    // JavaScript), not a package's.
+    const programFile = jsInferenceEnabled() && !isPackageJsFile(sf);
     const typedefs = new Map<string, string>();
     const typedefText: string[] = [];
     const edits: Edit[] = [];
@@ -292,7 +319,35 @@ export function planShapeOverlay(
     };
 
     // `inner`: inside a record field, where ⊤ and unprintable values are `any`.
+    const holdUntyped = (atoms: Iterable<Atom>): void => {
+      if (!programFile) return;
+      for (const a of atoms)
+        if (
+          a.kind === "object" ||
+          a.kind === "array" ||
+          a.kind === "function" ||
+          a.kind === "class"
+        )
+          untyped.add(a);
+    };
+    // In the program's own files a type with an `any` inside stays unwritten:
+    // the lowering stores an `any` field or element at the checker's type of
+    // the value it receives, which would type an object held untyped.
     const typeOf = (atoms: ReadonlySet<Atom>, inner: boolean, depth: number): string | null => {
+      let t = typeOfValues(atoms, inner, depth);
+      if (programFile && !inner && t !== null && containsAny(t)) t = null;
+      if (t === null || t === "any") holdUntyped(atoms);
+      return t;
+    };
+    // Typedefs with an `any` inside, directly or through another typedef.
+    const anyTypedefs = new Set<string>();
+    const containsAny = (t: string): boolean =>
+      /\bany\b/.test(t) || [...t.matchAll(/__shape_\d+/g)].some((m) => anyTypedefs.has(m[0]));
+    const typeOfValues = (
+      atoms: ReadonlySet<Atom>,
+      inner: boolean,
+      depth: number,
+    ): string | null => {
       if (atoms.size === 0) return inner ? "any" : null;
       const arms = new Set<string>();
       // Every array arm becomes one Array<…> of the joined element values.
@@ -414,6 +469,7 @@ export function planShapeOverlay(
         const t = typeOf(atoms, true, depth + 1);
         return `${/^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}${optional.has(k) ? "?" : ""}: ${t ?? "any"}`;
       });
+      if (parts.some(containsAny)) anyTypedefs.add(name);
       typedefText.push(`/** @typedef {{${parts.join(", ")}}} ${name} ${MARK} */`);
       return name;
     };
@@ -452,6 +508,7 @@ export function planShapeOverlay(
         const t = typeOf(atoms, true, depth + 1);
         return `${/^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}${optional.has(k) ? "?" : ""}: ${t ?? "any"}`;
       });
+      if (parts.some(containsAny)) anyTypedefs.add(name);
       typedefText.push(`/** @typedef {{${parts.join(", ")}}} ${name} ${MARK} */`);
       return name;
     };
@@ -694,6 +751,16 @@ export function planShapeOverlay(
       // has one, and none at all for a signature it types as a whole.
       const doc = packageDocOf(fn);
       if (doc.whole) return null;
+      if (
+        programFile &&
+        (dynCalled.has(fn) ||
+          (ts.isConstructorDeclaration(fn) && fn.parent !== undefined && dynCalled.has(fn.parent)))
+      ) {
+        list(fn.parameters).forEach((_, index) => holdUntyped(paramValues(fn, index)));
+        const ret = returnValues(fn);
+        if (ret !== undefined) holdUntyped(ret);
+        return null;
+      }
       let opaqueResult = false;
       if (!ts.isConstructorDeclaration(fn) && !constructed.has(fn) && !doc.returns) {
         const ret = returnValues(fn);
@@ -728,17 +795,25 @@ export function planShapeOverlay(
           p.dotDotDotToken !== undefined ||
           p.initializer !== undefined ||
           p.questionToken !== undefined
-        )
+        ) {
+          if (p.dotDotDotToken === undefined) holdUntyped(paramValues(fn, index));
           return;
+        }
         const values = paramValues(fn, index);
         const t = typeOf(values, false, 0);
         // A `typeof p === "…"` test the proven values never pass would
         // narrow the typed parameter to never inside the branch, which the
         // lowering refuses: such a parameter stays untyped.
-        if (t !== null && typeofTestsOutside(fn, p.name.text, values)) return;
-        if (doc.params.has(p.name.text)) return;
-        if (t !== null && storedIntoWiderField(fn, p.name.text, t)) return;
-        if (t !== null) tags.push(`@param {${t}} ${p.name.text}`);
+        if (
+          t === null ||
+          typeofTestsOutside(fn, p.name.text, values) ||
+          doc.params.has(p.name.text) ||
+          storedIntoWiderField(fn, p.name.text, t)
+        ) {
+          holdUntyped(values);
+          return;
+        }
+        tags.push(`@param {${t}} ${p.name.text}`);
       });
       // With typed parameters the checker infers the result from them: an
       // object or array the analysis does not type (a `__proto__` literal,
@@ -816,31 +891,67 @@ export function planShapeOverlay(
           }
         }
       }
-      // Locals only: module-level bindings are initialized once (and a
+      // Locals, and in the program's own files module-level bindings too: in
+      // a package, a module-level binding is initialized once (and a
       // record-typed module constant can turn a return type into a union of
-      // overlapping records, which the lowering width-coerces).
+      // overlapping records, which the lowering width-coerces). A module-level
+      // object literal of the program is typed as well: the lowering keeps
+      // such a binding dynamic for its identity unless the overlay types it.
+      // Every declarator of a statement is typed: a consumer of a literal in
+      // `const a = {…}, b = {…}` would otherwise see a record while the
+      // lowering kept that binding dynamic, a copy of it.
+      const moduleLevel = node.parent === sf;
       if (
         ts.isVariableStatement(node) &&
-        (node.parent !== sf || process.env["SCRIPTC_SHAPE_OVERLAY_MODULE_VARS"] === "1") &&
-        node.declarationList.declarations.nodes.length === 1
+        (!moduleLevel || programFile || process.env["SCRIPTC_SHAPE_OVERLAY_MODULE_VARS"] === "1")
       ) {
-        const d = node.declarationList.declarations.nodes[0]!;
-        const init = d.initializer;
-        if (ts.isIdentifier(d.name) && init !== undefined && !literalInitializer(init)) {
+        const declarations = node.declarationList.declarations.nodes;
+        for (const d of declarations) {
+          const init = d.initializer;
+          if (
+            !ts.isIdentifier(d.name) ||
+            init === undefined ||
+            (literalInitializer(init) &&
+              !(moduleLevel && programFile && ts.isObjectLiteralExpression(init)))
+          )
+            continue;
+          // A statement-level `@type` applies to the first declarator only,
+          // as the checker reads it: the later ones have their own trivia.
+          const documented = d === declarations[0] ? packageDocOf(node).type : declTypeDoc(d, sf);
           const t = typeOf(analysis.declValues(d), false, 0);
           if (process.env["SCRIPTC_DEBUG_SHAPE_OVERLAY_WHY"] === d.name.text)
             process.stderr.write(
               `[shape-overlay-why] ${d.name.text}@${sf.getLineAndCharacterOfPosition(ts.tokenStartOfNode(d)).line + 1}: ${t} <- ${[...analysis.declValues(d)].map((a) => `${a.kind}:${a.label}`).join(" | ")}\n`,
             );
-          if (t !== null && !packageDocOf(node).type)
-            annotate(ts.tokenStartOfNode(node), `@type {${t}}`);
+          if (t !== null && !documented) {
+            // The statement's first declarator takes the statement-level tag
+            // (the only position the checker reads it from); a later one
+            // takes a tag in its own leading trivia.
+            const first = d === declarations[0];
+            annotate(ts.tokenStartOfNode(first ? node : d), `@type {${t}}`);
+            typedDecls.add(d);
+          }
         }
+      }
+      // A binding of the program's own files the overlay does not type takes
+      // the checker's type from its initializer, or its JSDoc's: values it
+      // holds other than its own initializer's literal stay dynamic.
+      if (
+        programFile &&
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer !== undefined &&
+        !typedDecls.has(node)
+      ) {
+        const own = node.initializer;
+        holdUntyped([...analysis.declValues(node)].filter((a) => a.node !== own));
       }
       ts.forEachChild(node, (c) => {
         visit(c);
         return undefined;
       });
     };
+    const typedDecls = new Set<ts.VariableDeclaration>();
 
     const fieldType = (cls: ts.Node, name: string): string | null => {
       const atoms = new Set<Atom>();
@@ -916,6 +1027,17 @@ export function planShapeOverlay(
     if (edits.length === 0 && typedefText.length === 0) continue;
     parts.set(sf.fileName, { text: sf.text, edits, suffix: typedefText.join("") });
   }
+  // Holding more objects can leave more positions untyped: plan again until
+  // the held set stops growing.
+  const grown = [...untyped].filter((a) => !held.has(a) && !dynHeld.has(a));
+  if (grown.length > 0)
+    return planShapeOverlay(
+      analysis,
+      verdicts,
+      packageFiles,
+      exclusions,
+      new Set([...held, ...grown]),
+    );
   // Type aliases other files name these files' classes through.
   for (const [other, names] of exportedClasses) {
     const aliases = [...names]
@@ -999,13 +1121,19 @@ export function renderShapeOverlay(
 }
 
 /** Literal sites whose objects some holder keeps in the lowering's dynamic
- * representation: a module-level binding of a JavaScript file (the overlay
- * does not type those, and the lowering keeps their objects dynamic), and,
- * transitively, the fields and elements of those objects and of every
- * object or array that is not P-local. A typed position that receives such
- * an object converts it to a native record, which is a copy: identity
- * comparisons and writes through either reference would diverge. */
-function dynHeldSites(analysis: ShapeAnalysis, verdicts: readonly SiteVerdict[]): Set<Atom> {
+ * representation: a module-level binding of a package's JavaScript file (the
+ * overlay does not type those, and the lowering keeps their objects
+ * dynamic), the objects of `extra` (positions of the program's own files the
+ * overlay leaves untyped), and, transitively, the fields and elements of
+ * those objects and of every object or array that is not P-local. A typed
+ * position that receives such an object converts it to a native record,
+ * which is a copy: identity comparisons and writes through either reference
+ * would diverge. */
+function dynHeldSites(
+  analysis: ShapeAnalysis,
+  verdicts: readonly SiteVerdict[],
+  extra: ReadonlySet<Atom>,
+): Set<Atom> {
   const held = new Set<Atom>();
   const work: Atom[] = [];
   const add = (a: Atom): void => {
@@ -1014,8 +1142,12 @@ function dynHeldSites(analysis: ShapeAnalysis, verdicts: readonly SiteVerdict[])
       work.push(a);
     }
   };
+  for (const a of extra) add(a);
+  // The overlay types the module-level bindings of the program's own files.
+  const programFiles = jsInferenceEnabled();
   for (const sf of analysis.files) {
     if (!/\.[cm]?jsx?$/.test(sf.fileName)) continue;
+    if (programFiles && !isPackageJsFile(sf)) continue;
     for (const st of sf.statements.nodes) {
       if (!ts.isVariableStatement(st)) continue;
       for (const d of st.declarationList.declarations.nodes)
@@ -1037,6 +1169,33 @@ function dynHeldSites(analysis: ShapeAnalysis, verdicts: readonly SiteVerdict[])
     if (el !== undefined) for (const x of analysis.nodes[el]!.atoms) add(x);
   }
   return held;
+}
+
+/** Whether an object or array literal stores a parameter, read by name,
+ * that its function's JSDoc types. */
+function storesDocumentedParameter(literal: ts.Node): boolean {
+  const values: ts.Node[] = [];
+  if (ts.isObjectLiteralExpression(literal)) {
+    for (const p of literal.properties.nodes) {
+      if (ts.isPropertyAssignment(p)) values.push(p.initializer);
+      else if (ts.isShorthandPropertyAssignment(p)) values.push(p.name);
+    }
+  } else if (ts.isArrayLiteralExpression(literal)) values.push(...literal.elements.nodes);
+  for (let value of values) {
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    if (!ts.isIdentifier(value)) continue;
+    const name = value.text;
+    for (let n: ts.Node | undefined = literal.parent; n !== undefined; n = n.parent) {
+      if (!ts.isFunctionLike(n)) continue;
+      const declares = list((n as ts.FunctionLikeDeclaration).parameters).some(
+        (p) => ts.isIdentifier(p.name) && p.name.text === name,
+      );
+      if (!declares) continue;
+      if (packageDocOf(n).params.has(name)) return true;
+      break;
+    }
+  }
+  return false;
 }
 
 interface PackageDoc {
@@ -1099,6 +1258,17 @@ function packageDocOf(node: ts.Node): PackageDoc {
     type: /@type\b/.test(text),
     whole: /@(?:type|template|this|overload|callback)\b/.test(text),
   };
+}
+
+/** Whether the declaration's own leading trivia holds a `@type` JSDoc that
+ * is not the overlay's. A statement-level tag belongs to the statement's
+ * first declarator only, so later declarators of a list are asked about
+ * their trivia alone. */
+function declTypeDoc(decl: ts.VariableDeclaration, sf: ts.SourceFile): boolean {
+  const text = sf.text.slice(decl.pos, ts.tokenStartOfNode(decl));
+  for (const m of text.matchAll(/\/\*\*[\s\S]*?\*\//g))
+    if (!m[0].includes(MARK) && /@type\b/.test(m[0])) return true;
+  return false;
 }
 
 /** A comment range's JSDoc type tags made plain text (the range is

@@ -2713,18 +2713,21 @@ export function lowerDestructuringDecl(
   // takes (RequireObjectCoercible for an object pattern, GetIterator for
   // an array pattern). An object pattern whose source has no V8
   // spelling keeps the fence. TypeScript keeps the fence: narrowing
-  // first is the annotated fix.
+  // first is the annotated fix. An object pattern over a union with
+  // several data arms beside its unit arms (`number | Entry | null`)
+  // checks the unit arms the same way and reads the keys from the union.
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && init.type.kind === "union") {
     const def = lowerer.unions.get(init.type.unionId);
     const dataArms = (def?.arms ?? []).filter((a) => !isUnitType(a));
     const arm = dataArms[0];
-    if (
+    const single =
+      dataArms.length === 1 && arm !== undefined && (arm.kind === "array" || arm.kind === "record");
+    const several =
+      dataArms.length > 1 &&
+      ts.isObjectBindingPattern(decl.name) &&
       def !== undefined &&
-      dataArms.length === 1 &&
-      arm !== undefined &&
-      def.arms.every((a) => a === arm || isUnitType(a)) &&
-      (arm.kind === "array" || arm.kind === "record")
-    ) {
+      def.arms.some(isUnitType);
+    if (def !== undefined && arm !== undefined && (single || several)) {
       const tag = def.arms.indexOf(arm);
       const unionId = init.type.unionId;
       const utmp = lowerer.declareHiddenLocal("%destrU", init.type);
@@ -2783,17 +2786,36 @@ export function lowerDestructuringDecl(
                 loc,
               }
             : null;
+      const unitArmTest = (): IrExpr =>
+        def.arms
+          .map((a, index): IrExpr | null =>
+            isUnitType(a)
+              ? {
+                  kind: "unionIsTag",
+                  unionId,
+                  tag: index,
+                  negated: false,
+                  value: uref,
+                  type: BOOL,
+                  loc,
+                }
+              : null,
+          )
+          .filter((test): test is IrExpr => test !== null)
+          .reduce((left, right) => ({ kind: "logical", op: "||", left, right, type: BOOL, loc }));
       out.push({
         kind: "if",
-        cond: {
-          kind: "unionIsTag",
-          unionId: init.type.unionId,
-          tag,
-          negated: true,
-          value: uref,
-          type: BOOL,
-          loc,
-        },
+        cond: single
+          ? {
+              kind: "unionIsTag",
+              unionId: init.type.unionId,
+              tag,
+              negated: true,
+              value: uref,
+              type: BOOL,
+              loc,
+            }
+          : unitArmTest(),
         then: [
           ...(check !== null ? [{ kind: "exprStmt" as const, expr: check, loc }] : []),
           {
@@ -2806,7 +2828,9 @@ export function lowerDestructuringDecl(
         else_: null,
         loc,
       });
-      init = { kind: "unionNarrow", unionId: init.type.unionId, tag, value: uref, type: arm, loc };
+      init = single
+        ? { kind: "unionNarrow", unionId: init.type.unionId, tag, value: uref, type: arm, loc }
+        : uref;
     }
   }
   const groupsSource = matchGroupsPatternSource(
@@ -7492,14 +7516,33 @@ function jsObjectBindingExpands(
   return expands;
 }
 
+/** The source text that leads a declarator in its statement: everything
+ * before the statement for the first declarator, and from the previous
+ * declarator's end for the others. The checker applies a statement-level
+ * JSDoc to the first declarator alone, so a later declarator's own tag is
+ * the only one that speaks for it. */
+function declaratorLeadingText(decl: ts.VariableDeclaration): string | null {
+  const list = decl.parent;
+  if (list === undefined || !ts.isVariableDeclarationList(list)) return null;
+  const statement = list.parent;
+  if (statement === undefined) return null;
+  const declarations = list.declarations.nodes;
+  const index = declarations.indexOf(decl);
+  const from = index > 0 ? declarations[index - 1]!.end : statement.pos;
+  return ts.getSourceFileOfNode(decl).text.slice(from, ts.tokenStartOfNode(decl));
+}
+
 export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
-  const statement = decl.parent?.parent;
-  return (
-    !!statement &&
-    /@type\b/.test(
-      ts.getSourceFileOfNode(decl).text.slice(statement.pos, ts.tokenStartOfNode(decl)),
-    )
-  );
+  const text = declaratorLeadingText(decl);
+  return text !== null && /@type\b/.test(text);
+}
+
+/** Whether shape inference typed the declaration (an `@type` tag in a
+ * comment the overlay wrote): the analysis proved the value never reaches
+ * code it does not model, so the typed representation keeps its identity. */
+export function hasShapeOverlayType(decl: ts.VariableDeclaration): boolean {
+  const text = declaratorLeadingText(decl);
+  return text !== null && /\/\*\*[^*]*@type\b[^*]*@scriptcShape\b/.test(text);
 }
 
 /** The assignments to a declaration's binding in its function (or file),

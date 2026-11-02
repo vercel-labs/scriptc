@@ -92,6 +92,19 @@ const [fromSrc = function () {}] = srcFns;
 const [, anonFromSrc = function () {}] = srcFns;
 console.log('source-wins:', fromSrc.name, JSON.stringify(anonFromSrc.name));
 
+// The default's own spelling must not leak either: a named definition or an
+// identifier the source overrides stays the supplied value's name.
+const srcNamed = [function supplied() {}, function supplied2() {}];
+const srcObj = { p: function supplied3() {} };
+const [fromSrcNamed = function unused() {}] = srcNamed;
+const [, fromSrcRef = other] = srcNamed;
+const { p: fromSrcObj = class Unused {} } = srcObj;
+console.log('source-wins-named:', fromSrcNamed.name, fromSrcRef.name, fromSrcObj.name);
+function paramSrcWins(cb = other, named = function unused2() {}) {
+  return cb.name + ',' + named.name;
+}
+console.log('param-source-wins:', paramSrcWins(function arg() {}, function arg2() {}));
+
 // A plain assignment expression names its anonymous definition after the
 // target identifier, and an object property initializer after the key.
 let plain;

@@ -2270,24 +2270,21 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       n = declaration;
       break;
     }
-    // A binding element or a parameter holds the value its default produced
-    // only when the destructured value was undefined; otherwise it holds the
-    // source's value. The default named its own definition when it created it
-    // (`const [f = function () {}] = []` is "f"), so an anonymous definition
-    // here answers null for the runtime name rather than a spelling that the
-    // source's value would not have; `const [x = fn] = []` follows `fn`.
+    // A binding element or a parameter holds the default's value only when the
+    // destructured value or the argument was undefined; otherwise it holds the
+    // source's value. Which one ran is a runtime fact, so a default never
+    // answers for the binding: when it runs, the definition it created was
+    // already named after the binding, and a named definition it references
+    // keeps the name it spells. A default the source overrides must not lend
+    // its name to the supplied value (`const [x = function unused() {}] =
+    // [function supplied() {}]` is "supplied"), so this answers null and the
+    // name read takes the runtime value's own name.
     // Without a default the spelling is wrong for every value the binding can
     // hold, but that shape has no pattern-default signature and is a separate
     // change; it keeps the previous answer here.
     if (js && declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
-      const initializer = declaration.initializer;
-      if (!initializer) break;
-      if (!ts.isIdentifier(declaration.name)) return null;
-      let bound: ts.Node = initializer;
-      while (ts.isParenthesizedExpression(bound)) bound = bound.expression;
-      if (isAnonymousCallableDefinition(bound)) return null;
-      n = bound;
-      continue;
+      if (!declaration.initializer) break;
+      return null;
     }
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
     let value: ts.Node = declaration.initializer;

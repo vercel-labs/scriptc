@@ -142,10 +142,14 @@ typedef enum {
  *
  * Pin a new tag (move it to SCR_DYNH_TAGS with the value it has now: the
  * largest pinned value + 1 for the first row of SCR_DYNH_NEW_TAGS, + 2 for
- * the second, and so on) only when the LLVM backend needs its number: DYN_HANDLE_TAG_NUM and
+ * the second, and so on) when the LLVM backend needs its number — DYN_HANDLE_TAG_NUM and
  * TEXT_CODEC_TAG_NUM in packages/compiler/src/backend/llvm/dyn.ts may only
- * name pinned tags. Pin the new tags in name order, oldest first, in a change
- * of its own, so their values do not move.
+ * name pinned tags — and when a later tag sorting ahead of it in the list
+ * would otherwise renumber it: the word Segmenter's tags are pinned because
+ * scr_intl.c embeds their numbers in its code, so a new tag ahead of them
+ * would compile that unit differently for every program that links it. Pin
+ * the new tags in name order, oldest first, in a change of its own, so their
+ * values do not move.
  *
  * Checks: a pinned value at or above SCR_DYNH_CAPACITY fails its
  * _Static_assert, two tags with one value are a duplicate case label in
@@ -214,7 +218,9 @@ typedef enum {
   X(SEARCH_PARAMS, 33) /* live WHATWG URLSearchParams */ \
   X(SEGMENTER, 19) /* default Unicode grapheme segmentation */ \
   X(SEGMENTER_REFUSING, 80) /* word or sentence Segmenter whose segment() throws (scr_grapheme.c) */ \
+  X(SEGMENTER_WORD, 97) /* ICU word-granularity Segmenter (scr_intl.c) */ \
   X(SEGMENTS, 20) /* iterable immutable segmentation result */ \
+  X(SEGMENTS_WORD, 98) /* its word segmentation result (scr_intl.c) */ \
   X(SET, 25) /* native Set<unknown>, shared backing map */ \
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
@@ -253,8 +259,7 @@ typedef enum {
 
 /* Tags added since the last pin, by name only (see above). */
 #define SCR_DYNH_NEW_TAGS(Y) \
-  Y(SEGMENTER_WORD) /* ICU word-granularity Segmenter (scr_intl.c) */ \
-  Y(SEGMENTS_WORD) /* its word segmentation result (scr_intl.c) */
+  Y(ASYNC_DISPOSABLE_STACK) /* AsyncDisposableStack (scr_async_disposable_stack.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -1152,6 +1157,29 @@ bool scr_disposable_stack_is(const ScrDyn *value);
 bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
+/* AsyncDisposableStack (scr_async_disposable_stack.c), the `await using`
+ * counterpart: the same stack shape whose disposal awaits each resource.
+ * scr_async_disposable_stack_new answers a new stack (+1). use reads the
+ * resource's disposal method with the async hint (@@asyncDispose, then
+ * @@dispose) and registers a resource even for null and undefined; adopt and
+ * defer check their callback. All three throw Node's ReferenceError on a
+ * disposed stack and Node's TypeError on an invalid resource or callback, and
+ * return false with the exception pending. The stack's other members —
+ * disposeAsync included — are function values and getters of its dyn
+ * handle. */
+ScrDyn *scr_async_disposable_stack_new(void);
+/* The member value an AsyncDisposableStack answers for the method named `key`
+ * (+1), or NULL: the value AsyncDisposableStack.prototype holds as its
+ * member. */
+ScrDyn *scr_async_disposable_stack_member_value(const char *key, size_t len);
+bool scr_async_disposable_stack_is(const ScrDyn *value);
+bool scr_async_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
+/* use(value) for a typed class instance: `dispose` is the compiler's
+ * function, called with the value at disposal, whose result DisposeResources
+ * awaits like any other resource's. */
+bool scr_async_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value,
+                                             const ScrDyn *dispose);
+bool scr_async_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 /* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
  * view: replaces the value whatever the attributes copied into the view.

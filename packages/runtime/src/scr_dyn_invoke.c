@@ -1948,16 +1948,30 @@ static ScrDyn *scr_dyn_disposable_stack_member_value(const char *key, size_t len
   return member ? member(key, len) : NULL;
 }
 
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
+/* The AsyncDisposableStack answers its members through the table its own unit
+ * builds (scr_async_disposable_stack.c), which this build names directly:
+ * this entry exists in a column only a program with that unit's fact selects,
+ * so the call always resolves, and a program without the class compiles
+ * neither the call nor the row. The column also keeps this unit's object
+ * identical for every other program, byte for byte — a static function and
+ * one more table row would change it. */
+static ScrDyn *scr_dyn_async_disposable_stack_member_value(const char *key, size_t len) {
+  return scr_async_disposable_stack_member_value(key, len);
+}
+#endif
+
 /* The builtins that answer a member from a table of their own unit instead of
  * from the interner below, and the function that answers one. A Date's
  * methods run the Date receiver checks and a DisposableStack's carry the
  * interface's brand errors, so neither can be this unit's dispatch function;
  * the unit that builds the prototype answers its members from the same table
  * the instances use, so `Date.prototype.getTime === date.getTime` and
- * `DisposableStack.prototype.use === stack.use`. A builtin whose instances
- * already answer the interned values — Map, Set, WeakMap, WeakSet, String,
- * Object — needs no entry: `map.get` and `Map.prototype.get` are one interned
- * function.
+ * `DisposableStack.prototype.use === stack.use`. The AsyncDisposableStack's
+ * unit fills a slot on the same terms, in the build that carries its entry.
+ * A builtin whose instances already answer the interned values — Map, Set,
+ * WeakMap, WeakSet, String, Object — needs no entry: `map.get` and
+ * `Map.prototype.get` are one interned function.
  *
  * Identity is a JavaScript object-model behavior, so the partition lives in
  * the object-model build: a typed program's interner is the same object it
@@ -1968,6 +1982,9 @@ static const struct {
 } scr_dyn_member_providers[] = {
   { "Date", scr_native_date_member_value },
   { "DisposableStack", scr_dyn_disposable_stack_member_value },
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
+  { "AsyncDisposableStack", scr_dyn_async_disposable_stack_member_value },
+#endif
 };
 
 /* The member value the builtin named `prototype` answers for `method` from

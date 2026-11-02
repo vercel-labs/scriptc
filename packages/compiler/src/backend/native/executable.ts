@@ -273,6 +273,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.nodeIsland === true,
     "scr_async_dyn.c",
   ),
+  // AsyncDisposableStack (t262 W4): the `await using` stack whose
+  // disposeAsync awaits each resource. The fact selects dynAsync and symbol
+  // as well, whose units it awaits through and reads disposal methods with.
+  unit((u) => u.opts.asyncDisposableStack === true, "scr_async_disposable_stack.c"),
   // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
   // the specification's algorithms over the checked-dynamic tier. Their
   // values adopt through scr_async_dyn.c's thenable path, so the call
@@ -510,6 +514,10 @@ const RUNTIME_DEFINES: readonly {
   // program that reads one of those objects from a JavaScript source builds
   // the table; the object model's other programs build the fill stub.
   { define: "SCR_JS_INTRINSICS", when: (opts) => opts.intrinsicObjects },
+  // The intrinsic graph's arm for AsyncDisposableStack's prototype members
+  // (scr_async_disposable_stack.c): only a program that constructs the class
+  // selects the graph variant that carries it.
+  { define: "SCR_ASYNC_DISPOSABLE_STACK", when: (opts) => opts.asyncDisposableStack },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
   // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form

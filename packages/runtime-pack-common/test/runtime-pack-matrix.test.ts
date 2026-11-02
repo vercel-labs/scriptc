@@ -99,8 +99,23 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
     "node-island",
     "js-om",
     "js-om-node-island",
+    "async-disposable-stack",
+    "async-disposable-stack-node-island",
+    "async-disposable-stack-js-om",
+    "async-disposable-stack-js-om-node-island",
   ]);
   for (const variant of variants) {
+    if (variant.id.startsWith("async-disposable-stack")) {
+      // The AsyncDisposableStack's handle tag exists only in a program that
+      // constructs one, so its tag clauses are a column copied from every
+      // earlier build: each twin carries that build's defines and adds its own.
+      expect(variant.when.asyncDisposableStack).toBe(true);
+      expect(variant.defines).toContain("SCR_ASYNC_DISPOSABLE_STACK");
+      expect(variant.id.endsWith("js-om") || variant.id.endsWith("js-om-node-island")).toBe(
+        variant.defines.includes("SCR_JS_OBJECT_MODEL"),
+      );
+      continue;
+    }
     if (!variant.id.startsWith("js-om")) continue;
     expect(variant.when.jsObjectModel).toBe(true);
     expect(variant.defines).toContain("SCR_JS_OBJECT_MODEL");
@@ -141,6 +156,26 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
+});
+
+test("the AsyncDisposableStack member provider is a build of the invoke unit", () => {
+  // The object model's provider table names an entry per builtin whose
+  // members come from its own unit. The AsyncDisposableStack's row and slot
+  // exist only in a program that constructs the class, so its column adds the
+  // row to the build the program would otherwise select; every other program
+  // keeps the object it had, byte for byte.
+  const plain = { jsObjectModel: false, asyncDisposableStack: false, workers: false };
+  expect(selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, asyncDisposableStack: true }).defines).toEqual([
+    "SCR_ASYNC_DISPOSABLE_STACK",
+  ]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, asyncDisposableStack: true })
+      .defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_ASYNC_DISPOSABLE_STACK"]);
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {

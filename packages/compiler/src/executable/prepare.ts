@@ -156,6 +156,49 @@ export interface PrepareRoundOptions {
   reuseFirstLoad?: boolean;
 }
 
+/** What every island round of one compile shares. */
+interface PrepareInputs {
+  entryPath: string;
+  opts: CompileRequestOptions;
+  ffi: FfiProfile | null;
+  buildPlatform: string;
+  createFrontend: FrontendFactory;
+  timing: CompilationTiming;
+  /** Whether the island decision reads the detector's scan. */
+  islandScan: boolean;
+}
+
+/** The islands, modules and fence rule the next round retries with. */
+interface RoundRequest {
+  islands: ReadonlyMap<string, IslandPackage>;
+  modules: ReadonlyMap<string, IslandModule>;
+  retryFences: boolean;
+  unitStore: UnitStore | null;
+}
+
+/** A compiling build that asked for a fence retry: the packages the fence
+ * report grew, the attempts to try in order (the grown set, then the sure
+ * subset) and what an attempt inherits from the build that asked. */
+interface FenceRetry {
+  /** The build returned when every attempt fails. */
+  prepared: PreparedExecutableModule;
+  attempts: Map<string, IslandPackage>[];
+  grown: Map<string, IslandPackage>;
+  /** The asking build's islands: the warning names what they do not have. */
+  islands: ReadonlyMap<string, IslandPackage>;
+  modules: ReadonlyMap<string, IslandModule>;
+  unitStore: UnitStore | null;
+}
+
+/** One island round's result: a finished build (with the fence retry it
+ * asked for, if any), a failure, or the set to retry with. A round returns
+ * instead of recursing, so its frontend, lowering result and growth inputs
+ * are unreachable before the next round loads. */
+type RoundOutcome =
+  | { kind: "prepared"; prepared: PreparedExecutableModule; fence: FenceRetry | null }
+  | { kind: "failed"; failure: CompileFailure }
+  | { kind: "retry"; request: RoundRequest };
+
 /** Release the parser/checker before native object generation begins.
  * `unitStore` keeps the lowered units of this build for the next one
  * (unit-reuse.ts). */
@@ -172,37 +215,88 @@ export function prepareExecutableModule(
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
   roundOptions: PrepareRoundOptions = {},
 ): PreparedExecutableModule | CompileFailure {
-  return prepareRound(
-    { firstLoad: null, reuseFirstLoad: roundOptions.reuseFirstLoad !== false },
+  const state: RoundState = {
+    firstLoad: null,
+    reuseFirstLoad: roundOptions.reuseFirstLoad !== false,
+  };
+  const inputs: PrepareInputs = {
     entryPath,
     opts,
     ffi,
     buildPlatform,
     createFrontend,
     timing,
-    lowerIslands,
+    // The island decision reads the detector's scan unless islands are off.
+    islandScan: nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode !== "off",
+  };
+  // The island rounds run one at a time. A round whose preflight, lowering
+  // or fence report grows the island set returns that set instead of
+  // recursing, so its frontend, lowering result and growth inputs are all
+  // unreachable before the next round loads (on pi the frontend's RSS grew
+  // 5.3 -> 10 GB across three rounds while the rounds were recursive).
+  let request: RoundRequest = {
+    islands: lowerIslands,
+    modules: lowerModules,
     retryFences,
     unitStore,
-    lowerModules,
-  );
+  };
+  // The fence retry a compiling build asked for: its attempts run in order
+  // and the first that compiles replaces the build that asked for them. An
+  // attempt that retries starts its own round chain; its failure ends the
+  // attempt and the next one runs.
+  let fence: { retry: FenceRetry; next: number; firstError: ScrDiagnostic | null } | null = null;
+  for (;;) {
+    const outcome = prepareRound(state, inputs, request);
+    if (outcome.kind === "retry") {
+      request = outcome.request;
+      continue;
+    }
+    if (outcome.kind === "failed") {
+      // Only a fence retry consumes a failure; otherwise it is the build's.
+      const retry = fence;
+      if (retry === null) return outcome.failure;
+      retry.firstError ??= outcome.failure.diagnostics[0] ?? null;
+      const islands = retry.retry.attempts[retry.next++];
+      if (islands !== undefined) {
+        request = attemptRequest(retry.retry, islands);
+        continue;
+      }
+      // Every attempt failed: the build that asked keeps its result and
+      // carries an SC8023 warning with the first error.
+      if (retry.firstError !== null) {
+        const added = [...retry.retry.grown.keys()].filter(
+          (name) => !retry.retry.islands.has(name),
+        );
+        retry.retry.prepared.warnings.push(
+          nodeIslandRetryFailedDiag(added, retry.firstError, { file: entryPath, start: 0, end: 0 }),
+        );
+      }
+      return retry.retry.prepared;
+    }
+    // An attempt that compiles replaces the build that asked for it; the
+    // outermost build is the result.
+    if (fence !== null || outcome.fence === null) return outcome.prepared;
+    fence = { retry: outcome.fence, next: 1, firstError: null };
+    request = attemptRequest(outcome.fence, outcome.fence.attempts[0]!);
+  }
+}
+
+/** A fence attempt builds the same program with the packages as islands and
+ * no fence retry of its own. */
+function attemptRequest(
+  retry: FenceRetry,
+  islands: ReadonlyMap<string, IslandPackage>,
+): RoundRequest {
+  return { islands, modules: retry.modules, retryFences: false, unitStore: retry.unitStore };
 }
 
 function prepareRound(
   state: RoundState,
-  entryPath: string,
-  opts: CompileRequestOptions,
-  ffi: FfiProfile | null,
-  buildPlatform: string,
-  createFrontend: FrontendFactory,
-  timing: CompilationTiming,
-  lowerIslands: ReadonlyMap<string, IslandPackage>,
-  retryFences: boolean,
-  unitStore: UnitStore | null,
-  lowerModules: ReadonlyMap<string, IslandModule>,
-): PreparedExecutableModule | CompileFailure {
-  // The island decision reads the detector's scan unless islands are off.
-  const islandScan =
-    nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode !== "off";
+  inputs: PrepareInputs,
+  request: RoundRequest,
+): RoundOutcome {
+  const { entryPath, opts, createFrontend, timing, islandScan, buildPlatform, ffi } = inputs;
+  const { islands: lowerIslands, modules: lowerModules, retryFences, unitStore } = request;
   // A round after the first decides from the first round's capture of the
   // no-island load (RoundState). A decision that needs the frontend itself
   // loads it as before: none (this round lowers the no-island program) or
@@ -236,7 +330,7 @@ function prepareRound(
     const diagnostics = islandDecision.errors;
     const sourceTexts = first!.sourceTexts();
     first!.dispose();
-    return { ok: false, diagnostics, sourceTexts };
+    return { kind: "failed", failure: { ok: false, diagnostics, sourceTexts } };
   }
   let fe: Frontend;
   if (islandDecision !== null) {
@@ -301,10 +395,13 @@ function prepareRound(
   // The frontend (and its tsgo server) is released as soon as lowering
   // ends — clang and the link never hold it open.
   try {
-    const fail = (diagnostics: ScrDiagnostic[]): CompileFailure => ({
-      ok: false,
-      diagnostics,
-      sourceTexts: fe.sourceTexts(),
+    const fail = (diagnostics: ScrDiagnostic[]): RoundOutcome => ({
+      kind: "failed",
+      failure: {
+        ok: false,
+        diagnostics,
+        sourceTexts: fe.sourceTexts(),
+      },
     });
 
     const refused = fe.npmStatic.filter((entry) => entry.status === "refused");
@@ -331,19 +428,10 @@ function prepareRound(
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareRound(
-          state,
-          entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
-          grown,
-          retryFences,
-          unitStore,
-          lowerModules,
-        );
+        return {
+          kind: "retry",
+          request: { islands: grown, modules: lowerModules, retryFences, unitStore },
+        };
       }
       return fail(fe.preflight);
     }
@@ -408,19 +496,15 @@ function prepareRound(
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareRound(
-          state,
-          entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
-          grown ?? lowerIslands,
-          retryFences,
-          unitStore,
-          grownModules ?? lowerModules,
-        );
+        return {
+          kind: "retry",
+          request: {
+            islands: grown ?? lowerIslands,
+            modules: grownModules ?? lowerModules,
+            retryFences,
+            unitStore,
+          },
+        };
       }
       // A failed program whose compiled packages need the runtime or a
       // mutable object model (NI-2's report): try them as islands. If that
@@ -443,19 +527,10 @@ function prepareRound(
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareRound(
-          state,
-          entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
-          marked,
-          false,
-          null,
-          lowerModules,
-        );
+        return {
+          kind: "retry",
+          request: { islands: marked, modules: lowerModules, retryFences: false, unitStore: null },
+        };
       }
       return fail(lowered.diagnostics);
     }
@@ -542,39 +617,26 @@ function prepareRound(
   // If that build fails, retry with only the packages whose fences fire
   // for sure (module-init or runtime fences); if that fails too, the native
   // build carries an SC8023 warning with the island build's first error,
-  // never a silent fallback.
-  if (fenceGrown !== null) {
-    const attempts = [fenceGrown];
-    const sure = new Map(
-      [...fenceGrown].filter(([name]) => lowerIslands.has(name) || fenceSure.has(name)),
-    );
-    if (sure.size > lowerIslands.size && sure.size < fenceGrown.size) attempts.push(sure);
-    let firstError: ScrDiagnostic | null = null;
-    for (const islands of attempts) {
-      const islanded = prepareRound(
-        state,
-        entryPath,
-        opts,
-        ffi,
-        buildPlatform,
-        createFrontend,
-        timing,
-        islands,
-        false,
-        unitStore,
-        lowerModules,
-      );
-      if (islanded.ok) return islanded;
-      firstError ??= islanded.diagnostics[0] ?? null;
-    }
-    if (firstError !== null) {
-      const added = [...fenceGrown.keys()].filter((name) => !lowerIslands.has(name));
-      prepared.warnings.push(
-        nodeIslandRetryFailedDiag(added, firstError, { file: entryPath, start: 0, end: 0 }),
-      );
-    }
-  }
-  return prepared;
+  // never a silent fallback. The attempts run in the round driver, after
+  // this round's state is released (see prepareExecutableModule).
+  if (fenceGrown === null) return { kind: "prepared", prepared, fence: null };
+  const attempts = [fenceGrown];
+  const sure = new Map(
+    [...fenceGrown].filter(([name]) => lowerIslands.has(name) || fenceSure.has(name)),
+  );
+  if (sure.size > lowerIslands.size && sure.size < fenceGrown.size) attempts.push(sure);
+  return {
+    kind: "prepared",
+    prepared,
+    fence: {
+      prepared,
+      attempts,
+      grown: fenceGrown,
+      islands: lowerIslands,
+      modules: lowerModules,
+      unitStore,
+    },
+  };
 }
 
 /** Whether two spellings name the same file (the checker resolves through

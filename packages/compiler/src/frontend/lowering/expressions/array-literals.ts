@@ -433,6 +433,20 @@ export function lowerArrayLiteral(
       const fields = expr.elements.nodes.map((el, i) => {
         const fieldType = byName.get(String(i));
         if (!fieldType) lowerer.badType(el, lowerer.typeOf(el));
+        // A HOLE (`[x = 23] = [,]`, `f([,])` through a tuple parameter):
+        // the positional field holds the undefined every read of a hole
+        // answers. An optional position admits it; a position typed
+        // without undefined keeps the element's own refusal, since a hole
+        // is not a value the field can hold.
+        if (ts.isOmittedExpression(el))
+          return {
+            name: String(i),
+            value: lowerer.coerceInto(
+              el,
+              { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(el) },
+              fieldType,
+            ),
+          };
         return { name: String(i), value: lowerer.lowerExprExpecting(el, fieldType) };
       });
       return { kind: "recordLit", fields, type: mapped, loc };
@@ -872,7 +886,12 @@ function lowerTupleSpreadLiteral(
     if (!ts.isSpreadElement(element)) {
       const expected = byName.get(String(fields.length));
       if (!expected) lowerer.badType(element, lowerer.typeOf(element));
-      append(element, lowerer.lowerExprExpecting(element, expected));
+      append(
+        element,
+        ts.isOmittedExpression(element)
+          ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(element) }
+          : lowerer.lowerExprExpecting(element, expected),
+      );
       continue;
     }
     const source = lowerer.lowerExpr(element.expression);

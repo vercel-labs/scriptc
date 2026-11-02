@@ -140,6 +140,27 @@ function booleanToNumber(value: IrExpr, loc: SrcLoc): IrExpr {
   };
 }
 
+/** A JavaScript unary operand that is not the number the operator needs
+ * (`-"6"`, `+null`, `~aString`): ToNumber runs on the operand through the
+ * checked-dynamic conversion, so the runtime applies the language's
+ * ToPrimitive/valueOf order and throws Node's TypeError for a Symbol. Null
+ * for a typed source — a typed non-number operand is a source error — and
+ * for a BigInt, whose operators are the BigInt ones. */
+function jsUnaryNumber(
+  lowerer: Lowerer,
+  expr: ts.PrefixUnaryExpression,
+  raw: IrExpr,
+): IrExpr | null {
+  if (raw.type.kind === "bigint" || !isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  return {
+    kind: "libCall",
+    fn: "dyn.toNumberCoerce",
+    args: [lowerer.coerceToExpected(raw, DYN)],
+    type: F64,
+    loc: locOf(expr),
+  };
+}
+
 export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpression): IrExpr {
   const loc = locOf(expr);
   switch (expr.operator) {
@@ -172,7 +193,11 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
                     loc,
                   } satisfies IrExpr)
                 : lowerOperatorNumber(lowerer, raw, loc, expr.operand);
-      if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
+      if (operand.type.kind !== "f64") {
+        const js = jsUnaryNumber(lowerer, expr, raw);
+        if (js) return { kind: "unary", op: "-", operand: js, type: F64, loc };
+        operatorUnsupported(lowerer, expr, "-", [raw.type]);
+      }
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
     }
@@ -205,6 +230,10 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // union) converts as Number(value) does.
       const unionNumber = lowerPrimitiveUnionNumber(lowerer, raw, expr.operand, loc);
       if (unionNumber) return unionNumber;
+      {
+        const js = jsUnaryNumber(lowerer, expr, raw);
+        if (js) return js;
+      }
       operatorUnsupported(lowerer, expr, "+", [raw.type]);
     }
     case ts.SyntaxKind.ExclamationToken: {
@@ -242,7 +271,26 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // such as `while (~index)`, where inference may have widened an
       // otherwise numeric slot to the checked-dynamic tree.
       const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
-      if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "~", [raw.type]);
+      if (operand.type.kind !== "f64") {
+        // ToInt32 of a JavaScript operand that is not statically a number,
+        // through the same checked-dynamic conversion the `~`-over-`dyn`
+        // arm above runs.
+        if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+          const bits: IrExpr = {
+            kind: "libCall",
+            fn: "dyn.bitwise",
+            args: [
+              lowerer.coerceToExpected(raw, DYN),
+              dynUndefinedExpr(loc),
+              { kind: "strLit", value: "~", type: STRING, loc },
+            ],
+            type: DYN,
+            loc,
+          };
+          return { kind: "dynCheck", value: bits, type: F64, loc };
+        }
+        operatorUnsupported(lowerer, expr, "~", [raw.type]);
+      }
       return { kind: "unary", op: "~", operand, type: F64, loc };
     }
     case ts.SyntaxKind.PlusPlusToken:

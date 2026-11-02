@@ -99,6 +99,7 @@ import {
 import { inlineArraysApply, programLifetimeClassOf } from "./inline-arrays.js";
 import { pairRowSums } from "../../ir/row-pairs.js";
 import { jamSaturatingLoops } from "../../ir/saturating-loop-jams.js";
+import { jamRuntimeCountLoops } from "../../ir/runtime-jam-loops.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -797,18 +798,21 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
               specializeNumericCalls(
                 specializeTypedArguments(
                   pairRowSums(
-                    jamSaturatingLoops(
-                      inlineArraysPass(
-                        options,
-                        inlineExpressionFunctions(
-                          foldConstantGlobals(
-                            copyStableCaptures(
-                              resolveSelfCaptures(
-                                hoistFinalFieldReads(
-                                  freezeInitOnlyGlobals(
-                                    holdCharLocalsAsUnits(
-                                      dropUnwrittenPropertyBags(
-                                        runPairedWhileLoopsAsFor(mod, nodes),
+                    jamRuntimeCountLoops(
+                      jamSaturatingLoops(
+                        inlineArraysPass(
+                          options,
+                          inlineExpressionFunctions(
+                            foldConstantGlobals(
+                              copyStableCaptures(
+                                resolveSelfCaptures(
+                                  hoistFinalFieldReads(
+                                    freezeInitOnlyGlobals(
+                                      holdCharLocalsAsUnits(
+                                        dropUnwrittenPropertyBags(
+                                          runPairedWhileLoopsAsFor(mod, nodes),
+                                          nodes,
+                                        ),
                                         nodes,
                                       ),
                                       nodes,
@@ -823,8 +827,8 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                             ),
                             nodes,
                           ),
-                          nodes,
                         ),
+                        nodes,
                       ),
                       nodes,
                     ),

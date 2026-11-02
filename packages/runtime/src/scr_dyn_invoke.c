@@ -1933,6 +1933,11 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
  * carries the Date implementation (scr_lib.c). */
 extern ScrDyn *scr_native_date_member_value(const char *key, size_t key_len);
 
+static ScrDyn *scr_dyn_date_member(const char *cls, const char *key, size_t key_len) {
+  (void)cls;
+  return scr_native_date_member_value(key, key_len);
+}
+
 /* The stack's member table stays in scr_symbol.c, and this unit must not name
  * it: a reference from here keeps the whole stack unit, and everything it
  * drags, in every JavaScript program with no symbols at all that interns a
@@ -1943,8 +1948,9 @@ extern ScrDyn *scr_native_date_member_value(const char *key, size_t key_len);
  * function. */
 ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len);
 
-static ScrDyn *scr_dyn_disposable_stack_member_value(const char *key, size_t len) {
+static ScrDyn *scr_dyn_disposable_stack_member_value(const char *cls, const char *key, size_t len) {
   ScrDyn *(*member)(const char *, size_t) = scr_dyn_disposable_stack_member;
+  (void)cls;
   return member ? member(key, len) : NULL;
 }
 
@@ -1959,26 +1965,53 @@ static ScrDyn *scr_dyn_disposable_stack_member_value(const char *key, size_t len
  * Object — needs no entry: `map.get` and `Map.prototype.get` are one interned
  * function.
  *
+ * A unit that answers a class this table does not name — a wrapper prototype
+ * (String, Number, Boolean, BigInt, Symbol) is the one case today — registers
+ * its provider with scr_dyn_member_provider_register, and the class then
+ * answers through it as a Date does.
+ *
  * Identity is a JavaScript object-model behavior, so the partition lives in
  * the object-model build: a typed program's interner is the same object it
  * was, and never links a provider. */
-static const struct {
+#define SCR_DYN_MEMBER_PROVIDERS_MAX 8
+
+static struct {
   const char *cls;
-  ScrDyn *(*member)(const char *key, size_t key_len);
-} scr_dyn_member_providers[] = {
-  { "Date", scr_native_date_member_value },
+  ScrDynMemberProvider member;
+} scr_dyn_member_providers[SCR_DYN_MEMBER_PROVIDERS_MAX] = {
+  { "Date", scr_dyn_date_member },
   { "DisposableStack", scr_dyn_disposable_stack_member_value },
 };
+/* The rows above are the providers this unit carries; a unit that answers its
+ * own class's members registers beside them. */
+static size_t scr_dyn_member_provider_count = 2;
+
+void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider member) {
+  if (!cls || !member || scr_dyn_member_provider_count == SCR_DYN_MEMBER_PROVIDERS_MAX) return;
+  for (size_t i = 0; i < scr_dyn_member_provider_count; i++) {
+    if (strcmp(scr_dyn_member_providers[i].cls, cls) == 0) return;
+  }
+  scr_dyn_member_providers[scr_dyn_member_provider_count].cls = cls;
+  scr_dyn_member_providers[scr_dyn_member_provider_count].member = member;
+  scr_dyn_member_provider_count++;
+}
 
 /* The member value the builtin named `prototype` answers for `method` from
  * its own unit (+1), or NULL when it answers through this unit's interner. */
 static ScrDyn *scr_dyn_native_member(const ScrStr *prototype, const ScrStr *method) {
-  for (size_t i = 0; i < sizeof scr_dyn_member_providers / sizeof scr_dyn_member_providers[0]; i++) {
+  for (size_t i = 0; i < scr_dyn_member_provider_count; i++) {
     if (strcmp(scr_dyn_member_providers[i].cls, prototype->data) != 0) continue;
-    if (!scr_dyn_member_providers[i].member) return NULL;
-    return scr_dyn_member_providers[i].member(method->data, method->len);
+    return scr_dyn_member_providers[i].member(scr_dyn_member_providers[i].cls, method->data, method->len);
   }
   return NULL;
+}
+#else
+/* Identity is an object-model behavior: a build without the object model has
+ * no table to record into, and answers every member through its interner. A
+ * unit that registers a provider still builds here, and registers nothing. */
+void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider member) {
+  (void)cls;
+  (void)member;
 }
 #endif
 

@@ -182,6 +182,8 @@ interface RoundRetry {
    * retry already carries the fence-report growth: the round after it is
    * the last one, as it is after a report retry today. */
   nextRetryFences: boolean;
+  /** See RoundRequest.fenceFallback. */
+  fenceFallback: ReadonlyMap<string, IslandPackage> | null;
 }
 
 /** Internal round options, a test seam: the island-round tests turn the
@@ -211,6 +213,12 @@ interface RoundRequest {
   modules: ReadonlyMap<string, IslandModule>;
   retryFences: boolean;
   unitStore: UnitStore | null;
+  /** When the round folded a sure-fence growth into the lowering's set: the
+   * islands the lowering rule grew on its own. A build with the folded set
+   * that fails retries from these with the fence rule on, so the fence retry
+   * runs as it does without the fold and a failed sure-fence build keeps the
+   * compiling build with an SC8023 warning. */
+  fenceFallback: ReadonlyMap<string, IslandPackage> | null;
 }
 
 /** A compiling build that asked for a fence retry: the packages the fence
@@ -278,6 +286,7 @@ export function prepareExecutableModule(
     modules: lowerModules,
     retryFences,
     unitStore,
+    fenceFallback: null,
   };
   // The fence retry a compiling build asked for: its attempts run in order
   // and the first that compiles replaces the build that asked for them. An
@@ -291,6 +300,21 @@ export function prepareExecutableModule(
       continue;
     }
     if (outcome.kind === "failed") {
+      // A build with a folded sure-fence set that fails falls back to the
+      // round the fold skipped: the lowering's islands alone, with the fence
+      // rule on. That build compiles, its sure-fence retry fails too, and the
+      // result is the compiling build with the SC8023 warning the two-round
+      // sequence produces.
+      if (request.fenceFallback !== null) {
+        request = {
+          islands: request.fenceFallback,
+          modules: request.modules,
+          retryFences: true,
+          unitStore: request.unitStore,
+          fenceFallback: null,
+        };
+        continue;
+      }
       // Only a fence retry consumes a failure; otherwise it is the build's.
       const retry = fence;
       if (retry === null) return outcome.failure;
@@ -326,7 +350,13 @@ function attemptRequest(
   retry: FenceRetry,
   islands: ReadonlyMap<string, IslandPackage>,
 ): RoundRequest {
-  return { islands, modules: retry.modules, retryFences: false, unitStore: retry.unitStore };
+  return {
+    islands,
+    modules: retry.modules,
+    retryFences: false,
+    unitStore: retry.unitStore,
+    fenceFallback: null,
+  };
 }
 
 function prepareRound(
@@ -432,6 +462,7 @@ function prepareRound(
           })
         : null;
     let nextRetryFences = retryFences;
+    let fenceFallback: Map<string, IslandPackage> | null = null;
     if (state.foldFenceGrowth && growth !== null && islands !== null && fences !== null) {
       // Both rules grew the set. The fence-report rule is consulted after the
       // lowering rule finds nothing, so today's build reloads twice: once for
@@ -444,7 +475,11 @@ function prepareRound(
         fences: result.runtimeFences,
       });
       if (folded !== null) {
-        islands = folded;
+        // A folded sure-fence set is the growth a compiling build asks for;
+        // the build carrying it can fail where that compiling build does
+        // not, so the retry keeps the lowering's set to fall back to.
+        if (folded.sure) fenceFallback = islands;
+        islands = folded.islands;
         fences = null;
         nextRetryFences = false;
       }
@@ -455,7 +490,7 @@ function prepareRound(
     traceIslandRound(
       `round ${round} decide islands=${traceSet(islands)} modules=${traceSet(modules)} fences=${traceSet(fences)} nextRetryFences=${nextRetryFences}`,
     );
-    return { result, islands, modules, fences, nextRetryFences };
+    return { result, islands, modules, fences, nextRetryFences, fenceFallback };
   };
   // The frontend (and its tsgo server) is released as soon as lowering
   // ends — clang and the link never hold it open.
@@ -495,7 +530,13 @@ function prepareRound(
         disposed = true;
         return {
           kind: "retry",
-          request: { islands: grown, modules: lowerModules, retryFences, unitStore },
+          request: {
+            islands: grown,
+            modules: lowerModules,
+            retryFences,
+            unitStore,
+            fenceFallback: null,
+          },
         };
       }
       return fail(fe.preflight);
@@ -566,6 +607,7 @@ function prepareRound(
             modules: grownModules ?? lowerModules,
             retryFences: decided.nextRetryFences,
             unitStore,
+            fenceFallback: decided.fenceFallback,
           },
         };
       }
@@ -583,7 +625,13 @@ function prepareRound(
         disposed = true;
         return {
           kind: "retry",
-          request: { islands: marked, modules: lowerModules, retryFences: false, unitStore: null },
+          request: {
+            islands: marked,
+            modules: lowerModules,
+            retryFences: false,
+            unitStore: null,
+            fenceFallback: null,
+          },
         };
       }
       return fail(lowered.diagnostics);

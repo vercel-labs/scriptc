@@ -12,7 +12,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
+import type { ScrDiagnostic } from "../src/diagnostics/diagnostic.js";
 import { prepareExecutableModule } from "../src/executable/prepare.js";
+import type { LowerResult } from "../src/frontend/lowering/lowerer.js";
 import { runFrontend, type FrontendFactory } from "../src/frontend/pipeline.js";
 import { loadProgram } from "../src/frontend/program-node.js";
 
@@ -61,6 +63,20 @@ function writePackage(dir: string, name: string, js: string, types: string | nul
   if (types !== null) writeFileSync(join(at, "index.d.ts"), types);
 }
 
+/** Decorators in a JavaScript package: its own module refuses natively, which
+ * is the lowering's island growth. `nested` also requires `fencelib`, which
+ * the reload runs in the island's own program. */
+function refusingPackage(nested = true): string {
+  return `"use strict";
+${nested ? 'const nested = require("fencelib");\n' : ""}function logged(method) { return method; }
+class Thing {
+  @logged
+  value() { return "r"; }
+}
+exports.refuse = () => new Thing().value()${nested ? " + nested.value()" : ""};
+`;
+}
+
 function fixture(withFenced = true): string {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-island-fold-"));
   scratch.push(dir);
@@ -78,22 +94,7 @@ import { decorate } from "conditionalmodel";
 console.log(refuse(), decorate({}).constructor === Object);
 `,
   );
-  // Decorators in a JavaScript package: its own module refuses natively,
-  // which is the lowering's island growth.
-  writePackage(
-    dir,
-    "refuser",
-    `"use strict";
-const nested = require("fencelib");
-function logged(method) { return method; }
-class Thing {
-  @logged
-  value() { return "r"; }
-}
-exports.refuse = () => new Thing().value() + nested.value();
-`,
-    "export declare function refuse(): string;\n",
-  );
+  writePackage(dir, "refuser", refusingPackage(), "export declare function refuse(): string;\n");
   // Reached only through `refuser`: the reload runs it in the island's own
   // program, so the fence rule never sees it and must not island it.
   writePackage(dir, "fencelib", fencedBundle("lib"), "export declare function value(): string;\n");
@@ -125,8 +126,48 @@ exports.decorate = (target) => withPrototype(target);
   return dir;
 }
 
-function build(fold: boolean, copyResult = false, withFenced = true) {
-  const dir = fixture(withFenced);
+/**
+ * The sure-rule case: a refusing package the lowering islands, and a package
+ * that compiles with a runtime fence in its top-level module code. The reload
+ * then has no diagnostic at all, so the fence rule the fold applies is the
+ * sure one, and a build with its growth is what a compiling build asks for.
+ */
+function sureFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-island-fold-sure-"));
+  scratch.push(dir);
+  writeFileSync(
+    join(dir, "main.ts"),
+    `import { refuse } from "refuser";
+import { value } from "surefence";
+
+console.log(refuse(), value());
+`,
+  );
+  writePackage(
+    dir,
+    "refuser",
+    refusingPackage(false),
+    "export declare function refuse(): string;\n",
+  );
+  writePackage(
+    dir,
+    "surefence",
+    `"use strict";
+var stop = process.exit;
+exports.value = function () { return typeof stop; };
+`,
+    "export declare function value(): string;\n",
+  );
+  return dir;
+}
+
+function build(
+  fold: boolean,
+  copyResult = false,
+  withFenced = true,
+  failOn: string | null = null,
+  dir = fixture(withFenced),
+) {
   let firstLoads = 0;
   let reloads = 0;
   const rounds: string[][] = [];
@@ -144,6 +185,23 @@ function build(fold: boolean, copyResult = false, withFenced = true) {
       libraryNpmStatic,
       options,
     );
+    // An island build of `failOn` does not compile: a fence retry can fail
+    // where the build that asked for it compiled, and the retry then keeps
+    // that build with an SC8023 warning.
+    if (failOn !== null && options?.islandPackages?.has(failOn) === true) {
+      const failure: ScrDiagnostic = {
+        code: "SC0001",
+        message: "the island build rejects the program",
+        loc: { file: entry, start: 0, end: 0 },
+      };
+      const failed: LowerResult = {
+        module: null,
+        diagnostics: [failure],
+        runtimeFences: [],
+        stats: { statementsTotal: 0, statementsFailed: 1, functionsSkipped: 0 },
+      };
+      return { ...frontend, lower: () => failed };
+    }
     if (!copyResult) return frontend;
     // `fe.lower` returns the result wrapped in a copy when the program has
     // declaration-boundary notes (pipeline.ts: `{ ...lowered, performance }`).
@@ -172,6 +230,7 @@ function build(fold: boolean, copyResult = false, withFenced = true) {
     ok: result.ok,
     diagnostics,
     islands: result.ok ? (result.islands?.packages ?? []) : null,
+    warnings: result.ok ? result.warnings.map((w) => w.code) : null,
     firstLoads,
     reloads,
     rounds,
@@ -227,4 +286,31 @@ test("a reload the island set makes compile keeps a conditional object-model dep
   expect(on.ok).toBe(true);
   expect(on.islands).toEqual(["refuser"]);
   expect(on.firstLoads).toBe(1);
+}, 600_000);
+
+// The sure rule folds the growth a compiling build asks for. A build with that
+// growth can still fail, where the compiling build without it does not: the
+// retry then falls back to the lowering's islands alone and the fence retry
+// runs as it does without the fold, so the compiling build is kept with the
+// SC8023 warning that names the islands it does not have.
+test("a folded sure-fence build that fails keeps the compiling build with an SC8023 warning", () => {
+  const dir = sureFixture();
+  const off = build(false, false, true, "surefence", dir);
+  const on = build(true, false, true, "surefence", dir);
+  // The fold retries with the set the compiling build would ask for; that
+  // build fails, and the retry goes back to the lowering's set, compiles,
+  // and asks for the sure-fence retry that fails again.
+  expect(on.ok).toBe(true);
+  expect(on.diagnostics).toEqual([]);
+  expect(on.islands).toEqual(["refuser"]);
+  expect(on.warnings).toContain("SC8023");
+  expect(on.reloads).toBe(3);
+  expect(on.rounds).toEqual([["refuser", "surefence"], ["refuser"], ["refuser", "surefence"]]);
+  // The two-round sequence ends in the same build and warning, one load
+  // earlier.
+  expect(off.ok).toBe(true);
+  expect(off.islands).toEqual(on.islands);
+  expect(off.warnings).toEqual(on.warnings);
+  expect(off.reloads).toBe(2);
+  expect(off.rounds).toEqual([["refuser"], ["refuser", "surefence"]]);
 }, 600_000);

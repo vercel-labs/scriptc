@@ -381,13 +381,16 @@ export function stillCompiled(
  * means the islands made the reload compile, and a compiling build keeps its
  * conditional object-model dependencies native: only a fence that fires when
  * the module evaluates turns a package into an island then (the sure rule the
- * compiling build applies to itself). */
+ * compiling build applies to itself). `sure` reports which rule was applied.
+ * The sure rule folds the fence retry a compiling build would ask for, and a
+ * build with that growth can fail where the compiling build without it does
+ * not, so a retry that carries it can still fall back to `islands`. */
 export function foldFenceGrowth(
   ctx: IslandGrowthContext,
   islands: ReadonlyMap<string, IslandPackage>,
   modules: ReadonlyMap<string, IslandModule>,
   growth: { diagnostics: readonly ScrDiagnostic[]; fences: readonly ScrDiagnostic[] },
-): Map<string, IslandPackage> | null {
+): { islands: Map<string, IslandPackage>; sure: boolean } | null {
   const compiled = stillCompiled(ctx, islands, modules);
   const narrowed: IslandGrowthContext = {
     ...ctx,
@@ -398,9 +401,11 @@ export function foldFenceGrowth(
     },
   };
   const diagnostics = growth.diagnostics.filter((d) => compiled(d.loc.file));
-  return growIslandSet(narrowed, islands, {
+  const sure = diagnostics.length === 0;
+  const grown = growIslandSet(narrowed, islands, {
     diagnostics,
     fences: growth.fences.filter((d) => compiled(d.loc.file)),
-    fenceMode: diagnostics.length === 0 ? "sure" : "report",
+    fenceMode: sure ? "sure" : "report",
   });
+  return grown === null ? null : { islands: grown, sure };
 }

@@ -170,7 +170,7 @@ test.for([
   ],
   ["2464", "export const box = {};\nexport function keyed() { return { [box]: 1 }; }"],
   ["2365", "export function joined() { return true + 1; }"],
-  ["2508", "export class Derived extends Iterator {}"],
+  ["2689", "export class Derived extends AsyncIterator {}"],
   ["1166", 'export class Field { ["a" + "b"] = 1; }'],
   [
     "7032",
@@ -181,7 +181,9 @@ test.for([
   // exactly (a delete of a builtin's own property, a class element's computed
   // key, an operator on operands it cannot convert, a class over a stdlib
   // base, a class field with no stable key), so the relaxation must not
-  // admit them. The invalid assignment-target pair (2364 `f() += g()`,
+  // admit them. The base is the async iterator interface: `extends Iterator`
+  // is a program the lowering builds, so it no longer carries an opinion to
+  // keep. The invalid assignment-target pair (2364 `f() += g()`,
   // 2357 `f()++`) stays refused the same way: Node calls `f`, then throws.
   expect(
     diagnostics(library, 'import * as library from "./library.js"; console.log(library);').length,

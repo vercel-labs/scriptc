@@ -1056,8 +1056,9 @@ static size_t scr_sa_large_live; /* atomic */
  * pages too (scr_sa_large_trim). */
 #define SCR_SA_RUN_KEEP 16u
 static uint16_t scr_sa_run_chunks[SCR_SA_WINDOW_CHUNKS];
-/* The bytes each run's block asked for (atomic): scr_heap_stats reports them
- * as used, the rest of the run's chunks as idle. */
+/* The bytes each run's block holds (atomic): scr_heap_stats reports them as
+ * used, the rest of the run's chunks as idle. A realloc that stays in the
+ * run updates it (scr_sa_run_note_used). */
 static size_t scr_sa_run_used[SCR_SA_WINDOW_CHUNKS];
 typedef struct {
   uint16_t start, n;
@@ -1172,6 +1173,18 @@ static inline void scr_sa_large_push(unsigned i, ScrSaBlock *b, unsigned c) {
   b->next = scr_sa_large[i].free[c];
   scr_sa_large[i].free[c] = b;
   __atomic_fetch_sub(&scr_sa_large_live, scr_sa_large_size(c), __ATOMIC_RELAXED);
+}
+
+/* Records that the run head p now serves a block of n bytes: a realloc that
+ * stays in the run's chunks (scr_mem_realloc_ref) changes what the block
+ * holds without moving it. */
+static void scr_sa_run_note_used(void *p, size_t n) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  uintptr_t off = (uintptr_t)p - (uintptr_t)w;
+  if (!w || off >= (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) return;
+  size_t i = off >> SCR_SA_CHUNK_SHIFT;
+  if (__atomic_load_n(&scr_sa_chunks[i], __ATOMIC_RELAXED) != SCR_SA_RUN_HEAD) return;
+  __atomic_store_n(&scr_sa_run_used[i], n, __ATOMIC_RELAXED);
 }
 
 /* The window's large blocks and runs for scr_heap_stats, added to `held` and
@@ -2770,7 +2783,11 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
 void *scr_mem_realloc_ref(void *p, size_t n) {
   if (!p) return scr_mem_alloc_ref(n);
   size_t have = scr_mem_block_size(p);
-  if (n && n <= have && (n % 16 || have % 16 == 0)) return p;
+  if (n && n <= have && (n % 16 || have % 16 == 0)) {
+    /* A run's block keeps its run and now holds n of the run's bytes. */
+    scr_sa_run_note_used(p, n);
+    return p;
+  }
 #if defined(__linux__) && defined(MREMAP_FIXED)
   if (n > SCR_SA_LARGE_MAX) {
     void *moved = scr_sa_run_move(p, have, n);

@@ -1550,6 +1550,20 @@ static void check_large_blocks_stats(void) {
   scr_mem_free(b);
   scr_heap_stats(&total2, &used2);
   assert(used1 - used2 >= (double)(cls + run) && used2 <= total2);
+  /* A run's block that grows within the run's chunks keeps the run, and the
+   * figures follow the bytes it now holds. */
+  const size_t big = (size_t)9 << 20, more = (size_t)11 << 20; /* 3 chunks of 4 MiB */
+  unsigned char *c = scr_mem_alloc_ref(big);
+  assert(c && in_window(c));
+  c[0] = 0x11;
+  c[big - 1] = 0x22;
+  double total3, used3, total4, used4;
+  scr_heap_stats(&total3, &used3);
+  unsigned char *d = scr_mem_realloc_ref(c, more);
+  assert(d == c && d[0] == 0x11 && d[big - 1] == 0x22);
+  scr_heap_stats(&total4, &used4);
+  assert(used4 - used3 >= (double)(more - big) && used4 <= total4);
+  scr_mem_free(d);
 }
 #endif
 

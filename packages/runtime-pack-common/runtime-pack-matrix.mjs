@@ -408,6 +408,12 @@ export function variantsFor(source) {
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);
   }
+  // The member provider table above names an entry per builtin class whose
+  // members come from its own unit. The AsyncDisposableStack's row (and the
+  // slot it reads) exist only in a program that constructs the class, so that
+  // build is a column of its own: every other object model program keeps the
+  // object it had, byte for byte.
+  if (source === "scr_dyn_invoke.c") withAsyncDisposableStack(variants);
   // console.table reads the cells of a row's typed array, so a BigInt view
   // needs the element accessor that answers BigInts. The default object keeps
   // the numeric read, byte for byte.

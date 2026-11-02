@@ -1948,15 +1948,21 @@ static ScrDyn *scr_dyn_disposable_stack_member_value(const char *key, size_t len
   return member ? member(key, len) : NULL;
 }
 
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
 /* The AsyncDisposableStack's member table, on the same terms: its unit is
  * gated on the program's own fact (scr_async_disposable_stack.c), so this
- * unit names a slot it fills when it loads, never the unit's function. */
+ * unit names a slot it fills when it loads, never the unit's function. The
+ * class's entry and this slot are a build of their own (the asyncDisposableStack
+ * column), because a static function and one more table row change this
+ * unit's object: every other object model program keeps the object it had,
+ * byte for byte. */
 ScrDyn *(*scr_dyn_async_disposable_stack_member)(const char *key, size_t len);
 
 static ScrDyn *scr_dyn_async_disposable_stack_member_value(const char *key, size_t len) {
   ScrDyn *(*member)(const char *, size_t) = scr_dyn_async_disposable_stack_member;
   return member ? member(key, len) : NULL;
 }
+#endif
 
 /* The builtins that answer a member from a table of their own unit instead of
  * from the interner below, and the function that answers one. A Date's
@@ -1964,12 +1970,11 @@ static ScrDyn *scr_dyn_async_disposable_stack_member_value(const char *key, size
  * interface's brand errors, so neither can be this unit's dispatch function;
  * the unit that builds the prototype answers its members from the same table
  * the instances use, so `Date.prototype.getTime === date.getTime` and
- * `DisposableStack.prototype.use === stack.use` (the AsyncDisposableStack's
- * unit, gated on its own program fact, fills a slot the same way). A builtin
- * whose instances
- * already answer the interned values — Map, Set, WeakMap, WeakSet, String,
- * Object — needs no entry: `map.get` and `Map.prototype.get` are one interned
- * function.
+ * `DisposableStack.prototype.use === stack.use`. The AsyncDisposableStack's
+ * unit fills a slot on the same terms, in the build that carries its entry.
+ * A builtin whose instances already answer the interned values — Map, Set,
+ * WeakMap, WeakSet, String, Object — needs no entry: `map.get` and
+ * `Map.prototype.get` are one interned function.
  *
  * Identity is a JavaScript object-model behavior, so the partition lives in
  * the object-model build: a typed program's interner is the same object it
@@ -1980,7 +1985,9 @@ static const struct {
 } scr_dyn_member_providers[] = {
   { "Date", scr_native_date_member_value },
   { "DisposableStack", scr_dyn_disposable_stack_member_value },
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
   { "AsyncDisposableStack", scr_dyn_async_disposable_stack_member_value },
+#endif
 };
 
 /* The member value the builtin named `prototype` answers for `method` from

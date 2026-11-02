@@ -10,8 +10,8 @@
  *
  * One code per construct, so C1's checker relaxation stays safe: relaxing a
  * tsc code that doubles as an early error removes the ONLY rejection some
- * parse-negative test had, which is why these codes live beside
- * JS_RELAXED_TSC_CODES in tsc-codes.ts and never depend on it.
+ * parse-negative test had, which is why these codes live beside the
+ * JS_OPINIONS table in tsc-codes.ts and never depend on it.
  *
  * Scope: JavaScript sources only. A TypeScript source is type-checked, and
  * its checker diagnostics (TS2451 and friends) are the gate; re-reporting

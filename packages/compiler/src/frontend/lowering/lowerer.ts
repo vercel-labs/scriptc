@@ -69,7 +69,7 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
-import { isJsSourceFileName } from "../tsc-codes.js";
+import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
   builtinClassValue,
@@ -1034,6 +1034,10 @@ export interface LowerOptions {
    * resolution walk and named-import link checks): the program
    * compiles to that startup crash. */
   startupCrash?: StartupCrash | null;
+  /** LoadResult.admittedOpinions: every JavaScript checker diagnostic
+   * preflight admitted under an opinion row (tsc-codes.ts, JS_OPINIONS). A
+   * view's lowering path is gated on one of these records. */
+  admittedOpinions?: readonly AdmittedOpinion[] | undefined;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.moduleEdges. */
@@ -1161,6 +1165,9 @@ export interface LowererMode {
    * pass saw an untyped value flow into a stream slot
    * (requiresDynNodeStreams). */
   dynNodeStreams?: boolean;
+  /** LoadResult.admittedOpinions: the JS opinion sites preflight admitted
+   * (opinionAt). */
+  admittedOpinions?: readonly AdmittedOpinion[] | undefined;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.dynamicImportRejections. */
@@ -1408,6 +1415,7 @@ function lowerToIrWithIslands(
           projectCheckJs: options.projectCheckJs ?? false,
           targetPlatform,
           startupCrash,
+          admittedOpinions: options.admittedOpinions,
           inlineRequireCycleCalls,
           dynamicImportRejections: options.dynamicImportRejections,
           ffiImports,
@@ -1439,6 +1447,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       ffiImports,
       libraryCallbacks,
@@ -1476,6 +1485,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
@@ -1523,6 +1533,7 @@ function lowerToIrWithIslands(
       reachable,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
@@ -1682,6 +1693,7 @@ function lowerToIrWithIslands(
       alreadyFlushed: resultLowerer.flushedSymbols,
       degradedTypes: resultLowerer.degradedTypes,
       retriedSymbols: resultLowerer.retriedSymbols,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
@@ -2442,6 +2454,9 @@ export class Lowerer {
     ts.SourceFile,
     { exports: boolean; moduleExports: boolean }
   >();
+  /** JavaScript checker diagnostics preflight admitted under an opinion row
+   * (LoadResult.admittedOpinions): the sites opinionAt answers for. */
+  readonly admittedOpinions: readonly AdmittedOpinion[];
   /** Inline require() calls whose module edge closes a require cycle
    * (LoadResult.inlineRequireCycleCalls). */
   readonly inlineRequireCycleCalls: ReadonlySet<ts.Node>;
@@ -4838,6 +4853,10 @@ export class Lowerer {
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
+    // Preflight's admitted opinions are a program fact computed before any
+    // unit lowers, and the site index over them is a memo of that fact.
+    "admittedOpinions",
+    "admittedOpinionIndex",
     // Coverage's --explain-dynamic report: the indexed-read analysis's
     // storage decisions and the narrowed reads they explain.
     "runtimeOptionalProvenance",
@@ -5384,6 +5403,7 @@ export class Lowerer {
     this.ffiImports = mode.ffiImports ?? [];
     this.forkTargets = mode.forkTargets ?? [];
     this.frontendServices = mode.frontendServices;
+    this.admittedOpinions = mode.admittedOpinions ?? [];
     this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
     this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
@@ -5583,6 +5603,40 @@ export class Lowerer {
     registerBuiltinStreamClasses(this);
     registerBuiltinEventTargetClasses(this);
   }
+
+  /** Whether preflight admitted the checker diagnostic `code` at `node`: a
+   * site in `admittedOpinions` (tsc-codes.ts, JS_OPINIONS) whose span the
+   * node contains. A `widen`/`throw`/`island` row's lowering path is reached
+   * only through this query, so a program that admitted no such site keeps
+   * the IR it has today. */
+  opinionAt(node: ts.Node, code: number): boolean {
+    if (this.admittedOpinions.length === 0) return false;
+    const file = ts.getSourceFileOfNode(node).fileName;
+    const start = ts.tokenStartOfNode(node);
+    const hit = this.admittedOpinionSites();
+    const list = hit.get(`${file}\0${code}`);
+    if (list === undefined) return false;
+    return list.some((site) => start <= site.pos && site.end <= node.end);
+  }
+
+  /** opinionAt's index: admitted sites by file and code. */
+  private admittedOpinionSites(): ReadonlyMap<string, readonly AdmittedOpinion[]> {
+    let sites = this.admittedOpinionIndex;
+    if (sites === null) {
+      const built = new Map<string, AdmittedOpinion[]>();
+      for (const site of this.admittedOpinions) {
+        const key = `${site.file}\0${site.code}`;
+        const list = built.get(key);
+        if (list === undefined) built.set(key, [site]);
+        else list.push(site);
+      }
+      sites = built;
+      this.admittedOpinionIndex = sites;
+    }
+    return sites;
+  }
+
+  private admittedOpinionIndex: ReadonlyMap<string, readonly AdmittedOpinion[]> | null = null;
 
   /** A JavaScript file TypeScript type-checks (`// @ts-check`, or the
    * project's `checkJs`). Its JSDoc types are enforced like TypeScript

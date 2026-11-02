@@ -79,6 +79,10 @@ typedef struct ScrInspFormatOptions {
   bool sorted;
   double max_array_length; /* Infinity for null */
   double max_string_length; /* Infinity for null */
+  /* Whether an accessor property's getter runs: 0 the labels only,
+   * 1 every getter, 2 the getters without a setter, 3 the getters with
+   * one. */
+  int getters;
   /* The options object, when it holds keys inspect does not read: custom
    * inspect functions receive them (borrowed; NULL otherwise). */
   const ScrDyn *user_options;
@@ -154,6 +158,15 @@ void scr_insp_nested_restore(void);
 /* ctx.customInspect for the renders that follow; answers the previous
  * value for the caller to restore. */
 bool scr_insp_custom_inspect(bool enabled);
+/* ctx.getters for the renders that follow (0 the labels only, 1 every
+ * getter, 2 the getters without a setter, 3 the getters with one), the
+ * value the interned per-type helpers read, and an invoked accessor's
+ * result rendered by kind: `[Label: <primitive>]`, `[Label] <object>`.
+ * +1 values; the setter answers the previous value for the caller to
+ * restore, the result NULL with an exception pending. */
+double scr_insp_getters(double value);
+double scr_insp_getters_mode(void);
+ScrStr *scr_insp_accessor_result(ScrDyn *value, ScrStr *label, double recurse, double depth);
 /* Around a custom inspect function's call: begin gives the calls it makes
  * a fresh inspect context with the default options and answers a token;
  * end(token) restores the caller's, also after calls that threw. */

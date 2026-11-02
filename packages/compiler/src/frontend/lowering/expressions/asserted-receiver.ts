@@ -224,6 +224,15 @@ export function applyDeferredAssertion(
   return value;
 }
 
+/** The binding `node` names, through parentheses and the non-null
+ * assertion: `(x).member` and `x!.member` read the same binding `x` does.
+ * Null for any other receiver expression. */
+function bindingIdentifier(node: ts.Expression): ts.Identifier | null {
+  let e = node;
+  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+  return ts.isIdentifier(e) ? e : null;
+}
+
 /** Whether the binding `ident` names DECLARES `member`: its annotation or
  * the asserted type of its initializer. Checker-only, and narrowing never
  * enters a declaration's own type, so a member a test narrows in at a use
@@ -276,13 +285,16 @@ function assertedOptionalMember(
   let storage: IrType | null | undefined;
   if (assertion) {
     storage = lowerer.mapTypeOf(lowerer.typeOf(assertion.expression));
-  } else if (ts.isIdentifier(receiver)) {
+  } else {
     // A binding's assertion is its DECLARED type. A member a narrowing test
     // adds (`"k" in x`, `typeof x.k === "string"`) is not one the assertion
     // declares, and its read has its own lowering — the checked-dynamic
-    // keyed read — which this hook leaves byte-identical.
-    if (!declaredMember(lowerer, receiver, member)) return null;
-    storage = lowerer.peekLocal(receiver)?.type ?? lowerer.globalOf(receiver)?.type;
+    // keyed read — which this hook leaves byte-identical. Parentheses and
+    // the non-null assertion spell the same binding.
+    const binding = bindingIdentifier(receiver);
+    if (binding === null) return null;
+    if (!declaredMember(lowerer, binding, member)) return null;
+    storage = lowerer.peekLocal(binding)?.type ?? lowerer.globalOf(binding)?.type;
   }
   if (storage?.kind !== "record") return null;
   if (lowerer.shapes.get(storage.shapeId)?.fields.some((f) => f.name === member)) {
@@ -322,9 +334,9 @@ export function assertedOptionalMemberRead(
   );
   if (answer !== null) return answer;
   lowerer.unsupported(
-    "SC1031",
+    "SC1090",
     access,
-    `reading the member '${access.name.text}' only the asserted type declares, off a record whose kept source properties the layout cannot retain (declare the property on the record's own type)`,
+    `reading '${access.name.text}' through a type assertion to a member the value's own layout does not hold (the record's kept source properties cannot answer it; declare the member on the value's type)`,
   );
 }
 
@@ -340,8 +352,8 @@ export function assertedOnlyMemberWrite(
 ): void {
   if (assertedOptionalMember(lowerer, receiver, member) === null) return;
   lowerer.unsupported(
-    "SC1031",
+    "SC1090",
     blame,
-    `writing the member '${member}' only the asserted type declares (Node adds it to the object; a record's layout cannot hold it — declare the property on the record's own type)`,
+    `writing '${member}' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type)`,
   );
 }

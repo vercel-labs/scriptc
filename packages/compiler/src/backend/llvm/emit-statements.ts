@@ -312,10 +312,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // Whole-value uses still retain their own copies, so returning or
       // storing the alias preserves the ordinary heap representation.
       // Boxed captures, reassigned sources and projections need ownership.
+      // A tree value has one owner and no copy to lend: the alias would be
+      // a second pointer the source's scope exit still destroys.
       if (
         b.kind === "local" &&
         b.local &&
         isRefCounted(b.type) &&
+        !emitter.isTreeValue(b.type) &&
         emitter.stableCallBindings.has(s.localId) &&
         (emitter.canBorrowCallArgument(s.init) || emitter.unwrittenAlias(s))
       ) {

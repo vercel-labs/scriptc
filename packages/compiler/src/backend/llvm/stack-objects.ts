@@ -399,7 +399,10 @@ export function emitStackObject(
   const tagged = type.kind === "object" ? host.classMeta.get(type.className) : undefined;
   // A class-union arm keeps its class id beside the immortal count.
   if (tagged?.idInRc === true) B.line(`store i64 ${classIdImmortalRcWord(tagged)}, ptr ${slot}`);
-  else B.line(`store ${host.sizeType} -1, ptr ${slot}`);
+  // A tree instance has no count word, and its first word is a field: the
+  // frame owns the node the way it owns any other stack object, releases
+  // its fields at scope exit and never frees it.
+  else if (tagged?.tree !== true) B.line(`store ${host.sizeType} -1, ptr ${slot}`);
   if (type.kind === "record") {
     // A tagged shape's word names it to every shape union's tag read.
     const shapeNumber = host.nullableUnions.shapeNumber(type.shapeId);

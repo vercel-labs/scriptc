@@ -75,3 +75,16 @@ test("the checker-side bindings map is part of the scope", () => {
   const b = inBindings(subject, bindings, tsSecond, () => subject.currentTypeMemo());
   expect(a).not.toBe(b);
 });
+
+test("an entry written under one context is invisible to another", () => {
+  const subject = lowerer();
+  const first = new Map<TsSymbol, IrType>();
+  const second = new Map<TsSymbol, IrType>();
+  const entry: IrType = { kind: "void" };
+
+  inBindings(subject, first, null, () => subject.currentTypeMemo().set(7, entry));
+  expect(inBindings(subject, second, null, () => subject.currentTypeMemo().get(7))).toBeUndefined();
+  // ...and the context that wrote it still has it, through the repeat lookup
+  // the lowerer's hot path takes (Lowerer.lastMemo).
+  expect(inBindings(subject, first, null, () => subject.currentTypeMemo().get(7))).toBe(entry);
+});

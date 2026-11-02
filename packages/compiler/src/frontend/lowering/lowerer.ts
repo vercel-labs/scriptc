@@ -4033,11 +4033,21 @@ export class Lowerer {
    * through `this`, so the same ctx serves generic bodies too). */
   readonly typeCtx: TypeMapperCtx;
 
+  /** The context lastContextMemo answered for. Every mapType call asks for the
+   * current binding context, and a lowering pass stays in one context for
+   * thousands of calls, so the pair of identity checks below is the whole
+   * cost on that path: the two-level lookup only runs when the context
+   * actually changes. */
+  private lastMemoOuter: object | null = null;
+  private lastMemoInner: object | null = null;
+  private lastMemo: Map<number, IrType> | null = null;
+
   /** The memo for the current binding context (scopedTypeMemos). */
   currentTypeMemo(): Map<number, IrType> {
     if (this.typeParamBindings === null && this.typeParamTsBindings === null) return this.typeMemo;
     const outer: object = this.typeParamBindings ?? NO_BINDINGS;
     const inner: object = this.typeParamTsBindings ?? NO_BINDINGS;
+    if (outer === this.lastMemoOuter && inner === this.lastMemoInner) return this.lastMemo!;
     let byTs = this.scopedTypeMemos.get(outer);
     if (byTs === undefined) {
       byTs = new Map();
@@ -4048,6 +4058,9 @@ export class Lowerer {
       memo = new Map();
       byTs.set(inner, memo);
     }
+    this.lastMemoOuter = outer;
+    this.lastMemoInner = inner;
+    this.lastMemo = memo;
     return memo;
   }
 
@@ -4861,6 +4874,9 @@ export class Lowerer {
     "splitIdentifierUses",
     "typeMemo",
     "scopedTypeMemos",
+    "lastMemoOuter",
+    "lastMemoInner",
+    "lastMemo",
     "fnStack",
     "positions.nodesByKey",
     "positions.paths",

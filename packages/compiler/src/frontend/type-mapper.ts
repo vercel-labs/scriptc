@@ -1309,16 +1309,41 @@ export interface SymbolProvenance {
 }
 
 /** The answers provenanceOf has given, keyed by symbol. The lowering owns
- * one map through TypeMapperCtx.symbolProvenance, so an answer lives only
- * as long as the lowering that produced it; a symbol belongs to one loaded
- * program. */
+ * one map through TypeMapperCtx.symbolProvenance; a symbol belongs to one
+ * loaded program, so one island round shares the map across its passes
+ * (lowering-facts.ts). */
 export function newSymbolProvenanceMemo(): Map<ts.Symbol, SymbolProvenance> {
   return new Map();
 }
 
+/** A symbol's provenance, computed from its declarations alone: the answer
+ * depends on which files declare it and nothing else, so it is the same for
+ * every lowering pass of one loaded program (lowering-facts.ts shares the
+ * memo). */
+export function computeSymbolProvenance(
+  psym: ts.Symbol,
+  isStdlibFile: (sf: ts.SourceFile) => boolean,
+): SymbolProvenance {
+  let stdlibInterface = false;
+  let stdlibClass = false;
+  let libInterface = false;
+  for (const decl of psym.declarations) {
+    const file = ts.getSourceFileOfNode(decl);
+    if (!isStdlibFile(file)) continue;
+    if (ts.isInterfaceDeclaration(decl)) {
+      stdlibInterface = true;
+      stdlibClass = true;
+      if (!isNodeTypesPath(file.fileName)) libInterface = true;
+    } else if (ts.isClassDeclaration(decl)) {
+      stdlibClass = true;
+    }
+  }
+  return { stdlibInterface, stdlibClass, libInterface };
+}
+
 function provenanceOf(
   psym: ts.Symbol,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "symbolProvenance">,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "symbolProvenance" | "verifySymbolProvenance">,
 ): SymbolProvenance {
   let bySymbol = ctx.symbolProvenance;
   if (bySymbol === undefined) {
@@ -1327,23 +1352,9 @@ function provenanceOf(
   }
   let provenance = bySymbol.get(psym);
   if (provenance === undefined) {
-    let stdlibInterface = false;
-    let stdlibClass = false;
-    let libInterface = false;
-    for (const decl of psym.declarations) {
-      const file = ts.getSourceFileOfNode(decl);
-      if (!ctx.isStdlibFile(file)) continue;
-      if (ts.isInterfaceDeclaration(decl)) {
-        stdlibInterface = true;
-        stdlibClass = true;
-        if (!isNodeTypesPath(file.fileName)) libInterface = true;
-      } else if (ts.isClassDeclaration(decl)) {
-        stdlibClass = true;
-      }
-    }
-    provenance = { stdlibInterface, stdlibClass, libInterface };
+    provenance = computeSymbolProvenance(psym, ctx.isStdlibFile);
     bySymbol.set(psym, provenance);
-  }
+  } else ctx.verifySymbolProvenance?.(psym, provenance);
   return provenance;
 }
 
@@ -1373,6 +1384,21 @@ export function isGeneralNodeStreamInterface(
   });
 }
 
+/** Whether any declaration of the symbol sits in the shipped WebAssembly
+ * namespace (scriptc.d.ts). Like the declaration-kind walk, the answer is a
+ * function of the declarations alone, so provenanceOf's shared memo can keep
+ * it (SymbolProvenance.webAssembly). */
+export function declaresWebAssemblyNamespace(
+  declarations: readonly ts.Node[],
+  isStdlibFile: (sf: ts.SourceFile) => boolean,
+): boolean {
+  return declarations.some(
+    (d) =>
+      isStdlibFile(ts.getSourceFileOfNode(d)) &&
+      isDeclaredInAmbientNamespace(d as ts.Declaration, "WebAssembly"),
+  );
+}
+
 /** A type declared in the shipped WebAssembly namespace (scriptc.d.ts):
  * its modules, instances, memories, tables, globals, error classes and the
  * Exports/Imports records. */
@@ -1383,11 +1409,7 @@ export function isWebAssemblyType(
   const symbol = type.getAliasSymbol() ?? type.getSymbol();
   if (!symbol) return false;
   const provenance = provenanceOf(symbol, ctx);
-  provenance.webAssembly ??= symbol.declarations.some(
-    (d) =>
-      ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-      isDeclaredInAmbientNamespace(d as ts.Declaration, "WebAssembly"),
-  );
+  provenance.webAssembly ??= declaresWebAssemblyNamespace(symbol.declarations, ctx.isStdlibFile);
   return provenance.webAssembly;
 }
 
@@ -1573,11 +1595,18 @@ export interface TypeMapperCtx {
    * Map/RegExp/Promise recognition needs declaration provenance: the name
    * alone proves nothing (a user's own `interface Map` maps as a record). */
   isStdlibFile: (sf: ts.SourceFile) => boolean;
-  /** provenanceOf's answers, keyed by symbol (see SymbolProvenance). The
-   * lowering owns the map it passes here, so an answer lives only as long
-   * as the lowering that produced it. Absent: provenanceOf creates one on
-   * the context object. */
+  /** provenanceOf's answers, keyed by symbol (see SymbolProvenance). One
+   * loaded program owns one map (lowering-facts.ts shares it across the
+   * round's passes). Absent: provenanceOf creates one on the context
+   * object. */
   symbolProvenance?: Map<ts.Symbol, SymbolProvenance>;
+  /** SCRIPTC_LOWERING_FACTS_VERIFY: called on every hit on the symbol
+   * provenance memo, so the caller can compare it with a fresh computation
+   * (lowering-facts.ts throws on a disagreement). The optional webAssembly
+   * and legacyUrl fields are filled lazily, on first use, by
+   * declaresWebAssemblyNamespace/declaresLegacyUrl; the caller compares them
+   * only when the stored answer has them. */
+  verifySymbolProvenance?: (sym: ts.Symbol, answer: SymbolProvenance) => void;
 
   isNpmFile: (sf: ts.SourceFile) => boolean;
   /** The declaration file of @scriptc/experimental, wherever it is installed
@@ -1794,7 +1823,10 @@ export function isLegacyUrlSymbol(
   return provenance.legacyUrl;
 }
 
-function declaresLegacyUrl(
+/** Whether any declaration of the symbol is one of node:url's legacy record
+ * interfaces (or a member of one). A function of the declarations alone,
+ * stored as SymbolProvenance.legacyUrl in provenanceOf's shared memo. */
+export function declaresLegacyUrl(
   declarations: readonly ts.Node[],
   ctx: Pick<TypeMapperCtx, "isStdlibFile">,
 ): boolean {

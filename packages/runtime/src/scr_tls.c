@@ -100,8 +100,10 @@
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/error.h"
+#include "mbedtls/md.h"
 #include "mbedtls/net_sockets.h" /* the MBEDTLS_ERR_NET_* codes the BIOs answer */
 #include "mbedtls/pk.h"
+#include "mbedtls/sha256.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 
@@ -800,6 +802,22 @@ typedef struct ScrTlsSock {
   bool vrfy_chain_self;
   bool vrfy_expired;
   bool vrfy_cn_mismatch;
+  /* a certificate of the chain carried a blocked public key: the failure
+   * Node reports as CERT_REVOKED, ahead of every other verification error */
+  bool vrfy_blocked;
+  /* the verify callback ran at least once: a peer certificate arrived and
+   * was examined, so a verdict exists even if the handshake then failed */
+  bool vrfy_seen;
+  /* the flags every certificate of the chain raised so far: the callback
+   * runs depth-descending, so the leaf's turn holds the whole verdict */
+  uint32_t vrfy_flags;
+  /* the trust list this connection verifies against (borrowed from the
+   * client or server config, or the system store): the chain is continued
+   * through it past the certificate mbedTLS stopped at */
+  mbedtls_x509_crt *vrfy_trust;
+  /* the topmost certificate the verification walked — the callback runs
+   * depth-descending, the leaf last, so the leaf's turn closes the walk */
+  mbedtls_x509_crt *vrfy_top;
   /* SNI pre-parse state (server side with an SNI callback only) */
   int sni_state;
   bool in_handshake;   /* a synchronous cb answer must not re-pump */
@@ -844,6 +862,144 @@ typedef struct ScrTlsSock {
 
 static bool scr_tls_alert_error(ScrTlsSock *t, unsigned char alert);
 
+/* ── the blocked-SPKI policy ────────────────────────────────────────────
+ *
+ * Node 24.22.1 refuses a certificate chain that contains a public key from
+ * a fixed blocklist (src/crypto/crypto_context.cc, kBlockedSPKIs): the
+ * SHA-256 digest of the DER SubjectPublicKeyInfo. The check runs at the
+ * verification boundary over the chain the verification selected, trust
+ * anchor included, and, when that chain did not verify, over every
+ * certificate the peer sent. A hit is CERT_REVOKED ("certificate
+ * revoked"), which outranks the error the verification itself found.
+ *
+ * mbedTLS's walk ends at the first certificate it trusts, which may be an
+ * intermediate; the chain Node keeps building there, through every issuer
+ * the trust list can resolve, is continued by scr_tls_spki_anchor_blocked,
+ * and the peer's whole list is scanned on the leaf's turn when the chain did
+ * not verify, because mbedTLS releases it with the handshake. */
+
+#define SCR_TLS_SPKI_LEN 32
+
+/* Node v24.22.1's list, unchanged: the eMudhra/emSign intermediates whose
+ * private keys were reported compromised in October 2026 (Go and Electron
+ * ship the same entries). */
+static const unsigned char scr_tls_blocked_spki[][SCR_TLS_SPKI_LEN] = {
+  {0x49, 0xdd, 0x35, 0x3d, 0xc2, 0xb9, 0x19, 0xa3, 0x77, 0x06, 0x45, 0x11, 0x7d, 0x0e, 0x60, 0xc1,
+   0x61, 0x15, 0xe7, 0xd1, 0xbc, 0x25, 0x9e, 0xef, 0xe7, 0x34, 0xb0, 0x0e, 0xa4, 0x34, 0xfe, 0x5f},
+  {0x5c, 0x06, 0x60, 0xa2, 0xb1, 0x64, 0x91, 0x0d, 0x8f, 0xf5, 0x89, 0xc1, 0x8e, 0x14, 0x55, 0x2e,
+   0x9e, 0x0e, 0xc2, 0x37, 0xdc, 0xef, 0xe2, 0xcb, 0x73, 0x6d, 0x41, 0xa4, 0x81, 0x1f, 0x81, 0xa0},
+  {0x63, 0xec, 0xef, 0xee, 0x43, 0x1d, 0x49, 0x52, 0x3b, 0xc1, 0x13, 0x6c, 0x4e, 0x72, 0xd0, 0x20,
+   0x6a, 0x47, 0x70, 0x86, 0xca, 0xf6, 0x06, 0xcd, 0x5c, 0xf0, 0x25, 0x68, 0x6c, 0x10, 0x9c, 0xf8},
+  {0x92, 0xc0, 0x63, 0xd6, 0x7e, 0x8f, 0x14, 0xdb, 0x71, 0xd2, 0x88, 0xe1, 0x12, 0x66, 0xff, 0xda,
+   0xf6, 0x9c, 0xbf, 0x11, 0x5f, 0x7b, 0xab, 0x14, 0xf3, 0xbc, 0x2f, 0x68, 0xd2, 0x5e, 0x0e, 0x30},
+  {0xeb, 0xed, 0x64, 0x75, 0xc2, 0xc2, 0xd8, 0x0f, 0xcb, 0x19, 0x9f, 0x3f, 0xe8, 0xdd, 0x6e, 0x6b,
+   0x3c, 0xe6, 0x0b, 0x77, 0xeb, 0x15, 0xd4, 0xe4, 0x2c, 0x3d, 0xec, 0x0c, 0x6f, 0x5b, 0x51, 0x05},
+  {0xec, 0x4f, 0xfa, 0x1a, 0xd0, 0xac, 0x88, 0x08, 0x13, 0x14, 0xb7, 0xaa, 0xff, 0xef, 0x6a, 0x91,
+   0xf9, 0x7c, 0xd5, 0x72, 0x91, 0xbb, 0x5b, 0xa6, 0x86, 0xc5, 0x41, 0x5f, 0x5e, 0xb4, 0xf6, 0xb6},
+  {0x43, 0xbf, 0xfa, 0x19, 0xd6, 0xef, 0x65, 0x14, 0x51, 0xf6, 0x84, 0x1e, 0x01, 0x99, 0x31, 0xe9,
+   0x6f, 0x6f, 0x2e, 0xae, 0xff, 0x28, 0xab, 0x4b, 0x6f, 0x1c, 0xe4, 0x57, 0x6d, 0xe2, 0x71, 0x7b},
+  {0xe0, 0x25, 0x4c, 0x7f, 0xcd, 0xc2, 0x65, 0xe2, 0xf0, 0xf8, 0xa4, 0x28, 0xda, 0xbb, 0x75, 0xab,
+   0x4a, 0xe0, 0x39, 0xb4, 0x87, 0x2d, 0x62, 0xf5, 0xee, 0x57, 0xf0, 0x87, 0x7d, 0x5a, 0x8a, 0x41},
+};
+
+/* Test-only extra entries, Node's addBlockedSPKIForTesting: 64-hex-digit
+ * digests separated by commas in SCRIPTC_TLS_BLOCKED_SPKI. The hook only
+ * ever ADDS a key, which can make verification stricter but never weaker,
+ * so it ships the way Node ships its binding hook. */
+enum { SCR_TLS_SPKI_EXTRA_MAX = 16 };
+static unsigned char scr_tls_spki_extra[SCR_TLS_SPKI_EXTRA_MAX][SCR_TLS_SPKI_LEN];
+static size_t scr_tls_spki_extra_n;
+static bool scr_tls_spki_extra_loaded;
+
+static int scr_tls_hex_value(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static void scr_tls_spki_extra_load(void) {
+  if (scr_tls_spki_extra_loaded) return;
+  scr_tls_spki_extra_loaded = true;
+  const char *env = getenv("SCRIPTC_TLS_BLOCKED_SPKI");
+  while (env != NULL && *env != '\0' && scr_tls_spki_extra_n < SCR_TLS_SPKI_EXTRA_MAX) {
+    const char *comma = strchr(env, ',');
+    size_t len = comma != NULL ? (size_t)(comma - env) : strlen(env);
+    if (len == 2 * SCR_TLS_SPKI_LEN) {
+      unsigned char digest[SCR_TLS_SPKI_LEN];
+      bool ok = true;
+      for (size_t i = 0; i < SCR_TLS_SPKI_LEN; i++) {
+        int hi = scr_tls_hex_value(env[2 * i]);
+        int lo = scr_tls_hex_value(env[2 * i + 1]);
+        if (hi < 0 || lo < 0) {
+          ok = false;
+          break;
+        }
+        digest[i] = (unsigned char)((hi << 4) | lo);
+      }
+      if (ok) memcpy(scr_tls_spki_extra[scr_tls_spki_extra_n++], digest, SCR_TLS_SPKI_LEN);
+    }
+    env = comma != NULL ? comma + 1 : NULL;
+  }
+}
+
+/* 1 when the certificate's public key is blocked, 0 when it is not, -1
+ * when the SPKI cannot be hashed. Node answers that last case with
+ * X509_V_ERR_UNSPECIFIED rather than letting the chain through; a parsed
+ * mbedTLS certificate always keeps its SPKI, so it is defensive only and
+ * scr_tls_vrfy_cb fails it closed. */
+static int scr_tls_spki_check(const mbedtls_x509_crt *crt) {
+  if (crt == NULL || crt->pk_raw.p == NULL || crt->pk_raw.len == 0) return -1;
+  unsigned char digest[SCR_TLS_SPKI_LEN];
+  if (mbedtls_sha256(crt->pk_raw.p, crt->pk_raw.len, digest, 0) != 0) return -1;
+  for (size_t i = 0; i < sizeof scr_tls_blocked_spki / SCR_TLS_SPKI_LEN; i++)
+    if (memcmp(digest, scr_tls_blocked_spki[i], SCR_TLS_SPKI_LEN) == 0) return 1;
+  scr_tls_spki_extra_load();
+  for (size_t i = 0; i < scr_tls_spki_extra_n; i++)
+    if (memcmp(digest, scr_tls_spki_extra[i], SCR_TLS_SPKI_LEN) == 0) return 1;
+  return 0;
+}
+
+/* Whether `crt`'s signature is `ca`'s: the parent-search test mbedTLS applies
+ * before it accepts a trusted certificate. */
+static bool scr_tls_cert_signed_by(const mbedtls_x509_crt *crt, mbedtls_x509_crt *ca) {
+  mbedtls_md_type_t sig_md = crt->MBEDTLS_PRIVATE(sig_md);
+  const mbedtls_md_info_t *md = mbedtls_md_info_from_type(sig_md);
+  const unsigned char *sig = crt->MBEDTLS_PRIVATE(sig).p;
+  size_t sig_len = crt->MBEDTLS_PRIVATE(sig).len;
+  if (md == NULL || sig == NULL || sig_len == 0) return false;
+  unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+  if (mbedtls_md(md, crt->tbs.p, crt->tbs.len, hash) != 0) return false;
+  return mbedtls_pk_verify(&ca->pk, sig_md, hash, mbedtls_md_get_size(md), sig, sig_len) == 0;
+}
+
+/* The certificates Node's chain gains past the one mbedTLS stopped at: each
+ * time the trusted certificate whose subject is the current certificate's
+ * issuer and whose key verifies it, until the trust list supplies no further
+ * issuer. OpenSSL builds that continuation, so CheckSPKIs sees a blocked key
+ * along any of it and rejects a chain mbedTLS alone would accept. */
+static bool scr_tls_spki_anchor_blocked(const ScrTlsSock *t, const mbedtls_x509_crt *top) {
+  if (t->vrfy_trust == NULL || top == NULL) return false;
+  const mbedtls_x509_crt *cur = top;
+  /* the bound ends a certificate that names itself and a trust list whose
+   * issuers circle back; a longer chain is not one mbedTLS would accept */
+  for (size_t hop = 0; hop <= MBEDTLS_X509_MAX_INTERMEDIATE_CA; hop++) {
+    const mbedtls_x509_crt *issuer = NULL;
+    for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+      if (ca->subject_raw.len != cur->issuer_raw.len || ca->subject_raw.p == NULL) continue;
+      if (memcmp(ca->subject_raw.p, cur->issuer_raw.p, ca->subject_raw.len) != 0) continue;
+      if (!scr_tls_cert_signed_by(cur, ca)) continue;
+      issuer = ca;
+      break;
+    }
+    if (issuer == NULL) return false;
+    if (scr_tls_spki_check(issuer) != 0) return true;
+    if (issuer == cur) return false; /* a self-signed certificate ends the chain */
+    cur = issuer;
+  }
+  return false;
+}
+
 /* checkServerIdentity for an IP literal: the address must be one of the
  * certificate's IP SANs (no DNS SAN or CN applies). */
 static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
@@ -873,6 +1029,7 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * a mismatch. */
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
+  t->vrfy_seen = true;
   if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
     const char *name = t->cli->verify_name;
     if (name == NULL || name[0] == '\0') {
@@ -886,6 +1043,42 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
       (void)mbedtls_x509_crt_verify(crt, NULL, NULL, name, &name_flags, NULL, NULL);
       crt->next = chain;
       *flags |= name_flags & MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    }
+  }
+  /* Node's blocked-SPKI policy (crypto_context.cc CertVerifyCallback) runs
+   * over the selected chain before the verification verdict is reported,
+   * and its CERT_REVOKED outranks whatever that verdict found. The walk
+   * runs depth-descending, so its first call is the chain's top. */
+  if (t->vrfy_top == NULL) t->vrfy_top = crt;
+  if (scr_tls_spki_check(crt) != 0) {
+    *flags |= MBEDTLS_X509_BADCERT_REVOKED;
+    t->vrfy_blocked = true;
+  }
+  /* the chain Node selects continues past a trusted certificate through
+   * every issuer the trust list can supply, which mbedTLS never walks; the
+   * leaf's turn, which closes the walk, adds those certificates to the chain
+   * under the same policy */
+  if (depth == 0 && !t->vrfy_blocked && scr_tls_spki_anchor_blocked(t, t->vrfy_top)) {
+    *flags |= MBEDTLS_X509_BADCERT_REVOKED;
+    t->vrfy_blocked = true;
+  }
+  /* Node checks every certificate the peer sent when the chain did not
+   * verify, the leaf and X509_STORE_CTX_get0_untrusted after it, so a
+   * blocked key the chain did not select still reports CERT_REVOKED ahead
+   * of the chain's own error. The parsed peer list hangs off the leaf and
+   * is released once the handshake call returns (a failed TLS 1.2 chain is
+   * gone by then), so the scan runs here, on the leaf's turn, which has
+   * seen every flag of the walk. The hostname check runs outside Node's
+   * X509_verify_cert, so a name mismatch alone leaves the chain verified and
+   * the peer list unread: the name error stands. */
+  t->vrfy_flags |= *flags;
+  if (depth == 0 && !t->vrfy_blocked && (t->vrfy_flags & ~(uint32_t) MBEDTLS_X509_BADCERT_CN_MISMATCH) != 0) {
+    for (const mbedtls_x509_crt *c = crt->next; c != NULL; c = c->next) {
+      if (scr_tls_spki_check(c) != 0) {
+        t->vrfy_blocked = true;
+        *flags |= MBEDTLS_X509_BADCERT_REVOKED;
+        break;
+      }
     }
   }
   /* a rejecting client fails the handshake on any flag; Node's client
@@ -1065,6 +1258,12 @@ static ssize_t scr_tls_xwrite(void *tctx, const char *buf, size_t n) {
  * shape comes from the verify callback's records — the peer chain is
  * already gone once the handshake has failed. */
 static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
+  /* Node checks the blocked list before it looks at the verification's
+   * own error, so CERT_REVOKED takes precedence */
+  if (t->vrfy_blocked) {
+    snprintf(out, n, "certificate revoked");
+    return;
+  }
   if (t->vrfy_expired) {
     snprintf(out, n, "certificate has expired");
     return;
@@ -1727,7 +1926,10 @@ static void scr_tls_srv_on_conn(void *ctx, ScrNetSocket *sock) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &srv->conf) != 0) scr_tls_oom();
-  if (srv->request_cert) mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
+  if (srv->request_cert) {
+    mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
+    t->vrfy_trust = srv->has_ca ? &srv->ca : scr_tls_system_ca();
+  }
   t->sock = sock;
   t->srv = scr_tls_srv_retain(srv);
   ScrNetServer *server = scr_net_sock_server(sock);
@@ -1846,6 +2048,8 @@ static void scr_tls_cli_wrap(ScrNetSocket *sock, void *ctx) {
    * checks cli->verify_name instead */
   (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
   mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
+  if (cli->verify_recorded)
+    t->vrfy_trust = cli->has_ca ? &cli->ca : scr_tls_system_ca();
   t->sock = sock;
   t->cli = cli; /* the tctx owns the per-request config now */
   mbedtls_ssl_set_bio(&t->ssl, t, scr_tls_bio_send, scr_tls_bio_recv, NULL);
@@ -1939,6 +2143,8 @@ static ScrTlsSock *scr_tls_cli_sock(ScrNetSocket *sock, ScrTlsCli *cli) {
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
   (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
   mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
+  if (cli->verify_recorded)
+    t->vrfy_trust = cli->has_ca ? &cli->ca : scr_tls_system_ca();
   t->sock = sock;
   t->cli = cli;
   return t;
@@ -2860,6 +3066,7 @@ static int scr_tls_f_cert(mbedtls_ssl_context *ssl) {
   }
   if (s->request_cert) {
     t->ctx_verifies = true;
+    t->vrfy_trust = pick->has_ca ? &pick->ca : scr_tls_system_ca();
     mbedtls_ssl_set_hs_ca_chain(ssl, pick->has_ca ? &pick->ca : scr_tls_system_ca(), NULL);
   }
   return mbedtls_ssl_set_hs_own_cert(ssl, own, &pick->pk);
@@ -3059,7 +3266,10 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
   if (!ts) scr_tls_oom();
   mbedtls_ssl_init(&ts->ssl);
   if (mbedtls_ssl_setup(&ts->ssl, &srv->conf) != 0) scr_tls_oom();
-  if (srv->request_cert) mbedtls_ssl_set_verify(&ts->ssl, &scr_tls_vrfy_cb, ts);
+  if (srv->request_cert) {
+    mbedtls_ssl_set_verify(&ts->ssl, &scr_tls_vrfy_cb, ts);
+    ts->vrfy_trust = srv->has_ca ? &srv->ca : scr_tls_system_ca();
+  }
   ts->sock = t;
   ts->srv = srv; /* moves */
   ts->wrapped = true;
@@ -3507,6 +3717,7 @@ void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/,
  * ERR_TLS_CERT_ALTNAME_INVALID on a VERIFIED chain. */
 static const char *scr_tls_auth_code(ScrTlsSock *t) {
   uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
+  if (t->vrfy_blocked) return "CERT_REVOKED";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
   if (t->vrfy_leaf_self) return "DEPTH_ZERO_SELF_SIGNED_CERT";
   if (t->vrfy_chain_self) return "SELF_SIGNED_CERT_IN_CHAIN";
@@ -3521,6 +3732,7 @@ static const char *scr_tls_auth_code(ScrTlsSock *t) {
  * client that sent none is UNABLE_TO_GET_ISSUER_CERT, as Node reports it. */
 static const char *scr_tls_client_cert_code(ScrTlsSock *t) {
   uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
+  if (t->vrfy_blocked) return "CERT_REVOKED";
   if (vr & MBEDTLS_X509_BADCERT_MISSING) return "UNABLE_TO_GET_ISSUER_CERT";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
   if (vr & (MBEDTLS_X509_BADCERT_EXT_KEY_USAGE | MBEDTLS_X509_BADCERT_KEY_USAGE)) return "INVALID_PURPOSE";
@@ -3580,6 +3792,19 @@ static bool scr_tls_sock_verifies(const ScrTlsSock *t) {
                             (t->srv != NULL && t->srv->request_cert && !t->srv->standalone));
 }
 
+/* Whether a verification verdict exists at all. Node reads
+ * authorizationError from the socket's handle, so a server that ended
+ * the handshake on a failed client certificate still answers there —
+ * 'tlsClientError' carries that socket (the 'secureConnection' gate
+ * above keeps 'authorized' at false). A server whose client left before
+ * its certificate arrived has no verdict: mbedTLS still records a
+ * missing-certificate failure for it, which Node does not report. */
+static bool scr_tls_sock_verdict(const ScrTlsSock *t) {
+  if (t->cli != NULL) return t->established && t->cli->verify_recorded;
+  return t->srv != NULL && t->srv->request_cert && !t->srv->standalone &&
+         (t->established || t->vrfy_seen);
+}
+
 bool scr_tls_sock_authorized(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
   return t != NULL && scr_tls_sock_verifies(t) && mbedtls_ssl_get_verify_result(&t->ssl) == 0;
@@ -3587,7 +3812,7 @@ bool scr_tls_sock_authorized(ScrNetSocket *s) {
 
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || !scr_tls_sock_verifies(t) || mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
+  if (t == NULL || !scr_tls_sock_verdict(t) || mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
     return NULL; /* the null arm — authorized, or never verified */
   }
   const char *code = t->srv != NULL ? scr_tls_client_cert_code(t) : scr_tls_auth_code(t);

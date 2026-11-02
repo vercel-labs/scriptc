@@ -265,31 +265,32 @@ declare module "http" {
     end(data?: string | Uint8Array): void;
     destroy(error?: Error): void;
     abort(): void;
-    on(event: "response", listener: (res: IncomingMessage) => void): void;
-    on(event: "socket", listener: (socket: Socket) => void): void;
+    on(event: "response", listener: (res: IncomingMessage) => void): this;
+    on(event: "socket", listener: (socket: Socket) => void): this;
     on(
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    /* addListener IS on (Node aliases them) — the suite spells both. */
-    addListener(event: "response", listener: (res: IncomingMessage) => void): void;
-    addListener(event: "socket", listener: (socket: Socket) => void): void;
+    ): this;
+    on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    /* addListener IS on (Node aliases them) — the suite spells both. Each
+     * answers the request, as Node's does. */
+    addListener(event: "response", listener: (res: IncomingMessage) => void): this;
+    addListener(event: "socket", listener: (socket: Socket) => void): this;
     addListener(
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    addListener(event: "timeout" | "close" | "finish" | "abort", listener: () => void): void;
-    addListener(event: "error", listener: (err: Error) => void): void;
-    once(event: "response", listener: (res: IncomingMessage) => void): void;
-    once(event: "socket", listener: (socket: Socket) => void): void;
+    ): this;
+    addListener(event: "timeout" | "close" | "finish" | "abort", listener: () => void): this;
+    addListener(event: "error", listener: (err: Error) => void): this;
+    once(event: "response", listener: (res: IncomingMessage) => void): this;
+    once(event: "socket", listener: (socket: Socket) => void): this;
     once(
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
+    ): this;
+    once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
   }
   export function createServer(
     requestListener?: (req: IncomingMessage, res: ServerResponse) => void,
@@ -310,13 +311,18 @@ declare module "http" {
    * `target` is a URL string or URL object (the spelling a from-scratch
    * client reaches for first — dialed directly, with a non-http scheme
    * an ERR_INVALID_PROTOCOL at runtime rather than a type error), or
-   * the options record. */
+   * the options record. A URL target's second argument is the response
+   * callback or the options value the runtime merges under the URL's
+   * fields (`request(url, options[, callback])`); the lowering tells
+   * the two apart by the argument's own type. */
   export function request(
     target: RequestOptions | string | URL,
+    optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
   export function get(
     target: RequestOptions | string | URL,
+    optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
   export function validateHeaderName(name: string, label?: string): void;

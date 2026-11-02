@@ -103,11 +103,21 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
   ["scr_js_object.c", "dynTier"],
+  // Mutable ArrayBuffers (t262-dc C1/C2): the views registry that recomputes
+  // every view's length when a buffer resizes, grows or detaches, and the
+  // operations themselves. A JavaScript source with the `mutableBuffers`
+  // fact arms it at the top of %main (arrayBuffer.armMutable); every other
+  // program keeps the base units' hooks NULL and links no registry.
+  ["scr_js_buffers.c", "mutableBuffers"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
     any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
   ],
+  // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
+  // the specification's algorithms over the checked-dynamic tier. Its
+  // feature also selects dynInvoke and dynAsync, whose units it calls.
+  ["scr_js_promise_generic.c", "promiseGeneric"],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -120,10 +130,13 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
   // Primitive wrapper objects.
   ["scr_js_wrapper.c", "primitiveWrapper"],
+  // %Iterator% and %Iterator.prototype% as values.
+  ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
+  ["scr_zstd.c", all("zlib", "zstd")],
   // Intl over ICU (scr_intl.c): the default-locale number/date formats and
   // word segmentation, over the packed ICU archive and its data file.
   // Every engine-free Intl form (the en-US fast paths, default grapheme
@@ -238,6 +251,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // The dynamic global object's answer for the Node globals the native runtime
+  // does not implement (host-globals.ts): the compiler hands over its derived
+  // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
+  // instead of answering undefined.
+  ["scr_global_host_absent.c", "hostAbsentGlobals"],
 ];
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
@@ -260,17 +278,22 @@ export function variantsFor(source) {
   // scr_json.c builds one object per flavor (and workers mode): its paths
   // for Node island handles and handle classes call through tables that
   // scr_node_island_handle.c and scr_dyn_handle_class.c install when a
-  // program links them, and its dynamic-tier primitives are always defined.
-  // A program with a partial record assertion (record-views.ts) links the
-  // build whose view slot answers NULL for a field the viewed record does
-  // not declare, so the emitted guard, clone helper and presence test can
-  // stop with the program's message instead of reading a bogus slot; every
-  // other program keeps the default object.
+  // program links them, its dynamic-tier primitives are always defined, and
+  // its view slot answers NULL for a field the viewed record does not
+  // declare (a partial record assertion, record-views.ts), so the emitted
+  // guard, clone helper and presence test stop with the program's message.
+  // A full view holds an offset for every target field, so the NULL case is
+  // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
+    // An error thrown by island code answers `constructor` from V8 (NI-4),
+    // so `e.constructor === TypeError` holds with the island's TypeError.
+    // Pushed before the object model twins below, so a program that has both
+    // selects one build that carries both defines. Every other program keeps
+    // the default object, byte for byte.
     variants.push({
-      id: "record-view-partial",
-      when: { recordViewPartial: true },
-      defines: ["SCR_RECORD_VIEW_PARTIAL"],
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
     });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
@@ -310,6 +333,12 @@ export function variantsFor(source) {
     // default object, byte for byte.
     withJsObjectModel(variants);
   }
+  // The mutable-buffers registry (t262-dc C1/C2) is part of the JavaScript
+  // object model build: its tables and the ScrJsBufferOps contract it fills
+  // exist only there (SCR_JS_OBJECT_MODEL), so the unit selects that build
+  // and its default object compiles empty. A program with the fact links
+  // the unit at all (OPTIONAL_RUNTIME_SOURCES).
+  if (source === "scr_js_buffers.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects. Its Node island
   // build is not the one these variants name: island output keeps its own
@@ -526,6 +555,17 @@ export function variantsFor(source) {
       defines: ["SCR_YIN"],
     });
   }
+  // A program that reads the global object through a computed key or asks
+  // `… in globalThis` arms the runtime check for the Node globals the native
+  // runtime does not implement (scr_global_host_absent.c). Every other
+  // program keeps the default object, byte for byte.
+  if (source === "scr_node_builtin.c") {
+    variants.push({
+      id: "host-absent-globals",
+      when: { hostAbsentGlobals: true },
+      defines: ["SCR_GLOBAL_HOST_ABSENT"],
+    });
+  }
   return variants;
 }
 
@@ -544,6 +584,7 @@ export function createRuntimePackMatrix({
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];

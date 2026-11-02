@@ -3,12 +3,30 @@ import * as ts from "../ts7/adapter.js";
 import { BOOL, DYN, STRING, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { classValueRef, type ClassInfo } from "./lower-classes.js";
+import { classMemberNameOf, classValueRef, type ClassInfo } from "./lower-classes.js";
 import { classPrototypeData } from "./class-prototypes.js";
 
 export function hasRuntimeStatics(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base) {
     if (current.runtimeStatics !== undefined) return true;
+  }
+  return false;
+}
+
+/** Whether the class value's property table defines the static `name`: the
+ * members a class that keeps its statics in the table declares there. A
+ * class whose table holds only a `Symbol.hasInstance` hook keeps its other
+ * statics in module storage, so those keep their own lowering. A computed
+ * name defines the key it folds to (`static ['m']` defines `m`, overriding
+ * an inherited static); a name keyed at run time defines no key a source
+ * name reads. */
+export function runtimeStaticDefines(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    for (const member of current.runtimeStatics ?? []) {
+      const memberName = (member as { name?: ts.PropertyName }).name;
+      if (memberName === undefined) continue;
+      if (classMemberNameOf(lowerer, memberName) === name) return true;
+    }
   }
   return false;
 }

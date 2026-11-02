@@ -1265,7 +1265,11 @@ export function classConstructHelper(
   const info = lowerer.classes.get(className);
   if (info === undefined || info.def.runtime || info.localClass || info.generic) return null;
   for (let c: typeof info | null = info; c; c = c.base) if (c.def.baseValueGlobal) return null;
-  if (lowerer.inheritsBuiltinErrorCtor(info)) return null;
+  /* A ctor-less Error subclass keeps the builtin base's constructor
+   * parameters — the (message?, options?) checked-dynamic pair the
+   * synthesized constructor forwards — so its helper constructs exactly
+   * what native `new C(...)` does. Only an explicit constructor with
+   * another shape falls through the mode check below. */
   const shapes = info.ctorParams;
   if (shapes.some((s) => s.mode !== "required" && s.mode !== "omittable")) return null;
   const name = `%island.new:${className}`;
@@ -1650,7 +1654,9 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (ts.isElementAccessExpression(expr)) {
     if (!isForeignExpr(lowerer, expr.expression)) return null;
     lowerer.usesNodeIsland = true;
-    const target = lowerer.lowerExpr(expr.expression);
+    // `(p as V)[k]`: an assertion on a handle is a view, never a conversion
+    // (the read meets the member's declared type in fromIsland below).
+    const target = lowerer.lowerExpr(stripTypeWrappers(expr.expression));
     const key = toIsland(lowerer, expr.argumentExpression);
     return fromIsland(
       lowerer,
@@ -1841,7 +1847,9 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
           stmts.push({ kind: "varDecl", localId: local.id, init, loc });
           return varRef(local.id, type, loc);
         };
-        const target = lowerer.lowerExpr(left.expression);
+        // `(p as V).k = v`: write the HANDLE the assertion views, not the
+        // asserted record the conversion would build.
+        const target = lowerer.lowerExpr(stripTypeWrappers(left.expression));
         const receiver = hold("%islandSetTarget", target, target.type);
         const key = ts.isPropertyAccessExpression(left)
           ? null
@@ -1914,9 +1922,10 @@ function islandCompoundAssign(
     stmts.push({ kind: "varDecl", localId: local.id, init, loc });
     return varRef(local.id, DYN, loc);
   };
+  // `(p as V).k op= v`: the view is erased, so the handle is the receiver.
   const target = hold(
     "%islandObj",
-    lowerer.coerceToExpected(lowerer.lowerExpr(left.expression), DYN),
+    lowerer.coerceToExpected(lowerer.lowerExpr(stripTypeWrappers(left.expression)), DYN),
   );
   const key = ts.isPropertyAccessExpression(left)
     ? null
@@ -1977,7 +1986,9 @@ function islandReceiver(
       return { value: exports };
     }
   }
-  return { value: lowerer.coerceToExpected(lowerer.lowerExpr(receiver), FOREIGN) };
+  // `(p as V).k`: the assertion is a view of `p`'s handle, not a
+  // conversion of it (the read meets the member's type in fromIsland).
+  return { value: lowerer.coerceToExpected(lowerer.lowerExpr(inner), FOREIGN) };
 }
 
 /** Whether `require(spec)` in `file` loads an island module. */

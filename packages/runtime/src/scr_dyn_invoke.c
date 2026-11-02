@@ -1949,18 +1949,15 @@ static ScrDyn *scr_dyn_disposable_stack_member_value(const char *key, size_t len
 }
 
 #ifdef SCR_ASYNC_DISPOSABLE_STACK
-/* The AsyncDisposableStack's member table, on the same terms: its unit is
- * gated on the program's own fact (scr_async_disposable_stack.c), so this
- * unit names a slot it fills when it loads, never the unit's function. The
- * class's entry and this slot are a build of their own (the asyncDisposableStack
- * column), because a static function and one more table row change this
- * unit's object: every other object model program keeps the object it had,
- * byte for byte. */
-ScrDyn *(*scr_dyn_async_disposable_stack_member)(const char *key, size_t len);
-
+/* The AsyncDisposableStack answers its members through the table its own unit
+ * builds (scr_async_disposable_stack.c), which this build names directly:
+ * this entry exists in a column only a program with that unit's fact selects,
+ * so the call always resolves, and a program without the class compiles
+ * neither the call nor the row. The column also keeps this unit's object
+ * identical for every other program, byte for byte — a static function and
+ * one more table row would change it. */
 static ScrDyn *scr_dyn_async_disposable_stack_member_value(const char *key, size_t len) {
-  ScrDyn *(*member)(const char *, size_t) = scr_dyn_async_disposable_stack_member;
-  return member ? member(key, len) : NULL;
+  return scr_async_disposable_stack_member_value(key, len);
 }
 #endif
 

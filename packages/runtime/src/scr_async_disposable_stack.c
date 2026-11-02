@@ -550,19 +550,11 @@ static const ScrDynHandleOps scr_ads_ops = {
 
 /* The member providers table (scr_dyn_invoke.c) answers
  * `AsyncDisposableStack.prototype.<member>` from this unit's table, so a
- * member read off a stack and off its prototype are one function. The
- * declaration is weak because the object model is one runtime build among
- * several and this unit is compiled for all of them; where the slot does not
- * exist, the interner answers the read. Filling it when the unit loads covers
- * a prototype read that comes before the first stack exists — exactly as the
- * DisposableStack unit fills its own slot (scr_symbol.c). */
-extern ScrDyn *(*scr_dyn_async_disposable_stack_member)(const char *key, size_t len)
-    __attribute__((weak));
-
-__attribute__((constructor)) static void scr_ads_member_hook_install(void) {
-  if (&scr_dyn_async_disposable_stack_member)
-    scr_dyn_async_disposable_stack_member = scr_async_disposable_stack_member_value;
-}
+ * member read off a stack and off its prototype are one function. That table
+ * calls scr_async_disposable_stack_member_value() directly: the row lives in
+ * the unit's own build column, which only a program with this unit's fact
+ * selects, so the call resolves where the row exists and is not compiled
+ * anywhere else. */
 
 static ScrAsyncDisposableStack *scr_ads_alloc(void) {
   static SCR_TL bool installed;
@@ -570,10 +562,6 @@ static ScrAsyncDisposableStack *scr_ads_alloc(void) {
     installed = true;
     scr_dyn_handle_install(SCR_DYNH_ASYNC_DISPOSABLE_STACK, &scr_ads_ops);
     scr_ads_arm_methods();
-    /* Builds whose startup does not run the constructor before the first
-     * stack is made reach the slot here. */
-    if (&scr_dyn_async_disposable_stack_member)
-      scr_dyn_async_disposable_stack_member = scr_async_disposable_stack_member_value;
   }
   static ScrCycType cyc_type = {&scr_ads_trace, &scr_ads_gcfree, SCR_CYC_KIND_NONE, 0};
   ScrAsyncDisposableStack *s = scr_cyc_alloc(sizeof *s, &cyc_type);

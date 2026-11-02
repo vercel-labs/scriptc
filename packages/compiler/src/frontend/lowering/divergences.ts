@@ -715,7 +715,11 @@ function identityUse(
     return undefined;
   };
   ts.walkPreorder(root, visit);
-  return found ?? shared;
+  // Both bindings are only assigned from the walk's callbacks, and the
+  // self-hosting frontend types `found ?? shared` here as `null | undefined`
+  // and refuses to lower it; two explicit returns say the same thing.
+  if (found !== null) return found;
+  return shared;
 }
 
 /** `expr as T`, possibly through `as unknown`: the viewed value and `T`. */

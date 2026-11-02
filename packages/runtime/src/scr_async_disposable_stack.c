@@ -11,10 +11,11 @@
  * The loop cannot park a C frame on wasm32, so it is a state machine whose
  * every step is one continuation, spawned after the promise it awaits
  * (scr_async_spawn_after): each continuation extracts at most one settled
- * result, disposes at most one resource, and spawns the next. A disposal
- * whose result is not a promise takes JS's one-hop non-thenable await — a
- * resolved promise awaited the same way — so every step pays exactly the
- * microtask the specification's Await costs.
+ * result, disposes at most one resource, and spawns the next. A disposal's
+ * answer goes through Await — PromiseResolve first, so a thenable adopts —
+ * while a [Symbol.dispose] fallback's own answer is never awaited, because
+ * GetDisposeMethod wraps the fallback in a promise that answers undefined.
+ * Every step pays exactly the microtask the specification's Await costs.
  *
  * Error aggregation is the sync unit's: each failure after the first is
  * wrapped in a SuppressedError over the error so far, and a single failure
@@ -268,9 +269,9 @@ static void scr_ads_record_pending(ScrAdsRun *run) {
   run->error = scr_exc_take();
 }
 
-/* A fulfilled promise whose await costs JS's one hop: the Await of a
- * non-thenable (a disposal answering a plain value, or the closing await of
- * a stack that disposed only null and undefined resources). +1. */
+/* A fulfilled promise whose await costs JS's one hop: the wrapper promise a
+ * [Symbol.dispose] fallback is awaited through, or the closing await of a
+ * stack that disposed only null and undefined resources. +1. */
 static ScrPromise *scr_ads_tick(void) {
   ScrPromise *tick = scr_promise_new();
   scr_promise_fulfill_ref(tick, (void *)scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v,
@@ -298,14 +299,18 @@ static void scr_ads_suspend(ScrAdsRun *run, ScrPromise *dep) {
 }
 
 /* One disposal: Call(method, value) — or the adopt/defer callback — with the
- * resource released afterwards. NULL with the exception pending on a throw. */
-static ScrDyn *scr_ads_dispose(ScrAdsResource *r) {
+ * resource released afterwards. NULL with the exception pending on a throw.
+ * `sync_fallback` answers whether the call ran the entry's [Symbol.dispose]
+ * fallback, whose answer the loop never awaits. */
+static ScrDyn *scr_ads_dispose(ScrAdsResource *r, bool *sync_fallback) {
   ScrDyn *result;
+  *sync_fallback = false;
   if (r->kind == SCR_ADS_USE) {
     const ScrDyn *record = r->method;
-    bool sync_fallback = record->v.arr.items[1]->v.b;
+    bool fallback = record->v.arr.items[1]->v.b;
+    *sync_fallback = fallback;
     scr_dyn_this_push_dyn(r->value);
-    result = scr_dyn_call(record->v.arr.items[0], NULL, 0, sync_fallback ? "[Symbol.dispose]" : "[Symbol.asyncDispose]");
+    result = scr_dyn_call(record->v.arr.items[0], NULL, 0, fallback ? "[Symbol.dispose]" : "[Symbol.asyncDispose]");
     scr_dyn_this_pop();
   } else {
     scr_dyn_this_push_dyn(scr_dyn_undefined());
@@ -332,20 +337,32 @@ static void scr_ads_step(ScrAdsRun *run) {
       run->needsAwait = true;
       continue;
     }
-    ScrDyn *result = scr_ads_dispose(r);
+    bool sync_fallback = false;
+    ScrDyn *result = scr_ads_dispose(r, &sync_fallback);
+    if (sync_fallback) {
+      /* GetDisposeMethod with the async hint wraps the [Symbol.dispose]
+       * fallback in a promise that answers undefined whatever the method
+       * returns — a promise it returns is never awaited — and rejects with
+       * the method's throw. DisposeResources awaits that wrapper, so every
+       * fallback costs exactly one hop. */
+      scr_dyn_release(result);
+      scr_ads_record_pending(run);
+      run->hasAwaited = true;
+      scr_ads_suspend(run, scr_ads_tick());
+      return;
+    }
     if (!result) {
       scr_ads_record_pending(run);
       continue;
     }
     run->hasAwaited = true;
-    if (result->kind == SCR_DYN_PROMISE) {
-      ScrPromise *dep = scr_promise_retain(result->v.promise);
-      scr_dyn_release(result);
-      scr_ads_suspend(run, dep);
-      return;
-    }
+    /* Await(result) is PromiseResolve over the answer: a thenable adopts
+     * through its resolve job (a throwing `then` read rejects), a native
+     * promise is itself, and any other value fulfills — one hop, as the
+     * non-thenable await costs. */
+    ScrPromise *dep = scr_dyn_promise_resolve(result, NULL);
     scr_dyn_release(result);
-    scr_ads_suspend(run, scr_ads_tick());
+    scr_ads_suspend(run, dep);
     return;
   }
   if (run->needsAwait && !run->hasAwaited) {

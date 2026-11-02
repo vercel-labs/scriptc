@@ -47,7 +47,12 @@ import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
-import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
+import {
+  inOperatorTypeError,
+  isBuiltinIdentityToken,
+  isPrimitiveValueType,
+  throwAfterEach,
+} from "../primitive-throws.js";
 import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
@@ -1863,7 +1868,7 @@ export function lowerInExpression(
   // that reaches here, so only the receiver's own evaluation remains. The
   // message spells the receiver's value, so a receiver the IR cannot
   // re-evaluate (`receiver()`) evaluates once into a hidden local.
-  if (isPrimitiveValueType(recv.type)) {
+  if (isPrimitiveValueType(recv.type) && !isBuiltinIdentityToken(lowerer, expr.right, recv)) {
     if (isUnitType(recv.type) || isSafeToRepeat(recv)) {
       return throwAfterEach([recv], inOperatorTypeError(lowerer, key, recv, BOOL, loc), loc);
     }

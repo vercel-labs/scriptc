@@ -4,8 +4,11 @@ import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
   CAUGHT,
+  DYN,
   F64,
+  STRING,
   VOID,
+  arrayOf,
   type IrExpr,
   type IrParam,
   type IrStmt,
@@ -55,17 +58,30 @@ export function lowerArrayFromAsyncCall(
   if (resultT?.kind !== "promise" || resultT.inner.kind !== "array")
     lowerer.badType(call, lowerer.typeOf(call));
   const outT = resultT.inner;
-  const source = lowerer.lowerExpr(args[0]!);
+  let source = lowerer.lowerExpr(args[0]!);
   let step: SourceStep;
   if (source.type.kind === "array") {
     step = arraySourceStep(lowerer, args[0]!, source.type.elem);
   } else if (source.type.kind === "generator" && source.type.async) {
     step = generatorSourceStep(lowerer, args[0]!, source.type);
+  } else if (source.type.kind === "string") {
+    // A string iterates its code points. The string is immutable, so the
+    // array of code points drives the same live walk an array source takes.
+    source = {
+      kind: "libCall",
+      fn: "str.codePoints",
+      args: [source],
+      type: arrayOf(STRING),
+      loc,
+    };
+    step = arraySourceStep(lowerer, args[0]!, STRING);
+  } else if (source.type.kind === "set") {
+    step = setSourceStep(lowerer, args[0]!, source.type);
   } else {
     lowerer.noLowering(
       `Array.fromAsync over a value of type '${lowerer.checker.typeToString(lowerer.typeOf(args[0]!))}'`,
       args[0]!,
-      "an array or an async generator is the supported source",
+      "an array, a string, a Set, or an async generator is the supported source",
     );
   }
   let mapper: (IrExpr & { type: IrType & { kind: "func" } }) | null = null;
@@ -465,6 +481,136 @@ function arraySourceStep(lowerer: Lowerer, node: ts.Expression, elem: IrType): S
       };
       return [
         { kind: "varDecl", localId: arr.id, init: source, loc },
+        { kind: "varDecl", localId: needsClose.id, init: boolLit(false, loc), loc },
+        { kind: "varDecl", localId: value.id, init: null, loc },
+        {
+          kind: "tryCatch",
+          tryBody: [loop],
+          catchBody: null,
+          catchLocalId: null,
+          finallyBody: [
+            {
+              kind: "if",
+              cond: varRef(needsClose.id, BOOL, loc),
+              then: [hop(loc)],
+              else_: null,
+              loc,
+            },
+          ],
+          loc,
+        },
+      ];
+    },
+  };
+}
+
+/** The `for await` Set loop: each live entry of the collection's native
+ * iterator is an element, awaited through the async-from-sync form (two
+ * hops per non-promise element, two before the final done result, and one
+ * to close the iterator when the body completes abruptly — the array
+ * source's timing). The walk stays live: the element is read through the
+ * collection's typed entry intrinsic at the runtime iterator's current
+ * index, so an entry the mapping function adds is seen and a deleted one
+ * is skipped, exactly as Node's Set iterator behaves. */
+function setSourceStep(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  collT: IrType & { kind: "set" },
+): SourceStep {
+  const elem = collT.elem;
+  if (!nonThenable(lowerer, elem)) {
+    lowerer.noLowering(
+      "Array.fromAsync over a Set whose values may be promises or thenables",
+      node,
+      "use a Set of values or an array of promises",
+    );
+  }
+  return {
+    valueT: elem,
+    loop(source, append, loc) {
+      const coll = lowerer.declareHiddenLocal("%fromAsyncSet", collT);
+      const native = lowerer.declareHiddenLocal("%fromAsyncIterator", DYN);
+      const index = lowerer.declareHiddenLocal("%fromAsyncEntry", F64);
+      index.mutable = true;
+      const value = lowerer.declareHiddenLocal("%fromAsyncValue", elem);
+      value.mutable = true;
+      const needsClose = lowerer.declareHiddenLocal("%fromAsyncNeedsClose", BOOL);
+      needsClose.mutable = true;
+      const collRef = varRef(coll.id, collT, loc);
+      const indexRef = varRef(index.id, F64, loc);
+      const setClose = (on: boolean): IrStmt => ({
+        kind: "assign",
+        localId: needsClose.id,
+        value: boolLit(on, loc),
+        loc,
+      });
+      const loop: IrStmt = {
+        kind: "while",
+        cond: boolLit(true, loc),
+        body: [
+          setClose(false),
+          {
+            kind: "assign",
+            localId: index.id,
+            value: {
+              kind: "libCall",
+              fn: "dyn.collectionIteratorIndex",
+              args: [varRef(native.id, DYN, loc)],
+              type: F64,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "if",
+            cond: {
+              kind: "bin",
+              op: "<",
+              left: indexRef,
+              right: numLit(0, loc),
+              type: BOOL,
+              loc,
+            },
+            then: [hop(loc), hop(loc), { kind: "break", loc }],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "assign",
+            localId: value.id,
+            value: {
+              kind: "setIntrinsic",
+              method: "iterKey",
+              receiver: collRef,
+              args: [indexRef],
+              type: elem,
+              loc,
+            },
+            loc,
+          },
+          hop(loc),
+          hop(loc),
+          setClose(true),
+          ...append(varRef(value.id, elem, loc)),
+        ],
+        loc,
+      };
+      return [
+        { kind: "varDecl", localId: coll.id, init: source, loc },
+        {
+          kind: "varDecl",
+          localId: native.id,
+          init: {
+            kind: "dynInvoke",
+            recv: lowerer.coerceToExpected(collRef, DYN),
+            method: "values",
+            calleeName: "set.values",
+            args: [],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
         { kind: "varDecl", localId: needsClose.id, init: boolLit(false, loc), loc },
         { kind: "varDecl", localId: value.id, init: null, loc },
         {

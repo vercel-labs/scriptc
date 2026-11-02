@@ -564,9 +564,33 @@ static inline void scr_mem_free(void *p) {
   SCR_SA_FREE_FOREIGN(p);
 }
 #else
-static inline void *scr_mem_alloc(size_t n) { return malloc(n); }
-static inline void *scr_mem_calloc(size_t n) { return calloc(1, n); }
-static inline void scr_mem_free(void *p) { free(p); }
+#if defined(SCR_RC_AUDIT) && defined(SCR_LIB)
+/* A sanitized library's trap path hands the heap a longjmped-over entry
+ * abandons to LeakSanitizer (scr_library.c), which needs every live block
+ * addressable; the audit lane's allocation funnel is the only place that
+ * can see them all. Both hooks are no-ops outside library audit builds. */
+void scr_library_heap_note_alloc(void *p);
+void scr_library_heap_note_free(void *p);
+#define SCR_LIBRARY_HEAP_ALLOC(p) scr_library_heap_note_alloc(p)
+#define SCR_LIBRARY_HEAP_FREE(p) scr_library_heap_note_free(p)
+#else
+#define SCR_LIBRARY_HEAP_ALLOC(p) ((void)(p))
+#define SCR_LIBRARY_HEAP_FREE(p) ((void)(p))
+#endif
+static inline void *scr_mem_alloc(size_t n) {
+  void *p = malloc(n);
+  SCR_LIBRARY_HEAP_ALLOC(p);
+  return p;
+}
+static inline void *scr_mem_calloc(size_t n) {
+  void *p = calloc(1, n);
+  SCR_LIBRARY_HEAP_ALLOC(p);
+  return p;
+}
+static inline void scr_mem_free(void *p) {
+  SCR_LIBRARY_HEAP_FREE(p);
+  free(p);
+}
 #endif
 
 /* Inline twins of scr_cyc_alloc/scr_cyc_free for hot runtime allocation

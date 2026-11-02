@@ -426,6 +426,44 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       const key = lowerer.lowerExprExpecting(expr.argumentExpression, DYN);
       return lowerer.maybeNarrow({ kind: "dynKeyGet", key, value: boxed, type: DYN, loc }, expr);
     }
+    if (
+      receiver &&
+      (receiver.type.kind === "set" || receiver.type.kind === "map") &&
+      lowerer.dynConvertible(receiver.type)
+    ) {
+      // `new Set()[name]` / `m[k]` on a Set or Map instance: JavaScript
+      // reads the property the key names (size, a method object, or
+      // undefined) — never a collection entry. The checker's Set/Map type
+      // describes no such result, so the read stays checked-dynamic: the
+      // native collection boxes into the checked-dynamic tree as a handle
+      // that answers member reads (and fences a method value that has no
+      // lowering).
+      //
+      // The key keeps its VALUE for a dynamic, symbol or dyn-convertible
+      // union key: the checked-dynamic computed-key read applies
+      // ToPropertyKey itself (a symbol reads its symbol property, the
+      // well-known symbols answer as the collection's prototype does), so
+      // stringifying the key here would make `s[key]` throw on a symbol
+      // instead of reading the property JavaScript names.
+      const loc = locOf(expr);
+      const rawKey = lowerer.lowerExpr(expr.argumentExpression);
+      const key =
+        rawKey.type.kind === "dyn" ||
+        rawKey.type.kind === "symbol" ||
+        (rawKey.type.kind === "union" && lowerer.dynConvertible(rawKey.type))
+          ? lowerer.coerceToExpected(rawKey, DYN)
+          : lowerRecordPropertyKey(lowerer, rawKey, expr.argumentExpression);
+      return lowerer.maybeNarrow(
+        {
+          kind: "dynKeyGet",
+          value: lowerer.coerceInto(expr.expression, receiver, DYN),
+          key,
+          type: DYN,
+          loc,
+        },
+        expr,
+      );
+    }
     if (receiver?.type.kind === "array" || receiver?.type.kind === "bytes")
       receiverIr = receiver.type;
     if (receiver?.type.kind === "union") {
@@ -513,7 +551,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         key:
           index.type.kind === "f64"
             ? { kind: "toString", operand: index, type: STRING, loc: locOf(expr) }
-            : index,
+            : lowerer.coerceToExpected(index, DYN),
         type: DYN,
         loc: locOf(expr),
       };
@@ -1054,7 +1092,11 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(arr, DYN),
-      key: index,
+      // A non-f64 key (a JavaScript file's `arr[true]`, an `any` index) is a
+      // dynamic key: the property read below the IR is dynamic, and the
+      // class member dispatch helpers take a dynamic key — never the bool or
+      // record value the checker typed here.
+      key: lowerer.coerceToExpected(index, DYN),
       type: DYN,
       loc: locOf(expr),
     };

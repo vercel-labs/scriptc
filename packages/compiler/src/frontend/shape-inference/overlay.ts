@@ -897,27 +897,38 @@ export function planShapeOverlay(
       // overlapping records, which the lowering width-coerces). A module-level
       // object literal of the program is typed as well: the lowering keeps
       // such a binding dynamic for its identity unless the overlay types it.
+      // Every declarator of a statement is typed: a consumer of a literal in
+      // `const a = {…}, b = {…}` would otherwise see a record while the
+      // lowering kept that binding dynamic, a copy of it.
       const moduleLevel = node.parent === sf;
       if (
         ts.isVariableStatement(node) &&
-        (!moduleLevel || programFile || process.env["SCRIPTC_SHAPE_OVERLAY_MODULE_VARS"] === "1") &&
-        node.declarationList.declarations.nodes.length === 1
+        (!moduleLevel || programFile || process.env["SCRIPTC_SHAPE_OVERLAY_MODULE_VARS"] === "1")
       ) {
-        const d = node.declarationList.declarations.nodes[0]!;
-        const init = d.initializer;
-        if (
-          ts.isIdentifier(d.name) &&
-          init !== undefined &&
-          (!literalInitializer(init) ||
-            (moduleLevel && programFile && ts.isObjectLiteralExpression(init)))
-        ) {
+        const declarations = node.declarationList.declarations.nodes;
+        for (const d of declarations) {
+          const init = d.initializer;
+          if (
+            !ts.isIdentifier(d.name) ||
+            init === undefined ||
+            (literalInitializer(init) &&
+              !(moduleLevel && programFile && ts.isObjectLiteralExpression(init)))
+          )
+            continue;
+          // A statement-level `@type` applies to the first declarator only,
+          // as the checker reads it: the later ones have their own trivia.
+          const documented = d === declarations[0] ? packageDocOf(node).type : declTypeDoc(d, sf);
           const t = typeOf(analysis.declValues(d), false, 0);
           if (process.env["SCRIPTC_DEBUG_SHAPE_OVERLAY_WHY"] === d.name.text)
             process.stderr.write(
               `[shape-overlay-why] ${d.name.text}@${sf.getLineAndCharacterOfPosition(ts.tokenStartOfNode(d)).line + 1}: ${t} <- ${[...analysis.declValues(d)].map((a) => `${a.kind}:${a.label}`).join(" | ")}\n`,
             );
-          if (t !== null && !packageDocOf(node).type) {
-            annotate(ts.tokenStartOfNode(node), `@type {${t}}`);
+          if (t !== null && !documented) {
+            // The statement's first declarator takes the statement-level tag
+            // (the only position the checker reads it from); a later one
+            // takes a tag in its own leading trivia.
+            const first = d === declarations[0];
+            annotate(ts.tokenStartOfNode(first ? node : d), `@type {${t}}`);
             typedDecls.add(d);
           }
         }
@@ -1247,6 +1258,17 @@ function packageDocOf(node: ts.Node): PackageDoc {
     type: /@type\b/.test(text),
     whole: /@(?:type|template|this|overload|callback)\b/.test(text),
   };
+}
+
+/** Whether the declaration's own leading trivia holds a `@type` JSDoc that
+ * is not the overlay's. A statement-level tag belongs to the statement's
+ * first declarator only, so later declarators of a list are asked about
+ * their trivia alone. */
+function declTypeDoc(decl: ts.VariableDeclaration, sf: ts.SourceFile): boolean {
+  const text = sf.text.slice(decl.pos, ts.tokenStartOfNode(decl));
+  for (const m of text.matchAll(/\/\*\*[\s\S]*?\*\//g))
+    if (!m[0].includes(MARK) && /@type\b/.test(m[0])) return true;
+  return false;
 }
 
 /** A comment range's JSDoc type tags made plain text (the range is

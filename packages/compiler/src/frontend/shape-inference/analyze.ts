@@ -4136,8 +4136,9 @@ class Analyzer {
 
   /** The values of `l + r`: a string when either operand may convert to
    * one (a string, an object, an unknown value), a number when both may
-   * convert to numbers (numbers, booleans, null, undefined), and a bigint
-   * when both may be bigints. */
+   * convert to numbers (numbers, booleans, null, undefined, and objects,
+   * whose `valueOf` or `Symbol.toPrimitive` may yield one), and a bigint
+   * when both may yield bigints. */
   plusResult(l: number, r: number): number {
     const n = this.newNode();
     const numeric = [false, false];
@@ -4147,17 +4148,23 @@ class Analyzer {
       (a: Atom): void => {
         const top = a.kind === "top";
         const prim = a.kind === "prim" ? a.label : null;
+        // An object (a literal, an instance, a dictionary) converts with
+        // ToPrimitive, which calls the program's own `valueOf` or
+        // `Symbol.toPrimitive` and may yield a number or a bigint; only its
+        // default conversion is a string.
+        const object = a.kind === "object" || a.kind === "instance" || a.kind === "dictionary";
         if (top || prim === null || prim === "string" || prim === "symbol")
           this.add(n, this.prim("string"));
         if (
           top ||
+          object ||
           prim === "number" ||
           prim === "boolean" ||
           prim === "null" ||
           prim === "undefined"
         )
           numeric[i] = true;
-        if (top || prim === "bigint") big[i] = true;
+        if (top || object || prim === "bigint") big[i] = true;
         if (numeric[0] && numeric[1]) this.add(n, this.prim("number"));
         if (big[0] && big[1]) this.add(n, this.prim("bigint"));
       };

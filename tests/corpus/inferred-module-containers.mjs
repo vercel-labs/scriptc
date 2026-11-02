@@ -48,3 +48,12 @@ console.log(history.length, history[history.length - 1] === last, last.x, last.y
 console.log(cursors.map((c) => (c instanceof Marker ? `${c.label}:${c.x}` : `${c.x},${c.y}`)).join(" "));
 settings.scale = 3;
 console.log(record(cursors[1]).x, history.indexOf(last), JSON.stringify(settings));
+// Literals declared together in one statement are typed like separate ones:
+// the lowering keeps each dynamic, so a function that takes one sees the
+// same object, not a copy.
+const firstBox = { hits: 0 }, secondBox = { hits: 0 };
+function bump(box) {
+  box.hits += 1;
+  return box;
+}
+console.log(bump(firstBox) === firstBox, bump(secondBox) === secondBox, firstBox.hits, secondBox.hits);

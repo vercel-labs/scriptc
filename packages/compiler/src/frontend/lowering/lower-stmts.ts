@@ -7516,24 +7516,33 @@ function jsObjectBindingExpands(
   return expands;
 }
 
+/** The source text that leads a declarator in its statement: everything
+ * before the statement for the first declarator, and from the previous
+ * declarator's end for the others. The checker applies a statement-level
+ * JSDoc to the first declarator alone, so a later declarator's own tag is
+ * the only one that speaks for it. */
+function declaratorLeadingText(decl: ts.VariableDeclaration): string | null {
+  const list = decl.parent;
+  if (list === undefined || !ts.isVariableDeclarationList(list)) return null;
+  const statement = list.parent;
+  if (statement === undefined) return null;
+  const declarations = list.declarations.nodes;
+  const index = declarations.indexOf(decl);
+  const from = index > 0 ? declarations[index - 1]!.end : statement.pos;
+  return ts.getSourceFileOfNode(decl).text.slice(from, ts.tokenStartOfNode(decl));
+}
+
 export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
-  const statement = decl.parent?.parent;
-  return (
-    !!statement &&
-    /@type\b/.test(
-      ts.getSourceFileOfNode(decl).text.slice(statement.pos, ts.tokenStartOfNode(decl)),
-    )
-  );
+  const text = declaratorLeadingText(decl);
+  return text !== null && /@type\b/.test(text);
 }
 
 /** Whether shape inference typed the declaration (an `@type` tag in a
  * comment the overlay wrote): the analysis proved the value never reaches
  * code it does not model, so the typed representation keeps its identity. */
 export function hasShapeOverlayType(decl: ts.VariableDeclaration): boolean {
-  const statement = decl.parent?.parent;
-  if (!statement) return false;
-  const text = ts.getSourceFileOfNode(decl).text.slice(statement.pos, ts.tokenStartOfNode(decl));
-  return /\/\*\*[^*]*@type\b[^*]*@scriptcShape\b/.test(text);
+  const text = declaratorLeadingText(decl);
+  return text !== null && /\/\*\*[^*]*@type\b[^*]*@scriptcShape\b/.test(text);
 }
 
 /** The assignments to a declaration's binding in its function (or file),

@@ -55,6 +55,7 @@ import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
   activeNodeIslands,
+  islandSubclassCount,
   isForeignType,
   setActiveNodeIslands,
   type NodeIslandSet,
@@ -1782,7 +1783,7 @@ export function staticImportNamespaceType(
       !isCjsJsFile(source, lowerer.program) &&
       lowerer.moduleOrder.includes(source)
     ) {
-      moduleId = `file:${tsgoPath(resolve(source.fileName))}`;
+      moduleId = `file:${lowerer.pathOf(source)}`;
     }
   }
   if (moduleId === null) return null;
@@ -5305,9 +5306,7 @@ export class Lowerer {
     const islands = this.nodeIslands;
     const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
-      ...(islands !== null
-        ? { foreignType: (t: ts.Type) => isForeignType(islands, t, this.checker) }
-        : {}),
+      ...(islands !== null ? { foreignType: (t: ts.Type) => this.foreignType(t) } : {}),
       checker: this.checker,
       positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,
@@ -5421,9 +5420,7 @@ export class Lowerer {
       isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
-      isExternalTypeFile: (sf) =>
-        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))) ||
-        isDeclBoundaryFile(sf.fileName),
+      isExternalTypeFile: this.isExternalTypeFile,
       typeMemo: this.typeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
@@ -5612,7 +5609,7 @@ export class Lowerer {
         !isCjsJsFile(decl, this.program) &&
         this.moduleOrder.includes(decl)
       ) {
-        return `file:${tsgoPath(resolve(decl.fileName))}`;
+        return `file:${this.pathOf(decl)}`;
       }
       if (ts.isModuleDeclaration(decl) && ts.isStringLiteral(decl.name)) {
         const builtin = canonicalBuiltinModule(decl.name.text);
@@ -16784,6 +16781,60 @@ export class Lowerer {
   /** isStdlibFile's answer for each source file it was asked about: a file's
    * name and library status do not change while the program lowers. */
   private readonly stdlibFiles = new Map<ts.SourceFile, boolean>();
+
+  /** Whether the file holds declarations of an explicitly mapped external
+   * type surface (coverage's --external-types) or of the declaration-typed
+   * boundary's generated types. Both are fixed for one Lowerer, and the
+   * mapper asks per type. */
+  readonly isExternalTypeFile = (sf: ts.SourceFile): boolean => {
+    let external = this.externalTypeFiles.get(sf);
+    if (external === undefined) {
+      external =
+        this.externalTypeSpecifiersByFile.has(this.pathOf(sf)) || isDeclBoundaryFile(sf.fileName);
+      this.externalTypeFiles.set(sf, external);
+    }
+    return external;
+  };
+  /** isExternalTypeFile's answer per source file (see there). */
+  private readonly externalTypeFiles = new Map<ts.SourceFile, boolean>();
+
+  /** tsgoPath(resolve(sf.fileName)): the path spelling the module tables
+   * key by. A source file's path cannot change while the program lowers. */
+  readonly pathOf = (sf: ts.SourceFile): string => {
+    let path = this.filePaths.get(sf);
+    if (path === undefined) this.filePaths.set(sf, (path = tsgoPath(resolve(sf.fileName))));
+    return path;
+  };
+  private readonly filePaths = new Map<ts.SourceFile, string>();
+
+  /** Whether values of `type` are island handles (boundary.ts's
+   * isForeignType). The island set, the checker and the program are fixed for
+   * one Lowerer, so the answer is a function of the checker type alone, and
+   * the type mapper asks it on every mapType call, memo hits included. The
+   * one input that can change while a Lowerer runs is the island-subclass
+   * registry (splitFiles registers native subclasses of island classes, and
+   * its heritage check maps a type), so a new registration drops every
+   * answer that predates it. */
+  private foreignType(type: ts.Type): boolean {
+    const islands = this.nodeIslands;
+    if (islands === null) return false;
+    const subclasses = islandSubclassCount();
+    if (this.foreignTypeSubclasses !== subclasses) {
+      this.foreignTypeAnswers.clear();
+      this.foreignTypeSubclasses = subclasses;
+    }
+    const id = (type as { id?: number }).id;
+    if (id === undefined) return isForeignType(islands, type, this.checker);
+    const known = this.foreignTypeAnswers.get(id);
+    if (known !== undefined) return known;
+    const foreign = isForeignType(islands, type, this.checker);
+    this.foreignTypeAnswers.set(id, foreign);
+    return foreign;
+  }
+  /** foreignType's answers, by checker type id: one checker, one program. */
+  private readonly foreignTypeAnswers = new Map<number, boolean>();
+  /** The island-subclass count foreignTypeAnswers was computed at. */
+  private foreignTypeSubclasses = -1;
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);

@@ -111,6 +111,10 @@ test.for([
   "class C { x = await2; }\nnew C();",
   "class C { static { var o = { await: 1 }; console.log(o.await); } }\nnew C();",
   "class C { await() { return 1; } }\nconsole.log(new C().await());",
+  // A member's computed name is evaluated where the member is defined, so an
+  // async method's own [Await] does not reach its name.
+  "function outer() { var await = 'm'; class C { async [await]() {} } return new C(); }\nconsole.log(outer());",
+  "function outer() { var await = 'k'; return { async [await]() { return 1; } }; }\nconsole.log(outer());",
   // `let`/`const` at the top level of a script are ordinary declarations:
   // the Using bit is what SC0013 reads, and Const carries its own bit.
   "const a = 1;\nlet b = 2;\nconsole.log(a + b);",

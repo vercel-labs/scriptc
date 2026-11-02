@@ -784,7 +784,14 @@ function awaitIsReservedAt(node: ts.Node, isModuleCode: (sf: ts.SourceFile) => b
       if (isAsyncFunction(n)) return true;
       continue;
     }
-    if (ts.isFunctionLike(n)) return isAsyncFunction(n);
+    if (ts.isFunctionLike(n)) {
+      // A computed member name is evaluated in the enclosing context: the
+      // method's own [Await] applies to its parameter list and its body, not
+      // to the name that puts the member on the object or class.
+      const name = (n as { name?: ts.PropertyName }).name;
+      if (name !== undefined && ts.isComputedPropertyName(name) && isWithin(name, child)) continue;
+      return isAsyncFunction(n);
+    }
     if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) continue;
   }
   return false;

@@ -2,7 +2,7 @@
 // class static block, and nowhere else: a method's own arguments, a function
 // expression's, and a computed element name are all ordinary JavaScript.
 class Box {
-  static [String(1)] = "named";
+  static ["named"] = "named";
   field = function () {
     return arguments.length;
   };

@@ -366,3 +366,55 @@ test("an array of nodes keeps the count", () => {
   expect([...plan.classes]).toEqual([]);
   expect(plan.rejected.get("Node")?.length).toBeGreaterThan(0);
 });
+
+test("a node a function only builds inside an expression keeps the count", () => {
+  // `show` names no tree local and returns nothing but a number, yet its
+  // temporary expression hands a freshly built node to a dynamic value. The
+  // function must still be walked, because the lowering frees that node
+  // where the statement ends.
+  const mod = tree();
+  mod.functions.push(
+    fn("show", [], F64_T, [
+      {
+        kind: "exprStmt",
+        expr: { kind: "dynFrom", value: construct(nil(), nil()), type: { kind: "dyn" }, loc },
+        loc,
+      },
+      ret({ kind: "numLit", value: 1, type: F64_T, loc }),
+    ]),
+  );
+  const plan = planTreeClasses(mod, FACTS);
+  expect([...plan.classes]).toEqual([]);
+  expect(plan.rejected.get("Node")?.[0]).toContain("dynFrom expression holds one");
+});
+
+test("a local both branches moved is not read after the join", () => {
+  // Each branch hands the parameter to a consuming callee, so the binding
+  // holds nothing on either path; a read after the `if` reads a slot the
+  // lowering cleared on both.
+  const mod = tree();
+  const hand = (): IrStmt => ({
+    kind: "exprStmt",
+    expr: call("keep", [at("t.0")], { kind: "void" }),
+    loc,
+  });
+  mod.functions.push(
+    fn("keep", [param("k.0", NODE, true)], { kind: "void" }, []),
+    fn("twice", [param("t.0", NODE)], F64_T, [
+      {
+        kind: "if",
+        cond: { kind: "boolLit", value: true, type: { kind: "bool" }, loc },
+        then: [hand()],
+        else_: [hand()],
+        loc,
+      },
+      hand(),
+      ret({ kind: "numLit", value: 0, type: F64_T, loc }),
+    ]),
+  );
+  const plan = planTreeClasses(mod, FACTS);
+  expect([...plan.classes]).toEqual([]);
+  expect(plan.rejected.get("Node")).toEqual(
+    expect.arrayContaining([expect.stringContaining("local t.0 is used after it was moved")]),
+  );
+});

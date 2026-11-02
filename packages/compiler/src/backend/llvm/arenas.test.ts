@@ -19,6 +19,11 @@ async function llvmFor(source: string): Promise<string> {
   }
 }
 
+/** One emitted function, from its definition line through the closing brace. */
+function functionBody(llvm: string, name: string): string {
+  return new RegExp(`^define [^\\n]*@${name}\\([^\\n]*\\n[\\s\\S]*?^}`, "m").exec(llvm)?.[0] ?? "";
+}
+
 /** The bodies of the module's arena-aware constructors. */
 function arenaConstructors(llvm: string): string[] {
   return [...llvm.matchAll(/^define internal ptr @[^(]*\.r\(\)[^\n]*\n[\s\S]*?^}/gm)].map(
@@ -215,6 +220,89 @@ console.log(total);
   expect(llvm).toMatch(/@scr_arena_open\(ptr %[\w.]+, i32 0\)/);
   expect(llvm).not.toContain("its nodes are the arena's");
   expect(llvm).not.toMatch(/@sc_new_Node\.r\(\)/);
+  // The teardown frees the segment it built, which ends with the block the
+  // last node freed, so the free list takes the chain's result rather than
+  // the head this iteration began with.
+  const destroy = functionBody(llvm, "sc_release_Node_destroy_it");
+  expect(destroy).toMatch(/^it\.done:\n {2}%sgf\.none = icmp eq ptr %it\.leaf\.h, null/m);
+  expect(destroy.slice(destroy.indexOf("it.done:"))).not.toContain("%it.ha");
+});
+
+test("a one-child heap tree chains its last freed block into the segment it frees", async () => {
+  // A cell holds one nullable child, so its destroy walks the subtree without
+  // the worklist a two-child node needs. The string chain keeps the group
+  // open, so the class keeps the heap path and the walking teardown.
+  const llvm = await llvmFor(`
+class Cell {
+  next: Cell | null;
+  constructor(next: Cell | null) {
+    this.next = next;
+  }
+}
+function cell(n: number): Cell {
+  if (n === 0) return new Cell(null);
+  return new Cell(cell(n - 1));
+}
+function cells(c: Cell): number {
+  if (c.next === null) return 1;
+  return 1 + cells(c.next);
+}
+interface Item {
+  label: string;
+  next: Item | null;
+}
+function chain(labels: string[], n: number): Item {
+  if (n === 0) return { label: labels[0]!, next: null };
+  return { label: labels[n % labels.length]!, next: chain(labels, n - 1) };
+}
+function length(item: Item): number {
+  if (item.next === null) return item.label.length;
+  return item.label.length + length(item.next);
+}
+const labels = ["a", "bb"];
+let total = 0;
+for (let i = 0; i < 4; i++) total += cells(cell(i + 1)) + length(chain(labels, 5 + i));
+console.log(total);
+`);
+  // Eight bytes: one child and no count word.
+  expect(llvm).toContain("%sc_o_Cell = type { ptr }");
+  const destroy = functionBody(llvm, "sc_release_Cell_destroy_it");
+  expect(destroy).toMatch(/^it\.done:\n {2}%sgf\.none = icmp eq ptr %it\.ch\.h, null/m);
+  expect(destroy.slice(destroy.indexOf("it.done:"))).not.toContain("%it.ha");
+});
+
+test("a node a function builds inside a temporary expression keeps the counted layout", async () => {
+  // `b.value = build(2).left` moves a node no local ever named. The class has
+  // to keep the counted layout rather than reach the lowering, which has no
+  // record of a transfer there.
+  const llvm = await llvmFor(`
+class Node {
+  left: Node | null;
+  right: Node | null;
+  constructor(left: Node | null, right: Node | null) {
+    this.left = left;
+    this.right = right;
+  }
+}
+function build(depth: number): Node {
+  if (depth === 0) return new Node(null, null);
+  return new Node(build(depth - 1), build(depth - 1));
+}
+class Box {
+  value: unknown;
+  constructor(value: unknown) {
+    this.value = value;
+  }
+}
+function probe(): number {
+  const b = new Box(0);
+  b.value = build(2).left;
+  return 1;
+}
+console.log(probe());
+`);
+  expect(llvm).toContain("%sc_o_Node = type { i64, ptr, ptr }");
+  expect(llvm).not.toContain("(no count: a tree)");
 });
 
 test("a class a method can observe keeps its count word in the arena", async () => {

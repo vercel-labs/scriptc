@@ -320,7 +320,16 @@ class LinearUse {
     this.fn = fn;
     this.treeLocals.clear();
     for (const local of fn.locals) if (this.tree(local.type)) this.treeLocals.set(local.id, local);
-    if (this.treeLocals.size === 0 && !this.tree(fn.returnType)) return;
+    // A function with no tree local and no tree result can still build or
+    // read a node inside an expression; walk it when the body mentions the
+    // class so the temporary rules reject the class instead of letting the
+    // lowering copy a value this analysis never saw moved.
+    if (
+      this.treeLocals.size === 0 &&
+      !this.tree(fn.returnType) &&
+      !fn.body.some((stmt) => this.holdsTree(stmt))
+    )
+      return;
     if (fn.generator !== undefined) {
       this.fail("a generator holds it");
       return;
@@ -501,8 +510,10 @@ class LinearUse {
   }
 
   /** Branch or loop merge: the state of every local that existed before the
-   * region must be the same on every path out of it. Locals the region
-   * declared are scoped to it (each iteration allocates a fresh object). */
+   * region must be the same on every path out of it. The agreed state becomes
+   * the state after the region, so a local both branches moved stays moved.
+   * Locals the region declared are scoped to it (each iteration allocates a
+   * fresh object). */
   private join(
     before: Map<string, LocalState>,
     a: Map<string, LocalState>,
@@ -511,7 +522,10 @@ class LinearUse {
     for (const [id, was] of before) {
       const left = a.get(id) ?? was;
       const right = b.get(id) ?? was;
-      if (left === right) continue;
+      if (left === right) {
+        before.set(id, left);
+        continue;
+      }
       return this.fail(`local ${id} is transferred on only one path`) !== null;
     }
     return true;

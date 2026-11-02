@@ -2107,7 +2107,7 @@ export function treeTeardownDefinitions(
       ...chain("it.ch", "%it.k", "it.freed"),
       `  %it.nn = icmp ne ptr %it.v0, null`,
       `  br i1 %it.nn, label %it.node, label %it.done`,
-      ...done("%it.ha", "%it.ta"),
+      ...done("%it.ch.h", "%it.ch.t"),
       ...wrappers,
     ];
   const [f0, f1] = fields as [number, number];
@@ -2161,7 +2161,7 @@ export function treeTeardownDefinitions(
     `  %it.en = load ptr, ptr %it.pe`,
     ...chain("it.popk", "%it.st", "it.popk", "%it.leaf.h", "%it.leaf.t"),
     `  br label %it.node`,
-    ...done("%it.ha", "%it.ta"),
+    ...done("%it.leaf.h", "%it.leaf.t"),
     `define internal void @${destroy}_one(ptr %o) ${FN_ATTRS} {`,
     `entry:`,
     `  %one.f0 = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f0}`,

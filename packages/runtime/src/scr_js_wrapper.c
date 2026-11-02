@@ -392,6 +392,51 @@ ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor) {
   return scr_dyn_retain(scr_js_wrapper_prototype(SCR_JS_WRAPPER_BOOLEAN, constructor));
 }
 
+/* The prototype object the intrinsic table answers for `id` (+1), without
+ * members: the table's fill defines them. Built on first use and shared with
+ * `new String/Number/Boolean(v)`, so one intrinsic has one object, and the
+ * object is a wrapper of "", 0 or false, which its members read as the
+ * receiver's [[PrimitiveValue]] (t262-da A2). */
+ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id) {
+  int kind = SCR_JS_WRAPPER_BOOLEAN;
+  if (strcmp(id, "String.prototype") == 0) kind = SCR_JS_WRAPPER_STRING;
+  if (strcmp(id, "Number.prototype") == 0) kind = SCR_JS_WRAPPER_NUMBER;
+  if (scr_js_wrapper_prototypes[kind]) return scr_dyn_retain(scr_js_wrapper_prototypes[kind]);
+  scr_js_wrapper_register_cleanup();
+  ScrDyn *primitive;
+  if (kind == SCR_JS_WRAPPER_STRING) {
+    ScrStr *empty = scr_str_new("", 0);
+    primitive = scr_dyn_new_str(empty);
+    scr_str_release(empty);
+  } else {
+    primitive = kind == SCR_JS_WRAPPER_NUMBER ? scr_dyn_new_num(0) : scr_dyn_new_bool(false);
+  }
+  ScrDyn *prototype = scr_js_wrapper_object(kind, primitive);
+  scr_dyn_release(primitive);
+  scr_js_wrapper_prototypes[kind] = prototype;
+  return scr_dyn_retain(prototype);
+}
+
+/* thisStringValue / thisNumberValue / thisBooleanValue for a caller that is
+ * not `scr_js_wrapper_this_value`: the primitive `kind` that `value` is, or
+ * the one the wrapper `value` is a wrapper of. NULL for any other receiver,
+ * which lets the caller raise the TypeError its method names. +1. */
+ScrDyn *scr_js_wrapper_primitive_value(const ScrDyn *value, double kind_number) {
+  int kind = (int)kind_number;
+  ScrDynKind want = SCR_DYN_BOOL;
+  if (kind == SCR_JS_WRAPPER_STRING) want = SCR_DYN_STR;
+  if (kind == SCR_JS_WRAPPER_NUMBER) want = SCR_DYN_NUM;
+  if (value->kind == want) return scr_dyn_retain((ScrDyn *)value);
+  ScrJsWrapperSlot *slot = scr_js_wrapper_slot_of(value);
+  if (slot && slot->kind == kind) {
+    ScrDyn *primitive = scr_dyn_retain(slot->primitive);
+    scr_js_wrapper_slot_drop(slot);
+    return primitive;
+  }
+  scr_js_wrapper_slot_drop(slot);
+  return NULL;
+}
+
 /* The wrapper of kind `kind` over `primitive` (borrowed; already the
  * converted primitive). +1. */
 static ScrDyn *scr_js_wrapper_make(int kind, ScrDyn *primitive, ScrDyn *const constructors[3]) {

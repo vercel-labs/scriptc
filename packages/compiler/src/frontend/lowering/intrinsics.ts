@@ -17,7 +17,7 @@
  * byte-for-byte what it was, and typed programs never reach here at all. */
 import * as ts from "../ts7/adapter.js";
 import { DYN, STRING, type IrExpr, type SrcLoc } from "../../ir/ir.js";
-import { INTRINSIC_IDS } from "./intrinsic-ids.generated.js";
+import { INTRINSIC_IDS, INTRINSIC_PROTOTYPE_MEMBERS } from "./intrinsic-ids.generated.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 import type { Lowerer } from "./lowerer.js";
@@ -31,25 +31,68 @@ const PROTOTYPE_OWNERS: ReadonlySet<string> = new Set(
     .map((id) => id.slice(0, -".prototype".length)),
 );
 
-/** The prototypes the runtime's own units already build and answer
- * (`scr_js_wrapper.c`, `scr_dyn_builtin_prototype.c`,
- * `scr_dyn_stdlib_prototype.c`): the frontend keeps lowering their reads
- * there, so one intrinsic never has two builders (§4.4) and the constructor
- * a program's wrapper prototype names stays the program's own closure
- * (`Boolean.prototype.constructor === Boolean`). */
-const DEFERRED_PROTOTYPE_OWNERS: ReadonlySet<string> = new Set([
+/** The primitive wrapper prototypes the intrinsic table builds (t262-da A2).
+ * @types/node declares `X.prototype` with the wrapper interface
+ * (`Number.prototype: Number`), so the checker types the object as a
+ * primitive. A dynamic read of it must not extract a scalar from it, or
+ * `Number.prototype.added = 7` would lower its receiver as the checked cast
+ * to a number and throw (isPrimitivePrototypeValue in narrowing.ts). Date
+ * needs no such guard: its checker type is an object. */
+const WRAPPER_PROTOTYPE_OWNERS: ReadonlySet<string> = new Set([
   "String",
   "Number",
   "Boolean",
   "BigInt",
   "Symbol",
-  "Date",
 ]);
+
+/** The prototypes whose builtin members a compiled call site reaches
+ * natively: `n.toFixed(2)` and `d.getTime()` call the runtime function, not
+ * the table object, so a write that replaced one of those members would be
+ * silently ignored rather than observed. The frontend refuses such a write by
+ * name (fenceIntrinsicPrototypeWrite in property-access.ts). */
+const FENCED_PROTOTYPE_OWNERS: ReadonlySet<string> = new Set([...WRAPPER_PROTOTYPE_OWNERS, "Date"]);
+
+/** The primitive constructors whose source value is the compiler's interned
+ * conversion closure rather than the graph's constructor object, so
+ * `X.prototype.constructor` answers that closure and the identity Node
+ * defines (`Boolean.prototype.constructor === Boolean`) holds. */
+const PRIMITIVE_CONSTRUCTOR_OWNERS: ReadonlySet<string> = new Set([
+  "String",
+  "Number",
+  "Boolean",
+  "BigInt",
+]);
+
+/** Whether `owner`'s prototype is one the write fence covers. */
+export function isFencedPrototypeOwner(owner: string): boolean {
+  return FENCED_PROTOTYPE_OWNERS.has(owner);
+}
+
+/** Whether `id` names a wrapper prototype object (`Number.prototype`): the
+ * intrinsic value the checker types as the wrapper's primitive. */
+export function isWrapperPrototypeId(id: string): boolean {
+  return (
+    id.endsWith(".prototype") && WRAPPER_PROTOTYPE_OWNERS.has(id.slice(0, -".prototype".length))
+  );
+}
+
+/** Whether `key` names a member the table gives `owner.prototype`: the
+ * members a compiled call site calls natively. */
+export function isPrototypeMember(owner: string, key: string): boolean {
+  return INTRINSIC_PROTOTYPE_MEMBERS.get(`${owner}.prototype`)?.has(key) ?? false;
+}
+
+/** Whether `owner` is a primitive constructor whose `.prototype.constructor`
+ * is the program's own conversion closure. */
+export function isPrimitiveConstructorOwner(owner: string): boolean {
+  return PRIMITIVE_CONSTRUCTOR_OWNERS.has(owner);
+}
 
 /** The intrinsic id `X.prototype` names when `owner` is the standard
  * library's `X`, or null. */
 function prototypeId(owner: string): string | null {
-  if (!PROTOTYPE_OWNERS.has(owner) || DEFERRED_PROTOTYPE_OWNERS.has(owner)) return null;
+  if (!PROTOTYPE_OWNERS.has(owner)) return null;
   const id = `${owner}.prototype`;
   return INTRINSIC_IDS.has(id) ? id : null;
 }

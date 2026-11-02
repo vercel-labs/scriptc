@@ -213,6 +213,20 @@ if (process.argv.includes("--ts")) {
   console.log(
     `export const INTRINSIC_IDS: ReadonlySet<string> = new Set([\n${ids.map((i) => `  ${q(i)},`).join("\n")}\n]);`,
   );
+  // The member names each `X.prototype` carries, so the frontend can refuse
+  // replacing one of them by name (t262-da A2) without a second list.
+  const members = new Map();
+  for (const [owner, key] of rows) {
+    if (!owner.endsWith(".prototype")) continue;
+    if (!members.has(owner)) members.set(owner, new Set());
+    members.get(owner).add(key);
+  }
+  const owners = [...members.keys()].sort();
+  console.log(
+    `export const INTRINSIC_PROTOTYPE_MEMBERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([\n${owners
+      .map((o) => `  [${q(o)}, new Set([${[...members.get(o)].map(q).join(", ")}])],`)
+      .join("\n")}\n]);`,
+  );
   process.exit(0);
 }
 console.log(

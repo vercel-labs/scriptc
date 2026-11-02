@@ -24,7 +24,13 @@ import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
-import { lowerIntrinsicMember } from "../intrinsics.js";
+import {
+  lowerIntrinsicMember,
+  isFencedPrototypeOwner,
+  isPrototypeMember,
+  isPrimitiveConstructorOwner,
+  programUsesIntrinsicObjects,
+} from "../intrinsics.js";
 import { wrapperConstructors } from "../primitive-wrappers.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
@@ -1973,22 +1979,66 @@ function importMetaProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression)
   return isImportMeta(expr.expression) ? importMetaField(lowerer, expr, expr.name.text) : null;
 }
 
-const DATE_PROTOTYPE_WRITE_MESSAGE =
-  "writing through a standard library prototype (`Date.prototype` is a value for reads; a Date never observes a write to it)";
+/** Whether `parent` writes `child`: assignment and compound-assignment
+ * targets, `delete`, and `++`/`--` (the other prefix unary forms — `!`,
+ * `typeof`, `void`, `+`, `-`, `~` — only read their operand). */
+function writesNode(parent: ts.Node, child: ts.Node): boolean {
+  return (
+    (ts.isBinaryExpression(parent) &&
+      parent.left === child &&
+      (parent.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
+        (parent.operatorToken.kind >= ts.SyntaxKind.FirstCompoundAssignment &&
+          parent.operatorToken.kind <= ts.SyntaxKind.LastCompoundAssignment))) ||
+    ts.isDeleteExpression(parent) ||
+    ((ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+      (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+        parent.operator === ts.SyntaxKind.MinusMinusToken))
+  );
+}
 
-/** How many member steps separate `node` from `Date.prototype` in the read
- * chain `node` is part of: 0 for `Date.prototype` itself, 1 for a member, 2
- * for a property read on a member (the interned function object). Null when
- * the chain is not rooted at `Date.prototype`. */
-function datePrototypeDepth(lowerer: Lowerer, node: ts.Expression): number | null {
+/** The primitive constructor `expr` names when it reads
+ * `X.prototype.constructor` for one of the owners whose source value is the
+ * compiler's interned conversion closure, or null. */
+function primitivePrototypeConstructorOwner(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): "String" | "Number" | "Boolean" | "BigInt" | null {
+  if (expr.name.text !== "constructor") return null;
+  const inner = expr.expression;
+  if (!ts.isPropertyAccessExpression(inner)) return null;
+  const owner = inner.expression;
+  if (!ts.isIdentifier(owner) || !isPrimitiveConstructorOwner(owner.text)) return null;
+  if (lowerer.stdlibGlobalMember(inner, owner.text) !== "prototype") return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  if (!programUsesIntrinsicObjects(lowerer)) return null;
+  return owner.text as "String" | "Number" | "Boolean" | "BigInt";
+}
+
+const INTRINSIC_PROTOTYPE_WRITE_MESSAGE = (target: string) =>
+  `writing '${target}' (a compiled call site calls the native member, so the replacement would never be observed)`;
+
+/** How many member steps separate `node` from a fenced `X.prototype`
+ * (`intrinsics.ts`'s FENCED_PROTOTYPE_OWNERS) in the read chain `node` is
+ * part of: 0 for the prototype itself, 1 for a member, 2 for a property of a
+ * member. Null when the chain is not rooted there. */
+function fencedPrototypeChain(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): { owner: string; depth: number } | null {
   let depth = 0;
   let cur: ts.Expression = node;
   for (;;) {
-    if (
-      ts.isPropertyAccessExpression(cur) &&
-      lowerer.stdlibGlobalMember(cur, "Date") === "prototype"
-    )
-      return depth;
+    if (ts.isPropertyAccessExpression(cur)) {
+      // The global the prototype is read from, in the same spellings the
+      // read path resolves it from (`Date`, `globalThis.Date`).
+      const owner = stdlibGlobalNameOf(lowerer, cur.expression);
+      if (
+        owner !== null &&
+        isFencedPrototypeOwner(owner) &&
+        lowerer.stdlibGlobalMember(cur, owner) === "prototype"
+      )
+        return { owner, depth };
+    }
     if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
       cur = cur.expression;
       depth++;
@@ -1998,70 +2048,123 @@ function datePrototypeDepth(lowerer: Lowerer, node: ts.Expression): number | nul
   }
 }
 
-/** The prototype object and its members are a read surface: a write that
- * replaces a member, or a key of the prototype itself, keeps the SC1090
- * refusal it reached before the prototype had a value, because a typed Date
- * never observes it and the write would silently differ from Node. A property
- * OF a member (the interned function object, `Date.prototype.getTime.length
- * = 1`) writes the function the dynamic tier shares with Node, which matches,
- * so it stays open. True when `node` is the target of such a write
- * (assignment, compound assignment, `delete`, `++`/`--`), directly or as the
- * base of the target's member chain. */
-export function isDatePrototypeWrite(lowerer: Lowerer, node: ts.Expression): boolean {
-  const depth = datePrototypeDepth(lowerer, node);
-  if (depth === null) return false;
-  let steps = 0;
-  let cur: ts.Node = node;
+/** The cheap syntactic pre-test the fence needs: only a chain rooted at a
+ * bare standard library name (`Date`) or the global object
+ * (`globalThis.Date`) can name a fenced prototype, so every other property
+ * access exits before any symbol resolution. */
+function rootedAtFencedName(expr: ts.Expression): boolean {
+  let root: ts.Expression = expr;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+      root = root.expression;
+    else if (ts.isParenthesizedExpression(root)) root = root.expression;
+    else break;
+  }
+  return ts.isIdentifier(root) && (root.text === "globalThis" || isFencedPrototypeOwner(root.text));
+}
+
+/** The member key `node` names when it reads `X.prototype.key` or
+ * `X.prototype["key"]`, or null when the key is not statically known. */
+function prototypeMemberKey(node: ts.Expression): string | null {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (ts.isElementAccessExpression(node)) {
+    const key = node.argumentExpression;
+    return key !== undefined && ts.isStringLiteralLike(key) ? key.text : null;
+  }
+  return null;
+}
+
+/** The write fence for the builtin prototypes the table builds (t262-da A2:
+ * String, Number, Boolean, BigInt, Symbol and Date). A write that replaces a
+ * builtin member — or the prototype property itself — is refused by name
+ * instead of being accepted and dropped: the value is a read surface whose
+ * members a compiled call site calls natively (`n.toFixed(2)`,
+ * `d.getTime()`), so honouring the write would silently differ from Node.
+ * Extending the prototype with a new key stays open (Node's answer, and the
+ * object every dynamic read of the prototype sees), and so does a write
+ * through a dynamic receiver, which only the runtime can see. */
+export function fenceIntrinsicPrototypeWrite(lowerer: Lowerer, expr: ts.Expression): void {
+  if (!rootedAtFencedName(expr)) return;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return;
+  if (!programUsesIntrinsicObjects(lowerer)) return;
+  const chain = fencedPrototypeChain(lowerer, expr);
+  if (chain === null) return;
+  // The member the chain names so far: `X.prototype.member` read directly.
+  let level = chain.depth;
+  let key = level === 1 ? prototypeMemberKey(expr) : null;
+  let known = level !== 1 || key !== null;
+  let cur: ts.Node = expr;
   for (;;) {
     while (ts.isParenthesizedExpression(cur.parent)) cur = cur.parent;
     const parent = cur.parent;
-    if (!parent) return false;
+    if (!parent) return;
     if (
       (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
       parent.expression === cur
     ) {
+      if (level === 0) {
+        key = prototypeMemberKey(parent);
+        known = key !== null;
+      }
+      level++;
       cur = parent;
-      steps++;
       continue;
     }
-    const written =
-      (ts.isBinaryExpression(parent) &&
-        parent.left === cur &&
-        (parent.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
-          (parent.operatorToken.kind >= ts.SyntaxKind.FirstCompoundAssignment &&
-            parent.operatorToken.kind <= ts.SyntaxKind.LastCompoundAssignment))) ||
-      ts.isDeleteExpression(parent) ||
-      // `++`/`--` write their operand; the other prefix unary forms (`!`,
-      // `typeof`, `void`, `+`, `-`, `~`) only read it.
-      ((ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
-        (parent.operator === ts.SyntaxKind.PlusPlusToken ||
-          parent.operator === ts.SyntaxKind.MinusMinusToken));
-    return written && depth + steps <= 1;
+    if (!writesNode(parent, cur)) return;
+    const prototype = `${chain.owner}.prototype`;
+    if (level === 0) {
+      lowerer.unsupported("SC1090", expr, INTRINSIC_PROTOTYPE_WRITE_MESSAGE(prototype));
+      return;
+    }
+    if (level > 1) return;
+    // A non-literal key cannot be proved to be a new one, and a member of the
+    // table is what a compiled call site calls: both refuse.
+    if (!known || (key !== null && isPrototypeMember(chain.owner, key)))
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        INTRINSIC_PROTOTYPE_WRITE_MESSAGE(key === null ? prototype : `${prototype}.${key}`),
+      );
+    return;
   }
 }
 
-/** The fence for a write found while lowering a property access (see
- * isDatePrototypeWrite). The cheap syntactic pre-test keeps every other
- * property access down to one identifier comparison: only a chain rooted at
- * the `Date` global can name the prototype, and the write path reaches this
- * before chainBlocked's early return. */
-export function fenceDatePrototypeWrite(lowerer: Lowerer, expr: ts.Expression): void {
-  let root: ts.Expression = expr;
-  while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
-    root = root.expression;
-  while (ts.isParenthesizedExpression(root)) root = root.expression;
-  if (!ts.isIdentifier(root) || root.text !== "Date") return;
-  if (isDatePrototypeWrite(lowerer, expr))
-    lowerer.unsupported("SC1090", expr, DATE_PROTOTYPE_WRITE_MESSAGE);
+/** Whether `key` is a well-known symbol read off the `Symbol` global
+ * (`Symbol.replace`), a key no member of the table can be: every member is
+ * named by a string, so the key adds an ordinary property rather than
+ * replacing one a compiled call site calls. */
+function isWellKnownSymbolKey(lowerer: Lowerer, key: ts.Expression): boolean {
+  const expr = ts.isParenthesizedExpression(key) ? key.expression : key;
+  return (
+    (ts.isPropertyAccessExpression(expr) || ts.isElementAccessExpression(expr)) &&
+    stdlibGlobalNameOf(lowerer, expr.expression) === "Symbol"
+  );
 }
 
-/** The same fence for a call-shaped write (`Object.defineProperty`,
- * `Object.assign`) whose target argument is `Date.prototype` or one of its
- * members. */
-export function fenceDatePrototypeWriteCall(lowerer: Lowerer, node: ts.Expression): void {
-  const depth = datePrototypeDepth(lowerer, node);
-  if (depth !== null && depth <= 1)
-    lowerer.unsupported("SC1090", node, DATE_PROTOTYPE_WRITE_MESSAGE);
+/** The same fence for a call-shaped write whose target is a builtin
+ * prototype: `Object.defineProperty(X.prototype, "member", d)`,
+ * `Object.defineProperties`, and `Object.assign`, whose keys are a literal
+ * the fence cannot read. A definition on a member (the interned function
+ * object) is an ordinary object write and stays open. */
+export function fenceIntrinsicPrototypeWriteCall(
+  lowerer: Lowerer,
+  target: ts.Expression,
+  key?: ts.Expression,
+): void {
+  if (!rootedAtFencedName(target)) return;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(target))) return;
+  if (!programUsesIntrinsicObjects(lowerer)) return;
+  const chain = fencedPrototypeChain(lowerer, target);
+  if (chain === null || chain.depth !== 0) return;
+  const prototype = `${chain.owner}.prototype`;
+  const literal = key !== undefined && ts.isStringLiteralLike(key) ? key.text : null;
+  if (literal === null && key !== undefined && isWellKnownSymbolKey(lowerer, key)) return;
+  if (literal !== null && !isPrototypeMember(chain.owner, literal)) return;
+  lowerer.unsupported(
+    "SC1090",
+    target,
+    INTRINSIC_PROTOTYPE_WRITE_MESSAGE(literal === null ? prototype : `${prototype}.${literal}`),
+  );
 }
 
 /** The TypeError of a deferred-init field read that finds the field
@@ -2172,12 +2275,31 @@ export function lowerIntrinsicProperty(
   }
   if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys")
     return reflectMemberValue(lowerer, "ownKeys", locOf(expr));
-  // A write, `delete` or defineProperty through `Date.prototype` keeps its
-  // fence: the value below is a read surface, and a typed Date never observes
-  // a dynamic write to it. This runs before the chainBlocked early return
-  // because a write lowers the prototype read with the chain blocked.
-  fenceDatePrototypeWrite(lowerer, expr);
+  // A write, `delete` or defineProperty through a builtin prototype (the
+  // values below are a read surface, and a Date or a wrapper never observes a
+  // dynamic write to it) is refused by name rather than being accepted and
+  // ignored. This runs before the early return because a write lowers the
+  // prototype read with the chain blocked.
+  fenceIntrinsicPrototypeWrite(lowerer, expr);
   if (lowerer.chainBlocked(expr)) return null;
+  // `X.prototype.constructor` of a primitive wrapper answers the program's
+  // own conversion closure — the value a read of `X` answers — so
+  // `Number.prototype.constructor === Number` holds as in Node. The table's
+  // constructor member is the graph's twin of that same interface, a
+  // different object.
+  const constructorOwner = primitivePrototypeConstructorOwner(lowerer, expr);
+  if (constructorOwner !== null)
+    return primitiveCtorClosure(lowerer, constructorOwner, locOf(expr), true);
+  // `Symbol.prototype.constructor` answers the program's `Symbol` function
+  // value the same way, so `Symbol.prototype.constructor === Symbol` holds.
+  if (
+    expr.name.text === "constructor" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    lowerer.stdlibGlobalMember(expr.expression, "Symbol") === "prototype" &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    programUsesIntrinsicObjects(lowerer)
+  )
+    return globalFunctionValue(lowerer, "Symbol", locOf(expr));
   // A builtin prototype object and the members read through it, in a
   // program that reads intrinsics: one ordinary checked object per
   // intrinsic (scr_js_intrinsics.c, t262-da A1), filled in place for the

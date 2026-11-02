@@ -1197,6 +1197,14 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
  * refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
 #endif
+/* Installed by the intrinsic graph (scr_js_intrinsics.c) when a program links
+ * it: the member value of a wrapper prototype (String, Number, Boolean), or
+ * NULL for any other owner. scr_dyn_builtin_method asks it before it interns
+ * a plain member, so every reader — a member read on a primitive, on a
+ * wrapper instance, or on the prototype object — answers one function
+ * (`"abc".slice === String.prototype.slice`). A program without the graph
+ * links no wrapper objects, and this stays NULL. +1. */
+extern ScrDyn *(*scr_dyn_wrapper_member_hook)(const ScrStr *prototype, const ScrStr *method);
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
@@ -1594,6 +1602,21 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
  * Node's brand-check TypeError. +1; `constructor` is the compiled Boolean
  * constructor value. */
 ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
+
+/* The wrapper unit's prototype object for `id` ("String.prototype",
+ * "Number.prototype" or "Boolean.prototype"), which the intrinsic table
+ * answers for that id (t262-da A2): only this unit can build an object with
+ * the [[PrimitiveValue]] slot, and it is the object `new String/Number/
+ * Boolean(v)` instances inherit from, so one intrinsic has one builder and a
+ * member the program writes through the prototype object is the member an
+ * instance walks to (§4.4). Returned without members: the table's fill
+ * defines them. +1. */
+ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id);
+/* thisStringValue / thisNumberValue / thisBooleanValue over a value the
+ * intrinsic table's wrapper-prototype members were called on: the primitive
+ * of `kind` (the SCR_JS_WRAPPER_* number) that `value` is, or the one it
+ * wraps, and NULL for any other receiver. +1 for the primitive. */
+ScrDyn *scr_js_wrapper_primitive_value(const ScrDyn *value, double kind);
 
 /* Promise statics called with a foreign constructor (`Promise.all.call(C, …)`,
  * scr_js_promise_generic.c, linked only into programs that make the call):

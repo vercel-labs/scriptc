@@ -81,7 +81,9 @@ export interface NativeLinkFeatures {
    * scr_module_namespace_dyn.c; absent (false) otherwise. */
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
-   * otherwise. */
+   * otherwise. The intrinsic graph answers String.prototype, Number.prototype
+   * and Boolean.prototype with that unit's objects, so a program that reads
+   * intrinsics has the fact too (runtime-features.ts). */
   primitiveWrapper?: boolean;
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor link scr_js_promise_generic.c; absent (false) otherwise. */

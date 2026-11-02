@@ -1039,9 +1039,12 @@ static inline unsigned scr_sa_large_class(size_t n) {
 typedef struct {
   ScrSaBlock *free[SCR_SA_NLARGE], *trimmed[SCR_SA_NLARGE];
   char *bump[SCR_SA_NLARGE], *lim[SCR_SA_NLARGE];
-  size_t carved; /* bytes carved, every class (scr_sa_carved) */
+  size_t carved; /* bytes carved, every class (atomic; scr_sa_carved) */
 } ScrSaLarge;
 static ScrSaLarge scr_sa_large[SCR_SA_ARENAS];
+/* Bytes of the large-class blocks in use, every arena: scr_heap_stats reports
+ * them as used. */
+static size_t scr_sa_large_live; /* atomic */
 
 /* Runs: the chunks of the run that starts at each head chunk, and the runs
  * returned to the window, which later runs reuse first fit (under the window
@@ -1053,6 +1056,9 @@ static ScrSaLarge scr_sa_large[SCR_SA_ARENAS];
  * pages too (scr_sa_large_trim). */
 #define SCR_SA_RUN_KEEP 16u
 static uint16_t scr_sa_run_chunks[SCR_SA_WINDOW_CHUNKS];
+/* The bytes each run's block asked for (atomic): scr_heap_stats reports them
+ * as used, the rest of the run's chunks as idle. */
+static size_t scr_sa_run_used[SCR_SA_WINDOW_CHUNKS];
 typedef struct {
   uint16_t start, n;
   bool dirty;
@@ -1100,6 +1106,7 @@ static char *scr_sa_run_take(size_t n, size_t bytes, bool zero) {
     if (i >= scr_sa_window_chunks || n > scr_sa_window_chunks - i) return NULL;
   }
   scr_sa_run_chunks[i] = (uint16_t)n;
+  __atomic_store_n(&scr_sa_run_used[i], bytes, __ATOMIC_RELAXED);
   scr_sa_chunk_set(i, (uint16_t)SCR_SA_RUN_HEAD);
   for (size_t k = 1; k < n; k++) scr_sa_chunk_set(i + k, (uint16_t)SCR_SA_RUN_NEXT);
   return w + (i << SCR_SA_CHUNK_SHIFT);
@@ -1164,6 +1171,30 @@ static size_t scr_sa_large_bytes(const void *p, unsigned e) {
 static inline void scr_sa_large_push(unsigned i, ScrSaBlock *b, unsigned c) {
   b->next = scr_sa_large[i].free[c];
   scr_sa_large[i].free[c] = b;
+  __atomic_fetch_sub(&scr_sa_large_live, scr_sa_large_size(c), __ATOMIC_RELAXED);
+}
+
+/* The window's large blocks and runs for scr_heap_stats, added to `held` and
+ * to `idle`: the bytes of the large classes' blocks in every arena, with the
+ * free ones idle, and the chunks of the runs the chunk table holds, with the
+ * part past each block's bytes idle. */
+static void scr_sa_large_stats(size_t *held, size_t *idle) {
+  size_t carved = 0;
+  for (unsigned a = 0; a < SCR_SA_ARENAS; a++)
+    carved += __atomic_load_n(&scr_sa_large[a].carved, __ATOMIC_RELAXED);
+  size_t live = __atomic_load_n(&scr_sa_large_live, __ATOMIC_RELAXED);
+  *held += carved;
+  *idle += carved > live ? carved - live : 0;
+  if (!__atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE)) return;
+  size_t top = __atomic_load_n(&scr_sa_window_top, __ATOMIC_RELAXED);
+  if (top > scr_sa_window_chunks) top = scr_sa_window_chunks;
+  for (size_t i = 0; i < top; i++) {
+    if (__atomic_load_n(&scr_sa_chunks[i], __ATOMIC_RELAXED) != SCR_SA_RUN_HEAD) continue;
+    size_t chunks = (size_t)scr_sa_run_chunks[i] << SCR_SA_CHUNK_SHIFT;
+    size_t asked = __atomic_load_n(&scr_sa_run_used[i], __ATOMIC_RELAXED);
+    *held += chunks;
+    *idle += chunks > asked ? chunks - asked : 0;
+  }
 }
 
 /* Returns the pages of the calling thread's free large blocks, past each
@@ -1574,7 +1605,7 @@ static size_t scr_sa_carved(void) {
     const ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
     carved += scr_sa_class_carved(c, h->lim ? h->bump : scr_sa.bump[c]);
   }
-  return carved + scr_sa_large[scr_sa_arena].carved;
+  return carved + __atomic_load_n(&scr_sa_large[scr_sa_arena].carved, __ATOMIC_RELAXED);
 }
 
 /* For the slow path of class c, whose bump room is below sz: moves the
@@ -2068,6 +2099,7 @@ static void scr_sa_discard(ScrSaKeep *k) {
             b->next = l->free[c];
             l->free[c] = b;
           }
+          __atomic_fetch_sub(&scr_sa_large_live, sz, __ATOMIC_RELAXED);
         }
         continue;
       }
@@ -2634,6 +2666,7 @@ static void *scr_sa_large_take(size_t n, bool zero) {
   ScrSaBlock *b = l->free[c];
   if (b) {
     l->free[c] = b->next;
+    __atomic_fetch_add(&scr_sa_large_live, scr_sa_large_size(c), __ATOMIC_RELAXED);
     if (zero) memset(b, 0, n);
     return b;
   }
@@ -2643,6 +2676,7 @@ static void *scr_sa_large_take(size_t n, bool zero) {
      * zero (scr_sa_large_trim); the parts of its first and last pages kept
      * their bytes. */
     l->trimmed[c] = b->next;
+    __atomic_fetch_add(&scr_sa_large_live, scr_sa_large_size(c), __ATOMIC_RELAXED);
     if (zero) {
       long page = sysconf(_SC_PAGESIZE);
       uintptr_t pg = page > 0 ? (uintptr_t)page : 4096;
@@ -2664,7 +2698,8 @@ static void *scr_sa_large_take(size_t n, bool zero) {
   }
   /* Carved memory is fresh, and reads as zero. */
   l->bump[c] = q + sz;
-  l->carved += sz;
+  __atomic_fetch_add(&l->carved, sz, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&scr_sa_large_live, sz, __ATOMIC_RELAXED);
   return q;
 }
 
@@ -3077,11 +3112,12 @@ void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
 
 /* process.memoryUsage's heap figures: the calling thread's small-object
  * chunks (the bytes carved from them; in use is that less the blocks on
- * their free lists and the zeroed holes left to carve) plus the system
- * allocator's own totals where the platform reports them (glibc's
- * mallinfo2, the Darwin malloc zones, the Windows CRT heap, or the
- * sanitizer's allocator in sanitized builds). Walks the free lists, so
- * the cost grows with the number of free blocks. */
+ * their free lists and the zeroed holes left to carve), the window's large
+ * blocks and runs (scr_sa_large_stats; in use is that less the large classes'
+ * free blocks), plus the system allocator's own totals where the platform
+ * reports them (glibc's mallinfo2, the Darwin malloc zones, the Windows CRT
+ * heap, or the sanitizer's allocator in sanitized builds). Walks the free
+ * lists, so the cost grows with the number of free blocks. */
 #if defined(__linux__) && SCR_SMALL_ALLOC
 static void scr_plr_heap_stats(size_t *held, size_t *used);
 #endif
@@ -3104,6 +3140,7 @@ void scr_heap_stats(double *total, double *used) {
     held += scr_sa_class_carved(c, top);
     for (const ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) idle += sz;
   }
+  scr_sa_large_stats(&held, &idle);
 #endif
   size_t sys_held = 0, sys_used = 0;
 #if defined(SCR_HEAP_SANITIZER)

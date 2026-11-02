@@ -1533,6 +1533,24 @@ static void check_large_blocks(void) {
   }
   for (size_t i = 0; i < NB; i++) scr_mem_free(b[i]);
 }
+
+/* process.memoryUsage's heap figures count the window's large blocks and
+ * runs, and stop counting them when they are freed. */
+static void check_large_blocks_stats(void) {
+  const size_t cls = (size_t)1 << 20, run = (size_t)9 << 20;
+  double total0, used0, total1, used1, total2, used2;
+  scr_heap_stats(&total0, &used0);
+  unsigned char *a = scr_mem_alloc_ref(cls);
+  unsigned char *b = scr_mem_alloc_ref(run);
+  assert(a && b && in_window(a) && in_window(b));
+  scr_heap_stats(&total1, &used1);
+  assert(total1 - total0 >= (double)(cls + run));
+  assert(used1 - used0 >= (double)(cls + run) && used1 <= total1);
+  scr_mem_free(a);
+  scr_mem_free(b);
+  scr_heap_stats(&total2, &used2);
+  assert(used1 - used2 >= (double)(cls + run) && used2 <= total2);
+}
 #endif
 
 #if defined(SCR_WORKERS) && SCR_SMALL_ALLOC
@@ -1664,6 +1682,7 @@ int main(void) {
   check_classes();
 #if SCR_SMALL_ALLOC
   check_large_blocks();
+  check_large_blocks_stats();
 #endif
 #if SCR_SMALL_ALLOC && defined(__linux__)
   check_chunk_map();

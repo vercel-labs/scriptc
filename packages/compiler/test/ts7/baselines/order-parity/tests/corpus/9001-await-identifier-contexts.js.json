@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/9001-await-identifier-contexts.js"
- ],
- "diags": []
-}

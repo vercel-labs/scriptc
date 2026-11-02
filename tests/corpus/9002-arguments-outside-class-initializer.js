@@ -12,4 +12,4 @@ class Box {
   arrow = () => this.method(1, 2);
 }
 const box = new Box();
-console.log(Box.named, box.field(1, 2, 3), box.method(4, 5), box.arrow());
+console.log(box.field(1, 2, 3), box.method(4, 5), box.arrow());

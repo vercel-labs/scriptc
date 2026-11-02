@@ -1928,19 +1928,64 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
   return result;
 }
 
-/* The member value a builtin that answers its instances' member values from
- * its own unit also answers the prototype's, or NULL. Date (scr_lib.c) is the
- * one such builtin: its methods run the Date receiver checks, so
- * `Date.prototype.getTime` must be the very function `date.getTime` is, not a
- * second function of the same name. The value carries its own declared
- * `length` from the unit that builds it. */
-static ScrDyn *scr_dyn_invoke_native_member(const ScrStr *prototype, const ScrStr *method) {
-  return scr_native_builtin_member_value(prototype->data, method->data, method->len);
+#ifdef SCR_JS_OBJECT_MODEL
+/* The Date's member table, in the unit that always links and that already
+ * carries the Date implementation (scr_lib.c). */
+extern ScrDyn *scr_native_date_member_value(const char *key, size_t key_len);
+
+/* The stack's member table stays in scr_symbol.c, and this unit must not name
+ * it: a reference from here keeps the whole stack unit, and everything it
+ * drags, in every JavaScript program that interns a builtin method whether or
+ * not it ever holds a stack. The unit points this slot at its own table when
+ * it installs its handle ops, which happens before any stack exists; until
+ * then, and in a program that never creates one, the read answers the
+ * interned function and none of the stack unit is linked. */
+ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len);
+
+static ScrDyn *scr_dyn_disposable_stack_member_value(const char *key, size_t len) {
+  ScrDyn *(*member)(const char *, size_t) = scr_dyn_disposable_stack_member;
+  return member ? member(key, len) : NULL;
 }
 
+/* The builtins that answer a member from a table of their own unit instead of
+ * from the interner below, and the function that answers one. A Date's
+ * methods run the Date receiver checks and a DisposableStack's carry the
+ * interface's brand errors, so neither can be this unit's dispatch function;
+ * the unit that builds the prototype answers its members from the same table
+ * the instances use, so `Date.prototype.getTime === date.getTime` and
+ * `DisposableStack.prototype.use === stack.use`. A builtin whose instances
+ * already answer the interned values — Map, Set, WeakMap, WeakSet, String,
+ * Object — needs no entry: `map.get` and `Map.prototype.get` are one interned
+ * function.
+ *
+ * Identity is a JavaScript object-model behavior, so the partition lives in
+ * the object-model build: a typed program's interner is the same object it
+ * was, and never links a provider. */
+static const struct {
+  const char *cls;
+  ScrDyn *(*member)(const char *key, size_t key_len);
+} scr_dyn_member_providers[] = {
+  { "Date", scr_native_date_member_value },
+  { "DisposableStack", scr_dyn_disposable_stack_member_value },
+};
+
+/* The member value the builtin named `prototype` answers for `method` from
+ * its own unit (+1), or NULL when it answers through this unit's interner. */
+static ScrDyn *scr_dyn_native_member(const ScrStr *prototype, const ScrStr *method) {
+  for (size_t i = 0; i < sizeof scr_dyn_member_providers / sizeof scr_dyn_member_providers[0]; i++) {
+    if (strcmp(scr_dyn_member_providers[i].cls, prototype->data) != 0) continue;
+    if (!scr_dyn_member_providers[i].member) return NULL;
+    return scr_dyn_member_providers[i].member(method->data, method->len);
+  }
+  return NULL;
+}
+#endif
+
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
-  ScrDyn *native = scr_dyn_invoke_native_member(prototype, method);
+#ifdef SCR_JS_OBJECT_MODEL
+  ScrDyn *native = scr_dyn_native_member(prototype, method);
   if (native) return native;
+#endif
   if (!dyn_builtin_methods) {
     dyn_builtin_methods = scr_dyn_new_obj_null_proto();
     scr_atexit(dyn_builtin_methods_cleanup);

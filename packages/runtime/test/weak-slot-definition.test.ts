@@ -9,7 +9,22 @@ import { expect, test } from "vitest";
 const execFileAsync = promisify(execFile);
 const source = readFileSync(join(import.meta.dirname, "../src/scr_symbol.c"), "utf8");
 
-/** The slot's declaration, from its type to its `;`. */
+/** One arm of the slot's `#if defined(__APPLE__)` block. */
+function slotArm(arm: "darwin" | "elf"): string {
+  const at = source.indexOf("#if defined(__APPLE__)");
+  expect(at, "the slot's platform branch").toBeGreaterThan(-1);
+  const elseAt = source.indexOf("#else", at);
+  const endAt = source.indexOf("#endif", elseAt);
+  expect(elseAt, "the slot's `#else`").toBeGreaterThan(at);
+  expect(endAt, "the slot's `#endif`").toBeGreaterThan(elseAt);
+  const armText = source.slice(arm === "darwin" ? at : elseAt, arm === "darwin" ? elseAt : endAt);
+  expect(armText, "the arm declares the slot").toContain(
+    "ScrDyn *(*scr_dyn_disposable_stack_member)(",
+  );
+  return armText;
+}
+
+/** The slot's declaration, from its type to its `;`, as Darwin spells it. */
 function slotDeclaration(): string {
   const start = source.indexOf("ScrDyn *(*scr_dyn_disposable_stack_member)(");
   expect(start, "the slot's declaration").toBeGreaterThan(-1);
@@ -21,14 +36,25 @@ function slotDeclaration(): string {
 }
 
 // One build of the invoke unit defines the slot and this unit fills it, so a
-// program that links the stack without that build must still have a
-// definition: Darwin refuses to link a data symbol that is declared weak and
-// defined nowhere. The unit therefore defines the slot itself, weakly, and
-// the object-model build's definition replaces it when it links.
-test("the stack member slot is a weak definition", () => {
-  const declaration = slotDeclaration();
-  expect(declaration).not.toMatch(/^extern\b/);
-  expect(declaration).toContain("__attribute__((weak))");
+// program that links the stack without that build needs a definition from the
+// object format that will not bind a weak reference to zero. Darwin refuses
+// to link a data symbol that is declared weak and defined nowhere, so the
+// unit defines the slot itself there, weakly, and the object-model build's
+// definition replaces it when it links.
+test("Darwin defines the stack member slot weakly", () => {
+  const arm = slotArm("darwin");
+  expect(arm).not.toMatch(/^extern\b/m);
+  expect(arm).toContain("__attribute__((weak)) = 0;");
+});
+
+// ELF binds a weak declaration of a data symbol to zero by itself. A
+// definition there would put the pointer, and the code that writes it, into
+// every ELF program that links this unit, so ELF keeps the declaration.
+test("ELF keeps the stack member slot a weak declaration", () => {
+  const arm = slotArm("elf");
+  expect(arm).toMatch(/^extern\b/m);
+  expect(arm).not.toContain("= 0;");
+  expect(arm).toContain("__attribute__((weak));");
 });
 
 // The probe carries no system header, so the Darwin target needs no SDK: this

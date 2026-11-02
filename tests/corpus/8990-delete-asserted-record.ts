@@ -100,4 +100,22 @@ const numbers: number[] = [1, 2, 3];
 (numbers as unknown as Bag).extra = "named";
 delete (numbers as unknown as Bag).extra;
 console.log("array", (numbers as unknown as Bag).extra, Object.keys(numbers as unknown as Bag));
+
+// JavaScript evaluates the receiver before the key, so a key expression that
+// replaces the binding or the field the receiver reads still deletes from the
+// record the program named first.
+const firstRecord: Record<string, number | undefined> = { a: 1, b: 2 };
+const replacementRecord: Record<string, number | undefined> = { a: 9 };
+let live = firstRecord;
+const rebound = delete live[((live = replacementRecord), "a")];
+console.log(
+  "rebound",
+  rebound,
+  JSON.stringify(firstRecord),
+  JSON.stringify(replacementRecord),
+  JSON.stringify(live),
+);
+const fieldOwner = { rec: firstRecord };
+const replaced = delete fieldOwner.rec[((fieldOwner.rec = replacementRecord), "b")];
+console.log("rebound field", replaced, JSON.stringify(firstRecord), JSON.stringify(fieldOwner.rec));
 export {};

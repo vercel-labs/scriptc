@@ -29,6 +29,7 @@ import { locOf } from "../../program.js";
 import { constituentTypes } from "../../ts7/checker.js";
 import type { Lowerer } from "../lowerer.js";
 import { markSloppyRecordWrites } from "../frozen-records.js";
+import { isPureReference } from "../effect-free.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { literalFieldKeys } from "./keyed-field-targets.js";
 
@@ -179,12 +180,14 @@ export function lowerRecordMemberDelete(
 
 /** `delete` in VALUE position over a record: the same in-place delete a
  * statement performs, then Node's boolean answer. The receiver and a
- * computed key are bound once (the presence test reads them again), and
- * the answer is read from the member itself after the delete rather than
- * from the frozen bit: a frozen record keeps the member (sloppy code) and
- * answers `false`, while a member that was never there is gone and answers
- * `true`. Strict code never reaches the answer for a refused delete — the
- * frozen guard throws first. */
+ * computed key are bound once (the presence test reads them again), and a
+ * receiver a key that runs program code could replace is held before the
+ * key evaluates it, as JavaScript reads the receiver first. The answer is
+ * read from the member itself after the delete rather than from the frozen
+ * bit: a frozen record keeps the member (sloppy code) and answers `false`,
+ * while a member that was never there is gone and answers `true`. Strict
+ * code never reaches the answer for a refused delete — the frozen guard
+ * throws first. */
 export function lowerRecordDeleteExpr(
   lowerer: Lowerer,
   expr: ts.DeleteExpression,
@@ -193,7 +196,14 @@ export function lowerRecordDeleteExpr(
 ): IrExpr {
   const loc = locOf(expr);
   const stmts: IrStmt[] = [];
-  const receiver = bindOnce(lowerer, stmts, obj, "%deleteReceiver", loc);
+  const receiver = bindOnce(
+    lowerer,
+    stmts,
+    obj,
+    "%deleteReceiver",
+    loc,
+    keyEvaluatesCode(lowerer, target),
+  );
   let loweredKey: IrExpr | null = null;
   const key = (): IrExpr => {
     if (loweredKey === null)
@@ -212,16 +222,40 @@ export function lowerRecordDeleteExpr(
   };
 }
 
+/** Whether evaluating this delete's key runs program code. JavaScript
+ * evaluates the receiver first and deletes from that value, so a key that
+ * runs program code may reassign the receiver's binding or the field the
+ * receiver reads before the delete addresses it. A dot access and a
+ * constant bracket key spell the key with no program code; a bracket key
+ * that is a literal, a pure read or a literal-typed binding's read cannot
+ * run any either — except an untyped key, whose own ToString conversion
+ * can. */
+function keyEvaluatesCode(
+  lowerer: Lowerer,
+  target: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): boolean {
+  if (!ts.isElementAccessExpression(target)) return false;
+  let keyNode: ts.Expression = target.argumentExpression;
+  while (ts.isParenthesizedExpression(keyNode)) keyNode = keyNode.expression;
+  if (ts.isLiteralExpression(keyNode) || constantDeleteKey(lowerer, target) !== null) return false;
+  if (!isPureReference(lowerer, keyNode)) return true;
+  return lowerer.mapTypeOf(lowerer.typeOf(keyNode))?.kind === "dyn";
+}
+
 /** `value`, or a hidden local initialized with it when reading it twice
- * would repeat an effect (a varRef or a literal reads for free). */
+ * would repeat an effect (a varRef or a literal reads for free) — or when
+ * `hold` asks for the value as it is at this point, because something
+ * evaluated later can replace it. */
 function bindOnce(
   lowerer: Lowerer,
   stmts: IrStmt[],
   value: IrExpr,
   name: string,
   loc: SrcLoc,
+  hold = false,
 ): IrExpr {
-  if (isSafeToRepeat(value) || value.kind === "strLit" || value.kind === "numLit") return value;
+  if (!hold && (isSafeToRepeat(value) || value.kind === "strLit" || value.kind === "numLit"))
+    return value;
   const slot = lowerer.declareHiddenLocal(name, value.type);
   stmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
   return { kind: "varRef", localId: slot.id, type: value.type, loc };

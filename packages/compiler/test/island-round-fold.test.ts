@@ -101,7 +101,7 @@ exports.refuse = () => new Thing().value() + nested.value();
   return dir;
 }
 
-function build(fold: boolean) {
+function build(fold: boolean, copyResult = false) {
   const dir = fixture();
   let firstLoads = 0;
   let reloads = 0;
@@ -112,7 +112,19 @@ function build(fold: boolean) {
       reloads++;
       rounds.push([...(options?.islandPackages ?? [])].sort());
     }
-    return runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+    const frontend = runFrontend(
+      entry,
+      loadProgram,
+      npmStatic,
+      externalTypes,
+      libraryNpmStatic,
+      options,
+    );
+    if (!copyResult) return frontend;
+    // `fe.lower` returns the result wrapped in a copy when the program has
+    // declaration-boundary notes (pipeline.ts: `{ ...lowered, performance }`).
+    // The retry decision must still recognize the result it decided from.
+    return { ...frontend, lower: (lowerOpts, valid) => ({ ...frontend.lower(lowerOpts, valid) }) };
   };
   const result = prepareExecutableModule(
     join(dir, "main.ts"),
@@ -145,6 +157,7 @@ function build(fold: boolean) {
 test("the merged round decides the fence-report growth exactly as the second reload does", () => {
   const off = build(false);
   const on = build(true);
+  const copied = build(true, true);
   expect(off.diagnostics).toEqual([]);
   expect(on.diagnostics).toEqual([]);
   // Today's sequence: the lowering grows `refuser`, and the reload's fences
@@ -163,4 +176,9 @@ test("the merged round decides the fence-report growth exactly as the second rel
   // The first load is reused, not repeated: one load per compile either way.
   expect(on.firstLoads).toBe(1);
   expect(off.firstLoads).toBe(1);
+  // A lowering result that comes back as a copy still carries the merged
+  // decision: the round must not fall back to the lowering rule alone.
+  expect(copied.reloads).toBe(1);
+  expect(copied.rounds).toEqual([["fenceddirect", "refuser"]]);
+  expect(copied.islands).toEqual(on.islands);
 }, 600_000);

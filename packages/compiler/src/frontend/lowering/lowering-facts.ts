@@ -69,16 +69,17 @@ if (verifyMode === "stats")
 
 /** How many shared-fact hits SCRIPTC_LOWERING_FACTS_VERIFY has checked in
  * this process. Zero when the mode is off. */
-export function verifiedLoweringFactHits(): number {
-  return verifiedFactHits;
+export function verifiedLoweringFactHits(fact?: string): number {
+  if (fact === undefined) return verifiedFactHits;
+  return verifiedByFact.get(fact) ?? 0;
 }
 
-/** Records checks made outside LoweringFacts (the Lowerer's own per-pass
- * recomputations of a shared answer) in the same process-wide counter, so
- * `stats` and the engagement test see every verified fact. */
-export function recordVerifiedLoweringFact(fact: string, hits = 1): void {
-  verifiedFactHits += hits;
-  verifiedByFact.set(fact, (verifiedByFact.get(fact) ?? 0) + hits);
+/** Records one verified hit in the process-wide counter, so `stats` and the
+ * engagement test see every checked fact, including the Lowerer's own
+ * per-pass comparisons (which call LoweringFacts.noteVerified). */
+function recordVerified(fact: string): void {
+  verifiedFactHits++;
+  verifiedByFact.set(fact, (verifiedByFact.get(fact) ?? 0) + 1);
 }
 
 /** The admitted opinions' sites by file and code. */
@@ -312,7 +313,10 @@ export class LoweringFacts {
 
   /** The program's class protocol index (class-protocols.ts). Each pass
    * asking its own questions must get the same answers; the Lowerer's verify
-   * mode compares them against a fresh index per pass. */
+   * mode compares them against a fresh index per pass, so a pass that
+   * registered an island (or otherwise edited declarations) mid-round and
+   * changed an answer fails there instead of lowering a stale one. Nothing
+   * may edit the program while a round lowers. */
   classProtocols(): ClassProtocols {
     this.protocols ??= new ClassProtocols(this.program.getTypeChecker(), this.moduleOrder);
     return this.protocols;
@@ -329,9 +333,15 @@ export class LoweringFacts {
     );
   }
 
+  /** Records a check the Lowerer made against a shared answer, so the
+   * per-facts count and the process-wide one agree. */
+  noteVerified(fact: string): void {
+    this.countVerified(fact);
+  }
+
   private countVerified(fact: string): void {
     this.verified.set(fact, (this.verified.get(fact) ?? 0) + 1);
-    recordVerifiedLoweringFact(fact);
+    recordVerified(fact);
   }
 
   /** How many hits the verify mode has checked, by fact (tests). */

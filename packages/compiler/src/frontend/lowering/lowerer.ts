@@ -59,7 +59,7 @@ import {
   stdioIntoGeneralStream,
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
-import { LoweringFacts, recordVerifiedLoweringFact } from "./lowering-facts.js";
+import { LoweringFacts } from "./lowering-facts.js";
 import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -4114,6 +4114,10 @@ export class Lowerer {
    * A Lowerer built without LowererMode.facts gets a private copy (tests,
    * one-off lowerings). */
   readonly facts: LoweringFacts;
+  /** SCRIPTC_LOWERING_FACTS_VERIFY: the shared provenance memo's hit check,
+   * public so contexts built from this Lowerer (webassembly.ts's hand-made
+   * ctx, property-access.ts passing the Lowerer itself) verify too. */
+  readonly verifySymbolProvenance: ((sym: ts.Symbol, answer: SymbolProvenance) => void) | undefined;
   /** The one mapType context: registries + hooks, assembled in the
    * constructor (typeParamResolver reads the CURRENT instantiation bindings
    * through `this`, so the same ctx serves generic bodies too). */
@@ -5438,6 +5442,9 @@ export class Lowerer {
       throw new InternalCompilerError(
         "lowerer bug: LowererMode.facts belongs to a different program or moduleOrder",
       );
+    this.verifySymbolProvenance = this.facts.verify
+      ? (sym, answer) => this.verifySymbolProvenanceAnswer(sym, answer)
+      : undefined;
     this.checker = program.getTypeChecker();
     const islands = this.nodeIslands;
     const shadow = canonShadowHook(this.checker);
@@ -5562,8 +5569,8 @@ export class Lowerer {
       // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: this.isExternalTypeFile,
       symbolProvenance: this.symbolProvenance,
-      ...(this.facts.verify
-        ? { verifySymbolProvenance: (sym, answer) => this.verifySymbolProvenance(sym, answer) }
+      ...(this.verifySymbolProvenance
+        ? { verifySymbolProvenance: this.verifySymbolProvenance }
         : {}),
       typeMemo: this.typeMemo,
       // A hook: the ctx is spread in several places, and a copy made inside a
@@ -5686,7 +5693,7 @@ export class Lowerer {
       this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder);
     }
     const fresh = ask(this.ownClassProtocols);
-    recordVerifiedLoweringFact("classProtocols");
+    this.facts.noteVerified("classProtocols");
     if (answer === fresh) return answer;
     throw new InternalCompilerError(
       `shared class protocol index answered ${String(answer)} for ${query} where a fresh ` +
@@ -16998,11 +17005,12 @@ export class Lowerer {
   }
   /** SCRIPTC_LOWERING_FACTS_VERIFY: the shared provenance memo answered, so
    * recompute it and fail on a disagreement (lowering-facts.ts). */
-  private verifySymbolProvenance(sym: ts.Symbol, answer: SymbolProvenance): void {
+  private verifySymbolProvenanceAnswer(sym: ts.Symbol, answer: SymbolProvenance): void {
     const fresh = computeSymbolProvenance(sym, this.isStdlibFile);
-    // The two lazily filled answers are declaration-only too. A stored
-    // answer that carries one was compared when it was stored, so only a
-    // fresh answer needs computing for it.
+    // The two lazily filled answers (`??=` on a hit) are declaration-only
+    // too, so recompute the ones an answer carries. The pass that filled one
+    // stored the value it computed, and this comparison catches a later pass
+    // that would have filled a different one.
     const freshWebAssembly =
       answer.webAssembly === undefined
         ? undefined
@@ -17017,7 +17025,7 @@ export class Lowerer {
       fresh.libInterface === answer.libInterface &&
       freshWebAssembly === answer.webAssembly &&
       freshLegacyUrl === answer.legacyUrl;
-    recordVerifiedLoweringFact("symbolProvenance");
+    this.facts.noteVerified("symbolProvenance");
     if (same) return;
     if (freshWebAssembly !== undefined) fresh.webAssembly = freshWebAssembly;
     if (freshLegacyUrl !== undefined) fresh.legacyUrl = freshLegacyUrl;

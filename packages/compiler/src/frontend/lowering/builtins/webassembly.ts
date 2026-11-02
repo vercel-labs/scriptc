@@ -407,6 +407,7 @@ export function lowerWebAssemblyValueOf(
     checker: lowerer.checker,
     isStdlibFile: (sf: ts.SourceFile) => lowerer.isStdlibFile(sf),
     symbolProvenance: lowerer.symbolProvenance,
+    verifySymbolProvenance: lowerer.verifySymbolProvenance,
   };
   if (!isWebAssemblyType(lowerer.typeOf(receiver), ctx)) return null;
   lowerer.usesWebAssembly = true;

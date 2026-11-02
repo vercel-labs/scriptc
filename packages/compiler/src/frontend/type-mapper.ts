@@ -1341,10 +1341,14 @@ export function computeSymbolProvenance(
   return { stdlibInterface, stdlibClass, libInterface };
 }
 
-function provenanceOf(
-  psym: ts.Symbol,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "symbolProvenance" | "verifySymbolProvenance">,
-): SymbolProvenance {
+/** What provenanceOf needs: the shared memo, the stdlib classifier and the
+ * verify-mode hit check (absent when the mode is off). Contexts built from a
+ * Lowerer carry the hook too, so a hand-made ctx may omit it. */
+export type SymbolProvenanceCtx = Pick<TypeMapperCtx, "isStdlibFile" | "symbolProvenance"> & {
+  verifySymbolProvenance?: ((sym: ts.Symbol, answer: SymbolProvenance) => void) | undefined;
+};
+
+function provenanceOf(psym: ts.Symbol, ctx: SymbolProvenanceCtx): SymbolProvenance {
   let bySymbol = ctx.symbolProvenance;
   if (bySymbol === undefined) {
     bySymbol = new Map();
@@ -1402,10 +1406,7 @@ export function declaresWebAssemblyNamespace(
 /** A type declared in the shipped WebAssembly namespace (scriptc.d.ts):
  * its modules, instances, memories, tables, globals, error classes and the
  * Exports/Imports records. */
-export function isWebAssemblyType(
-  type: ts.Type,
-  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile" | "symbolProvenance">,
-): boolean {
+export function isWebAssemblyType(type: ts.Type, ctx: SymbolProvenanceCtx): boolean {
   const symbol = type.getAliasSymbol() ?? type.getSymbol();
   if (!symbol) return false;
   const provenance = provenanceOf(symbol, ctx);
@@ -1815,7 +1816,7 @@ export function isLegacyUrlType(
  * a member of one. */
 export function isLegacyUrlSymbol(
   symbol: ts.Symbol | null | undefined,
-  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile" | "symbolProvenance">,
+  ctx: SymbolProvenanceCtx,
 ): boolean {
   if (!symbol) return false;
   const provenance = provenanceOf(symbol, ctx);

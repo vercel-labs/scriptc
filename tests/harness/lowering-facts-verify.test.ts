@@ -74,6 +74,8 @@ test("the verify mode recomputes a real compile's shared facts", async () => {
   mkdirSync(fixtureDir, { recursive: true });
   writeFileSync(entryPath, program);
   const before = verifiedLoweringFactHits();
+  const beforeProvenance = verifiedLoweringFactHits("symbolProvenance");
+  const beforeProtocols = verifiedLoweringFactHits("classProtocols");
   const result = await compile(entryPath, {
     outPath: join(fixtureDir, "main.ir"),
     outDir: fixtureDir,
@@ -89,4 +91,9 @@ test("the verify mode recomputes a real compile's shared facts", async () => {
   // answers hundreds of them, so a small nonzero count would mean the mode
   // reached only part of the passes.
   expect(verifiedLoweringFactHits() - before).toBeGreaterThan(100);
+  // The Lowerer's own per-pass comparisons record here too (its provenance
+  // hits and its fresh class-protocol index), so a mode that only counted
+  // LoweringFacts' internal hits cannot satisfy this.
+  expect(verifiedLoweringFactHits("symbolProvenance") - beforeProvenance).toBeGreaterThan(0);
+  expect(verifiedLoweringFactHits("classProtocols") - beforeProtocols).toBeGreaterThan(0);
 });

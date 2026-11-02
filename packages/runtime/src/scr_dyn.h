@@ -1343,10 +1343,11 @@ void scr_dyn_proxy_delete(ScrDyn *proxy, const ScrStr *key);
 void scr_dyn_proxy_unsupported(const char *operation);
 /* ── Proxy.revocable and the Reflect entry points ──────────────────────
  * These are dynamic-tier operations reached only from a JavaScript program
- * that calls them, so scr_json.c compiles them into the JavaScript object
- * model build (SCR_JS_OBJECT_MODEL, t262-da §J) alone and every other
- * program keeps the unit's default object. */
-#ifdef SCR_JS_OBJECT_MODEL
+ * that calls them, so scr_json.c compiles them into the proxy build of the
+ * JavaScript object model (SCR_JS_OBJECT_MODEL_PROXY, t262-w5) alone, which
+ * the dynProxyTier fact selects; every other program keeps the plain object
+ * model object, or the unit's default object. */
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
 /* Proxy.revocable(target, handler): Node's { proxy, revoke } result. The
  * proxy observes revocation in every trap-mediated operation; revoke
  * answers undefined and is idempotent. */

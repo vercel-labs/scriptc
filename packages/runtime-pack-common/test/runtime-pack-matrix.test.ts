@@ -99,12 +99,42 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
     "node-island",
     "js-om",
     "js-om-node-island",
+    "js-om-proxy",
+    "js-om-node-island-proxy",
   ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
     expect(variant.when.jsObjectModel).toBe(true);
     expect(variant.defines).toContain("SCR_JS_OBJECT_MODEL");
   }
+  // The proxy build (t262-w5) is the object model build plus proxy internals:
+  // only a program that can reach a Proxy selects it, and every other program
+  // keeps the plain object model object, byte for byte.
+  const proxy = variants.filter((variant: { id: string }) => variant.id.endsWith("-proxy"));
+  expect(
+    proxy.map((variant: { id: string; when: Record<string, boolean> }) => [
+      variant.id,
+      variant.when.dynProxyTier,
+    ]),
+  ).toEqual([
+    ["js-om-proxy", true],
+    ["js-om-node-island-proxy", true],
+  ]);
+  for (const variant of proxy) expect(variant.defines).toContain("SCR_JS_OBJECT_MODEL_PROXY");
+  expect(
+    selected("scr_json.c", { workers: false, jsObjectModel: true, dynProxyTier: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_JS_OBJECT_MODEL_PROXY"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      dynProxyTier: true,
+      nodeIsland: true,
+    }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL", "SCR_JS_OBJECT_MODEL_PROXY"]);
+  expect(
+    selected("scr_json.c", { workers: false, jsObjectModel: true, dynProxyTier: true }).id,
+  ).toBe("js-om-proxy");
   // A program with the object model, and nothing else, selects its build...
   expect(selected("scr_json.c", { workers: false, jsObjectModel: true }).id).toBe("js-om");
   expect(selected("scr_json.c", { workers: false, jsObjectModel: true }).defines).toEqual([

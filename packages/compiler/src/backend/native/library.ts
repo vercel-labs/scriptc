@@ -139,6 +139,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.jsObjectModel || opts.bigintBytes || opts.mutableBuffers
       ? ["-DSCR_JS_OBJECT_MODEL"]
       : []),
+    ...(opts.dynProxyTier ? ["-DSCR_JS_OBJECT_MODEL_PROXY"] : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),

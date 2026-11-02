@@ -273,6 +273,22 @@ function withJsObjectModel(variants) {
   return variants;
 }
 
+/** One SCR_JS_OBJECT_MODEL_PROXY twin of each JavaScript object model build
+ * of a unit that carries proxy internals (t262-w5): a program that can reach
+ * a Proxy (dynProxyTier) links that build, and every other program keeps the
+ * plain object model build, byte for byte. */
+function withProxyTier(variants) {
+  for (const { id, when, defines } of variants.slice()) {
+    if (!id.startsWith("js-om")) continue;
+    variants.push({
+      id: `${id}-proxy`,
+      when: { ...when, dynProxyTier: true },
+      defines: [...defines, "SCR_JS_OBJECT_MODEL_PROXY"],
+    });
+  }
+  return variants;
+}
+
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths
@@ -306,6 +322,11 @@ export function variantsFor(source) {
     // tier's primitives and each one gets its object model twin. Every other
     // program keeps the default object, byte for byte.
     withJsObjectModel(variants);
+    // The proxy's reflection internal methods, the Reflect entry points and
+    // the proxy-aware construct live only in the proxy build: a program that
+    // can reach a Proxy selects it, and every other program keeps the plain
+    // object model build, byte for byte.
+    withProxyTier(variants);
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.

@@ -2773,6 +2773,7 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
 
 static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
 
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
 /* [[Construct]] with an explicit newTarget: a proxy without a construct
  * trap forwards it to its target, which builds the instance from
  * newTarget's prototype. NULL means `new callee(...)`, where the callee is
@@ -2784,7 +2785,6 @@ static ScrDyn *scr_dyn_construct_new_target(const ScrDyn *callee, const ScrDyn *
  * forward declarations keep the ordinary reflection paths reading as one
  * walk. Each answers true with its result, or false with the exception
  * pending (a throwing trap, a violated invariant, a revoked proxy). */
-#ifdef SCR_JS_OBJECT_MODEL
 static bool scr_dyn_proxy_get_prototype(ScrDyn *proxy, ScrDyn **result);
 static bool scr_dyn_proxy_set_prototype(ScrDyn *proxy, ScrDyn *prototype, bool *result);
 static bool scr_dyn_proxy_prevent_extensions(ScrDyn *proxy, bool *result);
@@ -2795,7 +2795,7 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
   if (scr_dyn_class_reflection_fence(object)) return NULL;
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
   if (object->kind == SCR_DYN_PROXY) {
     ScrDyn *result = NULL;
     if (!scr_dyn_proxy_get_prototype(object, &result)) return NULL;
@@ -2867,23 +2867,30 @@ ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object) {
 }
 
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
+  /* 20.1.2.21 step 2: the prototype's kind is checked before the object's
+   * internal method runs, so a proxy's setPrototypeOf trap never sees a
+   * primitive. */
   if (object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Object.setPrototypeOf called on null or undefined";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
-  /* 20.1.2.21 step 2: the prototype's kind is checked before the object's
-   * internal method runs, so a proxy's trap never sees a primitive. */
   if (!scr_dyn_prototype_valid(prototype)) return NULL;
+#endif
   /* A primitive receiver is returned unchanged when the prototype is null or
    * any object or function; nothing is mutated, so the prototype's kind is the
    * only check. */
   if (object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
       object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL) {
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
     return scr_dyn_retain(object);
+#else
+    return scr_dyn_prototype_valid(prototype) ? scr_dyn_retain(object) : NULL;
+#endif
   }
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object) || scr_dyn_class_reflection_fence(prototype)) return NULL;
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
   if (object->kind == SCR_DYN_PROXY) {
     bool accepted = false;
     if (!scr_dyn_proxy_set_prototype(object, prototype, &accepted)) return NULL;
@@ -2917,6 +2924,14 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     scr_dyn_release(result);
     return scr_dyn_retain(object);
   }
+#ifndef SCR_JS_OBJECT_MODEL_PROXY
+  if (object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_UNDEF) {
+    static const char message[] = "Object.setPrototypeOf called on null or undefined";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (!scr_dyn_prototype_valid(prototype)) return NULL;
+#endif
   if (object->kind == SCR_DYN_OBJ && scr_dyn_fixed_count && scr_dyn_prototype_fixed(object) &&
       !(prototype->kind == SCR_DYN_NULL ? object->null_proto : prototype == object->prototype)) {
     scr_dyn_prototype_unsupported("Object.setPrototypeOf");
@@ -3188,7 +3203,7 @@ ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function) {
 
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object)) return NULL;
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
   if (object->kind == SCR_DYN_PROXY) {
     bool accepted = false;
     if (!scr_dyn_proxy_prevent_extensions(object, &accepted)) return NULL;
@@ -3226,7 +3241,7 @@ ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
 
 bool scr_dyn_is_extensible(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
   if (object->kind == SCR_DYN_PROXY) {
     bool answer = false;
     if (!scr_dyn_proxy_is_extensible(object, &answer)) return false;
@@ -3369,7 +3384,7 @@ static void scr_dyn_proxy_invariant(void) {
   scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
 }
 
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
 /* Every operation on a revoked proxy throws before its handler is
  * consulted, with Node's message naming the internal method. */
 static void scr_dyn_proxy_revoked(const char *operation) {
@@ -3414,7 +3429,7 @@ ScrDyn *scr_dyn_proxy_new(const ScrDyn *target, const ScrDyn *handler) {
 /* GetMethod observes handler mutations on every operation. Retain the
  * callable across invocation, since a trap may replace itself. */
 static ScrDyn *scr_dyn_proxy_trap(const ScrDyn *proxy, const char *name) {
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
   if (proxy->v.proxy.revoked) {
     scr_dyn_proxy_revoked(name);
     return NULL;
@@ -3934,8 +3949,8 @@ void scr_dyn_proxy_delete(ScrDyn *proxy, const ScrStr *key) {
   scr_dyn_release(result);
 }
 
-#ifdef SCR_JS_OBJECT_MODEL
-/* ── the proxy's reflection internal methods (SCR_JS_OBJECT_MODEL) ───────────
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
+/* ── the proxy's reflection internal methods (SCR_JS_OBJECT_MODEL_PROXY) ────
  * Trap order is the specification's: a revoked proxy throws before the
  * handler is read, then the trap runs, then the target invariant is
  * checked. Each helper answers true with its result, or false with the
@@ -9135,33 +9150,63 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
 }
 
 /* Ordinary native function constructors retain their live prototype table.
- * A constructor may replace the fresh receiver with another object. */
+ * A constructor may replace the fresh receiver with another object. The proxy
+ * build of the object model (dynProxyTier) answers a proxy callee with the
+ * same [[Construct]], so it takes the proxy-aware path below for every
+ * callee; the plain build compiles that path, and the proxy internals it
+ * reaches, out. */
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
   return scr_dyn_construct_new_target(callee, args, what, NULL);
+#else
+  if (scr_ni_dyn_handle(callee))
+    return scr_ni_dyn_ops->construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
+  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
+      (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
+    return scr_bytes_construct(callee, args, what);
+  ScrDyn *prototype = scr_dyn_fn_get(callee, "prototype", 9);
+  if (!prototype) return NULL;
+  ScrDyn *receiver = scr_iterator_object(prototype) ? scr_dyn_obj_create(prototype) : scr_dyn_new_obj();
+  scr_dyn_release(prototype);
+  if (!receiver) return NULL;
+  scr_dyn_name_prototype_chain(receiver);
+  scr_dyn_this_push_dyn(receiver);
+  ScrDyn *result = scr_dyn_call(callee, args->v.arr.items, args->v.arr.len, what->data);
+  scr_dyn_this_pop();
+  if (!result) {
+    scr_dyn_release(receiver);
+    return NULL;
+  }
+  if (scr_iterator_object(result)) {
+    scr_dyn_release(receiver);
+    return result;
+  }
+  scr_dyn_release(result);
+  return receiver;
+#endif
 }
 
+#ifdef SCR_JS_OBJECT_MODEL_PROXY
 /* GetPrototypeFromConstructor's read: the newTarget's `prototype`, through a
  * proxy's get trap when the newTarget is one. */
 static ScrDyn *scr_dyn_construct_prototype(const ScrDyn *new_target) {
-#ifdef SCR_JS_OBJECT_MODEL
   if (new_target->kind == SCR_DYN_PROXY) {
     ScrStr *key = scr_str_new("prototype", 9);
     ScrDyn *value = scr_dyn_proxy_get(new_target, key);
     scr_str_release(key);
     return value;
   }
-#endif
   return scr_dyn_fn_get(new_target, "prototype", 9);
 }
 
+/* `new` with a newTarget that may differ from the callee. `new proxy(...)`
+ * runs the construct trap, with the proxy as newTarget; a proxy over a value
+ * that is not a constructor is not one either, so its construct trap does not
+ * run. */
 static ScrDyn *scr_dyn_construct_new_target(const ScrDyn *callee, const ScrDyn *args,
                                             const ScrStr *what, ScrDyn *new_target) {
   if (scr_ni_dyn_handle(callee))
     return scr_ni_dyn_ops->construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
-#ifdef SCR_JS_OBJECT_MODEL
-  /* `new proxy(...)`: the construct trap, with the proxy as newTarget. A
-   * proxy over a value that is not a constructor is not one either, so its
-   * construct trap does not run. */
   if (callee->kind == SCR_DYN_PROXY) {
     if (!scr_dyn_reflect_constructor(callee)) {
       ScrJsonBuf message;
@@ -9173,7 +9218,6 @@ static ScrDyn *scr_dyn_construct_new_target(const ScrDyn *callee, const ScrDyn *
     }
     return scr_dyn_proxy_construct((ScrDyn *)callee, (ScrDyn *)args, new_target, what);
   }
-#endif
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
       (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
     return scr_bytes_construct(callee, args, what);
@@ -9197,6 +9241,7 @@ static ScrDyn *scr_dyn_construct_new_target(const ScrDyn *callee, const ScrDyn *
   scr_dyn_release(result);
   return receiver;
 }
+#endif
 
 /* Symbol descriptors use the ordinary descriptor implementation in an
  * inaccessible table. Keep a retained key list so identities cannot be

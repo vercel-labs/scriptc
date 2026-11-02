@@ -217,6 +217,10 @@ export interface CcOptions {
    * %main emits. The fact ORs into jsObjectModel, so the unit's definition
    * of the JavaScript object model build is already on. */
   mutableBuffers?: boolean;
+  /** SCR_JS_OBJECT_MODEL_PROXY: the program's dynamic values may be proxies,
+   * so the JavaScript object model build carries the proxy reflection
+   * internals, the Reflect entry points and the proxy-aware construct. */
+  dynProxyTier?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
@@ -480,6 +484,9 @@ export interface LibArchiveOptions {
   /** See CcOptions.mutableBuffers: the archive carries the buffer views
    * registry, scr_js_buffers.c. */
   mutableBuffers?: boolean;
+  /** See CcOptions.dynProxyTier: the archive's json unit carries the proxy
+   * build. */
+  dynProxyTier?: boolean;
 }
 
 export interface NativeArtifactDependency {

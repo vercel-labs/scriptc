@@ -1545,13 +1545,17 @@ const RUNTIME_FEATURE_RULES = {
       node.args[0]?.kind === "strLit" &&
       BIGINT_BYTES_NAMES.has(node.args[0].value),
   }),
-  /** Proxy.revocable, the Reflect entry points and the proxy reflection
-   * traps: revocation checks and trap completion live in the JavaScript
-   * object model build (t262-da §J) of scr_json.c. The fact ORs into
-   * jsObjectModel (jsObjectModelFact), so it selects no build column of its
-   * own; every other program keeps the byte-for-byte default object. */
+  /** The program's dynamic values may be proxies: it creates one (`new
+   * Proxy`, Proxy.revocable) or uses the Reflect entry points and proxy
+   * reflection traps, whose revocation checks and trap completion live in
+   * the composition of the object model build (t262-da §J) that carries them
+   * (SCR_JS_OBJECT_MODEL_PROXY, t262-w5). The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects the proxy twin of every object model
+   * build, and every other program keeps the plain object model object, byte
+   * for byte. */
   dynProxyTier: rule({
     fns: [
+      "dyn.proxyNew",
       "dyn.proxyRevocable",
       "dyn.reflectGetPrototypeOf",
       "dyn.reflectSetPrototypeOf",

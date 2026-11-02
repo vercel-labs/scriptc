@@ -69,6 +69,9 @@ export interface EarlyExecutableNativeFeatures {
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
   mutableBuffers: boolean;
+  /** The proxy build of the json unit (SCR_JS_OBJECT_MODEL_PROXY): the
+   * program's dynamic values may be proxies. */
+  dynProxyTier?: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;

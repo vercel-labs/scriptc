@@ -21,6 +21,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
+    ...(features.dynProxyTier ? { dynProxyTier: true } : {}),
     mutableBuffers: features.mutableBuffers,
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),

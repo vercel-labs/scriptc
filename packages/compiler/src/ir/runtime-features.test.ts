@@ -261,16 +261,17 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
   });
 
-  test("the JavaScript object model build owns the buffer views registry calls", () => {
+  test("the JavaScript object model build owns every feature only a JavaScript source reaches", () => {
     // t262-da §J: the features only a JavaScript source reaches share one
     // runtime feature, whose entry list the slices fill as they land. The
     // buffer views registry (t262-dc C2) arms itself through these calls, and
-    // the resizable constructors lower to them, so a program that makes one
-    // selects the object model build; every other program keeps the default
-    // objects.
+    // a builtin constructor read as a value answers through the object
+    // model's RegExp, so a program that makes one selects the object model
+    // build; every other program keeps the default objects.
     expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
       "arrayBuffer.armMutable",
       "arrayBuffer.newResizable",
+      "dyn.globalConstructor",
       "sharedArrayBuffer.newGrowable",
     ]);
     const mod = module();
@@ -283,6 +284,15 @@ describe("runtime feature snapshots", () => {
       const armed = module();
       armed.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
+    }
+    // Only the buffer calls arm the views registry itself.
+    for (const fn of [
+      "arrayBuffer.armMutable",
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+    ] as const) {
+      const armed = module();
+      armed.functions[0]!.body.push(call(fn));
       expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);
     }
   });
@@ -301,11 +311,12 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(module()).hostAbsentGlobals).toBe(false);
   });
 
-  test("Proxy.revocable and the Reflect entry points ride the JavaScript object model build", () => {
-    // t262-da §J: the proxy and Reflect entry points have no build column of
-    // their own; the fact ORs into jsObjectModel, so the program selects the
-    // one SCR_JS_OBJECT_MODEL build of scr_json.c and every other program
-    // keeps the default object.
+  test("new Proxy, Proxy.revocable and the Reflect entry points ride the JavaScript object model build", () => {
+    // t262-da §J and t262-w5: the proxy and Reflect entry points have no
+    // build column of their own; the fact ORs into jsObjectModel, so the
+    // program selects the SCR_JS_OBJECT_MODEL_PROXY build of scr_json.c that
+    // carries their internals, and every other program keeps the plain object
+    // model object, or the default object.
     const mod = module();
     expect(moduleRuntimeFeatures(mod).dynProxyTier).toBe(false);
     mod.functions[0]!.body.push(call("dyn.proxyRevocable"));
@@ -317,6 +328,11 @@ describe("runtime feature snapshots", () => {
     const reflect = module();
     reflect.functions[0]!.body.push(call("dyn.reflectConstruct"));
     expect(moduleRuntimeFeatures(reflect).dynProxyTier).toBe(true);
+    // Creating a proxy is the same fact: the program can construct through
+    // one, and its prototype writes may reach one.
+    const created = module();
+    created.functions[0]!.body.push(call("dyn.proxyNew"));
+    expect(moduleRuntimeFeatures(created).dynProxyTier).toBe(true);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {

@@ -1827,6 +1827,8 @@ export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
   ["Unzip", 7],
   ["BrotliDecompress", 8],
   ["BrotliCompress", 9],
+  ["ZstdCompress", 10],
+  ["ZstdDecompress", 11],
 ]);
 
 export interface IrRecordShape {

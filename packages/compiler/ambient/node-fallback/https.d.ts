@@ -41,15 +41,18 @@ declare module "https" {
     requestListener: (req: IncomingMessage, res: ServerResponse) => void,
   ): Server;
   /* One signature with a union first parameter, for the request-fn
-   * ternary's sake (see the http block). A URL target takes no options,
-   * which means Node's defaults — the certificate is verified against
+   * ternary's sake (see the http block). The URL target takes an
+   * optional options value the runtime merges under its fields; without
+   * one it takes Node's defaults — the certificate is verified against
    * the default trust anchors. */
   export function request(
     target: RequestOptions | string | URL,
+    optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
   export function get(
     target: RequestOptions | string | URL,
+    optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
 }

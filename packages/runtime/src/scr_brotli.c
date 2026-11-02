@@ -316,7 +316,7 @@ static ScrZlibEngine *scr_brotli_engine(int mode, ScrZlibOptions *o) {
   return scr_zlib_engine_codec(mode, &scr_brotli_codec, b, o->reject_garbage);
 }
 
-static const ScrZlibBrotliHooks scr_brotli_hooks = {scr_brotli_options, scr_brotli_engine};
+static const ScrZlibCodecHooks scr_brotli_hooks = {scr_brotli_options, scr_brotli_engine};
 
 void scr_brotli_install(void) {
   scr_zlib_brotli_hooks = &scr_brotli_hooks;

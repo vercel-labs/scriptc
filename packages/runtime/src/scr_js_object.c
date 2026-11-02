@@ -341,6 +341,10 @@ bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJ
   return scr_js_append_shaped(receiver, target, value);
 }
 
+bool scr_js_literal_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic) {
+  return scr_js_store_probe(receiver, key, value, ic);
+}
+
 /* ── keyed loads ──────────────────────────────────────────────────────── */
 
 ScrDyn *scr_js_index_probe(ScrDyn *receiver, double index) {

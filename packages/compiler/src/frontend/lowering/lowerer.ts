@@ -215,6 +215,7 @@ import { collectContractAnnotations, type ContractAnnotations } from "../contrac
 import { sanitizeUnregisteredClassTypes } from "./sanitize-class-types.js";
 import { UnregisteredClassTypes } from "./unregistered-class-types.js";
 import type { WidthLift } from "./width-lift.js";
+import type { UnionClassRoute } from "./union-retag.js";
 import {
   bindingInContext,
   captureContextBinding,
@@ -835,6 +836,9 @@ export interface DynamicSlot {
    * slot, never reported as dynamic. */
   canonical?: true;
 }
+
+/** Stands for a null binding map in Lowerer.scopedTypeMemos. */
+const NO_BINDINGS: object = {};
 
 /** Localized failure: rounds of the declaration flush retry. */
 const MAX_DECLARATION_RETRIES = 16;
@@ -2254,6 +2258,10 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
  * property reads (`process.cwd`), or the binding an anonymous definition
  * initializes. Null when the source does not determine it. */
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
+  // Typed source cannot read a function's `name` (SC2020), so the names below
+  // are unobservable there; keeping them JavaScript-only leaves every typed
+  // program's output byte-identical.
+  const js = isJsSourceFile(ts.getSourceFileOfNode(node));
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
   const seen = new Set<ts.Symbol>();
@@ -2265,6 +2273,22 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     if (declaration && ts.isFunctionDeclaration(declaration)) {
       n = declaration;
       break;
+    }
+    // A binding element or a parameter holds the default's value only when the
+    // destructured value or the argument was undefined; otherwise it holds the
+    // source's value. Which one ran is a runtime fact, so a default never
+    // answers for the binding: when it runs, the definition it created was
+    // already named after the binding, and a named definition it references
+    // keeps the name it spells. A default the source overrides must not lend
+    // its name to the supplied value (`const [x = function unused() {}] =
+    // [function supplied() {}]` is "supplied"), so this answers null and the
+    // name read takes the runtime value's own name.
+    // Without a default the spelling is wrong for every value the binding can
+    // hold, but that shape has no pattern-default signature and is a separate
+    // change; it keeps the previous answer here.
+    if (js && declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
+      if (!declaration.initializer) break;
+      return null;
     }
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
     let value: ts.Node = declaration.initializer;
@@ -2304,6 +2328,36 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
+    }
+    // A default parameter names it (`function f(a = function () {})`), as
+    // does an object-assignment shorthand (`({ a = function () {} } = o)`)
+    // and a plain identifier assignment (`a = function () {}`). A member
+    // target never names one: only an identifier reference does.
+    if (js && p && ts.isParameter(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
+      return p.name.text;
+    }
+    if (
+      js &&
+      p &&
+      ts.isShorthandPropertyAssignment(p) &&
+      p.objectAssignmentInitializer === outer &&
+      ts.isIdentifier(p.name)
+    ) {
+      return p.name.text;
+    }
+    if (
+      js &&
+      p &&
+      ts.isBinaryExpression(p) &&
+      p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      p.right === outer &&
+      ts.isIdentifier(p.left) &&
+      // The native parser folds a parenthesized target into the target itself
+      // (`(a) = f`), leaving the source's `(` as a gap in front of it. A
+      // parenthesized target is not an IdentifierReference and names nothing.
+      p.getStart() === p.left.getStart()
+    ) {
+      return p.left.text;
     }
   }
   return null;
@@ -4016,12 +4070,49 @@ export class Lowerer {
   readonly unions = new UnionRegistry();
   /** Context-free successful type mappings. See TypeMapperCtx.typeMemo. */
   readonly typeMemo = new Map<number, IrType>();
+  /** Successful mappings per generic binding context (TypeMapperCtx.typeMemoFor):
+   * by the installed typeParamBindings map, then the typeParamTsBindings map
+   * (NO_BINDINGS stands for null). Binding maps are filled before they are
+   * installed and never change while installed, so their identity is the
+   * context. The lowerer owns the memos: they live as long as it does. */
+  private readonly scopedTypeMemos = new Map<object, Map<object, Map<number, IrType>>>();
   readonly ambient = ambientDtsPath();
   readonly overridesAmbient = overridesDtsPath();
   /** The one mapType context: registries + hooks, assembled in the
    * constructor (typeParamResolver reads the CURRENT instantiation bindings
    * through `this`, so the same ctx serves generic bodies too). */
   readonly typeCtx: TypeMapperCtx;
+
+  /** The context lastContextMemo answered for. Every mapType call asks for the
+   * current binding context, and a lowering pass stays in one context for
+   * thousands of calls, so the pair of identity checks below is the whole
+   * cost on that path: the two-level lookup only runs when the context
+   * actually changes. */
+  private lastMemoOuter: object | null = null;
+  private lastMemoInner: object | null = null;
+  private lastMemo: Map<number, IrType> | null = null;
+
+  /** The memo for the current binding context (scopedTypeMemos). */
+  currentTypeMemo(): Map<number, IrType> {
+    if (this.typeParamBindings === null && this.typeParamTsBindings === null) return this.typeMemo;
+    const outer: object = this.typeParamBindings ?? NO_BINDINGS;
+    const inner: object = this.typeParamTsBindings ?? NO_BINDINGS;
+    if (outer === this.lastMemoOuter && inner === this.lastMemoInner) return this.lastMemo!;
+    let byTs = this.scopedTypeMemos.get(outer);
+    if (byTs === undefined) {
+      byTs = new Map();
+      this.scopedTypeMemos.set(outer, byTs);
+    }
+    let memo = byTs.get(inner);
+    if (memo === undefined) {
+      memo = new Map();
+      byTs.set(inner, memo);
+    }
+    this.lastMemoOuter = outer;
+    this.lastMemoInner = inner;
+    this.lastMemo = memo;
+    return memo;
+  }
 
   readonly stats: LowerStats = {
     statementsTotal: 0,
@@ -4832,6 +4923,10 @@ export class Lowerer {
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
+    "scopedTypeMemos",
+    "lastMemoOuter",
+    "lastMemoInner",
+    "lastMemo",
     "fnStack",
     "positions.nodesByKey",
     "positions.paths",
@@ -5424,12 +5519,16 @@ export class Lowerer {
         this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))) ||
         isDeclBoundaryFile(sf.fileName),
       typeMemo: this.typeMemo,
+      // A hook: the ctx is spread in several places, and a copy made inside a
+      // binding scope must follow the lowerer's CURRENT scope, not the one
+      // that was installed at spread time.
+      typeMemoFor: () => this.currentTypeMemo(),
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
-      canMemoizeType: () =>
-        this.typeParamBindings === null &&
-        this.typeParamTsBindings === null &&
-        this.mixinTypeContext === null,
+      // Memoization is scoped by the binding maps (typeMemoFor); only a mixin
+      // context opts out, because mixinClassInstance answers by class node and
+      // the bindings do not identify it.
+      canMemoizeType: () => this.mixinTypeContext === null,
       // fileTag is filled just below; the hook is only ever CALLED during
       // lowering, long after the constructor completes.
       isProgramFile: (sf) => this.fileTag.has(sf),
@@ -7292,15 +7391,31 @@ export class Lowerer {
     };
     /** `r.name` where the name resolves to the receiver's index signature. */
     const isRecordIndexPropertyRead = (e: ts.PropertyAccessExpression): boolean => {
-      // A name that resolves to a declared member is not an index read, and
-      // only a receiver with an index signature maps to an indexed record.
-      if (symbolOf(e.name)) return false;
-      const receiverType = this.typeOf(e.expression);
-      if (this.checker.getIndexInfosOfType(receiverType).length === 0) return false;
-      const receiver = this.mapTypeOf(receiverType);
+      // A name that resolves to a declared member is a member read, and only
+      // a receiver with an index signature maps to an indexed record. The
+      // name's own symbol separates the two spellings: a mapped
+      // `Record<string, V>` answers no declaration at all, while a named
+      // object type answers the index signature's symbol, whose declaration
+      // is that signature. Reading the receiver's type instead would ask the
+      // checker about a node inside a body lowered only for coverage, which
+      // the batch prefetch covers and an extra individual query does not.
+      const nameSymbol = symbolOf(e.name);
+      const answersIndexSignature =
+        nameSymbol === null ||
+        (nameSymbol.declarations ?? []).some((decl) => ts.isIndexSignatureDeclaration(decl));
+      if (!answersIndexSignature) return false;
+      const receiver = this.mapTypeOf(this.typeOf(e.expression));
       if (receiver?.kind !== "record") return false;
       const shape = this.shapes.get(receiver.shapeId);
       if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn")
+        return false;
+      // A slot whose value type already admits undefined tells the checker
+      // itself that a key can be missing (`{ [name: string]: string |
+      // undefined }` in the http-header shape), so the read hides nothing.
+      if (
+        shape.indexValue.kind === "union" &&
+        this.armTag(shape.indexValue.unionId, UNDEFINED_T) >= 0
+      )
         return false;
       if (shape.fields.some((field) => field.name === e.name.text)) return false;
       const read = this.mapTypeOf(this.typeOf(e));
@@ -13811,8 +13926,9 @@ export class Lowerer {
     toId: string,
     loc: SrcLoc,
     trappable?: ReadonlySet<number>,
+    classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -17992,6 +18108,12 @@ export class Lowerer {
       });
     }
     if (valueParams.some((param) => param.name !== undefined)) {
+      // Every materialization writes this entry at ITS location, so a second
+      // one overwrites the first in place. A table only grows by addition, so
+      // that change is no part of this unit's function: name it (unit-journal.ts
+      // UnitEvents.touch), and the change is counted here instead of being
+      // found by HeldTables.check as an unnamed write.
+      if (this.builtinCheckedValues.has(fnName)) this.unitEvents?.touch(fnName);
       this.builtinCheckedValues.set(fnName, { fn, display, loc });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };

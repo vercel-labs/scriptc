@@ -182,16 +182,18 @@ const stringWrapperReceiver = (_node: ts.Node, d: ts.Diagnostic): boolean =>
   ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'");
 
 /** The deprecated `Buffer(...)` call without `new`, which Node's Buffer
- * function accepts (containers/bytes.ts lowers it), and `fs.ReadStream(...)`
- * / `fs.WriteStream(...)`, which construct their stream
- * (builtins/fs-streams.ts). Every other class called without `new` keeps the
- * triage's SC1090. */
+ * function accepts (containers/bytes.ts lowers it), `fs.ReadStream(...)` /
+ * `fs.WriteStream(...)`, which construct their stream
+ * (builtins/fs-streams.ts), and `Iterator()` (2348), which throws Node's
+ * TypeError at the call (iterator-prototype.ts). Every other class called
+ * without `new` keeps the triage's SC1090. */
 const deprecatedBufferCall = (_node: ts.Node, d: ts.Diagnostic): boolean => {
   const text = ts.flattenDiagnosticMessageText(d, "\n");
   return (
     text.includes("'BufferConstructor'") ||
     text.includes("'typeof ReadStream'") ||
-    text.includes("'typeof WriteStream'")
+    text.includes("'typeof WriteStream'") ||
+    text.includes("'IteratorConstructor'")
   );
 };
 
@@ -905,6 +907,26 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  // `new Iterator()` (TS2511): Iterator is the one abstract class the lib
+  // exposes, and Node throws its TypeError at the construction, which the
+  // lowering reproduces (iterator-prototype.ts).
+  [
+    2511,
+    THROW(
+      "Node throws its TypeError when the abstract Iterator class is constructed, and the lowering reproduces it at the site",
+      ["tests/corpus/js-iterator-prototype.js"],
+    ),
+  ],
+  // A base constructor's type-argument count (TS2508): JavaScript writes no
+  // type arguments, and `class X extends Iterator` names the lib's generic
+  // abstract class. The heritage lowering checks the actual base.
+  [
+    2508,
+    CHECKER(
+      "JavaScript writes no type arguments, and the heritage lowering checks the actual base class",
+      ["tests/corpus/js-iterator-subclass.js"],
+    ),
+  ],
   // A write through a String wrapper's index (TS2542; every other readonly
   // index signature keeps the triage's refusal).
   [
@@ -961,11 +983,9 @@ export function jsOpinion(code: number): Opinion | null {
  *    no invalid-target path that calls and then throws. TS2362/2363 keep
  *    their `any`-only admission below.
  *  - TS2508 ("No base constructor has the specified number of type
- *    arguments", `class X extends Iterator {}`) needs extending a class
- *    declared outside the program; heritage lowering answers SC1090. The
- *    baseline records 296 refusal variants (268 sole, 148 files), every one a
- *    stdlib heritage (`extends Iterator`, `Iterator.from`,
- *    `Iterator.prototype.<method>` non-constructible tests).
+ *    arguments", `class X extends Iterator {}`) has LEFT this list: the
+ *    heritage lowering learned the callable-base path for the lib's generic
+ *    abstract Iterator class, and the code is a `checker` row above.
  *  - TS1166 (a non-literal class-field key) needs a field the lowering can
  *    declare from a runtime key; the class lowering answers SC1090.
  *  - TS2704 ("The operand of a 'delete' operator cannot be a read-only

@@ -23,6 +23,11 @@ http.get({ port: 80, agent: false, headers: dynHeaders }, () => {});
 http.get({ port: 80, socketPath: "/tmp/sock.s" }, () => {});
 http.get({ port: 80, localAddress: "127.0.0.1" }, () => {});
 
+// Three arguments: only the URL form has a middle options value
+// (request(url, options, cb)), so the options-first spelling with a
+// trailing callback fences.
+http.get({ port: 80 }, () => {}, () => {});
+
 // An UNDOCUMENTED key Node would ignore — but Node still evaluates the
 // value, so an effectful one cannot silently drop.
 function effect(): number {

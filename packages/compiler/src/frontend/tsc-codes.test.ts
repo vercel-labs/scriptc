@@ -177,10 +177,11 @@ const CORPUS = fileURLToPath(new URL("../../../../tests/corpus/", import.meta.ur
 /** Codes the tables deliberately leave undecided, so the diagnostic stays
  * SC0001: each is legal JavaScript whose construct the lowerer cannot build
  * Node-exactly yet (TS2704's builtin-receiver delete, TS2464's class element
- * name, TS2508's stdlib heritage — see the "NOT relaxed" note in
- * tsc-codes.ts). `inferred-js-diagnostics.test.ts` pins that they stay
- * refused; nothing admits them. */
-const ADMISSION_ONLY_REFUSALS = new Set([2464, 2508, 2704]);
+ * name — see the "NOT relaxed" note in tsc-codes.ts).
+ * `inferred-js-diagnostics.test.ts` pins that they stay refused; nothing
+ * admits them. (TS2508 left this set when the heritage lowering learned the
+ * lib's generic abstract Iterator base; it is a `checker` row now.) */
+const ADMISSION_ONLY_REFUSALS = new Set([2464, 2704]);
 
 describe("the JavaScript checker decisions", () => {
   test("every observed code has exactly one decision", () => {

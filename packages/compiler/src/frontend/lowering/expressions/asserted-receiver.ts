@@ -271,35 +271,38 @@ function assertedOptionalMember(
   storage: IrType & { kind: "record" };
   field: { name: string; type: IrType };
 } | null {
-  // Cheap gate first: only an INTERSECTION type can add a member the
-  // stored layout lacks, so the ordinary `x.member` read of any other
-  // receiver never maps a type here.
-  if ((lowerer.typeOf(receiver).flags & ts.TypeFlags.Intersection) === 0) return null;
-  const asserted = lowerer.mapTypeOf(lowerer.typeOf(receiver));
-  if (asserted?.kind !== "record") return null;
-  const field = lowerer.shapes.get(asserted.shapeId)?.fields.find((f) => f.name === member);
-  if (!field) return null;
   // The value's own layout: the assertion erases (Node reads the property
   // off the value), and a binding stores what its initializer produced.
   const assertion = assertedReceiverNode(receiver);
   let storage: IrType | null | undefined;
+  let binding: ts.Identifier | null = null;
   if (assertion) {
     storage = lowerer.mapTypeOf(lowerer.typeOf(assertion.expression));
   } else {
-    // A binding's assertion is its DECLARED type. A member a narrowing test
-    // adds (`"k" in x`, `typeof x.k === "string"`) is not one the assertion
-    // declares, and its read has its own lowering — the checked-dynamic
-    // keyed read — which this hook leaves byte-identical. Parentheses and
-    // the non-null assertion spell the same binding.
-    const binding = bindingIdentifier(receiver);
+    binding = bindingIdentifier(receiver);
     if (binding === null) return null;
-    if (!declaredMember(lowerer, binding, member)) return null;
     storage = lowerer.peekLocal(binding)?.type ?? lowerer.globalOf(binding)?.type;
   }
+  // Cheap rejection for the ordinary `x.member` read: the binding's own
+  // layout answers it, so no asserted member is involved.
   if (storage?.kind !== "record") return null;
   if (lowerer.shapes.get(storage.shapeId)?.fields.some((f) => f.name === member)) {
     return null;
   }
+  // A binding's assertion is its DECLARED type. A member a narrowing test
+  // adds (`"k" in x`, `typeof x.k === "string"`) is not one the assertion
+  // declares, and its read has its own lowering — the checked-dynamic
+  // keyed read — which this hook leaves byte-identical. Parentheses and
+  // the non-null assertion spell the same binding.
+  if (binding !== null && !declaredMember(lowerer, binding, member)) return null;
+  // The asserted type may spell the added member as an intersection
+  // (`Base & { icons?: unknown }`) or as a declared record or interface
+  // that extends the stored one (`item as WithIcons`); both only ADD
+  // members Node reads off the object.
+  const asserted = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+  if (asserted?.kind !== "record") return null;
+  const field = lowerer.shapes.get(asserted.shapeId)?.fields.find((f) => f.name === member);
+  if (!field) return null;
   if (!assertedOptionalExtension(lowerer, storage, asserted)) return null;
   return { asserted, storage, field };
 }

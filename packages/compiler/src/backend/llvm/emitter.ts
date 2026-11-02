@@ -87,6 +87,7 @@ import {
   replayJournal,
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
+import { specializeTypedArguments } from "../../ir/typed-argument-clones.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
 import {
@@ -216,6 +217,7 @@ import {
 } from "./dense-array-access.js";
 import { matchMapRead, pointerMapGet, type MapReadLifetimes } from "./map-read-lifetimes.js";
 import { type MapEntryFusion } from "./map-entry-fusion.js";
+import { type RecordEntryFusion } from "./record-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
@@ -374,6 +376,7 @@ import {
   type LlInlineTail,
 } from "./classes.js";
 import { LifetimeRegions, REGION_TYPES } from "./regions.js";
+import { planTreeClasses } from "../tree-classes.js";
 import {
   arenaAware,
   arenaCurrentAddress,
@@ -385,7 +388,12 @@ import {
 import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
-import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
+import {
+  absentTrapLines,
+  planRecordViews,
+  recordViewFieldPtr,
+  recordViewTestLines,
+} from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
@@ -787,19 +795,22 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
           scalarizeNumericRecords(
             specializeCallbackCalls(
               specializeNumericCalls(
-                pairRowSums(
-                  jamSaturatingLoops(
-                    inlineArraysPass(
-                      options,
-                      inlineExpressionFunctions(
-                        foldConstantGlobals(
-                          copyStableCaptures(
-                            resolveSelfCaptures(
-                              hoistFinalFieldReads(
-                                freezeInitOnlyGlobals(
-                                  holdCharLocalsAsUnits(
-                                    dropUnwrittenPropertyBags(
-                                      runPairedWhileLoopsAsFor(mod, nodes),
+                specializeTypedArguments(
+                  pairRowSums(
+                    jamSaturatingLoops(
+                      inlineArraysPass(
+                        options,
+                        inlineExpressionFunctions(
+                          foldConstantGlobals(
+                            copyStableCaptures(
+                              resolveSelfCaptures(
+                                hoistFinalFieldReads(
+                                  freezeInitOnlyGlobals(
+                                    holdCharLocalsAsUnits(
+                                      dropUnwrittenPropertyBags(
+                                        runPairedWhileLoopsAsFor(mod, nodes),
+                                        nodes,
+                                      ),
                                       nodes,
                                     ),
                                     nodes,
@@ -814,11 +825,12 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                           ),
                           nodes,
                         ),
-                        nodes,
                       ),
+                      nodes,
                     ),
                     nodes,
                   ),
+                  mangleFunction,
                   nodes,
                 ),
                 mangleFunction,
@@ -1587,6 +1599,8 @@ export class LlEmitter {
   numberMapKeyIntegers = new Map<string, LlInteger>();
   /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
   mapEntryFusion: MapEntryFusion | null = null;
+  /** The current function's fused record get-then-set pairs (record-entry-fusion.ts). */
+  recordEntryFusion: RecordEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
   /** The locals whose value never leaves its frame (frame-escapes.ts), for
    * class instances with reference fields in frame storage. */
@@ -2724,48 +2738,6 @@ export class LlEmitter {
       mod.lib === undefined &&
       options.lowRegion === true &&
       [...this.classMeta.values()].some((m) => m.compact);
-    // Group arenas: off with lifetime regions, which own their classes'
-    // allocation, and in libraries, whose exports any host code calls.
-    if (arenasRequested() && mod.lifetimeRegions !== true && mod.lib === undefined) {
-      this.arenas = planArenas(mod, {
-        shape: (id) => {
-          const shape = this.recordsById.get(id);
-          return (
-            shape !== undefined &&
-            shape.freezable !== true &&
-            shape.indexValue === undefined &&
-            this.publishedTypes?.recordGuarded(id) !== true
-          );
-        },
-        cls: (def) => {
-          const meta = this.classMeta.get(def.name);
-          return (
-            meta !== undefined &&
-            !meta.compact &&
-            !meta.threadSlot &&
-            // An Array subclass's instance is an array (the runtime's header).
-            def.arrayElem === undefined &&
-            meta.root.def.arrayElem === undefined &&
-            !this.programLifetime.has(def.name) &&
-            this.publishedTypes?.classGuarded(def.name) !== true
-          );
-        },
-        nullableArm: (unionId) => this.nullableUnions.single(unionId)?.arm ?? null,
-        traced: (t) => traceAdapter(this.shapeHost, t) !== null,
-      });
-      if (this.arenas !== null) {
-        this.shapeHost.arenaShapes = this.arenas.shapes;
-        this.shapeHost.arenaClasses = this.arenas.classes;
-        this.shapeHost.arenasClosed = this.arenas.allClosed;
-      }
-    }
-    // Arena shapes are known only now; the plan's target set is shared by
-    // every host that copied the shape host, so dropping them here reaches
-    // all of them.
-    const arenaShapes = this.shapeHost.arenaShapes;
-    const viewTargets = this.recordViewTargets;
-    if (arenaShapes !== undefined && viewTargets !== null)
-      for (const id of arenaShapes) viewTargets.delete(id);
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -2791,6 +2763,70 @@ export class LlEmitter {
     );
     // After the vtable slots: borrowing slots exclude their implementations.
     if (this.debug === null) this.analyzeBorrowedReturns();
+    // Which classes drop their count word: a node of a graph the program
+    // proves acyclic, singly owned and unobserved (backend/tree-classes.ts,
+    // out/unique-ownership/DESIGN.md). The linear-use analysis agrees with
+    // the emitter's own ownership discipline, so it reads the facts above
+    // and nothing else. A debug build skips the borrowed-return analysis
+    // this needs; it keeps every class counted.
+    if (this.debug === null && mod.lib === undefined && mod.lifetimeRegions !== true) {
+      const plan = planTreeClasses(mod, {
+        borrowed: this.callLifetimes.borrowed,
+        borrowedReturns: this.borrowedReturns,
+        traced: { shapes: this.tracedShapes, unions: this.tracedUnions },
+        immutable: this.immutableFields,
+        published: this.publishedTypes,
+      });
+      for (const name of plan.classes) this.classMeta.get(name)!.tree = true;
+      this.treeMoves = plan.classes.size > 0 ? new Set(plan.moves) : null;
+    }
+    // Group arenas: off with lifetime regions, which own their classes'
+    // allocation, and in libraries, whose exports any host code calls.
+    // Planned after the tree classes, which keep the general allocator:
+    // their teardown is a plain free, and an arena block's disposal runs
+    // the counted path.
+    if (arenasRequested() && mod.lifetimeRegions !== true && mod.lib === undefined) {
+      this.arenas = planArenas(mod, {
+        shape: (id) => {
+          const shape = this.recordsById.get(id);
+          return (
+            shape !== undefined &&
+            shape.freezable !== true &&
+            shape.indexValue === undefined &&
+            this.publishedTypes?.recordGuarded(id) !== true
+          );
+        },
+        cls: (def) => {
+          const meta = this.classMeta.get(def.name);
+          return (
+            meta !== undefined &&
+            !meta.compact &&
+            !meta.tree &&
+            !meta.threadSlot &&
+            // An Array subclass's instance is an array (the runtime's header).
+            def.arrayElem === undefined &&
+            meta.root.def.arrayElem === undefined &&
+            !this.programLifetime.has(def.name) &&
+            this.publishedTypes?.classGuarded(def.name) !== true
+          );
+        },
+        nullableArm: (unionId) => this.nullableUnions.single(unionId)?.arm ?? null,
+        traced: (t) => traceAdapter(this.shapeHost, t) !== null,
+        tree: (def) => this.classMeta.get(def.name)?.tree === true,
+      });
+      if (this.arenas !== null) {
+        this.shapeHost.arenaShapes = this.arenas.shapes;
+        this.shapeHost.arenaClasses = this.arenas.classes;
+        this.shapeHost.arenasClosed = this.arenas.allClosed;
+      }
+    }
+    // Arena shapes are known only now; the plan's target set is shared by
+    // every host that copied the shape host, so dropping them here reaches
+    // all of them.
+    const arenaShapes = this.shapeHost.arenaShapes;
+    const viewTargets = this.recordViewTargets;
+    if (arenaShapes !== undefined && viewTargets !== null)
+      for (const id of arenaShapes) viewTargets.delete(id);
     this.int32SlotsValue ??= this.joinInt32Slots();
   }
 
@@ -3909,10 +3945,30 @@ export class LlEmitter {
     this.disownTemp(v);
   }
 
+  /** Whether a value of `type` is an instance of a tree class, whose retain
+   * is a no-op and whose release destroys the subtree: it has exactly one
+   * owner, so it may only be moved. */
+  isTreeValue(type: IrType): boolean {
+    if (this.treeMoves === null) return false;
+    const nullable = this.shapeHost.nullableUnions.of(type);
+    const arm = nullable === null ? type : nullable.repr === "single" ? nullable.arm : null;
+    return (
+      arm !== null && arm.kind === "object" && this.classMeta.get(arm.className)?.tree === true
+    );
+  }
+
   /** The retained (+1) read of a refcounted value — type-directed through
    * the `_v` table (immortals skip, exactly the C retain calls). */
   private retainCall(name: string, type: IrType): string {
     if (this.isImmortal(name)) return name;
+    // A copy of a tree value would be a second owner, and the two would
+    // destroy the same nodes. Every accepted read of one is a move
+    // (takeLastUseMove), so a retain means the plan and the emitter
+    // disagree: fail here rather than corrupt the heap.
+    if (this.isTreeValue(type))
+      throw new InternalCompilerError(
+        `llvm emitter bug: tree value ${name} is copied instead of moved`,
+      );
     const t = this.B.tmp();
     this.B.line(`${t} = call ptr ${retainSym(this.shapeHost, type)}(ptr ${name})`);
     return t;
@@ -5235,6 +5291,183 @@ export class LlEmitter {
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
   }
 
+  /** Whether a value of `shapeId` may lack field `field`: a PARTIAL record
+   * view (record-views.ts) whose viewed record does not declare it. A field
+   * with no value representation (a unit type) keeps its slot lookup. */
+  partialFieldMissing(shapeId: string, field: string): boolean {
+    if (this.shapeHost.recordViews?.partialMissing(shapeId, field) !== true) return false;
+    const type = this.recordShape(shapeId).fields.find((f) => f.name === field)?.type;
+    return type !== undefined && !isUnitType(type);
+  }
+
+  /** The viewed record's slot for `field` of a partial view, or NULL when
+   * that record does not declare the field. The caller has established that
+   * `obj` is a view. */
+  private partialViewSlot(objName: string, shapeId: string, field: string): string {
+    const position = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    this.declare(`declare ptr @scr_record_view_slot(ptr, ${this.sizeType})`);
+    const slot = this.B.tmp();
+    this.B.line(
+      `${slot} = call ptr @scr_record_view_slot(ptr ${objName}, ${this.sizeType} ${position})`,
+    );
+    return slot;
+  }
+
+  /** The boxed property a partial view keeps for a field its viewed record
+   * does not declare (NULL until something writes it). */
+  private partialViewExtra(objName: string, field: string): string {
+    this.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${this.sizeType})`);
+    const extra = this.B.tmp();
+    this.B.line(
+      `${extra} = call ptr @scr_record_view_extra(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")})`,
+    );
+    return extra;
+  }
+
+  /** Reads field `field` of `obj` (shape `shapeId`) where a PARTIAL view may
+   * lack it. A view's present field reads through the viewed record's slot;
+   * a field that record does not declare reads the property a write left in
+   * the view's extra store, converted back to the field type; a field
+   * nothing wrote stops the program (the frontend's checked read throws its
+   * TypeError first). The answer is owned, like a checked conversion's. */
+  readPartialField(objName: string, shapeId: string, field: string, type: IrType): LlValue {
+    const B = this.B;
+    const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    const inline = this.inlineUnions.record(type);
+    const isView = B.tmp();
+    const view = B.newLabel("pf.view");
+    const notView = B.newLabel("pf.slot");
+    const slots = B.newLabel("pf.slots");
+    const extra = B.newLabel("pf.extra");
+    const answer = B.newLabel("pf.answer");
+    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+      B.line(line.trimStart());
+    B.condBr(isView, view, notView);
+    // Not a view: the field's own slot.
+    B.startBlock(notView);
+    const own = B.tmp();
+    B.line(
+      `${own} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
+    );
+    const ownFrom = B.currentLabel();
+    B.br(slots);
+    B.startBlock(view);
+    const slot = this.partialViewSlot(objName, shapeId, field);
+    const present = B.tmp();
+    B.line(`${present} = icmp ne ptr ${slot}, null`);
+    const slotFrom = B.currentLabel();
+    B.condBr(present, slots, extra);
+    B.startBlock(slots);
+    const addr = B.tmp();
+    B.line(`${addr} = phi ptr [ ${own}, %${ownFrom} ], [ ${slot}, %${slotFrom} ]`);
+    // An inline union field answers a private stack box, as a plain read does.
+    const loaded = inline
+      ? this.inlineFieldUnion(addr, type)
+      : this.loadRecordField(addr, type, false);
+    const hit = isRefCounted(type) ? this.retainFrame(loaded, type) : loaded;
+    const hitFrom = B.currentLabel();
+    B.br(answer);
+    B.startBlock(extra);
+    const stored = this.partialViewExtra(objName, field);
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${stored}, null`);
+    const trap = B.newLabel("pf.absent");
+    const convert = B.newLabel("pf.convert");
+    B.condBr(absent, trap, convert);
+    B.startBlock(trap);
+    absentTrapLines(
+      B,
+      (text) => this.cstr(text),
+      (decl) => this.declare(decl),
+    );
+    B.startBlock(convert);
+    const path = B.slot();
+    B.entryAllocas.push(`${path} = alloca %ScrDynPath`);
+    const parentPtr = B.tmp();
+    const keyPtr = B.tmp();
+    const indexPtr = B.tmp();
+    B.line(`${parentPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 0`);
+    B.line(`store ptr null, ptr ${parentPtr}`);
+    B.line(`${keyPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 1`);
+    B.line(`store ptr ${this.cstr(field)}, ptr ${keyPtr}`);
+    B.line(`${indexPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 2`);
+    B.line(`store ${this.sizeType} 0, ptr ${indexPtr}`);
+    const helper = this.dyn.dynCheckHelper(type);
+    const ty = this.llType(type);
+    const checked = B.tmp();
+    B.line(
+      `${checked} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${stored}, ptr ${path})`,
+    );
+    const convertFrom = B.currentLabel();
+    B.br(answer);
+    B.startBlock(answer);
+    const value = B.tmp();
+    B.line(`${value} = phi ${ty} [ ${hit}, %${hitFrom} ], [ ${checked}, %${convertFrom} ]`);
+    return { name: value, type };
+  }
+
+  /** Stores `value` into field `field` of `obj` (shape `shapeId`) where a
+   * PARTIAL view may lack it, calling `storeAt` with the address to write.
+   * A field the viewed record does not declare is kept as a boxed property
+   * in the view's extra store, where reflection and a later read see it;
+   * `released` gives up a caller reference the frame does not own. */
+  storePartialField(
+    objName: string,
+    shapeId: string,
+    field: string,
+    type: IrType,
+    value: LlValue,
+    storeAt: (ptr: string) => void,
+    released?: () => void,
+  ): void {
+    const B = this.B;
+    const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    const isView = B.tmp();
+    const notView = B.newLabel("ps.slot");
+    const view = B.newLabel("ps.view");
+    const present = B.newLabel("ps.present");
+    const store = B.newLabel("ps.store");
+    const extra = B.newLabel("ps.extra");
+    const done = B.newLabel("ps.done");
+    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+      B.line(line.trimStart());
+    B.condBr(isView, view, notView);
+    B.startBlock(notView);
+    const own = B.tmp();
+    B.line(
+      `${own} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
+    );
+    const ownFrom = B.currentLabel();
+    B.br(store);
+    B.startBlock(view);
+    const slot = this.partialViewSlot(objName, shapeId, field);
+    const hasSlot = B.tmp();
+    B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+    B.condBr(hasSlot, present, extra);
+    B.startBlock(present);
+    const presentFrom = B.currentLabel();
+    B.br(store);
+    // One store site whichever slot answers: the value's frame ownership
+    // ends in one place, whether the write runs on this program's path or
+    // on the other branch of the test.
+    B.startBlock(store);
+    const addr = B.tmp();
+    B.line(`${addr} = phi ptr [ ${own}, %${ownFrom} ], [ ${slot}, %${presentFrom} ]`);
+    storeAt(addr);
+    B.br(done);
+    B.startBlock(extra);
+    const boxed = B.tmp();
+    const box = this.dyn.toDynHelper(type);
+    B.line(`${boxed} = call ptr @${box}(${this.llType(type)} ${value.name})`);
+    this.declare(`declare void @scr_record_view_extra_set(ptr, ptr, ${this.sizeType}, ptr)`);
+    B.line(
+      `call void @scr_record_view_extra_set(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")}, ptr ${boxed})`,
+    );
+    released?.();
+    B.br(done);
+    B.startBlock(done);
+  }
+
   /** The overflow map's slot pointer on an index-signature shape. */
   recordOvfPtr(objName: string, shapeId: string): string {
     const shape = this.recordShape(shapeId);
@@ -6320,7 +6553,9 @@ export class LlEmitter {
       B.startBlock(pad);
       const exception = B.tmp();
       B.line(`${exception} = landingpad { ptr, i32 } cleanup`);
-      for (const index of borrowed) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
+      for (const index of borrowed)
+        if (!this.isTreeValue(fn.params[index]!.type))
+          this.releaseFrame(`%p${index}`, fn.params[index]!.type);
       this.declare(UNWIND_RESUME_DECLARATION);
       B.resumeUnwind(exception);
       B.startBlock(ok);
@@ -6345,8 +6580,11 @@ export class LlEmitter {
       result = B.tmp();
       B.line(`${result} = load ptr, ptr ${slot}`);
     }
+    // A tree value is passed by reference to its owner and never counted,
+    // so the wrapper has nothing to drop for it.
     for (const index of borrowed)
-      if (!kept.has(index)) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
+      if (!kept.has(index) && !this.isTreeValue(fn.params[index]!.type))
+        this.releaseFrame(`%p${index}`, fn.params[index]!.type);
     B.terminate(ret === "void" ? "ret void" : `ret ${ret} ${result}`);
     const symbol =
       kept.size > 0 ? `${mangleBorrowedFunction(fn.name)}.virtual` : mangleFunction(fn.name);
@@ -6595,6 +6833,16 @@ export class LlEmitter {
   /** Emits the move of a noted last read: the slot is cleared, so scope
    * exits release nothing and the read's owned temp carries the reference. */
   takeLastUseMove(e: IrExpr, slot: string, type: IrType): boolean {
+    if (this.isTreeValue(e.type)) {
+      // A tree value has one owner and no count: every read of it that the
+      // plan accepted IS its transfer (backend/tree-classes.ts records the
+      // expression), so the read takes the reference exactly as a last-use
+      // move does. A read the plan did not record would copy the node,
+      // which retainCall refuses.
+      if (this.treeMoves?.delete(e) !== true) return false;
+      this.B.line(`store ptr null, ptr ${slot}`);
+      return true;
+    }
     if (this.lastUseMoves.get(e) !== slot || !typeEquals(type, e.type)) return false;
     this.lastUseMoves.delete(e);
     this.B.line(`store ptr null, ptr ${slot}`);
@@ -8083,6 +8331,11 @@ export class LlEmitter {
   /** Group arenas (arenas.ts): the plan, the list slot of each root and
    * call region, and which locals' scopes drop which roots' arenas. */
   arenas: ArenaPlan | null = null;
+  /** The varRef reads the tree-class plan proved move a node out of its
+   * local (backend/tree-classes.ts). Each one emits its own last-use move:
+   * the source slot is nulled and the value taken without a retain, since
+   * a tree instance has no count to raise. */
+  private treeMoves: Set<IrExpr> | null = null;
   private arenaSlots = new Map<Node, string>();
   /** The frames emitStmtBody opens for whole statements (arenas only). */
   readonly statementFrames = new Set<LlValue[]>();
@@ -8577,6 +8830,8 @@ export class LlEmitter {
     overflowOnly: boolean,
     loc?: SrcLoc,
     missNaN = false,
+    missInto: (() => void) | null = null,
+    read: IrExpr | null = null,
   ): void {
     return keyedRecordReadInto(
       this,
@@ -8589,6 +8844,8 @@ export class LlEmitter {
       overflowOnly,
       loc,
       missNaN,
+      missInto,
+      read,
     );
   }
 

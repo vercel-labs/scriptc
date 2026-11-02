@@ -37,8 +37,10 @@ import {
   assertedOptionalExtension,
   hostedStorageView,
   hostsAll,
+  recordViewHosted,
 } from "./expressions/hosted-narrowing.js";
 import { assertedOnlyMemberWrite } from "./expressions/asserted-receiver.js";
+import { assertionViewCopy, bindingIdentityUse, bindingWrite } from "./divergences.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
@@ -109,7 +111,12 @@ import {
   lowerYieldStarStatement,
   type GenType,
 } from "./lower-generators.js";
-import { classAsyncGeneratorIterator, lowerForAwaitBuiltin } from "./lower-async-iteration.js";
+import {
+  classAsyncGeneratorIterator,
+  isNodeReadableIteratorSource,
+  isWebReadableIteratorSource,
+  lowerForAwaitBuiltin,
+} from "./lower-async-iteration.js";
 import {
   BOOL,
   BYTES_U8,
@@ -6837,6 +6844,17 @@ export function lowerVarDecl(
       g.type = raw.type;
       notePreservedLayout(lowerer, decl);
     }
+    // The same for a module const initialized by an assertion: the value's
+    // storage already answers the asserted view (narrowing.ts), so the
+    // module holds that layout and writes through it reach the object.
+    if (
+      !isVarDeclared(decl) &&
+      (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+      assertionKeepsStorageLayout(lowerer, decl, raw.type, g.type)
+    ) {
+      g.type = raw.type;
+      notePreservedLayout(lowerer, decl);
+    }
     if (
       !isVarDeclared(decl) &&
       keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
@@ -6857,6 +6875,7 @@ export function lowerVarDecl(
       lowerer.runtimeOptionalArithmeticGlobals.add(g);
     }
     const init = lowerer.coerceInto(decl.initializer, raw, g.type);
+    refuseAssertionViewWrite(lowerer, decl);
     return {
       kind: "assign",
       localId: g.id,
@@ -7443,16 +7462,9 @@ export function lowerVarDecl(
   // the stored type hosts (`const view: Route & { order: number } = ...`)
   // keeps it too: coercing into the annotated layout would copy the
   // value and read members the writes have not created yet.
-  if (
-    !isLet &&
-    decl.initializer &&
-    isAssertionInitializer(decl.initializer) &&
-    (settledType.kind === "union" || settledType.kind === "record") &&
-    (init.type.kind === "union" || init.type.kind === "record") &&
-    (hostsAll(lowerer, init.type, settledType) ||
-      assertedOptionalExtension(lowerer, init.type, settledType))
-  ) {
+  if (!isLet && assertionKeepsStorageLayout(lowerer, decl, init.type, settledType)) {
     settledType = init.type;
+    notePreservedLayout(lowerer, decl);
   }
   // An exact class behind a generic interface keeps its native
   // representation so generic calls can specialize against its body.
@@ -7483,6 +7495,7 @@ export function lowerVarDecl(
   // Slot coercion: `const r: A | B = bValue;` wraps implicitly; width
   // subtyping (`const p: {a: number} = wider;`) is rejected, not coerced.
   init = lowerer.coerceInto(decl.initializer, init, settledType);
+  refuseAssertionViewWrite(lowerer, decl);
   const local = lowerer.declareLocal(decl.name, decl.name.text, settledType, isLet);
   if (runtimeStringArithmetic && init.type.kind === "union") {
     lowerer.runtimeOptionalArithmeticLocals.add(lowerer.runtimeOptionalRootOf(local));
@@ -11811,7 +11824,14 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   const awaitArray =
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";
   if (stmt.awaitModifier && !awaitArray) {
-    {
+    // A web ReadableStream's and a Node readable's iterator views both type
+    // as AsyncIterableIterator, which lowers like the async protocols — but
+    // the loop consumes each view through its own lowering
+    // (lowerForAwaitBuiltin below).
+    if (
+      !isWebReadableIteratorSource(lowerer, stmt.expression) &&
+      !isNodeReadableIteratorSource(lowerer, stmt.expression)
+    ) {
       const genT =
         lowerer.stageSourceType(stmt.expression) ??
         lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
@@ -14776,4 +14796,66 @@ function isAssertionInitializer(node: ts.Expression): boolean {
   let e = node;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return ts.isAsExpression(e) || ts.isTypeAssertion(e);
+}
+
+/** `const view = route as Route & { order: number }`: the asserted type
+ * refines the record arms the value is stored in (hosted-narrowing.ts), and
+ * a projection (`{ text: string }` over `TextBlock`) only names members the
+ * stored record already holds. Either way Node erases the assertion and
+ * keeps the object, so the binding keeps the value's layout and its writes
+ * reach that object instead of a copy. */
+function assertionKeepsStorageLayout(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  init: IrType,
+  settled: IrType,
+): boolean {
+  if (decl.initializer === undefined || !isAssertionInitializer(decl.initializer)) return false;
+  if (settled.kind !== "union" && settled.kind !== "record") return false;
+  if (init.kind !== "union" && init.kind !== "record") return false;
+  if (hostsAll(lowerer, init, settled)) return true;
+  // An assertion that only ADDS optional members (`item as Base & { icons?:
+  // unknown }`) keeps the value too: Node erases it, and the added members
+  // have no slot in the stored layout, so reads answer them through the
+  // layout's kept source (assertedOnlyFieldRead) instead of a width copy's
+  // absent slot.
+  if (assertedOptionalExtension(lowerer, init, settled)) return true;
+  // A projection (`{ text: string }` over `TextBlock`) keeps the stored
+  // record only when the binding's identity is observable through it
+  // (a write, an identity comparison). A read-only view is equal either
+  // way, keeps the copy narrowing.ts made, and stays reported.
+  if (!bindingIdentityUse(decl, lowerer.checker)) return false;
+  return (
+    init.kind === "record" &&
+    settled.kind === "record" &&
+    recordViewHosted(lowerer, init.shapeId, settled.shapeId)
+  );
+}
+
+/** `const v = x as { a: number; extra?: string }; v.extra = "x"`: the
+ * assertion's view names a member the value's own layout does not, so the
+ * binding receives a COPY of `x` and the write lands on that copy — Node
+ * erases the assertion and adds the property to `x` itself, so the write
+ * must reach a caller-visible object. Reads of a copy are equal either
+ * way, and so is a nested write through a member the copy shares (the same
+ * child object in both), so only a write to the copy's own field is
+ * refused, by name. Where the layouts agree the binding keeps the value's
+ * storage instead (assertionKeepsStorageLayout), narrowing.ts and
+ * lowerVarDecl record that in layoutKeptNodes, and nothing here fires: an
+ * assertion that only adds optional members keeps the layout its reads
+ * answer from, and a write to an added member is refused where it happens
+ * (assertedOnlyMemberWrite). Runs for file-scope and local bindings alike,
+ * after the declaration has been lowered (so the keep is known). */
+function refuseAssertionViewWrite(lowerer: Lowerer, decl: ts.VariableDeclaration): void {
+  if (decl.initializer === undefined || !isAssertionInitializer(decl.initializer)) return;
+  if (lowerer.layoutKeptNodes.has(decl.initializer)) return;
+  const copy = assertionViewCopy(lowerer, decl.initializer);
+  if (copy === null) return;
+  const write = bindingWrite(lowerer, decl);
+  if (write === null) return;
+  lowerer.unsupported(
+    "SC1090",
+    decl,
+    `writing '${write.text}' through '${decl.name.getText()}', a copy of the '${copy.source}' value the assertion views as '${copy.target}' (the write would land on the copy; write through the original binding, or declare the member on the value's type)`,
+  );
 }

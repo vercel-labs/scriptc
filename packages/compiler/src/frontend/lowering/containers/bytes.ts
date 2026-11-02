@@ -330,10 +330,14 @@ function bytesCallbackHelper(
     type: F64,
     loc,
   });
+  // A mutable-buffers program's receiver length can shrink inside the
+  // callback (the buffer resizes or detaches), while Node's visit captures
+  // %TypedArrayLength once: the loop bound is the captured `n` there.
+  const bound = (): IrExpr => (lowerer.buffersMutable ? n() : length());
   const inRange = (): IrExpr =>
     backward
       ? { kind: "bin", op: ">=", left: i(), right: numLit(0, loc), type: BOOL, loc }
-      : { kind: "bin", op: "<", left: i(), right: length(), type: BOOL, loc };
+      : { kind: "bin", op: "<", left: i(), right: bound(), type: BOOL, loc };
   const advance = (): IrStmt => ({
     kind: "assign",
     localId: "i.0",
@@ -373,7 +377,27 @@ function bytesCallbackHelper(
     { localId: "f.0", name: "f", type: fnT },
     ...(hasInit ? [{ localId: "z.0", name: "z", type: resultT }] : []),
   ];
-  const visit: IrStmt[] = [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
+  // A mutable-buffers program's visit runs to the captured length even after
+  // the buffer shrinks under it, where Node's element Get answers undefined.
+  // The typed model has no undefined in an element slot, so an out-of-view
+  // index reads as NaN, which is what every numeric use of undefined converts
+  // to. The callback still runs, and the result array is independent of the
+  // source, so its element Set always stores.
+  const inView = (): IrExpr =>
+    lowerer.buffersMutable
+      ? { kind: "bin", op: "<", left: i(), right: length(), type: BOOL, loc }
+      : boolLit(true, loc);
+  const visit: IrStmt[] = lowerer.buffersMutable
+    ? [
+        {
+          kind: "if",
+          cond: inView(),
+          then: [{ kind: "assign", localId: "v.0", value: at(i()), loc }],
+          else_: [{ kind: "assign", localId: "v.0", value: numLit(NaN, loc), loc }],
+          loc,
+        },
+      ]
+    : [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
   let seeded = false;
   const prologue: IrStmt[] = [];
   let epilogue: IrStmt[];
@@ -389,13 +413,8 @@ function bytesCallbackHelper(
         init: { kind: "bytesNew", source: n(), type: bytesT, loc },
         loc,
       });
-      visit.push({
-        kind: "bytesSet",
-        arr: acc(),
-        index: i(),
-        value: lowerer.coerceToExpected(callback(), F64),
-        loc,
-      });
+      const mapped = lowerer.coerceToExpected(callback(), F64);
+      visit.push({ kind: "bytesSet", arr: acc(), index: i(), value: mapped, loc });
       if (bytesT.elem === "u8") prologue.push(copyBrand(acc()));
       epilogue = [ret(acc())];
       break;
@@ -618,7 +637,16 @@ export function lowerBytesNew(
     lowerer.isStdlibSymbol(symbol)
   ) {
     const args = expr.arguments?.nodes ?? [];
-    if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    // `new ArrayBuffer(len, { maxByteLength })` is a resizable, growable or
+    // detachable buffer (t262-dc C2). Only a JavaScript source may build
+    // one: the TypeScript surface keeps the fixed-length refusal.
+    const options =
+      args.length === 2 &&
+      !args.some(ts.isSpreadElement) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? args[1]
+        : undefined;
+    if (args.length > (options ? 2 : 1) || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         "resizable ArrayBuffer construction",
         expr,
@@ -628,10 +656,22 @@ export function lowerBytesNew(
     const length = args[0]
       ? lowerer.coerceInto(args[0], lowerer.lowerExpr(args[0]), DYN)
       : dynUndefinedExpr(locOf(expr));
+    const shared = ts.symbolName(symbol) === "SharedArrayBuffer";
+    if (options) {
+      // A resizable or growable construction is the mutableBuffers fact by
+      // itself: the buffer it builds can change length later.
+      lowerer.buffersMutable = true;
+      return {
+        kind: "libCall",
+        fn: shared ? "sharedArrayBuffer.newGrowable" : "arrayBuffer.newResizable",
+        args: [length, lowerer.coerceInto(options, lowerer.lowerExpr(options), DYN)],
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
     return {
       kind: "libCall",
-      fn:
-        ts.symbolName(symbol) === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
+      fn: shared ? "sharedArrayBuffer.new" : "arrayBuffer.new",
       args: [length],
       type: DYN,
       loc: locOf(expr),

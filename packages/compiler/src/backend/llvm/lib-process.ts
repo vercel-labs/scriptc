@@ -677,6 +677,40 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`call void @${sym}(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "stdin.onReadable") {
+    // A 'readable' listener is a consumer too: the loop watches fd 0 and
+    // stays alive until EOF. Its closure's own entry takes the callback
+    // pointer (no adapter — the listener has no parameters).
+    host.usesTimers = true;
+    if (e.args[0]!.type.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: stdin.onReadable callback not a func");
+    const cb = host.emitExpr(e.args[0]!);
+    const once = host.emitExpr(e.args[1]!);
+    host.toHeap(cb);
+    host.declare(`declare void @scr_stdin_on_readable(ptr, i1 zeroext)`);
+    B.line(`call void @scr_stdin_on_readable(ptr ${cb.name}, i1 ${once.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "stdin.read") {
+    // +1 chunk or NULL → the `Uint8Array | null` union, constructed
+    // type-directedly like readable.read; the pending check runs between
+    // the call and the wrap (a size above 1 GiB threw ERR_OUT_OF_RANGE).
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError("llvm emitter bug: stdin.read result is not a union");
+    const def = host.unionsById.get(e.type.unionId);
+    const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes") : -1;
+    const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+    if (bytesTag < 0 || nullTag < 0)
+      throw new InternalCompilerError("llvm emitter bug: stdin.read union lacks its arms");
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.declare(`declare ptr @scr_stdin_read_bytes(i1 zeroext, double)`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @scr_stdin_read_bytes(i1 ${args[0]!.name}, double ${args[1]!.name})`);
+    const b = host.own({ name: raw, type: def!.arms[bytesTag]! });
+    host.emitPendingCheck();
+    host.toHeap(b);
+    return host.wrapNullable(raw, raw, def!.arms[bytesTag]!, bytesTag, e.type, nullTag);
+  }
   if (e.fn === "stdin.onKeypress") {
     // The listener, a checked-dynamic function, joins process.stdin's
     // keypress listeners (the runtime retains it).

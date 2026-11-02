@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8827-generic-optional-constraint-read.ts"
+ ],
+ "diags": []
+}

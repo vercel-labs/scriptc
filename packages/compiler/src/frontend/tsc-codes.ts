@@ -48,7 +48,10 @@ export const ADOPTED_OPTIONS = [
  * preflight codes — SC0005 (duplicate lexical declaration in a block or
  * switch statement list), SC0006 (lexical declaration colliding with a
  * `var` in the same block), SC0007 (declaration in a single-statement
- * position). A relaxation that needs one of those rules to keep firing must
+ * position), SC0008 (an ImportCall argument list the grammar does not
+ * allow), SC0009 (a private name with no declaring enclosing class) and
+ * SC0010 (an assignment target that is not a variable or property access).
+ * A relaxation that needs one of those rules to keep firing must
  * land with the matching rule in that pass, not rely on this table. */
 
 export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
@@ -205,27 +208,618 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // ---- The checker's OPINIONS about legal JavaScript ----
   // Each diagnostic below reports that a construct is unusual for TypeScript,
   // never that it is illegal JavaScript: Node gives it a defined runtime
-  // meaning and the lowerer already builds it. TypeScript input keeps all
-  // three.
+  // meaning and the lowerer already builds it. TypeScript input keeps every
+  // one of them.
   //
   // 2695, an unused comma-operand left side (`(0, fn)`, `(0, [[x]] = [])`):
   // the operator evaluates the left operand for its effects and yields the
-  // right one; the lowerer emits a sequence expression for it.
+  // right one; the lowerer emits a sequence expression for it. The 2026-10-29
+  // campaign baseline records 555 refusal variants whose diagnostics include
+  // this message, 508 of them with no other diagnostic, across 281 files;
+  // corpus 8700 pins the lowered list against Node.
   2695,
   // 18050, `null`/`undefined` in an arithmetic or bitwise position
   // (`null + undefined`, `null * 3`): ToNumber gives them 0 and NaN, which
   // the numeric coercion implements for a unit literal; the demand comes
-  // from strictNullChecks, not from JavaScript.
+  // from strictNullChecks, not from JavaScript. Baseline: 416 refusal variants
+  // (390 sole, 208 files); corpus 8702 pins the numeric result against Node.
   18050,
   // 7057, a `yield` in a generator with no return-type annotation: the
   // generator protocol is untyped in JavaScript and the sent value is
   // whatever the caller passes. The generator lowering owns the channels.
+  // Baseline: 312 refusal variants (275 sole, 165 files); corpus 8703 pins
+  // the sent values and the completion against Node.
   7057,
+  // 7032, a set accessor whose parameter has no type annotation ("property
+  // implicitly has type 'any'"): a JavaScript setter's parameter is whatever
+  // the caller passes. The lowering gives the parameter checked-dynamic
+  // storage (`paramShape`), and a read of it stays dynamic rather than
+  // checking the caller's value back into the type the checker inferred from
+  // a twin getter (jsWidenedBindings), so the stored value keeps its runtime
+  // identity. A JSDoc `@param` type is an annotation like any other and keeps
+  // its declared storage. Corpus 8701 stores a number, a string, an object,
+  // null and undefined through object-literal and class setters and reads
+  // each one back unchanged, plus a class setter that converts, a setter that
+  // appends to an array, and a setter with no twin getter. A *private* setter
+  // stays reported (`suppressedJsStrictness7`): the private-element lowering
+  // does not yet implement the shadowing and brand-check semantics.
+  7032,
 ]);
+
+/* NOT relaxed, though each is legal JavaScript the checker merely dislikes:
+ * the construct needs a lowering that does not exist yet, so admitting the
+ * code would compile a program the lowerer cannot build correctly.
+ *
+ *  - TS2365 (an operator on operands the lowerer cannot convert, `true + 1`)
+ *    needs ToPrimitive on a static operand; the arithmetic lowering answers
+ *    SC1043. Its TS2362/2363 siblings (an arithmetic operand of the wrong
+ *    type) never fire on a JS source — TypeScript only demands an operand
+ *    type it knows, and an unannotated JavaScript value is `any` — so the pair
+ *    has nothing to relax here. The invalid-assignment-target forms the
+ *    checker does report stay refused too: `f() += g()` (TS2364) and `f()++`
+ *    (TS2357) are legal JavaScript, but Node CALLS `f` and then throws a
+ *    ReferenceError ("Invalid left-hand side in assignment", "Invalid
+ *    left-hand side expression in postfix operation"), and the lowering has
+ *    no invalid-target path that calls and then throws. TS2362/2363 keep
+ *    their `any`-only admission below.
+ *  - TS2508 ("No base constructor has the specified number of type
+ *    arguments", `class X extends Iterator {}`) needs extending a class
+ *    declared outside the program; heritage lowering answers SC1090. The
+ *    baseline records 296 refusal variants (268 sole, 148 files), every one a
+ *    stdlib heritage (`extends Iterator`, `Iterator.from`,
+ *    `Iterator.prototype.<method>` non-constructible tests).
+ *  - TS1166 (a non-literal class-field key) needs a field the lowering can
+ *    declare from a runtime key; the class lowering answers SC1090.
+ *  - TS2704 ("The operand of a 'delete' operator cannot be a read-only
+ *    property") is the `Object.defineProperty(obj, "p", ...)` idiom. The
+ *    delete lowering is exact for an object literal and for a dynamic
+ *    receiver, but a delete of a BUILTIN's own property
+ *    (`delete String.prototype.charAt.length`,
+ *    `delete Promise[Symbol.toStringTag]`) compiles and leaves the property
+ *    in place, because the runtime delete has no view of the builtin's
+ *    synthesized properties. Admitting the code therefore compiles programs
+ *    that differ from Node (on the relaxed experiment tree, Test262
+ *    Object/prototype/toLocaleString/S15.2.4.3_A9,
+ *    String/prototype/charAt/S15.5.4.4_A9 and indexOf/S15.5.4.7_A9 fail).
+ *    The lowering needs a builtin-receiver fence first. The baseline records
+ *    255 refusal variants (191 sole, 162 files) for this code.
+ *  - TS2464 (a computed property name whose type is not a literal) is exact
+ *    for an OBJECT literal (the lowering converts a dynamic key with
+ *    ToPropertyKey; the relaxed experiment tree passed every object-literal
+ *    computed-name test), but a CLASS element name
+ *    takes the class lowering's stable-key path, which neither coerces the
+ *    key nor keeps Node's evaluation order: admitting the code makes
+ *    `class C { [key]() {} }` with a ToPrimitive key compile and disagree
+ *    with Node (Test262 computed-property-names/to-name-side-effects/class.js
+ *    and expressions/class/elements/evaluation-error/computed-name-toprimitive-*
+ *    fail). Class element names need the same ToPropertyKey lowering, or a
+ *    refusal, before the code can be admitted.
+ */
 
 /* Arithmetic on an `any` operand (TS2362/2363/2365 fire when the other
  * side is bigint-ish): plain JS — relaxed only when 'any' participates. */
 export const JS_ANY_OPERATOR_CODES: ReadonlySet<number> = new Set([2362, 2363, 2365]);
+
+/* ── The triage table for the SC0001 tail ──────────────────────────────
+ *
+ * Every other TypeScript code that reaches SC0001 in a JavaScript source
+ * gets one decision here. The codes the W1.1/W1.2 relaxations own (2695,
+ * 7032, 18050, 2508, 7057, 2704, 2464, 2365) are absent on purpose: they
+ * are admitted by the sets above, not triaged here.
+ *
+ *   relax    legal JavaScript whose construct the lowering already builds
+ *            Node-exactly. The code is admitted; every admitted code is
+ *            proved by a differential corpus program.
+ *   keep     Node rejects the program too (a JavaScript grammar or early
+ *            error, or a ReferenceError/TypeError the language guarantees),
+ *            so tsc's own text is the honest diagnostic and stays SC0001.
+ *   refuse   legal JavaScript scriptc does not lower, and no lowering
+ *            change is claimed: SC1090 names the construct.
+ *   rewrite  legal JavaScript whose admission needs a lowering change:
+ *            SC1090 names the construct today and marks the work.
+ *
+ * refuse and rewrite both emit a named SC1090 diagnostic at the
+ * diagnostic's own location. A code cannot be relaxed and kept at once;
+ * the table is exhaustive over the codes the Test262 journals observed
+ * (tsc-codes.test.ts enforces that), so a new code cannot slip through
+ * untriaged.
+ */
+
+export type JsTscCodeAction = "relax" | "refuse" | "rewrite" | "keep";
+
+export type JsTscCodeTriage =
+  /** Admitted: the construct already lowers to Node-exact behavior. */
+  | { action: "relax"; why: string }
+  /** Kept as SC0001: Node rejects this program too. */
+  | { action: "keep"; why: string }
+  /** SC1090 names an unlowered construct. */
+  | { action: "refuse"; feature: string; hint: string }
+  /** SC1090 names a construct whose lowering is still missing. */
+  | { action: "rewrite"; feature: string; hint: string };
+
+const KEEP_GRAMMAR =
+  "a JavaScript grammar or early error: Node rejects this source with a SyntaxError, and tsc's text describes that rule";
+const KEEP_EARLY_ERROR =
+  "an early error whose runtime failure Node raises too (a ReferenceError or TypeError at the site); tsc's text names the rule";
+
+const RELAX = (why: string): JsTscCodeTriage => ({ action: "relax", why });
+const KEEP = (why: string): JsTscCodeTriage => ({ action: "keep", why });
+const REFUSE = (feature: string, hint: string): JsTscCodeTriage => ({
+  action: "refuse",
+  feature,
+  hint,
+});
+const REWRITE = (feature: string, hint: string): JsTscCodeTriage => ({
+  action: "rewrite",
+  feature,
+  hint,
+});
+
+const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
+  [1005, KEEP(KEEP_GRAMMAR)],
+  [1010, KEEP(KEEP_GRAMMAR)],
+  [1014, KEEP(KEEP_GRAMMAR)],
+  [1042, KEEP(KEEP_GRAMMAR)],
+  [1052, KEEP(KEEP_GRAMMAR)],
+  [1054, KEEP(KEEP_GRAMMAR)],
+  [1089, KEEP(KEEP_GRAMMAR)],
+  [1101, KEEP(KEEP_GRAMMAR)],
+  [1102, KEEP(KEEP_GRAMMAR)],
+  [1104, KEEP(KEEP_GRAMMAR)],
+  [1105, KEEP(KEEP_GRAMMAR)],
+  [1106, KEEP(KEEP_GRAMMAR)],
+  [1109, KEEP(KEEP_GRAMMAR)],
+  [1113, KEEP(KEEP_GRAMMAR)],
+  [1114, KEEP(KEEP_GRAMMAR)],
+  [1117, KEEP(KEEP_GRAMMAR)],
+  [1119, KEEP(KEEP_GRAMMAR)],
+  [1121, KEEP(KEEP_GRAMMAR)],
+  [1123, KEEP(KEEP_GRAMMAR)],
+  [1125, KEEP(KEEP_GRAMMAR)],
+  [1127, KEEP(KEEP_GRAMMAR)],
+  [1134, KEEP(KEEP_GRAMMAR)],
+  [1142, KEEP(KEEP_GRAMMAR)],
+  [1156, KEEP(KEEP_GRAMMAR)],
+  [1163, KEEP(KEEP_GRAMMAR)],
+  [
+    1166,
+    REWRITE(
+      "a computed class field name whose type is not a string, number, or symbol literal",
+      "the class-field lowering needs the key computed at class-definition time, which is the value Node uses",
+    ),
+  ],
+  [1189, KEEP(KEEP_GRAMMAR)],
+  [1198, KEEP(KEEP_GRAMMAR)],
+  [1200, KEEP(KEEP_GRAMMAR)],
+  [1210, KEEP(KEEP_GRAMMAR)],
+  [1214, KEEP(KEEP_GRAMMAR)],
+  [1215, KEEP(KEEP_GRAMMAR)],
+  [1260, KEEP(KEEP_GRAMMAR)],
+  [1262, KEEP(KEEP_GRAMMAR)],
+  [1312, KEEP(KEEP_GRAMMAR)],
+  [
+    1313,
+    RELAX(
+      "an empty statement as an 'if' body ('if (x) ;') is legal JavaScript, and the lowering emits nothing for the empty statement",
+    ),
+  ],
+  [
+    1320,
+    REWRITE(
+      "an 'await' operand the checker cannot prove is a promise",
+      "Node awaits any value and ignores a non-callable 'then'; the await lowering needs the hostile-'then' path",
+    ),
+  ],
+  [1329, KEEP(KEEP_GRAMMAR)],
+  [1341, KEEP(KEEP_GRAMMAR)],
+  [1359, KEEP(KEEP_GRAMMAR)],
+  [1368, KEEP(KEEP_GRAMMAR)],
+  [1451, KEEP(KEEP_GRAMMAR)],
+  [1487, KEEP(KEEP_GRAMMAR)],
+  [1488, KEEP(KEEP_GRAMMAR)],
+  [1489, KEEP(KEEP_GRAMMAR)],
+  [1492, KEEP(KEEP_GRAMMAR)],
+  [1493, KEEP(KEEP_GRAMMAR)],
+  [1494, KEEP(KEEP_GRAMMAR)],
+  [1514, KEEP(KEEP_GRAMMAR)],
+  [1532, KEEP(KEEP_GRAMMAR)],
+  [1533, KEEP(KEEP_GRAMMAR)],
+  [1534, KEEP(KEEP_GRAMMAR)],
+  [1536, KEEP(KEEP_GRAMMAR)],
+  [1539, KEEP(KEEP_GRAMMAR)],
+  [2300, KEEP(KEEP_EARLY_ERROR)],
+  [2335, KEEP(KEEP_GRAMMAR)],
+  [2337, KEEP(KEEP_GRAMMAR)],
+  [
+    2348,
+    REWRITE(
+      "calling a class constructor without 'new'",
+      "Node throws the 'Class constructor ... cannot be invoked without new' TypeError at the call",
+    ),
+  ],
+  [
+    2356,
+    REFUSE(
+      "arithmetic on an operand the checker types as non-numeric",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [2357, KEEP(KEEP_GRAMMAR)],
+  [
+    2359,
+    REWRITE(
+      "an 'instanceof' right operand that is not callable",
+      "Node throws the 'Right-hand side of instanceof is not callable' TypeError at the expression",
+    ),
+  ],
+  [2364, KEEP(KEEP_EARLY_ERROR)],
+  [
+    2372,
+    REWRITE(
+      "a parameter default that references its own parameter",
+      "Node throws a ReferenceError when the parameter is initialized (the parameter environment's temporal dead zone)",
+    ),
+  ],
+  [
+    2373,
+    REWRITE(
+      "a parameter default that references a later parameter",
+      "Node throws a ReferenceError when the parameter is initialized (the parameter environment's temporal dead zone)",
+    ),
+  ],
+  [
+    2377,
+    REWRITE(
+      "a derived constructor that never calls 'super'",
+      "Node throws a ReferenceError when the constructor returns; the lowering needs the uninitialized-this path",
+    ),
+  ],
+  [2378, RELAX("a 'get' accessor with no return path is legal JavaScript and answers undefined")],
+  [2392, KEEP(KEEP_GRAMMAR)],
+  [2393, KEEP(KEEP_GRAMMAR)],
+  [
+    2403,
+    REWRITE(
+      "a 'var' redeclared with a value of a different type",
+      "the lowering pins the first declaration's storage type; a redeclaration must widen it (sloppy Annex B semantics)",
+    ),
+  ],
+  [2405, KEEP(KEEP_GRAMMAR)],
+  [2406, KEEP(KEEP_GRAMMAR)],
+  [
+    2407,
+    REFUSE(
+      "'for...in' over a value the checker types 'never'",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [2408, KEEP(KEEP_GRAMMAR)],
+  [
+    2409,
+    REWRITE(
+      "a constructor signature whose return type is not the instance type",
+      "a JSDoc @constructor signature has to describe the instance it builds",
+    ),
+  ],
+  [
+    2416,
+    REFUSE(
+      "a subclass member whose type differs from its base's",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2417,
+    REFUSE(
+      "a subclass static side whose type differs from its base's",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2418,
+    REFUSE(
+      "a computed class member whose value type differs from the checker's expectation",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2447,
+    RELAX("'&' on booleans is legal JavaScript: the operator converts both operands with ToInt32"),
+  ],
+  [
+    2448,
+    REWRITE(
+      "a block-scoped variable read above its declaration",
+      "Node throws a ReferenceError (the temporal dead zone); the lowering needs a TDZ-carrying binding",
+    ),
+  ],
+  [2451, KEEP(KEEP_GRAMMAR)],
+  [
+    2454,
+    REFUSE(
+      "a 'var' read before its assignment",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2469,
+    REWRITE(
+      "the '+' operator on a symbol operand",
+      "Node throws a TypeError ('Cannot convert a Symbol value to a string') at the operator",
+    ),
+  ],
+  [2481, KEEP(KEEP_GRAMMAR)],
+  [2487, KEEP(KEEP_GRAMMAR)],
+  [
+    2490,
+    REWRITE(
+      "an iterator whose 'next()' result the checker cannot prove carries a 'value' property",
+      "the iteration protocols throw a TypeError when 'next()' returns a non-object",
+    ),
+  ],
+  [2491, KEEP(KEEP_GRAMMAR)],
+  [2492, KEEP(KEEP_EARLY_ERROR)],
+  [
+    2493,
+    REWRITE(
+      "reading an element of an empty tuple-typed array",
+      "the read answers undefined in JavaScript; the tuple lowering must not assume the element exists",
+    ),
+  ],
+  [
+    2506,
+    REWRITE(
+      "a class whose 'extends' expression references the class itself",
+      "Node throws a ReferenceError when the class is defined",
+    ),
+  ],
+  [
+    2511,
+    REFUSE(
+      "instantiating a class the declarations mark 'abstract'",
+      "the class throws TypeErrors under Node's own semantics; declare a concrete subclass or construct the value in a Node island",
+    ),
+  ],
+  [2524, KEEP(KEEP_GRAMMAR)],
+  [
+    2537,
+    REFUSE(
+      "an index read over a type with no matching index signature",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2539,
+    REWRITE(
+      "assigning to 'undefined'",
+      "sloppy mode ignores the write and strict mode throws a TypeError; the lowering needs the mode-dependent path",
+    ),
+  ],
+  [
+    2542,
+    REFUSE(
+      "a write through a readonly index signature",
+      "readonly is an annotation: whether the write succeeds or throws depends on the object's frozen state at run time, which the lowering does not model",
+    ),
+  ],
+  [
+    2547,
+    REWRITE(
+      "an async iterator whose 'next()' result the checker cannot prove is a promise for a 'value' object",
+      "the async iteration protocol throws a TypeError when the promise resolves to a non-object",
+    ),
+  ],
+  [
+    2565,
+    REFUSE(
+      "reading 'prototype' before its assignment",
+      "the declaration's definite-assignment rule; assign 'prototype' before the read",
+    ),
+  ],
+  [
+    2576,
+    REFUSE(
+      "an instance read of a member the checker knows only as static",
+      "the instance read answers undefined in JavaScript; declare the member on the instance to read it, or reach the class object",
+    ),
+  ],
+  [
+    2588,
+    REWRITE(
+      "assigning to a 'const' binding",
+      "Node throws a TypeError at the assignment (strict mode, and always in modules)",
+    ),
+  ],
+  [
+    2629,
+    REWRITE(
+      "assigning to a class name binding",
+      "Node throws a TypeError at the assignment; the class binding is read-only",
+    ),
+  ],
+  [
+    2630,
+    REWRITE(
+      "assigning to a function declaration name",
+      "Node throws a TypeError at the assignment in strict mode and modules",
+    ),
+  ],
+  [2660, KEEP(KEEP_GRAMMAR)],
+  [2662, KEEP(KEEP_GRAMMAR)],
+  [2678, RELAX("comparing two literal values of different types is legal JavaScript")],
+  [
+    2684,
+    REWRITE(
+      "a call whose 'this' type the checker rejects",
+      "JavaScript passes whatever receiver the expression produces; the this-context lowering is the remaining gap (W6)",
+    ),
+  ],
+  [
+    2698,
+    RELAX(
+      "object spread of null or undefined is legal JavaScript: the spread contributes no properties",
+    ),
+  ],
+  [
+    2699,
+    REFUSE(
+      "a static class member named 'prototype'",
+      "Node throws a TypeError when the class is defined; rename the member",
+    ),
+  ],
+  [
+    2700,
+    REWRITE(
+      "a rest element over a null or undefined value",
+      "Node throws a TypeError when the pattern is assigned",
+    ),
+  ],
+  [
+    2703,
+    REWRITE(
+      "the operand of 'delete' is not a property reference",
+      "sloppy mode answers true and strict mode is a SyntaxError; the lowering needs the mode-dependent path",
+    ),
+  ],
+  [
+    2723,
+    REFUSE(
+      "a call to a value the checker types as possibly null or undefined",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2729,
+    REWRITE(
+      "a private field read before its initialization",
+      "Node throws a TypeError at the read",
+    ),
+  ],
+  [2736, REWRITE("unary '+' on a bigint", "Node throws a TypeError at the operator")],
+  [
+    2739,
+    REFUSE(
+      "a set-like argument the checker cannot prove implements 'has' and 'size'",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2767,
+    REWRITE(
+      "an iterator whose 'throw' property is not a method",
+      "the iteration protocol throws a TypeError at the call",
+    ),
+  ],
+  [
+    2768,
+    REWRITE(
+      "an async iterator whose 'return' property is not a method",
+      "the async iteration protocol throws a TypeError at the call",
+    ),
+  ],
+  [
+    2774,
+    RELAX(
+      "a function reference in a condition is legal JavaScript and truthy; the condition evaluates as written",
+    ),
+  ],
+  [2777, KEEP(KEEP_GRAMMAR)],
+  [
+    2783,
+    RELAX(
+      "a later property or spread overwriting an earlier property is legal JavaScript, and the last write wins",
+    ),
+  ],
+  [
+    2803,
+    REWRITE(
+      "assigning to a private method",
+      "Node throws a TypeError at the assignment; private methods are not writable",
+    ),
+  ],
+  [2815, KEEP(KEEP_GRAMMAR)],
+  [
+    2839,
+    REFUSE(
+      "a comparison the checker proves constant (two object references)",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2845,
+    REFUSE(
+      "a comparison the checker proves constant (a bigint against a non-finite number)",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2850,
+    REWRITE(
+      "a 'using' initializer that is not disposable",
+      "Node throws a TypeError when the declaration is initialized",
+    ),
+  ],
+  [2855, KEEP(KEEP_GRAMMAR)],
+  [
+    2869,
+    REFUSE(
+      "the right operand of '??' the checker proves unreachable",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2871,
+    REFUSE(
+      "an expression the checker proves always nullish",
+      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+    ),
+  ],
+  [
+    2872,
+    RELAX("an always-truthy expression is legal JavaScript; the condition evaluates as written"),
+  ],
+  [
+    2873,
+    RELAX("an always-falsy expression is legal JavaScript; the condition evaluates as written"),
+  ],
+  [
+    4104,
+    REFUSE(
+      "assigning to a readonly array type",
+      "readonly is an annotation: whether the write succeeds or throws depends on the array's frozen state at run time, which the lowering does not model",
+    ),
+  ],
+  [5076, KEEP(KEEP_GRAMMAR)],
+  [
+    7036,
+    REWRITE(
+      "a dynamic import specifier that is not statically a string",
+      "Node converts the specifier with ToString at run time, and the import lowering must follow",
+    ),
+  ],
+  [17005, KEEP(KEEP_EARLY_ERROR)],
+  [17009, KEEP(KEEP_EARLY_ERROR)],
+  [17011, KEEP(KEEP_EARLY_ERROR)],
+  [17013, KEEP(KEEP_EARLY_ERROR)],
+  [18013, KEEP(KEEP_EARLY_ERROR)],
+  [18014, KEEP(KEEP_EARLY_ERROR)],
+  [18016, KEEP(KEEP_GRAMMAR)],
+  [18030, KEEP(KEEP_EARLY_ERROR)],
+  [18037, KEEP(KEEP_EARLY_ERROR)],
+  [18041, KEEP(KEEP_EARLY_ERROR)],
+  [18058, KEEP(KEEP_EARLY_ERROR)],
+  [18059, KEEP(KEEP_EARLY_ERROR)],
+  [18061, KEEP(KEEP_GRAMMAR)],
+];
+
+/** The triage of one TypeScript code that reaches SC0001 in a JavaScript
+ * source, or null for a code this table does not cover (the W1.1/W1.2
+ * admissions above, and codes no journal has observed). */
+export const JS_TSC_CODE_TRIAGE: ReadonlyMap<number, JsTscCodeTriage> = new Map(TRIAGE_ROWS);
+
+export function jsTscCodeTriage(code: number): JsTscCodeTriage | null {
+  return JS_TSC_CODE_TRIAGE.get(code) ?? null;
+}
 
 /** True for JavaScript source file NAMES (.js/.mjs/.cjs/.jsx) — the files
  * whose types come entirely from inference (checkJs + JSDoc) and whose JS

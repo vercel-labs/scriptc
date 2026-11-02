@@ -3,7 +3,7 @@
 `run.mjs` builds files from a Node.js checkout's `test/parallel` with scriptc, runs each executable in that directory, and compares its exit status with Node's. It records a verdict per file: `pass` (the same exit code, or the same terminating signal), `fail` (a different exit code or signal), or `refused` (the build failed), with the first error line.
 
 ```bash
-git clone --depth 1 --branch v24.22.0 https://github.com/nodejs/node /path/to/node
+git clone --depth 1 --branch v24.22.1 https://github.com/nodejs/node /path/to/node
 node tests/node-parallel/run.mjs --node /path/to/node --pattern '^test-(url-|whatwg-url-|querystring)'
 ```
 

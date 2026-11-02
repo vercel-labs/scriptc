@@ -234,6 +234,10 @@ ScrDyn *scr_js_get_probe_native(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic
 /* `receiver.key = value` (value borrowed) when it replaces a writable own
  * data property or adds one the prototype chain lacks: true when done. */
 bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic);
+/* scr_js_store_probe for an object literal's member store. It answers the
+ * same; it exists so that an attribution profile (SCRIPTC_DEBUG_JS_IC_WAYS)
+ * can tell literal members from other stores by entry point. */
+bool scr_js_literal_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic);
 /* `receiver[key]` for an array element or an own data property named by a
  * string key: +1 value, or NULL. */
 ScrDyn *scr_js_keyed_probe(ScrDyn *receiver, const ScrDyn *key, ScrJsIc *ic);

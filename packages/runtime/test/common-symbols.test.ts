@@ -54,6 +54,7 @@ async function commonSymbols(label: string, compiler: string[]): Promise<string[
         `-I${join(vendorDir, "quickjs-ng")}`,
         `-I${join(vendorDir, "mbedtls", "include")}`,
         `-I${join(vendorDir, "brotli", "c", "include")}`,
+        `-I${join(vendorDir, "zstd", "lib")}`,
         ...(name === "scr_intl.c" ? icu : []),
         "-o",
         output,

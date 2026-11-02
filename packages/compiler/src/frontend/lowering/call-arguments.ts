@@ -584,6 +584,44 @@ export function omittedArgFor(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrEx
   return lowerer.wrappedUndefined(type, loc);
 }
 
+/** Complete a call through a value whose type is a checked-dynamic
+ * variadic (`rest` with no ABI spelling): the declared parameters, then
+ * the single synthetic trailing dyn array the value's lifted signature
+ * hides — the same slot the boxed call thunk fills. Callers hold the
+ * slot's ABI open in `callValue` (the last argument carries no declared
+ * parameter). Null when an omitted parameter has no absent spelling: the
+ * boxed lane keeps JavaScript's arity for that shape. */
+export function checkedRestCallArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  funcType: IrType & { kind: "func" },
+  loc: SrcLoc,
+): IrExpr[] | null {
+  const declared = funcType.params;
+  const nodes = call.arguments.nodes;
+  const args: IrExpr[] = [];
+  for (let i = 0; i < declared.length; i++) {
+    const node = nodes[i];
+    if (node) {
+      args.push(lowerer.lowerExprExpecting(node, declared[i]));
+      continue;
+    }
+    const absent = omittedArgFor(lowerer, declared[i]!, loc);
+    if (!absent) return null;
+    args.push(absent);
+  }
+  // `arguments` holds every actual argument; a rest parameter only the
+  // ones the declared parameters do not cover.
+  const tail = funcType.argumentsAll === true ? nodes : nodes.slice(declared.length);
+  args.push({
+    kind: "dynArrLit",
+    elems: tail.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  });
+  return args;
+}
+
 /** Complete an indirect static call against its func value ABI. Ordinary
  * fixed-width values retain the historical optional-suffix completion.
  * Typed-rest values reinterpret their final array slot as a rest ParamShape

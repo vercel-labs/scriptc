@@ -6166,6 +6166,17 @@ function namedEvaluationName(expr: ts.ClassLikeDeclaration): string {
     return p.left.text;
   if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)) return p.name.text;
   if (ts.isParameter(p) && ts.isIdentifier(p.name)) return p.name.text;
+  // A destructuring default: `const [c = class {}] = []` and
+  // `({ c = class {} } = o)` name the class after the bound identifier. An
+  // array-literal element that is not a pattern element stays unnamed.
+  if (ts.isBindingElement(p) && p.initializer !== undefined && ts.isIdentifier(p.name))
+    return p.name.text;
+  if (
+    ts.isShorthandPropertyAssignment(p) &&
+    p.objectAssignmentInitializer !== undefined &&
+    ts.isIdentifier(p.name)
+  )
+    return p.name.text;
   return "";
 }
 

@@ -55,6 +55,7 @@ import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
   activeNodeIslands,
+  islandSubclassCount,
   isForeignType,
   setActiveNodeIslands,
   type NodeIslandSet,
@@ -68,7 +69,7 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
-import { isJsSourceFileName } from "../tsc-codes.js";
+import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
   builtinClassValue,
@@ -400,6 +401,7 @@ import {
   isFetchHandleType,
   jsOpenObjectType,
   mapType,
+  newSymbolProvenanceMemo,
   ShapeRegistry,
   type DeclaredOrderPriorityRef,
   typeKey,
@@ -837,6 +839,9 @@ export interface DynamicSlot {
   canonical?: true;
 }
 
+/** Stands for a null binding map in Lowerer.scopedTypeMemos. */
+const NO_BINDINGS: object = {};
+
 /** Localized failure: rounds of the declaration flush retry. */
 const MAX_DECLARATION_RETRIES = 16;
 
@@ -1029,6 +1034,10 @@ export interface LowerOptions {
    * resolution walk and named-import link checks): the program
    * compiles to that startup crash. */
   startupCrash?: StartupCrash | null;
+  /** LoadResult.admittedOpinions: every JavaScript checker diagnostic
+   * preflight admitted under an opinion row (tsc-codes.ts, JS_OPINIONS). A
+   * view's lowering path is gated on one of these records. */
+  admittedOpinions?: readonly AdmittedOpinion[] | undefined;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.moduleEdges. */
@@ -1167,6 +1176,9 @@ export interface LowererMode {
    * pass saw an untyped value flow into a stream slot
    * (requiresDynNodeStreams). */
   dynNodeStreams?: boolean;
+  /** LoadResult.admittedOpinions: the JS opinion sites preflight admitted
+   * (opinionAt). */
+  admittedOpinions?: readonly AdmittedOpinion[] | undefined;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.dynamicImportRejections. */
@@ -1435,6 +1447,7 @@ function lowerToIrWithIslands(
             projectCheckJs: options.projectCheckJs ?? false,
             targetPlatform,
             startupCrash,
+            admittedOpinions: options.admittedOpinions,
             inlineRequireCycleCalls,
             dynamicImportRejections: options.dynamicImportRejections,
             ffiImports,
@@ -1482,6 +1495,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
@@ -1587,6 +1601,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       ffiImports,
       libraryCallbacks,
@@ -1656,6 +1671,7 @@ function lowerToIrWithIslands(
       reachable,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
@@ -1815,6 +1831,7 @@ function lowerToIrWithIslands(
       alreadyFlushed: resultLowerer.flushedSymbols,
       degradedTypes: resultLowerer.degradedTypes,
       retriedSymbols: resultLowerer.retriedSymbols,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
@@ -1920,7 +1937,7 @@ export function staticImportNamespaceType(
       !isCjsJsFile(source, lowerer.program) &&
       lowerer.moduleOrder.includes(source)
     ) {
-      moduleId = `file:${tsgoPath(resolve(source.fileName))}`;
+      moduleId = `file:${lowerer.pathOf(source)}`;
     }
   }
   if (moduleId === null) return null;
@@ -2393,6 +2410,10 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
  * property reads (`process.cwd`), or the binding an anonymous definition
  * initializes. Null when the source does not determine it. */
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
+  // Typed source cannot read a function's `name` (SC2020), so the names below
+  // are unobservable there; keeping them JavaScript-only leaves every typed
+  // program's output byte-identical.
+  const js = isJsSourceFile(ts.getSourceFileOfNode(node));
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
   const seen = new Set<ts.Symbol>();
@@ -2404,6 +2425,22 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     if (declaration && ts.isFunctionDeclaration(declaration)) {
       n = declaration;
       break;
+    }
+    // A binding element or a parameter holds the default's value only when the
+    // destructured value or the argument was undefined; otherwise it holds the
+    // source's value. Which one ran is a runtime fact, so a default never
+    // answers for the binding: when it runs, the definition it created was
+    // already named after the binding, and a named definition it references
+    // keeps the name it spells. A default the source overrides must not lend
+    // its name to the supplied value (`const [x = function unused() {}] =
+    // [function supplied() {}]` is "supplied"), so this answers null and the
+    // name read takes the runtime value's own name.
+    // Without a default the spelling is wrong for every value the binding can
+    // hold, but that shape has no pattern-default signature and is a separate
+    // change; it keeps the previous answer here.
+    if (js && declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
+      if (!declaration.initializer) break;
+      return null;
     }
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
     let value: ts.Node = declaration.initializer;
@@ -2443,6 +2480,36 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
+    }
+    // A default parameter names it (`function f(a = function () {})`), as
+    // does an object-assignment shorthand (`({ a = function () {} } = o)`)
+    // and a plain identifier assignment (`a = function () {}`). A member
+    // target never names one: only an identifier reference does.
+    if (js && p && ts.isParameter(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
+      return p.name.text;
+    }
+    if (
+      js &&
+      p &&
+      ts.isShorthandPropertyAssignment(p) &&
+      p.objectAssignmentInitializer === outer &&
+      ts.isIdentifier(p.name)
+    ) {
+      return p.name.text;
+    }
+    if (
+      js &&
+      p &&
+      ts.isBinaryExpression(p) &&
+      p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      p.right === outer &&
+      ts.isIdentifier(p.left) &&
+      // The native parser folds a parenthesized target into the target itself
+      // (`(a) = f`), leaving the source's `(` as a gap in front of it. A
+      // parenthesized target is not an IdentifierReference and names nothing.
+      p.getStart() === p.left.getStart()
+    ) {
+      return p.left.text;
     }
   }
   return null;
@@ -2525,6 +2592,9 @@ export class Lowerer {
     ts.SourceFile,
     { exports: boolean; moduleExports: boolean }
   >();
+  /** JavaScript checker diagnostics preflight admitted under an opinion row
+   * (LoadResult.admittedOpinions): the sites opinionAt answers for. */
+  readonly admittedOpinions: readonly AdmittedOpinion[];
   /** Inline require() calls whose module edge closes a require cycle
    * (LoadResult.inlineRequireCycleCalls). */
   readonly inlineRequireCycleCalls: ReadonlySet<ts.Node>;
@@ -4155,12 +4225,49 @@ export class Lowerer {
   readonly unions = new UnionRegistry();
   /** Context-free successful type mappings. See TypeMapperCtx.typeMemo. */
   readonly typeMemo = new Map<number, IrType>();
+  /** Successful mappings per generic binding context (TypeMapperCtx.typeMemoFor):
+   * by the installed typeParamBindings map, then the typeParamTsBindings map
+   * (NO_BINDINGS stands for null). Binding maps are filled before they are
+   * installed and never change while installed, so their identity is the
+   * context. The lowerer owns the memos: they live as long as it does. */
+  private readonly scopedTypeMemos = new Map<object, Map<object, Map<number, IrType>>>();
   readonly ambient = ambientDtsPath();
   readonly overridesAmbient = overridesDtsPath();
   /** The one mapType context: registries + hooks, assembled in the
    * constructor (typeParamResolver reads the CURRENT instantiation bindings
    * through `this`, so the same ctx serves generic bodies too). */
   readonly typeCtx: TypeMapperCtx;
+
+  /** The context lastContextMemo answered for. Every mapType call asks for the
+   * current binding context, and a lowering pass stays in one context for
+   * thousands of calls, so the pair of identity checks below is the whole
+   * cost on that path: the two-level lookup only runs when the context
+   * actually changes. */
+  private lastMemoOuter: object | null = null;
+  private lastMemoInner: object | null = null;
+  private lastMemo: Map<number, IrType> | null = null;
+
+  /** The memo for the current binding context (scopedTypeMemos). */
+  currentTypeMemo(): Map<number, IrType> {
+    if (this.typeParamBindings === null && this.typeParamTsBindings === null) return this.typeMemo;
+    const outer: object = this.typeParamBindings ?? NO_BINDINGS;
+    const inner: object = this.typeParamTsBindings ?? NO_BINDINGS;
+    if (outer === this.lastMemoOuter && inner === this.lastMemoInner) return this.lastMemo!;
+    let byTs = this.scopedTypeMemos.get(outer);
+    if (byTs === undefined) {
+      byTs = new Map();
+      this.scopedTypeMemos.set(outer, byTs);
+    }
+    let memo = byTs.get(inner);
+    if (memo === undefined) {
+      memo = new Map();
+      byTs.set(inner, memo);
+    }
+    this.lastMemoOuter = outer;
+    this.lastMemoInner = inner;
+    this.lastMemo = memo;
+    return memo;
+  }
 
   readonly stats: LowerStats = {
     statementsTotal: 0,
@@ -4869,9 +4976,25 @@ export class Lowerer {
     // A file's name and library status do not change while the program
     // lowers, so the answer stays with the file that was asked about.
     "stdlibFiles",
+    // The type mapper asks these on every mapped type. A file's path
+    // spelling and whether its declarations are an external surface are
+    // fixed for the program, as are what a symbol's declarations prove
+    // (type-mapper.ts's SymbolProvenance). foreignTypeAnswers covers the
+    // island subclass registry, which grows during a lowering:
+    // foreignTypeSubclasses is the count the answers were computed at, and
+    // a registration that changes it drops them.
+    "filePaths",
+    "externalTypeFiles",
+    "symbolProvenance",
+    "foreignTypeAnswers",
+    "foreignTypeSubclasses",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
+    // Preflight's admitted opinions are a program fact computed before any
+    // unit lowers, and the site index over them is a memo of that fact.
+    "admittedOpinions",
+    "admittedOpinionIndex",
     // Coverage's --explain-dynamic report: the indexed-read analysis's
     // storage decisions and the narrowed reads they explain.
     "runtimeOptionalProvenance",
@@ -4971,6 +5094,10 @@ export class Lowerer {
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
+    "scopedTypeMemos",
+    "lastMemoOuter",
+    "lastMemoInner",
+    "lastMemo",
     "fnStack",
     "positions.nodesByKey",
     "positions.paths",
@@ -5414,6 +5541,7 @@ export class Lowerer {
     this.ffiImports = mode.ffiImports ?? [];
     this.forkTargets = mode.forkTargets ?? [];
     this.frontendServices = mode.frontendServices;
+    this.admittedOpinions = mode.admittedOpinions ?? [];
     this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
     this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
@@ -5443,9 +5571,7 @@ export class Lowerer {
     const islands = this.nodeIslands;
     const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
-      ...(islands !== null
-        ? { foreignType: (t: ts.Type) => isForeignType(islands, t, this.checker) }
-        : {}),
+      ...(islands !== null ? { foreignType: (t: ts.Type) => this.foreignType(t) } : {}),
       checker: this.checker,
       positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,
@@ -5559,16 +5685,19 @@ export class Lowerer {
       isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
-      isExternalTypeFile: (sf) =>
-        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))) ||
-        isDeclBoundaryFile(sf.fileName),
+      isExternalTypeFile: this.isExternalTypeFile,
+      symbolProvenance: this.symbolProvenance,
       typeMemo: this.typeMemo,
+      // A hook: the ctx is spread in several places, and a copy made inside a
+      // binding scope must follow the lowerer's CURRENT scope, not the one
+      // that was installed at spread time.
+      typeMemoFor: () => this.currentTypeMemo(),
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
-      canMemoizeType: () =>
-        this.typeParamBindings === null &&
-        this.typeParamTsBindings === null &&
-        this.mixinTypeContext === null,
+      // Memoization is scoped by the binding maps (typeMemoFor); only a mixin
+      // context opts out, because mixinClassInstance answers by class node and
+      // the bindings do not identify it.
+      canMemoizeType: () => this.mixinTypeContext === null,
       // fileTag is filled just below; the hook is only ever CALLED during
       // lowering, long after the constructor completes.
       isProgramFile: (sf) => this.fileTag.has(sf),
@@ -5612,6 +5741,40 @@ export class Lowerer {
     registerBuiltinStreamClasses(this);
     registerBuiltinEventTargetClasses(this);
   }
+
+  /** Whether preflight admitted the checker diagnostic `code` at `node`: a
+   * site in `admittedOpinions` (tsc-codes.ts, JS_OPINIONS) whose span the
+   * node contains. A `widen`/`throw`/`island` row's lowering path is reached
+   * only through this query, so a program that admitted no such site keeps
+   * the IR it has today. */
+  opinionAt(node: ts.Node, code: number): boolean {
+    if (this.admittedOpinions.length === 0) return false;
+    const file = ts.getSourceFileOfNode(node).fileName;
+    const start = ts.tokenStartOfNode(node);
+    const hit = this.admittedOpinionSites();
+    const list = hit.get(`${file}\0${code}`);
+    if (list === undefined) return false;
+    return list.some((site) => start <= site.pos && site.end <= node.end);
+  }
+
+  /** opinionAt's index: admitted sites by file and code. */
+  private admittedOpinionSites(): ReadonlyMap<string, readonly AdmittedOpinion[]> {
+    let sites = this.admittedOpinionIndex;
+    if (sites === null) {
+      const built = new Map<string, AdmittedOpinion[]>();
+      for (const site of this.admittedOpinions) {
+        const key = `${site.file}\0${site.code}`;
+        const list = built.get(key);
+        if (list === undefined) built.set(key, [site]);
+        else list.push(site);
+      }
+      sites = built;
+      this.admittedOpinionIndex = sites;
+    }
+    return sites;
+  }
+
+  private admittedOpinionIndex: ReadonlyMap<string, readonly AdmittedOpinion[]> | null = null;
 
   /** A JavaScript file TypeScript type-checks (`// @ts-check`, or the
    * project's `checkJs`). Its JSDoc types are enforced like TypeScript
@@ -5750,7 +5913,7 @@ export class Lowerer {
         !isCjsJsFile(decl, this.program) &&
         this.moduleOrder.includes(decl)
       ) {
-        return `file:${tsgoPath(resolve(decl.fileName))}`;
+        return `file:${this.pathOf(decl)}`;
       }
       if (ts.isModuleDeclaration(decl) && ts.isStringLiteral(decl.name)) {
         const builtin = canonicalBuiltinModule(decl.name.text);
@@ -16923,6 +17086,65 @@ export class Lowerer {
    * name and library status do not change while the program lowers. */
   private readonly stdlibFiles = new Map<ts.SourceFile, boolean>();
 
+  /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by
+   * symbol. A symbol's declarations are fixed for one loaded program, and
+   * the mapper asks on every object type it maps. */
+  readonly symbolProvenance = newSymbolProvenanceMemo();
+
+  /** Whether the file holds declarations of an explicitly mapped external
+   * type surface (coverage's --external-types) or of the declaration-typed
+   * boundary's generated types. Both are fixed for one Lowerer, and the
+   * mapper asks per type. */
+  readonly isExternalTypeFile = (sf: ts.SourceFile): boolean => {
+    let external = this.externalTypeFiles.get(sf);
+    if (external === undefined) {
+      external =
+        this.externalTypeSpecifiersByFile.has(this.pathOf(sf)) || isDeclBoundaryFile(sf.fileName);
+      this.externalTypeFiles.set(sf, external);
+    }
+    return external;
+  };
+  /** isExternalTypeFile's answer per source file (see there). */
+  private readonly externalTypeFiles = new Map<ts.SourceFile, boolean>();
+
+  /** tsgoPath(resolve(sf.fileName)): the path spelling the module tables
+   * key by. A source file's path cannot change while the program lowers. */
+  readonly pathOf = (sf: ts.SourceFile): string => {
+    let path = this.filePaths.get(sf);
+    if (path === undefined) this.filePaths.set(sf, (path = tsgoPath(resolve(sf.fileName))));
+    return path;
+  };
+  private readonly filePaths = new Map<ts.SourceFile, string>();
+
+  /** Whether values of `type` are island handles (boundary.ts's
+   * isForeignType). The island set, the checker and the program are fixed for
+   * one Lowerer, so the answer is a function of the checker type alone, and
+   * the type mapper asks it on every mapType call, memo hits included. The
+   * one input that can change while a Lowerer runs is the island-subclass
+   * registry (splitFiles registers native subclasses of island classes, and
+   * its heritage check maps a type), so a new registration drops every
+   * answer that predates it. */
+  private foreignType(type: ts.Type): boolean {
+    const islands = this.nodeIslands;
+    if (islands === null) return false;
+    const subclasses = islandSubclassCount();
+    if (this.foreignTypeSubclasses !== subclasses) {
+      this.foreignTypeAnswers.clear();
+      this.foreignTypeSubclasses = subclasses;
+    }
+    const id = (type as { id?: number }).id;
+    if (id === undefined) return isForeignType(islands, type, this.checker);
+    const known = this.foreignTypeAnswers.get(id);
+    if (known !== undefined) return known;
+    const foreign = isForeignType(islands, type, this.checker);
+    this.foreignTypeAnswers.set(id, foreign);
+    return foreign;
+  }
+  /** foreignType's answers, by checker type id: one checker, one program. */
+  private readonly foreignTypeAnswers = new Map<number, boolean>();
+  /** The island-subclass count foreignTypeAnswers was computed at. */
+  private foreignTypeSubclasses = -1;
+
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);
   }
@@ -18148,6 +18370,12 @@ export class Lowerer {
       });
     }
     if (valueParams.some((param) => param.name !== undefined)) {
+      // Every materialization writes this entry at ITS location, so a second
+      // one overwrites the first in place. A table only grows by addition, so
+      // that change is no part of this unit's function: name it (unit-journal.ts
+      // UnitEvents.touch), and the change is counted here instead of being
+      // found by HeldTables.check as an unnamed write.
+      if (this.builtinCheckedValues.has(fnName)) this.unitEvents?.touch(fnName);
       this.builtinCheckedValues.set(fnName, { fn, display, loc });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };

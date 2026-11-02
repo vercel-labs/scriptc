@@ -1011,6 +1011,21 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "arrayBuffer.armMutable",
 ]);
 
+/** The member name Object.prototype answers as an accessor (protoAccessor):
+ * a dynamic read (`dynKeyGet`) or a dynamic key write names it. */
+export function isProtoKeyLiteral(node: IrExpr): boolean {
+  return node.kind === "strLit" && node.value === "__proto__";
+}
+
+/** The dynamic key operations whose member-name argument reaches the write
+ * path (dyn.keySet, and the bag entries a JavaScript source's object
+ * literals use). */
+const PROTO_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "dyn.bagGet",
+  "dyn.bagSet",
+  "dyn.keySet",
+]);
+
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
  * (BigInt views today, array attributes and handle property tables next), so
@@ -1020,11 +1035,13 @@ export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
   mutableBuffers?: boolean;
+  protoAccessor?: boolean;
 }): boolean {
   return (
     features.jsObjectModel === true ||
     features.bigintBytes === true ||
-    features.mutableBuffers === true
+    features.mutableBuffers === true ||
+    features.protoAccessor === true
   );
 }
 
@@ -1555,6 +1572,22 @@ const RUNTIME_FEATURE_RULES = {
   primitiveWrapper: rule({ prefixes: ["wrapper."] }),
   /** %Iterator% and %Iterator.prototype% as values (scr_js_iterator.c). */
   iteratorProto: rule({ prefixes: ["iterator."] }),
+  /** A JavaScript source reads or writes the member named `__proto__` by
+   * that literal name on a dynamic value, or builds a literal member with
+   * that name: Object.prototype's accessor answers the read with the
+   * receiver's [[Prototype]] and the write by replacing it, while a literal
+   * member is a property definition, both of which the object model build
+   * models (scr_json.c, expr-dynamic.ts). The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so a program that names the member links that one
+   * build; every other program keeps the default object, byte for byte. */
+  protoAccessor: rule({
+    expr: (node) =>
+      (node.kind === "dynKeyGet" && isProtoKeyLiteral(node.key)) ||
+      (node.kind === "dynObjLit" &&
+        (node.fields ?? []).some((field) => isProtoKeyLiteral(field.key))),
+    libCall: (node) =>
+      PROTO_KEY_LIB_FNS.has(node.fn) && node.args.some((arg) => isProtoKeyLiteral(arg)),
+  }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1702,6 +1735,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
     iteratorProto: false,
+    protoAccessor: false,
     stream: false,
     strdecDyn: false,
     streamDyn: false,

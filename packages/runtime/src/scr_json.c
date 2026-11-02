@@ -13268,6 +13268,29 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
   if (!deleting) scr_dyn_note_assign_failure();
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Object.prototype's `__proto__` is an accessor whose getter answers the
+ * receiver's [[Prototype]] and whose setter replaces it (a primitive other
+ * than null is ignored). The object model build answers it here instead of
+ * as an entry in the builtin's table, so a program that names the member
+ * reads and writes it through the object model build. The read and write
+ * paths ask after their own walk found no `__proto__` entry, which is
+ * exactly "no own or inherited definition shadows the accessor". */
+static bool scr_dyn_proto_accessor(const ScrDyn *receiver, const char *key, size_t key_len) {
+  if (key_len != 9 || memcmp(key, "__proto__", 9) != 0 || receiver == NULL) return false;
+  if (receiver->kind != SCR_DYN_OBJ && receiver->kind != SCR_DYN_ARR &&
+      receiver->kind != SCR_DYN_FUNC) return false;
+  /* Object.create(null) and a chain that ends elsewhere have no accessor. */
+  return scr_dyn_has_object_prototype(receiver);
+}
+
+static void scr_dyn_proto_accessor_set(ScrDyn *receiver, ScrDyn *value) {
+  /* A non-object, non-null prototype completes without a property. */
+  if (value->kind != SCR_DYN_NULL && !scr_dyn_to_primitive_result_is_object(value)) return;
+  scr_dyn_release(scr_dyn_set_prototype(receiver, value));
+}
+#endif
+
 /* One lookup of the own property decides the assignment: an own property
  * is written (or runs its setter, or refuses the write); an absent one
  * consults the prototype chain and is then added. */
@@ -13310,6 +13333,10 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
     scr_error_sync_cause(recv, key);
     return;
   }
+  /* Whether the chain itself defines the key: an inherited definition takes
+   * the ordinary assignment, so it also keeps Object.prototype's accessor
+   * out of the write below. */
+  bool inherited_definition = false;
   {
     for (const ScrDyn *current = scr_dyn_proto_next(recv); current;) {
       ScrDyn *table = current->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(current) : NULL;
@@ -13318,6 +13345,7 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
       if (object->v.obj.layout) {
         /* A layout-mode prototype's properties are writable data. */
         bool found = scr_layout_find(object->v.obj.layout, key->data, key->len) != UINT32_MAX;
+        inherited_definition = found;
         current = found ? NULL : scr_dyn_proto_next(object);
         scr_dyn_release(table);
         continue;
@@ -13345,9 +13373,19 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
         return;
       }
       scr_dyn_release(table);
+      inherited_definition = true;
       break;
     }
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  /* No own `__proto__` and none on the chain: the assignment is
+   * Object.prototype's setter. It adds no property, so a non-extensible
+   * receiver is no reason to refuse it. */
+  if (!inherited_definition && scr_dyn_proto_accessor(receiver, key->data, key->len)) {
+    scr_dyn_proto_accessor_set((ScrDyn *)receiver, value);
+    return;
+  }
+#endif
   if (recv->non_extensible) {
     ScrJsonBuf buffer;
     scr_jb_init(&buffer);
@@ -13491,6 +13529,28 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       recv->v.arr.properties = scr_dyn_new_obj();
     }
     recv->v.arr.properties->non_extensible = recv->non_extensible;
+#ifdef SCR_JS_OBJECT_MODEL
+    /* The named property lives in the array's table, but an assignment's
+     * receiver is the array: Object.prototype's `__proto__` setter replaces
+     * the array's [[Prototype]] and adds no member. The named read passes
+     * the array the same way (scr_dyn_arr_named_get). */
+    if (key->len == 9 && memcmp(key->data, "__proto__", 9) == 0 &&
+        !scr_dyn_has_own(recv->v.arr.properties, key)) {
+      if (scr_dyn_property_owner(recv, key->data, key->len)) {
+        /* A definition of the key on the chain shadows the accessor, as it
+         * does for an object, and the assignment adds the array's own member.
+         * The nested write below cannot: it reaches the properties table's
+         * own prototype, whose accessor answers for a different receiver. */
+        if (!recv->non_extensible) {
+          scr_dyn_obj_set(recv->v.arr.properties, key->data, key->len, scr_dyn_retain(value));
+          return;
+        }
+      } else if (scr_dyn_proto_accessor(recv, key->data, key->len)) {
+        scr_dyn_proto_accessor_set(recv, value);
+        return;
+      }
+    }
+#endif
     scr_dyn_key_set(recv->v.arr.properties, key, value);
     return;
   }
@@ -13570,6 +13630,22 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   }
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* A property definition (an object literal's member, dynObjLit) creates or
+ * updates the own data property: unlike an assignment it never runs an
+ * inherited accessor, so a literal `__proto__` member is an ordinary own
+ * member and not Object.prototype's prototype setter. The compiler emits
+ * this entry only for a literal `__proto__` key, which is also what selects
+ * the object model build (runtime-features.ts). */
+void scr_dyn_key_define(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
+  if (recv->kind == SCR_DYN_OBJ && key->len == 9 && memcmp(key->data, "__proto__", 9) == 0) {
+    scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
+    return;
+  }
+  scr_dyn_key_set(recv, key, value);
+}
+#endif
 
 /* Sloppy-mode assignments (the compiler's IrModule.sloppyDynWrites). */
 void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
@@ -17138,6 +17214,12 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       return scr_dyn_error_constructor(names[kind]);
     }
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Nothing on the chain defines `__proto__`: Object.prototype's getter
+   * answers the receiver's [[Prototype]]. */
+  if (scr_dyn_proto_accessor(receiver, key, key_len))
+    return scr_dyn_get_prototype((ScrDyn *)receiver);
+#endif
   return scr_dyn_retain(scr_dyn_undefined());
 }
 

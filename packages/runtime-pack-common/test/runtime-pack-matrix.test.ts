@@ -194,6 +194,18 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   }
 });
 
+test("the shape store probe declines __proto__ in the object model build", () => {
+  // A dynamic store to the `__proto__` member is Object.prototype's setter,
+  // not a field the receiver's shape grows (object-literals.ts, scr_json.c),
+  // so the probe in scr_js_object.c declines it there; every other program
+  // keeps the default object, byte for byte.
+  const plain = { dynTier: false, jsObjectModel: false, workers: false };
+  expect(selected("scr_js_object.c", { ...plain, dynTier: true }).defines).toEqual([]);
+  expect(
+    selected("scr_js_object.c", { ...plain, dynTier: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL"]);
+});
+
 test("a dynamic global read selects the host-global build of the global unit", () => {
   // A computed read of the global object, or `… in globalThis`, arms the
   // check for the Node globals the native runtime does not implement

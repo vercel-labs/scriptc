@@ -35,7 +35,11 @@ import { emitUnionWiden } from "./expr-records.js";
 import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
 import { jsImmediates } from "./jsval.js";
 import { jsIcLiteralKey } from "../../ir/js-ic.js";
-import { ARRAY_PROTOTYPE_MEMBER_NAMES, DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
+import {
+  ARRAY_PROTOTYPE_MEMBER_NAMES,
+  DYN_BUFFER_METHODS,
+  isProtoKeyLiteral,
+} from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -389,6 +393,17 @@ export function emitDynamicExpr(
       for (const f of e.fields ?? []) {
         const k = emitBorrowedInput(host, f.key);
         const v = emitBorrowedInput(host, f.value);
+        // A literal member is a property definition, not an assignment:
+        // `{ ["__proto__"]: v }` creates an own data property instead of
+        // running Object.prototype's prototype setter (scr_json.c). Only
+        // this key needs the distinction, and a program with it selects the
+        // object model build (runtime-features.ts).
+        if (isProtoKeyLiteral(f.key)) {
+          host.declare(`declare void @scr_dyn_key_define(ptr, ptr, ptr)`);
+          B.line(`call void @scr_dyn_key_define(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`);
+          host.emitPendingCheck();
+          continue;
+        }
         if (cached && jsIcLiteralKey(f.key) !== null) {
           emitJsIcLiteralMember(host, obj, k.name, v.name);
           continue;

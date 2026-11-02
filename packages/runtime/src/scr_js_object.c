@@ -310,6 +310,16 @@ static bool scr_js_append_shaped(ScrDyn *receiver, const ScrLayout *target, ScrD
 }
 
 bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* `__proto__` names Object.prototype's setter, which replaces the
+   * receiver's [[Prototype]] and adds no field of the shape (scr_json.c).
+   * The generic path decides it: an own `__proto__` is written, a chain
+   * that ends at Object.prototype runs the setter, and one that ends
+   * elsewhere adds the property. Growing the shape would make the member an
+   * ordinary field of every object of that shape, which is not what a
+   * JavaScript source's assignment means. */
+  if (key->len == 9 && memcmp(key->data, "__proto__", 9) == 0) return false;
+#endif
   const ScrLayout *shape = scr_js_layout_of(receiver);
   if (!shape || scr_js_error_synced_key(key)) return false;
   uint32_t stale = UINT32_MAX;

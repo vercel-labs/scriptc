@@ -339,6 +339,11 @@ export function variantsFor(source) {
   // and its default object compiles empty. A program with the fact links
   // the unit at all (OPTIONAL_RUNTIME_SOURCES).
   if (source === "scr_js_buffers.c") withJsObjectModel(variants);
+  // A dynamic store to the `__proto__` member is Object.prototype's setter,
+  // never a field the receiver's shape grows (scr_json.c answers it), so the
+  // shape store probe declines it. Only the object model build models that
+  // accessor: every other program keeps the default object, byte for byte.
+  if (source === "scr_js_object.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects. Its Node island
   // build is not the one these variants name: island output keeps its own

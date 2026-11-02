@@ -1176,6 +1176,11 @@ const RUNTIME_FEATURE_RULES = {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
   stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
+  /** The dynamic global object's answer for the Node globals the native
+   * runtime does not implement (scr_global_host_absent.c, plus the
+   * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
+   * the global object, or `… in globalThis` (host-globals.ts). */
+  hostAbsentGlobals: rule({ fns: ["global.hostAbsent", "dyn.globalHas"] }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -1650,6 +1655,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
+    hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,

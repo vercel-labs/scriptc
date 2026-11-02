@@ -191,6 +191,10 @@ export interface CcOptions {
   /** A standard library prototype object read as a value in a JavaScript
    * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`: compiles
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c. */
+  hostAbsentGlobals?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */

@@ -308,6 +308,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.dirDyn": "scr_console_dir_dyn",
   "console.dirHidden": "scr_console_dir_hidden",
   "global.native": "scr_global_native",
+  "global.hostAbsent": "scr_global_host_absent_install",
+  "dyn.globalHas": "scr_global_host_absent_has",
   "global.installValues": "scr_global_values_install",
   "dyn.installBuiltinStatics": "scr_builtin_statics_install",
   "global.forInObject": "scr_global_for_in_object",

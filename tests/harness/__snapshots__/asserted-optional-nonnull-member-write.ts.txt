@@ -1,0 +1,6 @@
+asserted-optional-nonnull-member-write.ts:10:1 - error SC1031: writing the member 'icons' only the asserted type declares (Node adds it to the object; a record's layout cannot hold it — declare the property on the record's own type) are not supported yet
+
+   9 | const view = item as Base & { icons?: unknown };
+  10 | view!.icons = ["z"];
+     | ^~~~~~~~~~~
+  11 | console.log(String(view.icons), JSON.stringify(item));

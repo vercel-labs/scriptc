@@ -43,7 +43,7 @@ import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
-import { hostedStorageView, hostsAll } from "./hosted-narrowing.js";
+import { assertedOptionalExtension, hostedStorageView, hostsAll } from "./hosted-narrowing.js";
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
@@ -1584,6 +1584,21 @@ export function lowerAsExpression(
     if (inner.type.kind === "record" && target && hostsAll(lowerer, inner.type, target)) {
       return inner;
     }
+    // `const { icons } = item as Base & { icons?: unknown }`: the
+    // assertion only ADDS optional members to the record the value has,
+    // and Node erases it, so the pattern reads the properties off the
+    // value itself. The added members have no slot in the stored layout:
+    // the read answers them through the layout's kept source
+    // (assertedOnlyFieldRead), where a width copy would answer its own
+    // absent slot with undefined.
+    if (
+      inner.type.kind === "record" &&
+      target &&
+      constSourceUse(expr) &&
+      assertedOptionalExtension(lowerer, inner.type, target)
+    ) {
+      return inner;
+    }
     // Static assertions normally erase, but record layouts are
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
@@ -2042,4 +2057,28 @@ function adoptingCast(
     type: target,
     loc,
   };
+}
+
+/** Whether this assertion only FEEDS a `const` binding: it is a binding
+ * pattern's source (`const { a } = value as T`) or such a declaration's
+ * initializer, through parentheses. Node erases the assertion, so both
+ * read the members off the value itself; a `let` binding keeps its
+ * declared type (later assignments coerce into it). */
+function constSourceUse(assertion: ts.Expression): boolean {
+  let use: ts.Node = assertion;
+  for (;;) {
+    const parent = use.parent as ts.Node | undefined;
+    if (!parent || !ts.isParenthesizedExpression(parent) || parent.expression !== use) break;
+    use = parent;
+  }
+  const parent = use.parent as ts.Node | undefined;
+  if (parent === undefined || !ts.isVariableDeclaration(parent) || parent.initializer !== use) {
+    return false;
+  }
+  const list = parent.parent;
+  return (
+    list !== undefined &&
+    ts.isVariableDeclarationList(list) &&
+    (list.flags & ts.NodeFlags.Const) !== 0
+  );
 }

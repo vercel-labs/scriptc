@@ -401,6 +401,7 @@ import {
   isFetchHandleType,
   jsOpenObjectType,
   mapType,
+  newSymbolProvenanceMemo,
   ShapeRegistry,
   type DeclaredOrderPriorityRef,
   typeKey,
@@ -4732,6 +4733,18 @@ export class Lowerer {
     // A file's name and library status do not change while the program
     // lowers, so the answer stays with the file that was asked about.
     "stdlibFiles",
+    // The type mapper asks these on every mapped type. A file's path
+    // spelling and whether its declarations are an external surface are
+    // fixed for the program, as are what a symbol's declarations prove
+    // (type-mapper.ts's SymbolProvenance). foreignTypeAnswers covers the
+    // island subclass registry, which grows during a lowering:
+    // foreignTypeSubclasses is the count the answers were computed at, and
+    // a registration that changes it drops them.
+    "filePaths",
+    "externalTypeFiles",
+    "symbolProvenance",
+    "foreignTypeAnswers",
+    "foreignTypeSubclasses",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
@@ -5421,6 +5434,7 @@ export class Lowerer {
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: this.isExternalTypeFile,
+      symbolProvenance: this.symbolProvenance,
       typeMemo: this.typeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
@@ -16781,6 +16795,11 @@ export class Lowerer {
   /** isStdlibFile's answer for each source file it was asked about: a file's
    * name and library status do not change while the program lowers. */
   private readonly stdlibFiles = new Map<ts.SourceFile, boolean>();
+
+  /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by
+   * symbol. A symbol's declarations are fixed for one loaded program, and
+   * the mapper asks on every object type it maps. */
+  readonly symbolProvenance = newSymbolProvenanceMemo();
 
   /** Whether the file holds declarations of an explicitly mapped external
    * type surface (coverage's --external-types) or of the declaration-typed

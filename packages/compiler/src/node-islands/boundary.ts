@@ -49,6 +49,14 @@ export interface IslandModule {
 export interface NodeIslandSet {
   packages: ReadonlyMap<string, IslandPackage>;
   modules: ReadonlyMap<string, IslandModule>;
+  /** islandPackageOfFile's answers by file spelling. A set is assembled
+   * before its lowering starts and is not changed afterwards, so every
+   * answer is fixed for the set's lifetime; the two memos live in the set
+   * so they cannot outlive it, and a new set starts empty. */
+  packagesOfFile?: Map<string, IslandPackage | null>;
+  /** islandModuleOfFile's answers by file spelling (same lifetime as
+   * packagesOfFile). */
+  modulesOfFile?: Map<string, IslandModule | null>;
 }
 
 function normalizePath(file: string): string {
@@ -58,17 +66,18 @@ function normalizePath(file: string): string {
 /* What an island set answers about one file, keyed by the file. A set is
  * assembled before its lowering starts and is never modified afterwards
  * (executable/prepare.ts builds a fresh one for every island round), so an
- * answer is fixed for the set's lifetime. The memo is reached only through
- * the set object, so it cannot outlive the set and a reload can never read
- * another program's answer. */
-const packagesOfFile = new WeakMap<NodeIslandSet, Map<string, IslandPackage | null>>();
-const modulesOfFile = new WeakMap<NodeIslandSet, Map<string, IslandModule | null>>();
+ * answer is fixed for the set's lifetime. The memo is stored on the set
+ * object, so it cannot outlive the set and a reload can never read another
+ * program's answer. */
 
 /** The island module at `file`, or null. */
 export function islandModuleOfFile(islands: NodeIslandSet, file: string): IslandModule | null {
   if (islands.modules.size === 0) return null;
-  let answers = modulesOfFile.get(islands);
-  if (answers === undefined) modulesOfFile.set(islands, (answers = new Map()));
+  let answers = islands.modulesOfFile;
+  if (answers === undefined) {
+    answers = new Map();
+    islands.modulesOfFile = answers;
+  }
   const known = answers.get(file);
   if (known !== undefined) return known;
   const module = islands.modules.get(file) ?? islands.modules.get(normalizePath(file)) ?? null;
@@ -98,8 +107,11 @@ export function islandOwnerOfFile(
  * `@types/<name>` declarations type the package `<name>`. */
 export function islandPackageOfFile(islands: NodeIslandSet, file: string): IslandPackage | null {
   if (islands.packages.size === 0) return null;
-  let answers = packagesOfFile.get(islands);
-  if (answers === undefined) packagesOfFile.set(islands, (answers = new Map()));
+  let answers = islands.packagesOfFile;
+  if (answers === undefined) {
+    answers = new Map();
+    islands.packagesOfFile = answers;
+  }
   const known = answers.get(file);
   if (known !== undefined) return known;
   const at = packageDirOf(file);

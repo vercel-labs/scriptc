@@ -269,8 +269,14 @@ static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 
 /* Registry of descriptors by id (copies, so a header reaches its entry
  * points in one step); ids are assigned on first allocation and shared by
- * every thread. */
+ * every thread. The table is static, so memory-constrained builds can shrink
+ * it with -DSCR_CYC_MAX_TYPES=<n>; registration traps once a program needs
+ * more. Headers store the id in 16 bits. */
+#ifndef SCR_CYC_MAX_TYPES
 #define SCR_CYC_MAX_TYPES ((uint32_t)1 << 15)
+#endif
+_Static_assert(SCR_CYC_MAX_TYPES >= 2 && SCR_CYC_MAX_TYPES <= 65536,
+               "SCR_CYC_MAX_TYPES must leave id 0 unused and fit a 16-bit header id");
 extern ScrCycType scr_cyc_types[SCR_CYC_MAX_TYPES];
 uint32_t scr_cyc_register(ScrCycType *type);
 static inline uint32_t scr_cyc_type_id(ScrCycType *type) {
@@ -558,9 +564,33 @@ static inline void scr_mem_free(void *p) {
   SCR_SA_FREE_FOREIGN(p);
 }
 #else
-static inline void *scr_mem_alloc(size_t n) { return malloc(n); }
-static inline void *scr_mem_calloc(size_t n) { return calloc(1, n); }
-static inline void scr_mem_free(void *p) { free(p); }
+#if defined(SCR_RC_AUDIT) && defined(SCR_LIB)
+/* A sanitized library's trap path hands the heap a longjmped-over entry
+ * abandons to LeakSanitizer (scr_library.c), which needs every live block
+ * addressable; the audit lane's allocation funnel is the only place that
+ * can see them all. Both hooks are no-ops outside library audit builds. */
+void scr_library_heap_note_alloc(void *p);
+void scr_library_heap_note_free(void *p);
+#define SCR_LIBRARY_HEAP_ALLOC(p) scr_library_heap_note_alloc(p)
+#define SCR_LIBRARY_HEAP_FREE(p) scr_library_heap_note_free(p)
+#else
+#define SCR_LIBRARY_HEAP_ALLOC(p) ((void)(p))
+#define SCR_LIBRARY_HEAP_FREE(p) ((void)(p))
+#endif
+static inline void *scr_mem_alloc(size_t n) {
+  void *p = malloc(n);
+  SCR_LIBRARY_HEAP_ALLOC(p);
+  return p;
+}
+static inline void *scr_mem_calloc(size_t n) {
+  void *p = calloc(1, n);
+  SCR_LIBRARY_HEAP_ALLOC(p);
+  return p;
+}
+static inline void scr_mem_free(void *p) {
+  SCR_LIBRARY_HEAP_FREE(p);
+  free(p);
+}
 #endif
 
 /* Inline twins of scr_cyc_alloc/scr_cyc_free for hot runtime allocation

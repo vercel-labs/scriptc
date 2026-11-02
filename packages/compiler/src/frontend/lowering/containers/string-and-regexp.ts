@@ -1152,6 +1152,34 @@ function globalCharPattern(text: string): string | null {
   return null;
 }
 
+/** `String.prototype.{includes,startsWith,endsWith}(searchString, position)`
+ * throws a TypeError when the search value is a RegExp (spec: IsRegExp, then
+ * throw); `indexOf`/`lastIndexOf` convert it with ToString instead and search
+ * for "/x/". Every argument is evaluated first, in source order — receiver,
+ * search value, then the remaining arguments — because the throw replaces the
+ * call, not the evaluation of its arguments. */
+function rejectRegexpSearchArgument(
+  lowerer: Lowerer,
+  method: string,
+  receiver: IrExpr,
+  needle: ts.Expression,
+  rest: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr | null {
+  if (method === "indexOf") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(needle))?.kind !== "regex") return null;
+  const message = `First argument to String.prototype.${method} must not be a regular expression`;
+  const stmts: IrStmt[] = [];
+  const discard = (expr: IrExpr): void => {
+    if (!isSafeToDiscard(expr)) stmts.push({ kind: "exprStmt", expr, loc });
+  };
+  discard(receiver);
+  discard(lowerer.lowerExpr(needle));
+  for (const argument of rest) discard(lowerer.lowerExpr(argument));
+  const thrown = nodeThrowExpr(1, "", message, BOOL, loc);
+  return stmts.length === 0 ? thrown : { kind: "seqExpr", stmts, result: thrown, type: BOOL, loc };
+}
+
 /** `s.slice(1, 4)` and friends → strIntrinsic. Null when this isn't an
  * ambient string method call (caller keeps its generic rejection).
  * Complete position defaults and conversions here before code generation. */
@@ -1201,11 +1229,20 @@ export function lowerStringMethodCall(
       return null;
     if (!lowerer.isStdlibMember(access)) return null;
   }
-  if (extraMethod && argumentNodes === call.arguments.nodes) {
+  // A `.call` form brings the method's own arguments already sliced off the
+  // receiver, so the extra-method lowering reads them from `argumentNodes`.
+  if (extraMethod && (argumentNodes === call.arguments.nodes || dynReceiver !== undefined)) {
     const receiver = dynReceiver
       ? dynReceiver()
       : lowerMethodReceiver(lowerer, access.expression, STRING, access.name.text);
-    return lowerExtraStringMethodCall(lowerer, call, access.name.text, receiver, access.expression);
+    return lowerExtraStringMethodCall(
+      lowerer,
+      call,
+      access.name.text,
+      receiver,
+      access.expression,
+      argumentNodes,
+    );
   }
   // The lib declares optional parameters beyond some lowered forms; fence
   // those arities instead of passing arguments the runtime doesn't take.
@@ -1265,6 +1302,17 @@ export function lowerStringMethodCall(
     entry.method === "includes" ||
     entry.method === "startsWith" ||
     entry.method === "endsWith";
+  if (searchMethod && argumentNodes.length > 0) {
+    const rejection = rejectRegexpSearchArgument(
+      lowerer,
+      entry.method,
+      receiver,
+      argumentNodes[0]!,
+      argumentNodes.slice(1),
+      loc,
+    );
+    if (rejection !== null) return rejection;
+  }
   if (searchMethod && argumentNodes.length < 2) {
     const needle = lowerStringSearchArgument(lowerer, argumentNodes[0], loc);
     return {
@@ -1666,9 +1714,10 @@ function buildStringMethod(
   args: IrExpr[],
   receiverNode: ts.Node,
   stmts: IrStmt[],
+  argNodes: readonly ts.Expression[] = call.arguments.nodes,
 ): IrExpr | null {
   const loc = locOf(call);
-  const node = (i: number): ts.Expression => call.arguments.nodes[i] ?? call;
+  const node = (i: number): ts.Expression => argNodes[i] ?? call;
   // concat(...values): each argument's ToString, in order, after all of
   // them evaluated.
   if (name === "concat") {
@@ -1818,8 +1867,9 @@ function evaluatedOperands(
   stmts: IrStmt[],
   expected: IrType | undefined,
   receiver?: { value: IrExpr; name: string },
+  argumentNodes: readonly ts.Expression[] = call.arguments.nodes,
 ): { receiver: IrExpr | undefined; args: IrExpr[] } {
-  const args = call.arguments.nodes.map((arg) =>
+  const args = argumentNodes.map((arg) =>
     expected ? lowerer.lowerExprExpecting(arg, expected) : lowerer.lowerExpr(arg),
   );
   const conversionsRunCode = args.some((arg) => !PLAIN_CONVERSION_KINDS.has(arg.type.kind));
@@ -1832,22 +1882,42 @@ function evaluatedOperands(
 }
 
 /** A typed STRING receiver calling one of EXTRA_STRING_METHODS: receiver,
- * then arguments, then the method's own conversions — the spec order. */
+ * then arguments, then the method's own conversions — the spec order. The
+ * `argumentNodes` slice carries the method's own arguments when the call is
+ * `String.prototype.<name>.call(receiver, …)`, whose node list starts at the
+ * receiver. */
 export function lowerExtraStringMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   name: string,
   receiver: IrExpr,
   receiverNode: ts.Node,
+  argumentNodes: readonly ts.Expression[] = call.arguments.nodes,
 ): IrExpr | null {
-  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  if (argumentNodes.some(ts.isSpreadElement)) return null;
   const stmts: IrStmt[] = [];
-  const operands = evaluatedOperands(lowerer, call, stmts, undefined, {
-    value: receiver,
-    name: "%stringReceiver",
-  });
+  const operands = evaluatedOperands(
+    lowerer,
+    call,
+    stmts,
+    undefined,
+    {
+      value: receiver,
+      name: "%stringReceiver",
+    },
+    argumentNodes,
+  );
   const s = operands.receiver!;
-  const result = buildStringMethod(lowerer, call, name, s, operands.args, receiverNode, stmts);
+  const result = buildStringMethod(
+    lowerer,
+    call,
+    name,
+    s,
+    operands.args,
+    receiverNode,
+    stmts,
+    argumentNodes,
+  );
   return result ? seq(stmts, result) : null;
 }
 

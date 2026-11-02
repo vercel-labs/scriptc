@@ -159,6 +159,7 @@ export const GUARDED_CONSUMERS: ReadonlySet<string> = new Set([
   "assert.looseDeepDyn",
   "assert.partialDeepDyn",
   "console.dirDyn",
+  "console.dirHidden",
   "insp.format",
   "insp.formatPrimitives",
   "insp.formatList",

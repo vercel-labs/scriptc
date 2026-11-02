@@ -35,15 +35,17 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
-  /** The program asserts a record literal to a wider record type (a partial
-   * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
-   * Absent for every program without one, so their objects stay identical. */
-  recordViewPartial?: boolean;
   /** The program uses a runtime feature only a JavaScript source reaches:
    * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
    * (t262-da §J). Absent for every other program, so their objects stay
    * identical. */
   jsObjectModel?: boolean;
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
+   * registry those operations maintain. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
+  mutableBuffers?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
@@ -74,9 +76,17 @@ export interface NativeLinkFeatures {
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
    * otherwise. */
   primitiveWrapper?: boolean;
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
+  promiseGeneric?: boolean;
+  /** %Iterator% and %Iterator.prototype% as values link
+   * scr_js_iterator.c; absent (false) otherwise. */
+  iteratorProto?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
+  /** node:zlib's zstd forms: scr_zstd.c and the vendored zstd archive. */
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -135,6 +145,10 @@ export interface NativeLinkFeatures {
    * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
    * (false) otherwise, so other programs keep their exact link line. */
   stdlibPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`, links
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c; absent (false) otherwise. */
+  hostAbsentGlobals?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

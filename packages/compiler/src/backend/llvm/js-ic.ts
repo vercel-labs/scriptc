@@ -95,8 +95,31 @@ function kindIs(host: Host, d: string, kind: number, yes: string, no: string): v
  * they made the run 13% faster than one entry, and 26% faster without its
  * class instances; four were no faster than two. So a site tests entries
  * 0 and 1, own or prototype, and its probe does the rest. (0 makes every access probe: with a runtime
- * built with SCR_JS_VERIFY, that probes every access.) */
-const INLINE_WAYS: number = 2;
+ * built with SCR_JS_VERIFY, that probes every access.)
+ *
+ * SCRIPTC_DEBUG_JS_IC_WAYS=0|1|2 overrides the count for an attribution run,
+ * where every access should reach the probe so that the runtime entry points
+ * can count it; the value is read once, so one build is one way count. */
+/** The attribution way count `SCRIPTC_DEBUG_JS_IC_WAYS` asks for, or null
+ * when the variable is unset. The value changes emitted code, so the build
+ * cache keys on it (executable/executable-cache.ts). */
+export function debugJsIcWays(env: NodeJS.ProcessEnv = process.env): 0 | 1 | 2 | null {
+  const raw = env["SCRIPTC_DEBUG_JS_IC_WAYS"];
+  if (raw === undefined || raw === "") return null;
+  const ways = Number(raw);
+  if (ways !== 0 && ways !== 1 && ways !== 2)
+    throw new Error(`SCRIPTC_DEBUG_JS_IC_WAYS must be 0, 1 or 2, got ${raw}`);
+  return ways;
+}
+
+const IC_WAYS_DEBUG: 0 | 1 | 2 | null = debugJsIcWays();
+const INLINE_WAYS: number = IC_WAYS_DEBUG ?? 2;
+
+/* An attribution run gives an object literal's member stores their own probe
+ * entry point, so a profile can split them from other stores. With the
+ * variable unset the emitted code calls scr_js_store_probe as before. */
+const LITERAL_PROBE: string =
+  IC_WAYS_DEBUG === null ? "scr_js_store_probe" : "scr_js_literal_probe";
 const INLINE_PROTO = true;
 
 /** The address of slot `slot` of layout-mode object `d`. */
@@ -347,7 +370,7 @@ function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
   const receiver = helper.params[0]?.localId;
   if (receiver === undefined || helper.params.length !== 1) return [];
   const reads = new Map<string, CapsuleRead | null>();
-  for (const stmt of helper.body) {
+  for (const stmt of tableBranches(helper.body)) {
     if (normalizes(stmt, receiver)) continue;
     if (stmt.kind !== "if" || stmt.else_ !== null) break;
     if (notCapsule(stmt.cond, receiver)) continue;
@@ -373,6 +396,28 @@ function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
     if (same) out.push(read);
   }
   return out;
+}
+
+/** A class table's branches in the order a receiver that matches none of
+ * them reaches their guards: the statements of the body, with a
+ * `dyn.classHash` switch replaced by its cases' branches. A capsule whose
+ * key is a branch's selects that case, whose guard is then true, so the
+ * site can treat the branches as the chain they were lowered from. */
+function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
+  if (!body.some(isClassHashSwitch)) return body;
+  const branches: IrStmt[] = [];
+  for (const stmt of body) {
+    if (isClassHashSwitch(stmt))
+      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
+    else branches.push(stmt);
+  }
+  return branches;
+}
+
+/** The switch the compiler builds over a generated class table's branches
+ * (frontend/lowering/class-dynamic-dispatch.ts). */
+function isClassHashSwitch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
+  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
 }
 
 /** `p = %dyn.class.normalize(p)`. */
@@ -437,7 +482,7 @@ function normalizationTargets(host: Host): Map<string, string[]> | null {
   if (normalize === undefined) return targets;
   const value = normalize.params[0]?.localId;
   if (value === undefined) return null;
-  for (const stmt of normalize.body) {
+  for (const stmt of tableBranches(normalize.body)) {
     if (stmt.kind === "return") {
       if (stmt.value !== null && isLocal(stmt.value, value)) continue;
       return null;
@@ -603,7 +648,7 @@ export function capsuleCallSite(
   if (resolved === null) return null;
   const branches = new Map<string, CapsuleCall | null>();
   const self = params[0]!.localId;
-  for (const stmt of helper.body) {
+  for (const stmt of tableBranches(helper.body)) {
     if (normalizes(stmt, self)) continue;
     if (stmt.kind !== "if" || stmt.else_ !== null) break;
     if (notCapsule(stmt.cond, self) || classObjectTest(stmt.cond, self)) continue;
@@ -637,7 +682,7 @@ export function capsuleCallSite(
 function callbackKeys(callback: IrFunction): Set<string> | null {
   const value = callback.params[0]!.localId;
   const keys = new Set<string>();
-  const body = callback.body;
+  const body = tableBranches(callback.body);
   for (let i = 0; i < body.length; i++) {
     const stmt = body[i]!;
     if (normalizes(stmt, value)) continue;
@@ -1362,10 +1407,10 @@ function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
 export function emitJsIcLiteralMember(host: Host, obj: string, key: string, value: string): void {
   const B = host.B;
   const ic = host.jsIcSite();
-  host.declare(`declare zeroext i1 @scr_js_store_probe(ptr, ptr, ptr, ptr)`);
+  host.declare(`declare zeroext i1 @${LITERAL_PROBE}(ptr, ptr, ptr, ptr)`);
   const done = B.tmp();
   B.line(
-    `${done} = call zeroext i1 @scr_js_store_probe(ptr ${obj}, ptr ${key}, ptr ${value}, ptr ${ic})`,
+    `${done} = call zeroext i1 @${LITERAL_PROBE}(ptr ${obj}, ptr ${key}, ptr ${value}, ptr ${ic})`,
   );
   const slow = B.newLabel("icl.slow");
   const join = B.newLabel("icl.j");

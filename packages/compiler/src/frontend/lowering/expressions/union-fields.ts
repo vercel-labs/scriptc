@@ -159,6 +159,25 @@ export function lowerUnionFieldRead(
   return { kind: "seqExpr", stmts: [init], result: dispatch, type, loc };
 }
 
+/** The expression a receiver write actually targets, through parentheses
+ * and erased type assertions (`(value as R)`, `<R>value`, and chains of
+ * them). Node erases an assertion, so `(u as R).f = v` mutates the value in
+ * `u`; only the checker's view of it changes. */
+function unassertedReceiver(expr: ts.Expression): ts.Expression {
+  let node = expr;
+  for (;;) {
+    if (ts.isParenthesizedExpression(node)) {
+      node = node.expression;
+      continue;
+    }
+    if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
+      node = node.expression;
+      continue;
+    }
+    return node;
+  }
+}
+
 /** Assign a common data field without projecting the union's objects into
  * a new structural shape. Each tag writes the original payload, so
  * aliases and identity-keyed collections observe the mutation. Arms may
@@ -176,9 +195,17 @@ export function lowerUnionFieldWrite(
   access: ts.PropertyAccessExpression,
   rhs: ts.Expression,
 ): IrExpr | null {
-  const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
-  if (access.questionDotToken || mapped?.kind !== "union") return null;
-  let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(access.expression), access.expression);
+  if (access.questionDotToken) return null;
+  // A write through an erased type assertion (`(entry.message as { role:
+  // string }).role = "custom"`): the assertion decides checking, not the
+  // object a write mutates, so the dispatch runs over the UNDERLYING
+  // expression's arms and each tag writes its own payload slot. A lying
+  // assertion narrows nothing here; an arm that does not declare the field
+  // keeps the refusal below, exactly as for the unasserted spelling.
+  const target = unassertedReceiver(access.expression);
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(target));
+  if (mapped?.kind !== "union") return null;
+  let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(target), target);
   // Optional base-class storage narrowed to several subclasses (see
   // lowerUnionProperty): extract the instance and test its class.
   if (receiver.type.kind === "union" && !typeEquals(receiver.type, mapped))

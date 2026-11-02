@@ -1472,6 +1472,8 @@ export function emitRecordExpr(
     }
     case "recordGet": {
       const obj = host.emitReadReceiver(e.obj);
+      if (host.partialFieldMissing(e.shapeId, e.field))
+        return host.own(host.readPartialField(obj.name, e.shapeId, e.field, e.type));
       const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
       if (inline) return host.own({ name: host.inlineFieldUnion(ptr, type), type: e.type });
       const v = host.loadRecordField(ptr, type, false);
@@ -1534,9 +1536,11 @@ export function emitRecordExpr(
       }
       // A field some partial view of this shape lacks: ask the view first.
       // Only a present field's slot may be looked up — a partial view's
-      // absent field answers no slot at all (scr_record_view_slot).
+      // absent field answers no slot at all (scr_record_view_slot), and has
+      // the property only once a write left it in the view's extra store.
       const position = host.recordsById.get(e.shapeId)!.fields.findIndex((f) => f.name === e.field);
       host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+      host.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${host.sizeType})`);
       const isView = B.tmp();
       const rhFrom = B.currentLabel();
       const view = B.newLabel("rh.view");
@@ -1552,10 +1556,18 @@ export function emitRecordExpr(
       );
       const hasSlot = B.tmp();
       B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+      const extra = B.tmp();
+      const hasExtra = B.tmp();
+      B.line(
+        `${extra} = call ptr @scr_record_view_extra(ptr ${obj.name}, ptr ${host.cstr(e.field)}, ${host.sizeType} ${Buffer.byteLength(e.field, "utf8")})`,
+      );
+      B.line(`${hasExtra} = icmp ne ptr ${extra}, null`);
+      const fromView = B.tmp();
+      B.line(`${fromView} = select i1 ${hasSlot}, i1 true, i1 ${hasExtra}`);
       B.br(done);
       B.startBlock(done);
       const hasView = B.tmp();
-      B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${hasSlot}, %${view} ]`);
+      B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${fromView}, %${view} ]`);
       if (fieldType === undefined || fieldType.kind !== "union")
         return { name: hasView, type: e.type };
       const unionId = fieldType.unionId;

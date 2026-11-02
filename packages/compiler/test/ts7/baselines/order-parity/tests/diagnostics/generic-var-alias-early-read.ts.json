@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/generic-var-alias-early-read.ts"
+ ],
+ "diags": []
+}

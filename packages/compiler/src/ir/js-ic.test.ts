@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { BOOL, DYN, STRING, VOID, type IrExpr, type IrFunction, type IrStmt } from "./ir.js";
+import { BOOL, DYN, F64, STRING, VOID, type IrExpr, type IrFunction, type IrStmt } from "./ir.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 
 const loc = { file: "js-ic.ts", start: 0, end: 0 };
@@ -124,6 +124,41 @@ test("property helpers whose class branches only test capsules are cache sites",
   );
   expect(sites.site("%dyn.class.property.0")).toEqual({ kind: "get", key: "x" });
   expect(sites.site("%dyn.class.property.1")).toEqual({ kind: "set", key: "y" });
+});
+
+test("a class table's indexed dispatch reads as the branches it selects", () => {
+  // The lowering replaces a long run of capsule branches with a switch on the
+  // receiver's class key; each case holds the branch it selects, still
+  // guarded by its own key test.
+  const indexed = (branches: IrStmt[], receiver: string): IrStmt => ({
+    kind: "switch",
+    disc: {
+      kind: "libCall",
+      fn: "dyn.classHash",
+      args: [ref(receiver)],
+      type: F64,
+      loc,
+    },
+    cases: branches.map((branch, index) => ({
+      test: { kind: "numLit", value: index, type: F64, loc },
+      body: [branch],
+    })),
+    loc,
+  });
+  const dispatchBag = helper(
+    "%dyn.class.readProperties.indexed",
+    ["v"],
+    [indexed([capsuleBranch("v"), capsuleBranch("v")], "v"), ret(ref("v"))],
+  );
+  const sites = sitesOf(
+    dispatchBag,
+    getHelper("%dyn.class.property.0", "x", [], call(dispatchBag.name, ref("p.0"))),
+    getHelper("%dyn.class.property.1", "x", [
+      indexed([capsuleBranch("p.0"), capsuleBranch("p.0")], "p.0"),
+    ]),
+  );
+  expect(sites.site("%dyn.class.property.0")).toEqual({ kind: "get", key: "x" });
+  expect(sites.site("%dyn.class.property.1")).toEqual({ kind: "get", key: "x" });
 });
 
 test("bags converted between dyn and jsval are still the receiver", () => {

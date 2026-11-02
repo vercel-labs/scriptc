@@ -427,6 +427,79 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
   );
 });
 
+test("--explain-dynamic explains the runtime-optional storage behind a narrowed read", async () => {
+  const { coverage, sourceTexts } = analyze(fixture("runtime-optional-narrowing.ts"), {
+    explainDynamic: true,
+  });
+  const slots = coverage.tiers!.runtimeOptional;
+  // Each binding holds a value an unchecked read can leave undefined, while
+  // the checker types every read with the declared type; the decision names
+  // the read that made the slot optional.
+  expect(slots.map((s) => [s.name, s.storage, s.narrowed])).toEqual([
+    ["count", "number | undefined", "number"],
+    ["label", "string | undefined", "string"],
+    ["first", "number | undefined", "number"],
+  ]);
+  expect(slots.map((s) => s.decisions.map((d) => d.kind))).toEqual([
+    ["binding"],
+    ["binding"],
+    ["pattern-binding"],
+  ]);
+  // A declared optional parameter leaves no hidden absence to report.
+  expect(slots.some((s) => s.name === "value")).toBe(false);
+  const guard = slots[0]!;
+  // The `typeof` guard and the read it guards; the fixture's type alias
+  // references the binding but does not read its storage.
+  expect(guard.reads).toHaveLength(2);
+  for (const read of guard.reads) expect(read.end).toBeGreaterThan(read.start);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.tiers?.runtimeOptional[0]).toMatchObject({
+    name: "count",
+    storage: "number | undefined",
+    narrowed: "number",
+    decisions: [{ kind: "binding" }],
+  });
+  expect(envelope.tiers?.runtimeOptional[0]?.reads.length).toBe(guard.reads.length);
+  const relative = JSON.parse(
+    JSON.stringify(coverage.tiers).replaceAll(repoRoot + "/", ""),
+  ) as typeof coverage.tiers;
+  await expect(renderExplainDynamic(relative!)).toMatchFileSnapshot(
+    "__snapshots__/coverage-explain-runtime-optional.txt",
+  );
+});
+
+test("--explain-dynamic names the short call that passed undefined to a widened parameter", () => {
+  const { coverage } = analyze(fixture("runtime-optional-parameter.js"), { explainDynamic: true });
+  const slots = coverage.tiers!.runtimeOptional;
+  expect(slots.map((s) => [s.name, s.storage, s.narrowed])).toEqual([
+    ["value", "number | undefined", "number"],
+  ]);
+  expect(slots[0]!.decisions).toMatchObject([
+    { kind: "parameter", detail: "(omitted or undefined argument)" },
+  ]);
+});
+
+test("--explain-dynamic reports shorthand reads and multi-arm guard narrowings", () => {
+  const { coverage } = analyze(fixture("runtime-optional-shorthand.ts"), { explainDynamic: true });
+  const slots = coverage.tiers!.runtimeOptional;
+  // A guard that narrows the slot to several storage arms at once is still a
+  // read below the storage, and every distinct narrowing it reaches is
+  // listed.
+  const item = slots.find((s) => s.name === "item");
+  expect(item?.storage).toBe("string | number | boolean | undefined");
+  expect(item?.narrowed.split(" or ").sort()).toEqual([
+    "boolean | number",
+    "boolean | number | string",
+    "number | string",
+  ]);
+  // An object shorthand reads the binding behind the property it creates, so
+  // a slot whose only read is a shorthand keeps that read.
+  const label = slots.find((s) => s.name === "label");
+  expect(label?.storage).toBe("string | undefined");
+  expect(label?.narrowed).toBe("string");
+  expect(label?.reads).toHaveLength(1);
+});
+
 test("--explain-dynamic lists the type failures localized failure would turn into dynamic slots", async () => {
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;
@@ -989,6 +1062,25 @@ test("Node islands (report-only): one package per class, gap islands first", asy
   expect(coveragePasses(coverage, "node-islands")).toBe(false);
 });
 
+test("a package the policy islands types its values as island handles", async () => {
+  // The analysis lowers with the island set a build would decide, so an SDK
+  // whose implementation is not compiled natively (ni-config ships a webpack
+  // marker) types its config object as an island handle. Writing a member
+  // (`config.region = …`, what a client-config builder does) is then a
+  // dynamic property write the build lowers through the island, not
+  // "assignment to non-variables" (SC1090) on an unmapped package type.
+  const entry = fixture("node-islands-config-writes/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-node-islands-config-writes.txt",
+  );
+  const { coverage } = analyze(entry);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  expect(coverage.diagnostics.filter((d) => d.code !== "SC2013")).toEqual([]);
+  expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
+    ["ni-config", "packaging"],
+  ]);
+});
+
 test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
   const entry = fixture("node-islands-config/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-config-"));
@@ -1018,15 +1110,28 @@ test("unknown scriptc settings warn in a build and make the island report unavai
 
 test("Node island policy from the command line: native, forced, off", () => {
   const entry = fixture("node-islands/main.ts");
-  const forced = analyze(entry, {
+  const forcedCoverage = analyze(entry, {
     nodeIslands: { native: ["ni-eval"], islands: ["ni-typed", "not-a-dependency"] },
-  }).coverage.nodeIslands!;
+  }).coverage;
+  const forced = forcedCoverage.nodeIslands!;
+  // A forced package's implementation is not part of the program a build
+  // compiles: its class is the CLI mark, and its own module body contributes
+  // no coverage failures, exactly as a build's SC8001 note reports it.
   expect(forced.islands.map((i) => [i.package, i.class, i.decision])).toEqual([
     ["ni-gap", "gap", "auto"],
     ["ni-ctor", "object-model", "auto"],
     ["ni-bundled", "packaging", "auto"],
     ["ni-typed", "marked", "cli"],
   ]);
+  // ni-typed compiles statically but its module body is not part of the
+  // lowered program (the CommonJS `exports` assignment its JavaScript
+  // carries would report SC1090); a build excludes it, and the analysis
+  // reports nothing of it.
+  expect(
+    [...forcedCoverage.diagnostics, ...(forcedCoverage.runtimeFences ?? [])].filter((d) =>
+      d.loc.file.includes("ni-typed"),
+    ),
+  ).toEqual([]);
   expect(forced.violations.map((v) => v.code)).toEqual(["SC8003"]);
   expect(forced.unknownPackages).toEqual(["not-a-dependency"]);
   const off = analyze(entry, { nodeIslands: { mode: "off" } }).coverage;

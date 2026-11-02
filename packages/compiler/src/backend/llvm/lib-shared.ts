@@ -86,6 +86,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sharedArrayBuffer.new": "scr_shared_array_buffer_new",
   "sharedArrayBuffer.is": "scr_shared_array_buffer_is",
   "arrayBuffer.new": "scr_array_buffer_new",
+  "arrayBuffer.newResizable": "scr_js_buffer_new_resizable",
+  "sharedArrayBuffer.newGrowable": "scr_js_buffer_new_growable",
+  "arrayBuffer.armMutable": "scr_js_buffers_arm",
   "ffi.argument": "scr_ffi_argument",
   "ffi.memoryModule": "scr_ffi_memory_module",
   "arrayBuffer.is": "scr_array_buffer_is",
@@ -303,8 +306,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.clear": "scr_console_clear",
   "console.table": "scr_console_table",
   "console.dirDyn": "scr_console_dir_dyn",
+  "console.dirHidden": "scr_console_dir_hidden",
   "global.native": "scr_global_native",
   "global.installValues": "scr_global_values_install",
+  "dyn.installBuiltinStatics": "scr_builtin_statics_install",
   "global.forInObject": "scr_global_for_in_object",
   "navigator.object": "scr_navigator_object",
   "navigator.language": "scr_navigator_language",
@@ -324,6 +329,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "wrapper.guardList": "scr_js_wrapper_guard_list",
   "wrapper.isStringMethod": "scr_js_wrapper_is_string_method",
   "wrapper.thisString": "scr_js_wrapper_this_string",
+  "wrapper.booleanPrototype": "scr_js_wrapper_boolean_prototype",
   "fs.callbackValue": "scr_fs_callback_value",
   "fs.callbackCall": "scr_fs_callback_call",
   "process.hrtimeValue": "scr_process_hrtime_value",
@@ -552,6 +558,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",
   "buffer.byteLenValue": "scr_buffer_byte_length_value",
   "buffer.byteLenStr": "scr_bytes_byte_length_str",
+  "buffer.normalizeEncoding": "scr_bytes_normalize_encoding",
+  "buffer.normalizeEncodingEmptyUtf8": "scr_bytes_normalize_encoding_empty_utf8",
+  "buffer.normalizeEncodingOrUtf8": "scr_bytes_normalize_encoding_or_utf8",
+  "buffer.writeStrDyn": "scr_bytes_write_str_dyn",
+  "buffer.writeStrDynLen": "scr_bytes_write_str_dyn_len",
   "buffer.isEncoding": "scr_bytes_is_encoding",
   // The checked-dynamic compare/equals validators (scr_bytes_io.c):
   // Node's argument ladders throw catchably (MAY_THROW_LIB_FNS).
@@ -578,6 +589,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.installValue": "scr_buffer_install_value",
   "buffer.staticValue": "scr_buffer_static_value",
   "buffer.prototypeMember": "scr_buffer_prototype_member",
+  "buffer.prototypeObject": "scr_buffer_prototype_object",
+  "buffer.slowBuffer": "scr_buffer_slow",
   "fs.toUnixTimestamp": "scr_fs_to_unix_timestamp",
   "fs.existsChk": "scr_fs_exists_async",
   "fs.mkdtempSyncChk": "scr_fs_mkdtemp_sync_chk",
@@ -612,7 +625,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.statfsSync": "scr_fs_statfs_checked",
   "fs.readlinkSyncStr": "scr_fs_readlink_str",
   "fs.readlinkSyncBuffer": "scr_fs_readlink_buffer",
-  "fs.openSync": "scr_fs_open",
+  "fs.openSync": "scr_fs_open_mode",
   "fs.openNumericSync": "scr_fs_open_numeric",
   "fs.readSync": "scr_fs_read_sync",
   "fs.readSyncDyn": "scr_fs_read_sync_dyn",
@@ -705,6 +718,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "zlib.inflateSync": "scr_zlib_inflate",
   "zlib.crc32": "scr_zlib_crc32",
   "zlib.brotliInstall": "scr_brotli_install",
+  "zlib.zstdInstall": "scr_zstd_install",
   // The CA-store unit. get/set throw (an unknown type name, a
   // certificate-free set) and take the generic path's pending check.
   "tlsca.root": "scr_tls_ca_root",
@@ -802,6 +816,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.errorCause": "scr_insp_error_cause",
   "insp.begin": "scr_insp_begin",
   "insp.layout": "scr_insp_layout",
+  "insp.maxArrayLength": "scr_insp_max_array_length",
+  "insp.maxStringLength": "scr_insp_max_string_length",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
@@ -923,6 +939,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
   "cp.spawnSyncEnv": "scr_spawn_sync_env",
+  "cp.spawnSyncExt": "scr_spawn_sync_ext",
+  "cp.spawnSyncExtEnv": "scr_spawn_sync_ext_env",
   "cp.execSync": "scr_exec_sync",
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",
@@ -1022,6 +1040,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sym.for": "scr_sym_for",
   "sym.wellKnown": "scr_sym_well_known",
   "sym.toString": "scr_sym_to_string",
+  "sym.keyForDyn": "scr_dyn_symbol_key_for",
   "bigint.parse": "scr_bigint_parse",
   "bigint.fromF64": "scr_bigint_from_f64",
   "bigint.neg": "scr_bigint_neg",
@@ -1161,6 +1180,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.keySetComputed": "scr_dyn_key_set_computed",
   "dyn.keyDelete": "scr_dyn_key_delete",
   "dyn.keyDeleteComputed": "scr_dyn_key_delete_computed",
+  "dyn.primitiveDelete": "scr_dyn_primitive_delete",
   "dyn.reflectDeleteProperty": "scr_dyn_reflect_delete_property",
   "dyn.reflectHasTarget": "scr_dyn_reflect_has_target",
   "dyn.hasKeyComputed": "scr_dyn_has_key_computed",
@@ -1208,6 +1228,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
   "dyn.promiseResolve": "scr_dyn_promise_resolve",
+  // Promise statics with a foreign `this` (scr_js_promise_generic.c).
+  "promise.genericStatic": "scr_js_promise_generic_call",
   "child.propsInstall": "scr_dyn_handle_props_install",
   "child.propsDefine": "scr_dyn_define_property_hp",
   "child.propsDescriptor": "scr_dyn_get_own_property_descriptor_hp",
@@ -1881,6 +1903,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
   "timers.userDelay": "scr_timer_user_delay",
+  "timers.thisCallback": "scr_timer_this_callback",
 };
 
 /** The mock-aware entry points (scr_test.c) that the timer calls of a
@@ -1945,8 +1968,10 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "url.legacyParse",
   "url.legacyFormat",
   "url.legacyResolve",
-  // The deprecated Buffer constructor reports DEP0005 on the next tick.
+  // The deprecated Buffer constructor reports DEP0005, and SlowBuffer
+  // DEP0030, on the next tick.
   "buffer.deprecation",
+  "buffer.slowBuffer",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.isArrayDeprecated",

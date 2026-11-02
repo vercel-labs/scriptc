@@ -489,7 +489,13 @@ export function pointerRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolea
   const shape = host.recordShape(e.shapeId);
   if (e.overflowOnly !== true) {
     for (const f of shape.fields)
-      if (host.recordFieldInline(e.shapeId, f.name) || !exact(f.type)) return false;
+      if (
+        host.recordFieldInline(e.shapeId, f.name) ||
+        !exact(f.type) ||
+        // A field a partial view may lack has no slot to lend.
+        host.partialFieldMissing(e.shapeId, f.name)
+      )
+        return false;
   }
   return shape.indexValue === undefined || typeEquals(shape.indexValue, nullable.arm);
 }
@@ -637,6 +643,8 @@ export function scalarRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolean
   if (e.overflowOnly !== true) {
     for (const f of shape.fields) {
       const inline = host.recordFieldInline(e.shapeId, f.name);
+      // A field a partial view may lack has no slot to read.
+      if (host.partialFieldMissing(e.shapeId, f.name)) return false;
       if (!isArm(f.type) && !(inline && typeEquals(f.type, resultType))) return false;
     }
   }
@@ -745,10 +753,13 @@ export function keyedRecordReadInto(
   const B = host.B;
   const shape = host.recordShape(shapeId);
   if (resultType.kind === "dyn") {
-    // A dyn JOIN (the C helper's `surface` dyn arm): declared hits
-    // convert through the per-type toDyn walker (borrowed read → fresh
-    // +1 tree), a dyn-valued overflow hit passes through (+1 from the
-    // map get), and a miss is JS's undefined — the dyn singleton.
+    // A dyn JOIN (the C helper's `surface` dyn arm): a declared hit of a
+    // record, an array or a union holding one boxes as a LIVE capsule of
+    // the field (+1), as `dynFrom` with `liveRef` boxes the same value, so
+    // a write through the result reaches the field it came from; every
+    // other hit converts through the per-type toDyn walker, a dyn-valued
+    // overflow hit passes through (+1 from the map get), and a miss is
+    // JS's undefined — the dyn singleton.
     for (const f of overflowOnly ? [] : shape.fields) {
       const hit = B.tmp();
       B.line(
@@ -758,19 +769,32 @@ export function keyedRecordReadInto(
       const ln = B.newLabel("rkg.n");
       B.condBr(hit, lh, ln);
       B.startBlock(lh);
-      const { ptr, type, inline } = host.recordFieldPtr(objName, shapeId, f.name);
-      const v = host.loadRecordField(ptr, type, inline);
-      if (type.kind === "dyn") {
-        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-        const r = B.tmp();
-        B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${v})`);
-        B.line(`store ptr ${r}, ptr ${slot}`);
+      let v: string;
+      let type: IrType;
+      if (host.partialFieldMissing(shapeId, f.name)) {
+        // A field a partial record view may lack reads through the view's
+        // extra-property store; the read answers an owned value.
+        type = shape.fields.find((field) => field.name === f.name)!.type;
+        v = host.readPartialField(objName, shapeId, f.name, type).name;
+        if (type.kind === "dyn") B.line(`store ptr ${v}, ptr ${slot}`);
+        else {
+          const r = host.dyn.liveReadToDyn(B, type, v);
+          host.releaseFrame(v, type);
+          B.line(`store ptr ${r}, ptr ${slot}`);
+        }
       } else {
-        const conv = host.dyn.toDynHelper(type);
-        const vTy = host.llType(type);
-        const r = B.tmp();
-        B.line(`${r} = call ptr @${conv}(${vTy} ${v})`);
-        B.line(`store ptr ${r}, ptr ${slot}`);
+        const { ptr, type: fieldType, inline } = host.recordFieldPtr(objName, shapeId, f.name);
+        type = fieldType;
+        v = host.loadRecordField(ptr, type, inline);
+        if (type.kind === "dyn") {
+          host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+          const r = B.tmp();
+          B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${v})`);
+          B.line(`store ptr ${r}, ptr ${slot}`);
+        } else {
+          const r = host.dyn.liveReadToDyn(B, type, v);
+          B.line(`store ptr ${r}, ptr ${slot}`);
+        }
       }
       B.br(join);
       B.startBlock(ln);
@@ -877,11 +901,19 @@ export function keyedRecordReadInto(
     const ln = B.newLabel("rkg.n");
     B.condBr(hit, lh, ln);
     B.startBlock(lh);
-    const { ptr, type, inline } = host.recordFieldPtr(objName, shapeId, f.name);
-    // An inline union field surfaces through a fresh heap box.
-    const value = inline
-      ? surface(type, host.inlineFieldUnion(ptr, type), true)
-      : surface(type, host.loadRecordField(ptr, type, false), false);
+    let value: string;
+    if (host.partialFieldMissing(shapeId, f.name)) {
+      // A field a partial record view may lack: the read covers the view's
+      // extra-property store, or stops the program when nothing wrote it.
+      const type = shape.fields.find((field) => field.name === f.name)!.type;
+      value = surface(type, host.readPartialField(objName, shapeId, f.name, type).name, true);
+    } else {
+      const { ptr, type, inline } = host.recordFieldPtr(objName, shapeId, f.name);
+      // An inline union field surfaces through a fresh heap box.
+      value = inline
+        ? surface(type, host.inlineFieldUnion(ptr, type), true)
+        : surface(type, host.loadRecordField(ptr, type, false), false);
+    }
     B.line(`store ${ty} ${value}, ptr ${slot}`);
     B.br(join);
     B.startBlock(ln);

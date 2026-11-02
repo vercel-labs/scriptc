@@ -1,19 +1,47 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
+import { ARRAY_PROTOTYPE_MEMBER_NAMES } from "../../ir/runtime-features.js";
 import { BYTES_ELEM_NUM, CLOSURE_KIND, SCR_ARR_FROZEN, SCR_ARR_STATES } from "./common.js";
 import { DYN_KIND, MESSAGE_KIND } from "./dyn.js";
 
 // The backend writes the numbers of several runtime enums and flag sets
-// into the IR it emits. Each check here reads the C declaration and fails
-// when the backend's copy disagrees, or when two names share a value.
+// into the IR it emits, and the IR layer names the methods a runtime
+// prototype installs. Each check here reads the C declaration and fails
+// when the copy disagrees, or when two names share a value.
 const source = (file: string) =>
   readFileSync(new URL(`../../../../runtime/src/${file}`, import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\/\/.*$/gm, "");
 
-/** The members of `typedef enum ... { ... } <name>;` with their values. */
-function cEnum(file: string, name: string): Map<string, number> {
-  const match = new RegExp(`typedef enum(?: \\w+)? \\{([^}]*)\\} ${name};`).exec(source(file));
+/** Resolves the `#ifdef NAME` / `#else` / `#endif` blocks a header opens, so a
+ * declaration a feature macro extends can be read in either configuration. */
+function conditional(text: string, defines: readonly string[]): string {
+  const kept: string[] = [];
+  const open: boolean[] = [];
+  for (const line of text.split("\n")) {
+    const directive = /^\s*#\s*(ifdef|ifndef|else|endif)\b\s*(\w*)/.exec(line);
+    if (directive !== null) {
+      const [, kind, name] = directive;
+      if (kind === "ifdef" || kind === "ifndef") {
+        const named = defines.includes(name!);
+        open.push(kind === "ifdef" ? named : !named);
+      } else if (kind === "else") open[open.length - 1] = !open[open.length - 1];
+      else open.pop();
+      continue;
+    }
+    if (open.every((on) => on)) kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+/** The members of `typedef enum ... { ... } <name>;` with their values. A
+ * `defines` list reads the declaration as that feature configuration builds it;
+ * without one the raw text is used. */
+function cEnum(file: string, name: string, defines?: readonly string[]): Map<string, number> {
+  const text = source(file);
+  const match = new RegExp(`typedef enum(?: \\w+)? \\{([^}]*)\\} ${name};`).exec(
+    defines === undefined ? text : conditional(text, defines),
+  );
   expect(match, `${name} in ${file}`).not.toBeNull();
   const body = match![1]!;
   const members = new Map<string, number>();
@@ -68,12 +96,22 @@ test("MESSAGE_KIND matches ScrMessageKind", () => {
 });
 
 test("BYTES_ELEM_NUM matches ScrBytesElem", () => {
-  const elems = cEnum("scr_bytes.h", "ScrBytesElem");
+  const elems = cEnum("scr_bytes.h", "ScrBytesElem", []);
   expectDistinct(elems, "ScrBytesElem");
   expect(Object.keys(BYTES_ELEM_NUM).length).toBe(elems.size);
   for (const [name, value] of Object.entries(BYTES_ELEM_NUM)) {
     expect(elems.get(`SCR_BYTES_${name.toUpperCase()}`), name).toBe(value);
   }
+});
+
+test("the SCR_JS_OBJECT_MODEL build appends the BigInt element kinds", () => {
+  const plain = cEnum("scr_bytes.h", "ScrBytesElem", []);
+  const bigint = cEnum("scr_bytes.h", "ScrBytesElem", ["SCR_JS_OBJECT_MODEL"]);
+  expectDistinct(bigint, "ScrBytesElem");
+  expect([...bigint.keys()].slice(0, plain.size)).toEqual([...plain.keys()]);
+  for (const [name, value] of plain) expect(bigint.get(name)).toBe(value);
+  expect(bigint.get("SCR_BYTES_I64")).toBe(plain.size);
+  expect(bigint.get("SCR_BYTES_U64")).toBe(plain.size + 1);
 });
 
 test("CLOSURE_KIND matches the SCR_CLOSURE_KIND_* bits", () => {
@@ -84,6 +122,17 @@ test("CLOSURE_KIND matches the SCR_CLOSURE_KIND_* bits", () => {
   flags.delete("MASK");
   expectSingleBits(flags, "SCR_CLOSURE_KIND");
   expect(Object.fromEntries(flags)).toEqual(CLOSURE_KIND);
+});
+
+test("ARRAY_PROTOTYPE_MEMBER_NAMES matches the Array.prototype method table", () => {
+  // The runtime installs these methods on Array.prototype, and the IR and
+  // backend read the set to decide which reads link the dyn-invoke unit.
+  const body = /dyn_array_prototype_methods\[\] = \{([\s\S]*?)\};/.exec(
+    source("scr_dyn_invoke.c"),
+  )?.[1];
+  expect(body, "dyn_array_prototype_methods in scr_dyn_invoke.c").toBeDefined();
+  const names = [...body!.matchAll(/\{"(\w+)", \d+\}/g)].map(([, name]) => name!);
+  expect(new Set(names)).toEqual(ARRAY_PROTOTYPE_MEMBER_NAMES);
 });
 
 test("the %ScrArr spare flags the backend tests match scr_array.h", () => {

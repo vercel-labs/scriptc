@@ -120,6 +120,16 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     }
     for (size_t i = 0; i < d->v.bytes->len; i++) {
       if (i > 0) scr_jb_putc(b, ',');
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_bytes_elem_is_bigint(d->v.bytes->elem)) {
+        ScrDyn *element = scr_bytes_get_bigint(d->v.bytes, (double)i);
+        ScrStr *n = scr_bigint_to_string(element->v.bigint, 10);
+        scr_dyn_release(element);
+        scr_jb_write(b, n->data, n->len);
+        scr_str_release(n);
+        continue;
+      }
+#endif
       ScrStr *n = scr_f64_to_scrstr(scr_bytes_get(d->v.bytes, (double)i));
       scr_jb_write(b, n->data, n->len);
       scr_str_release(n);
@@ -289,6 +299,10 @@ static ScrDyn *dyn_borrow_get(ScrDyn *recv, const ScrStr *key) {
       return scr_dyn_arr_named_get(recv, key);
     if (recv->kind == SCR_DYN_ARR) return scr_dyn_arr_at(recv, (double)index);
     if (recv->kind == SCR_DYN_BYTES) {
+#ifdef SCR_JS_OBJECT_MODEL
+      if (index < recv->v.bytes->len && scr_bytes_elem_is_bigint(recv->v.bytes->elem))
+        return scr_bytes_get_bigint(recv->v.bytes, (double)index);
+#endif
       return index < recv->v.bytes->len
         ? scr_dyn_new_num(scr_bytes_get(recv->v.bytes, (double)index))
         : scr_dyn_retain(scr_dyn_undefined());
@@ -2163,6 +2177,32 @@ static ScrDyn *dyn_inherited_from(const char *ctor, int methods, const ScrStr *k
   return method;
 }
 
+/* The methods Array.prototype installs, in the order the prototype object
+ * defines them. `arity` is the ECMAScript `length` of the function the name
+ * holds. */
+static const struct {
+  const char *name;
+  size_t arity;
+} dyn_array_prototype_methods[] = {
+  {"at", 1}, {"concat", 1}, {"copyWithin", 2}, {"fill", 1}, {"find", 1}, {"findIndex", 1},
+  {"findLast", 1}, {"findLastIndex", 1}, {"lastIndexOf", 1}, {"pop", 0}, {"push", 1},
+  {"reverse", 0}, {"shift", 0}, {"unshift", 1}, {"slice", 2}, {"sort", 1}, {"splice", 2},
+  {"includes", 1}, {"indexOf", 1}, {"join", 1}, {"keys", 0}, {"entries", 0}, {"values", 0},
+  {"forEach", 1}, {"filter", 1}, {"flat", 0}, {"flatMap", 1}, {"map", 1}, {"every", 1},
+  {"some", 1}, {"reduce", 1}, {"reduceRight", 1}, {"toReversed", 0}, {"toSorted", 1},
+  {"toSpliced", 2}, {"with", 2}, {"toLocaleString", 0}, {"toString", 0},
+};
+
+/* Whether `key` names one of the methods Array.prototype installs. */
+static bool dyn_array_prototype_defines(const ScrStr *key) {
+  for (size_t i = 0; i < sizeof dyn_array_prototype_methods / sizeof dyn_array_prototype_methods[0];
+       i++) {
+    const char *name = dyn_array_prototype_methods[i].name;
+    if (strlen(name) == key->len && memcmp(name, key->data, key->len) == 0) return true;
+  }
+  return false;
+}
+
 /* The inherited member `key` of `d` when its own chain does not define it,
  * or NULL (the read's undefined stands). */
 static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
@@ -2194,8 +2234,22 @@ static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
     return dyn_inherited_from(dyn_s26, DYN_INHERIT_ALL, key);
   }
   case SCR_DYN_ARR:
-    /* Array.prototype defines toString and answers constructor itself. */
+    /* Array.prototype answers constructor itself. */
     if (d->null_proto || d->prototype || scr_dyn_has_own(d, key)) return NULL;
+    /* An array literal's implicit prototype is the object Array.prototype
+     * installs its methods on, so reading `[].slice` answers the function
+     * `Array.prototype.slice` reads as. The read that reached here already
+     * went through that prototype, so a name it carries — a program's own
+     * definition, a getter included — has already run once with the array
+     * as its receiver: the undefined read stands instead of a second read
+     * running the getter again. Otherwise the table installs on first use,
+     * exactly as a read of Array.prototype does. */
+    if (dyn_array_prototype_defines(key)) {
+      if (scr_dyn_array_prototype_owns(key)) return NULL;
+      ScrDyn *prototype = scr_dyn_array_prototype();
+      scr_dyn_release(prototype);
+      return scr_dyn_arr_named_get(d, key);
+    }
     return dyn_inherited_from(NULL, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
   case SCR_DYN_FUNC:
     /* Function.prototype defines toString and answers constructor itself. */
@@ -2444,25 +2498,28 @@ ScrDyn *scr_dyn_array_prototype(void) {
   ScrDyn *prototype = scr_dyn_array_prototype_base();
   if (initialized) return prototype;
   initialized = true;
-  static const struct { const char *name; size_t arity; } methods[] = {
-    {"at", 1}, {"concat", 1}, {"copyWithin", 2}, {"fill", 1}, {"find", 1}, {"findIndex", 1},
-    {"findLast", 1}, {"findLastIndex", 1}, {"lastIndexOf", 1}, {"pop", 0}, {"push", 1},
-    {"reverse", 0}, {"shift", 0}, {"unshift", 1}, {"slice", 2}, {"sort", 1}, {"splice", 2},
-    {"includes", 1}, {"indexOf", 1}, {"join", 1}, {"keys", 0}, {"entries", 0}, {"values", 0},
-    {"forEach", 1}, {"filter", 1}, {"flat", 0}, {"flatMap", 1}, {"map", 1}, {"every", 1},
-    {"some", 1}, {"reduce", 1}, {"reduceRight", 1}, {"toReversed", 0}, {"toSorted", 1},
-    {"toSpliced", 2}, {"with", 2}, {"toLocaleString", 0}, {"toString", 0},
-  };
-  for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {
-    ScrStr *name = scr_str_new(methods[i].name, strlen(methods[i].name));
+  for (size_t i = 0; i < sizeof dyn_array_prototype_methods / sizeof dyn_array_prototype_methods[0];
+       i++) {
+    ScrStr *name = scr_str_new(dyn_array_prototype_methods[i].name,
+                               strlen(dyn_array_prototype_methods[i].name));
+    /* A name the program already installed on Array.prototype keeps the
+     * program's descriptor. A JavaScript prototype carries its methods
+     * before the program runs, so a program's definition replaces one; the
+     * lazily installed table must not replace the program's definition. */
+    if (scr_dyn_has_own(prototype, name)) {
+      scr_str_release(name);
+      continue;
+    }
     ScrDyn *method;
-    if (!strcmp(methods[i].name, "values")) method = scr_dyn_array_values_function();
+    if (!strcmp(dyn_array_prototype_methods[i].name, "values"))
+      method = scr_dyn_array_values_function();
     else {
       ScrClosure *closure = scr_closure_new(NULL, 1);
       closure->caps[0] = scr_box_new(SCR_BOX_STR);
       scr_box_set_ref(closure->caps[0], scr_str_retain(name));
-      method = scr_dyn_new_func(closure, dyn_array_method_value_call, methods[i].arity,
-        "native:Array.prototype", methods[i].name);
+      method = scr_dyn_new_func(closure, dyn_array_method_value_call,
+        dyn_array_prototype_methods[i].arity, "native:Array.prototype",
+        dyn_array_prototype_methods[i].name);
     }
     ScrDyn *descriptor = scr_dyn_new_obj();
     scr_dyn_obj_set(descriptor, "value", 5, method);

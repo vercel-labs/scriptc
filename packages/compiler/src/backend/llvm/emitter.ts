@@ -130,6 +130,7 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { versionUnionArmLoops } from "../../ir/union-arm-loops.js";
 import { unitSafeFunctions } from "./string-unit-versions.js";
 import { stringScanInline } from "./string-reads.js";
 import {
@@ -169,7 +170,7 @@ import {
   bridgePlainUnwindCalls,
   unwindAbiFunctions,
 } from "./unwind-abi.js";
-import { cloneForCpuDispatch } from "./cpu-dispatch.js";
+import { cloneForCpuDispatch, type CpuCopies } from "./cpu-dispatch.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -384,7 +385,12 @@ import {
 import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
-import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
+import {
+  absentTrapLines,
+  planRecordViews,
+  recordViewFieldPtr,
+  recordViewTestLines,
+} from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
@@ -641,9 +647,9 @@ export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
 /** Function versions on loop-bounding number parameters
  * (ir/parameter-versions.ts). Library builds have no int32 entries, and a
  * module that observes call stacks could see the version's frame. */
-function versionParameters(mod: IrModule): IrModule {
-  if (mod.lib !== undefined || observesStacks(mod)) return mod;
-  return versionLoopBoundParameters(mod, mangleFunction);
+function versionParameters(mod: IrModule, nodes: IrNodeIndex): IrModule {
+  if (mod.lib !== undefined || observesStacks(mod, nodes)) return mod;
+  return versionLoopBoundParameters(mod, mangleFunction, nodes);
 }
 
 /** The int32 slot analysis of one module and the inputs it read: the
@@ -659,12 +665,15 @@ export interface Int32SlotAnalysis {
 
 /** The int32 slot analysis of `mod`, with the inputs LlEmitter gives it.
  * With `revise`, the analysis revises the functions of candidates that drop
- * (Int32SlotInputs.revise), and `mod` is the module it started from. */
+ * (Int32SlotInputs.revise), and `mod` is the module it started from. The
+ * node index of `mod` takes the nodes `previous` recorded for the functions
+ * both hold. */
 function analyzeModuleInt32Slots(
   mod: IrModule,
+  previous: IrNodeIndex | undefined,
   revise?: (fnName: string, dropped: ReadonlySet<string>) => IrFunction,
 ): Int32SlotAnalysis {
-  const nodeIndex = new IrNodeIndex(mod);
+  const nodeIndex = new IrNodeIndex(mod, previous);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
   const slots = analyzeInt32Slots(mod, {
@@ -686,7 +695,7 @@ function keptInt32Arrays(analysis: Int32SlotAnalysis): ReadonlySet<string> {
  * node index of `mod`, and its initializer bindings and dynamic stores,
  * which must be the ones the analysis read. Null when they differ. */
 function revisedAnalysis(analysis: Int32SlotAnalysis, mod: IrModule): Int32SlotAnalysis | null {
-  const nodeIndex = new IrNodeIndex(mod);
+  const nodeIndex = new IrNodeIndex(mod, analysis.nodeIndex);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
   const read = analysis.initializerBindings;
@@ -735,20 +744,24 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Each proof selectInt32Arrays asks for analyzes a marked module; the
   // emitter of the module it returns reuses the last one. A proof that
   // revised functions analyzed the module of the functions it ended with.
+  // Each round's node index takes the recorded nodes of the functions it
+  // shares with the latest index (`nodes`).
   const rounds: {
     last: Int32SlotAnalysis | null;
     functions: readonly IrFunction[] | null;
     revising: boolean;
-  } = { last: null, functions: null, revising: true };
+    nodes: IrNodeIndex | undefined;
+  } = { last: null, functions: null, revising: true, nodes: undefined };
   const proven = (marked: IrModule, revise: Int32ArrayRevision | null): Int32ArrayProof | null => {
     rounds.functions = null;
     if (revise === null || !rounds.revising) {
-      rounds.last = analyzeModuleInt32Slots(marked);
+      rounds.last = analyzeModuleInt32Slots(marked, rounds.nodes);
+      rounds.nodes = rounds.last.nodeIndex;
       return { kept: keptInt32Arrays(rounds.last), functions: null };
     }
     const latest = new Map<string, IrFunction>();
     try {
-      rounds.last = analyzeModuleInt32Slots(marked, (fnName, dropped) => {
+      rounds.last = analyzeModuleInt32Slots(marked, rounds.nodes, (fnName, dropped) => {
         const fn = revise(fnName, dropped);
         latest.set(fnName, fn);
         return fn;
@@ -758,6 +771,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       rounds.last = null;
       return null;
     }
+    rounds.nodes = rounds.last.nodeIndex;
     if (latest.size === 0) return { kept: keptInt32Arrays(rounds.last), functions: null };
     rounds.functions = marked.functions.map((fn) => latest.get(fn.name) ?? fn);
     return { kept: keptInt32Arrays(rounds.last), functions: rounds.functions };
@@ -765,41 +779,67 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Keep source storage intact for debugger inspection in dev builds.
   if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
   const timing = options.timing ?? (() => {});
-  const passed = versionParameters(
-    addRecordResultEntries(
-      scalarizeLiteralResults(
-        scalarizeNumericRecords(
-          specializeCallbackCalls(
-            specializeNumericCalls(
-              pairRowSums(
-                jamSaturatingLoops(
-                  inlineArraysPass(
-                    options,
-                    inlineExpressionFunctions(
-                      foldConstantGlobals(
-                        copyStableCaptures(
-                          resolveSelfCaptures(
-                            hoistFinalFieldReads(
-                              freezeInitOnlyGlobals(
-                                holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+  // One index of the module the passes start from. Each pass skips the
+  // functions the index records without the node kinds it rewrites, and
+  // reads its scans of whole bodies from the index; it walks the functions
+  // an earlier pass rewrote, which the index does not record.
+  const nodes = new IrNodeIndex(mod);
+  rounds.nodes = nodes;
+  const passed = versionUnionArmLoops(
+    versionParameters(
+      addRecordResultEntries(
+        scalarizeLiteralResults(
+          scalarizeNumericRecords(
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                pairRowSums(
+                  jamSaturatingLoops(
+                    inlineArraysPass(
+                      options,
+                      inlineExpressionFunctions(
+                        foldConstantGlobals(
+                          copyStableCaptures(
+                            resolveSelfCaptures(
+                              hoistFinalFieldReads(
+                                freezeInitOnlyGlobals(
+                                  holdCharLocalsAsUnits(
+                                    dropUnwrittenPropertyBags(
+                                      runPairedWhileLoopsAsFor(mod, nodes),
+                                      nodes,
+                                    ),
+                                    nodes,
+                                  ),
+                                  nodes,
                                 ),
+                                nodes,
                               ),
+                              nodes,
                             ),
+                            nodes,
                           ),
+                          nodes,
                         ),
+                        nodes,
                       ),
                     ),
+                    nodes,
                   ),
+                  nodes,
                 ),
+                mangleFunction,
+                nodes,
               ),
               mangleFunction,
+              nodes,
             ),
-            mangleFunction,
           ),
+          nodes,
         ),
+        nodes,
       ),
+      nodes,
     ),
+    nodes,
   );
   timing("llvm-emit-rewrites");
   let emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
@@ -829,6 +869,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
     options,
     null,
     prepared?.mod === emitted ? prepared : null,
+    rounds.nodes,
   );
   timing("llvm-emit-analyses");
   return emitter;
@@ -846,7 +887,7 @@ function verifyInt32Selection(
   const reference = selectInt32Arrays(
     passed,
     (marked) => {
-      last = analyzeModuleInt32Slots(marked);
+      last = analyzeModuleInt32Slots(marked, undefined);
       return { kept: keptInt32Arrays(last), functions: null };
     },
     resultEntryTargets,
@@ -855,7 +896,7 @@ function verifyInt32Selection(
   if (text(reference) !== text(emitted))
     throw new InternalCompilerError("int32 selection: the revised module differs from the rounds'");
   const facts = (mod: IrModule, prepared: Int32SlotAnalysis | null): string =>
-    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod)).slots.summary(mod);
+    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod, undefined)).slots.summary(mod);
   const expected = facts(reference, last);
   const actual = facts(emitted, analysis);
   if (expected !== actual) {
@@ -949,6 +990,25 @@ function isIdentifierByte(code: number): boolean {
  * bookkeeping calls do not suspend it. */
 export const SUSPENDS =
   /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_)|sc_a[wd]_)/;
+/** The literal text each SUSPENDS alternative starts with. The `@scr_` prefix
+ * is joined to each suffix here so that a prefix is not read as an emitted
+ * symbol name by the runtime ABI scan. */
+const SUSPEND_PREFIXES = [
+  "await_",
+  "module_await",
+  "promise_await_settled",
+  "test_sub",
+  "gen_yield_",
+  "async_gen_",
+  "fiber_",
+]
+  .map((suffix) => `@scr_${suffix}`)
+  .concat("@sc_aw_", "@sc_ad_");
+/** Whether `text` mentions a SUSPENDS entry point. The regex runs only on
+ * text that holds one of its prefixes, which most function bodies do not. */
+export function mentionsSuspension(text: string): boolean {
+  return SUSPEND_PREFIXES.some((prefix) => text.includes(prefix)) && SUSPENDS.test(text);
+}
 /** The suspensions of a fiber body's own awaits, which its stackless
  * coroutine form suspends itself at instead. */
 const AWAIT_SUSPENSIONS =
@@ -1055,6 +1115,10 @@ function countLocalMentions(body: readonly IrStmt[], id: string): number {
 export class LlEmitter {
   /** Per-feature state (emitter-state.ts), indexed by each key's slot. */
   readonly moduleStates: unknown[] = [];
+  /** The names of the functions that `versionLoopBoundParameters` versions
+   * for int32 loop bounds: the ones that keep their name and call the copy
+   * and the fallback. Computed on first use. */
+  int32Versioned: Set<string> | null = null;
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
@@ -1413,6 +1477,9 @@ export class LlEmitter {
   readonly sanitizeAttributes: boolean;
   /** LlvmTargetOptions.cpuDispatch, where it applies. */
   readonly cpuDispatch: boolean;
+  /** How the program's functions are copied (cpu-dispatch.ts): for runtime
+   * dispatch, for an x86-64-v3 `targetCpu` ("target"), or not at all. */
+  readonly cpuCopies: CpuCopies | null;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -2094,6 +2161,7 @@ export class LlEmitter {
     options: LlvmTargetOptions,
     journal: EmitJournal | null = null,
     int32Analysis: Int32SlotAnalysis | null = null,
+    previousIndex?: IrNodeIndex,
   ) {
     this.targetOptions = options;
     this.journal = journal;
@@ -2101,8 +2169,9 @@ export class LlEmitter {
       journal !== null ||
       ((options.functionWorkers ?? 1) > 1 && options.forkPrimitives !== undefined);
     // One walk of every body, which the analyses below read instead of
-    // walking the bodies themselves.
-    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
+    // walking the bodies themselves. The functions `previousIndex` (an index
+    // of an earlier module) recorded are not walked again.
+    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod, previousIndex);
     this.initializerBindings =
       int32Analysis?.initializerBindings ?? findInitializerBindings(mod, this.nodeIndex);
     // One walk finds the dynamic field stores every analysis below consults.
@@ -2180,13 +2249,17 @@ export class LlEmitter {
     this.nodeIslandModuleData = options.nodeIslandModuleData ?? null;
     this.targetCpu = options.targetCpu;
     this.sanitizeAttributes = options.sanitizeAttributes !== false;
-    this.cpuDispatch =
-      options.cpuDispatch === true &&
-      options.targetCpu === undefined &&
+    const copyable =
       !this.wasi &&
       mod.lib === undefined &&
       this.debug === null &&
       /^(x86_64|amd64|x64)\b/.test(options.targetTriple || process.arch);
+    this.cpuDispatch = options.cpuDispatch === true && options.targetCpu === undefined && copyable;
+    this.cpuCopies = this.cpuDispatch
+      ? "dispatch"
+      : options.targetCpu === "x86-64-v3" && copyable
+        ? "target"
+        : null;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -2826,7 +2899,7 @@ export class LlEmitter {
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    const out = this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    const out = this.cpuCopies === null ? bridged : cloneForCpuDispatch(bridged, this.cpuCopies);
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 
@@ -2836,6 +2909,7 @@ export class LlEmitter {
    * displayName, else its sourceName. Function boxes without a static name
    * look the closure's entry up in this table. */
   private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  private closureNameByEntry: Map<string, string> | undefined;
   /** The declared functions `closureNames` lists by their wrapper. A scan
    * sees closures in statements the emitter never reaches (a statement
    * after a runtimeFence: the fence always jumps), so some of these names
@@ -2845,6 +2919,7 @@ export class LlEmitter {
   closureNames(): readonly { entry: string; name: string }[] {
     if (this.closureNameEntries !== undefined) return this.closureNameEntries;
     const entries = new Map<string, string>();
+    this.closureNameByEntry = entries;
     const scan = this.nodeIndex.scan(CLOSURE_KINDS);
     for (const fn of this.mod.functions) {
       eachNodeOfKinds(fn, scan, (node) => {
@@ -2854,14 +2929,29 @@ export class LlEmitter {
           target?.displayName ??
           (target?.sourceName !== "<anonymous>" ? target?.sourceName : undefined);
         if (target === undefined || name === undefined || name === "") return true;
-        const entry =
-          target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        const entry = this.closureEntry(node.fnName, target);
         if (target.captures === undefined) this.closureWrapperNames.add(node.fnName);
         if (!entries.has(entry)) entries.set(entry, name);
         return true;
       });
     }
     return (this.closureNameEntries = [...entries].map(([entry, name]) => ({ entry, name })));
+  }
+
+  /** The entry point of a closure of `fnName` (closureNames). */
+  private closureEntry(fnName: string, target: IrFunction): string {
+    return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
+  }
+
+  /** The name the closure-name table gives a closure made of `fnName`
+   * (null when it has none), which lets a box of a closure made at the site
+   * skip the table lookup; undefined for a function the module does not
+   * define. */
+  closureNameOf(fnName: string): string | null | undefined {
+    const target = this.fnByName.get(fnName);
+    if (target === undefined) return undefined;
+    this.closureNames();
+    return this.closureNameByEntry!.get(this.closureEntry(fnName, target)) ?? null;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -5150,6 +5240,183 @@ export class LlEmitter {
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
   }
 
+  /** Whether a value of `shapeId` may lack field `field`: a PARTIAL record
+   * view (record-views.ts) whose viewed record does not declare it. A field
+   * with no value representation (a unit type) keeps its slot lookup. */
+  partialFieldMissing(shapeId: string, field: string): boolean {
+    if (this.shapeHost.recordViews?.partialMissing(shapeId, field) !== true) return false;
+    const type = this.recordShape(shapeId).fields.find((f) => f.name === field)?.type;
+    return type !== undefined && !isUnitType(type);
+  }
+
+  /** The viewed record's slot for `field` of a partial view, or NULL when
+   * that record does not declare the field. The caller has established that
+   * `obj` is a view. */
+  private partialViewSlot(objName: string, shapeId: string, field: string): string {
+    const position = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    this.declare(`declare ptr @scr_record_view_slot(ptr, ${this.sizeType})`);
+    const slot = this.B.tmp();
+    this.B.line(
+      `${slot} = call ptr @scr_record_view_slot(ptr ${objName}, ${this.sizeType} ${position})`,
+    );
+    return slot;
+  }
+
+  /** The boxed property a partial view keeps for a field its viewed record
+   * does not declare (NULL until something writes it). */
+  private partialViewExtra(objName: string, field: string): string {
+    this.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${this.sizeType})`);
+    const extra = this.B.tmp();
+    this.B.line(
+      `${extra} = call ptr @scr_record_view_extra(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")})`,
+    );
+    return extra;
+  }
+
+  /** Reads field `field` of `obj` (shape `shapeId`) where a PARTIAL view may
+   * lack it. A view's present field reads through the viewed record's slot;
+   * a field that record does not declare reads the property a write left in
+   * the view's extra store, converted back to the field type; a field
+   * nothing wrote stops the program (the frontend's checked read throws its
+   * TypeError first). The answer is owned, like a checked conversion's. */
+  readPartialField(objName: string, shapeId: string, field: string, type: IrType): LlValue {
+    const B = this.B;
+    const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    const inline = this.inlineUnions.record(type);
+    const isView = B.tmp();
+    const view = B.newLabel("pf.view");
+    const notView = B.newLabel("pf.slot");
+    const slots = B.newLabel("pf.slots");
+    const extra = B.newLabel("pf.extra");
+    const answer = B.newLabel("pf.answer");
+    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+      B.line(line.trimStart());
+    B.condBr(isView, view, notView);
+    // Not a view: the field's own slot.
+    B.startBlock(notView);
+    const own = B.tmp();
+    B.line(
+      `${own} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
+    );
+    const ownFrom = B.currentLabel();
+    B.br(slots);
+    B.startBlock(view);
+    const slot = this.partialViewSlot(objName, shapeId, field);
+    const present = B.tmp();
+    B.line(`${present} = icmp ne ptr ${slot}, null`);
+    const slotFrom = B.currentLabel();
+    B.condBr(present, slots, extra);
+    B.startBlock(slots);
+    const addr = B.tmp();
+    B.line(`${addr} = phi ptr [ ${own}, %${ownFrom} ], [ ${slot}, %${slotFrom} ]`);
+    // An inline union field answers a private stack box, as a plain read does.
+    const loaded = inline
+      ? this.inlineFieldUnion(addr, type)
+      : this.loadRecordField(addr, type, false);
+    const hit = isRefCounted(type) ? this.retainFrame(loaded, type) : loaded;
+    const hitFrom = B.currentLabel();
+    B.br(answer);
+    B.startBlock(extra);
+    const stored = this.partialViewExtra(objName, field);
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${stored}, null`);
+    const trap = B.newLabel("pf.absent");
+    const convert = B.newLabel("pf.convert");
+    B.condBr(absent, trap, convert);
+    B.startBlock(trap);
+    absentTrapLines(
+      B,
+      (text) => this.cstr(text),
+      (decl) => this.declare(decl),
+    );
+    B.startBlock(convert);
+    const path = B.slot();
+    B.entryAllocas.push(`${path} = alloca %ScrDynPath`);
+    const parentPtr = B.tmp();
+    const keyPtr = B.tmp();
+    const indexPtr = B.tmp();
+    B.line(`${parentPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 0`);
+    B.line(`store ptr null, ptr ${parentPtr}`);
+    B.line(`${keyPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 1`);
+    B.line(`store ptr ${this.cstr(field)}, ptr ${keyPtr}`);
+    B.line(`${indexPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 2`);
+    B.line(`store ${this.sizeType} 0, ptr ${indexPtr}`);
+    const helper = this.dyn.dynCheckHelper(type);
+    const ty = this.llType(type);
+    const checked = B.tmp();
+    B.line(
+      `${checked} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${stored}, ptr ${path})`,
+    );
+    const convertFrom = B.currentLabel();
+    B.br(answer);
+    B.startBlock(answer);
+    const value = B.tmp();
+    B.line(`${value} = phi ${ty} [ ${hit}, %${hitFrom} ], [ ${checked}, %${convertFrom} ]`);
+    return { name: value, type };
+  }
+
+  /** Stores `value` into field `field` of `obj` (shape `shapeId`) where a
+   * PARTIAL view may lack it, calling `storeAt` with the address to write.
+   * A field the viewed record does not declare is kept as a boxed property
+   * in the view's extra store, where reflection and a later read see it;
+   * `released` gives up a caller reference the frame does not own. */
+  storePartialField(
+    objName: string,
+    shapeId: string,
+    field: string,
+    type: IrType,
+    value: LlValue,
+    storeAt: (ptr: string) => void,
+    released?: () => void,
+  ): void {
+    const B = this.B;
+    const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    const isView = B.tmp();
+    const notView = B.newLabel("ps.slot");
+    const view = B.newLabel("ps.view");
+    const present = B.newLabel("ps.present");
+    const store = B.newLabel("ps.store");
+    const extra = B.newLabel("ps.extra");
+    const done = B.newLabel("ps.done");
+    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+      B.line(line.trimStart());
+    B.condBr(isView, view, notView);
+    B.startBlock(notView);
+    const own = B.tmp();
+    B.line(
+      `${own} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
+    );
+    const ownFrom = B.currentLabel();
+    B.br(store);
+    B.startBlock(view);
+    const slot = this.partialViewSlot(objName, shapeId, field);
+    const hasSlot = B.tmp();
+    B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+    B.condBr(hasSlot, present, extra);
+    B.startBlock(present);
+    const presentFrom = B.currentLabel();
+    B.br(store);
+    // One store site whichever slot answers: the value's frame ownership
+    // ends in one place, whether the write runs on this program's path or
+    // on the other branch of the test.
+    B.startBlock(store);
+    const addr = B.tmp();
+    B.line(`${addr} = phi ptr [ ${own}, %${ownFrom} ], [ ${slot}, %${presentFrom} ]`);
+    storeAt(addr);
+    B.br(done);
+    B.startBlock(extra);
+    const boxed = B.tmp();
+    const box = this.dyn.toDynHelper(type);
+    B.line(`${boxed} = call ptr @${box}(${this.llType(type)} ${value.name})`);
+    this.declare(`declare void @scr_record_view_extra_set(ptr, ptr, ${this.sizeType}, ptr)`);
+    B.line(
+      `call void @scr_record_view_extra_set(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")}, ptr ${boxed})`,
+    );
+    released?.();
+    B.br(done);
+    B.startBlock(done);
+  }
+
   /** The overflow map's slot pointer on an index-signature shape. */
   recordOvfPtr(objName: string, shapeId: string): string {
     const shape = this.recordShape(shapeId);
@@ -6041,6 +6308,8 @@ export class LlEmitter {
       this.mod,
       { ...this.targetOptions, functionChunks: 1 },
       new EmitJournal(),
+      null,
+      this.nodeIndex,
     );
     chunk.debug?.record();
     return chunk;

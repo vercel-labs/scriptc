@@ -1009,12 +1009,6 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "arrayBuffer.newResizable",
   "sharedArrayBuffer.newGrowable",
   "arrayBuffer.armMutable",
-  // A builtin constructor read as a value. Calling it — `RegExp(pattern,
-  // flags)` through a stored constructor — answers RegExp's IsRegExp and
-  // `constructor` short circuit and its flag and pattern validation, which
-  // only a JavaScript source reaches (the constructor value build of
-  // scr_dyn_invoke.c, dynCtorValue).
-  "dyn.globalConstructor",
 ]);
 
 /** The JavaScript object model build's program facts (t262-da §J): every
@@ -1548,14 +1542,21 @@ const RUNTIME_FEATURE_RULES = {
       node.args[0]?.kind === "strLit" &&
       BIGINT_BYTES_NAMES.has(node.args[0].value),
   }),
-  /** The program reads a builtin constructor as a value (`const R =
-   * RegExp`), so it can call or construct through it: the answers live in
+  /** The program reads the `RegExp` constructor as a value (`const R =
+   * RegExp`), so it can call or construct through it: those answers live in
    * the constructor value build of scr_dyn_invoke.c
    * (SCR_JS_OBJECT_MODEL_CTOR_VALUE, t262-w5) together with scr_regex.c, and
-   * the fact selects that twin of the unit. It ORs into jsObjectModel
-   * (jsObjectModelFact), and every other program keeps the plain object
-   * model object, byte for byte. */
-  dynCtorValue: rule({ fns: ["dyn.globalConstructor"] }),
+   * the fact selects that twin of the unit. Reading another builtin
+   * constructor as a value answers the same refusals in every build, so it
+   * stays out of this fact and keeps the object it had. The fact ORs into
+   * jsObjectModel (jsObjectModelFact), and every other program keeps the
+   * plain object model object, byte for byte. */
+  dynCtorValue: rule({
+    libCall: (node) =>
+      node.fn === "dyn.globalConstructor" &&
+      node.args[0]?.kind === "strLit" &&
+      node.args[0].value === "RegExp",
+  }),
   /** The program's dynamic values may be proxies: it creates one (`new
    * Proxy`, Proxy.revocable) or uses the Reflect entry points and proxy
    * reflection traps, whose revocation checks and trap completion live in

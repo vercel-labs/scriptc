@@ -22,6 +22,18 @@ describe("runtime feature snapshots", () => {
     loc,
     expr: { kind: "libCall" as const, fn, args: [], type: VOID, loc },
   });
+  /** A builtin constructor read as a value: the lowering names it. */
+  const ctorValue = (name: string) => ({
+    kind: "exprStmt" as const,
+    loc,
+    expr: {
+      kind: "libCall" as const,
+      fn: "dyn.globalConstructor" as const,
+      args: [{ kind: "strLit" as const, value: name, type: STRING, loc }],
+      type: VOID,
+      loc,
+    },
+  });
 
   test("updates link requirements after an IR edit without changing earlier snapshots", () => {
     const mod = module();
@@ -264,14 +276,14 @@ describe("runtime feature snapshots", () => {
   test("the JavaScript object model build owns every feature only a JavaScript source reaches", () => {
     // t262-da §J: the features only a JavaScript source reaches share one
     // runtime feature, whose entry list the slices fill as they land. The
-    // buffer views registry (t262-dc C2) arms itself through these calls, and
-    // a builtin constructor read as a value answers through the object
-    // model's RegExp, so a program that makes one selects the object model
-    // build; every other program keeps the default objects.
+    // buffer views registry (t262-dc C2) arms itself through these calls, so
+    // a program that makes one selects the object model build; every other
+    // program keeps the default objects. A constructor read as a value is not
+    // one of them: only the RegExp constructor has object model code that
+    // reads it needs (dynCtorValue), and that fact carries the build.
     expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
       "arrayBuffer.armMutable",
       "arrayBuffer.newResizable",
-      "dyn.globalConstructor",
       "sharedArrayBuffer.newGrowable",
     ]);
     const mod = module();
@@ -344,13 +356,19 @@ describe("runtime feature snapshots", () => {
     const plain = module();
     expect(moduleRuntimeFeatures(plain).dynCtorValue).toBe(false);
     const mod = module();
-    mod.functions[0]!.body.push(call("dyn.globalConstructor"));
+    mod.functions[0]!.body.push(ctorValue("RegExp"));
     const features = moduleRuntimeFeatures(mod);
     expect(features.dynCtorValue).toBe(true);
-    // The builtin constructor value is itself an object model fact, so the
-    // program selects the object model build and its constructor value twin.
-    expect(features.jsObjectModel).toBe(true);
+    // The fact selects the constructor value twin: it ORs into jsObjectModel
+    // rather than the other way around.
+    expect(features.jsObjectModel).toBe(false);
     expect(jsObjectModelFact(features)).toBe(true);
+    // Another builtin constructor answers the same refusals in every build,
+    // so reading one selects nothing.
+    const other = module();
+    other.functions[0]!.body.push(ctorValue("Array"));
+    expect(moduleRuntimeFeatures(other).dynCtorValue).toBe(false);
+    expect(moduleRuntimeFeatures(other).jsObjectModel).toBe(false);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {

@@ -14595,12 +14595,15 @@ export class Lowerer {
    * copy or need the handle's own table, and they keep their fences. A
    * builtin value (`TextEncoder`, a URL, ...) is typed as a record with an
    * internal slot, but the checked-dynamic layer holds it as a handle and
-   * refuses a property set on it, so the slot excludes it here too. */
+   * refuses a property set on it, so the slot excludes it here too. A
+   * tuple is a record layout but views as an array, and its checked view
+   * rebuilds that array from the tuple's fields on every refresh without
+   * keeping added properties, so it keeps its fence as well. */
   jsDynamicMemberTarget(t: IrType): boolean {
     if (t.kind === "array") return true;
     if (t.kind === "record") {
       const shape = this.shapes.get(t.shapeId);
-      if (!shape || shape.fields.some((f) => f.name.startsWith("%"))) return false;
+      if (!shape || shape.tuple || shape.fields.some((f) => f.name.startsWith("%"))) return false;
       return shape.fields.length > 0 || shape.indexValue !== undefined;
     }
     if (t.kind === "union") {

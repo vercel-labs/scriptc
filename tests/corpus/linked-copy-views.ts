@@ -53,7 +53,7 @@ console.log(JSON.stringify(fromSpreadCopy), Object.keys(fromSpreadCopy as object
 // a setter that changes a later field copies the changed value.
 const assigned: any = {
   set a(value: number) {
-    two.b = 100;
+    obj.b = 100;
   },
 };
 Object.assign(assigned, two as unknown);

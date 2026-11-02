@@ -1850,11 +1850,16 @@ function scanRuntimeFeatures(
     );
   // The object model build of scr_dyn_invoke.c answers `RegExp ( pattern,
   // flags )` through a stored constructor, which builds its pattern with
-  // scr_regex.c and the vendored engine: every object model program links
-  // the regex unit so that call resolves, whether or not it names a pattern
-  // of its own. Programs outside the object model build keep the
-  // historical command line.
-  if (jsObjectModelFact(features)) features.regex = true;
+  // scr_regex.c and the vendored engine: a program that links that unit in
+  // its object model build links the regex unit too, whether or not it names
+  // a pattern of its own. The condition is the executable's own link test for
+  // scr_dyn_invoke.c, so no program widens its command line without the
+  // object that needs it.
+  if (
+    jsObjectModelFact(features) &&
+    (features.dynInvoke || features.fetch || features.nodeIsland === true)
+  )
+    features.regex = true;
   return features;
 }
 

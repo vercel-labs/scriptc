@@ -5856,6 +5856,24 @@ function preflight7(load: LoadResult): {
   const recordAdmittedOpinion = (site: AdmittedOpinion): void => {
     admittedOpinions.set(`${site.file}\0${site.pos}\0${site.end}\0${site.code}`, site);
   };
+  // A diagnostic's span is an offset into the text of the program that
+  // answered it. With JSX sources the gate's worlds hold the files as
+  // written, while the lowering asks opinionAt about nodes of `program`,
+  // which carries the rewritten text; an original offset recorded as a site
+  // would name an unrelated node wherever a rewrite moved the text. The span
+  // moves into that text exactly as a reported diagnostic's location does
+  // below: copied text keeps its offset, a span inside JSX maps to the call
+  // it lowered to.
+  const admittedSite = (p: ts.Program, site: AdmittedOpinion): AdmittedOpinion => {
+    if (p === program) return site;
+    const lowered = load.jsxSources?.get(site.file);
+    if (lowered === undefined) return site;
+    return {
+      ...site,
+      pos: lowered.rewrittenPosition(site.pos, false),
+      end: lowered.rewrittenPosition(site.end, true),
+    };
+  };
   // keptErrors drops every diagnostic of these files: the gate does not ask
   // the checker for them.
   const diagnosticsKept = (fileName: string): boolean =>
@@ -5936,13 +5954,15 @@ function preflight7(load: LoadResult): {
       // No span, no site: nothing a view's lowering could be gated on.
       if (d.fileName === undefined || d.pos === undefined || d.end === undefined) continue;
       if (keptApartFromOpinionTextually(d))
-        recordAdmittedOpinion({
-          file: d.fileName,
-          pos: d.pos,
-          end: d.end,
-          code: d.code,
-          view: opinion.view,
-        });
+        recordAdmittedOpinion(
+          admittedSite(p, {
+            file: d.fileName,
+            pos: d.pos,
+            end: d.end,
+            code: d.code,
+            view: opinion.view,
+          }),
+        );
     }
     return kept;
   };

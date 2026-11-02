@@ -201,6 +201,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.init",
   "event.targetCall",
   "event.targetDispatch",
+  // events.getEventListeners and events.listenerCount over an EventTarget:
+  // Node's receiver errors.
+  "event.targetListeners",
+  "event.targetListenersDyn",
+  "event.targetListenerCount",
+  "event.targetListenerCountDyn",
+  "event.targetGetMax",
+  "event.targetSetMax",
   "event.call",
   "blob.new",
   "blob.fileNew",

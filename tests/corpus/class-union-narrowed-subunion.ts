@@ -65,3 +65,22 @@ if (nullable !== null && isRound(nullable)) {
 } else {
   console.log("nullable", nullable === null ? "null" : "none");
 }
+// A destination that keeps a scalar arm (`Circle | number`) cannot rebox the
+// whole union: the stored base arm's payload is class-checked and read as the
+// subclass, and the scalar arm keeps its own tag.
+function describeRound(shape: Circle | number): string {
+  return typeof shape === "number" ? `n${shape}` : `${shape.name}:${shape.r}`;
+}
+function describeAny(shape: Circle | Square | number): string {
+  return typeof shape === "number" ? `n${shape}` : shape instanceof Circle ? `c${shape.r}` : `s${shape.side}`;
+}
+for (const item of items) {
+  if (typeof item === "number" || item instanceof Circle) console.log("round", describeRound(item));
+  if (typeof item === "number" || item instanceof Circle || item instanceof Square)
+    console.log("any", describeAny(item));
+}
+const narrowed: Shape | Circle | Square | number = items[0]!;
+if (narrowed instanceof Circle || typeof narrowed === "number") {
+  const kept: Circle | number = narrowed;
+  console.log("keep", describeRound(kept));
+}

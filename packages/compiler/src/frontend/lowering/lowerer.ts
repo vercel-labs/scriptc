@@ -215,6 +215,7 @@ import { collectContractAnnotations, type ContractAnnotations } from "../contrac
 import { sanitizeUnregisteredClassTypes } from "./sanitize-class-types.js";
 import { UnregisteredClassTypes } from "./unregistered-class-types.js";
 import type { WidthLift } from "./width-lift.js";
+import type { UnionClassRoute } from "./union-retag.js";
 import {
   bindingInContext,
   captureContextBinding,
@@ -13827,8 +13828,9 @@ export class Lowerer {
     toId: string,
     loc: SrcLoc,
     trappable?: ReadonlySet<number>,
+    classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {

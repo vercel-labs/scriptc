@@ -1635,10 +1635,12 @@ ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
  *
  * The graph, not every program that links this unit, is the only caller: a
  * program links this unit when it names a wrapper, and the graph when it
- * reads an intrinsic, so the graph names this function weakly — absent, the
- * reference is null and the graph answers an ordinary object instead. A weak
- * reference pulls nothing out of the archive, which is why the column that
- * decides linking stays the program's own wrapper use. */
+ * reads an intrinsic, so the graph reaches this function through a slot
+ * (scr_js_wrapper_intrinsic_prototype_slot) this unit fills with a static
+ * initializer, and the graph's own weak fallback leaves the slot at zero when
+ * this unit is absent — the graph then answers an ordinary object instead.
+ * The pointer, not a call, is what crosses, so the column that decides
+ * linking stays the program's own wrapper use. */
 ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id);
 /* Installs the program's own conversion closure as the `constructor` of the
  * intrinsic prototype `prototype` and seeds the closure's `prototype` with
@@ -1649,7 +1651,7 @@ ScrDyn *scr_js_wrapper_install_constructor(ScrDyn *prototype, ScrDyn *constructo
  * intrinsic table's wrapper-prototype members were called on: the primitive
  * of `kind` (the SCR_JS_WRAPPER_* number) that `value` is, or the one it
  * wraps, and NULL for any other receiver. +1 for the primitive. The graph
- * names it weakly, for the reason above. */
+ * reaches it through a slot, for the reason above. */
 ScrDyn *scr_js_wrapper_primitive_value(const ScrDyn *value, double kind);
 
 /* Promise statics called with a foreign constructor (`Promise.all.call(C, …)`,

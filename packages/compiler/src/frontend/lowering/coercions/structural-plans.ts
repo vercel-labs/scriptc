@@ -312,7 +312,8 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         ? { how: "ovf" }
         : null;
     }
-    return lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null ? { how: "width" } : null;
+    if (lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null) return { how: "width" };
+    return null;
   }
   if (dst.kind === "record" && src.kind === "union") {
     // A union of records can share a structural destination without
@@ -367,6 +368,55 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     return null;
   }
   return null;
+}
+
+/** The checked widening's gates (see WidthLift's `checkedWiden`): every
+ * field the source declares is a destination field of the same type, the
+ * destination declares a REQUIRED member the source lacks (optional and
+ * `unknown` members are the field-copy plan's own absent completion, so a
+ * pair whose only missing members are those cannot reach here), the
+ * source crosses into a checked-dynamic value at all, and the destination
+ * is a shape dynCheck validates. */
+function checkedWidenPlan(lowerer: Lowerer, fromId: string, toId: string): boolean {
+  const from = lowerer.shapes.get(fromId);
+  const to = lowerer.shapes.get(toId);
+  if (!from || !to || from.tuple || to.tuple) return false;
+  if (from.indexValue !== undefined || to.indexValue !== undefined) return false;
+  for (const field of from.fields) {
+    const target = to.fields.find((tf) => tf.name === field.name);
+    if (!target || !typeEquals(target.type, field.type)) return false;
+  }
+  let missingRequired = false;
+  for (const field of to.fields) {
+    if (from.fields.some((ff) => ff.name === field.name)) continue;
+    if (field.type.kind === "dyn") continue;
+    if (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0)
+      continue;
+    missingRequired = true;
+  }
+  if (!missingRequired) return false;
+  const source: IrType = { kind: "record", shapeId: fromId };
+  return (
+    lowerer.dynConvertible(source) &&
+    canDynCheckTo(
+      { kind: "record", shapeId: toId },
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  );
+}
+
+/** The checked widening as its own conversion, for the sites that ask for
+ * it BY NAME: a written predicate narrowing an element to a record that
+ * declares required members the element's type lacks (filter-predicates.ts).
+ * It is deliberately not part of widthLiftPlan: that relation answers every
+ * speculative "could this pair convert?" question in the lowering, and a
+ * trapping answer there would change the code of programs that already
+ * compile. A caller that reaches this point has no field-copy plan, so only
+ * a program that refused before gains the conversion. */
+export function checkedWidthLift(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
+  if (src.kind !== "record" || dst.kind !== "record" || typeEquals(src, dst)) return null;
+  return checkedWidenPlan(lowerer, src.shapeId, dst.shapeId) ? { how: "checkedWiden" } : null;
 }
 
 /** True when the record arm `arm` has a field of every name the record

@@ -4,6 +4,91 @@ import type { IrExpr, IrModule, IrStmt, IrType, SrcLoc } from "./ir.js";
 // and an arrow function: the arrow would be a new closure at every visited
 // node, which the native compiler allocates and releases per node.
 
+/** Maps a child list and returns `children` itself when every child maps to
+ * itself. A rewrite pass walks whole functions, and the common case is a
+ * subtree the pass does not touch; returning the input list keeps that walk
+ * allocation-free. `map` is called on every child, in order, either way. */
+function mapOf<T>(children: readonly T[], map: (child: T) => T): T[] {
+  const length = children.length;
+  for (let i = 0; i < length; i++) {
+    const child = children[i]!;
+    const mapped = map(child);
+    if (mapped === child) continue;
+    const result: T[] = children.slice(0, i) as T[];
+    result.push(mapped);
+    for (let j = i + 1; j < length; j++) result.push(map(children[j]!));
+    return result;
+  }
+  return children as T[];
+}
+
+/** mapOf over a record literal's or object literal's value slots. */
+function mapValues<T extends { value: IrExpr }>(
+  children: readonly T[],
+  expr: (expr: IrExpr) => IrExpr,
+): T[] {
+  const length = children.length;
+  for (let i = 0; i < length; i++) {
+    const child = children[i]!;
+    const value = expr(child.value);
+    if (value === child.value) continue;
+    const result: T[] = children.slice(0, i) as T[];
+    result.push({ ...child, value });
+    for (let j = i + 1; j < length; j++) {
+      const rest = children[j]!;
+      result.push({ ...rest, value: expr(rest.value) });
+    }
+    return result;
+  }
+  return children as T[];
+}
+
+/** mapOf over a map literal's or dynamic object literal's entry slots. */
+function mapEntries<T extends { key: IrExpr; value: IrExpr }>(
+  children: readonly T[],
+  expr: (expr: IrExpr) => IrExpr,
+): T[] {
+  const length = children.length;
+  for (let i = 0; i < length; i++) {
+    const child = children[i]!;
+    const key = expr(child.key);
+    const value = expr(child.value);
+    if (key === child.key && value === child.value) continue;
+    const result: T[] = children.slice(0, i) as T[];
+    result.push({ ...child, key, value });
+    for (let j = i + 1; j < length; j++) {
+      const rest = children[j]!;
+      result.push({ ...rest, key: expr(rest.key), value: expr(rest.value) });
+    }
+    return result;
+  }
+  return children as T[];
+}
+
+/** mapOf over a switch statement's cases (a test and a statement body). */
+function mapCases<T extends { test: IrExpr | null; body: IrStmt[] }>(
+  cases: readonly T[],
+  expr: (expr: IrExpr) => IrExpr,
+  stmt: (stmt: IrStmt) => IrStmt,
+): T[] {
+  const length = cases.length;
+  for (let i = 0; i < length; i++) {
+    const child = cases[i]!;
+    const test = child.test === null ? null : expr(child.test);
+    const body = mapOf(child.body, stmt);
+    if (test === child.test && body === child.body) continue;
+    const result: T[] = cases.slice(0, i) as T[];
+    result.push({ ...child, test, body });
+    for (let j = i + 1; j < length; j++) {
+      const rest = cases[j]!;
+      const restTest = rest.test === null ? null : expr(rest.test);
+      result.push({ ...rest, test: restTest, body: mapOf(rest.body, stmt) });
+    }
+    return result;
+  }
+  return cases as T[];
+}
+
 function everyOf<T>(children: readonly T[], visit: (child: T) => boolean): boolean {
   const length = children.length;
   for (let i = 0; i < length; i++) if (!visit(children[i]!)) return false;
@@ -31,13 +116,6 @@ function everyEntry(
   return true;
 }
 
-function mapOf<T>(children: readonly T[], map: (child: T) => T): T[] {
-  const length = children.length;
-  const result: T[] = [];
-  for (let i = 0; i < length; i++) result.push(map(children[i]!));
-  return result;
-}
-
 /** The type tree contains structural children; named shapes are references.
  * Module traversal visits each shape definition separately. */
 export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): boolean {
@@ -48,7 +126,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "map":
       return visit(node.key) && visit(node.value);
     case "func":
-      return node.params.every(visit) && visit(node.ret);
+      return everyOf(node.params, visit) && visit(node.ret);
     case "promise":
       return visit(node.inner);
     case "generator":
@@ -480,7 +558,8 @@ export function everyStmtChild(
 /** Called with each record literal and checked conversion mapExprChildren
  * rebuilds and its replacement, so a side table keyed by node identity (the
  * lowering's key-order witness notes) follows the node into the rewritten
- * tree. */
+ * tree. A node whose children are unchanged is not rebuilt and keeps its
+ * identity, so the note stays attached and no call is made. */
 let recordLiteralRebuilt: ((from: IrExpr, to: IrExpr) => void) | null = null;
 
 /** Installs (or with null removes) the record-literal rebuild observer. */
@@ -490,7 +569,11 @@ export function observeRecordLiteralRebuilds(
   recordLiteralRebuilt = observer;
 }
 
-/** Copy a node with transformed immediate children; preserve all metadata. */
+/** Copy a node with transformed immediate children; preserve all metadata.
+ * A node whose children all map to themselves is returned as-is, so a
+ * rewrite pass that changes nothing below it allocates nothing for it. A
+ * rebuilt node is a new object and the caller owns it; the input is never
+ * mutated. */
 export function mapExprChildren(
   node: IrExpr,
   expr: (expr: IrExpr) => IrExpr,
@@ -501,25 +584,44 @@ export function mapExprChildren(
   switch (node.kind) {
     case "varRef":
       return node;
-    case "call":
-      return { ...node, args: mapOf(node.args, expr) };
-    case "dynFrom":
-      return { ...node, value: expr(node.value) };
+    case "call": {
+      const args = mapOf(node.args, expr);
+      return args === node.args ? node : { ...node, args };
+    }
+    case "dynFrom": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
     case "strLit":
       return node;
-    case "libCall":
-      return { ...node, args: mapOf(node.args, expr) };
+    case "libCall": {
+      const args = mapOf(node.args, expr);
+      return args === node.args ? node : { ...node, args };
+    }
     case "dynCheck": {
-      const rebuilt: IrExpr = { ...node, value: expr(node.value) };
+      const value = expr(node.value);
+      if (value === node.value) return node;
+      const rebuilt: IrExpr = { ...node, value };
       if (recordLiteralRebuilt !== null) recordLiteralRebuilt(node, rebuilt);
       return rebuilt;
     }
-    case "strEq":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "fieldGet":
-      return { ...node, obj: expr(node.obj) };
-    case "ternary":
-      return { ...node, cond: expr(node.cond), then: expr(node.then), else_: expr(node.else_) };
+    case "strEq": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
+    case "fieldGet": {
+      const obj = expr(node.obj);
+      return obj === node.obj ? node : { ...node, obj };
+    }
+    case "ternary": {
+      const cond = expr(node.cond);
+      const then = expr(node.then);
+      const else_ = expr(node.else_);
+      return cond === node.cond && then === node.then && else_ === node.else_
+        ? node
+        : { ...node, cond, then, else_ };
+    }
     case "closure":
       return node;
     case "boolLit":
@@ -528,241 +630,389 @@ export function mapExprChildren(
       return node;
     case "unitLit":
       return node;
-    case "seqExpr":
-      return { ...node, stmts: mapOf(node.stmts, stmt), result: expr(node.result) };
+    case "seqExpr": {
+      const stmts = mapOf(node.stmts, stmt);
+      const result = expr(node.result);
+      return stmts === node.stmts && result === node.result ? node : { ...node, stmts, result };
+    }
     case "dynCall": {
-      const result: Extract<IrExpr, { kind: "dynCall" }> = { ...node, callee: expr(node.callee) };
-      if (node.receiver !== undefined) result.receiver = expr(node.receiver);
-      if (node.calleeNameValue !== undefined) result.calleeNameValue = expr(node.calleeNameValue);
-      result.args = mapOf(node.args, expr);
+      const callee = expr(node.callee);
+      const receiver = node.receiver === undefined ? undefined : expr(node.receiver);
+      const calleeNameValue =
+        node.calleeNameValue === undefined ? undefined : expr(node.calleeNameValue);
+      const args = mapOf(node.args, expr);
+      if (
+        callee === node.callee &&
+        receiver === node.receiver &&
+        calleeNameValue === node.calleeNameValue &&
+        args === node.args
+      )
+        return node;
+      const result: Extract<IrExpr, { kind: "dynCall" }> = { ...node, callee };
+      if (receiver !== undefined) result.receiver = receiver;
+      if (calleeNameValue !== undefined) result.calleeNameValue = calleeNameValue;
+      result.args = args;
       return result;
     }
-    case "dynTest":
-      return { ...node, value: expr(node.value) };
-    case "dynScalarEq":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "upcast":
-      return { ...node, value: expr(node.value) };
-    case "bin":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
+    case "dynTest": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "dynScalarEq": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
+    case "upcast": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "bin": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
     case "moduleNsRef":
       return node;
-    case "unary":
-      return { ...node, operand: expr(node.operand) };
+    case "unary": {
+      const operand = expr(node.operand);
+      return operand === node.operand ? node : { ...node, operand };
+    }
     case "incDec":
       return node;
-    case "fieldIncDec":
-      return { ...node, obj: expr(node.obj) };
-    case "assignExpr":
-      return { ...node, value: expr(node.value) };
-    case "toBool":
-      return { ...node, operand: expr(node.operand) };
-    case "logical":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "strConcat":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "strCmp":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "toString":
-      return { ...node, operand: expr(node.operand) };
-    case "nullish":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "orDefault":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "optChain":
-      return { ...node, receiver: expr(node.receiver), body: expr(node.body) };
+    case "fieldIncDec": {
+      const obj = expr(node.obj);
+      return obj === node.obj ? node : { ...node, obj };
+    }
+    case "assignExpr": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "toBool": {
+      const operand = expr(node.operand);
+      return operand === node.operand ? node : { ...node, operand };
+    }
+    case "logical": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
+    case "strConcat": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
+    case "strCmp": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
+    case "toString": {
+      const operand = expr(node.operand);
+      return operand === node.operand ? node : { ...node, operand };
+    }
+    case "nullish": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
+    case "orDefault": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
+    case "optChain": {
+      const receiver = expr(node.receiver);
+      const body = expr(node.body);
+      return receiver === node.receiver && body === node.body ? node : { ...node, receiver, body };
+    }
     case "chainRecv":
       return node;
-    case "strIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
+    case "strIntrinsic": {
+      const receiver = expr(node.receiver);
+      const args = mapOf(node.args, expr);
+      return receiver === node.receiver && args === node.args ? node : { ...node, receiver, args };
+    }
     case "regexLit":
       return node;
     case "templateStrings":
       return node;
-    case "regexIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "arrayLit":
-      return { ...node, elems: mapOf(node.elems, expr) };
-    case "arrayNewLen":
-      return { ...node, length: expr(node.length) };
-    case "arrayGet":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "arrayHas":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "arrayState":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "arrIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "bytesNew":
-      return { ...node, source: node.source === null ? null : expr(node.source) };
-    case "bytesIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "mapNew":
-      return node.seed === undefined
-        ? node
-        : {
-            ...node,
-            seed: node.seed.map((child) => ({
-              ...child,
-              key: expr(child.key),
-              value: expr(child.value),
-            })),
-          };
-    case "mapIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "setNew":
-      return node.seed === undefined ? node : { ...node, seed: expr(node.seed) };
-    case "setIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "ffiCall":
-      return { ...node, args: mapOf(node.args, expr) };
+    case "regexIntrinsic": {
+      const receiver = expr(node.receiver);
+      const args = mapOf(node.args, expr);
+      return receiver === node.receiver && args === node.args ? node : { ...node, receiver, args };
+    }
+    case "arrayLit": {
+      const elems = mapOf(node.elems, expr);
+      return elems === node.elems ? node : { ...node, elems };
+    }
+    case "arrayNewLen": {
+      const length = expr(node.length);
+      return length === node.length ? node : { ...node, length };
+    }
+    case "arrayGet": {
+      const arr = expr(node.arr);
+      const index = expr(node.index);
+      return arr === node.arr && index === node.index ? node : { ...node, arr, index };
+    }
+    case "arrayHas": {
+      const arr = expr(node.arr);
+      const index = expr(node.index);
+      return arr === node.arr && index === node.index ? node : { ...node, arr, index };
+    }
+    case "arrayState": {
+      const arr = expr(node.arr);
+      const index = expr(node.index);
+      return arr === node.arr && index === node.index ? node : { ...node, arr, index };
+    }
+    case "arrIntrinsic": {
+      const receiver = expr(node.receiver);
+      const args = mapOf(node.args, expr);
+      return receiver === node.receiver && args === node.args ? node : { ...node, receiver, args };
+    }
+    case "bytesNew": {
+      const source = node.source === null ? null : expr(node.source);
+      return source === node.source ? node : { ...node, source };
+    }
+    case "bytesIntrinsic": {
+      const receiver = expr(node.receiver);
+      const args = mapOf(node.args, expr);
+      return receiver === node.receiver && args === node.args ? node : { ...node, receiver, args };
+    }
+    case "mapNew": {
+      if (node.seed === undefined) return node;
+      const seed = mapEntries(node.seed, expr);
+      return seed === node.seed ? node : { ...node, seed };
+    }
+    case "mapIntrinsic": {
+      const receiver = expr(node.receiver);
+      const args = mapOf(node.args, expr);
+      return receiver === node.receiver && args === node.args ? node : { ...node, receiver, args };
+    }
+    case "setNew": {
+      if (node.seed === undefined) return node;
+      const seed = expr(node.seed);
+      return seed === node.seed ? node : { ...node, seed };
+    }
+    case "setIntrinsic": {
+      const receiver = expr(node.receiver);
+      const args = mapOf(node.args, expr);
+      return receiver === node.receiver && args === node.args ? node : { ...node, receiver, args };
+    }
+    case "ffiCall": {
+      const args = mapOf(node.args, expr);
+      return args === node.args ? node : { ...node, args };
+    }
     case "callValue": {
       const callee = expr(node.callee);
-      if (node.receiver === undefined) return { ...node, callee, args: mapOf(node.args, expr) };
-      return {
-        ...node,
-        callee,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
+      if (node.receiver === undefined) {
+        const args = mapOf(node.args, expr);
+        return callee === node.callee && args === node.args ? node : { ...node, callee, args };
+      }
+      const receiver = expr(node.receiver);
+      const args = mapOf(node.args, expr);
+      return callee === node.callee && receiver === node.receiver && args === node.args
+        ? node
+        : { ...node, callee, receiver, args };
     }
     case "selfRef":
       return node;
-    case "yieldExpr":
-      return { ...node, value: node.value === null ? null : expr(node.value) };
-    case "genResume":
-      return { ...node, gen: expr(node.gen), arg: node.arg === null ? null : expr(node.arg) };
-    case "awaitExpr":
-      return { ...node, value: expr(node.value) };
-    case "awaitUnionExpr":
-      return { ...node, value: expr(node.value) };
-    case "newPromise":
-      return { ...node, executor: expr(node.executor) };
+    case "yieldExpr": {
+      const value = node.value === null ? null : expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "genResume": {
+      const gen = expr(node.gen);
+      const arg = node.arg === null ? null : expr(node.arg);
+      return gen === node.gen && arg === node.arg ? node : { ...node, gen, arg };
+    }
+    case "awaitExpr": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "awaitUnionExpr": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "newPromise": {
+      const executor = expr(node.executor);
+      return executor === node.executor ? node : { ...node, executor };
+    }
     case "promiseWithResolvers":
       return node;
-    case "new":
-      return { ...node, args: mapOf(node.args, expr) };
+    case "new": {
+      const args = mapOf(node.args, expr);
+      return args === node.args ? node : { ...node, args };
+    }
     case "classRef":
       return node;
-    case "newValue":
-      return { ...node, callee: expr(node.callee), args: mapOf(node.args, expr) };
-    case "instanceOfValue":
-      return { ...node, value: expr(node.value), classValue: expr(node.classValue) };
-    case "promiseVoidWiden":
-      return { ...node, value: expr(node.value) };
-    case "downcast":
-      return { ...node, value: expr(node.value) };
-    case "instanceOf":
-      return { ...node, value: expr(node.value) };
-    case "virtualCall":
-      return { ...node, args: mapOf(node.args, expr) };
+    case "newValue": {
+      const callee = expr(node.callee);
+      const args = mapOf(node.args, expr);
+      return callee === node.callee && args === node.args ? node : { ...node, callee, args };
+    }
+    case "instanceOfValue": {
+      const value = expr(node.value);
+      const classValue = expr(node.classValue);
+      return value === node.value && classValue === node.classValue
+        ? node
+        : { ...node, value, classValue };
+    }
+    case "promiseVoidWiden": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "downcast": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "instanceOf": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "virtualCall": {
+      const args = mapOf(node.args, expr);
+      return args === node.args ? node : { ...node, args };
+    }
     case "recordLit": {
-      const rebuilt: IrExpr = {
-        ...node,
-        fields: node.fields.map((child) => ({ ...child!, value: expr(child.value) })),
-      };
+      const fields = mapValues(node.fields, expr);
+      if (fields === node.fields) return node;
+      const rebuilt: IrExpr = { ...node, fields };
       if (recordLiteralRebuilt !== null) recordLiteralRebuilt(node, rebuilt);
       return rebuilt;
     }
-    case "recordClone":
-      return {
-        ...node,
-        source: expr(node.source),
-        overrides: node.overrides.map((child) => ({ ...child!, value: expr(child.value) })),
-      };
-    case "recordGet":
-      return { ...node, obj: expr(node.obj) };
-    case "recordKeyGet":
-      return { ...node, obj: expr(node.obj), key: expr(node.key) };
+    case "recordClone": {
+      const source = expr(node.source);
+      const overrides = mapValues(node.overrides, expr);
+      return source === node.source && overrides === node.overrides
+        ? node
+        : { ...node, source, overrides };
+    }
+    case "recordGet": {
+      const obj = expr(node.obj);
+      return obj === node.obj ? node : { ...node, obj };
+    }
+    case "recordKeyGet": {
+      const obj = expr(node.obj);
+      const key = expr(node.key);
+      return obj === node.obj && key === node.key ? node : { ...node, obj, key };
+    }
     case "dynInvoke": {
-      const result: Extract<IrExpr, { kind: "dynInvoke" }> = { ...node, recv: expr(node.recv) };
-      if (node.calleeNameValue !== undefined) result.calleeNameValue = expr(node.calleeNameValue);
-      result.args = mapOf(node.args, expr);
+      const recv = expr(node.recv);
+      const calleeNameValue =
+        node.calleeNameValue === undefined ? undefined : expr(node.calleeNameValue);
+      const args = mapOf(node.args, expr);
+      if (recv === node.recv && calleeNameValue === node.calleeNameValue && args === node.args)
+        return node;
+      const result: Extract<IrExpr, { kind: "dynInvoke" }> = { ...node, recv };
+      if (calleeNameValue !== undefined) result.calleeNameValue = calleeNameValue;
+      result.args = args;
       return result;
     }
-    case "dynArrLit":
-      return { ...node, elems: mapOf(node.elems, expr) };
-    case "dynObjLit":
-      return node.fields === undefined
-        ? node
-        : {
-            ...node,
-            fields: node.fields.map((child) => ({
-              ...child,
-              key: expr(child.key),
-              value: expr(child.value),
-            })),
-          };
-    case "dynKeyGet":
-      return { ...node, key: expr(node.key), value: expr(node.value) };
-    case "dynHasKey":
-      return { ...node, value: expr(node.value) };
-    case "dynDestrCheck":
-      return { ...node, value: expr(node.value) };
-    case "dynIterN":
-      return { ...node, value: expr(node.value) };
-    case "recordOvfKeys":
-      return { ...node, obj: expr(node.obj) };
-    case "recordOvfHas":
-      return { ...node, obj: expr(node.obj), key: expr(node.key) };
-    case "recordNullProto":
-      return { ...node, obj: expr(node.obj) };
-    case "recordHas":
-      return { ...node, obj: expr(node.obj) };
+    case "dynArrLit": {
+      const elems = mapOf(node.elems, expr);
+      return elems === node.elems ? node : { ...node, elems };
+    }
+    case "dynObjLit": {
+      if (node.fields === undefined) return node;
+      const fields = mapEntries(node.fields, expr);
+      return fields === node.fields ? node : { ...node, fields };
+    }
+    case "dynKeyGet": {
+      const key = expr(node.key);
+      const value = expr(node.value);
+      return key === node.key && value === node.value ? node : { ...node, key, value };
+    }
+    case "dynHasKey": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "dynDestrCheck": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "dynIterN": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "recordOvfKeys": {
+      const obj = expr(node.obj);
+      return obj === node.obj ? node : { ...node, obj };
+    }
+    case "recordOvfHas": {
+      const obj = expr(node.obj);
+      const key = expr(node.key);
+      return obj === node.obj && key === node.key ? node : { ...node, obj, key };
+    }
+    case "recordNullProto": {
+      const obj = expr(node.obj);
+      return obj === node.obj ? node : { ...node, obj };
+    }
+    case "recordHas": {
+      const obj = expr(node.obj);
+      return obj === node.obj ? node : { ...node, obj };
+    }
     case "fieldAbsent":
       return node;
-    case "unionWrap":
-      return { ...node, value: expr(node.value) };
-    case "unionRetype":
-      return { ...node, value: expr(node.value) };
-    case "unionFuncEq":
-      return { ...node, union: expr(node.union), func: expr(node.func) };
-    case "caughtTest":
-      return { ...node, value: expr(node.value) };
-    case "caughtNarrow":
-      return { ...node, value: expr(node.value) };
-    case "caughtCheck":
-      return { ...node, value: expr(node.value) };
-    case "caughtToDyn":
-      return { ...node, value: expr(node.value) };
-    case "unionNarrow":
-      return { ...node, value: expr(node.value) };
-    case "unionDisc":
-      return { ...node, value: expr(node.value) };
-    case "unionKeyGet":
-      return { ...node, key: expr(node.key), value: expr(node.value) };
-    case "unionIsTag":
-      return { ...node, value: expr(node.value) };
-    case "unionEq":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "intrinsic":
-      return { ...node, args: mapOf(node.args, expr) };
-    case "jsonStringify":
-      return { ...node, value: expr(node.value) };
+    case "unionWrap": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "unionRetype": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "unionFuncEq": {
+      const union = expr(node.union);
+      const func = expr(node.func);
+      return union === node.union && func === node.func ? node : { ...node, union, func };
+    }
+    case "caughtTest": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "caughtNarrow": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "caughtCheck": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "caughtToDyn": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "unionNarrow": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "unionDisc": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "unionKeyGet": {
+      const key = expr(node.key);
+      const value = expr(node.value);
+      return key === node.key && value === node.value ? node : { ...node, key, value };
+    }
+    case "unionIsTag": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "unionEq": {
+      const left = expr(node.left);
+      const right = expr(node.right);
+      return left === node.left && right === node.right ? node : { ...node, left, right };
+    }
+    case "intrinsic": {
+      const args = mapOf(node.args, expr);
+      return args === node.args ? node : { ...node, args };
+    }
+    case "jsonStringify": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
   }
   node satisfies never;
   throw new Error("unhandled IR node");
@@ -777,88 +1027,144 @@ export function mapStmtChildren(
   // The most common node kinds come first: the engine tests string cases
   // one after another, in source order.
   switch (node.kind) {
-    case "return":
-      return { ...node, value: node.value === null ? null : expr(node.value) };
-    case "if":
-      return {
-        ...node,
-        cond: expr(node.cond),
-        then: mapOf(node.then, stmt),
-        else_: node.else_ === null ? null : mapOf(node.else_, stmt),
-      };
-    case "varDecl":
-      return { ...node, init: node.init === null ? null : expr(node.init) };
-    case "exprStmt":
-      return { ...node, expr: expr(node.expr) };
-    case "assign":
-      return { ...node, value: expr(node.value) };
-    case "block":
-      return { ...node, body: mapOf(node.body, stmt) };
-    case "fieldSet":
-      return { ...node, obj: expr(node.obj), value: expr(node.value) };
-    case "while":
-      return { ...node, cond: expr(node.cond), body: mapOf(node.body, stmt) };
-    case "doWhile":
-      return { ...node, body: mapOf(node.body, stmt), cond: expr(node.cond) };
-    case "switch":
-      return {
-        ...node,
-        disc: expr(node.disc),
-        cases: node.cases.map((child) => ({
-          ...child,
-          test: child.test === null ? null : expr(child.test),
-          body: mapOf(child.body, stmt),
-        })),
-      };
-    case "for":
-      return {
-        ...node,
-        init: node.init === null ? null : stmt(node.init),
-        cond: node.cond === null ? null : expr(node.cond),
-        update: node.update === null ? null : stmt(node.update),
-        body: mapOf(node.body, stmt),
-      };
-    case "arraySet":
-      return { ...node, arr: expr(node.arr), index: expr(node.index), value: expr(node.value) };
-    case "arraySetLength":
-      return { ...node, arr: expr(node.arr), length: expr(node.length) };
-    case "arraySetUndefined":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "arrayDelete":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "bytesSet":
-      return { ...node, arr: expr(node.arr), index: expr(node.index), value: expr(node.value) };
-    case "forOf":
-      return {
-        ...node,
-        iterable: expr(node.iterable),
-        body: mapOf(node.body, stmt),
-      };
-    case "recordSet":
-      return { ...node, obj: expr(node.obj), value: expr(node.value) };
-    case "recordKeySet":
-      return { ...node, obj: expr(node.obj), key: expr(node.key), value: expr(node.value) };
-    case "recordKeyDelete":
-      return { ...node, obj: expr(node.obj), key: expr(node.key) };
+    case "return": {
+      const value = node.value === null ? null : expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "if": {
+      const cond = expr(node.cond);
+      const then = mapOf(node.then, stmt);
+      const else_ = node.else_ === null ? null : mapOf(node.else_, stmt);
+      return cond === node.cond && then === node.then && else_ === node.else_
+        ? node
+        : { ...node, cond, then, else_ };
+    }
+    case "varDecl": {
+      const init = node.init === null ? null : expr(node.init);
+      return init === node.init ? node : { ...node, init };
+    }
+    case "exprStmt": {
+      const inner = expr(node.expr);
+      return inner === node.expr ? node : { ...node, expr: inner };
+    }
+    case "assign": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
+    case "block": {
+      const body = mapOf(node.body, stmt);
+      return body === node.body ? node : { ...node, body };
+    }
+    case "fieldSet": {
+      const obj = expr(node.obj);
+      const value = expr(node.value);
+      return obj === node.obj && value === node.value ? node : { ...node, obj, value };
+    }
+    case "while": {
+      const cond = expr(node.cond);
+      const body = mapOf(node.body, stmt);
+      return cond === node.cond && body === node.body ? node : { ...node, cond, body };
+    }
+    case "doWhile": {
+      const body = mapOf(node.body, stmt);
+      const cond = expr(node.cond);
+      return body === node.body && cond === node.cond ? node : { ...node, body, cond };
+    }
+    case "switch": {
+      const disc = expr(node.disc);
+      const cases = mapCases(node.cases, expr, stmt);
+      return disc === node.disc && cases === node.cases ? node : { ...node, disc, cases };
+    }
+    case "for": {
+      const init = node.init === null ? null : stmt(node.init);
+      const cond = node.cond === null ? null : expr(node.cond);
+      const update = node.update === null ? null : stmt(node.update);
+      const body = mapOf(node.body, stmt);
+      return init === node.init &&
+        cond === node.cond &&
+        update === node.update &&
+        body === node.body
+        ? node
+        : { ...node, init, cond, update, body };
+    }
+    case "arraySet": {
+      const arr = expr(node.arr);
+      const index = expr(node.index);
+      const value = expr(node.value);
+      return arr === node.arr && index === node.index && value === node.value
+        ? node
+        : { ...node, arr, index, value };
+    }
+    case "arraySetLength": {
+      const arr = expr(node.arr);
+      const length = expr(node.length);
+      return arr === node.arr && length === node.length ? node : { ...node, arr, length };
+    }
+    case "arraySetUndefined": {
+      const arr = expr(node.arr);
+      const index = expr(node.index);
+      return arr === node.arr && index === node.index ? node : { ...node, arr, index };
+    }
+    case "arrayDelete": {
+      const arr = expr(node.arr);
+      const index = expr(node.index);
+      return arr === node.arr && index === node.index ? node : { ...node, arr, index };
+    }
+    case "bytesSet": {
+      const arr = expr(node.arr);
+      const index = expr(node.index);
+      const value = expr(node.value);
+      return arr === node.arr && index === node.index && value === node.value
+        ? node
+        : { ...node, arr, index, value };
+    }
+    case "forOf": {
+      const iterable = expr(node.iterable);
+      const body = mapOf(node.body, stmt);
+      return iterable === node.iterable && body === node.body ? node : { ...node, iterable, body };
+    }
+    case "recordSet": {
+      const obj = expr(node.obj);
+      const value = expr(node.value);
+      return obj === node.obj && value === node.value ? node : { ...node, obj, value };
+    }
+    case "recordKeySet": {
+      const obj = expr(node.obj);
+      const key = expr(node.key);
+      const value = expr(node.value);
+      return obj === node.obj && key === node.key && value === node.value
+        ? node
+        : { ...node, obj, key, value };
+    }
+    case "recordKeyDelete": {
+      const obj = expr(node.obj);
+      const key = expr(node.key);
+      return obj === node.obj && key === node.key ? node : { ...node, obj, key };
+    }
     case "break":
       return node;
     case "continue":
       return node;
-    case "throw":
-      return { ...node, value: expr(node.value) };
+    case "throw": {
+      const value = expr(node.value);
+      return value === node.value ? node : { ...node, value };
+    }
     case "runtimeFence":
       return node;
     case "genBindBarrier":
       return node;
     case "rethrow":
       return node;
-    case "tryCatch":
-      return {
-        ...node,
-        tryBody: mapOf(node.tryBody, stmt),
-        catchBody: node.catchBody === null ? null : mapOf(node.catchBody, stmt),
-        finallyBody: node.finallyBody === null ? null : mapOf(node.finallyBody, stmt),
-      };
+    case "tryCatch": {
+      const tryBody = mapOf(node.tryBody, stmt);
+      const catchBody = node.catchBody === null ? null : mapOf(node.catchBody, stmt);
+      const finallyBody = node.finallyBody === null ? null : mapOf(node.finallyBody, stmt);
+      return tryBody === node.tryBody &&
+        catchBody === node.catchBody &&
+        finallyBody === node.finallyBody
+        ? node
+        : { ...node, tryBody, catchBody, finallyBody };
+    }
   }
   node satisfies never;
   throw new Error("unhandled IR node");
@@ -903,5 +1209,5 @@ export function transformStmt(node: IrStmt, transform: IrTransform): IrStmt {
 }
 
 export function transformStmtList(body: IrStmt[], transform: IrTransform): IrStmt[] {
-  return body.map(transformation(transform).stmt);
+  return mapOf(body, transformation(transform).stmt);
 }

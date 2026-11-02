@@ -12,6 +12,8 @@ import {
   everyStmtList,
   mapExprChildren,
   mapStmtChildren,
+  observeRecordLiteralRebuilds,
+  transformExpr,
   transformStmtList,
 } from "./traverse.js";
 
@@ -347,4 +349,88 @@ test("type traversal visits all structural children and leaves named shapes as r
       expect(count).toBe(stop + 1);
     }
   }
+});
+
+// A rewrite pass walks a whole function and usually changes nothing in it.
+// These tests pin the allocation contract that follows: an untouched subtree
+// keeps its identity, so the pass allocates nothing for it and a side table
+// keyed by node identity stays valid.
+const varRef = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, loc });
+const binAdd = (left: IrExpr, right: IrExpr): IrExpr => ({
+  kind: "bin",
+  op: "+",
+  left,
+  right,
+  type: F64,
+  loc,
+});
+const ret = (value: IrExpr): IrStmt => ({ kind: "return", value, loc });
+const blockOf = (body: IrStmt[]): IrStmt => ({ kind: "block", body, loc });
+const identity = {
+  expr: (node: IrExpr): IrExpr => node,
+  stmt: (node: IrStmt): IrStmt => node,
+};
+
+test("a transform that changes nothing returns the nodes and lists it was given", () => {
+  const sum = binAdd(varRef("a"), binAdd(num(1), num(2)));
+  const body = [blockOf([ret(sum)]), ret(num(3))];
+  const transformed = transformStmtList(body, identity);
+  expect(transformed).toBe(body);
+  expect(transformed[0]).toBe(body[0]);
+  expect((transformed[0] as { body: IrStmt[] }).body).toBe((body[0] as { body: IrStmt[] }).body);
+  expect(((body[0] as { body: IrStmt[] }).body[0] as { value: IrExpr }).value).toBe(sum);
+  expect(transformExpr(sum, identity)).toBe(sum);
+});
+
+test("a changed leaf rebuilds exactly the path to it", () => {
+  const inner = binAdd(num(1), num(2));
+  const sum = binAdd(varRef("a"), inner);
+  const rewritten = transformExpr(sum, {
+    expr: (node) => (node.kind === "varRef" ? num(9) : node),
+    stmt: (node) => node,
+  });
+  expect(rewritten).not.toBe(sum);
+  expect((rewritten as { left: IrExpr }).left).toEqual(num(9));
+  // The untouched right subtree keeps its identity.
+  expect((rewritten as { right: IrExpr }).right).toBe(inner);
+});
+
+test("the record-literal observer fires only when the literal is rebuilt", () => {
+  const literal: IrExpr = {
+    kind: "recordLit",
+    fields: [{ name: "a", value: num(1) }],
+    type: { kind: "record", shapeId: "s1" },
+    loc,
+  };
+  const seen: [IrExpr, IrExpr][] = [];
+  observeRecordLiteralRebuilds((from, to) => seen.push([from, to]));
+  try {
+    expect(mapExprChildren(literal, identity.expr, identity.stmt)).toBe(literal);
+    expect(seen).toEqual([]);
+    const rebuilt = mapExprChildren(
+      literal,
+      (node) => (node.kind === "numLit" ? num(2) : node),
+      identity.stmt,
+    );
+    expect(rebuilt).not.toBe(literal);
+    expect(seen).toEqual([[literal, rebuilt]]);
+    expect((rebuilt as { fields: { value: IrExpr }[] }).fields[0]!.value).toEqual(num(2));
+  } finally {
+    observeRecordLiteralRebuilds(null);
+  }
+});
+
+test("a switch rebuilds only its changed case and keeps the others", () => {
+  const kept = { test: num(1), body: [ret(num(1))] };
+  const changed = { test: num(2), body: [ret(num(2))] };
+  const node: IrStmt = { kind: "switch", disc: varRef("d"), cases: [kept, changed], loc };
+  const mapped = mapStmtChildren(
+    node,
+    (child) => (child.kind === "numLit" && child.value === 2 ? num(22) : child),
+    identity.stmt,
+  );
+  expect(mapped).not.toBe(node);
+  const cases = (mapped as { cases: { test: IrExpr; body: IrStmt[] }[] }).cases;
+  expect(cases[0]).toBe(kept);
+  expect(cases[1]).toEqual({ test: num(22), body: [ret(num(2))] });
 });

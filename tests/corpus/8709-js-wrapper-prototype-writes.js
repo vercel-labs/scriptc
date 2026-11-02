@@ -123,4 +123,17 @@ show("natives", [
   new Date(0).getTime(),
 ].join("|"));
 
+// A member read off a primitive, off a wrapper instance and off the prototype
+// object is one function, as in Node: the wrapper prototypes' members are the
+// invoke unit's interned functions, wrapped for the wrapper receivers, and one
+// value answers every reader. (A number's or a boolean's methods as values are
+// a separate frontend refusal, so the primitives here are strings.)
+show("identity", [
+  "abc".slice === String.prototype.slice,
+  "abc".startsWith === String.prototype.startsWith,
+  new String("abc").slice === String.prototype.slice,
+  new Number(1).toFixed === Number.prototype.toFixed,
+  new Boolean(true).toString === Boolean.prototype.toString,
+].join("|"));
+
 for (const line of lines.sort()) console.log(line);

@@ -630,6 +630,46 @@ static ScrDyn *scr_js_wrapper_member(ScrDyn *callee, const ScrStr *owner, const 
   return scr_dyn_new_func(closure, scr_js_wrapper_member_call, 0, "native:prototype", method->data);
 }
 
+/* One reference per wrapped member, keyed "Owner.method". */
+static SCR_TL ScrDyn *scr_js_wrapper_members;
+/* Set while the hook asks scr_dyn_builtin_method for the plain member it
+ * wraps, so the hook does not answer that call with itself. */
+static SCR_TL bool scr_js_wrapper_member_building;
+
+static void scr_js_wrapper_members_cleanup(void) {
+  scr_dyn_release(scr_js_wrapper_members);
+  scr_js_wrapper_members = NULL;
+}
+
+/* The invoke unit's hook (scr_dyn_builtin_method): the member value of a
+ * wrapper prototype, built once per owner and method. A member read on a
+ * primitive, on a wrapper instance and on the prototype object all pass
+ * through that function, so they answer this same value — the language's
+ * identity, `"abc".slice === String.prototype.slice` (§4.4's one intrinsic,
+ * one object, extended to the member value). +1, or NULL for another owner. */
+static ScrDyn *scr_js_wrapper_member_value(const ScrStr *owner, const ScrStr *method) {
+  if (scr_js_wrapper_member_building || !scr_js_wrapper_owner(owner->data)) return NULL;
+  if (!scr_js_wrapper_members) {
+    scr_js_wrapper_members = scr_dyn_new_obj_null_proto();
+    scr_atexit(scr_js_wrapper_members_cleanup);
+  }
+  char key[160];
+  int key_length = snprintf(key, sizeof key, "%s.%s", owner->data, method->data);
+  if (key_length < 0 || (size_t)key_length >= sizeof key) return NULL;
+  ScrDyn *cached = scr_dyn_obj_get(scr_js_wrapper_members, key, (size_t)key_length);
+  if (cached) return scr_dyn_retain(cached);
+  scr_js_wrapper_member_building = true;
+  ScrDyn *callee = scr_dyn_builtin_method(owner, method);
+  scr_js_wrapper_member_building = false;
+  ScrDyn *wrapped = scr_js_wrapper_member(callee, owner, method);
+  scr_dyn_obj_set(scr_js_wrapper_members, key, (size_t)key_length, wrapped);
+  return scr_dyn_retain(wrapped);
+}
+
+__attribute__((constructor)) static void scr_js_wrapper_member_hook_install(void) {
+  scr_dyn_wrapper_member_hook = scr_js_wrapper_member_value;
+}
+
 /* The member value a builtin's own unit answers for `key` (+1), or NULL.
  * A class whose instances answer their methods from a private table — a Date
  * (scr_lib.c), whose method functions run the Date receiver checks, and the
@@ -669,9 +709,10 @@ static ScrDyn *scr_js_member_value(size_t index, const ScrJsIntrinsicRow *row) {
       ScrStr *prototype = scr_str_new(owner, strlen(owner));
       ScrStr *method = scr_str_new(row->a, method_length);
       /* The wrapper owners' members are the invoke unit's, wrapped to run on
-       * the primitive the prototype wraps. */
+       * the primitive the prototype wraps, and scr_dyn_builtin_method answers
+       * that wrapped value through the hook above — the same one a primitive's
+       * or a wrapper instance's member read gets. */
       ScrDyn *value = scr_dyn_builtin_method(prototype, method);
-      if (scr_js_wrapper_owner(owner)) value = scr_js_wrapper_member(value, prototype, method);
       scr_str_release(method);
       scr_str_release(prototype);
       scr_js_define_length(value, scr_js_member_length(row->a));

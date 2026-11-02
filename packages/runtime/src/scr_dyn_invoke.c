@@ -1977,9 +1977,20 @@ static ScrDyn *scr_dyn_invoke_native_member(const ScrStr *prototype, const ScrSt
   return scr_native_builtin_member_value(prototype->data, method->data, method->len);
 }
 
+ScrDyn *(*scr_dyn_wrapper_member_hook)(const ScrStr *prototype, const ScrStr *method) = NULL;
+
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
   ScrDyn *native = scr_dyn_invoke_native_member(prototype, method);
   if (native) return native;
+  /* A wrapper prototype's member is the graph's (t262-da A2): it wraps this
+   * unit's function so the member runs on the primitive the prototype wraps.
+   * Asking the hook here, where both a primitive's member read and the
+   * prototype object's converge, keeps them one function. The hook answers
+   * NULL for every other owner, so the plain member is interned below. */
+  if (scr_dyn_wrapper_member_hook) {
+    ScrDyn *wrapped = scr_dyn_wrapper_member_hook(prototype, method);
+    if (wrapped) return wrapped;
+  }
   if (!dyn_builtin_methods) {
     dyn_builtin_methods = scr_dyn_new_obj_null_proto();
     scr_atexit(dyn_builtin_methods_cleanup);

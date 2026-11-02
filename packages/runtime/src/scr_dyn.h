@@ -1197,6 +1197,14 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
  * refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
 #endif
+/* Installed by the intrinsic graph (scr_js_intrinsics.c) when a program links
+ * it: the member value of a wrapper prototype (String, Number, Boolean), or
+ * NULL for any other owner. scr_dyn_builtin_method asks it before it interns
+ * a plain member, so every reader — a member read on a primitive, on a
+ * wrapper instance, or on the prototype object — answers one function
+ * (`"abc".slice === String.prototype.slice`). A program without the graph
+ * links no wrapper objects, and this stays NULL. +1. */
+extern ScrDyn *(*scr_dyn_wrapper_member_hook)(const ScrStr *prototype, const ScrStr *method);
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);

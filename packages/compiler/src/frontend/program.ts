@@ -1503,6 +1503,23 @@ export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
   return diags;
 }
 
+/** The module evaluation order and the graph facts derived with it, without
+ * the diagnostics. `--npm-static`'s library fixpoint reloads the program
+ * once per package it discovers and reads the order alone (to find the next
+ * package); only the last program's diagnostics are ever reported, and its
+ * checkPreflight completes this walk instead of repeating it. */
+export function checkModuleOrder<T extends LoadResult>(load: T): void {
+  registerWorkspaceEdges(load);
+  fillPreflightFields(load, preflightStructure(load));
+}
+
+function fillPreflightFields(load: LoadResult, structure: PreflightStructure): void {
+  load.moduleOrder = structure.order;
+  load.inlineRequireCycleCalls = structure.inlineRequireCycleCalls;
+  load.moduleEdges = structure.moduleEdges;
+  load.dynamicImportRejections = structure.dynamicImportRejections;
+}
+
 /* Finding 5: tsgo's strict CommonJS modeling fires checker codes on JS
  * shapes 5.9.3 accepted, and the real hazards those shapes carry are fenced
  * by scriptc's OWN analysis, never by these codes — so for JS FILES ONLY
@@ -5637,36 +5654,36 @@ function sameResolvedFile(a: string, b: string): boolean {
   return normalize(trackedRealpath(a) ?? a) === normalize(trackedRealpath(b) ?? b);
 }
 
-function preflight7(load: LoadResult): {
-  diags: ScrDiagnostic[];
-  moduleOrder: ts.SourceFile[];
-  startupCrash: StartupCrash | null;
-  inlineRequireCycleCalls: ReadonlySet<ts.Node>;
-  moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]>;
-  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash>;
-} {
-  const { program, entry } = load;
-  const diags: ScrDiagnostic[] = [...load.configDiags];
+/** A program file TypeScript's checker pulled in from a package the build
+ * does not compile — unselected node_modules JavaScript, or an unselected
+ * workspace package's shipped JavaScript at a realpath outside node_modules
+ * (the symlinked-install shape): Node never loads it as program source. */
+function unselectedPackageJsFilePredicate(entryFileName: string): (file: string) => boolean {
+  const entryPackageFile = entryPackageFilePredicate(entryFileName);
+  return (file) =>
+    isJsSourceFileName(file) &&
+    !entryPackageFile(file) &&
+    npmStaticPackageOfPath(file) === null &&
+    (isNodeModulesPath(file) || workspacePackageOfPath(file) !== null);
+}
 
-  // An explicit entry can itself live in an installed package. Its own
-  // source files are program code, including relative barrels and sibling
-  // modules; their location must not erase the module graph.
-  // Match the full installed directory, not just the package name, and
-  // exclude nested installations so dependencies keep their npm policy.
-  const entryPackageFile = entryPackageFilePredicate(entry.fileName);
+/** Workspace-linked packages register before the tsc gate. Their files live
+ * at realpaths OUTSIDE node_modules (the monorepo-tool symlink shape), so
+ * nothing path-shaped marks them as npm surface — yet their shipped JS
+ * follows the same foreign-tsconfig rules as node_modules JS. The lazy
+ * registration inside the import-fence walk registers them too, but too late
+ * for the gate, so one pass over the program's import edges registers them up
+ * front: every bare specifier any program file loads — import/export
+ * declarations, dynamic import("literal") (tsgo chases those into the program
+ * too; a CLI reaches its workspace sibling exactly that way),
+ * require("literal") — resolved with the own resolver, workspace answers
+ * recorded. Runs once per load, ahead of the gate and the walk. */
+const workspaceProbed = new WeakSet<LoadResult>();
 
-  // Workspace-linked packages register BEFORE the tsc gate. Their files
-  // live at realpaths OUTSIDE node_modules (the monorepo-tool symlink
-  // shape), so nothing path-shaped marks them as npm surface — yet their
-  // shipped JS follows the same foreign-tsconfig rules as node_modules JS.
-  // The lazy
-  // registration inside the import-fence walk below runs AFTER errorsOf,
-  // too late for the gate, so one pass over the program's import edges
-  // registers them up front: every bare specifier any program file loads —
-  // import/export declarations, dynamic import("literal") (tsgo chases
-  // those into the program too; a CLI reaches its workspace sibling exactly
-  // that way), require("literal") — resolved with the own resolver,
-  // workspace answers recorded.
+function registerWorkspaceEdges(load: LoadResult): void {
+  if (workspaceProbed.has(load)) return;
+  workspaceProbed.add(load);
+  const { program } = load;
   {
     const supportedBuiltins = new Set<string>(SUPPORTED_NODE_MODULES);
     const probed = new Set<string>();
@@ -5692,243 +5709,54 @@ function preflight7(load: LoadResult): {
         probe(sf.fileName, specifier);
     }
   }
+}
 
-  const toPassthrough = (d: ts.Diagnostic): ScrDiagnostic => {
-    const message = ts.flattenDiagnosticMessageText(d, "\n");
-    // File-less (global/options) diagnostics anchor at the entry with a
-    // zero span, exactly like the 5.9.3 lane's `d.start ?? 0` fallback.
-    const file = d.fileName ?? entry.fileName;
-    const start = d.fileName !== undefined ? d.pos : 0;
-    const end = d.fileName !== undefined ? d.end : 0;
-    // A JavaScript source's `refuse`/`rewrite` code names the construct
-    // scriptc does not lower (tsc-codes.ts): the user sees what is missing
-    // instead of TypeScript's opinion about legal JavaScript.
-    const triaged =
-      d.fileName !== undefined && isJsSourceFileName(d.fileName) ? jsTscCodeTriage(d.code) : null;
-    if (triaged?.action === "refuse" || triaged?.action === "rewrite") {
-      const diag = unsupportedDiag(
-        "SC1090",
-        { file, start, end },
-        triaged.feature,
-        `${triaged.hint} (TypeScript reports TS${d.code} here.)`,
-      );
-      return diag;
-    }
-    const diag = tscPassthroughDiag(message, { file, start, end });
-    const hint = typeWorldHint(d, message, load);
-    if (hint !== null) {
-      diag.typeWorld = true;
-      diag.hint = hint;
-    }
-    return diag;
-  };
-  /* TS7 checker change (not finding 5, same discipline): tsgo types a
-   * NAMESPACE import as the spec's non-callable module namespace object
-   * even when the module is declared with the callable `export =` shape —
-   * 5.9.3 bound the callable value directly, so `import * as a from
-   * "node:assert"; a(x)` typechecked there and draws TS2349 here. Those
-   * callable module objects are scriptc's OWN declared surface, and calls
-   * through the namespace binding are fenced per site by the lowering (the
-   * assert-fences fixture pins the wording), so tsgo's extra TS2349 on
-   * exactly those callees — an identifier that is a namespace-import
-   * binding of a supported builtin module — is suppressed to the 5.9.3
-   * verdict. Nothing else rides this: any other non-callable call keeps
-   * tsc's voice in both lanes. */
-  const builtinNamespaceNames = new Map<string, Set<string>>();
-  const namespaceCalleeSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 2349 || d.fileName === undefined) return false;
-    let names = builtinNamespaceNames.get(d.fileName);
-    if (!names) {
-      names = new Set();
-      builtinNamespaceNames.set(d.fileName, names);
-      const sf = p.getSourceFile(d.fileName);
-      for (const stmt of sf?.statements?.nodes ?? []) {
-        if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
-        if (canonicalBuiltinModule(stmt.moduleSpecifier.text) === null) continue;
-        const bindings = stmt.importClause?.namedBindings;
-        if (bindings && ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
-      }
-    }
-    if (names.size === 0) return false;
-    const sf = p.getSourceFile(d.fileName);
-    return sf !== undefined && names.has(sf.text.slice(d.pos, d.end));
-  };
+/** The structural half of preflight: the module evaluation order and the
+ * graph facts derived with it, plus the fence diagnostics the walk itself
+ * produces. */
+interface PreflightStructure {
+  order: ts.SourceFile[];
+  moduleEdges: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]>;
+  dynamicImportRejections: ReadonlyMap<ts.SourceFile, StartupCrash>;
+  inlineRequireCycleCalls: ReadonlySet<ts.Node>;
+  /** The graph walk's own diagnostics, in report order. The full preflight
+   * reports them right after its tsc gate. */
+  diags: ScrDiagnostic[];
+  /** Node's resolve-phase refusal, before the full preflight decides whether
+   * the remaining diagnostics let it stand (a build that already fails
+   * reports every refusal's compile fence instead). */
+  resolveCrash: StartupCrash | null;
+  /** The compile-fence diagnostic of every refusal the entry never reaches,
+   * in report order; the full preflight reports them only when nothing else
+   * fails. */
+  fallbacks: ScrDiagnostic[];
+}
 
-  const npmStaticFileSuppressed = (d: ts.Diagnostic): boolean =>
-    d.fileName !== undefined && npmStaticPackageOfPath(d.fileName) !== null;
+/** One load's structure, computed once: a fixpoint that asked for the
+ * module order first completes the same walk instead of repeating it. */
+const preflightStructures = new WeakMap<LoadResult, PreflightStructure>();
 
-  const unselectedPackageJsFile = (file: string): boolean =>
-    isJsSourceFileName(file) &&
-    !entryPackageFile(file) &&
-    npmStaticPackageOfPath(file) === null &&
-    (isNodeModulesPath(file) || workspacePackageOfPath(file) !== null);
-  const nodeModulesJsSuppressed = (d: ts.Diagnostic): boolean =>
-    d.fileName !== undefined && unselectedPackageJsFile(d.fileName);
-  /* JSDoc TYPE positions in JS files are documentation Node never reads:
-   * a name-resolution failure THERE (2304/2552 — the pattern's utilities.js
-   * spells a mapped type over a @template name it never declared) types
-   * as the error-any and the per-site fences apply, same stance as the
-   * strictness families above. A 2300 duplicate-identifier PAIR formed by
-   * a @typedef and a same-named class/function is the same story — the
-   * typedef half sits inside the comment, and the code half is suppressed
-   * exactly when its partner (same file, same name) was comment-side, so
-   * a REAL duplicate declaration (both halves in code — Node's own
-   * SyntaxError) keeps tsc's voice. */
-  const insideBlockComment = (text: string, pos: number): boolean => {
-    const open = text.lastIndexOf("/*", pos);
-    if (open < 0) return false;
-    const close = text.indexOf("*/", open + 2);
-    return close === -1 || close >= pos;
-  };
-  const jsdocTypeSuppressed = (
-    p: ts.Program,
-    d: ts.Diagnostic,
-    commentDup: Set<string>,
-  ): boolean => {
-    if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003) return false;
-    if (d.pos === undefined) return false;
-    const sf = p.getSourceFile(d.fileName);
-    if (!sf) return false;
-    if (insideBlockComment(sf.text, d.pos)) return true;
-    return d.code === 2300 && commentDup.has(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
-  };
+function preflightStructure(load: LoadResult): PreflightStructure {
+  const cached = preflightStructures.get(load);
+  if (cached !== undefined) return cached;
+  const structure = preflightStructure7(load);
+  preflightStructures.set(load, structure);
+  return structure;
+}
 
-  /* `typeof window` / `typeof self` in a JavaScript file: the operand of
-   * typeof may name a global nothing declares (Node answers "undefined"
-   * and never throws), the feature-detection idiom every isomorphic
-   * package uses, and the guarded uses of that name (`typeof window < "u"
-   * ? window : …`) are code Node never runs. A name the file feature-tests
-   * this way is therefore not a type error in JavaScript; a reached use
-   * still meets the lowering's located refusal. TypeScript files keep the
-   * error and its hint. */
-  const typeofTestedNameSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2584) return false;
-    if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.pos === undefined || d.end === undefined) return false;
-    const sf = p.getSourceFile(d.fileName);
-    if (!sf) return false;
-    const name = sf.text.slice(d.pos, d.end);
-    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
-    return new RegExp(`\\btypeof\\s*\\(?\\s*${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(sf.text);
-  };
+function preflightStructure7(load: LoadResult): PreflightStructure {
+  const { program, entry } = load;
+  // The walk's own diagnostics. The config diagnostics and the tsc gate are
+  // preflightDiagnostics7's, which reports them ahead of these.
+  const diags: ScrDiagnostic[] = [];
+  const unselectedPackageJsFile = unselectedPackageJsFilePredicate(entry.fileName);
 
-  // A `return` at the top level of a CommonJS module (TS1108): Node runs
-  // the module as a function body, so the return ends the module's
-  // evaluation. ES modules and TypeScript keep the error.
-  const cjsTopLevelReturnSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 1108 || d.fileName === undefined || !isJsSourceFileName(d.fileName))
-      return false;
-    const sf = p.getSourceFile(d.fileName);
-    return sf !== undefined && isCjsJsFile7(sf, p);
-  };
-
-  const workspaceImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
-      return false;
-    const sf = p.getSourceFile(d.fileName);
-    if (!sf) return false;
-    const spec = sf.text.slice(d.pos, d.end).replace(/^['"]|['"]$/g, "");
-    const prefix = spec.startsWith("@")
-      ? spec.split("/").slice(0, 2).join("/")
-      : spec.split("/")[0]!;
-    return isWorkspacePackageName(prefix);
-  };
-  // A JavaScript file that TypeScript checks keeps the type errors that
-  // protect its JSDoc types: a value of another type reaching a typed slot,
-  // a call with the wrong arity, and a subclass member that does not
-  // match its base.
-  const projectCheckJs = load.typeWorld?.projectCheckJs ?? false;
-  const enforcedInCheckedJs = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (!CHECKED_JS_ENFORCED_CODES.has(d.code) || d.fileName === undefined) return false;
-    const sf = p.getSourceFile(d.fileName);
-    return sf !== undefined && isCheckedJsSourceFile(sf, projectCheckJs);
-  };
-  // keptErrors drops every diagnostic of these files: the gate does not ask
-  // the checker for them.
-  const diagnosticsKept = (fileName: string): boolean =>
-    npmStaticPackageOfPath(fileName) === null &&
-    !unselectedPackageJsFile(fileName) &&
-    !isPackageShimFile(fileName);
-  const errorsOf = (p: ts.Program): ts.Diagnostic[] =>
-    keptErrors(p, ts.getPreEmitDiagnostics(p, diagnosticsKept));
-  const keptErrors = (p: ts.Program, all: readonly ts.Diagnostic[]): ts.Diagnostic[] => {
-    // First pass: every comment-side 2300's (file, name) — the partners
-    // the second pass forgives.
-    const commentDup = new Set<string>();
-    for (const d of all) {
-      if (d.code !== 2300 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
-        continue;
-      if (!isJsSourceFileName(d.fileName)) continue;
-      const sf = p.getSourceFile(d.fileName);
-      if (sf && insideBlockComment(sf.text, d.pos))
-        commentDup.add(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
-    }
-    return all.filter(
-      (d) =>
-        d.category === ts.DiagnosticCategory.Error &&
-        (!suppressedJsStrictness7(d) || enforcedInCheckedJs(p, d)) &&
-        !npmStaticFileSuppressed(d) &&
-        !nodeModulesJsSuppressed(d) &&
-        (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
-        !namespaceCalleeSuppressed(p, d) &&
-        !inferredJsDiagnosticSuppressed(p, d) &&
-        !isNpmStaticSubclassArgument(p, d) &&
-        !workspaceImplicitAnySuppressed(p, d) &&
-        !typeofTestedNameSuppressed(p, d) &&
-        !cjsTopLevelReturnSuppressed(p, d) &&
-        !jsdocTypeSuppressed(p, d, commentDup),
-    );
-  };
-
-  // The tsc gate, with a second chance: the LOWERING world's checker
-  // includes the divergence overrides (JSON.parse(): unknown, the Promise
-  // executor shape, ...), which are TIGHTER than the standard lib — a
-  // project that typechecks clean under its own tsc can still error here
-  // (any-typed JSON.parse results, most commonly). Those errors are OURS,
-  // not the project's, so they must not fail preflight: when the lowering
-  // world has errors, the PROJECT world (same program without the override
-  // declarations) is built and consulted. Clean there → preflight passes
-  // and the override-affected sites meet the lowerer's honest fences
-  // instead (the SC1100 checked-cast family). Dirty there → the project-
-  // world errors are the ones reported: they are reproducible with the
-  // project's own tsc, which is what "fix type errors first" asks for.
-  // With JSX sources, the program over the original text answers the tsc
-  // gate; its positions move into the rewritten text the program holds.
-  // Errors only the rewritten text has come from the calls the JSX lowers
-  // to (a factory whose signature does not accept them).
-  const tscWorld = load.tscWorld;
-  const tscErrors =
-    tscWorld === undefined ? errorsOf(program) : keptErrors(tscWorld.program, tscWorld.diagnostics);
-  if (tscErrors.length > 0) {
-    const world =
-      tscWorld === undefined || tscWorld.declWorldFallback === true
-        ? load.projectWorld()
-        : (tscWorld.projectWorld ?? tscWorld.program);
-    for (const d of errorsOf(world)) {
-      const diag = toPassthrough(d);
-      const lowered = tscWorld === undefined ? undefined : load.jsxSources?.get(diag.loc.file);
-      if (lowered !== undefined) {
-        diag.loc = {
-          ...diag.loc,
-          start: lowered.rewrittenPosition(diag.loc.start, false),
-          end: lowered.rewrittenPosition(diag.loc.end, true),
-        };
-      }
-      diags.push(diag);
-    }
-  } else if (load.jsxSources !== undefined) {
-    for (const file of load.jsxSources.keys()) {
-      const sf = program.getSourceFile(file);
-      if (sf === undefined) continue;
-      const own = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)];
-      for (const d of keptErrors(program, own)) {
-        const diag = toPassthrough(d);
-        diag.message = `${diag.message} (in the call this JSX lowers to)`;
-        diags.push(diag);
-      }
-    }
-  }
+  // An explicit entry can itself live in an installed package. Its own
+  // source files are program code, including relative barrels and sibling
+  // modules; their location must not erase the module graph.
+  // Match the full installed directory, not just the package name, and
+  // exclude nested installations so dependencies keep their npm policy.
+  const entryPackageFile = entryPackageFilePredicate(entry.fileName);
 
   // Preflight and lowering share this CheckerFacade. Claim executable
   // source files after workspace discovery and the tsc gate but before
@@ -6893,11 +6721,6 @@ function preflight7(load: LoadResult): {
   };
   visit(entry);
 
-  // ECMAScript's sloppy-mode WRITE to an undeclared name, which the JS
-  // relaxation above admits for READS (plan D-2): refused by name, with the
-  // island route in the text (SC1091).
-  for (const d of jsUndeclaredWriteDiags(program, order)) diags.push(d);
-
   // The startup crash Node's RESOLUTION phase reports: modules resolve
   // their request specifiers in source order, children linking depth-first
   // as each resolves (ModuleJob.syncLink) — a preorder walk over the
@@ -6908,6 +6731,7 @@ function preflight7(load: LoadResult): {
   // Node's fetch/resolve phase runs before instantiate.
   let resolveCrash: StartupCrash | null = null;
   const dynamicImportRejections = new Map<ts.SourceFile, StartupCrash>();
+  const fallbacks: ScrDiagnostic[] = [];
   {
     const seen = new Set<ts.SourceFile>();
     const walk = (sf: ts.SourceFile): StartupCrash | null => {
@@ -6970,38 +6794,330 @@ function preflight7(load: LoadResult): {
     // preflight: when any other diagnostic already fails the build, every
     // refusal keeps its compile-fence fallback instead — the report names
     // each import's story, so edges whose crash will never compile still
-    // get a diagnostic. (No reachable refusal → same: fallbacks only.)
-    if (resolveCrash === null || diags.length > 0) {
-      resolveCrash = null;
-      for (const [sf, cands] of refusals) {
-        if (covered.has(sf) && !startup.has(sf)) continue;
-        for (const c of cands) diags.push(c.fallback);
-      }
+    // get a diagnostic. (No reachable refusal → same: fallbacks only.) The
+    // "otherwise pass" half of that question is preflightDiagnostics7's:
+    // it alone sees the tsc gate's diagnostics, so it reports `fallbacks`.
+    for (const [sf, cands] of refusals) {
+      if (covered.has(sf) && !startup.has(sf)) continue;
+      for (const c of cands) fallbacks.push(c.fallback);
     }
   }
 
+  return {
+    order,
+    moduleEdges: edges,
+    dynamicImportRejections,
+    inlineRequireCycleCalls,
+    diags,
+    resolveCrash,
+    fallbacks,
+  };
+}
+
+/** The whole preflight for one load: the tsc gate, the module graph walk and
+ * every diagnostic they report, in report order. The structure is memoized,
+ * so a caller that asked for the order first (checkModuleOrder) pays for the
+ * walk once. */
+function preflight7(load: LoadResult): {
+  diags: ScrDiagnostic[];
+  moduleOrder: ts.SourceFile[];
+  startupCrash: StartupCrash | null;
+  inlineRequireCycleCalls: ReadonlySet<ts.Node>;
+  moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]>;
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash>;
+} {
+  registerWorkspaceEdges(load);
+  const gate = preflightGate7(load);
+  const structure = preflightStructure(load);
+  const { diags, startupCrash } = preflightDiagnostics7(load, structure, gate);
+  return {
+    diags,
+    moduleOrder: structure.order,
+    startupCrash,
+    inlineRequireCycleCalls: structure.inlineRequireCycleCalls,
+    moduleEdges: structure.moduleEdges,
+    dynamicImportRejections: structure.dynamicImportRejections,
+  };
+}
+
+/** The diagnostics half of preflight: the tsc gate ahead of the walk's own
+ * diagnostics, then the passes that judge the completed module order. The
+ * tsc gate runs first on every load whose order was not requested on its
+ * own, exactly as it did inside the single pass. */
+function preflightDiagnostics7(
+  load: LoadResult,
+  structure: PreflightStructure,
+  gate: ScrDiagnostic[],
+): { diags: ScrDiagnostic[]; startupCrash: StartupCrash | null } {
+  const { program, entry } = load;
+  const order = structure.order;
+  const diags: ScrDiagnostic[] = [...load.configDiags];
+  for (const d of gate) diags.push(d);
+  for (const d of structure.diags) diags.push(d);
+  // ECMAScript's sloppy-mode WRITE to an undeclared name, which the JS
+  // relaxation above admits for READS (plan D-2): refused by name, with the
+  // island route in the text (SC1091).
+  for (const d of jsUndeclaredWriteDiags(program, order)) diags.push(d);
+  // The crash channel engages only when nothing else fails preflight.
+  let startupCrash = structure.resolveCrash;
+  if (startupCrash === null || diags.length > 0) {
+    startupCrash = null;
+    for (const d of structure.fallbacks) diags.push(d);
+  }
   const linkCrash =
-    resolveCrash !== null
+    startupCrash !== null
       ? null
       : earlierLinkCrash(
           order,
           cjsNamedImportLinkCheck(program, entry, order, diags),
           esmNamedImportLinkCheck(program, entry, order, diags),
         );
-
   // ECMAScript early errors the TypeScript checker does not model (plan
   // §7.7 D-4): a JavaScript source the spec makes a SyntaxError fails here,
   // before any lowering, exactly where a tsc parse error fails.
   diags.push(...earlyErrorDiagnostics7(order, (sf) => isNodeEsmFile7(sf, program)));
+  return { diags, startupCrash: startupCrash ?? linkCrash };
+}
 
-  return {
-    diags,
-    moduleOrder: order,
-    startupCrash: resolveCrash ?? linkCrash,
-    inlineRequireCycleCalls,
-    moduleEdges: edges,
-    dynamicImportRejections,
+/** The tsc gate: the program's TypeScript errors, filtered to the ones whose
+ * files the build compiles, with the project-world second chance. */
+function preflightGate7(load: LoadResult): ScrDiagnostic[] {
+  const { program, entry } = load;
+  const diags: ScrDiagnostic[] = [];
+  const unselectedPackageJsFile = unselectedPackageJsFilePredicate(entry.fileName);
+  const toPassthrough = (d: ts.Diagnostic): ScrDiagnostic => {
+    const message = ts.flattenDiagnosticMessageText(d, "\n");
+    // File-less (global/options) diagnostics anchor at the entry with a
+    // zero span, exactly like the 5.9.3 lane's `d.start ?? 0` fallback.
+    const file = d.fileName ?? entry.fileName;
+    const start = d.fileName !== undefined ? d.pos : 0;
+    const end = d.fileName !== undefined ? d.end : 0;
+    // A JavaScript source's `refuse`/`rewrite` code names the construct
+    // scriptc does not lower (tsc-codes.ts): the user sees what is missing
+    // instead of TypeScript's opinion about legal JavaScript.
+    const triaged =
+      d.fileName !== undefined && isJsSourceFileName(d.fileName) ? jsTscCodeTriage(d.code) : null;
+    if (triaged?.action === "refuse" || triaged?.action === "rewrite") {
+      const diag = unsupportedDiag(
+        "SC1090",
+        { file, start, end },
+        triaged.feature,
+        `${triaged.hint} (TypeScript reports TS${d.code} here.)`,
+      );
+      return diag;
+    }
+    const diag = tscPassthroughDiag(message, { file, start, end });
+    const hint = typeWorldHint(d, message, load);
+    if (hint !== null) {
+      diag.typeWorld = true;
+      diag.hint = hint;
+    }
+    return diag;
   };
+  /* TS7 checker change (not finding 5, same discipline): tsgo types a
+   * NAMESPACE import as the spec's non-callable module namespace object
+   * even when the module is declared with the callable `export =` shape —
+   * 5.9.3 bound the callable value directly, so `import * as a from
+   * "node:assert"; a(x)` typechecked there and draws TS2349 here. Those
+   * callable module objects are scriptc's OWN declared surface, and calls
+   * through the namespace binding are fenced per site by the lowering (the
+   * assert-fences fixture pins the wording), so tsgo's extra TS2349 on
+   * exactly those callees — an identifier that is a namespace-import
+   * binding of a supported builtin module — is suppressed to the 5.9.3
+   * verdict. Nothing else rides this: any other non-callable call keeps
+   * tsc's voice in both lanes. */
+  const builtinNamespaceNames = new Map<string, Set<string>>();
+  const namespaceCalleeSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (d.code !== 2349 || d.fileName === undefined) return false;
+    let names = builtinNamespaceNames.get(d.fileName);
+    if (!names) {
+      names = new Set();
+      builtinNamespaceNames.set(d.fileName, names);
+      const sf = p.getSourceFile(d.fileName);
+      for (const stmt of sf?.statements?.nodes ?? []) {
+        if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+        if (canonicalBuiltinModule(stmt.moduleSpecifier.text) === null) continue;
+        const bindings = stmt.importClause?.namedBindings;
+        if (bindings && ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+      }
+    }
+    if (names.size === 0) return false;
+    const sf = p.getSourceFile(d.fileName);
+    return sf !== undefined && names.has(sf.text.slice(d.pos, d.end));
+  };
+
+  const npmStaticFileSuppressed = (d: ts.Diagnostic): boolean =>
+    d.fileName !== undefined && npmStaticPackageOfPath(d.fileName) !== null;
+
+  const nodeModulesJsSuppressed = (d: ts.Diagnostic): boolean =>
+    d.fileName !== undefined && unselectedPackageJsFile(d.fileName);
+  /* JSDoc TYPE positions in JS files are documentation Node never reads:
+   * a name-resolution failure THERE (2304/2552 — the pattern's utilities.js
+   * spells a mapped type over a @template name it never declared) types
+   * as the error-any and the per-site fences apply, same stance as the
+   * strictness families above. A 2300 duplicate-identifier PAIR formed by
+   * a @typedef and a same-named class/function is the same story — the
+   * typedef half sits inside the comment, and the code half is suppressed
+   * exactly when its partner (same file, same name) was comment-side, so
+   * a REAL duplicate declaration (both halves in code — Node's own
+   * SyntaxError) keeps tsc's voice. */
+  const insideBlockComment = (text: string, pos: number): boolean => {
+    const open = text.lastIndexOf("/*", pos);
+    if (open < 0) return false;
+    const close = text.indexOf("*/", open + 2);
+    return close === -1 || close >= pos;
+  };
+  const jsdocTypeSuppressed = (
+    p: ts.Program,
+    d: ts.Diagnostic,
+    commentDup: Set<string>,
+  ): boolean => {
+    if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
+    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003) return false;
+    if (d.pos === undefined) return false;
+    const sf = p.getSourceFile(d.fileName);
+    if (!sf) return false;
+    if (insideBlockComment(sf.text, d.pos)) return true;
+    return d.code === 2300 && commentDup.has(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
+  };
+
+  /* `typeof window` / `typeof self` in a JavaScript file: the operand of
+   * typeof may name a global nothing declares (Node answers "undefined"
+   * and never throws), the feature-detection idiom every isomorphic
+   * package uses, and the guarded uses of that name (`typeof window < "u"
+   * ? window : …`) are code Node never runs. A name the file feature-tests
+   * this way is therefore not a type error in JavaScript; a reached use
+   * still meets the lowering's located refusal. TypeScript files keep the
+   * error and its hint. */
+  const typeofTestedNameSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2584) return false;
+    if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
+    if (d.pos === undefined || d.end === undefined) return false;
+    const sf = p.getSourceFile(d.fileName);
+    if (!sf) return false;
+    const name = sf.text.slice(d.pos, d.end);
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
+    return new RegExp(`\\btypeof\\s*\\(?\\s*${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(sf.text);
+  };
+
+  // A `return` at the top level of a CommonJS module (TS1108): Node runs
+  // the module as a function body, so the return ends the module's
+  // evaluation. ES modules and TypeScript keep the error.
+  const cjsTopLevelReturnSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (d.code !== 1108 || d.fileName === undefined || !isJsSourceFileName(d.fileName))
+      return false;
+    const sf = p.getSourceFile(d.fileName);
+    return sf !== undefined && isCjsJsFile7(sf, p);
+  };
+
+  const workspaceImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
+      return false;
+    const sf = p.getSourceFile(d.fileName);
+    if (!sf) return false;
+    const spec = sf.text.slice(d.pos, d.end).replace(/^['"]|['"]$/g, "");
+    const prefix = spec.startsWith("@")
+      ? spec.split("/").slice(0, 2).join("/")
+      : spec.split("/")[0]!;
+    return isWorkspacePackageName(prefix);
+  };
+  // A JavaScript file that TypeScript checks keeps the type errors that
+  // protect its JSDoc types: a value of another type reaching a typed slot,
+  // a call with the wrong arity, and a subclass member that does not
+  // match its base.
+  const projectCheckJs = load.typeWorld?.projectCheckJs ?? false;
+  const enforcedInCheckedJs = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (!CHECKED_JS_ENFORCED_CODES.has(d.code) || d.fileName === undefined) return false;
+    const sf = p.getSourceFile(d.fileName);
+    return sf !== undefined && isCheckedJsSourceFile(sf, projectCheckJs);
+  };
+  // keptErrors drops every diagnostic of these files: the gate does not ask
+  // the checker for them.
+  const diagnosticsKept = (fileName: string): boolean =>
+    npmStaticPackageOfPath(fileName) === null &&
+    !unselectedPackageJsFile(fileName) &&
+    !isPackageShimFile(fileName);
+  const errorsOf = (p: ts.Program): ts.Diagnostic[] =>
+    keptErrors(p, ts.getPreEmitDiagnostics(p, diagnosticsKept));
+  const keptErrors = (p: ts.Program, all: readonly ts.Diagnostic[]): ts.Diagnostic[] => {
+    // First pass: every comment-side 2300's (file, name) — the partners
+    // the second pass forgives.
+    const commentDup = new Set<string>();
+    for (const d of all) {
+      if (d.code !== 2300 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
+        continue;
+      if (!isJsSourceFileName(d.fileName)) continue;
+      const sf = p.getSourceFile(d.fileName);
+      if (sf && insideBlockComment(sf.text, d.pos))
+        commentDup.add(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
+    }
+    return all.filter(
+      (d) =>
+        d.category === ts.DiagnosticCategory.Error &&
+        (!suppressedJsStrictness7(d) || enforcedInCheckedJs(p, d)) &&
+        !npmStaticFileSuppressed(d) &&
+        !nodeModulesJsSuppressed(d) &&
+        (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
+        !namespaceCalleeSuppressed(p, d) &&
+        !inferredJsDiagnosticSuppressed(p, d) &&
+        !isNpmStaticSubclassArgument(p, d) &&
+        !workspaceImplicitAnySuppressed(p, d) &&
+        !typeofTestedNameSuppressed(p, d) &&
+        !cjsTopLevelReturnSuppressed(p, d) &&
+        !jsdocTypeSuppressed(p, d, commentDup),
+    );
+  };
+
+  // The tsc gate, with a second chance: the LOWERING world's checker
+  // includes the divergence overrides (JSON.parse(): unknown, the Promise
+  // executor shape, ...), which are TIGHTER than the standard lib — a
+  // project that typechecks clean under its own tsc can still error here
+  // (any-typed JSON.parse results, most commonly). Those errors are OURS,
+  // not the project's, so they must not fail preflight: when the lowering
+  // world has errors, the PROJECT world (same program without the override
+  // declarations) is built and consulted. Clean there → preflight passes
+  // and the override-affected sites meet the lowerer's honest fences
+  // instead (the SC1100 checked-cast family). Dirty there → the project-
+  // world errors are the ones reported: they are reproducible with the
+  // project's own tsc, which is what "fix type errors first" asks for.
+  // With JSX sources, the program over the original text answers the tsc
+  // gate; its positions move into the rewritten text the program holds.
+  // Errors only the rewritten text has come from the calls the JSX lowers
+  // to (a factory whose signature does not accept them).
+  const tscWorld = load.tscWorld;
+  const tscErrors =
+    tscWorld === undefined ? errorsOf(program) : keptErrors(tscWorld.program, tscWorld.diagnostics);
+  if (tscErrors.length > 0) {
+    const world =
+      tscWorld === undefined || tscWorld.declWorldFallback === true
+        ? load.projectWorld()
+        : (tscWorld.projectWorld ?? tscWorld.program);
+    for (const d of errorsOf(world)) {
+      const diag = toPassthrough(d);
+      const lowered = tscWorld === undefined ? undefined : load.jsxSources?.get(diag.loc.file);
+      if (lowered !== undefined) {
+        diag.loc = {
+          ...diag.loc,
+          start: lowered.rewrittenPosition(diag.loc.start, false),
+          end: lowered.rewrittenPosition(diag.loc.end, true),
+        };
+      }
+      diags.push(diag);
+    }
+  } else if (load.jsxSources !== undefined) {
+    for (const file of load.jsxSources.keys()) {
+      const sf = program.getSourceFile(file);
+      if (sf === undefined) continue;
+      const own = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)];
+      for (const d of keptErrors(program, own)) {
+        const diag = toPassthrough(d);
+        diag.message = `${diag.message} (in the call this JSX lowers to)`;
+        diags.push(diag);
+      }
+    }
+  }
+
+  return diags;
 }
 
 /* ── the CJS named-import link check ─────────────────────────────────────

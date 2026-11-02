@@ -18179,7 +18179,7 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
   }
 #endif
   if (scr_typed_ref_linked_live(v)) {
-    ScrDyn *snapshot = scr_typed_ref_peek(v);
+    ScrDyn *snapshot = scr_dyn_typed_ref_peek(v);
     ScrDyn *keys = scr_dyn_for_in_keys(snapshot);
     scr_dyn_release(snapshot);
     return keys;

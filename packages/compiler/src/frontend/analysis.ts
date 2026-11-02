@@ -11,7 +11,8 @@ import type { IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { nodeIslandPolicy, type NodeIslandPolicy } from "../node-islands/policy.js";
 import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.js";
-import { hasNodeIslandFindings } from "../node-islands/summary.js";
+import { describe, hasNodeIslandFindings } from "../node-islands/summary.js";
+import { classifyDiagnostic, isIslandReasonCode } from "../node-islands/classify.js";
 import { outsideGraphIslands } from "../node-islands/graph-islands.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
@@ -307,11 +308,14 @@ function islandPackageDir(
   return at !== null && at.name === name ? at.dir : null;
 }
 
-/** The island set grown by the packages the lowering said are not part of
- * its compiled module graph (executable/prepare.ts's loweringIslands, first
- * clause): a package named by an SC2013 refusal runs in a Node island in a
- * build, so the analysis lowers again with it islanded. Null when nothing
- * grows — no named package, auto policy off, or the same set the cap allows. */
+/** The island set grown by the packages the lowering refused to compile
+ * (executable/prepare.ts's loweringIslands, the same two clauses): a package
+ * named by an SC2013 refusal — a use outside the compiled module graph — and
+ * one whose own natively compiled module raised an island-reason refusal both
+ * run in a Node island in a build, so the analysis lowers again with them
+ * islanded instead of reporting their code as this program's refusals. Null
+ * when nothing grows — no such package, auto policy off, or the same set the
+ * cap allows. */
 function grownIslands(
   entryPath: string,
   fe: Frontend,
@@ -322,23 +326,37 @@ function grownIslands(
   if (policy.mode !== "auto") return null;
   const packages = known?.packages ?? new Map<string, IslandPackage>();
   if (packages.size > 16) return null;
+  // A package npm-static compiled is the one a lowering refusal can island;
+  // a refused one was never in the program.
+  const compiled = new Set(fe.npmStatic.filter((e) => e.status === "static").map((e) => e.package));
   let grown: Map<string, IslandPackage> | null = null;
-  for (const d of diagnostics) {
-    if (d.code !== "SC2013") continue;
-    const named = /npm package '([^']+)'/.exec(d.message);
-    if (named === null) continue;
-    const name = named[1]!;
-    if (packages.has(name) || policy.forcedNative.has(name) || policy.unloaded.has(name)) continue;
-    const dir = islandPackageDir(fe, entryPath, name, d.loc.file);
-    if (dir === null) continue;
+  const grow = (name: string, dir: string, islandClass: string, reason: string): void => {
     grown ??= new Map(packages);
     grown.set(name, {
       name,
       version: packageVersionOf(dir),
       dir,
-      class: "packaging",
-      reason: `${d.code}: ${d.message}`,
+      class: islandClass,
+      reason,
     });
+  };
+  for (const d of diagnostics) {
+    const named = d.code === "SC2013" ? /npm package '([^']+)'/.exec(d.message) : null;
+    if (named !== null) {
+      const name = named[1]!;
+      if (packages.has(name) || policy.forcedNative.has(name) || policy.unloaded.has(name))
+        continue;
+      const dir = islandPackageDir(fe, entryPath, name, d.loc.file);
+      if (dir === null) continue;
+      grow(name, dir, "packaging", `${d.code}: ${d.message}`);
+      continue;
+    }
+    if (!isIslandReasonCode(d.code)) continue;
+    const at = packageDirOf(d.loc.file);
+    if (at === null || !compiled.has(at.name) || packages.has(at.name)) continue;
+    if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
+    const reason = classifyDiagnostic(d, "refusal");
+    grow(at.name, at.dir, reason.class, describe(reason));
   }
   if (grown === null) return null;
   return { packages: grown, modules: known?.modules ?? new Map() };

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8710-js-prototype-constructor-identity.js"
+ ],
+ "diags": []
+}

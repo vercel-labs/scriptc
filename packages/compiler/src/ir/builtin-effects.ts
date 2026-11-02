@@ -106,6 +106,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.reflectDefine",
   // The intrinsic fill defines members with define semantics.
   "dyn.intrinsic",
+  // Installing a prototype's constructor seeds the closure's own property
+  // table, which also hands a builtin constructor its static members.
+  "wrapper.installConstructor",
   "dyn.abstractEq",
   "text.decodeOptions",
   "text.decodeStream",

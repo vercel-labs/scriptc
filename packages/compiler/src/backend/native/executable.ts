@@ -258,6 +258,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // A module namespace as the frozen null-prototype object typed code sees.
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
+  // The intrinsic graph's String, Number and Boolean prototypes ARE this
+  // unit's objects (t262-da A2), and the graph reaches them through slots, so
+  // the unit links for the program's own wrapper use alone: a read of
+  // `X.prototype` emits wrapper.installConstructor, which carries the fact.
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
   // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).
   unit((u) => u.opts.iteratorProto === true, "scr_js_iterator.c"),

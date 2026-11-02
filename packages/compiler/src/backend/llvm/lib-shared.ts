@@ -337,6 +337,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "wrapper.isStringMethod": "scr_js_wrapper_is_string_method",
   "wrapper.thisString": "scr_js_wrapper_this_string",
   "wrapper.booleanPrototype": "scr_js_wrapper_boolean_prototype",
+  "wrapper.installConstructor": "scr_js_wrapper_install_constructor",
   "fs.callbackValue": "scr_fs_callback_value",
   "fs.callbackCall": "scr_fs_callback_call",
   "process.hrtimeValue": "scr_process_hrtime_value",

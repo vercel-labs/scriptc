@@ -3980,6 +3980,12 @@ function buildLibFnSignatures() {
      * a Boolean wrapper receiver and throw Node's brand-check TypeError for
      * a foreign one. `constructor` is the compiled Boolean constructor. */
     "wrapper.booleanPrototype": { argTypes: [DYN], result: DYN },
+    /** Installs the program's own `String`/`Number`/`Boolean`/`BigInt`
+     * conversion closure as the `constructor` of the intrinsic prototype
+     * object and seeds the closure's `prototype` with that object, so the
+     * prototype's `constructor` read, its descriptor value and the global
+     * `X` are one value. Returns the prototype object. */
+    "wrapper.installConstructor": { argTypes: [DYN, DYN], result: DYN },
     "fs.callbackValue": { argTypes: [STRING], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },

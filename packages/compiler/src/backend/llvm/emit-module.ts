@@ -7,6 +7,7 @@ import { type ChunkResult, EmitJournal } from "./emit-journal.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { JS_GROUP_WORDS } from "./js-groups.js";
 import { JS_IC_WORDS } from "./js-ic.js";
 import {
   mangleAsyncSpawn,
@@ -965,6 +966,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       );
     for (let site = 0; site < emitter.jsIcSiteCount; site++)
       out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
+    for (let group = 0; group < emitter.jsGroupCount; group++)
+      out.push(
+        `@sc_js_group_${group} = internal ${tl}global [${JS_GROUP_WORDS} x i64] zeroinitializer`,
+      );
+    for (const [name, keys] of emitter.jsGroupKeysTable)
+      out.push(
+        `${name} = internal constant [${keys.length} x ptr] [${keys.map((key) => `ptr ${key}`).join(", ")}]`,
+      );
   }
   if (nodeIslandModulesCall !== null) out.push(...nodeIslandModulesCall.globals);
   for (const table of emitter.constantNumericTables.values()) {

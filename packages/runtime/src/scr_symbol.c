@@ -720,6 +720,17 @@ enum { SCR_DS_M_USE, SCR_DS_M_ADOPT, SCR_DS_M_DEFER, SCR_DS_M_MOVE, SCR_DS_M_DIS
 
 static ScrDisposableStack *scr_ds_alloc(void);
 static ScrDyn *scr_ds_box(ScrDisposableStack *s);
+static void scr_ds_teardown(void);
+
+/* The method-value cache is kept for the lifetime of the program, like the
+ * invoke unit's interned method table; register its teardown once, on
+ * whichever path creates the first member value. */
+static void scr_ds_arm_methods(void) {
+  static SCR_TL bool armed;
+  if (armed) return;
+  armed = true;
+  scr_atexit(scr_ds_teardown);
+}
 
 static ScrDyn *scr_ds_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   unsigned index = (unsigned)scr_box_get_f64(clo->caps[0]);
@@ -765,6 +776,7 @@ static ScrDyn *scr_ds_method_call(ScrClosure *clo, ScrDyn *const *args, size_t a
 /* The function value of method `index` (+1), cached per thread. */
 static ScrDyn *scr_ds_method_value(unsigned index) {
   if (!scr_ds_method_values[index]) {
+    scr_ds_arm_methods();
     ScrClosure *clo = scr_closure_new(NULL, 1);
     clo->caps[0] = scr_box_new(SCR_BOX_F64);
     scr_box_set_f64(clo->caps[0], (double)index);
@@ -774,14 +786,21 @@ static ScrDyn *scr_ds_method_value(unsigned index) {
   return scr_dyn_retain(scr_ds_method_values[index]);
 }
 
-static ScrDyn *scr_ds_get(void *ptr, const char *key, size_t len) {
-  ScrDisposableStack *s = ptr;
-  if (len == 8 && memcmp(key, "disposed", 8) == 0) return scr_dyn_new_bool(s->disposed);
+/* The function value a DisposableStack answers for the method named `key`
+ * (+1), or NULL — the value DisposableStack.prototype holds as its member, so
+ * a member read off a stack and off the prototype are one function. */
+ScrDyn *scr_disposable_stack_member_value(const char *key, size_t len) {
   for (unsigned i = 0; i < SCR_DS_M_DISPOSED; i++) {
     if (strlen(scr_ds_method_names[i]) == len && memcmp(key, scr_ds_method_names[i], len) == 0)
       return scr_ds_method_value(i);
   }
   return NULL;
+}
+
+static ScrDyn *scr_ds_get(void *ptr, const char *key, size_t len) {
+  ScrDisposableStack *s = ptr;
+  if (len == 8 && memcmp(key, "disposed", 8) == 0) return scr_dyn_new_bool(s->disposed);
+  return scr_disposable_stack_member_value(key, len);
 }
 
 static bool scr_ds_set(void *ptr, const char *key, size_t len, const ScrDyn *value) {
@@ -833,7 +852,7 @@ static ScrDisposableStack *scr_ds_alloc(void) {
   if (!installed) {
     installed = true;
     scr_dyn_handle_install(SCR_DYNH_DISPOSABLE_STACK, &scr_ds_ops);
-    scr_atexit(scr_ds_teardown);
+    scr_ds_arm_methods();
   }
   static ScrCycType cyc_type = {&scr_ds_trace, &scr_ds_gcfree, SCR_CYC_KIND_NONE, 0};
   ScrDisposableStack *s = scr_cyc_alloc(sizeof *s, &cyc_type);

@@ -15,7 +15,10 @@
  * Every member is the value the runtime already has for it: a prototype
  * method is the invoke unit's interned builtin-method function
  * (scr_dyn_builtin_method), so `Date.prototype.getTime` and the `getTime` a
- * Date value answers are one function; a constructor is the interned
+ * Date value answers are one function, and a class whose instances answer
+ * their methods from a private table (a Date, the DisposableStack in
+ * scr_symbol.c) defines its prototype's member with that same value
+ * (scr_js_native_member_value); a constructor is the interned
  * constructor value a source reading `Date` answers (scr_dyn_global_constructor),
  * so `Date.prototype.constructor === Date`. Members the runtime has no
  * implementation for are fenced functions that throw when called; they are
@@ -627,6 +630,20 @@ static ScrDyn *scr_js_wrapper_member(ScrDyn *callee, const ScrStr *owner, const 
   return scr_dyn_new_func(closure, scr_js_wrapper_member_call, 0, "native:prototype", method->data);
 }
 
+/* The member value a builtin's own unit answers for `key` (+1), or NULL.
+ * A class whose instances answer their methods from a private table — a Date
+ * (scr_lib.c), whose method functions run the Date receiver checks, and the
+ * DisposableStack (scr_symbol.c), whose carry the interface's own brand
+ * errors — defines its prototype's member with that same value, so a member
+ * read off an instance and off the prototype are one function (the language's
+ * identity: `stack.use === DisposableStack.prototype.use`). */
+static ScrDyn *scr_js_native_member_value(const char *owner, const char *key, size_t key_len) {
+  ScrDyn *native = scr_native_builtin_member_value(owner, key, key_len);
+  if (native) return native;
+  if (strcmp(owner, "DisposableStack") == 0) return scr_disposable_stack_member_value(key, key_len);
+  return NULL;
+}
+
 /* The value of one member row, or NULL when the row defines nothing
  * (a constructor's `prototype`, which seeds the pair instead). */
 static ScrDyn *scr_js_member_value(size_t index, const ScrJsIntrinsicRow *row) {
@@ -644,8 +661,15 @@ static ScrDyn *scr_js_member_value(size_t index, const ScrJsIntrinsicRow *row) {
       char owner[96];
       scr_js_method_owner(row->owner, owner, sizeof owner);
       size_t method_length = scr_js_member_name_length(row->a);
+      ScrDyn *native = scr_js_native_member_value(owner, row->a, method_length);
+      if (native) {
+        scr_js_define_length(native, scr_js_member_length(row->a));
+        return native;
+      }
       ScrStr *prototype = scr_str_new(owner, strlen(owner));
       ScrStr *method = scr_str_new(row->a, method_length);
+      /* The wrapper owners' members are the invoke unit's, wrapped to run on
+       * the primitive the prototype wraps. */
       ScrDyn *value = scr_dyn_builtin_method(prototype, method);
       if (scr_js_wrapper_owner(owner)) value = scr_js_wrapper_member(value, prototype, method);
       scr_str_release(method);

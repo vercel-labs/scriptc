@@ -1063,6 +1063,11 @@ bool scr_dyn_native_url_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
 bool scr_dyn_native_search_params_is(const ScrDyn *value);
 bool scr_dyn_native_date_is(const ScrDyn *value);
+/* The member value the builtin named `prototype` answers for `key` (+1) from
+ * its own unit, or NULL: the value that builtin's prototype holds as its
+ * member too, so a member read off an instance and off the prototype are one
+ * function (scr_native_builtin_member_value, scr_lib.c). */
+ScrDyn *scr_native_builtin_member_value(const char *prototype, const char *key, size_t key_len);
 /* Instances of program classes declared `extends Date` (scr_lib.c). */
 void scr_date_class_operation_install(ScrDyn *time, ScrDyn *methods);
 /* Set by scr_date_class_operation_install; NULL in a program without such
@@ -1148,6 +1153,11 @@ ScrDyn *scr_dyn_using_dispose(const ScrDyn *method, const ScrDyn *value);
  * class instance, whose dyn view has no methods. The stack's other members
  * are function values and getters of its dyn handle. */
 ScrDyn *scr_disposable_stack_new(void);
+/* The member value a DisposableStack answers for the method named `key` (+1),
+ * or NULL: the value DisposableStack.prototype holds as its member, so a
+ * member read off a stack and off the prototype are one function
+ * (scr_symbol.c). */
+ScrDyn *scr_disposable_stack_member_value(const char *key, size_t len);
 bool scr_disposable_stack_is(const ScrDyn *value);
 bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
@@ -1181,6 +1191,12 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+#ifdef SCR_JS_OBJECT_MODEL
+/* That table as the object model build reaches it: this unit installs the
+ * hook when a program links both builds, and scr_json.c keeps its named
+ * refusal where it is NULL. */
+extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
+#endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
@@ -1421,10 +1437,21 @@ typedef struct {
   const char *key;
   size_t key_len;
   const size_t *offsets;
+  /* The source record's declared names in declaration order, as strided
+   * tables: what a partial view needs to keep the properties a write adds
+   * to a field the source does not declare. */
+  const char *names;
+  const char *lens;
+  size_t name_stride, len_stride, count;
 } ScrRecordViewSource;
 /* The slot of field `position` of a view, or NULL for a field the viewed
  * record does not declare (a partial record view, record-views.ts). */
 void *scr_record_view_slot(void *view, size_t position);
+/* A partial view's field the viewed record does not declare: the property
+ * a write added for it (borrowed), or NULL. */
+ScrDyn *scr_record_view_extra(void *view, const char *name, size_t name_len);
+/* Adds or replaces that property; consumes one reference. */
+void scr_record_view_extra_set(void *view, const char *name, size_t name_len, ScrDyn *value);
 void *scr_record_view_field(void *value, size_t offset, size_t position);
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
                           const char *key, size_t key_len, void *(*alloc)(void));
@@ -1729,6 +1756,15 @@ void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol);
  * object answers it; its symbol-keyed properties are the global object's
  * (scr_node_builtin.c). */
 ScrDyn *scr_global_object(void);
+/* The Node globals the native runtime does not implement (host-globals.ts):
+ * the compiler hands over its derived name table (idempotent, first install
+ * stands), and the dynamic global object's read and `in` answers throw Node's
+ * TypeError for exactly those names (scr_global_host_absent.c). */
+void scr_global_host_absent_install(ScrArr *names);
+/* True when the name is one of them — the error is pending in that case. */
+bool scr_global_host_absent_check(const char *key, size_t length);
+/* `key in <global object>`: the check above, then the global object's answer. */
+bool scr_global_host_absent_has(ScrStr *key);
 /* The program's builtin-global lookup, a dyn function (borrowed); the first
  * installation stands. */
 void scr_global_values_install(ScrDyn *lookup);

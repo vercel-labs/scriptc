@@ -4848,20 +4848,12 @@ function readOnlyAccess(access: ts.PropertyAccessExpression): boolean {
   );
 }
 
-/** The receiver a member WRITE addresses through a type assertion:
- * `(p as View).x = v`. Node erases a type assertion, so the write lands on
- * the very object the operand names; the asserted view's conversion may
- * instead build a fresh width record (`%rec.width`), and a write into that
- * temporary is dropped. Address the unasserted value when its stored layout
- * already holds the member at the asserted type — the erased write of Node.
- * A view that ADDS a member has no slot to write, so it keeps the
- * assertion's conversion. Null when the receiver is not an assertion. */
-function assertedWriteReceiver(
-  lowerer: Lowerer,
-  access: ts.PropertyAccessExpression,
-  fieldType: IrType,
-  assertedType: IrType & { kind: "record" },
-): IrExpr | null {
+/** The operand a member WRITE addresses through a chain of type assertions:
+ * `(p as View).x = v` names `p`. Node erases a type assertion, so a write
+ * mutates the very object the operand names; the assertion only decides what
+ * the checker accepts. Null when no `as`/`<T>` wraps the receiver (a write
+ * there keeps the ordinary lowering). */
+function assertionOperand(access: ts.PropertyAccessExpression): ts.Expression | null {
   let node: ts.Expression = access.expression;
   let asserted = false;
   for (;;) {
@@ -4876,23 +4868,40 @@ function assertedWriteReceiver(
     }
     break;
   }
-  if (!asserted) return null;
-  const staticType = lowerer.mapTypeOf(lowerer.typeOf(node));
-  if (staticType?.kind !== "record") return null;
-  const staticField = lowerer.shapes
-    .get(staticType.shapeId)
-    ?.fields.find((f) => f.name === access.name.text);
-  if (!staticField || !typeEquals(staticField.type, fieldType)) return null;
-  const obj = lowerer.lowerExpr(node);
-  if (obj.type.kind === "record") {
-    const actualField = lowerer.shapes
-      .get(obj.type.shapeId)
-      ?.fields.find((f) => f.name === access.name.text);
-    if (actualField && typeEquals(actualField.type, fieldType)) return obj;
+  return asserted ? node : null;
+}
+
+/** The unasserted value a member write addresses, when its OWN stored
+ * layout holds the member at the asserted type — the erased write of Node.
+ * The asserted view's conversion may instead build a fresh width record
+ * (`%rec.width`), and a write into that temporary is dropped, so a view
+ * that adds a member to a record has nothing to write and the caller
+ * refuses. Only a RECORD operand converts like that: a dyn value's cast is
+ * a checked, identity-preserving view (`dyn-literal-identity.ts`), and the
+ * ordinary lowering already writes through it. The static type decides, so
+ * the operand is lowered exactly once even when it has side effects. */
+function assertedWrite(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  operand: ts.Expression,
+  fieldType: IrType,
+  assertedType: IrType & { kind: "record" },
+): { receiver: IrExpr | null; refuse: boolean } {
+  if (lowerer.mapTypeOf(lowerer.typeOf(operand))?.kind !== "record") {
+    return { receiver: null, refuse: false };
   }
-  // The value's own layout differs from the checker's view (a generic
-  // body, an aliased layout): keep the assertion's conversion.
-  return lowerer.coerceInto(access.expression, obj, assertedType);
+  const value = lowerer.lowerExpr(operand);
+  if (value.type.kind === "record") {
+    const field = lowerer.shapes
+      .get(value.type.shapeId)
+      ?.fields.find((f) => f.name === access.name.text);
+    return field && typeEquals(field.type, fieldType)
+      ? { receiver: value, refuse: false }
+      : { receiver: null, refuse: true };
+  }
+  // The value stayed non-record (a generic body, an aliased layout): keep
+  // the assertion's conversion over the value already lowered.
+  return { receiver: lowerer.coerceInto(access.expression, value, assertedType), refuse: false };
 }
 
 export function fieldTarget(
@@ -5093,10 +5102,12 @@ export function fieldTarget(
     const shape = lowerer.shapes.get(receiverIr.shapeId);
     const fieldType = shape?.fields.find((f) => f.name === access.name.text)?.type;
     if (fieldType) {
-      const writeReceiver = readOnlyAccess(access)
-        ? null
-        : assertedWriteReceiver(lowerer, access, fieldType, receiverIr);
-      let obj = writeReceiver ?? lowerer.lowerExpr(access.expression);
+      const writeOperand = readOnlyAccess(access) ? null : assertionOperand(access);
+      const write =
+        writeOperand === null
+          ? null
+          : assertedWrite(lowerer, access, writeOperand, fieldType, receiverIr);
+      let obj = write?.receiver ?? lowerer.lowerExpr(access.expression);
       const nominal = representedClassFieldTarget(
         lowerer,
         access.expression,
@@ -5139,6 +5150,17 @@ export function fieldTarget(
             : lowerer.maybeNarrow(obj, access.expression));
       }
       if (obj.type.kind !== "record") return null;
+      // A write through a type assertion that the value's own layout cannot
+      // host would land on the assertion's converted copy (`%rec.width.<id>`)
+      // and be dropped. Node erases the assertion and mutates the object the
+      // operand names, so refuse rather than diverge silently.
+      if (write?.refuse === true) {
+        lowerer.unsupported(
+          "SC1090",
+          access,
+          `writing '${access.name.text}' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type)`,
+        );
+      }
       const actualShape = lowerer.shapes.get(obj.type.shapeId);
       const actualField = actualShape?.fields.find((f) => f.name === access.name.text);
       return {

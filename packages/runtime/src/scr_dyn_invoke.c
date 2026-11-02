@@ -1967,7 +1967,19 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
   return result;
 }
 
+/* The member value a builtin that answers its instances' member values from
+ * its own unit also answers the prototype's, or NULL. Date (scr_lib.c) is the
+ * one such builtin: its methods run the Date receiver checks, so
+ * `Date.prototype.getTime` must be the very function `date.getTime` is, not a
+ * second function of the same name. The value carries its own declared
+ * `length` from the unit that builds it. */
+static ScrDyn *scr_dyn_invoke_native_member(const ScrStr *prototype, const ScrStr *method) {
+  return scr_native_builtin_member_value(prototype->data, method->data, method->len);
+}
+
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
+  ScrDyn *native = scr_dyn_invoke_native_member(prototype, method);
+  if (native) return native;
   if (!dyn_builtin_methods) {
     dyn_builtin_methods = scr_dyn_new_obj_null_proto();
     scr_atexit(dyn_builtin_methods_cleanup);
@@ -2193,6 +2205,13 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
 }
 
 #ifdef SCR_JS_OBJECT_MODEL
+/* The object model build answers a DataView's `constructor` through this hook
+ * (scr_json.c). A program that never reads a global constructor as a value
+ * does not link this unit, and the read keeps its named refusal there. */
+__attribute__((constructor)) static void dyn_global_constructor_hook_install(void) {
+  scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
+}
+
 /* Whether scr_dyn_global_constructor answers a value for `name` (it traps on
  * the names it does not intern). The intrinsics unit builds every constructor
  * as the same value a JavaScript source reads, and creates a fenced function

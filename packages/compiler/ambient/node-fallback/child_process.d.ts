@@ -1,3 +1,5 @@
+/// <reference path="./stream.d.ts" />
+
 /* node:child_process — the synchronous slice: spawnSync(command, args?)
  * runs the child to completion (posix_spawn + waitpid) with stdout/stderr
  * captured as utf8 strings. `status` is the exit code, or null when the
@@ -7,6 +9,8 @@
  * `code` stamped, or ETIMEDOUT after a timeout kill) and both outputs are
  * "" where Node types them null (SEMANTICS.md). */
 declare module "child_process" {
+  import type { Readable, Writable } from "stream";
+
   export interface SpawnSyncReturns {
     readonly status: number | null;
     readonly stdout: string;
@@ -96,18 +100,19 @@ declare module "child_process" {
    * loop quiescence (SEMANTICS.md documents the divergence). An "error"
    * event with no registered listener prints the error and exits 1,
    * exactly the unhandled-'error' EventEmitter behavior. */
-  export interface ChildStdin {
-    readonly writable: boolean;
-    write(chunk: string | Uint8Array): boolean;
-    end(): void;
-    destroy(): void;
-    on(event: "drain" | "finish", listener: () => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    on(event: string, listener: (...args: any[]) => void): void;
-    once(event: "drain" | "finish", listener: () => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
-    once(event: string, listener: (...args: any[]) => void): void;
-  }
+  /* The piped child stdin is the node:stream Writable Node's typings give
+   * it, so it flows into any Writable slot and back. Members the direct
+   * handle does not lower (the underscored hooks, cork, an encoding, a
+   * third argument) typecheck and need the general stream
+   * representation. */
+  export interface ChildStdin extends Writable {}
+
+  /* The piped child output is the node:stream Readable Node's typings
+   * give it. The direct handle delivers one chunk per pipe read (a
+   * Buffer, or a string after setEncoding); the rest of the Readable
+   * surface typechecks and needs the general stream representation to
+   * lower. */
+  export interface ChildStdout extends Readable {}
 
   export interface ChildProcess extends Disposable {
     ref(): void;
@@ -164,10 +169,11 @@ declare module "child_process" {
     disconnect(): void;
     [Symbol.dispose](): void;
     /* The piped streams — non-null exactly when the matching stdio slot
-     * was "pipe" (Node's shape). */
+     * was "pipe" (Node's shape; the node:stream classes, narrowed to the
+     * members the direct handles deliver). */
     readonly stdin: ChildStdin | null;
-    readonly stdout: NodeJS.ReadableStream | null;
-    readonly stderr: NodeJS.ReadableStream | null;
+    readonly stdout: ChildStdout | null;
+    readonly stderr: ChildStdout | null;
   }
   export interface SpawnOptions {
     /* The 3-tuple form admits number fds in the stdout/stderr slots —

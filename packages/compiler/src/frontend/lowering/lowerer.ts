@@ -2254,6 +2254,10 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
  * property reads (`process.cwd`), or the binding an anonymous definition
  * initializes. Null when the source does not determine it. */
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
+  // Typed source cannot read a function's `name` (SC2020), so the names below
+  // are unobservable there; keeping them JavaScript-only leaves every typed
+  // program's output byte-identical.
+  const js = isJsSourceFile(ts.getSourceFileOfNode(node));
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
   const seen = new Set<ts.Symbol>();
@@ -2265,6 +2269,25 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     if (declaration && ts.isFunctionDeclaration(declaration)) {
       n = declaration;
       break;
+    }
+    // A binding element or a parameter holds the value its default produced
+    // only when the destructured value was undefined; otherwise it holds the
+    // source's value. The default named its own definition when it created it
+    // (`const [f = function () {}] = []` is "f"), so an anonymous definition
+    // here answers null for the runtime name rather than a spelling that the
+    // source's value would not have; `const [x = fn] = []` follows `fn`.
+    // Without a default the spelling is wrong for every value the binding can
+    // hold, but that shape has no pattern-default signature and is a separate
+    // change; it keeps the previous answer here.
+    if (js && declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
+      const initializer = declaration.initializer;
+      if (!initializer) break;
+      if (!ts.isIdentifier(declaration.name)) return null;
+      let bound: ts.Node = initializer;
+      while (ts.isParenthesizedExpression(bound)) bound = bound.expression;
+      if (isAnonymousCallableDefinition(bound)) return null;
+      n = bound;
+      continue;
     }
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
     let value: ts.Node = declaration.initializer;
@@ -2304,6 +2327,36 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
+    }
+    // A default parameter names it (`function f(a = function () {})`), as
+    // does an object-assignment shorthand (`({ a = function () {} } = o)`)
+    // and a plain identifier assignment (`a = function () {}`). A member
+    // target never names one: only an identifier reference does.
+    if (js && p && ts.isParameter(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
+      return p.name.text;
+    }
+    if (
+      js &&
+      p &&
+      ts.isShorthandPropertyAssignment(p) &&
+      p.objectAssignmentInitializer === outer &&
+      ts.isIdentifier(p.name)
+    ) {
+      return p.name.text;
+    }
+    if (
+      js &&
+      p &&
+      ts.isBinaryExpression(p) &&
+      p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      p.right === outer &&
+      ts.isIdentifier(p.left) &&
+      // The native parser folds a parenthesized target into the target itself
+      // (`(a) = f`), leaving the source's `(` as a gap in front of it. A
+      // parenthesized target is not an IdentifierReference and names nothing.
+      p.getStart() === p.left.getStart()
+    ) {
+      return p.left.text;
     }
   }
   return null;

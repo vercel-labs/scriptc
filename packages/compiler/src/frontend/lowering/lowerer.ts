@@ -1068,6 +1068,17 @@ export interface LowerOptions {
    * `preflight` holds the import and package refusals coverage reports
    * beside the lowering's own blockers; they request module demotions. */
   tierReport?: { preflight: readonly ScrDiagnostic[] };
+  /** Prepared island rounds (`executable/prepare.ts`): the predicate decides
+   * a retry with more islands from a failing pass's own result, so when its
+   * failure already implies one the lowering ends there. The whole-slot and
+   * stream relowers exist to pick the pass a program's failure is reported
+   * from, and a round that retries discards them (D-R, "only decide once").
+   * Asked after the push-down pass, or, for a program that needs the
+   * general stream representation, after the stream pass in push-down mode
+   * instead (decision D1 b): that pass can compile a program whose
+   * push-down pass failed, so it is the one whose diagnostics decide.
+   * Absent for every other build, which keeps the full pipeline. */
+  stopAfterPushDown?: ((result: LowerResult) => boolean) | undefined;
 }
 
 interface RuntimeFenceFallback {
@@ -1422,40 +1433,6 @@ function lowerToIrWithIslands(
   let result = emitted.result;
   let resultLowerer = reachableEmit;
   timing("reachable-emit", { reachable: reachable.size });
-  // Localized failure (stage L3): push-down must never cost a failing
-  // program more errors than the whole-slot checked dynamic. A pushed-down
-  // type is baked into the globals, fields and signatures that hold it, so
-  // when the program still fails, the emit runs once more with every
-  // degraded type held whole, and the pass with fewer errors wins (ties
-  // keep push-down). A program that compiles never takes this path.
-  if (result.diagnostics.length > 0 && reachableEmit.hasPartialDegradedTypes()) {
-    const whole = new Lowerer(program, entry, moduleOrder, {
-      frontendServices: options.frontendServices,
-      projectCheckJs: options.projectCheckJs ?? false,
-      targetPlatform,
-      startupCrash,
-      inlineRequireCycleCalls,
-      ffiImports,
-      libraryCallbacks,
-      forkTargets,
-      workerTargets,
-      externalTypes,
-      externalTypeSpecifiersByFile,
-      tierMode,
-      runtimeOptionalReport,
-      ffiBindingSymbols: ffiValidation.symbolsByName,
-      wholeSlotDegradation: true,
-    });
-    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
-    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
-    const wholeEmitted = whole.emitReachable(options.libRoots);
-    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
-      reachable = wholeEmitted.reachable;
-      result = wholeEmitted.result;
-      resultLowerer = whole;
-    }
-    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
-  }
   // The general stream representation (TypeMapperCtx.generalNodeStreams)
   // is a per-program decision: only a program whose reachable code moved
   // a general stream into a stdio-represented stream slot lowers again
@@ -1495,11 +1472,119 @@ function lowerToIrWithIslands(
     timing(dyn ? "dyn-streams-relower" : "general-streams-relower", { reachable: reachable.size });
     return general;
   };
+  // Prepared island rounds only (LowerOptions.stopAfterPushDown): a round
+  // whose failing pass already implies a retry with more islands would
+  // discard the passes below along with their diagnostics, so the caller's
+  // predicate decides the retry from that pass's result and the rest of the
+  // pipeline is skipped. A round that compiles, or whose pass implies no
+  // retry, runs the full pipeline as before and reports from the pass that
+  // wins.
+  //
+  // A program whose push-down pass needs the general stream representation
+  // is lowered again with it below, and that pass can compile a program
+  // whose push-down pass failed: deciding from the push-down pass alone
+  // would island packages from diagnostics the final pass never reports (a
+  // program that compiled then refuses with SC8020). Such a program decides
+  // from the stream pass in push-down mode instead (decision D1 b), and the
+  // pipeline reuses that pass when push-down wins the whole-slot comparison.
+  let decidedStream: {
+    reachable: Set<string>;
+    result: LowerResult;
+    lowerer: Lowerer;
+    dyn: boolean;
+  } | null = null;
+  if (result.module === null && options.stopAfterPushDown !== undefined) {
+    const stop = options.stopAfterPushDown;
+    if (!generalNodeStreams) {
+      // The predicate reads the result as lowerToIr returns it: module-init
+      // fences carry their mark (lowerToIr marks them again, unchanged).
+      markModuleInitFences(program, result.runtimeFences);
+      if (stop(result)) {
+        timing("stop-after-push-down");
+        return result;
+      }
+    } else {
+      const pushDownReachable = reachable;
+      const pushDownResult = result;
+      const pushDownLowerer = resultLowerer;
+      let dyn = dynNodeStreams;
+      let general = streamPass(dyn);
+      if (!dyn && general.requiresDynNodeStreams) {
+        dyn = true;
+        general = streamPass(true);
+      }
+      // A stream pass that compiles decides nothing: the round does not
+      // retry, and the pipeline below keeps the program (a decision from
+      // the push-down pass's diagnostics would island packages the final
+      // pass never reports, so a compiling program could refuse with
+      // SC8020).
+      if (result.module === null) {
+        // The predicate reads the result as lowerToIr returns it: module-init
+        // fences carry their mark (lowerToIr marks them again, unchanged).
+        markModuleInitFences(program, result.runtimeFences);
+        if (stop(result)) {
+          timing("stop-after-push-down");
+          return result;
+        }
+      }
+      // Push-down is the representation the stream pass above used, so the
+      // pipeline reuses it whenever push-down wins the whole-slot comparison.
+      decidedStream = { reachable, result, lowerer: resultLowerer, dyn };
+      reachable = pushDownReachable;
+      result = pushDownResult;
+      resultLowerer = pushDownLowerer;
+    }
+  }
+  // Localized failure (stage L3): push-down must never cost a failing
+  // program more errors than the whole-slot checked dynamic. A pushed-down
+  // type is baked into the globals, fields and signatures that hold it, so
+  // when the program still fails, the emit runs once more with every
+  // degraded type held whole, and the pass with fewer errors wins (ties
+  // keep push-down). A program that compiles never takes this path.
+  if (result.diagnostics.length > 0 && reachableEmit.hasPartialDegradedTypes()) {
+    const whole = new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      targetPlatform,
+      startupCrash,
+      inlineRequireCycleCalls,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      runtimeOptionalReport,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      wholeSlotDegradation: true,
+    });
+    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
+    const wholeEmitted = whole.emitReachable(options.libRoots);
+    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
+      reachable = wholeEmitted.reachable;
+      result = wholeEmitted.result;
+      resultLowerer = whole;
+    }
+    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
+  }
   if (generalNodeStreams) {
-    const general = streamPass(dynNodeStreams);
-    if (!dynNodeStreams && general.requiresDynNodeStreams) {
-      dynNodeStreams = true;
-      streamPass(true);
+    if (decidedStream !== null && resultLowerer === reachableEmit) {
+      // Push-down won (the whole-slot pass ran no better, or did not run):
+      // the stream pass the retry decision above ran is the pass this
+      // pipeline would run, so it is reused instead of lowered again.
+      reachable = decidedStream.reachable;
+      result = decidedStream.result;
+      resultLowerer = decidedStream.lowerer;
+      dynNodeStreams = decidedStream.dyn;
+      timing("stream-relower-reused", { reachable: reachable.size });
+    } else {
+      const general = streamPass(dynNodeStreams);
+      if (!dynNodeStreams && general.requiresDynNodeStreams) {
+        dynNodeStreams = true;
+        streamPass(true);
+      }
     }
   }
   // A generic class-rest support decision can depend on record metadata

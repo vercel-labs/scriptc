@@ -3271,12 +3271,10 @@ export function lowerEventsEmitterHelper(
         type: DYN,
         loc,
       };
-      return {
-        kind: "dynCheck",
-        value: listeners,
-        type: arrayOf({ kind: "func", params: [], ret: { kind: "void" } }),
-        loc,
-      };
+      // Node returns the listeners as registered, so a listener object with
+      // handleEvent comes back as itself; typed reads of the array convert
+      // each element where it is used.
+      return { kind: "dynCheck", value: listeners, type: arrayOf(DYN), loc };
     }
     // emitter.listeners(name): the event's listener array, typed by the
     // event's unified tuple (the instance method's rules).

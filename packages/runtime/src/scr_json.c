@@ -7503,6 +7503,8 @@ static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 
 /* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
 SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
+/* BroadcastChannel's listener core lookup (scr_worker_events_install). */
+SCR_TL ScrEventTargetCore *(*scr_et_broadcast_core_fn)(const ScrDyn *d) = NULL;
 
 void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops) {
   scr_dynh_ops[tag] = ops;

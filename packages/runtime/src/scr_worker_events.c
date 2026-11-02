@@ -929,6 +929,16 @@ static void scr_worker_events_cleanup(void) {
 static void scr_port_ops_install(void);
 static bool scr_worker_events_install(void);
 
+/* The node:events helpers read a BroadcastChannel's listeners through its
+ * EventTarget core (scr_et_core_of). */
+static ScrEventTargetCore *scr_broadcast_core_of(const ScrDyn *value) {
+  if (!value || value->kind != SCR_DYN_HANDLE ||
+      value->v.handle.tag != SCR_DYNH_BROADCAST_CHANNEL)
+    return NULL;
+  ScrWorkerView *view = value->v.handle.ptr;
+  return view->broadcast ? view->et : NULL;
+}
+
 static void scr_worker_stdin_attach(void) { (void)scr_worker_events_install(); }
 
 static bool scr_worker_events_install(void) {
@@ -936,6 +946,7 @@ static bool scr_worker_events_install(void) {
   ScrMailbox *inbox = scr_worker_inbox();
   scr_worker_events = inbox ? scr_mailbox_retain(inbox) : scr_mailbox_new();
   if (!scr_worker_events) return false;
+  scr_et_broadcast_core_fn = scr_broadcast_core_of;
   if (inbox && !scr_worker_port) scr_worker_port = scr_worker_view_new(true);
   static const ScrDynHandleOps worker_ops = {
     .cls = "Worker", .retain = scr_worker_view_retain, .release = scr_worker_view_release,

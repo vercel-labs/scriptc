@@ -71,6 +71,21 @@ emitter.on("foo", first);
 emitter.on("foo", second);
 report("emitter", getEventListeners(emitter, "foo"), first, second);
 
+// A listener registered as an object with handleEvent comes back as the
+// object itself and still receives the dispatch.
+const objectTarget = new EventTarget();
+const handler = {
+  handleEvent(event: Event) {
+    console.log("handled", event.type);
+  },
+};
+objectTarget.addEventListener("x", handler);
+const objects = getEventListeners(objectTarget, "x");
+console.log("object", objects.length, objects[0] === handler, typeof objects[0]);
+objectTarget.dispatchEvent(new Event("x"));
+objectTarget.removeEventListener("x", handler);
+console.log("object removed", getEventListeners(objectTarget, "x").length);
+
 function attempt(label: string, value: unknown) {
   try {
     getEventListeners(value as EventTarget, "foo");

@@ -1014,13 +1014,18 @@ static bool scr_et_target_method(ScrEventTargetCore *core, ScrDyn *self, const c
 static ScrDyn *scr_event_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
                                 size_t argc, const char *what);
 
-/* The listener core of an EventTarget value: a plain target, an
- * AbortSignal, or a subclass instance; NULL for anything else. */
+/* The listener core of an EventTarget value: a plain target, a
+ * BroadcastChannel, an AbortSignal, or a subclass instance; NULL for
+ * anything else. */
 static ScrEventTargetCore *scr_et_core_of(const ScrDyn *d) {
   ScrEventTargetObj *obj = scr_event_target_obj_of(d);
   if (obj) return obj->core;
   if (d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_EVENT_TARGET)
     return &((ScrEventTarget *)d->v.handle.ptr)->core;
+  if (scr_et_broadcast_core_fn) {
+    ScrEventTargetCore *broadcast = scr_et_broadcast_core_fn(d);
+    if (broadcast) return broadcast;
+  }
   bool aborted;
   return scr_et_signal_core_fn ? scr_et_signal_core_fn(d, &aborted) : NULL;
 }

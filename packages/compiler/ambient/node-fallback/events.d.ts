@@ -60,10 +60,19 @@ declare module "events" {
       n?: number,
       ...eventTargets: Array<EventEmitter | EventTarget>
     ): void;
+    /* An EventEmitter's listeners are functions, so their array is
+     * statically consumable. An EventTarget's listeners come back as
+     * registered (Node's `Function[]`): a listener object with
+     * handleEvent is itself, not a function, so that array's elements
+     * stay checked-dynamic. */
+    export function getEventListeners(
+      emitter: EventEmitter,
+      name: string | symbol,
+    ): Array<() => void>;
     export function getEventListeners(
       emitterOrTarget: EventEmitter | EventTarget,
       name: string | symbol,
-    ): Array<() => void>;
+    ): Array<any>;
   }
   export = EventEmitter;
 }

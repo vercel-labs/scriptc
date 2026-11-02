@@ -128,6 +128,9 @@ typedef struct {
 } ScrEtBroadcastOps;
 extern SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops;
 void scr_et_broadcast_install(void);
+/* A BroadcastChannel handle's listener core, or NULL for any other value;
+ * installed by the worker events unit (defined in scr_json.c). */
+extern SCR_TL ScrEventTargetCore *(*scr_et_broadcast_core_fn)(const ScrDyn *d);
 
 /* util.aborted(signal, resource): +1 dyn promise; argument errors reject it. */
 ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource);

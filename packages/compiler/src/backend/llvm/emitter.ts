@@ -7,6 +7,7 @@ import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsImmediates, jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
+import type { JsGroup, JsGroupPlan } from "../../ir/js-groups.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
@@ -1800,6 +1801,18 @@ export class LlEmitter {
    * zero-initialized ScrJsIc per site (scr_js.h). */
   jsIcSiteCount = 0;
   private jsIcSitesMemo: JsIcSites | undefined;
+  /** Guard-group records of dynamic-tier functions (js-groups.ts): one
+   * zero-initialized ScrJsGroup per group, and the key arrays the probes
+   * read (scr_js.h). */
+  jsGroupCount = 0;
+  private jsGroupKeysCount = 0;
+  private readonly jsGroupKeysByName = new Map<string, readonly string[]>();
+  private readonly jsGroupKeysByText = new Map<string, string>();
+  /** The guard of each group the function being emitted has entered: the
+   * entry value, and the position of the member that comes next. */
+  readonly groupRuns = new Map<JsGroup, { entry: string; next: number }>();
+  /** The guard groups of the function being emitted (ir/js-groups.ts). */
+  jsGroupPlan: JsGroupPlan | null = null;
   /** The tier of the function being emitted. */
   currentTier: IrFunction["tier"] = undefined;
   /** The class graph (buildClassGraph): preorder numbering, hierarchy
@@ -8421,6 +8434,31 @@ export class LlEmitter {
     return name;
   }
 
+  /** A fresh guard-group record (js-groups.ts). */
+  jsGroup(): string {
+    const name = `@sc_js_group_${this.jsGroupCount++}`;
+    this.journal?.site(name, "jsGroup");
+    return name;
+  }
+
+  /** The constant key array `keys` (string literal symbols) that a group's
+   * probe reads, shared by every group with the same keys. */
+  jsGroupKeys(keys: readonly string[]): string {
+    const text = keys.join("\u0000");
+    let name = this.jsGroupKeysByText.get(text);
+    if (name !== undefined) return name;
+    name = `@sc_gkeys_${this.jsGroupKeysCount++}`;
+    this.jsGroupKeysByText.set(text, name);
+    this.jsGroupKeysByName.set(name, keys);
+    this.journal?.site(name, "jsGroupKeys", [keys]);
+    return name;
+  }
+
+  /** The key array of each of this module's guard groups, by name. */
+  get jsGroupKeysTable(): ReadonlyMap<string, readonly string[]> {
+    return this.jsGroupKeysByName;
+  }
+
   /** A fresh read-site cache for one constant-key dyn read. */
   dynReadIcSite(): string {
     const name = `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
@@ -8926,6 +8964,8 @@ function addNumberedSymbol<V extends { sym: string }>(
 }
 
 registerReplay("jsIcSite", (emitter) => emitter.jsIcSite());
+registerReplay("jsGroup", (emitter) => emitter.jsGroup());
+registerReplay("jsGroupKeys", (emitter, args) => emitter.jsGroupKeys(args[0] as string[]));
 registerReplay("dynReadIcSite", (emitter) => emitter.dynReadIcSite());
 registerReplay("speculativeLoopSite", (emitter) => emitter.speculativeLoopSite());
 for (const op of [

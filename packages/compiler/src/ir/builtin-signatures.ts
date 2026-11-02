@@ -3914,6 +3914,14 @@ function buildLibFnSignatures() {
      * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
      * constructor values for the prototypes' `constructor`. */
     "wrapper.new": { argTypes: [F64, DYN, DYN, DYN, DYN], result: DYN },
+    /** %Iterator.prototype% and %Iterator% (scr_js_iterator.c), `new
+     * Iterator()` (always the abstract-class TypeError), Iterator.from over
+     * a checked value, and OrdinaryHasInstance(%Iterator%, value). */
+    "iterator.prototype": { argTypes: [], result: DYN },
+    "iterator.constructor": { argTypes: [], result: DYN },
+    "iterator.construct": { argTypes: [], result: DYN },
+    "iterator.from": { argTypes: [DYN], result: DYN },
+    "iterator.instanceOf": { argTypes: [DYN], result: BOOL },
     /** ToObject (scr_js_wrapper_to_object): a wrapper for a primitive, the
      * value for an object, a fresh object for null/undefined; then the
      * three constructor values. */

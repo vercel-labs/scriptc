@@ -32,6 +32,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
     ...(features.primitiveWrapper ? { primitiveWrapper: true } : {}),
+    ...(features.iteratorProto ? { iteratorProto: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
     ...(features.zstd ? { zstd: true } : {}),

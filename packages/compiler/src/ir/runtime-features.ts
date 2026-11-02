@@ -1498,7 +1498,10 @@ const RUNTIME_FEATURE_RULES = {
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
     fns: [...SYMBOL_LIB_FNS],
-    prefixes: ["sym.", "disposable."],
+    // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
+    // Symbol.toStringTag and Symbol.dispose members with the well-known
+    // symbols scr_sym_well_known makes.
+    prefixes: ["sym.", "disposable.", "iterator."],
     types: ["symbol"],
   }),
   /** Symbol.toPrimitive is read (sym.wellKnown with that name, or a name
@@ -1546,6 +1549,8 @@ const RUNTIME_FEATURE_RULES = {
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
   /** Primitive wrapper objects (scr_js_wrapper.c). */
   primitiveWrapper: rule({ prefixes: ["wrapper."] }),
+  /** %Iterator% and %Iterator.prototype% as values (scr_js_iterator.c). */
+  iteratorProto: rule({ prefixes: ["iterator."] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1692,6 +1697,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
+    iteratorProto: false,
     stream: false,
     strdecDyn: false,
     streamDyn: false,

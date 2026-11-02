@@ -6243,6 +6243,19 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
+  /* A builtin method read as a value (Array.prototype.slice, a string's
+   * trim) is not a constructor in Node, which names the callee the source
+   * used. */
+  if (callee->kind == SCR_DYN_FUNC && callee->v.fn.sig &&
+      (strcmp(callee->v.fn.sig, "native:prototype") == 0 ||
+       strstr(callee->v.fn.sig, ".prototype") != NULL)) {
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_write(&message, what->data, what->len);
+    scr_jb_puts(&message, " is not a constructor");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return NULL;
+  }
   /* A compiled function that is not a constructor (an arrow function, a
    * method, a builtin function value such as Symbol or Number.parseFloat)
    * throws Node's TypeError. Native functions without a construction here

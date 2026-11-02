@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
@@ -153,6 +154,8 @@ function hostGlobalInstanceOfAnswer(
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const iteratorTest = lowerIteratorInstanceOf(lowerer, expr, loc);
+  if (iteratorTest !== null) return iteratorTest;
   // A listed Node global's value is a constructor native code never created
   // an instance from, so `x instanceof X` is false for every value — an
   // ordinary function's [[Prototype]] included, which the generic walk

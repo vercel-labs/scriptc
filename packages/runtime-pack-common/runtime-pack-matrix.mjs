@@ -130,6 +130,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
   // Primitive wrapper objects.
   ["scr_js_wrapper.c", "primitiveWrapper"],
+  // %Iterator% and %Iterator.prototype% as values.
+  ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],

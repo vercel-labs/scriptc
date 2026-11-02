@@ -2414,8 +2414,18 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     isatty: ["process.isTTYValue"],
   },
   os: {
-    // lowerOsUserInfoCall assembles the record from scalar libCalls.
-    userInfo: ["os.userHomedir", "os.userShell", "os.userUid", "os.userGid"],
+    // lowerOsUserInfoCall assembles the record from scalar libCalls: one
+    // snapshot call and the passwd fields, as text and as Buffers.
+    userInfo: [
+      "os.userInfoBegin",
+      "os.userHomedir",
+      "os.userHomedirBuf",
+      "os.userShell",
+      "os.userShellBuf",
+      "os.userNameBuf",
+      "os.userUid",
+      "os.userGid",
+    ],
     // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
     cpus: ["os.cpusModel", "os.cpusField"],
   },

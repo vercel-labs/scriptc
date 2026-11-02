@@ -987,14 +987,18 @@ export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
   return webcrypto && named;
 }
 
-/** The typed file reads that answer a ScrBytes: Node answers a Buffer, and
- * scr_lib.c's read entries brand it, so a typed read makes a Buffer value. */
+/** The typed reads that answer a ScrBytes: Node answers a Buffer, and
+ * scr_lib.c's read entries brand it, so a typed read makes a Buffer value;
+ * a spawnSync capture (spawnRes.stdoutBytes/stderrBytes) arrives from
+ * scr_child_capture.c, whose accessors stamp the same brand. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
   "fs.readFdSyncBytes",
   "fsp.readFileBytes",
   "fileHandle.readFileBytes",
+  "spawnRes.stdoutBytes",
+  "spawnRes.stderrBytes",
 ]);
 
 /** The entries that need the JavaScript object model build (t262-da §J):
@@ -1076,6 +1080,14 @@ const RUNTIME_FEATURE_RULES = {
    * object, byte for byte. */
   childOptionExt: rule({
     fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+  }),
+  /** A spawnSync capture read as a Buffer (spawnSync without an encoding
+   * option): scr_child_capture.c, a unit of its own so a program that never
+   * reads a capture keeps scr_child.c's layout — the memo's thread-local
+   * state and its functions would otherwise move every symbol the linker
+   * lays out after them. */
+  spawnCaptureBytes: rule({
+    fns: ["spawnRes.stdoutBytes", "spawnRes.stderrBytes"],
   }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
@@ -1708,6 +1720,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     handleProps: false,
     childLifecycle: false,
     childOptionExt: false,
+    spawnCaptureBytes: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,

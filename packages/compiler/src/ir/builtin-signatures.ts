@@ -3265,6 +3265,10 @@ function buildLibFnSignatures() {
     "child.ref": { argTypes: [CHILD_T], result: VOID },
     "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
     "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
+    /* The Buffer captures (spawnSync without an encoding option): the same
+     * stored bytes as a bytes<u8> value, branded under fsBufferBrand. */
+    "spawnRes.stdoutBytes": { argTypes: [SPAWNRES_T], result: BYTES_U8 },
+    "spawnRes.stderrBytes": { argTypes: [SPAWNRES_T], result: BYTES_U8 },
     /** fs/promises (scr_lib.c over scr_async.c's settled minting): the SAME
      * sync syscalls, wrapped in an ALREADY-SETTLED promise — failure
      * REJECTS (catchable at the await) instead of throwing, so none of

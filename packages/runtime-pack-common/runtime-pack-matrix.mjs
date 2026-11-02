@@ -200,6 +200,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
+  // The spawnSync capture Buffers; a unit of its own for the same reason.
+  ["scr_child_capture.c", "spawnCaptureBytes"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.

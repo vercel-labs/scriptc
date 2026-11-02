@@ -19,6 +19,7 @@ const features = {
   handleProps: false,
   childLifecycle: false,
   childOptionExt: false,
+  spawnCaptureBytes: false,
   declAdopt: false,
   typeOrigins: false,
   dynForAwait: false,

@@ -95,6 +95,7 @@ export interface EarlyExecutableNativeFeatures {
   handleProps?: boolean;
   childLifecycle?: boolean;
   childOptionExt?: boolean;
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;

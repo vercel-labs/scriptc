@@ -956,6 +956,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",
   "spawnRes.stderr": "scr_spawn_res_stderr",
+  "spawnRes.stdoutBytes": "scr_spawn_res_stdout_bytes",
+  "spawnRes.stderrBytes": "scr_spawn_res_stderr_bytes",
   "child.killed": "scr_child_killed",
   "child.offSpawn": "scr_child_off_spawn",
   "child.offExit": "scr_child_off_exit",

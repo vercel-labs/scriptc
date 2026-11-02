@@ -149,6 +149,14 @@ static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, b
   return d;
 }
 
+/* The spawnSync capture accessors (scr_spawn_res_stdout_bytes /
+ * scr_spawn_res_stderr_bytes, and the one-Buffer-per-capture memo behind
+ * them) live in scr_child_capture.c, a unit linked only by programs that
+ * read an unencoded capture. Nothing in this unit names them: a unit of the
+ * always-linked set may not reference an optional one, because a link of
+ * that set alone (the runtime unit tests, and the precompiled pack's own
+ * archive) would carry the undefined symbol — which is exactly what broke
+ * every Windows program when the accessors lived here. */
 /* execSync/execFileSync: the spawnSync result's status, signal, output,
  * pid, stdout and stderr. out/err move in (null for a stream that was not
  * piped); output is [null, stdout, stderr]. A child that never started

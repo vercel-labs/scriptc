@@ -61,15 +61,21 @@ function writePackage(dir: string, name: string, js: string, types: string | nul
   if (types !== null) writeFileSync(join(at, "index.d.ts"), types);
 }
 
-function fixture(): string {
+function fixture(withFenced = true): string {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-island-fold-"));
   scratch.push(dir);
   writeFileSync(
     join(dir, "main.ts"),
-    `import { refuse } from "refuser";
+    withFenced
+      ? `import { refuse } from "refuser";
 import { value } from "fenceddirect";
 
 console.log(refuse(), value());
+`
+      : `import { refuse } from "refuser";
+import { decorate } from "conditionalmodel";
+
+console.log(refuse(), decorate({}).constructor === Object);
 `,
   );
   // Decorators in a JavaScript package: its own module refuses natively,
@@ -92,17 +98,35 @@ exports.refuse = () => new Thing().value() + nested.value();
   // program, so the fence rule never sees it and must not island it.
   writePackage(dir, "fencelib", fencedBundle("lib"), "export declare function value(): string;\n");
   // Imported by the program itself: the fence rule islands it.
-  writePackage(
-    dir,
-    "fenceddirect",
-    fencedBundle("direct"),
-    "export declare function value(): string;\n",
-  );
+  if (withFenced) {
+    writePackage(
+      dir,
+      "fenceddirect",
+      fencedBundle("direct"),
+      "export declare function value(): string;\n",
+    );
+  } else {
+    // Imported by the program itself, but its object-model marker sits in a
+    // function body: the module compiles natively, and a reload the island
+    // set makes compile keeps it native.
+    writePackage(
+      dir,
+      "conditionalmodel",
+      `"use strict";
+function withPrototype(target) {
+  Object.setPrototypeOf(target, {});
+  return target;
+}
+exports.decorate = (target) => withPrototype(target);
+`,
+      "export declare function decorate(target: object): object;\n",
+    );
+  }
   return dir;
 }
 
-function build(fold: boolean, copyResult = false) {
-  const dir = fixture();
+function build(fold: boolean, copyResult = false, withFenced = true) {
+  const dir = fixture(withFenced);
   let firstLoads = 0;
   let reloads = 0;
   const rounds: string[][] = [];
@@ -181,4 +205,26 @@ test("the merged round decides the fence-report growth exactly as the second rel
   expect(copied.reloads).toBe(1);
   expect(copied.rounds).toEqual([["fenceddirect", "refuser"]]);
   expect(copied.islands).toEqual(on.islands);
+}, 600_000);
+
+// The fence report is the failed build's rule: it islands the packages whose
+// class explains a failure the lowering still reports. When the islands the
+// lowering grew remove every compilation error, the reload compiles, and a
+// compiling build keeps a conditional object-model dependency native (its
+// marker sits in a function body the program may never run). The merged round
+// must make the same choice rather than island it on its markers alone.
+test("a reload the island set makes compile keeps a conditional object-model dependency native", () => {
+  const off = build(false, false, false);
+  const on = build(true, false, false);
+  expect(off.diagnostics).toEqual([]);
+  expect(on.diagnostics).toEqual([]);
+  expect(off.rounds).toEqual([["refuser"]]);
+  expect(off.islands).toEqual(["refuser"]);
+  // One reload, the same set: the fence report did not run on a program that
+  // compiles, so `conditionalmodel` stays native.
+  expect(on.reloads).toBe(1);
+  expect(on.rounds).toEqual([["refuser"]]);
+  expect(on.ok).toBe(true);
+  expect(on.islands).toEqual(["refuser"]);
+  expect(on.firstLoads).toBe(1);
 }, 600_000);

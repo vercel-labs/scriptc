@@ -24,7 +24,9 @@
  * the fence rule's growth is decided from the same lowering pass, narrowed to
  * the packages the reload still compiles. A package the new islands reach
  * only through themselves is in a Node island by association: its modules
- * leave the compiled graph, so the next round no longer sees its fences. */
+ * leave the compiled graph, so the next round no longer sees its fences. The
+ * rule folded is the one that reload would apply: the fence report when it
+ * still fails, the sure rule when the islands make it compile. */
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { resolveBareModule } from "../frontend/resolve.js";
@@ -361,8 +363,8 @@ export function stillCompiled(
 }
 
 /** The island set a prepared round retries with when both growth rules grew
- * it: the lowering's growth plus the fence-report growth the *next* round
- * would decide (D4, the pi build-speed plan's WP9). That round lowers with
+ * it: the lowering's growth plus the fence growth the *next* round would
+ * decide (D4, the pi build-speed plan's WP9). That round lowers with
  * `islands` islanded, so it reads what its program still holds — the
  * diagnostics and fences a reload can still report, and the scan modules and
  * edges of the packages it still compiles. Null when the fence rule grows
@@ -371,7 +373,15 @@ export function stillCompiled(
  * Narrowing the scan matters as much as the diagnostics: the fence rule
  * reads a package's island reasons from its markers, so a package the reload
  * no longer compiles would be islanded on its markers alone — the plain
- * union this filter exists to prevent. */
+ * union this filter exists to prevent.
+ *
+ * The rule the next round would apply depends on the failure it still has.
+ * Remaining diagnostics are a failed build, and the fence-report rule islands
+ * the package whose class accounts for that failure. No remaining diagnostic
+ * means the islands made the reload compile, and a compiling build keeps its
+ * conditional object-model dependencies native: only a fence that fires when
+ * the module evaluates turns a package into an island then (the sure rule the
+ * compiling build applies to itself). */
 export function foldFenceGrowth(
   ctx: IslandGrowthContext,
   islands: ReadonlyMap<string, IslandPackage>,
@@ -387,9 +397,10 @@ export function foldFenceGrowth(
       edges: ctx.scan.edges.filter((e) => compiled(e.fromFile)),
     },
   };
+  const diagnostics = growth.diagnostics.filter((d) => compiled(d.loc.file));
   return growIslandSet(narrowed, islands, {
-    diagnostics: growth.diagnostics.filter((d) => compiled(d.loc.file)),
+    diagnostics,
     fences: growth.fences.filter((d) => compiled(d.loc.file)),
-    fenceMode: "report",
+    fenceMode: diagnostics.length === 0 ? "sure" : "report",
   });
 }

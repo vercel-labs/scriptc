@@ -439,13 +439,18 @@ function prepareRound(
       // Fold the second decision into this one (node-islands/growth.ts): the
       // fence rule reads only what the reload still compiles, and the round
       // that would make it is the one this retry becomes.
-      islands =
-        foldFenceGrowth(growth, islands, modules ?? lowerModules, {
-          diagnostics: result.diagnostics,
-          fences: result.runtimeFences,
-        }) ?? islands;
-      fences = null;
-      nextRetryFences = false;
+      const folded = foldFenceGrowth(growth, islands, modules ?? lowerModules, {
+        diagnostics: result.diagnostics,
+        fences: result.runtimeFences,
+      });
+      if (folded !== null) {
+        islands = folded;
+        fences = null;
+        nextRetryFences = false;
+      }
+      // A fold that grows nothing leaves the retry the rules would have made
+      // on their own: the reload compiles, or the fence rule is decided from
+      // that reload's own result.
     }
     traceIslandRound(
       `round ${round} decide islands=${traceSet(islands)} modules=${traceSet(modules)} fences=${traceSet(fences)} nextRetryFences=${nextRetryFences}`,

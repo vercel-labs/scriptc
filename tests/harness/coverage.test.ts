@@ -97,8 +97,12 @@ test("divergences report as warnings, never as blockers", async () => {
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
-  // The last site narrows a union of records: the assertion selects an arm and
-  // the binding receives a copy of it.
+  // Six sites copy: a narrower parameter, the empty record, a narrower
+  // assertion, a later assignment, an array element, and the last one, which
+  // narrows a union of records so the assertion selects an arm and the binding
+  // receives a copy of it. The unknown-only views at the end of the fixture are
+  // assertions too, but they keep the arm they select (there is no field to
+  // copy into), so they report nothing and the count stays at six.
   expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
     "SC6001",
     "SC6001",

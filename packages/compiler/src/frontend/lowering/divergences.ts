@@ -20,7 +20,7 @@ import {
   widthCopyDivergenceDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
-import { typeEquals } from "../../ir/ir.js";
+import { typeEquals, type IrType } from "../../ir/ir.js";
 import { isCollationCovered } from "./collation-repertoire.js";
 import type { Lowerer } from "./lowerer.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
@@ -686,8 +686,13 @@ function widthCopyBetween(
       checker.getPropertiesOfType(type).some((p) => (p.flags & accessor) !== 0);
     if (arms !== null) {
       if (arms.some(hasAccessor)) return null;
-      // Only an arm that already has the target's layout may keep it.
+      // A view with no field of its own (`{ text: unknown }`, or the record
+      // the empty and unknown-only views lower to) keeps the arm it selects:
+      // there is nothing to copy into, and narrowing.ts erases the assertion
+      // (or boxes the live reference), so the value keeps its identity.
       const targetIr = lowerer.mapTypeOf(t);
+      if (targetIr !== null && keepsIdentityView(lowerer, targetIr)) return null;
+      // Only an arm that already has the target's layout may keep it.
       if (targetIr !== null) {
         for (const arm of arms) {
           const armIr = lowerer.mapTypeOf(arm);
@@ -703,6 +708,23 @@ function widthCopyBetween(
       return null;
   }
   return { source: checker.typeToString(s), target: checker.typeToString(t) };
+}
+
+/** Whether asserting to `target` keeps the value it selects: the
+ * checked-dynamic representation, or a record whose every field is unknown.
+ * Such a view has nothing to copy into, and narrowing.ts erases the assertion
+ * (or boxes the live reference), so the assertion is pure typing. */
+function keepsIdentityView(lowerer: Lowerer, target: IrType): boolean {
+  if (target.kind === "dyn") return true;
+  if (target.kind !== "record") return false;
+  const shape = lowerer.shapes.get(target.shapeId);
+  return (
+    shape !== undefined &&
+    !shape.tuple &&
+    // The empty record has no field to copy and erases as well.
+    shape.fields.every((f) => f.type.kind === "dyn") &&
+    (shape.indexValue === undefined || shape.indexValue.kind === "dyn")
+  );
 }
 
 /** The members of a union whose every member is a plain record; a union with

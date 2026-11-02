@@ -1,8 +1,8 @@
 scriptc coverage tests/coverage-fixtures/width-copies.ts
 
-  statements analyzed   17
-  compile statically    17  (100%)
-    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
+  statements analyzed   22
+  compile statically    22  (100%)
+    in dynamic tier     3  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   fully static — all analyzed statements compile to native code.
 

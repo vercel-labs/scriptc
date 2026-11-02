@@ -50,3 +50,12 @@ interface ThinkingBlock {
 const blocks: (TextBlock | ThinkingBlock)[] = [{ type: "text", text: "a" }];
 const block = blocks[0] as { text: string };
 block.text = "b";
+
+// A view whose every field is unknown keeps the arm it selects: there is no
+// field to copy into, so the assertion is pure typing and the value keeps
+// its identity.
+const unknownField = blocks[0] as { text: unknown };
+unknownField.text = "c";
+console.log((blocks[0] as TextBlock).text);
+const unknownView = blocks[0] as { type: unknown; text: unknown };
+unknownView.text = "d";

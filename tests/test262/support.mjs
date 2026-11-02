@@ -365,6 +365,9 @@ const earlyErrorSites = new Map([
   [2335, superCallOutsideDerivedConstructor],
   [2660, superPropertyOutsideHomeObject],
   [2699, staticPrototypeIsEarlyError],
+  [1341, constructorMemberIsEarlyError],
+  [1368, constructorMemberIsEarlyError],
+  [2357, updateOperandIsEarlyError],
 ]);
 
 /** The narrowest node whose span contains `position`, with its parents set. */
@@ -498,6 +501,38 @@ function staticPrototypeIsEarlyError(file, _variant, diagnostic) {
   if (!element) return false;
   if ((ts.getCombinedModifierFlags(element) & ts.ModifierFlags.Static) === 0) return false;
   return memberNameText(element.name) === "prototype";
+}
+
+// 1341 / 1368: a class constructor may not be an accessor or a generator. tsc
+// reports both codes for a static member named `constructor` as well, and
+// `static get constructor() {}` and `static *constructor() {}` are legal
+// JavaScript, so those sites stay out.
+function constructorMemberIsEarlyError(file, _variant, diagnostic) {
+  const element = enclosingMember(smallestNodeAt(file, diagnostic.start));
+  if (!element) return true;
+  return (ts.getCombinedModifierFlags(element) & ts.ModifierFlags.Static) === 0;
+}
+
+// 2357: an update operator needs a variable or a property access as its
+// operand. tsc also reports it for a call result such as `f()++`, which V8
+// parses and only refuses at run time, with a ReferenceError, so a
+// negative parse test must not take that site as its SyntaxError. Every other
+// operand (a literal, an arithmetic result, a `new` expression) is refused
+// while parsing, and so is an optional call, whose question mark stays on the
+// call node.
+function updateOperandIsEarlyError(file, _variant, diagnostic) {
+  let node = smallestNodeAt(file, diagnostic.start);
+  while (
+    node &&
+    !((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken))
+  ) {
+    node = node.parent;
+  }
+  if (!node) return true;
+  let operand = node.operand;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  return !(ts.isCallExpression(operand) && operand.questionDotToken === undefined);
 }
 
 export function earlyErrorDiagnostics(source, variant) {

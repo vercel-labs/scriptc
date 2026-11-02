@@ -948,6 +948,7 @@ function loadFrontend(
           ...opts,
           frontendServices: l.services,
           startupCrash: l.startupCrash ?? null,
+          admittedOpinions: l.admittedOpinions,
           inlineRequireCycleCalls: l.inlineRequireCycleCalls,
           moduleEdges: l.moduleEdges,
           dynamicImportRejections: l.dynamicImportRejections,

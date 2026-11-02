@@ -142,10 +142,14 @@ typedef enum {
  *
  * Pin a new tag (move it to SCR_DYNH_TAGS with the value it has now: the
  * largest pinned value + 1 for the first row of SCR_DYNH_NEW_TAGS, + 2 for
- * the second, and so on) only when the LLVM backend needs its number: DYN_HANDLE_TAG_NUM and
+ * the second, and so on) when the LLVM backend needs its number — DYN_HANDLE_TAG_NUM and
  * TEXT_CODEC_TAG_NUM in packages/compiler/src/backend/llvm/dyn.ts may only
- * name pinned tags. Pin the new tags in name order, oldest first, in a change
- * of its own, so their values do not move.
+ * name pinned tags — and when a later tag sorting ahead of it in the list
+ * would otherwise renumber it: the word Segmenter's tags are pinned because
+ * scr_intl.c embeds their numbers in its code, so a new tag ahead of them
+ * would compile that unit differently for every program that links it. Pin
+ * the new tags in name order, oldest first, in a change of its own, so their
+ * values do not move.
  *
  * Checks: a pinned value at or above SCR_DYNH_CAPACITY fails its
  * _Static_assert, two tags with one value are a duplicate case label in
@@ -214,7 +218,9 @@ typedef enum {
   X(SEARCH_PARAMS, 33) /* live WHATWG URLSearchParams */ \
   X(SEGMENTER, 19) /* default Unicode grapheme segmentation */ \
   X(SEGMENTER_REFUSING, 80) /* word or sentence Segmenter whose segment() throws (scr_grapheme.c) */ \
+  X(SEGMENTER_WORD, 97) /* ICU word-granularity Segmenter (scr_intl.c) */ \
   X(SEGMENTS, 20) /* iterable immutable segmentation result */ \
+  X(SEGMENTS_WORD, 98) /* its word segmentation result (scr_intl.c) */ \
   X(SET, 25) /* native Set<unknown>, shared backing map */ \
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
@@ -253,9 +259,7 @@ typedef enum {
 
 /* Tags added since the last pin, by name only (see above). */
 #define SCR_DYNH_NEW_TAGS(Y) \
-  Y(ASYNC_DISPOSABLE_STACK) /* AsyncDisposableStack (scr_async_disposable_stack.c) */ \
-  Y(SEGMENTER_WORD) /* ICU word-granularity Segmenter (scr_intl.c) */ \
-  Y(SEGMENTS_WORD) /* its word segmentation result (scr_intl.c) */
+  Y(ASYNC_DISPOSABLE_STACK) /* AsyncDisposableStack (scr_async_disposable_stack.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */

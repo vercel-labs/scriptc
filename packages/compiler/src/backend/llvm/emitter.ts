@@ -217,6 +217,7 @@ import {
 } from "./dense-array-access.js";
 import { matchMapRead, pointerMapGet, type MapReadLifetimes } from "./map-read-lifetimes.js";
 import { type MapEntryFusion } from "./map-entry-fusion.js";
+import { type RecordEntryFusion } from "./record-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
@@ -1597,6 +1598,8 @@ export class LlEmitter {
   numberMapKeyIntegers = new Map<string, LlInteger>();
   /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
   mapEntryFusion: MapEntryFusion | null = null;
+  /** The current function's fused record get-then-set pairs (record-entry-fusion.ts). */
+  recordEntryFusion: RecordEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
   /** The locals whose value never leaves its frame (frame-escapes.ts), for
    * class instances with reference fields in frame storage. */
@@ -8764,6 +8767,8 @@ export class LlEmitter {
     overflowOnly: boolean,
     loc?: SrcLoc,
     missNaN = false,
+    missInto: (() => void) | null = null,
+    read: IrExpr | null = null,
   ): void {
     return keyedRecordReadInto(
       this,
@@ -8776,6 +8781,8 @@ export class LlEmitter {
       overflowOnly,
       loc,
       missNaN,
+      missInto,
+      read,
     );
   }
 

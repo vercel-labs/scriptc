@@ -144,3 +144,89 @@ console.log(total);
   expect(withFields.length).toBeGreaterThan(0);
   for (const body of withFields) expect(body).toContain("ScrArena.closed");
 });
+
+/** A tree class (no methods, so dispatch cannot observe it) and its builders. */
+const TREE_NODES = `
+class Node {
+  left: Node | null;
+  right: Node | null;
+  constructor(left: Node | null, right: Node | null) {
+    this.left = left;
+    this.right = right;
+  }
+}
+function build(depth: number): Node {
+  if (depth === 0) return new Node(null, null);
+  return new Node(build(depth - 1), build(depth - 1));
+}
+function nodes(tree: Node): number {
+  if (tree.left === null || tree.right === null) return 1;
+  return 1 + nodes(tree.left) + nodes(tree.right);
+}
+`;
+
+test("a proven tree class's nodes are reclaimed by the group arena", async () => {
+  const llvm = await llvmFor(`${TREE_NODES}
+let total = 0;
+for (let depth = 0; depth < 4; depth++) total += nodes(build(depth));
+console.log(total);
+`);
+  // Sixteen bytes: two children and no count word.
+  expect(llvm).toContain("%sc_o_Node = type { ptr, ptr }");
+  // The drop frees every node of the subtree, so the destroy has nothing to
+  // walk and nothing to free.
+  expect(llvm).toContain("; destroy Node (its nodes are the arena's)");
+  expect(llvm).toMatch(/@sc_release_Node_destroy\(ptr %o\)[^{]*\{[^}]*\n  ret void/);
+  // Every node comes from the arena: the constructor has no heap copy to
+  // fall back to, and a miss stops instead of leaking a node no release
+  // could free.
+  expect(llvm).toMatch(/@sc_new_Node\.r\(\)/);
+  expect(llvm).toMatch(/\nmiss:\n[^}]*scr_trap/);
+  expect(llvm).not.toMatch(/label %heap/);
+  // Every group is closed, so no open arena caps its bytes and sends a node
+  // to the heap.
+  expect(llvm).toMatch(/@scr_arena_open\(ptr %[\w.]+, i32 1\)/);
+  expect(llvm).not.toMatch(/@scr_arena_open\(ptr %[\w.]+, i32 0\)/);
+});
+
+test("a tree class whose group is open keeps the heap path", async () => {
+  // The chain holds outside strings, so its group is open and its arena
+  // caps its bytes: a node that fell back to the heap would have nothing
+  // to free it. The class keeps its headerless layout, but not the arena.
+  const llvm = await llvmFor(`${TREE_NODES}
+interface Item {
+  label: string;
+  next: Item | null;
+}
+function chain(labels: string[], n: number): Item {
+  if (n === 0) return { label: labels[0]!, next: null };
+  return { label: labels[n % labels.length]!, next: chain(labels, n - 1) };
+}
+function length(item: Item): number {
+  if (item.next === null) return item.label.length;
+  return item.label.length + length(item.next);
+}
+const labels = ["a", "bb", "ccc"];
+let total = 0;
+for (let round = 0; round < 4; round++) total += length(chain(labels, 10 + round)) + nodes(build(3));
+console.log(total);
+`);
+  expect(llvm).toContain("%sc_o_Node = type { ptr, ptr }");
+  expect(llvm).toMatch(/@scr_arena_open\(ptr %[\w.]+, i32 0\)/);
+  expect(llvm).not.toContain("its nodes are the arena's");
+  expect(llvm).not.toMatch(/@sc_new_Node\.r\(\)/);
+});
+
+test("a class a method can observe keeps its count word in the arena", async () => {
+  // `count()` dispatches on the class, so the node is observed: it keeps its
+  // count word and the general arena path, which frees a drained node.
+  const llvm = await llvmFor(`${TREE}
+let total = 0;
+for (let d = 0; d < 4; d++) total += tree(d).count();
+console.log(total);
+`);
+  expect(llvm).toContain("%sc_o_Node = type { i64, ptr, ptr }");
+  expect(llvm).not.toContain("its nodes are the arena's");
+  const cls = arenaConstructors(llvm).find((body) => !body.includes("@sc_rnew_"))!;
+  expect(cls).toContain("store i64 536870912, ptr %o");
+});

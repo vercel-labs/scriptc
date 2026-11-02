@@ -43,7 +43,7 @@ import type { LibraryProfile } from "../library/library-profile.js";
 import type { IrModule } from "../ir/ir.js";
 import { deserializeModuleBytes, serializeModuleParts } from "../ir/serialize.js";
 import { contentDigest, NATIVE_STRING_BYTES, type NativeCache } from "./cache.js";
-import { batchTextParts, joinedParts, textSlices } from "./text-file.js";
+import { batchTextParts, joinedParts } from "./text-file.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { nativeFileIdentity } from "./file-identity.js";
 
@@ -61,35 +61,37 @@ export interface NativeExecutableInput {
   /** Divergence warnings (SC6xxx) the lowering found; cached with the
    * input so a frontend-cache hit reports them too. */
   warnings?: ScrDiagnostic[];
+  /** partsDigest of `llvm`, when the frontend cache has computed it: the key
+   * of the text's `frontend-llvm` entry. */
+  llvmDigest?: string;
 }
 
-/** The two large artifacts follow the input metadata as separate members so
- * an entry can be written as parts instead of one JSON string; the stored
- * input carries empty placeholders (`[]`, `null`) for them. */
+/** The LLVM text is a separate `frontend-llvm` entry under its digest, which
+ * `llvm` names, so a build whose inputs changed reads only this entry's
+ * probes, and the text is hashed once per build. The serialized IR follows
+ * the input metadata as a separate member so the entry can be written as
+ * parts; the stored input carries empty placeholders (`[]`, `null`) for both. */
 interface FrontendCacheEntry {
-  schema: "scriptc.native-frontend.v3";
+  schema: "scriptc.native-frontend.v4";
   probes: FrontendInputSnapshot;
   input: NativeExecutableInput;
   llvm: string;
   ir: string[] | null;
 }
 
-/** The entry's JSON text, generated as it is written. The LLVM text is
- * escaped in slices (`textSlices`), the same JSON string as escaping it
- * whole, so a large module is never copied whole. */
+/** The entry's JSON text, generated as it is written. */
 function* frontendCacheParts(
   probes: FrontendInputSnapshot,
   input: NativeExecutableInput,
+  llvmDigest: string,
 ): Generator<string> {
   const metadata = JSON.stringify({
-    schema: "scriptc.native-frontend.v3",
+    schema: "scriptc.native-frontend.v4",
     probes,
-    input: { ...input, llvm: [], ir: null },
+    input: { ...input, llvm: [], ir: null, llvmDigest: undefined },
+    llvm: llvmDigest,
   });
-  yield metadata.slice(0, metadata.length - 1) + ',"llvm":"';
-  for (const part of joinedParts(input.llvm))
-    for (const slice of textSlices(part)) yield JSON.stringify(slice).slice(1, -1);
-  yield '"';
+  yield metadata.slice(0, metadata.length - 1);
   if (input.ir === null) yield ',"ir":null}';
   else {
     yield ',"ir":[';
@@ -112,20 +114,36 @@ function* boundedParts(parts: Generator<string>, limit: number): Generator<strin
   }
 }
 
-/** Publish an entry only when a native reader can decode it as one string;
- * UTF-16 length never exceeds the UTF-8 byte length. A longer entry
- * abandons its write, which writeParts discards. */
+/** Publish an entry, and the LLVM text's entry unless `input` already names
+ * one, only when a native reader can decode each as one string; UTF-16
+ * length never exceeds the UTF-8 byte length. A longer entry abandons its
+ * write, which the cache discards. Sets `input.llvmDigest` when the text's
+ * entry is written. */
 function publishFrontendCache(
   cache: NativeCache,
   key: string,
   probes: FrontendInputSnapshot,
   input: NativeExecutableInput,
 ): void {
+  const llvmDigest =
+    input.llvmDigest ??
+    cache.writeContentParts(
+      "frontend-llvm",
+      boundedParts(joinedParts(input.llvm), NATIVE_STRING_BYTES),
+    );
+  if (llvmDigest === null) return;
+  input.llvmDigest = llvmDigest;
   cache.writeParts(
     "frontend",
     key,
-    boundedParts(frontendCacheParts(probes, input), NATIVE_STRING_BYTES),
+    boundedParts(frontendCacheParts(probes, input, llvmDigest), NATIVE_STRING_BYTES),
   );
+}
+
+/** The LLVM text of an entry, from its `frontend-llvm` entry; null when
+ * that entry is missing or does not have the digest it is named by. */
+function readFrontendLlvm(cache: NativeCache, digest: string): string | null {
+  return cache.readContent("frontend-llvm", digest, NATIVE_STRING_BYTES)?.toString("utf8") ?? null;
 }
 
 /** The cached input when every frontend input still matches, else the
@@ -141,7 +159,9 @@ function readFrontendCache(
   const cached: unknown = JSON.parse(bytes.toString("utf8"));
   if (!validCachedInput(cached)) return null;
   if (!frontendInputsStillMatch(cached.probes, exclusions)) return { stale: cached };
-  return { input: { ...cached.input, llvm: [cached.llvm], ir: cached.ir } };
+  const llvm = readFrontendLlvm(cache, cached.llvm);
+  if (llvm === null) return null;
+  return { input: { ...cached.input, llvm: [llvm], llvmDigest: cached.llvm, ir: cached.ir } };
 }
 
 /** The stale entry's input when every changed source is token-equivalent to
@@ -156,6 +176,7 @@ function readFrontendCache(
  * in messages, comptime callbacks, test locations) is rebuilt as well:
  * frontendInputsSemanticallyMatch refuses its `text` probe. */
 function equivalentFrontendInput(
+  cache: NativeCache,
   stale: FrontendCacheEntry,
   options: CompileRequestOptions,
   exclusions: FrontendInputExclusions,
@@ -175,18 +196,17 @@ function equivalentFrontendInput(
     exclusions,
   );
   if (match === null || match.changed.length === 0) return null;
+  const llvm = readFrontendLlvm(cache, stale.llvm);
+  if (llvm === null) return null;
   // Runtime fences and unsupported-construct messages name their source as
   // `[<code> at <file>:<line>]`, and an equivalent edit can move the line.
-  if (
-    match.changed.some(({ path }) =>
-      stale.llvm.includes(` at ${llvmBytes(wtf8Bytes(path), false)}:`),
-    )
-  )
+  if (match.changed.some(({ path }) => llvm.includes(` at ${llvmBytes(wtf8Bytes(path), false)}:`)))
     return null;
   return {
     input: {
       ...stale.input,
-      llvm: [stale.llvm],
+      llvm: [llvm],
+      llvmDigest: stale.llvm,
       ir: null,
       sources: stale.input.sources.map(([path, text]) => [
         path,
@@ -227,15 +247,17 @@ function implementationIdentity(toolchain: NativeToolchain): string {
   );
 }
 
-/** SCRIPTC_* variables that report on a build, place its cache or set
- * backend emission parallelism. The frontend's output does not depend on
- * them, so they are left out of its cache key. */
+/** SCRIPTC_* variables that report on a build, place its cache or control
+ * backend emission (its parallelism, a requested worker failure). The
+ * frontend's output does not depend on them, so they are left out of its
+ * cache key. */
 const FRONTEND_INDEPENDENT_VARIABLES = new Set([
   "SCRIPTC_CACHE_DIR",
   "SCRIPTC_CACHE_MAX_MB",
   // The shared checker server answers as the build's own checker does.
   "SCRIPTC_CHECKER_SERVER",
   "SCRIPTC_EMIT_WORKERS",
+  "SCRIPTC_EMIT_WORKER_FAIL",
   "SCRIPTC_EMIT_WORKER_FUNCTIONS",
   // Reusing lowered units leaves the lowered module as it is.
   "SCRIPTC_INCR_LOWERING",
@@ -260,6 +282,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "regex",
     "copying",
     "textDecoderLegacy",
+    "bigintBytes",
     "fileHandle",
     "fetch",
     "zlib",
@@ -308,7 +331,7 @@ function validCachedInput(value: unknown): value is FrontendCacheEntry {
   const entry = value as Partial<FrontendCacheEntry>;
   const input = entry.input;
   if (
-    entry.schema !== "scriptc.native-frontend.v3" ||
+    entry.schema !== "scriptc.native-frontend.v4" ||
     !validFrontendInputSnapshot(entry.probes) ||
     input === undefined ||
     input === null ||
@@ -318,6 +341,7 @@ function validCachedInput(value: unknown): value is FrontendCacheEntry {
   return (
     input.ok === true &&
     typeof entry.llvm === "string" &&
+    /^[0-9a-f]{64}$/.test(entry.llvm) &&
     (entry.ir === null ||
       (Array.isArray(entry.ir) && entry.ir.every((part) => typeof part === "string"))) &&
     (input.sidecarJson === null || typeof input.sidecarJson === "string") &&
@@ -423,7 +447,7 @@ export function prepareNativeExecutable(
       const equivalent =
         cached === null || outputKind === "ir"
           ? null
-          : equivalentFrontendInput(cached.stale, options, exclusions);
+          : equivalentFrontendInput(cache, cached.stale, options, exclusions);
       if (equivalent !== null) {
         publishFrontendCache(cache, key, equivalent.probes, equivalent.input);
         timing("frontend-cache-equivalent");

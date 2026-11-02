@@ -875,14 +875,17 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
 
 // The level of an optimized partition's simplification before the thin
 // link. The backend optimizes every partition again at Level after
-// importing, so the pre-link runs the O1 simplification: it annotates the
-// profile, inlines and simplifies enough for the summaries the import
-// decisions read, and leaves the full simplification to the backend. The
-// O2 simplification before the link repeated most of the backend's work: on
-// a partition dominated by one large function it took about half as long as
-// the backend's optimization and code generation of that partition.
-OptimizationLevel preLinkLevel(OptimizationLevel Level) {
-  if (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3)
+// importing, so without a profile to use the pre-link runs the O1
+// simplification: it inlines and simplifies enough for the summaries the
+// import decisions read, and leaves the full simplification to the backend.
+// The O2 simplification before the link repeated most of the backend's
+// work: on a partition dominated by one large function it took about half
+// as long as the backend's optimization and code generation of that
+// partition. A build that uses a profile keeps the pre-link at Level: with
+// the O1 pre-link, profile-guided programs ran up to 3% slower.
+OptimizationLevel preLinkLevel(OptimizationLevel Level, bool UsingProfile) {
+  if (!UsingProfile &&
+      (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3))
     return OptimizationLevel::O1;
   return Level;
 }
@@ -1081,10 +1084,11 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.collectAnnotated(Weigher.Annotated);
         P.afterProfileAnnotation(PartitionMatch);
       }
-      if (preLinkLevel(Level) != Level)
+      OptimizationLevel PreLink = preLinkLevel(Level, Annotating);
+      if (PreLink != Level)
         addPreLinkValuePropagation(P.PB);
       ModulePassManager MPM =
-          P.PB.buildThinLTOPreLinkDefaultPipeline(preLinkLevel(Level));
+          P.PB.buildThinLTOPreLinkDefaultPipeline(PreLink);
       MPM.addPass(UnnameStructTypes());
       // The module hash is set at the thin link instead (see Names).
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,

@@ -52,6 +52,7 @@ import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { emitPerKeyOrder } from "./key-orders.js";
+import { emitLinkedRecordBranches } from "./walkers.js";
 import { registerReplay } from "./emit-journal.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
@@ -281,10 +282,13 @@ export function streamTypedRefCommitAdapter(
         });
     }
     const symbols = new Map((meta.def.symbolFields ?? []).map((symbol) => [symbol.field, symbol]));
+    // An inline array field is never written through a view
+    // (inline-array-views.ts), so its elements stay as they are.
     const fields = meta.def.fields.filter(
       (field) =>
         (isClassOwnEnumerableFieldName(field.name) || symbols.has(field.name)) &&
-        !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")),
+        !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")) &&
+        inlineFieldTail(host, t.className, field.name) === undefined,
     );
     for (const [index, field] of fields.entries()) {
       const next = `f${index}_next`;
@@ -1178,6 +1182,22 @@ export function streamTypedRefMaterializeAdapter(
       }
       B.terminate(`ret ptr ${out}`);
     } else {
+      // A copy linked to its source (IrModule.recordLinks) views as its
+      // composed record: the field operations below answer the declared
+      // fields from the copy, and the view the source's other properties.
+      // The composed record's live view boxes its records live, and it
+      // holds the copy's own nested records, so writes through the view's
+      // nested records reach the copy's.
+      emitLinkedRecordBranches(host.shapeHost, B, t.shapeId, "%p", (sourceT, composed) => {
+        const view = B.tmp();
+        B.line(`${view} = call ptr @${host.liveDynRefAdapter(sourceT).snapshot}(ptr ${composed})`);
+        // The composed record keeps what its source kept (a spread's other
+        // keys), which rejoins the view in their own-key positions.
+        host.declare(`declare ptr @scr_record_source_apply(ptr, ptr)`);
+        const merged = B.tmp();
+        B.line(`${merged} = call ptr @scr_record_source_apply(ptr ${view}, ptr ${composed})`);
+        return `ret ptr ${merged}`;
+      });
       host.declare(`declare ptr @scr_dyn_new_obj()`);
       host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
       const out = B.tmp();

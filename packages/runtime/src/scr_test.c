@@ -2218,6 +2218,7 @@ static void scr_mt_hooks(void) {
   scr_date_mock_now = date ? &date->now : NULL;
   scr_mt_abort_timeout_arm = scr_mt_owner[SCR_MT_ABORT] ? &scr_mt_abort_arm : NULL;
   scr_mt_wait_state = scr_mt_owner[SCR_MT_WAIT] ? 1 : scr_mt_wait_unbound ? 2 : 0;
+  scr_timer_mocked_apis = (scr_mt_owner[SCR_MT_TIMEOUT] ? 1 : 0) | (scr_mt_owner[SCR_MT_INTERVAL] ? 2 : 0);
 }
 
 /* Node's #toggleEnableTimers. Mocking Date while another MockTimers mocks

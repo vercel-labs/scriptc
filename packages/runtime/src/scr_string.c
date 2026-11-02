@@ -3937,6 +3937,30 @@ ScrStr *scr_qs_escape(ScrStr *s) {
   return scr_str_encode_uri_component(s);
 }
 
+/* querystring.escape(value) of a value that may not be a string: Node's
+ * qsEscape converts an object or null with String(value) and any other
+ * value with value + "", so a symbol throws TypeError. A function converts
+ * to its source text, which a compiled binary does not keep: SC2020. +1, or
+ * NULL with the exception pending. */
+ScrStr *scr_qs_escape_value(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_SYMBOL) {
+    static const char message[] = "Cannot convert a Symbol value to a string";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_FUNC) {
+    static const char message[] =
+        "querystring.escape of a function converts its source text, which a compiled binary does not keep";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (!text) return NULL;
+  ScrStr *out = scr_qs_escape(text);
+  scr_str_release(text);
+  return out;
+}
+
 /* One %XX escape's byte, or -1 (bad hex / truncated). */
 static int scr_uri_hex_byte(const char *p, size_t rem) {
   if (rem < 3 || p[0] != '%') return -1;

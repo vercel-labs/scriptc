@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/timers-callback-this.cjs"
+ ],
+ "diags": []
+}

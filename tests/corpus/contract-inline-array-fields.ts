@@ -192,3 +192,13 @@ for (let round = 0; round < 2000; round++) {
   if (list.nodes.length > 0) total += list.nodes.indexOf(list.nodes[list.nodes.length - 1]!);
 }
 console.log(total);
+
+// An index that assigns the list local reads the elements of the list the
+// field was read off first.
+function firstOf(a: List, b: List): number | undefined {
+  let list = a;
+  return list.nodes[((list = b), 0)]?.pos;
+}
+const firstA = new List(0, 1, leaves(7, 1));
+const firstB = new List(0, 1, leaves(8, 1));
+console.log(firstOf(firstA, firstB), firstOf(firstB, firstA));

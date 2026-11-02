@@ -3,7 +3,7 @@
  * their fields. Every allocation has a size_t reference count at offset zero
  * and participates in the runtime allocation audit. */
 import type { HeapCensus } from "./heap-census.js";
-import type { IrClassDef, IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
+import type { IrClassDef, IrModule, IrRecordLink, IrRecordShape, IrType } from "../../ir/ir.js";
 import {
   isIdentityCollectionKey,
   isRefCounted,
@@ -77,13 +77,14 @@ import { PARTIAL_VIEW_ABSENT, recordViewTestLines, type RecordViews } from "./re
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
-/** SCR_CYC_MAX_TYPES (scr_rc.h): the registry's size, and the length of
- * the young-in nursery's per-id skip countdown. */
-const CYC_MAX_TYPES = 32768;
-
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
+  /** The module's record links (IrModule.recordLinks); absent when none. */
+  readonly recordLinks?: readonly IrRecordLink[];
+  /** The gate a lookup of a checked record's kept source tests
+   * (alloc.ts RECORD_KEPT_GATE); RECORD_SOURCES_GATE when absent. */
+  readonly recordSourcesGate?: string;
   /** The counters of a build instrumented for the heap census (heap-census.ts). */
   readonly heapCensus?: HeapCensus | null;
   /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,
@@ -195,13 +196,16 @@ export function youngEntryLines(host: ShapeHost): string[] {
     return [`  call void @scr_yin_enter(ptr %o) ; the young-in nursery`];
   }
   host.declare(`@scr_yin = external global { ptr, i64, i64, i64 }`);
-  host.declare(`@scr_yin_skip = external global [${CYC_MAX_TYPES} x i32]`);
+  // The per-id skip countdown has SCR_CYC_MAX_TYPES entries (scr_rc.h),
+  // which a runtime build may set; the declaration leaves the size to the
+  // definition, as C does for `extern uint32_t scr_yin_skip[];`.
+  host.declare(`@scr_yin_skip = external global [0 x i32]`);
   host.declare(`declare void @scr_yin_enter_slow(ptr)`);
   return [
     `  %ye.idp = getelementptr inbounds i8, ptr %o, i64 -${CYC_HDR} ; the young-in nursery`,
     `  %ye.id16 = load i16, ptr %ye.idp ; ScrCycHdr.id`,
     `  %ye.id = zext i16 %ye.id16 to i64`,
-    `  %ye.sp = getelementptr inbounds [${CYC_MAX_TYPES} x i32], ptr @scr_yin_skip, i64 0, i64 %ye.id`,
+    `  %ye.sp = getelementptr inbounds i32, ptr @scr_yin_skip, i64 %ye.id`,
     `  %ye.s = load i32, ptr %ye.sp`,
     `  %ye.skip = icmp ne i32 %ye.s, 0`,
     `  br i1 %ye.skip, label %ye.skipped, label %ye.enter`,
@@ -1474,7 +1478,12 @@ export function mapKeyKindNum(key: IrType, unionArms?: IrType[]): number {
   if (key.kind === "bool") return 6;
   if (key.kind === "nullT") return 8;
   if (key.kind === "undefinedT") return 9;
-  if (key.kind === "union") return unionArms?.every(isIdentityCollectionKey) ? 3 : 7;
+  // SCR_MAP_KEY_CLOSURE: function values compare their identity roots, so a
+  // signature adapter is the key of the function it adapts. A union with a
+  // function arm keys each arm by its own kind (SCR_MAP_KEY_UNION_VALUE).
+  if (key.kind === "func") return 10;
+  if (key.kind === "union")
+    return unionArms?.every((arm) => isIdentityCollectionKey(arm) && arm.kind !== "func") ? 3 : 7;
   const acc = mapKeyAccess(key);
   return acc === "f64" ? 0 : acc === "str" ? 1 : 2;
 }

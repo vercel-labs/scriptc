@@ -14,6 +14,7 @@ import {
 import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
 import { PACK_VERIFIED_FILE } from "../packages/compiler/src/backend/runtime-pack-native.js";
 import { prebuiltLibDiagnosticsText } from "../packages/compiler/src/frontend/ts7/lib-diagnostics.js";
+import { judgeProfileMatch } from "./build-native-cli-profile.mjs";
 import { stageNativeCliAssets } from "./native-cli-assets.mjs";
 import type { NativeToolchainManifest } from "../packages/compiler/src/native/toolchain.js";
 
@@ -35,12 +36,10 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // profile (cli.blocks.gz beside cli.profdata.gz) annotate the functions
 // whose control flow changed since the profile was collected.
 const profileGenerate = process.env["SCRIPTC_NATIVE_PROFILE_GENERATE"] || undefined;
-// Below this share of matching functions, the build warns that the profile
-// has lost most of its gain. A profile refreshed on the same commit, with
-// the same layout, matches all of the native compiler's profiled functions.
-// One refreshed 1.5 days and about 200 commits earlier matched 87.2%, and
-// kept about half of the fresh profile's gain on a cold tsc-ts build.
-const PROFILE_MATCH_WARNING = 0.9;
+// SCRIPTC_NATIVE_PROFILE_CHECK=1 fails a build with the committed profile
+// when it matches fewer than FAIL_BELOW of the functions it describes
+// (scripts/build-native-cli-profile.mjs); CI sets it.
+const profileCheck = process.env["SCRIPTC_NATIVE_PROFILE_CHECK"] === "1";
 const committedProfile = join(root, "packages/compiler/native/cli.profdata.gz");
 const requestedProfile = process.env["SCRIPTC_NATIVE_PROFILE_USE"];
 const useProfile =
@@ -182,36 +181,22 @@ if (!result.ok)
       )
       .join("\n"),
   );
-// How well the profile still describes the compiler: a function whose
-// control flow changed since the profile was collected is optimized as
-// without one. The share falls as compiler code changes, and with it the
-// profile's gain (refresh it with scripts/refresh-cli-profile.mjs).
+// How well the profile still describes the compiler. The profile matches
+// builds laid out like the instrumented build; a build with another layout
+// (the bootstrap seed uses none) matches fewer functions however fresh the
+// profile is, so its summary is printed but not graded.
 const match = useProfile && "artifact" in result ? result.artifact.profileMatch : undefined;
 if (match !== undefined) {
-  const profiled = match.annotated + match.mismatched;
-  const share = profiled === 0 ? 0 : match.annotated / profiled;
-  // The same by the profile's counters: a changed hot function loses more
-  // of the profile's gain than a changed cold one.
-  const counts =
-    match.annotatedCounts === undefined || match.mismatchedCounts === undefined
-      ? 0
-      : match.annotatedCounts + match.mismatchedCounts;
-  console.log(
-    `native compiler profile: ${match.annotated} of ${profiled} profiled functions match (${(100 * share).toFixed(1)}%); ${match.missing} functions have no profile` +
-      (counts > 0
-        ? `; changed functions hold ${((100 * match.mismatchedCounts!) / counts).toFixed(1)}% of its counts`
-        : "") +
-      (match.recovered > 0
-        ? `; ${match.recovered} functions annotated from the profile's block counts`
-        : "") +
-      (match.unknownPartitions > 0
-        ? `; ${match.unknownPartitions} partitions reused without counts`
-        : ""),
-  );
-  if (match.unknownPartitions === 0 && share < PROFILE_MATCH_WARNING)
-    console.warn(
-      `warning: the native compiler profile matches ${(100 * share).toFixed(1)}% of the functions it describes; run scripts/refresh-cli-profile.mjs`,
-    );
+  const verdict = judgeProfileMatch(match, {
+    check: profileCheck,
+    layoutMatchesProfile: functionLayout === committedLayout,
+  });
+  console.log(verdict.summary);
+  if (verdict.warning !== undefined) console.warn(`warning: ${verdict.warning}`);
+  if (verdict.error !== undefined) {
+    console.error(`error: ${verdict.error}`);
+    process.exit(1);
+  }
 }
 const compilerVersion = (
   JSON.parse(readFileSync(join(root, "packages/compiler/package.json"), "utf8")) as {

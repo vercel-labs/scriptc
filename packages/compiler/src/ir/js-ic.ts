@@ -33,6 +33,28 @@ export type JsIcSite =
 
 const CAPSULE_TESTS = new Set(["dyn.typedRefIs", "dyn.typedRefKeyIs", "dyn.classIs"]);
 
+/** A class table's branches in the order a receiver that matches none of
+ * them reaches their guards: the body's statements, with a `dyn.classHash`
+ * switch replaced by its cases' branches. The switch selects one of those
+ * branches by the receiver's class key and each branch keeps its own key
+ * test, so a reader treats the switch's cases as the capsule branches they
+ * were lowered from (frontend/lowering/class-dynamic-dispatch.ts). */
+function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
+  if (!body.some(isClassDispatch)) return body;
+  const branches: IrStmt[] = [];
+  for (const stmt of body) {
+    if (isClassDispatch(stmt))
+      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
+    else branches.push(stmt);
+  }
+  return branches;
+}
+
+/** The switch the lowering builds over a generated class table's branches. */
+function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
+  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
+}
+
 /** Classifies the helpers of a module once. */
 export class JsIcSites {
   private readonly fns: ReadonlyMap<string, IrFunction>;
@@ -62,16 +84,17 @@ export class JsIcSites {
     const receiver = fn.params[0]?.localId;
     if (receiver === undefined) return null;
     const second = fn.params[1]?.localId;
+    const body = classTableBranches(fn.body);
     const exits: JsIcSite[] = [];
     let i = 0;
-    for (; i < fn.body.length; i++) {
-      const s = fn.body[i]!;
+    for (; i < body.length; i++) {
+      const s = body[i]!;
       if (this.capsuleBranch(s, receiver) || this.rebinding(s, receiver)) continue;
       const exit = this.plainExit(s, receiver, second);
       if (exit === null) break;
       exits.push(exit);
     }
-    const tail = fn.body.slice(i);
+    const tail = body.slice(i);
     let site: JsIcSite | null;
     if (fn.params.length === 1) site = this.getTail(tail, receiver);
     else if (fn.params.length !== 2 || second === undefined) return null;
@@ -269,9 +292,10 @@ export class JsIcSites {
       fn.captures === undefined
     ) {
       const param = fn.params[0]!.localId;
-      const last = fn.body[fn.body.length - 1];
+      const body = classTableBranches(fn.body);
+      const last = body[body.length - 1];
       identity =
-        fn.body
+        body
           .slice(0, -1)
           .every(
             (s) =>

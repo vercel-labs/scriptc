@@ -1,3 +1,4 @@
+import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
   arrayClassMemberOwner,
@@ -139,6 +140,7 @@ import {
   lowerHelperReturnCall,
   lowerIteratorFromCall,
   lowerIteratorHelperCall,
+  lowerWidenedIteratorHelperCall,
 } from "./containers/iterator-helpers.js";
 import {
   lowerObjectAssignIndexShape,
@@ -1842,6 +1844,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // (untyped in fallback builds, so before the dyn receiver path) or
       // webcrypto.
       lowerWebCryptoMethodCall(lowerer, expr, expr.expression) ??
+      // A helper call on a JavaScript binding reassigned with a helper
+      // stage (`let it = g(); it = it.filter(...)`): the binding holds the
+      // checked value, and the dyn receiver path would read `filter` as
+      // Array.prototype's. Before it, so the runtime's helper answers.
+      lowerWidenedIteratorHelperCall(lowerer, expr) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
       lowerDynReceiverMethodCall(lowerer, expr, expr.expression) ??
@@ -8281,6 +8288,11 @@ function lowerIteratorStaticFence(
   if (!lowerer.isStdlibMember(access)) return null;
   const from = lowerIteratorFromCall(lowerer, call, access);
   if (from) return from;
+  // Any other argument in JavaScript: the runtime's Iterator.from.
+  if (access.name.text === "from" && !call.questionDotToken && !access.questionDotToken) {
+    const dynamic = lowerIteratorFromDyn(lowerer, call);
+    if (dynamic) return dynamic;
+  }
   lowerer.noLowering(
     `Iterator.${access.name.text}`,
     call,
@@ -10058,6 +10070,17 @@ function lowerObjectStaticCall(
         if (typeEquals(vt, valueT)) return value;
         if (valueT.kind === "dyn" && lowerer.dynConvertible(vt))
           return lowerer.coerceToExpected(value, DYN);
+        if (valueT.kind === "union" && vt.kind === "union") {
+          // A field union that is a PROPER SUBSET of the element union
+          // (`{ accent: number | string; scrollbarThumb: number | string
+          // | undefined }` enumerates as `[string, number | string |
+          // undefined][]`): every arm the field can hold is an arm of the
+          // element union, so the box re-tags onto it — the same runtime
+          // value under the element union's tag numbering.
+          return lowerer.unionRetagMappable(vt.unionId, valueT.unionId)
+            ? lowerer.coerceToExpected(value, valueT)
+            : null;
+        }
         if (valueT.kind === "union" && vt.kind !== "union") {
           const tag = lowerer.armTag(valueT.unionId, vt);
           if (tag >= 0) {
@@ -10104,7 +10127,11 @@ function lowerObjectStaticCall(
           } else {
             return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
           }
-        } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
+        } else if (
+          valueT?.kind !== "dyn" &&
+          !typeEquals(f.type, valueT ?? f.type) &&
+          !(valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId))
+        ) {
           return `field '${f.name}' is a union that cannot re-tag into the result element type`;
         }
       }

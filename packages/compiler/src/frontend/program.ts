@@ -1558,6 +1558,14 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   // index properties (sloppy) or throws (strict), as the object does.
   if (d.code === 2542 && ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'"))
     return true;
+  // `new Iterator()` (2511: Iterator is the lib's one abstract class) and
+  // `Iterator()` (2348): Node throws its TypeError at run time, which the
+  // lowering reproduces (iterator-prototype.ts).
+  if (d.code === 2511) return true;
+  // A base constructor's type-argument count (2508): JavaScript writes no
+  // type arguments, and `class X extends Iterator` is the lib's generic
+  // abstract class. The heritage lowering checks the actual base.
+  if (d.code === 2508) return true;
   // The deprecated Buffer(...) call without `new`, which Node's Buffer
   // function accepts (containers/bytes.ts lowers it), and fs.ReadStream(...)
   // and fs.WriteStream(...), which construct their stream
@@ -1565,6 +1573,7 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   if (d.code === 2348) {
     const text = ts.flattenDiagnosticMessageText(d, "\n");
     return (
+      text.includes("'IteratorConstructor'") ||
       text.includes("'BufferConstructor'") ||
       text.includes("'typeof ReadStream'") ||
       text.includes("'typeof WriteStream'")

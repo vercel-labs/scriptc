@@ -189,6 +189,10 @@ export interface CcOptions {
   /** A standard library prototype object read as a value in a JavaScript
    * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`: compiles
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c. */
+  hostAbsentGlobals?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
@@ -241,6 +245,8 @@ export interface CcOptions {
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
   primitiveWrapper?: boolean;
+  /** %Iterator% and %Iterator.prototype%: compiles scr_js_iterator.c. */
+  iteratorProto?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep

@@ -253,6 +253,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
+  // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).
+  unit((u) => u.opts.iteratorProto === true, "scr_js_iterator.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||
@@ -465,6 +467,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
+  // The dynamic global object's answer for the Node globals the native
+  // runtime does not implement (host-globals.ts).
+  unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -486,6 +491,10 @@ const RUNTIME_DEFINES: readonly {
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
+  // scr_node_builtin.c's dynamic global read throws for the plain Node
+  // globals the native runtime does not implement; a program with a computed
+  // global read or `… in globalThis` selects that build (host-globals.ts).
+  { define: "SCR_GLOBAL_HOST_ABSENT", when: (opts) => opts.hostAbsentGlobals },
   // The JavaScript object model build (t262-da §J): the code the runtime
   // features only a JavaScript source reaches share. Its objects are separate
   // builds selected by runtime-pack-matrix.mjs, so the source build must name

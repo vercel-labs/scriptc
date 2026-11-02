@@ -240,6 +240,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  // A getter the walk invokes renders its result, and that rendering can
+  // refuse (SC2020) exactly like the walk's own.
+  "insp.accessorValue",
   // The options object reads the caller's options (getters included), and
   // the checked-dynamic walk calls custom inspect functions.
   "insp.customOptions",
@@ -286,6 +289,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",
+  "http.clientProtocolCheck",
+  "http.clientProtocolCheckAgent",
   "http.serverMaxHeaderSize",
   "http.clientMaxHeaderSize",
   "http.resAppendHeader",
@@ -395,6 +400,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  // The URL+options form adds the URL parse's throws to that walk's.
+  "http.requestUrlDyn",
+  "http.requestUrlDynCb",
+  "https.requestUrlDyn",
+  "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
   // The h2 client's throwing entries: connect on a bad/non-http
@@ -780,6 +790,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
   "dyn.hasKeyComputed",
+  // `… in globalThis` over a name the runtime does not provide throws
+  "dyn.globalHas",
   "dyn.hasOwnComputed",
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
@@ -805,6 +817,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run
   // user hooks and the guard refuses.
   "wrapper.new",
+  // %Iterator% (scr_js_iterator.c): construction always throws, and
+  // Iterator.from runs the value's iterator method and next getter.
+  "iterator.construct",
+  "iterator.from",
+  "iterator.instanceOf",
   "wrapper.toObject",
   "wrapper.objectTag",
   "wrapper.thisString",

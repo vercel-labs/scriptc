@@ -43,15 +43,18 @@ import { globalSymbolKey } from "./global-symbols.js";
 import {
   HOST_GLOBAL_PROTOTYPE_MEMBERS,
   HOST_GLOBAL_VALUE_MEMBERS,
+  NODE_GLOBALS_WITHOUT_NATIVE,
+  hostAbsentInstall,
   hostGlobalCallTarget,
   hostGlobalNameOfElement,
   hostGlobalNameOfRead,
   hostGlobalPrototypeOf,
+  isGlobalObjectRead,
 } from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
-import { lowerGlobalValue } from "../lower-global-value.js";
+import { lowerGlobalObjectValue } from "../lower-global-value.js";
 import { expandoMemberRead } from "../lower-expando.js";
 import {
   assertedElementKeepsUndefined,
@@ -236,7 +239,35 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         lowerer.hostGlobalFence(prototypeOf, expr);
     }
   }
-  if (!expr.questionDotToken && stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis") {
+  // A computed key over the global object: the runtime answers from its own
+  // table, which cannot tell that a name is Node's. Reading a Node global the
+  // native runtime does not implement must not answer undefined, so the
+  // derived host-global set is armed before the read (host-globals.ts). A
+  // static string key never needs it (the fence above decides those), and a
+  // symbol key keeps its identity-indexed store.
+  const globalName = expr.questionDotToken ? null : stdlibGlobalNameOf(lowerer, expr.expression);
+  const plainGlobalRead = globalName === "globalThis";
+  // The alias/cast spellings (`const scope = globalThis as T`) resolve to no
+  // global name at all, which is what keeps them out of the check above.
+  const aliasGlobalRead =
+    !plainGlobalRead &&
+    globalName === null &&
+    !expr.questionDotToken &&
+    isGlobalObjectRead(lowerer, expr.expression, undefined, globalName);
+  // A key the checker spells as one literal (a literal, an enum member, a
+  // `const` of one, a template of those — the same fold property keys take)
+  // is decided here rather than at run time, so a static key arms nothing
+  // unless it IS one of the derived globals: the fence above cannot see that
+  // one, because the key is not a string literal (`const key: "FormData" =
+  // "FormData"; globalThis[key]`). Every other static key keeps its read.
+  const foldedKey = expr.questionDotToken
+    ? null
+    : lowerer.foldedStringKeyOf(expr.argumentExpression);
+  const foldedHostGlobal = foldedKey !== null && NODE_GLOBALS_WITHOUT_NATIVE.has(foldedKey);
+  const dynamicKey =
+    foldedKey === null &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.argumentExpression))?.kind !== "symbol";
+  if (plainGlobalRead || (aliasGlobalRead && (dynamicKey || foldedHostGlobal))) {
     const symbol = globalSymbolKey(lowerer, expr.expression, expr.argumentExpression);
     if (symbol)
       return {
@@ -257,12 +288,26 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
             type: STRING,
             loc: locOf(expr),
           };
-    return {
+    const loc = locOf(expr);
+    const read: IrExpr = {
       kind: "dynKeyGet",
-      value: lowerGlobalValue(lowerer, expr.expression),
+      // The receiver is the global object however this spelling reached it,
+      // so its name table is the `globalThis` one, not the read's own type.
+      value: lowerGlobalObjectValue(lowerer, expr.expression, locOf(expr.expression)),
       key: name,
       type: DYN,
-      loc: locOf(expr),
+      loc,
+    };
+    // Only a key the compiler cannot resolve, or a folded one that names a
+    // derived global, needs the runtime's set; the other static keys keep the
+    // read exactly as they had it.
+    if (!dynamicKey && !foldedHostGlobal) return read;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: hostAbsentInstall(loc), loc }],
+      result: read,
+      type: DYN,
+      loc,
     };
   }
   // `req.headers["x-name"]` — the computed twin of `req.headers.host`

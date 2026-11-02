@@ -334,9 +334,9 @@ export function assertedOptionalMemberRead(
   );
   if (answer !== null) return answer;
   lowerer.unsupported(
-    "SC1031",
+    "SC1090",
     access,
-    `reading the member '${access.name.text}' only the asserted type declares, off a record whose kept source properties the layout cannot retain (declare the property on the record's own type)`,
+    `reading '${access.name.text}' through a type assertion to a member the value's own layout does not hold (the record's kept source properties cannot answer it; declare the member on the value's type)`,
   );
 }
 
@@ -352,8 +352,8 @@ export function assertedOnlyMemberWrite(
 ): void {
   if (assertedOptionalMember(lowerer, receiver, member) === null) return;
   lowerer.unsupported(
-    "SC1031",
+    "SC1090",
     blame,
-    `writing the member '${member}' only the asserted type declares (Node adds it to the object; a record's layout cannot hold it — declare the property on the record's own type)`,
+    `writing '${member}' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type)`,
   );
 }

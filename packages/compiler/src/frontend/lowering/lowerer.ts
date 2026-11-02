@@ -4799,6 +4799,10 @@ export class Lowerer {
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
+    // Preflight's admitted opinions are a program fact computed before any
+    // unit lowers, and the site index over them is a memo of that fact.
+    "admittedOpinions",
+    "admittedOpinionIndex",
     // Coverage's --explain-dynamic report: the indexed-read analysis's
     // storage decisions and the narrowed reads they explain.
     "runtimeOptionalProvenance",

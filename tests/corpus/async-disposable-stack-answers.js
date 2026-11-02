@@ -63,7 +63,7 @@ async function syncFallbackAnswers() {
       return new Promise((resolve) => {
         setTimeout(() => {
           seen.push("fallback promise settled");
-          resolve();
+          resolve(undefined);
         }, 5);
       });
     },

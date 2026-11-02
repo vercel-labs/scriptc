@@ -253,6 +253,7 @@ typedef enum {
 
 /* Tags added since the last pin, by name only (see above). */
 #define SCR_DYNH_NEW_TAGS(Y) \
+  Y(ASYNC_DISPOSABLE_STACK) /* AsyncDisposableStack (scr_async_disposable_stack.c) */ \
   Y(SEGMENTER_WORD) /* ICU word-granularity Segmenter (scr_intl.c) */ \
   Y(SEGMENTS_WORD) /* its word segmentation result (scr_intl.c) */
 
@@ -1152,6 +1153,29 @@ bool scr_disposable_stack_is(const ScrDyn *value);
 bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
+/* AsyncDisposableStack (scr_async_disposable_stack.c), the `await using`
+ * counterpart: the same stack shape whose disposal awaits each resource.
+ * scr_async_disposable_stack_new answers a new stack (+1). use reads the
+ * resource's disposal method with the async hint (@@asyncDispose, then
+ * @@dispose) and registers a resource even for null and undefined; adopt and
+ * defer check their callback. All three throw Node's ReferenceError on a
+ * disposed stack and Node's TypeError on an invalid resource or callback, and
+ * return false with the exception pending. The stack's other members —
+ * disposeAsync included — are function values and getters of its dyn
+ * handle. */
+ScrDyn *scr_async_disposable_stack_new(void);
+/* The member value an AsyncDisposableStack answers for the method named `key`
+ * (+1), or NULL: the value AsyncDisposableStack.prototype holds as its
+ * member. */
+ScrDyn *scr_async_disposable_stack_member_value(const char *key, size_t len);
+bool scr_async_disposable_stack_is(const ScrDyn *value);
+bool scr_async_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
+/* use(value) for a typed class instance: `dispose` is the compiler's
+ * function, called with the value at disposal, whose result DisposeResources
+ * awaits like any other resource's. */
+bool scr_async_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value,
+                                             const ScrDyn *dispose);
+bool scr_async_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 /* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
  * view: replaces the value whatever the attributes copied into the view.

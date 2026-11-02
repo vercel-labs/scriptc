@@ -1948,13 +1948,25 @@ static ScrDyn *scr_dyn_disposable_stack_member_value(const char *key, size_t len
   return member ? member(key, len) : NULL;
 }
 
+/* The AsyncDisposableStack's member table, on the same terms: its unit is
+ * gated on the program's own fact (scr_async_disposable_stack.c), so this
+ * unit names a slot it fills when it loads, never the unit's function. */
+ScrDyn *(*scr_dyn_async_disposable_stack_member)(const char *key, size_t len);
+
+static ScrDyn *scr_dyn_async_disposable_stack_member_value(const char *key, size_t len) {
+  ScrDyn *(*member)(const char *, size_t) = scr_dyn_async_disposable_stack_member;
+  return member ? member(key, len) : NULL;
+}
+
 /* The builtins that answer a member from a table of their own unit instead of
  * from the interner below, and the function that answers one. A Date's
  * methods run the Date receiver checks and a DisposableStack's carry the
  * interface's brand errors, so neither can be this unit's dispatch function;
  * the unit that builds the prototype answers its members from the same table
  * the instances use, so `Date.prototype.getTime === date.getTime` and
- * `DisposableStack.prototype.use === stack.use`. A builtin whose instances
+ * `DisposableStack.prototype.use === stack.use` (the AsyncDisposableStack's
+ * unit, gated on its own program fact, fills a slot the same way). A builtin
+ * whose instances
  * already answer the interned values — Map, Set, WeakMap, WeakSet, String,
  * Object — needs no entry: `map.get` and `Map.prototype.get` are one interned
  * function.
@@ -1968,6 +1980,7 @@ static const struct {
 } scr_dyn_member_providers[] = {
   { "Date", scr_native_date_member_value },
   { "DisposableStack", scr_dyn_disposable_stack_member_value },
+  { "AsyncDisposableStack", scr_dyn_async_disposable_stack_member_value },
 };
 
 /* The member value the builtin named `prototype` answers for `method` from

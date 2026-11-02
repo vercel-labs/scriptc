@@ -7,6 +7,7 @@ import {
   type IrFunction,
   type IrLocal,
   type IrModule,
+  type IrType,
   type IrStmt,
 } from "./ir.js";
 import { everyStmtList } from "./traverse.js";
@@ -78,7 +79,7 @@ const get = (index: IrExpr): IrExpr => ({
   type: F64,
   invalidNaN: true,
 });
-const FN = { kind: "func", params: [], ret: F64 } as const;
+const FN: IrType = { kind: "func", params: [], ret: F64 };
 const closureOf = (captures: string[]): IrExpr => ({
   loc,
   kind: "closure",

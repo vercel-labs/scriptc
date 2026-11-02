@@ -2218,7 +2218,15 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (memoKey !== null && !bypassTypeMemo) {
     contextMemo = ctx.typeMemoFor?.() ?? ctx.typeMemo;
     const own = contextMemo?.get(memoKey);
-    if (own !== undefined) return own;
+    if (own !== undefined) {
+      // The scope's own memo also holds answers this scope's bindings shaped
+      // (they were written here, not shared). Taking one re-reads that
+      // scope state just as mapping the type would, so the frame that took it
+      // is scope-specific too: without this the parent could enter the shared
+      // memo and serve this instance's representation to every later one.
+      if (ctx.typeMemoShared?.get(memoKey) !== own) noteScopeSensitiveMapping();
+      return own;
+    }
     const shared = ctx.typeMemoShared;
     if (shared !== undefined && shared !== contextMemo) {
       const hit = shared.get(memoKey);

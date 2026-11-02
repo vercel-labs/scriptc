@@ -16,7 +16,7 @@ import {
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
-import { prepareExecutableModule } from "./executable/prepare.js";
+import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
 import { setIslandResolver } from "./node-islands/resolve.js";
 import {
@@ -47,6 +47,7 @@ import type {
   CompileRequestResult,
   CompileLibraryOptions,
   CompileLibraryResult,
+  CompileFailure,
   AnalyzeOptions,
   AnalyzeResult,
 } from "./compile-types.js";
@@ -1142,45 +1143,30 @@ async function prepareExecutableInput(
   timing: CompilationTiming,
   warningSink?: CompileWarningSink,
 ): Promise<PreparedExecutable | CompileRequestResult> {
-  // One scope for the whole build. The island decision reloads the program
-  // and every island retry round loads it again; they take the checker the
-  // previous load leaves idle instead of starting a cold one, and the last
-  // one to end closes the scope's services.
+  const outputKind = opts.outputKind ?? "exe";
+  // The frontend loads of one build — the island decision's reload and every
+  // retry round's load — share one services scope, so each load after the
+  // first rebinds the checker the previous one leaves idle instead of
+  // starting a cold one. The scope ends with the last load: LLVM emission and
+  // native code generation run after it, and no idle checker process holds
+  // its heap through them.
   const services = beginCompileServices();
+  let prepared: PreparedExecutableModule | CompileFailure;
   try {
-    return await prepareExecutableInputInScope(
+    prepared = prepareExecutableModule(
       entryPath,
       opts,
       ffi,
       buildPlatform,
+      nodeFrontend,
       timing,
-      warningSink,
+      new Map(),
+      true,
+      await nodeUnitStore(entryPath, opts, ffi, buildPlatform),
     );
   } finally {
     endCompileServices(services);
   }
-}
-
-async function prepareExecutableInputInScope(
-  entryPath: string,
-  opts: CompileRequestOptions,
-  ffi: FfiProfile | null,
-  buildPlatform: string,
-  timing: CompilationTiming,
-  warningSink?: CompileWarningSink,
-): Promise<PreparedExecutable | CompileRequestResult> {
-  const outputKind = opts.outputKind ?? "exe";
-  const prepared = prepareExecutableModule(
-    entryPath,
-    opts,
-    ffi,
-    buildPlatform,
-    nodeFrontend,
-    timing,
-    new Map(),
-    true,
-    await nodeUnitStore(entryPath, opts, ffi, buildPlatform),
-  );
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
   // Calls into Node record the libnode pack an executable loads at run

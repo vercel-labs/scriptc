@@ -4920,6 +4920,43 @@ static void scr_typed_ref_view_numeric_properties(const ScrDyn *capsule, ScrDyn 
   scr_dyn_release(named);
 }
 
+/* A capsule's view keeps the own properties a program added through it: a
+ * materializer rebuilds only what the native storage holds (a class's
+ * fields, an error's slots, an array's elements and named properties), so a
+ * key stored on a view whose storage cannot hold it -- an own property of a
+ * compiled Error subclass, for one -- would vanish on the next refresh and
+ * read back absent. Carry each cached own property the fresh view lacks,
+ * descriptor and all, as the record-view branch below does for records. */
+static void scr_typed_ref_view_keep_own(const ScrDyn *cached, ScrDyn *fresh) {
+  const ScrDyn *from = NULL;
+  if (cached->kind == SCR_DYN_OBJ && fresh->kind == SCR_DYN_OBJ) {
+    from = cached;
+  } else if (cached->kind == SCR_DYN_ARR && fresh->kind == SCR_DYN_ARR) {
+    from = cached->v.arr.properties;
+  }
+  if (!from) return;
+  for (size_t i = 0; i < from->v.obj.len; i++) {
+    ScrDynEntry *entry = &scr_dyn_obj_dict_entries(from)[i];
+    const ScrDyn *have = fresh->kind == SCR_DYN_OBJ
+                             ? scr_dyn_obj_get(fresh, entry->key, entry->key_len)
+                             : (fresh->v.arr.properties
+                                    ? scr_dyn_obj_get(fresh->v.arr.properties,
+                                                      entry->key, entry->key_len)
+                                    : NULL);
+    if (have) continue;
+    ScrStr *name = scr_str_new(entry->key, entry->key_len);
+    ScrDyn *key = scr_dyn_new_str(name);
+    ScrDyn *descriptor = scr_dyn_own_descriptor(from, name);
+    if (descriptor) {
+      ScrDyn *defined = scr_dyn_define_property(fresh, key, descriptor);
+      scr_dyn_release(defined);
+      scr_dyn_release(descriptor);
+    }
+    scr_dyn_release(key);
+    scr_str_release(name);
+  }
+}
+
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
   ScrDyn *capsule = (ScrDyn *)d;
   ScrDyn *fresh = capsule->v.typed_ref.materialize(capsule->v.typed_ref.ptr);
@@ -4965,6 +5002,8 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
         scr_dyn_release(key);
         scr_str_release(name);
       }
+    } else {
+      scr_typed_ref_view_keep_own(cached, fresh);
     }
     /* A native record stores its own fields, while its checked view owns
      * prototype changes. Refreshing fields must preserve that prototype. */
@@ -21387,9 +21426,17 @@ void scr_error_accessor_set(ScrError *e, const ScrStr *key, ScrDyn *value) {
 }
 
 bool scr_error_has_key(ScrError *e, const ScrStr *key) {
-  const ScrDyn *view = scr_errdyn_view_of(e);
-  if (view != NULL && view->kind == SCR_DYN_OBJ && scr_dyn_find_entry(view, key->data, key->len) != NULL)
-    return true;
+  ScrDyn *view = scr_errdyn_view_of(e);
+  if (view != NULL) {
+    /* A checked view of a compiled class is a live capsule the view's own
+     * properties are read through (scr_typed_ref_view_keep_own). */
+    if (view->kind == SCR_DYN_OBJ) {
+      if (scr_dyn_find_entry(view, key->data, key->len) != NULL) return true;
+    } else if (scr_dyn_has_own(view, key)) {
+      return true;
+    }
+    if (scr_exc_pending()) return false;
+  }
   return scr_dyn_object_proto_name(key);
 }
 

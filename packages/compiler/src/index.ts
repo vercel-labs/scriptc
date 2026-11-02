@@ -822,7 +822,12 @@ async function compileExecutableNative(
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
-    ...(features.jsObjectModel === true ? { intrinsicObjects: true } : {}),
+    // The raw program fact, already derived from the scan by
+    // executableLinkFeatures: `features.jsObjectModel` here is the merged
+    // link feature, which is also true for a program that only carries the
+    // object model's union (a BigInt typed array), and those programs build
+    // the fill stub, not the graph.
+    ...(features.intrinsicObjects === true ? { intrinsicObjects: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),

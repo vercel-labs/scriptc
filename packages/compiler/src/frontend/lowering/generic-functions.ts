@@ -3296,11 +3296,17 @@ function typeVariesWithEnclosingTypeParameters(lowerer: Lowerer, type: ts.Type):
       return lowerer.checker
         .getTypeArguments(part as ts.TypeReference)
         .some((p) => walk(p, depth + 1));
+    // A mapped type reduces to its source's keys and type arguments.
+    if ((flags & ts.ObjectFlags.Mapped) !== 0) return true;
+    // An index signature names its value type directly, and its key is never
+    // a type parameter: `{ [key: string]: T }` varies exactly as `T` does,
+    // whether the type is an object literal's or a named one's.
+    for (const info of lowerer.checker.getIndexInfosOfType(part)) {
+      if (walk(info.type, depth + 1)) return true;
+    }
     // A nominal instance whose type arguments the reference test above did
     // not see carries none to miss.
     if ((flags & ts.ObjectFlags.ClassOrInterface) !== 0) return false;
-    // A mapped type reduces to its source's keys and type arguments.
-    if ((flags & ts.ObjectFlags.Mapped) !== 0) return true;
     // An inferred object literal or a type alias's object type names its
     // members instead of type arguments: read them, with a bounded width so
     // a wide type cannot make this walk expensive.

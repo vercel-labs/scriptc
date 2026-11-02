@@ -16,6 +16,7 @@ import { createDeterministicArchive } from "./archive.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
 import { zlibInputs } from "../../runtime-pack-common/scripts/zlib-inputs.mjs";
+import { zstdInputs } from "../../runtime-pack-common/scripts/zstd-inputs.mjs";
 
 const run = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -74,9 +75,11 @@ async function build() {
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
+  const zstd = join(vendorRoot, "zstd", "lib");
   const QJS_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
   const ZLIB_BUILD = zlibInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
+  const ZSTD_BUILD = zstdInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
 
   // Speed-flavor executable units are emitted through the host LLVM helper
   // (runtime-unit.mjs), which promotes their local symbols and applies the
@@ -175,6 +178,7 @@ async function build() {
                 ? ["-I", zlib]
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
+              ...(unit.source === "scr_zstd.c" ? ["-I", zstd] : []),
             ];
             const unitFlags = [
               ...commonFlags,
@@ -282,6 +286,17 @@ async function build() {
         "-I",
         join(brotli, "include"),
       ]),
+      await archive("zstd", ZSTD_BUILD.sources, zstd, [
+        "-target",
+        RUNTIME_PACK_MATRIX.target.llvm_triple,
+        "-std=c11",
+        "-O3",
+        ...ZSTD_BUILD.defines.map((define) => `-D${define}`),
+        ...ZSTD_BUILD.compileFlags,
+        ...codeAlignment,
+        "-I",
+        zstd,
+      ]),
       await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -313,6 +328,7 @@ async function build() {
       [join(zlib, "LICENSE"), "artifacts/licenses/zlib.txt", "Zlib"],
       [join(zlib, "LICENSE.chromium"), "artifacts/licenses/zlib-chromium.txt", "BSD-3-Clause"],
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
+      [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
     ];
     await Promise.all(

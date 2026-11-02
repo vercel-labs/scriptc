@@ -203,6 +203,7 @@ test("timing, cache placement and emission worker variables keep the frontend ou
     "SCRIPTC_CACHE_DIR",
     "SCRIPTC_CACHE_MAX_MB",
     "SCRIPTC_EMIT_WORKERS",
+    "SCRIPTC_EMIT_WORKER_FAIL",
     "SCRIPTC_EMIT_WORKER_FUNCTIONS",
     "SCRIPTC_TIMING",
     "SCRIPTC_TEST_FRONTEND_KEY",
@@ -213,6 +214,7 @@ test("timing, cache placement and emission worker variables keep the frontend ou
   vi.stubEnv("SCRIPTC_CACHE_DIR", f.cache.root);
   vi.stubEnv("SCRIPTC_CACHE_MAX_MB", "8192");
   vi.stubEnv("SCRIPTC_EMIT_WORKERS", "1");
+  vi.stubEnv("SCRIPTC_EMIT_WORKER_FAIL", "all");
   vi.stubEnv("SCRIPTC_EMIT_WORKER_FUNCTIONS", "100");
   vi.stubEnv("SCRIPTC_TIMING", "0");
   expect(f.prepare().ok).toBe(true);

@@ -839,7 +839,7 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
       Root = I;
     Roots[I] = Root;
   }
-  // The x86-64-v3 copy of a --cpu-dispatch build's function (`<name>.v3`),
+  // The x86-64-v3 copy of a function with CPU copies (`<name>.v3`),
   // with the chain that ends at it, is placed with the chain of its baseline
   // copy (`<name>.base`), so that the helper can compare the two copies
   // after optimization (cpu-copies.h).

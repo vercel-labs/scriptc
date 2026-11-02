@@ -315,6 +315,78 @@ double scr_bytes_byte_len(const ScrBytes *b); /* len * elem size */
  * pooling), the view's offset into its owner's storage for a DataView. */
 double scr_bytes_byte_offset(const ScrBytes *b);
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* ── mutable buffers (t262-dc) ────────────────────────────────────────
+ * A JavaScript program with the `mutableBuffers` fact may resize, grow or
+ * detach an ArrayBuffer, so a view's header (its length and data pointer)
+ * stops being fixed at construction. The registry that records each view's
+ * declared byte offset and length, and recomputes it on such an operation,
+ * lives in the optional unit scr_js_buffers.c — selected only when the fact
+ * is present (runtime-pack-matrix OPTIONAL_RUNTIME_SOURCES). The base units
+ * reach it through this one per-thread table, so a program without the fact
+ * links no part of the registry: the pointer stays NULL and each hook below
+ * costs one branch. scr_js_buffers_arm, lowered into the top of %main, sets
+ * the table. */
+typedef struct ScrJsBufferOps {
+  /* Record (or update) a view over its owner (`view->backing`) with the
+   * view's declared byte offset and either its fixed element count or, for
+   * a length-tracking view, none. */
+  void (*view_register)(ScrBytes *view, bool tracking);
+  /* The dispose observer: forget a freed view, and a freed owner's state. */
+  void (*disposed)(void *object);
+  /* Whether a view is unusable: its owner is detached, or the view is out
+   * of bounds (a fixed view past a shrink, a length-tracking view whose
+   * declared offset is past the end). Node throws for the DataView
+   * byteLength/byteOffset getters and for every typed-array method on
+   * both, and answers 0 for a typed array's length and byteOffset. */
+  bool (*view_invalid)(const ScrBytes *view);
+  /* Whether the view was constructed without a length over a buffer that
+   * can change size, so it follows the buffer (subarray of such a view with
+   * an omitted end makes another length-tracking view). */
+  bool (*view_tracks)(const ScrBytes *view);
+  bool (*owner_detached)(const ScrBytes *owner);
+  bool (*owner_resizable)(const ScrBytes *owner);
+  bool (*owner_growable)(const ScrBytes *owner);
+  /* maxByteLength: the reserved capacity of a resizable owner, the byte
+   * length of every other owner, 0 while detached. */
+  double (*owner_capacity)(const ScrBytes *owner, double fallback);
+  /* ArrayBuffer.prototype.transfer / transferToFixedLength (+1); NULL with
+   * the exception pending. */
+  ScrDyn *(*transfer)(ScrBytes *owner, bool has_length, double length, bool fixed);
+  /* ArrayBuffer.prototype.resize and SharedArrayBuffer.prototype.grow;
+   * false with the exception pending on a bad receiver or argument. */
+  bool (*resize)(ScrBytes *owner, double length);
+  bool (*grow)(ScrBytes *owner, double length);
+} ScrJsBufferOps;
+
+extern SCR_TL const ScrJsBufferOps *scr_js_buffer_ops;
+
+/* `new ArrayBuffer(len, options)` / `new SharedArrayBuffer(len, options)`
+ * (the options object's maxByteLength; undefined or a non-object is a
+ * fixed buffer). +1. */
+ScrDyn *scr_js_buffer_new_resizable(ScrDyn *length, ScrDyn *options);
+ScrDyn *scr_js_buffer_new_growable(ScrDyn *length, ScrDyn *options);
+/* arrayBuffer.armMutable: installs the table above and the dispose hook. */
+void scr_js_buffers_arm(void);
+
+/* The guard around code that Node refuses on such a view. `label` names the
+ * operation exactly as Node's message does ("%TypedArray%.prototype.fill",
+ * "DataView.prototype.getUint8", "get DataView.prototype.byteLength", ...):
+ * the message is "Cannot perform <label> on a detached ArrayBuffer".
+ * Answers true when the view is usable. */
+bool scr_js_bytes_live(const ScrBytes *b);
+void scr_js_bytes_throw_detached(const char *label);
+/* Whether `b` is a length-tracking view. */
+bool scr_js_bytes_tracking(const ScrBytes *b);
+/* `.byteLength` / `.byteOffset` for a view whose owner may move: a DataView
+ * throws when it is detached or out of bounds, a typed array answers 0. */
+double scr_js_bytes_byte_length(const ScrBytes *b);
+double scr_js_bytes_byte_offset(const ScrBytes *b);
+/* The dispose hook's installation point (scr_json.c): the registry must see
+ * frees even in a program with no weak collection. */
+void scr_js_dispose_hook_install(void);
+#endif
+
 /* `new DataView(src.buffer, byteOffset?, byteLength?)` — src is the bytes
  * value whose `.buffer` the program named (any elem kind; a DataView src
  * resolves to ITS owner, so offsets stay relative to the one buffer,

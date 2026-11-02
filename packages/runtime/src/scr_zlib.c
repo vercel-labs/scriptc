@@ -453,11 +453,19 @@ void scr_zlib_options_drop(ScrZlibOptions *o) {
   o->codec_state = NULL;
 }
 
-const ScrZlibBrotliHooks *scr_zlib_brotli_hooks = NULL;
+const ScrZlibCodecHooks *scr_zlib_brotli_hooks = NULL;
+const ScrZlibCodecHooks *scr_zlib_zstd_hooks = NULL;
 
-/* Node's BROTLI_DECODE and BROTLI_ENCODE modes. */
-static bool scr_zlib_brotli_mode(int mode) {
-  return mode == 8 || mode == 9;
+/* The mode's codec hooks: Brotli's BROTLI_DECODE and BROTLI_ENCODE (8, 9),
+ * zstd's ZSTD_COMPRESS and ZSTD_DECOMPRESS (10, 11), or NULL for zlib. */
+static const ScrZlibCodecHooks *scr_zlib_codec_hooks(int mode) {
+  if (mode == 8 || mode == 9) return scr_zlib_brotli_hooks;
+  if (mode == 10 || mode == 11) return scr_zlib_zstd_hooks;
+  return NULL;
+}
+
+static bool scr_zlib_codec_mode(int mode) {
+  return mode == 8 || mode == 9 || mode == 10 || mode == 11;
 }
 
 static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibOptions *out);
@@ -466,9 +474,10 @@ static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibO
  * slot by reference) is read through its materialized view, as a plain
  * object is. */
 bool scr_zlib_options_parse(int mode, const ScrDyn *opts, ScrZlibOptions *out) {
-  if (scr_zlib_brotli_mode(mode)) {
-    if (!scr_zlib_brotli_hooks) scr_trap("scriptc: the Brotli codec is not linked\n");
-    return scr_zlib_brotli_hooks->options(mode, opts, out);
+  if (scr_zlib_codec_mode(mode)) {
+    const ScrZlibCodecHooks *hooks = scr_zlib_codec_hooks(mode);
+    if (!hooks) scr_trap("scriptc: the codec is not linked\n");
+    return hooks->options(mode, opts, out);
   }
   if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF) return scr_zlib_options_parse_object(mode, opts, out);
   ScrDyn *view = scr_dyn_typed_ref_materialize(opts);
@@ -562,18 +571,21 @@ bool scr_zlib_base_options(const ScrDyn *o, double flush_max, ScrZlibOptions *ou
 }
 
 ScrZlibEngine *scr_zlib_engine_from_options(int mode, ScrZlibOptions *o) {
-  if (scr_zlib_brotli_mode(mode)) return scr_zlib_brotli_hooks->engine(mode, o);
+  if (scr_zlib_codec_mode(mode)) return scr_zlib_codec_hooks(mode)->engine(mode, o);
   return scr_zlib_engine_new(mode, (int)o->level, (int)o->window_bits, (int)o->mem_level,
                              (int)o->strategy, o->dict ? o->dict->data : NULL,
                              o->dict ? o->dict->len : 0, o->reject_garbage);
 }
 
-/* Node's error for an engine failure: Error(message) with errno and code. */
+/* Node's error for an engine failure: Error(message) with errno and code,
+ * except a codec's trailing-junk report, which Node raises as the
+ * ERR_TRAILING_JUNK_AFTER_STREAM_END TypeError. */
 ScrError *scr_zlib_error_new(const ScrZlibError *ze) {
+  bool junk = ze->code != NULL && strcmp(ze->code, "ERR_TRAILING_JUNK_AFTER_STREAM_END") == 0;
   ScrStr *message = scr_str_new(ze->message, strlen(ze->message));
-  ScrError *err = scr_error_new(SCR_ERR_ERROR, message);
+  ScrError *err = scr_error_new(junk ? SCR_ERR_TYPE : SCR_ERR_ERROR, message);
   scr_str_release(message);
-  err->system_errno = ze->err;
+  err->system_errno = junk ? 0 : ze->err; /* Node's TypeError carries no errno */
   scr_error_set_code(err, ze->code);
   return err;
 }
@@ -588,10 +600,17 @@ typedef struct {
   ScrZlibError err;
 } ScrZlibRun;
 
+/* Feeds the input with *flush* and, when *finish* differs, runs one last
+ * iteration with an empty input and *finish*. The callback and promise forms
+ * reach the engine the way Node's streams do: a write with the flush kind,
+ * then an end with the finish kind. */
 static void scr_zlib_run(ScrZlibEngine *e, const unsigned char *in, size_t in_len, uint32_t chunk,
-                         int flush, double max_output, bool reject, ScrZlibRun *out) {
+                         int flush, int finish, double max_output, bool reject,
+                         ScrZlibRun *out) {
   uint32_t in_off = 0, avail_in_before = (uint32_t)in_len, avail_out_before = chunk;
   uint32_t offset = 0, avail_in_after = 0, avail_out_after = 0;
+  int phase = flush;
+  bool finishing = finish == flush;
   for (;;) {
     if (out->len + avail_out_before > out->cap) {
       size_t cap = out->cap ? out->cap : chunk;
@@ -601,7 +620,7 @@ static void scr_zlib_run(ScrZlibEngine *e, const unsigned char *in, size_t in_le
       out->data = grown;
       out->cap = cap;
     }
-    scr_zlib_engine_work(e, flush, in + in_off, avail_in_before, out->data + out->len,
+    scr_zlib_engine_work(e, phase, in + in_off, avail_in_before, out->data + out->len,
                          avail_out_before);
     if (scr_zlib_engine_error(e, &out->err)) {
       out->status = 1;
@@ -622,9 +641,14 @@ static void scr_zlib_run(ScrZlibEngine *e, const unsigned char *in, size_t in_le
     } else {
       avail_out_before = chunk - offset;
     }
-    if (avail_out_after != 0) break;
     in_off += in_delta;
     avail_in_before = avail_in_after;
+    if (!finishing && avail_in_after == 0) {
+      phase = finish;
+      finishing = true;
+      continue;
+    }
+    if (avail_out_after != 0) break;
   }
   if (avail_in_after > 0 && reject) out->status = 3;
 }
@@ -725,8 +749,8 @@ static ScrBytes *scr_zlib_sync_run(int mode, const ScrBytes *data, ScrZlibOption
   ScrZlibOptions o = *o_;
   ScrZlibEngine *e = scr_zlib_engine_from_options(mode, &o);
   ScrZlibRun run = {NULL, 0, 0, 0, {NULL, NULL, 0}};
-  scr_zlib_run(e, data->data, data->len, (uint32_t)o.chunk_size, (int)o.finish_flush, o.max_output,
-               o.reject_garbage, &run);
+  scr_zlib_run(e, data->data, data->len, (uint32_t)o.chunk_size, (int)o.finish_flush,
+               (int)o.finish_flush, o.max_output, o.reject_garbage, &run);
   ScrBytes *result = NULL;
   if (run.status != 0) {
     ScrError *err = scr_zlib_run_error(&run, o.max_output);
@@ -749,6 +773,7 @@ typedef struct {
   size_t len;
   uint32_t chunk;
   int flush;
+  int finish;
   double max_output;
   bool reject;
   ScrZlibRun run;
@@ -759,8 +784,8 @@ typedef struct {
 
 static void scr_zlib_opts_work(void *payload) {
   ScrZlibOptsOp *op = payload;
-  scr_zlib_run(op->eng, op->data, op->len, op->chunk, op->flush, op->max_output, op->reject,
-               &op->run);
+  scr_zlib_run(op->eng, op->data, op->len, op->chunk, op->flush, op->finish, op->max_output,
+               op->reject, &op->run);
 }
 
 static void scr_zlib_opts_after(void *payload) {
@@ -880,7 +905,8 @@ static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions
   if (data->len) memcpy(op->data, data->data, data->len);
   op->len = data->len;
   op->chunk = (uint32_t)o.chunk_size;
-  op->flush = (int)o.finish_flush;
+  op->flush = (int)o.flush;
+  op->finish = (int)o.finish_flush;
   op->max_output = o.max_output;
   op->reject = o.reject_garbage;
   op->cb = cb;

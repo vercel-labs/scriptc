@@ -752,6 +752,26 @@ asanTest("M8: M6 under ASan", async () => {
   expect(run.stdout).toBe(THREADED_EXPECTED);
 });
 
+/* The audit registry's table is bookkeeping, not instance state: once a
+ * thread has freed its last tracked block, or abandoned them all through a
+ * trap, nothing the registry owns may outlive that thread. M8's fixture
+ * holds thread-local string caches that its own contract leaves to the
+ * thread's lifetime (hence detect_leaks=0), which would hide the table
+ * behind them; this probe does only unwound work plus one deliberate trap,
+ * and runs LeakSanitizer at its default setting. */
+const linuxTest = process.platform === "linux" ? test : test.skip;
+linuxTest("M8: the audit registry does not outlive its thread (LSan stays on)", async () => {
+  const archive = await buildThreaded("llvm", { sanitize: true });
+  const probe = buildThreadProbe(join(threadFixtureDir, "probe_leak.c"), [archive], "t-leak", {
+    sanitize: true,
+  });
+  const run = spawnSync(probe, { encoding: "utf8", timeout: 120_000 });
+  expect(run.signal).toBeNull();
+  expect(run.status).toBe(0);
+  expect(run.stderr).not.toContain("LeakSanitizer");
+  expect(run.stdout).toBe("threads done bad=0\n");
+});
+
 /* ── M9: profile shape ───────────────────────────────────────────────────── */
 
 test("M9: abi.instance_per_thread is strictly boolean", () => {

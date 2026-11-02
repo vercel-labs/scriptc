@@ -102,6 +102,152 @@ void scr_library_callback_end(void) {
   if (scr_library_callback_depth != 0) scr_library_callback_depth--;
 }
 
+#ifdef SCR_RC_AUDIT
+/* ── the abandoned heap, audit lane ─────────────────────────────────────────
+ * A trap fires mid-operation, so the sink receives its message with the
+ * entry's frames still holding the values the trapped call had live. A
+ * conforming sink longjmps to a host frame BELOW the entry: those frames
+ * never unwind, and every block they owned is abandoned. That heap is not a
+ * defect to report — the instance is POISONED and recovery is a process
+ * restart — but a LeakSanitizer host would report it as a leak when the
+ * process exits, so the trap path names the blocks with
+ * __lsan_ignore_object (scr_lsan_immortal: an ignored chunk is a leak-scan
+ * root, so everything an abandoned block reaches is covered too).
+ *
+ * Naming them needs the blocks, and only the allocation funnel can keep
+ * them: scr_rc.h routes every audit-lane allocation and free through the
+ * registry below (SCR_SMALL_ALLOC is 0 there, so nothing bypasses it) while
+ * library code links. The table is an ordinary heap block reached only
+ * through this unit's status words, and a refused table allocation only
+ * stops the tracking, never a free. Nothing here is linked outside library
+ * audit builds. */
+static SCR_TL void **scr_library_heap_slots;
+static SCR_TL size_t scr_library_heap_cap;  /* 0, or a power of two */
+static SCR_TL size_t scr_library_heap_live;
+
+/* Slots hold the block address XOR this key. LeakSanitizer's reachability
+ * pass follows pointers found in live chunks, so a literal list of every
+ * live block would mark each of them reachable and hide real leaks; the
+ * table is bookkeeping, not a set of references, and the trap path decodes
+ * it before it names blocks. */
+#define SCR_LIBRARY_HEAP_KEY ((uintptr_t)0x9e3779b97f4a7c15u)
+
+static void *scr_library_heap_encode(void *p) { return (void *)((uintptr_t)p ^ SCR_LIBRARY_HEAP_KEY); }
+static void *scr_library_heap_decode(const void *key) {
+  return (void *)((uintptr_t)key ^ SCR_LIBRARY_HEAP_KEY);
+}
+
+static size_t scr_library_heap_slot(const void *key, size_t mask) {
+  uintptr_t h = (uintptr_t)key >> 3;
+  h ^= h >> 17;
+  h *= (uintptr_t)0x9e3779b1u;
+  h ^= h >> 13;
+  return (size_t)h & mask;
+}
+
+/* Places a key the table does not hold yet. */
+static bool scr_library_heap_place(void *key) {
+  size_t mask = scr_library_heap_cap - 1;
+  size_t i = scr_library_heap_slot(key, mask);
+  for (;;) {
+    if (scr_library_heap_slots[i] == NULL) {
+      scr_library_heap_slots[i] = key;
+      return true;
+    }
+    if (scr_library_heap_slots[i] == key) return false;
+    i = (i + 1) & mask;
+  }
+}
+
+/* Moves every held key into a table of `cap` slots. A refused allocation
+ * leaves the registry untouched: its blocks still free normally. */
+static void scr_library_heap_rehash(size_t cap) {
+  void **slots = malloc(cap * sizeof *slots);
+  if (slots == NULL) return;
+  memset(slots, 0, cap * sizeof *slots);
+  void **old = scr_library_heap_slots;
+  size_t old_cap = scr_library_heap_cap;
+  scr_library_heap_slots = slots;
+  scr_library_heap_cap = cap;
+  scr_library_heap_live = 0;
+  for (size_t i = 0; i < old_cap; i++) {
+    if (old[i] != NULL && scr_library_heap_place(old[i])) scr_library_heap_live++;
+  }
+  free(old);
+}
+
+/* The index of a key, or SIZE_MAX. */
+static size_t scr_library_heap_find(const void *key) {
+  size_t mask = scr_library_heap_cap - 1;
+  for (size_t i = scr_library_heap_slot(key, mask);;) {
+    if (scr_library_heap_slots[i] == NULL) return SIZE_MAX;
+    if (scr_library_heap_slots[i] == key) return i;
+    i = (i + 1) & mask;
+  }
+}
+
+/* Empties a slot by moving the rest of its probe chain back, so no
+ * tombstone can accumulate. `i` is in range and holds a key. */
+static void scr_library_heap_remove(size_t i) {
+  size_t mask = scr_library_heap_cap - 1;
+  size_t hole = i;
+  for (size_t j = (i + 1) & mask; scr_library_heap_slots[j] != NULL; j = (j + 1) & mask) {
+    size_t ideal = scr_library_heap_slot(scr_library_heap_slots[j], mask);
+    /* The chain entry at j is reachable through the hole only while the
+     * hole lies on its probe path (which wraps at the table's end). */
+    bool through_hole = hole <= j ? ideal <= hole || ideal > j : ideal <= hole && ideal > j;
+    if (through_hole) {
+      scr_library_heap_slots[hole] = scr_library_heap_slots[j];
+      hole = j;
+    }
+  }
+  scr_library_heap_slots[hole] = NULL;
+}
+
+void scr_library_heap_note_alloc(void *p) {
+  if (p == NULL) return;
+  if (scr_library_heap_cap == 0 || (scr_library_heap_live + 1) * 4 > scr_library_heap_cap * 3) {
+    /* Widen while the live blocks crowd the table; a table at 0 exists to
+     * be sized here. A refused rehash leaves the block untracked. */
+    size_t cap = scr_library_heap_cap != 0 ? scr_library_heap_cap : 64;
+    scr_library_heap_rehash((scr_library_heap_live + 1) * 2 > cap ? cap * 2 : cap);
+    if ((scr_library_heap_live + 1) * 4 > scr_library_heap_cap * 3) return;
+  }
+  if (scr_library_heap_place(scr_library_heap_encode(p))) scr_library_heap_live++;
+}
+
+/* Frees the table itself. Empty, it is bookkeeping with nothing left to
+ * name — and in a thread-instanced instance the thread is its only owner,
+ * so a table left behind is an unreachable chunk that LeakSanitizer
+ * reports once that thread is gone. */
+static void scr_library_heap_release(void) {
+  free(scr_library_heap_slots);
+  scr_library_heap_slots = NULL;
+  scr_library_heap_cap = 0;
+  scr_library_heap_live = 0;
+}
+
+void scr_library_heap_note_free(void *p) {
+  if (p == NULL || scr_library_heap_cap == 0) return;
+  size_t i = scr_library_heap_find(scr_library_heap_encode(p));
+  if (i == SIZE_MAX) return; /* untracked: an interior or foreign pointer */
+  scr_library_heap_remove(i);
+  if (--scr_library_heap_live == 0) scr_library_heap_release();
+}
+
+/* The trap fired: the entry will never run its epilogue, so every block
+ * still held is unreachable by definition. Name each a deliberate root
+ * before the message goes out, then hand the empty table back. */
+static void scr_library_heap_abandon(void) {
+  for (size_t i = 0; i < scr_library_heap_cap; i++) {
+    if (scr_library_heap_slots[i] != NULL) {
+      scr_lsan_immortal(scr_library_heap_decode(scr_library_heap_slots[i]));
+    }
+  }
+  scr_library_heap_release();
+}
+#endif /* SCR_RC_AUDIT */
+
 /* ── the trap funnel, library expansion ───────────────────────────────────
  * Poison first (the sink may longjmp to a host frame below the entry — the
  * conforming survival pattern), then deliver exactly once, then abort:
@@ -170,6 +316,12 @@ static const char *scr_library_trap_code(const char *msg, size_t len) {
 
 static _Noreturn void scr_library_trap_deliver(const char *msg, size_t len, uint64_t addr) {
   scr_library_poisoned = true;
+#ifdef SCR_RC_AUDIT
+  /* Before delivery: the sink may longjmp out of the entry, leaving the
+   * heap it held live abandoned for good. Register those blocks as
+   * deliberate so a LeakSanitizer host reports only real leaks. */
+  scr_library_heap_abandon();
+#endif
   if (!(len > 0 && (uint8_t)msg[0] == 0x01)) {
     /* A detected trap: assemble the structured message. Static buffer —
      * no malloc on the failure path; text truncates before structure ever

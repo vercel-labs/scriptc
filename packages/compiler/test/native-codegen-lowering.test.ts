@@ -59,6 +59,15 @@ test("Brotli options lower for run-time validation", () => {
   expect(diags).toEqual([]);
 });
 
+test("zstd options lower for run-time validation", () => {
+  const diags = diagnostics(`
+    import { zstdCompressSync, zstdDecompressSync, constants } from "node:zlib";
+    const packed = zstdCompressSync("payload", { params: { [constants.ZSTD_c_compressionLevel]: 3 } });
+    console.log(zstdDecompressSync(packed, { chunkSize: 1024 }).length);
+  `);
+  expect(diags).toEqual([]);
+});
+
 test("union writes keep the refusal for incompatible field storage", () => {
   const diags = diagnostics(`
     type Value = { kind: "text"; value: string } | { kind: "number"; value: number };

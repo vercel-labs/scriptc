@@ -90,6 +90,9 @@ export interface CcOptions {
   /** The program uses node:zlib's Brotli forms (with zlib): compiles
    * scr_brotli.c and links the vendored brotli archive. */
   brotli?: boolean;
+  /** The program uses node:zlib's zstd forms (with zlib): compiles
+   * scr_zstd.c and links the vendored zstd objects. */
+  zstd?: boolean;
   /** The program uses an Intl form that only ICU can answer (the `icu.*`
    * libCalls: default-locale number/date formats, word segmentation):
    * compiles scr_intl.c and links the ICU archive, and the
@@ -133,6 +136,12 @@ export interface CcOptions {
    * the IR): compiles the scr_js_* units (two-tier design I3). Programs
    * without them link no scr_js_ symbol. */
   dynTier?: boolean;
+  /** The program calls a Promise static with a foreign constructor
+   * (`Promise.all.call(C, …)`): compiles scr_js_promise_generic.c, the
+   * specification's algorithms over the checked-dynamic tier. Its values
+   * adopt through scr_async_dyn.c, so the unit needs dynAsync and
+   * dynInvoke too; programs without the call link none of it. */
+  promiseGeneric?: boolean;
   /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
    * compiles scr_stream_dyn.c. */
   streamDyn?: boolean;
@@ -180,6 +189,10 @@ export interface CcOptions {
   /** A standard library prototype object read as a value in a JavaScript
    * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`: compiles
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c. */
+  hostAbsentGlobals?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
@@ -196,12 +209,14 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
-  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
-   * NULL for a field a partial record view does not have. */
-  recordViewPartial?: boolean;
   /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
    * object model feature the program reaches (t262-da §J). */
   jsObjectModel?: boolean;
+  /** The program resizes, grows or detaches an ArrayBuffer: compiles the
+   * buffer views registry, scr_js_buffers.c, whose arming call the program's
+   * %main emits. The fact ORs into jsObjectModel, so the unit's definition
+   * of the JavaScript object model build is already on. */
+  mutableBuffers?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
@@ -230,6 +245,8 @@ export interface CcOptions {
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
   primitiveWrapper?: boolean;
+  /** %Iterator% and %Iterator.prototype%: compiles scr_js_iterator.c. */
+  iteratorProto?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -460,6 +477,9 @@ export interface LibArchiveOptions {
   /** See CcOptions.jsObjectModel: the archive's bytes and json units carry
    * the JavaScript object model build. */
   jsObjectModel?: boolean;
+  /** See CcOptions.mutableBuffers: the archive carries the buffer views
+   * registry, scr_js_buffers.c. */
+  mutableBuffers?: boolean;
 }
 
 export interface NativeArtifactDependency {

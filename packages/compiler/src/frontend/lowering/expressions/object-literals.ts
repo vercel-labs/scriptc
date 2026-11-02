@@ -262,6 +262,64 @@ function propertyFunctionName(lowerer: Lowerer, name: ts.PropertyName): string |
   return null;
 }
 
+/** `{ __proto__: value }` (B.3.1): sets the literal's prototype when the
+ * value is an object, a function or null, and does nothing for any other
+ * primitive — unlike Object.setPrototypeOf, which throws. Interned once. */
+function protoLiteralHelper(lowerer: Lowerer, loc: SrcLoc): string {
+  const key = "%dyn.protoLiteral";
+  const existing = lowerer.builtinCallableValueFns.get(key);
+  if (existing !== undefined) return existing;
+  const name = keyedHelperName(lowerer, key, "proto");
+  lowerer.builtinCallableValueFns.set(key, name);
+  const value = (): IrExpr => varRef("value.0", DYN, loc);
+  type PrimitiveTest = "string" | "number" | "boolean" | "undefined" | "symbol" | "bigint";
+  const test = (kind: PrimitiveTest): IrExpr => ({
+    kind: "dynTest",
+    test: kind,
+    value: value(),
+    type: BOOL,
+    loc,
+  });
+  let primitive: IrExpr = test("string");
+  for (const kind of ["number", "boolean", "undefined", "symbol", "bigint"] as PrimitiveTest[])
+    primitive = { kind: "logical", op: "||", left: primitive, right: test(kind), type: BOOL, loc };
+  lowerer.liftedFns.push({
+    name,
+    params: [
+      { localId: "object.0", name: "object", type: DYN },
+      { localId: "value.0", name: "value", type: DYN },
+    ],
+    returnType: VOID,
+    locals: [
+      { id: "object.0", name: "object", type: DYN, mutable: false },
+      { id: "value.0", name: "value", type: DYN, mutable: false },
+    ],
+    body: [
+      {
+        kind: "if",
+        cond: { kind: "unary", op: "!", operand: primitive, type: BOOL, loc },
+        then: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.setPrototype",
+              args: [varRef("object.0", DYN, loc), value()],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+    ],
+    loc,
+  });
+  return name;
+}
+
 /** The runtime-keyed JS object literal (a computed key that doesn't fold):
  * builds a dyn object member-by-member. Keys evaluate before their values,
  * properties in source order — JS's object-literal evaluation exactly.
@@ -330,75 +388,41 @@ export function lowerDynObjectLiteral(
     ) {
       flushFields();
       acc ??= { kind: "dynObjLit", fields: [], type: DYN, loc };
-      const protoLoc = locOf(prop);
+      const value = lowerer.lowerExprExpecting(prop.initializer, DYN);
+      // B.3.1: a null value sets the prototype; an object or function does
+      // too, through the guarded helper (scr_dyn_set_prototype throws for
+      // primitives, where B.3.1 silently ignores the value).
       if (prop.initializer.kind === ts.SyntaxKind.NullKeyword) {
         acc = {
           kind: "libCall",
           fn: "dyn.setPrototype",
-          args: [acc, lowerer.lowerExprExpecting(prop.initializer, DYN)],
+          args: [acc, value],
           type: DYN,
-          loc: protoLoc,
+          loc: locOf(prop),
         };
         continue;
       }
-      // `__proto__: v` with any other value sets the [[Prototype]] only when
-      // v is an Object — null included, functions too. Every other value
-      // (a number, string, boolean, symbol, bigint or undefined) is SKIPPED:
-      // no TypeError, and no own "__proto__" property (unlike
-      // Object.setPrototypeOf, which throws). The value evaluates once.
-      const objectSlot = lowerer.declareHiddenLocal("%protoObj", DYN);
-      const protoSlot = lowerer.declareHiddenLocal("%proto", DYN);
-      const objectRead = (): IrExpr => varRef(objectSlot.id, DYN, protoLoc);
-      const protoRead = (): IrExpr => varRef(protoSlot.id, DYN, protoLoc);
-      const typeOf: IrExpr = {
-        kind: "libCall",
-        fn: "dyn.typeof",
-        args: [protoRead()],
-        type: STRING,
-        loc: protoLoc,
-      };
-      const typeIs = (name: string): IrExpr => ({
-        kind: "strEq",
-        negated: false,
-        left: typeOf,
-        right: { kind: "strLit", value: name, type: STRING, loc: protoLoc },
-        type: BOOL,
-        loc: protoLoc,
-      });
+      const local = lowerer.declareHiddenLocal("%protoLiteral", DYN);
+      const object: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
       acc = {
         kind: "seqExpr",
         stmts: [
-          { kind: "varDecl", localId: objectSlot.id, init: acc, loc: protoLoc },
+          { kind: "varDecl", localId: local.id, init: acc, loc },
           {
-            kind: "varDecl",
-            localId: protoSlot.id,
-            init: lowerer.lowerExprExpecting(prop.initializer, DYN),
-            loc: protoLoc,
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: protoLiteralHelper(lowerer, loc),
+              args: [object, value],
+              type: VOID,
+              loc,
+            },
+            loc,
           },
         ],
-        result: {
-          kind: "ternary",
-          cond: {
-            kind: "logical",
-            op: "||",
-            left: typeIs("object"),
-            right: typeIs("function"),
-            type: BOOL,
-            loc: protoLoc,
-          },
-          then: {
-            kind: "libCall",
-            fn: "dyn.setPrototype",
-            args: [objectRead(), protoRead()],
-            type: DYN,
-            loc: protoLoc,
-          },
-          else_: objectRead(),
-          type: DYN,
-          loc: protoLoc,
-        },
+        result: object,
         type: DYN,
-        loc: protoLoc,
+        loc,
       };
       continue;
     }
@@ -1870,16 +1894,10 @@ export function lowerObjectLiteral(
       };
     }
   }
-  // Unfoldable computed keys outside the index-signature merge path:
-  // no record shape can hold a runtime-decided name.
+  // Unfoldable computed keys outside the index-signature merge path.
   for (const prop of expr.properties.nodes) {
-    if (isRuntimeComputedKey(prop)) {
-      lowerer.unsupported(
-        "SC1090",
-        (prop as ts.PropertyAssignment).name,
-        "computed property keys (compile-time-known keys fold — a pure expression whose checker type is one string or number literal: consts, enum members, quoted keys, templates of those — `{ [MARKER]: v }`; runtime string keys write through an index-signature target; symbol keys stay out)",
-      );
-    }
+    if (isRuntimeComputedKey(prop))
+      return runtimeKeyedDynLiteral(lowerer, expr, prop, type, expected);
   }
 
   // A declared destination combining fixed records and runtime-keyed
@@ -3616,6 +3634,70 @@ function dynSpreadLiteral(
   // own keys the copy reads, not against the record one arm need not
   // complete.
   return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr, undefined, true), type);
+}
+
+/** The PURE index-signature record `candidate` names — every key an overflow
+ * entry, no declared field, no tuple — when a checked-dynamic value converts
+ * into it. Null for any other type. */
+function indexSignatureDestination(
+  lowerer: Lowerer,
+  candidate: IrType | undefined,
+): (IrType & { kind: "record" }) | null {
+  if (candidate?.kind !== "record") return null;
+  const shape = lowerer.shapes.get(candidate.shapeId);
+  if (!shape || shape.tuple || shape.fields.length > 0 || !shape.indexValue) return null;
+  return canDynCheckTo(
+    candidate,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  )
+    ? candidate
+    : null;
+}
+
+/** `expr` — a literal whose property name is decided at runtime — as the
+ * checked-dynamic object the literal's own keys describe. No record shape can
+ * hold a runtime-decided name: a record stores declared fields sorted and
+ * overflow entries apart, while Node writes the key where it stands
+ * (`{ [k]: 2, n: 1 }` enumerates `k` first), and TypeScript itself drops a
+ * union-keyed computed property from the literal's inferred type once a
+ * spread joins the literal while the evaluated object keeps the key. The
+ * destination's conversion checks the values afterwards (the same
+ * copy-then-check `dynSpreadLiteral` applies to a runtime-keyed source).
+ * A pure index-signature destination is the value's real home, so coerce
+ * into it directly; a destination with declared fields is left to the
+ * caller's own conversion. */
+function runtimeKeyedDynLiteral(
+  lowerer: Lowerer,
+  expr: ts.ObjectLiteralExpression,
+  prop: ts.ObjectLiteralElementLike,
+  type: IrType,
+  expected?: IrType,
+): IrExpr {
+  const destination =
+    indexSignatureDestination(lowerer, expected) ?? indexSignatureDestination(lowerer, type);
+  if (destination === null) {
+    // A layout that keeps DECLARED fields beside an index signature
+    // (`{ fixed: 1, [key]: 2 }`, inferred as `{ fixed: number; [x: string]:
+    // number }`) stores the declared fields ahead of the overflow a runtime
+    // key lands in, so the value would print them first instead of where
+    // Node writes them. Nothing in that layout can carry the order, so the
+    // form keeps its refusal.
+    const mixedLayout = [expected, type].some((candidate) => {
+      if (candidate?.kind !== "record") return false;
+      const shape = lowerer.shapes.get(candidate.shapeId);
+      return shape !== undefined && !shape.tuple && shape.fields.length > 0 && !!shape.indexValue;
+    });
+    if (mixedLayout) {
+      lowerer.unsupported(
+        "SC1090",
+        prop.name ?? prop,
+        "computed property keys (compile-time-known keys fold — a pure expression whose checker type is one string or number literal: consts, enum members, quoted keys, templates of those — `{ [MARKER]: v }`; runtime string keys write through an index-signature target; symbol keys stay out)",
+      );
+    }
+  }
+  const dyn = lowerDynObjectLiteral(lowerer, expr, undefined, true);
+  return destination === null ? dyn : lowerer.coerceToExpected(dyn, destination);
 }
 
 /** A conditional spread source in a checked-dynamic literal, as the dyn

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-stdin-pipe-interface.ts"
+ ],
+ "diags": []
+}

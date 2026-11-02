@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/early-error-assignment-target.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0010",
+   "message": "the left-hand side of an assignment must be a variable reference or a property access",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-assignment-target.js",
+    "start": 368,
+    "end": 391
+   }
+  }
+ ]
+}

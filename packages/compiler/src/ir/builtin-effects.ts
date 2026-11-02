@@ -73,6 +73,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.countReset",
   "console.table",
   "console.dirDyn",
+  "console.dirHidden",
   "worker.new",
   "worker.data",
   "worker.parentPort",
@@ -148,6 +149,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",
+  "arrayBuffer.newResizable",
+  "sharedArrayBuffer.newGrowable",
   "atomics.op",
   "atomics.wait",
   "atomics.notify",
@@ -518,6 +521,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
+  // read(size) above the 1 GiB high-water mark: Node's ERR_OUT_OF_RANGE.
+  "stdin.read",
   // The unguarded h2-only stream call: always throws Node's TypeError.
   "http2.streamUndefCall",
   "http.reqH2StreamOrThrow",
@@ -570,6 +575,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.classBasePrototype",
   "dyn.classInherit",
   "dyn.classSuper",
+  // Promise.<s>.call(C, …) validates its `this` and runs C's constructor and
+  // resolve — every throw (a non-object this, a non-constructor, a throwing
+  // executor or resolve) rejects the capability or propagates.
+  "promise.genericStatic",
   "dyn.hasKey",
   "dyn.in",
   "child.kill",
@@ -767,9 +776,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackCall",
   "dyn.keyDelete",
   "dyn.keyDeleteComputed",
+  "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
   "dyn.hasKeyComputed",
+  // `… in globalThis` over a name the runtime does not provide throws
+  "dyn.globalHas",
   "dyn.hasOwnComputed",
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
@@ -795,6 +807,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run
   // user hooks and the guard refuses.
   "wrapper.new",
+  // %Iterator% (scr_js_iterator.c): construction always throws, and
+  // Iterator.from runs the value's iterator method and next getter.
+  "iterator.construct",
+  "iterator.from",
+  "iterator.instanceOf",
   "wrapper.toObject",
   "wrapper.objectTag",
   "wrapper.thisString",

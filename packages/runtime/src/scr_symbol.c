@@ -791,31 +791,24 @@ static ScrDyn *scr_ds_method_value(unsigned index) {
  * `DisposableStack.prototype.use` and `stack.use` are one function whichever
  * read comes first: a read the interner answers is kept by the prototype
  * object for the program's lifetime, so the stack has to answer that read
- * from its own table rather than only once a stack exists. The declaration
- * is weak because the object model is one runtime build among several and
- * this unit is compiled for all of them; where the slot does not exist, the
- * interner answers the read by itself. The pointer, rather than a symbol, is
- * what keeps this unit — the stack, its methods and everything they call —
- * out of programs with no symbols at all, which only intern a builtin
- * method.
- *
- * Darwin does not read a weak declaration of a data symbol as a weak import:
- * the reference stays an ordinary undefined symbol, so a program that links
- * this unit without the object-model build fails to link rather than starting
- * with the slot empty. weak_import is the spelling that leaves an absent
- * symbol at zero there; ELF's plain weak declaration already does. */
-#if defined(__APPLE__)
-#define SCR_DS_MEMBER_SLOT __attribute__((weak_import))
-#else
-#define SCR_DS_MEMBER_SLOT __attribute__((weak))
-#endif
-extern ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) SCR_DS_MEMBER_SLOT;
+ * from its own table rather than only once a stack exists. The slot is
+ * defined weakly because the object model is one runtime build among several
+ * and this unit is compiled for all of them: the object-model build defines
+ * it too, and takes the definition over when it links, and a program without
+ * that build starts with it at zero, where the interner answers the read by
+ * itself. The definition has to be here rather than a weak declaration:
+ * Darwin refuses to link a data symbol that is declared weak and defined
+ * nowhere, so a program that links this unit without the object-model build
+ * would not link at all, while ELF would bind such a declaration to zero. The
+ * pointer, rather than a symbol, is what keeps this unit — the stack, its
+ * methods and everything they call — out of programs with no symbols at all,
+ * which only intern a builtin method. */
+ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) __attribute__((weak)) = 0;
 
 static ScrDyn *scr_disposable_stack_member_value(const char *key, size_t len);
 
 __attribute__((constructor)) static void scr_ds_member_hook_install(void) {
-  if (&scr_dyn_disposable_stack_member)
-    scr_dyn_disposable_stack_member = scr_disposable_stack_member_value;
+  scr_dyn_disposable_stack_member = scr_disposable_stack_member_value;
 }
 
 /* The function value a DisposableStack answers for the method named `key`
@@ -893,8 +886,7 @@ static ScrDisposableStack *scr_ds_alloc(void) {
     /* The load-time fill above answers a prototype read that comes first;
      * this keeps the slot filled on a build whose startup does not run the
      * constructor before the first stack is made. */
-    if (&scr_dyn_disposable_stack_member)
-      scr_dyn_disposable_stack_member = scr_disposable_stack_member_value;
+    scr_dyn_disposable_stack_member = scr_disposable_stack_member_value;
   }
   static ScrCycType cyc_type = {&scr_ds_trace, &scr_ds_gcfree, SCR_CYC_KIND_NONE, 0};
   ScrDisposableStack *s = scr_cyc_alloc(sizeof *s, &cyc_type);

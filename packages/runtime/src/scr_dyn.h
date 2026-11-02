@@ -630,7 +630,7 @@ struct ScrDyn {
      * adapter promise otherwise). */
     ScrPromise *promise;
 
-    struct { ScrDyn *target; ScrDyn *handler; } proxy; /* both owned */
+    struct { ScrDyn *target; ScrDyn *handler; bool revoked; } proxy; /* all owned */
   } v;
   /* Keep the checked value payload at its established offset: generated
    * native converters read array and object fields directly. */
@@ -1341,6 +1341,27 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key);
 void scr_dyn_proxy_set(ScrDyn *proxy, ScrStr *key, ScrDyn *value);
 void scr_dyn_proxy_delete(ScrDyn *proxy, const ScrStr *key);
 void scr_dyn_proxy_unsupported(const char *operation);
+/* ── Proxy.revocable and the Reflect entry points ──────────────────────
+ * These are dynamic-tier operations reached only from a JavaScript program
+ * that calls them, so scr_json.c compiles them into the JavaScript object
+ * model build (SCR_JS_OBJECT_MODEL, t262-da §J) alone and every other
+ * program keeps the unit's default object. */
+#ifdef SCR_JS_OBJECT_MODEL
+/* Proxy.revocable(target, handler): Node's { proxy, revoke } result. The
+ * proxy observes revocation in every trap-mediated operation; revoke
+ * answers undefined and is idempotent. */
+ScrDyn *scr_dyn_proxy_revocable(const ScrDyn *target, const ScrDyn *handler);
+ScrDyn *scr_dyn_reflect_get_prototype(ScrDyn *target);
+bool scr_dyn_reflect_set_prototype(ScrDyn *target, ScrDyn *prototype);
+bool scr_dyn_reflect_prevent_extensions(ScrDyn *target);
+bool scr_dyn_reflect_is_extensible(ScrDyn *target);
+/* Reflect.construct(target, argsList, newTarget): the three-argument form.
+ * newTarget is a constructor, and only a constructor: a written `undefined`
+ * throws, where leaving the argument out uses the target. */
+ScrDyn *scr_dyn_reflect_construct(ScrDyn *target, ScrDyn *arguments_list, ScrDyn *new_target);
+/* The two-argument form: newTarget defaults to the target. */
+ScrDyn *scr_dyn_reflect_construct_default(ScrDyn *target, ScrDyn *arguments_list);
+#endif
 /* Retains the native view, preserving identity and its shared backing
  * allocation across the checked-dynamic boundary. Borrows b. */
 ScrDyn *scr_dyn_new_bytes(const ScrBytes *b);

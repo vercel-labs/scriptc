@@ -214,6 +214,7 @@ import {
   registerLinkedHelper,
 } from "./record-links.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
+import { lowerProxyRevocable } from "./expressions/native-proxy.js";
 import {
   lowerAbsenceProbe,
   v8CalleeText,
@@ -1731,6 +1732,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // Reflect.apply of a builtin rest-parameter fn (fixtures.js's
       // fixturesPath idiom) — before the stdlib member fence claims it.
       lowerReflectCall(lowerer, expr, expr.expression) ??
+      // Proxy.revocable(target, handler): the dynamic tier's revocation.
+      lowerProxyRevocable(lowerer, expr, expr.expression) ??
       lowerBigIntStaticCall(lowerer, expr, expr.expression) ??
       lowerer.lowerNumberStaticCall(expr, expr.expression) ??
       lowerer.lowerDateCall(expr, expr.expression) ??

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/proxy-construct-new-target.js"
+ ],
+ "diags": []
+}

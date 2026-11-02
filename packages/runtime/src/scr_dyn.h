@@ -1784,6 +1784,24 @@ ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *argument
 ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what);
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
+/* A builtin that answers its instances' member values from a table of its own
+ * unit — a Date (scr_lib.c), the DisposableStack (scr_symbol.c), a wrapper
+ * prototype (String, Number, Boolean, BigInt, Symbol) — instead of by
+ * interning a function of the member's name: given the class and the member
+ * name, the member value (+1), or NULL for a name the builtin does not
+ * answer. A member read off an instance and off its prototype both pass
+ * through scr_dyn_builtin_method, so both answer this one value, as in Node
+ * (`stack.use === DisposableStack.prototype.use`,
+ * `"abc".slice === String.prototype.slice`). */
+typedef ScrDyn *(*ScrDynMemberProvider)(const char *cls, const char *key, size_t key_len);
+/* Answer `cls`'s member reads through `member`, beside the providers this unit
+ * already carries (Date, DisposableStack). One provider serves any number of
+ * classes, and one class keeps the first provider registered for it. A
+ * provider a program never reads costs it nothing: the unit that carries one
+ * is linked only when the program itself pays for it. Identity is an
+ * object-model behavior, so a build without the object model records and
+ * consults nothing. */
+void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider member);
 /* ── the builtin intrinsics (scr_js_intrinsics.c) ──────────────────────
  * The standard library's prototype and constructor objects as ordinary
  * checked-dynamic values, built from the table the pinned Node release

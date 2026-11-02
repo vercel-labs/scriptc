@@ -5185,6 +5185,17 @@ function buildLibFnSignatures() {
     /** ctx.maxStringLength for the renders that follow; answers the previous
      * value so the call site can restore it. */
     "insp.maxStringLength": { argTypes: [F64], result: F64 },
+    /** ctx.getters for the renders that follow: whether an accessor
+     * property's getter runs (0 the labels only, 1 every getter, 2 the
+     * getters without a setter, 3 the getters with one); answers the previous
+     * value so the call site can restore it. */
+    "insp.getters": { argTypes: [F64], result: F64 },
+    /** The current ctx.getters, which the interned per-type helpers read: the
+     * option is run-time state shared by every call site. */
+    "insp.gettersMode": { argTypes: [], result: F64 },
+    /** An invoked accessor property's value, by the result's kind:
+     * `[Label: <primitive>]` or `[Label] <object>`. */
+    "insp.accessorValue": { argTypes: [DYN, STRING, F64, F64], result: STRING },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
     // Circular references: the receiver slot is program-dependent (any
     // cycle-capable record/array/map/class type — the insp.error precedent).
@@ -5237,6 +5248,8 @@ function buildLibFnSignatures() {
      * `prefix inner` re-indented at the caller's level (+1). */
     "insp.nestedBegin": { argTypes: [], result: VOID },
     "insp.nestedEnd": { argTypes: [STRING, STRING], result: STRING },
+    /** nestedEnd's restore alone: the caller's context returns. */
+    "insp.nestedRestore": { argTypes: [], result: VOID },
     /** Around a top-level render that an inspection refusal can end: mark
      * records the inspector's frame and nesting depth, unwind (in the
      * render's finally) closes what the render left open above it. */

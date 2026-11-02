@@ -240,6 +240,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  // A getter the walk invokes renders its result, and that rendering can
+  // refuse (SC2020) exactly like the walk's own.
+  "insp.accessorValue",
   // The options object reads the caller's options (getters included), and
   // the checked-dynamic walk calls custom inspect functions.
   "insp.customOptions",

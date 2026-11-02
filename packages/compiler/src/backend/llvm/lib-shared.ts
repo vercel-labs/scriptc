@@ -825,6 +825,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.layout": "scr_insp_layout",
   "insp.maxArrayLength": "scr_insp_max_array_length",
   "insp.maxStringLength": "scr_insp_max_string_length",
+  "insp.getters": "scr_insp_getters",
+  "insp.gettersMode": "scr_insp_getters_mode",
+  "insp.accessorValue": "scr_insp_accessor_result",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
@@ -833,6 +836,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.mark": "scr_insp_mark",
   "insp.unwind": "scr_insp_unwind",
   "insp.nestedEnd": "scr_insp_nested_end",
+  "insp.nestedRestore": "scr_insp_nested_restore",
   // Circular references over cycle-capable composites (Node's
   // seen/circular machinery — none of these throw; refWrap borrows its
   // string and answers +1).

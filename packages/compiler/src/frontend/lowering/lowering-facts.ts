@@ -73,6 +73,14 @@ export function verifiedLoweringFactHits(): number {
   return verifiedFactHits;
 }
 
+/** Records checks made outside LoweringFacts (the Lowerer's own per-pass
+ * recomputations of a shared answer) in the same process-wide counter, so
+ * `stats` and the engagement test see every verified fact. */
+export function recordVerifiedLoweringFact(fact: string, hits = 1): void {
+  verifiedFactHits += hits;
+  verifiedByFact.set(fact, (verifiedByFact.get(fact) ?? 0) + hits);
+}
+
 /** The admitted opinions' sites by file and code. */
 type OpinionIndex = ReadonlyMap<string, readonly AdmittedOpinion[]>;
 
@@ -323,8 +331,7 @@ export class LoweringFacts {
 
   private countVerified(fact: string): void {
     this.verified.set(fact, (this.verified.get(fact) ?? 0) + 1);
-    verifiedByFact.set(fact, (verifiedByFact.get(fact) ?? 0) + 1);
-    verifiedFactHits++;
+    recordVerifiedLoweringFact(fact);
   }
 
   /** How many hits the verify mode has checked, by fact (tests). */

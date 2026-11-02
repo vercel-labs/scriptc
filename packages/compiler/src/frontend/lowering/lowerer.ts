@@ -59,7 +59,7 @@ import {
   stdioIntoGeneralStream,
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
-import { LoweringFacts } from "./lowering-facts.js";
+import { LoweringFacts, recordVerifiedLoweringFact } from "./lowering-facts.js";
 import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -5686,6 +5686,7 @@ export class Lowerer {
       this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder);
     }
     const fresh = ask(this.ownClassProtocols);
+    recordVerifiedLoweringFact("classProtocols");
     if (answer === fresh) return answer;
     throw new InternalCompilerError(
       `shared class protocol index answered ${String(answer)} for ${query} where a fresh ` +
@@ -17016,6 +17017,7 @@ export class Lowerer {
       fresh.libInterface === answer.libInterface &&
       freshWebAssembly === answer.webAssembly &&
       freshLegacyUrl === answer.legacyUrl;
+    recordVerifiedLoweringFact("symbolProvenance");
     if (same) return;
     if (freshWebAssembly !== undefined) fresh.webAssembly = freshWebAssembly;
     if (freshLegacyUrl !== undefined) fresh.legacyUrl = freshLegacyUrl;

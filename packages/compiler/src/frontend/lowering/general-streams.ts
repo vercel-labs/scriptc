@@ -74,6 +74,11 @@ export function needsGeneralNodeStreams(
   if (actual.kind === "dyn") return containsPart(lowerer, expected, pipeHandle);
   if (containsPart(lowerer, expected, stdio))
     return containsPart(lowerer, actual, (p) => isGeneralStream(lowerer, p));
+  // A child pipe handle flowing into a runtime stream slot (a declared
+  // `Readable`/`Writable` variable, a parameter of one): the general
+  // representation converts the handle into the runtime stream.
+  if (containsPart(lowerer, expected, (p) => isGeneralStream(lowerer, p)))
+    return containsPart(lowerer, actual, pipeHandle);
   return expected.kind === "dyn" && containsPart(lowerer, actual, pipeHandle);
 }
 

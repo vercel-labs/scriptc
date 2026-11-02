@@ -309,6 +309,20 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(intrinsic).mutableBuffers).toBe(false);
   });
 
+  test("arms the host-global check for a computed global read and `in`", () => {
+    // A computed read of the global object, or `… in globalThis`, links the
+    // derived name table's runtime check (scr_global_host_absent.c) and the
+    // SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c.
+    for (const fn of ["global.hostAbsent", "dyn.globalHas"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      const features = moduleRuntimeFeatures(mod);
+      expect(features.hostAbsentGlobals, fn).toBe(true);
+      expect(features.jsObjectModel, fn).toBe(false);
+    }
+    expect(moduleRuntimeFeatures(module()).hostAbsentGlobals).toBe(false);
+  });
+
   test("gates the BigInt typed-array element kinds on the constructor name", () => {
     // The two BigInt kinds have no double-backed element, so their code lives
     // in the JavaScript object model build (t262-da §J); every other typed

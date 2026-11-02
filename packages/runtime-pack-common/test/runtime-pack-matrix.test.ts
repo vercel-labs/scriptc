@@ -217,3 +217,18 @@ test("the builtin intrinsic graph is one object-model unit", () => {
     selected("scr_js_intrinsics.c", { intrinsicObjects: true, workers: true }).defines,
   ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS", "SCR_WORKERS"]);
 });
+
+test("a dynamic global read selects the host-global build of the global unit", () => {
+  // A computed read of the global object, or `… in globalThis`, arms the
+  // check for the Node globals the native runtime does not implement
+  // (host-globals.ts); every other program keeps the default object.
+  const plain = { hostAbsentGlobals: false, workers: false };
+  expect(selected("scr_node_builtin.c", plain).defines).toEqual([]);
+  expect(selected("scr_node_builtin.c", { ...plain, hostAbsentGlobals: true }).defines).toEqual([
+    "SCR_GLOBAL_HOST_ABSENT",
+  ]);
+  // A worker program keeps its thread-state build AND the check.
+  expect(
+    selected("scr_node_builtin.c", { hostAbsentGlobals: true, workers: true }).defines,
+  ).toEqual(["SCR_GLOBAL_HOST_ABSENT", "SCR_WORKERS"]);
+});

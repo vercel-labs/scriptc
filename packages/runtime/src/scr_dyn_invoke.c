@@ -2166,6 +2166,13 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
 }
 
 #ifdef SCR_JS_OBJECT_MODEL
+/* The object model build answers a DataView's `constructor` through this hook
+ * (scr_json.c). A program that never reads a global constructor as a value
+ * does not link this unit, and the read keeps its named refusal there. */
+__attribute__((constructor)) static void dyn_global_constructor_hook_install(void) {
+  scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
+}
+
 /* Whether scr_dyn_global_constructor answers a value for `name` (it traps on
  * the names it does not intern). The intrinsics unit builds every constructor
  * as the same value a JavaScript source reads, and creates a fenced function

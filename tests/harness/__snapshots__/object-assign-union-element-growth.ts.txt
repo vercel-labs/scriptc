@@ -1,0 +1,8 @@
+object-assign-union-element-growth.ts:26:3 - error SC2020: 'Object.assign' is part of the standard library types but has no scriptc lowering yet
+
+  25 | function applyTextEnd(parts: ContentPart[], index: number, text: string, signature: string): void {
+  26 |   Object.assign(parts[index]!, { text, textSignature: signature });
+     |   ^~~~~~~~~~~~~
+  27 |   console.log(JSON.stringify(parts));
+
+  hint: spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target literal-source shape (Object.assign({}, { ... }) IS the source literal) and merges INTO an index-signature record whose value slot every source value enters — other aliased targets are real mutation, and a function target (Object.assign(fn, { prop })) is a function-with-properties value the model cannot represent: bind the property separately

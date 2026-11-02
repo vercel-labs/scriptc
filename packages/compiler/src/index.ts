@@ -1,7 +1,13 @@
 import { createRequire } from "node:module";
 import { setShapeOverlayMemoDir, shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
 import { jsInferenceEnabled } from "./frontend/js-inference.js";
-import { createNodeFrontendServices, nodeFrontendServices } from "./frontend/services-node.js";
+import {
+  beginCompileServices,
+  compileFrontendServices,
+  createNodeFrontendServices,
+  endCompileServices,
+  nodeFrontendServices,
+} from "./frontend/services-node.js";
 import {
   runTypePatchCommand,
   type TypePatchCommandRequest,
@@ -444,7 +450,15 @@ export function sourceTargetPlatform(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 export function analyze(entryPath: string, opts: AnalyzeOptions = {}): AnalyzeResult {
-  return analyzeWithFrontend(entryPath, opts, buildTargetPlatform(), nodeFrontend);
+  // One scope for the whole analysis: its island reload and retry lowerings
+  // load the program again, and they reuse the checker that answered the
+  // first load instead of starting a cold one.
+  const services = beginCompileServices();
+  try {
+    return analyzeWithFrontend(entryPath, opts, buildTargetPlatform(), nodeFrontend);
+  } finally {
+    endCompileServices(services);
+  }
 }
 
 /** analyze() behind the coverage verdict cache (the CLI's `scriptc
@@ -489,8 +503,12 @@ const nodeFrontend: FrontendFactory = (
   options,
 ) => {
   // One syntax parser for every load of this compile, and program hosts
-  // that serve several loads (FrontendServices.reuseProgramHosts).
-  const services = createNodeFrontendServices();
+  // that serve several loads (FrontendServices.reuseProgramHosts). Inside a
+  // compile scope (beginCompileServices) the later frontends — the island
+  // reload and each retry round's loads — share the hosts this one leaves
+  // idle instead of starting a cold checker each.
+  const shared = compileFrontendServices();
+  const services = shared ?? createNodeFrontendServices();
   try {
     services.reuseProgramHosts(programHostLoads());
     const frontend = runFrontend(
@@ -507,12 +525,13 @@ const nodeFrontend: FrontendFactory = (
         try {
           frontend.dispose();
         } finally {
-          services.close();
+          // A shared scope closes its services when the compile ends.
+          if (shared === null) services.close();
         }
       },
     };
   } catch (error) {
-    services.close();
+    if (shared === null) services.close();
     throw error;
   }
 };
@@ -1116,6 +1135,33 @@ interface PreparedExecutable {
 /** Finish frontend work in a separate scope so the AST, checker caches and
  * typed IR can be reclaimed before the native optimizer needs its heap. */
 async function prepareExecutableInput(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  buildPlatform: string,
+  timing: CompilationTiming,
+  warningSink?: CompileWarningSink,
+): Promise<PreparedExecutable | CompileRequestResult> {
+  // One scope for the whole build. The island decision reloads the program
+  // and every island retry round loads it again; they take the checker the
+  // previous load leaves idle instead of starting a cold one, and the last
+  // one to end closes the scope's services.
+  const services = beginCompileServices();
+  try {
+    return await prepareExecutableInputInScope(
+      entryPath,
+      opts,
+      ffi,
+      buildPlatform,
+      timing,
+      warningSink,
+    );
+  } finally {
+    endCompileServices(services);
+  }
+}
+
+async function prepareExecutableInputInScope(
   entryPath: string,
   opts: CompileRequestOptions,
   ffi: FfiProfile | null,

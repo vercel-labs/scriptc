@@ -385,6 +385,13 @@ export interface LoadResult {
   /** Shape inference's overlay state for this load (restored before its
    * lowering: a later load resets the per-process registry). */
   shapeOverlayState?: ShapeOverlayLoadState;
+  /** This load's structural preflight walk: the module order and the graph
+   * facts below, plus the walk's own fences. Computed once — a fixpoint that
+   * asked for the order first completes the same walk in checkPreflight
+   * instead of repeating it. The load owns the memo. */
+  preflightStructure?: PreflightStructure;
+  /** The workspace-edge probe below already ran for this load. */
+  workspaceProbed?: true;
   /** User source files in Node's evaluation order: depth-first postorder
    * of the import graph from the entry, each module once. The entry is
    * last. Empty until checkPreflight runs (and empty when preflight fails
@@ -5685,11 +5692,9 @@ function unselectedPackageJsFilePredicate(entryFileName: string): (file: string)
  * too; a CLI reaches its workspace sibling exactly that way),
  * require("literal") — resolved with the own resolver, workspace answers
  * recorded. Runs once per load, ahead of the gate and the walk. */
-const workspaceProbed = new WeakSet<LoadResult>();
-
 function registerWorkspaceEdges(load: LoadResult): void {
-  if (workspaceProbed.has(load)) return;
-  workspaceProbed.add(load);
+  if (load.workspaceProbed === true) return;
+  load.workspaceProbed = true;
   const { program } = load;
   {
     const supportedBuiltins = new Set<string>(SUPPORTED_NODE_MODULES);
@@ -5739,16 +5744,9 @@ interface PreflightStructure {
   fallbacks: ScrDiagnostic[];
 }
 
-/** One load's structure, computed once: a fixpoint that asked for the
- * module order first completes the same walk instead of repeating it. */
-const preflightStructures = new WeakMap<LoadResult, PreflightStructure>();
-
 function preflightStructure(load: LoadResult): PreflightStructure {
-  const cached = preflightStructures.get(load);
-  if (cached !== undefined) return cached;
-  const structure = preflightStructure7(load);
-  preflightStructures.set(load, structure);
-  return structure;
+  if (load.preflightStructure === undefined) load.preflightStructure = preflightStructure7(load);
+  return load.preflightStructure;
 }
 
 function preflightStructure7(load: LoadResult): PreflightStructure {

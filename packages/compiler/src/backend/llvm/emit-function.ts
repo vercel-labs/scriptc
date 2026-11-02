@@ -9,6 +9,8 @@ import {
 } from "./emitter.js";
 import { type IrFunction, type IrModule, type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
 import { INT32_FALLBACK_SUFFIX } from "../../ir/parameter-versions.js";
+import { planJsGroups } from "../../ir/js-groups.js";
+import { jsImmediates } from "./jsval.js";
 import { BlockBuilder } from "./blocks.js";
 import { findPrivateSplitLocals } from "./split-loops.js";
 import {
@@ -103,6 +105,13 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.findInt32Allocations(fn);
   emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
+  // Guard groups (js-groups.ts): dynamic-tier reads of one subject inside
+  // one statement share one layout probe.
+  emitter.groupRuns.clear();
+  emitter.jsGroupPlan =
+    fn.tier === "dynamic" && jsImmediates(emitter)
+      ? planJsGroups(fn, emitter.jsIcSites, emitter.int32Abis)
+      : null;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
   B.excCellInvariant = fn.async !== true && fn.generator === undefined;

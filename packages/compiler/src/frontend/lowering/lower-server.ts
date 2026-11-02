@@ -6701,7 +6701,13 @@ function runtimeRequestOptions(
  * a RequestOptions value is not callable. */
 function isResponseCallback(lowerer: Lowerer, node: ts.Expression): boolean {
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return true;
-  return lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
+  const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+  // An untyped value stays on the callback side: Node decides
+  // `typeof options === 'function'` at run time, and the two-argument URL
+  // call has always taken an untyped callback (`http.get(url, cb)` with
+  // `cb: any`). The options form needs a value the lowering can hand to
+  // the merge, which an untyped value is not.
+  return t === null || t.kind === "func" || t.kind === "dyn";
 }
 
 /** The options value of request(url, options[, cb]) as the checked-dynamic
@@ -6712,9 +6718,20 @@ function lowerUrlFormOptions(lowerer: Lowerer, node: ts.Expression): IrExpr {
   if (ts.isObjectLiteralExpression(node)) return lowerDynObjectLiteral(lowerer, node);
   const t = lowerer.mapTypeOf(lowerer.typeOf(node));
   // `request(url, undefined, cb)`: Node's spread contributes no member, so
-  // the URL's fields stand alone.
+  // the URL's fields stand alone. The argument is still evaluated: an
+  // expression with effects there runs, and its throw propagates, before
+  // the request is built.
   if (t && (t.kind === "void" || t.kind === "undefinedT" || t.kind === "nullT")) {
-    return dynUndefinedExpr(locOf(node));
+    const loc = locOf(node);
+    const value = lowerer.lowerExpr(node);
+    if (value.kind === "unitLit") return dynUndefinedExpr(loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: dynUndefinedExpr(loc),
+      type: DYN,
+      loc,
+    };
   }
   if (t && (t.kind === "dyn" || (t.kind === "record" && lowerer.dynConvertible(t)))) {
     return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
@@ -7244,6 +7261,18 @@ function lowerHttpClientCall(
         );
     }
   }
+  /** A literal request carrying both a protocol option and an Agent VALUE
+   * evaluates the agent expression once, into a hidden local: the protocol
+   * check and the request then read the same object, as Node's options
+   * object does. */
+  let agentInit: IrExpr | null = null;
+  let agentLocalId: string | null = null;
+  if (protocol !== null && agentVal !== null) {
+    const agentLocal = lowerer.declareHiddenLocal("%requestAgent", DYN);
+    agentLocalId = agentLocal.id;
+    agentInit = agentVal;
+    agentVal = varRef(agentLocal.id, DYN, loc);
+  }
   if (agentClose !== null) {
     // agent: false → Node sends `Connection: close` (its one-shot Agent
     // sets the header) and tears the socket down with the response — the
@@ -7337,6 +7366,9 @@ function lowerHttpClientCall(
     const local = lowerer.declareHiddenLocal("%requestOptions", HTTPCLIENTREQ_T);
     const ref = (): IrExpr => varRef(local.id, HTTPCLIENTREQ_T, loc);
     const steps: IrStmt[] = [];
+    if (agentInit !== null && agentLocalId !== null) {
+      steps.push({ kind: "varDecl", localId: agentLocalId, init: agentInit, loc });
+    }
     let signalRef: (() => IrExpr) | null = null;
     if (signal !== null) {
       const signalLocal = lowerer.declareHiddenLocal("%requestSignal", DYN);

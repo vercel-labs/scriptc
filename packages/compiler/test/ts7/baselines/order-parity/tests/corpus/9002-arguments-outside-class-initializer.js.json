@@ -1,0 +1,18 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9002-arguments-outside-class-initializer.js"
+ ],
+ "diags": [
+  {
+   "code": "SC1090",
+   "message": "a computed class field name whose type is not a string, number, or symbol literal is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9002-arguments-outside-class-initializer.js",
+    "start": 249,
+    "end": 260
+   },
+   "milestone": "later",
+   "hint": "the class-field lowering needs the key computed at class-definition time, which is the value Node uses (TypeScript reports TS1166 here.)"
+  }
+ ]
+}

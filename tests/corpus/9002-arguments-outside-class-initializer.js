@@ -1,0 +1,15 @@
+// ContainsArguments rejects `arguments` in a class field initializer and a
+// class static block, and nowhere else: a method's own arguments, a function
+// expression's, and a computed element name are all ordinary JavaScript.
+class Box {
+  static [String(1)] = "named";
+  field = function () {
+    return arguments.length;
+  };
+  method() {
+    return arguments.length;
+  }
+  arrow = () => this.method(1, 2);
+}
+const box = new Box();
+console.log(Box.named, box.field(1, 2, 3), box.method(4, 5), box.arrow());

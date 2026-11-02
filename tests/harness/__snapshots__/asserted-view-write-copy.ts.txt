@@ -36,3 +36,17 @@ asserted-view-write-copy.ts:24:3 - error SC2004: uses of 'view' inherit the bloc
   25 | }
 
   hint: the declaration of 'view' did not compile — fix the diagnostic reported there and these sites clear with it
+
+asserted-view-write-copy.ts:40:7 - error SC1090: writing 'bagView.item.n' through 'bagView', a copy of the 'Bag' value the assertion views as 'WideBag' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+
+  39 | const bag: Bag = { id: 1, item: { n: 0 }, extra: "x" };
+  40 | const bagView = bag as unknown as WideBag;
+     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  41 | bagView.item.n = 2;
+
+asserted-view-write-copy.ts:55:7 - error SC1090: writing 'holderView.tag' through 'holderView', a copy of the 'Holder' value the assertion views as 'HolderView' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+
+  54 | const holder: Holder = { item: { n: 0 }, extra: "x" };
+  55 | const holderView = holder as unknown as HolderView;
+     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  56 | holderView.item.n = 3;

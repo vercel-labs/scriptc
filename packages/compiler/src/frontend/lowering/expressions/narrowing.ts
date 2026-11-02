@@ -1443,7 +1443,7 @@ function freshEntriesRecordAssertion(
  * compares it with `===`/`!==`. Node erases the assertion, so such a binding
  * must reach the value itself; a read-only view answers the same members
  * either way and keeps the copy (`divergences.ts`, `bindingIdentityUse`). */
-function assertedBindingUsesIdentity(expr: ts.Expression): boolean {
+function assertedBindingUsesIdentity(lowerer: Lowerer, expr: ts.Expression): boolean {
   let node: ts.Node = expr;
   while (
     node.parent !== undefined &&
@@ -1452,7 +1452,7 @@ function assertedBindingUsesIdentity(expr: ts.Expression): boolean {
     node = node.parent;
   const decl = node.parent;
   if (decl === undefined || !ts.isVariableDeclaration(decl)) return false;
-  return bindingIdentityUse(decl);
+  return bindingIdentityUse(decl, lowerer.checker);
 }
 
 /** `e as T` and the old-style assertion `<T>e` — one node shape (both
@@ -1656,7 +1656,7 @@ export function lowerAsExpression(
     // comparison) keeps the storage; a read-only view is equal either way
     // and keeps the copy the width-copy report names.
     if (
-      assertedBindingUsesIdentity(expr) &&
+      assertedBindingUsesIdentity(lowerer, expr) &&
       inner.type.kind === "record" &&
       target?.kind === "record" &&
       recordViewHosted(lowerer, inner.type.shapeId, target.shapeId)
@@ -1716,7 +1716,7 @@ export function lowerAsExpression(
       // .when` over `Stamped | Unstamped`), which the coercion reproduces
       // and the checked extraction would not (it traps on the other arm).
       // Only a binding whose identity is observable reaches the arm itself.
-      if (target?.kind === "record" && assertedBindingUsesIdentity(expr)) {
+      if (target?.kind === "record" && assertedBindingUsesIdentity(lowerer, expr)) {
         const tags = viewHostedArmTags(lowerer, inner.type.unionId, target);
         if (tags !== null && tags.size === 1) {
           const arm = lowerer.unions.get(inner.type.unionId)!.arms[[...tags][0]!]!;

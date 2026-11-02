@@ -59,3 +59,54 @@ function appendText(index: number, text: string): void {
 }
 appendText(0, "b");
 console.log("union", JSON.stringify(blocks[0]), (blocks[0] as TextBlock).text);
+
+// A view that adds a member copies the record, but the copy shares the child
+// objects it does not reshape: a nested write through one reaches the value.
+interface Leaf {
+  n: number;
+}
+interface Tree {
+  id: number;
+  leaf: Leaf;
+  extra: string;
+}
+interface LeafView {
+  leaf: Leaf;
+  extra: string;
+  tag?: string;
+}
+const tree: Tree = { id: 1, leaf: { n: 0 }, extra: "x" };
+const leafView = tree as unknown as LeafView;
+leafView.leaf.n = 5;
+console.log("nested", tree.leaf.n, leafView.leaf.n);
+
+// A class-instance member is shared the same way.
+class Box {
+  n: number;
+  constructor(n: number) {
+    this.n = n;
+  }
+}
+interface Crate {
+  box: Box;
+  extra: string;
+}
+interface CrateView {
+  box: Box;
+  extra: string;
+  tag?: string;
+}
+const crate: Crate = { box: new Box(0), extra: "x" };
+const crateView = crate as unknown as CrateView;
+crateView.box.n = 7;
+console.log("class", crate.box.n, crateView.box.n);
+
+// A write to a shadowing local of the same name is not a write through the
+// view above it, so the copy the view makes stays unobserved.
+function shadow(): void {
+  const leafView = { leaf: { n: 0 }, extra: "y" };
+  leafView.extra = "z";
+  console.log("shadow", leafView.extra);
+}
+shadow();
+console.log("outer", leafView.leaf.n, tree.leaf.n);

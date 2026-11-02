@@ -24,5 +24,37 @@ function widenUnion(u: Base | { a: number; b: number }): void {
   view.extra = "z";
 }
 
+// A nested write is still a write to the copy when the view reshapes the
+// member it goes through: the copy rebuilds that child, so the write would
+// not reach the value's own child.
+interface Bag {
+  id: number;
+  item: { n: number };
+  extra: string;
+}
+interface WideBag {
+  item: { n: number; label: string };
+  extra: string;
+}
+const bag: Bag = { id: 1, item: { n: 0 }, extra: "x" };
+const bagView = bag as unknown as WideBag;
+bagView.item.n = 2;
+
+// A shared write before a write to the copy's own field does not hide the
+// latter: the refusal names the own-field write.
+interface Holder {
+  item: { n: number };
+  extra: string;
+}
+interface HolderView {
+  item: { n: number };
+  extra: string;
+  tag?: string;
+}
+const holder: Holder = { item: { n: 0 }, extra: "x" };
+const holderView = holder as unknown as HolderView;
+holderView.item.n = 3;
+holderView.tag = "t";
+
 widen(base);
 widenUnion(base);

@@ -14470,7 +14470,7 @@ function assertionKeepsStorageLayout(
   // record only when the binding's identity is observable through it
   // (a write, an identity comparison). A read-only view is equal either
   // way, keeps the copy narrowing.ts made, and stays reported.
-  if (!bindingIdentityUse(decl)) return false;
+  if (!bindingIdentityUse(decl, lowerer.checker)) return false;
   return (
     init.kind === "record" &&
     settled.kind === "record" &&
@@ -14483,21 +14483,23 @@ function assertionKeepsStorageLayout(
  * binding receives a COPY of `x` and the write lands on that copy — Node
  * erases the assertion and adds the property to `x` itself, so the write
  * must reach a caller-visible object. Reads of a copy are equal either
- * way, so only a write is refused, by name. Where the layouts agree the
- * binding keeps the value's storage instead (assertionKeepsStorageLayout),
- * narrowing.ts and lowerVarDecl record that in layoutKeptNodes, and
- * nothing here fires. Runs for file-scope and local bindings alike, after
- * the declaration has been lowered (so the keep is known). */
+ * way, and so is a nested write through a member the copy shares (the same
+ * child object in both), so only a write to the copy's own field is
+ * refused, by name. Where the layouts agree the binding keeps the value's
+ * storage instead (assertionKeepsStorageLayout), narrowing.ts and
+ * lowerVarDecl record that in layoutKeptNodes, and nothing here fires.
+ * Runs for file-scope and local bindings alike, after the declaration has
+ * been lowered (so the keep is known). */
 function refuseAssertionViewWrite(lowerer: Lowerer, decl: ts.VariableDeclaration): void {
   if (decl.initializer === undefined || !isAssertionInitializer(decl.initializer)) return;
   if (lowerer.layoutKeptNodes.has(decl.initializer)) return;
   const copy = assertionViewCopy(lowerer, decl.initializer);
   if (copy === null) return;
-  const write = bindingWrite(decl);
+  const write = bindingWrite(lowerer, decl);
   if (write === null) return;
   lowerer.unsupported(
     "SC1090",
     decl,
-    `writing '${write}' through '${decl.name.getText()}', a copy of the '${copy.source}' value the assertion views as '${copy.target}' (the write would land on the copy; write through the original binding, or declare the member on the value's type)`,
+    `writing '${write.text}' through '${decl.name.getText()}', a copy of the '${copy.source}' value the assertion views as '${copy.target}' (the write would land on the copy; write through the original binding, or declare the member on the value's type)`,
   );
 }

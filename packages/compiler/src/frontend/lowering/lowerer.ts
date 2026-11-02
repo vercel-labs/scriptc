@@ -403,6 +403,7 @@ import {
   mapType,
   newSymbolProvenanceMemo,
   ShapeRegistry,
+  noteScopeSensitiveMapping,
   type DeclaredOrderPriorityRef,
   typeKey,
   type TypeMapperCtx,
@@ -4072,6 +4073,12 @@ export class Lowerer {
   readonly unions = new UnionRegistry();
   /** Context-free successful type mappings. See TypeMapperCtx.typeMemo. */
   readonly typeMemo = new Map<number, IrType>();
+  /** Successful mappings that read no generic-instantiation scope state
+   * (TypeMapperCtx.typeMemoShared): the same answer in every binding scope
+   * and at the top level. A generic instance's unscoped types land here, so
+   * the next instance — and the top level — answers them without mapping
+   * again. */
+  readonly sharedTypeMemo = new Map<number, IrType>();
   /** Successful mappings per generic binding context (TypeMapperCtx.typeMemoFor):
    * by the installed typeParamBindings map, then the typeParamTsBindings map
    * (NO_BINDINGS stands for null). Binding maps are filled before they are
@@ -4937,6 +4944,7 @@ export class Lowerer {
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
+    "sharedTypeMemo",
     "scopedTypeMemos",
     "lastMemoOuter",
     "lastMemoInner",
@@ -5449,7 +5457,7 @@ export class Lowerer {
       runtimeClassValue: (type) => runtimeClassValueOfType(this, type),
       localClassValue: (type) =>
         this.instanceResultClass !== null && this.instanceResultClass.declared === type.id
-          ? this.instanceResultClass.value
+          ? (noteScopeSensitiveMapping(), this.instanceResultClass.value)
           : (this.localClassValueTypes.get(type.id) ?? null),
       mixinClassInstance: (decl) =>
         this.mixinTypeContext && this.mixinTypeContext.classNode === decl
@@ -5460,6 +5468,10 @@ export class Lowerer {
         // the factory produced (localClassResultInstance).
         const instanceClass = instanceType && this.localClassInstanceTypes.get(instanceType.id);
         if (instanceClass) return { kind: "object", className: instanceClass };
+        // The instantiation-stack check below (and classNamer) answers
+        // differently inside a generic instance, so this mapping stays in
+        // its scope.
+        if (this.classInsideFunction(decl)) noteScopeSensitiveMapping();
         // Computed heritage can close over parameters of its factory.
         // A speculative checker query outside that factory must not lower
         // the extends expression in the caller's lexical scope.
@@ -5534,6 +5546,7 @@ export class Lowerer {
       // binding scope must follow the lowerer's CURRENT scope, not the one
       // that was installed at spread time.
       typeMemoFor: () => this.currentTypeMemo(),
+      typeMemoShared: this.sharedTypeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
       // Memoization is scoped by the binding maps (typeMemoFor); only a mixin
@@ -5880,6 +5893,10 @@ export class Lowerer {
    * program-unique through the file qualifier, and collision-free with
    * user identifiers ('%'). */
   readonly classNamer = (decl: ts.ClassLikeDeclaration): string => {
+    // A class declared inside a function takes the instantiated owner's name
+    // (`%<instance>`, below), so its type's answer is per instance — and a
+    // mapping that reads it may not be shared between scopes.
+    if (this.classInsideFunction(decl)) noteScopeSensitiveMapping();
     const name =
       ts.isClassExpression(decl) ||
       (() => {
@@ -5912,6 +5929,20 @@ export class Lowerer {
     }
     return name;
   };
+
+  /** True for a class declaration lexically inside a function: only such a
+   * class can take an instantiated owner's name (classNamer), and only there
+   * can localClassInstance's instantiation-stack check answer. */
+  private classInsideFunction(decl: ts.ClassLikeDeclaration): boolean {
+    for (
+      let parent: ts.Node | undefined = decl.parent;
+      parent !== undefined && !ts.isSourceFile(parent);
+      parent = parent.parent
+    ) {
+      if (ts.isFunctionLike(parent)) return true;
+    }
+    return false;
+  }
 
   /** Follows import aliases to the original declaration's symbol. Every
    * value reference resolves through here, so it doubles as the flush
@@ -12675,7 +12706,11 @@ export class Lowerer {
    * (`T`, `T[]`, `{ v: T }`, `(x: T) => T` all resolve). Inert outside
    * generic instantiation. */
   readonly typeParamResolver = (t: ts.Type): IrType | null => {
-    if (!this.typeParamBindings || !(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    if (!(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    // The answer is the current bindings' (an unbound parameter maps by the
+    // symbolic rules), so the mapping may not leave its scope.
+    noteScopeSensitiveMapping();
+    if (!this.typeParamBindings) return null;
     const sym: ts.Symbol | undefined = t.getSymbol();
     return (sym && this.typeParamBindings.get(sym)) ?? null;
   };
@@ -12687,7 +12722,9 @@ export class Lowerer {
    * over literal arguments). Inert outside generic function and class
    * instantiation. */
   readonly typeParamTsResolver = (t: ts.Type): ts.Type | null => {
-    if (!this.typeParamTsBindings || !(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    if (!(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    noteScopeSensitiveMapping();
+    if (!this.typeParamTsBindings) return null;
     const sym: ts.Symbol | undefined = t.getSymbol();
     return (sym && this.typeParamTsBindings.get(sym)) ?? null;
   };
@@ -12697,7 +12734,12 @@ export class Lowerer {
    * (boundAliasInstances), or null when its signature never instantiated
    * that reference. Inert outside generic function instantiation. */
   readonly boundAliasTsResolver = (t: ts.Type): ts.Type | null => {
-    if (!this.typeParamTsBindings || t.getAliasTypeArguments().length === 0) return null;
+    const aliasArguments = t.getAliasTypeArguments().length;
+    if (aliasArguments === 0) return null;
+    // boundAliasInstances is keyed by the installed ts bindings, so this
+    // answer belongs to the instantiation that asks.
+    noteScopeSensitiveMapping();
+    if (!this.typeParamTsBindings) return null;
     const tsBindings = this.typeParamTsBindings;
     return (
       this.boundAliasInstances.get(t)?.find((entry) => entry.tsBindings === tsBindings)?.instance ??

@@ -126,6 +126,7 @@ import {
   checkerTypeDescription,
   isGenericCallableMemberType,
   jsOpenObjectType,
+  noteScopeSensitiveMapping,
   typeKey,
   withUnitArm,
   X509_DER_FIELD,
@@ -4950,6 +4951,9 @@ export function genericClassInstanceType(
     // body (`this.v = v` types the receiver as `this`, not a reference).
     // Inside an instantiation the CURRENT bindings are the arguments;
     // anywhere else the reference is honestly unmappable.
+    // The current instance's bindings ARE the arguments: the mapping
+    // belongs to that instance.
+    noteScopeSensitiveMapping();
     for (const tp of gci.typeParams) {
       const b = lowerer.typeParamBindings?.get(tp);
       if (!b) return null;

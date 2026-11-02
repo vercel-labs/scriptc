@@ -1,7 +1,8 @@
 // The reserved-word rule for `await` is a property of the POSITION, not of
 // the enclosing function: an arrow's parameters inherit the enclosing
 // async-ness, an arrow's body resets it, and PropertyName positions are
-// ordinary IdentifierNames. Node accepts every program below.
+// ordinary IdentifierNames. The file is CommonJS because a module reserves
+// `await` everywhere; Node accepts every program below in this script.
 function sloppy(a = await) {
   var await = a + 1;
   return await;

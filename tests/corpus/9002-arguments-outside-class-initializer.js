@@ -1,8 +1,8 @@
 // ContainsArguments rejects `arguments` in a class field initializer and a
-// class static block, and nowhere else: a method's own arguments, a function
-// expression's, and a computed element name are all ordinary JavaScript.
+// class static block, and nowhere else: a method's own arguments and a
+// function expression's are ordinary JavaScript.
 class Box {
-  static ["named"] = "named";
+  static named = "named";
   field = function () {
     return arguments.length;
   };

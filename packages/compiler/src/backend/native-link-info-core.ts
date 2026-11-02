@@ -52,6 +52,9 @@ export interface NativeLinkFeatures {
   /** writeFile's `flag` disposition or copyFile's mode argument:
    * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
   fsFlags?: boolean;
+  /** The BYTE-data spellings of the options write and
+   * fs.promises.writeFile: scr_fs_bytes_write.c. */
+  fsBytesWrites?: boolean;
   /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** process.prependListener, stdin.isRaw or server.off: the

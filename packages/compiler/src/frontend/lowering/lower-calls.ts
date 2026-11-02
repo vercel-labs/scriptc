@@ -10653,6 +10653,32 @@ export function lowerRecordFieldCall(
   // An optional callback field the checker narrowed at this call
   // (`o.cb ? o.cb(x) : …`, `if (o.cb) o.cb(x)`): extract the func arm.
   if (callee.type.kind === "union") callee = lowerer.maybeNarrow(callee, access);
+  // A GENERIC instantiation narrows the member to the CONSTRAINT's declared
+  // signature (`TOptions["transformHeaders"]` describes `(h) => H | Promise<H>`
+  // on `ModelsRequestTransforms`, while the instance stores `(h) => H`), so
+  // the narrowed type names a DIFFERENT func than the stored arm and no arm
+  // tag matches — maybeNarrow keeps the union. The checker proved the value
+  // is not the empty arm, and the slot holds exactly one callable arm beside
+  // it, so the call goes through that arm: the signature the instantiated
+  // field was stored with (the constraint's is a static upper bound, not the
+  // value's own contract).
+  if (callee.type.kind === "union" && lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "func") {
+    const arms = lowerer.unions.get(callee.type.unionId)?.arms ?? [];
+    const callables = arms.filter((arm) => arm.kind === "func").length;
+    const index = arms.findIndex((arm) => arm.kind === "func");
+    if (
+      callables === 1 &&
+      arms.every((arm, i) => i === index || arm.kind === "undefinedT" || arm.kind === "nullT")
+    )
+      callee = {
+        kind: "unionNarrow",
+        unionId: callee.type.unionId,
+        tag: index,
+        value: callee,
+        type: arms[index]!,
+        loc: locOf(access),
+      };
+  }
   if (callee.type.kind !== "func") lowerer.badType(access, lowerer.typeOf(access));
   // JavaScript passes the record as `this`. A record with no dynamic form
   // cannot be that receiver; the library's own function fields (the

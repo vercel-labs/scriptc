@@ -825,6 +825,7 @@ async function compileExecutableNative(
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),

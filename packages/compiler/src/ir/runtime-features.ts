@@ -1590,6 +1590,14 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.writeFileFlags",
     ],
   }),
+  /** The BYTE-data spellings of the options write and of
+   * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
+   * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
+   * for byte. The unit carries its own static copy of scr_fs_flags.c's
+   * mode validation, so it links alone. */
+  fsBytesWrites: rule({
+    fns: ["fs.writeFileSyncBytesFlags", "fsp.writeFileBytes", "fsp.writeFileBytesFlags"],
+  }),
   /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
    * scr_bytes_strdec_dyn.c. */
   strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
@@ -1657,6 +1665,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsFlags: false,
+    fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
     genBind: false,

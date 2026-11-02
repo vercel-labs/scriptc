@@ -4408,6 +4408,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!genResultRecord(yieldT, VOID, ctx.shapes, unions)) return null;
     return { kind: "generator", yieldT, retT: VOID, nextT: UNDEFINED_T };
   }
+  // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
+  // types: any object implementing the protocol is assignable, so the value
+  // is checked-dynamic (like the Map/Set iterators above) and `for await`
+  // over it takes the runtime's source-agnostic async-iteration protocol
+  // (lowerForOfDyn): a compiled async generator steps natively, any other
+  // object through its Symbol.asyncIterator, and a synchronous iterable
+  // through its values awaited one by one. An `async *` declaration whose
+  // return annotation is one of these spells the generator it builds, so
+  // function-returns.ts asks mapAsyncGeneratorAnnotation first. The rule is
+  // asked before the generator kind below: a protocol annotation names any
+  // implementor, not the generator shape it happens to share a spelling with.
+  if (
+    isStdlibInterface("AsyncIterable") ||
+    isStdlibInterface("AsyncIterableIterator") ||
+    isStdlibInterface("AsyncIterator")
+  )
+    return DYN;
   // Generator<T, TReturn, TNext>, AsyncGenerator<T, TReturn, TNext> (and
   // the lib's IterableIterator<T, ...>, the older sync annotation spelling;
   // AsyncIterator<T>, AsyncIterableIterator<T> and AsyncIterable<T>, what

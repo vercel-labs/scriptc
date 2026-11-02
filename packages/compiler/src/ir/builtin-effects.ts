@@ -990,6 +990,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
   "fs.writeFileSyncBytes",
+  "fs.writeFileSyncBytesFlags",
   "fs.writeFileSyncFd",
   "fs.appendFileSyncBytes",
   "zlib.inflateSync",

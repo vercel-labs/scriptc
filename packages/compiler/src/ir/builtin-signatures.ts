@@ -3594,6 +3594,10 @@ function buildLibFnSignatures() {
     "fs.readFileSyncBytes": { argTypes: [STRING], result: BYTES_U8 },
     "fs.writeFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
     "fs.appendFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
+    /** writeFileSync(path, bytes, { mode, flag }) and its fs/promises
+     * twins: the byte-data spellings of the option write (scr_fs_flags.c's
+     * open(2) with the disposition flag, creation mode at creation only). */
+    "fs.writeFileSyncBytesFlags": { argTypes: [STRING, BYTES_U8, F64, F64], result: VOID },
     "fsp.readFileBytes": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     /** node:zlib (scr_zlib.c — native-toolchain.ts compiles/links it ONLY when these
      * appear on the IR, the regex/libcurl gating precedent): one-shot zlib,
@@ -3718,6 +3722,17 @@ function buildLibFnSignatures() {
     "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.appendFileBytes": {
       argTypes: [STRING, BYTES_U8],
+      result: { kind: "promise", inner: VOID },
+    },
+    /** fs.promises.writeFile(path, bytes): the truncating write, and its
+     * { mode, flag } form — the settled-promise twins of
+     * fs.writeFileSyncBytes and fs.writeFileSyncBytesFlags. */
+    "fsp.writeFileBytes": {
+      argTypes: [STRING, BYTES_U8],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileBytesFlags": {
+      argTypes: [STRING, BYTES_U8, F64, F64],
       result: { kind: "promise", inner: VOID },
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },

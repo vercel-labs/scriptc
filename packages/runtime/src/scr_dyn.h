@@ -1187,6 +1187,45 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
  * refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
 #endif
+#ifdef SCR_JS_OBJECT_MODEL
+/* String.prototype, Number.prototype and Boolean.prototype are the wrapper
+ * unit's objects — only it builds one with the [[PrimitiveValue]] slot their
+ * instances inherit — and their members are the intrinsic graph's, which
+ * wraps each member so the brand checks run on the primitive the prototype
+ * wraps (t262-da A2). A program links the graph when it reads an intrinsic,
+ * and the wrapper unit only when it names a wrapper, so neither unit may name
+ * the other: a reference from either side would drag the other into every
+ * program that links the first. Each edge is a slot instead, filled by the
+ * defining unit with a static initializer, which is data and not a
+ * constructor — a constructor is a link root that pulls its unit's whole call
+ * graph, the dynamic tier included (t262-da W4).
+ *
+ * The reading unit carries the fallback so a program that links it alone
+ * still links: an absent symbol is zero, and the reader then answers what it
+ * answered before the fold. Darwin refuses a weak reference to a symbol the
+ * link lacks, so the fallback there is a weak definition the definer's strong
+ * one overrides; ELF's weak reference already leaves it at zero. */
+/* The wrapper unit's prototype object for `id` ("String.prototype",
+ * "Number.prototype" or "Boolean.prototype"), +1, without members: the
+ * graph's fill defines them. */
+typedef ScrDyn *(*ScrJsWrapperPrototypeSlot)(const char *id);
+/* thisStringValue / thisNumberValue / thisBooleanValue for `kind` (+1), NULL
+ * for a receiver that is not that wrapper's value. */
+typedef ScrDyn *(*ScrJsWrapperPrimitiveSlot)(const ScrDyn *value, double kind);
+/* The graph's registration of the three wrapper providers in the invoke
+ * unit's member table. The invoke unit asks once, before it answers the first
+ * builtin member read, so that even the first read of a wrapper member is the
+ * value the prototype object holds. */
+typedef void (*ScrJsWrapperProvidersSlot)(void);
+extern ScrJsWrapperPrototypeSlot scr_js_wrapper_intrinsic_prototype_slot;
+extern ScrJsWrapperPrimitiveSlot scr_js_wrapper_primitive_value_slot;
+extern ScrJsWrapperProvidersSlot scr_js_wrapper_member_providers_slot;
+#if defined(__APPLE__)
+#define SCR_JS_SLOT_FALLBACK(type, name) __attribute__((weak)) type name
+#else
+#define SCR_JS_SLOT_FALLBACK(type, name) extern type name __attribute__((weak))
+#endif
+#endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
@@ -1584,6 +1623,34 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
  * Node's brand-check TypeError. +1; `constructor` is the compiled Boolean
  * constructor value. */
 ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
+
+/* The wrapper unit's prototype object for `id` ("String.prototype",
+ * "Number.prototype" or "Boolean.prototype"), which the intrinsic table
+ * answers for that id (t262-da A2): only this unit can build an object with
+ * the [[PrimitiveValue]] slot, and it is the object `new String/Number/
+ * Boolean(v)` instances inherit from, so one intrinsic has one builder and a
+ * member the program writes through the prototype object is the member an
+ * instance walks to (§4.4). Returned without members: the table's fill
+ * defines them. +1.
+ *
+ * The graph, not every program that links this unit, is the only caller: a
+ * program links this unit when it names a wrapper, and the graph when it
+ * reads an intrinsic, so the graph names this function weakly — absent, the
+ * reference is null and the graph answers an ordinary object instead. A weak
+ * reference pulls nothing out of the archive, which is why the column that
+ * decides linking stays the program's own wrapper use. */
+ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id);
+/* Installs the program's own conversion closure as the `constructor` of the
+ * intrinsic prototype `prototype` and seeds the closure's `prototype` with
+ * it, so `X.prototype.constructor` (and its descriptor value) is the value a
+ * read of `X` answers (t262-da A2). +1 (prototype). */
+ScrDyn *scr_js_wrapper_install_constructor(ScrDyn *prototype, ScrDyn *constructor);
+/* thisStringValue / thisNumberValue / thisBooleanValue over a value the
+ * intrinsic table's wrapper-prototype members were called on: the primitive
+ * of `kind` (the SCR_JS_WRAPPER_* number) that `value` is, or the one it
+ * wraps, and NULL for any other receiver. +1 for the primitive. The graph
+ * names it weakly, for the reason above. */
+ScrDyn *scr_js_wrapper_primitive_value(const ScrDyn *value, double kind);
 
 /* Promise statics called with a foreign constructor (`Promise.all.call(C, …)`,
  * scr_js_promise_generic.c, linked only into programs that make the call):

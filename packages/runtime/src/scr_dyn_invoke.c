@@ -1236,6 +1236,46 @@ static ScrDyn *scr_dyn_invoke_impl(
 
   if (recv->kind == SCR_DYN_STR) {
     ScrStr *s = recv->v.str;
+#ifdef SCR_JS_OBJECT_MODEL
+    if (!strcmp(method, "replace")) {
+      /* String.prototype.replace: searchValue is a RegExp or coerced with
+       * ToString, and a replaceValue that is not callable coerces with
+       * ToString before any matching, so an object converting to another
+       * object raises Node's ToPrimitive TypeError here (a replacement whose
+       * toString answers a function is the Sputnik example, test262's
+       * S15.5.4.11_A1_T16). A function replacement has no lowering in this
+       * unit, and the match loop over a native RegExp lives in the regex
+       * unit, which a program without a regex does not link: both keep the
+       * tier's loud refusal, after the conversions Node performs. `rep` and
+       * the coerced search value are +1; the result is +1. Only the object
+       * model build answers: it is the build that carries the folded
+       * prototypes a program assigns this member from, and a program
+       * without the fact keeps the build byte for byte. */
+      ScrDyn *search = argc ? args[0] : scr_dyn_undefined();
+      ScrDyn *replace = argc > 1 ? args[1] : scr_dyn_undefined();
+      if (replace->kind == SCR_DYN_FUNC) {
+        dyn_throw_unsupported("String", method);
+        return NULL;
+      }
+      ScrStr *rep = scr_dyn_string_coerce_js(replace);
+      if (!rep) return NULL;
+      ScrStr *out = NULL;
+      if (search->kind == SCR_DYN_HANDLE && search->v.handle.tag == SCR_DYNH_REGEXP) {
+        dyn_throw_unsupported("String", method);
+      } else if (search->kind == SCR_DYN_STR) {
+        out = scr_str_replace_literal(s, search->v.str, rep, false);
+      } else {
+        ScrStr *needle = scr_dyn_string_coerce_js(search);
+        out = needle ? scr_str_replace_literal(s, needle, rep, false) : NULL;
+        if (needle) scr_str_release(needle);
+      }
+      scr_str_release(rep);
+      if (!out) return NULL;
+      ScrDyn *result = scr_dyn_new_str(out); /* retains */
+      scr_str_release(out);
+      return result;
+    }
+#endif
     if ((mid == DYN_M_slice)) {
       double start = dyn_index_arg(args, argc, 0, 0, what);
       if (scr_exc_pending()) return NULL;
@@ -1911,11 +1951,19 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
       } else if (strict) result = scr_dyn_retain(receiver);
       else {
+        /* String's generic members coerce the receiver with ToString, then
+         * run on the string. The dispatch answers the ones this build
+         * implements (slice, and replace in the object-model build); the
+         * rest keep the tier's refusal. */
         ScrStr *text = scr_dyn_string_coerce_js(receiver);
         if (text) {
           ScrDyn *string = scr_dyn_new_str(text);
           scr_str_release(text);
-          if (!strcmp(method->data, "slice")) result = scr_dyn_invoke(string, method->data, args, argc, method->data);
+          bool forwards = !strcmp(method->data, "slice");
+#ifdef SCR_JS_OBJECT_MODEL
+          if (!strcmp(method->data, "replace")) forwards = true;
+#endif
+          if (forwards) result = scr_dyn_invoke(string, method->data, args, argc, method->data);
           else dyn_throw_unsupported("String", method->data);
           scr_dyn_release(string);
         }
@@ -1954,21 +2002,42 @@ static ScrDyn *scr_dyn_disposable_stack_member_value(const char *cls, const char
   return member ? member(key, len) : NULL;
 }
 
+/* The intrinsic graph registers the primitive wrappers' providers
+ * (scr_js_intrinsics.c: a primitive's member read answers the value its
+ * prototype object holds, wrapped so the brand checks run on the primitive).
+ * This unit asks for that here, through a slot (scr_dyn.h), because it cannot
+ * name the graph: a program links this unit with no intrinsic graph at all.
+ * The ask is the first thing every builtin member read does and it happens
+ * once, so even the first read of a wrapper member is the prototype's value;
+ * a program without the graph registers nothing and keeps the interned
+ * functions it answered before the fold. */
+SCR_JS_SLOT_FALLBACK(ScrJsWrapperProvidersSlot, scr_js_wrapper_member_providers_slot);
+static bool scr_dyn_wrapper_providers_asked;
+
+static void scr_dyn_wrapper_providers_ask(void) {
+  if (scr_dyn_wrapper_providers_asked) return;
+  scr_dyn_wrapper_providers_asked = true;
+  if (scr_js_wrapper_member_providers_slot) scr_js_wrapper_member_providers_slot();
+}
+
 /* The builtins that answer a member from a table of their own unit instead of
  * from the interner below, and the function that answers one. A Date's
  * methods run the Date receiver checks and a DisposableStack's carry the
  * interface's brand errors, so neither can be this unit's dispatch function;
  * the unit that builds the prototype answers its members from the same table
  * the instances use, so `Date.prototype.getTime === date.getTime` and
- * `DisposableStack.prototype.use === stack.use`. A builtin whose instances
- * already answer the interned values — Map, Set, WeakMap, WeakSet, String,
- * Object — needs no entry: `map.get` and `Map.prototype.get` are one interned
- * function.
+ * `DisposableStack.prototype.use === stack.use`. The three primitive wrapper
+ * prototypes answer through the intrinsic graph, which wraps their members
+ * so the brand checks run on the primitive the prototype wraps; a builtin
+ * whose instances already answer the interned values — Map, Set, WeakMap,
+ * WeakSet, Object — needs no entry: `map.get` and `Map.prototype.get` are one
+ * interned function.
  *
- * A unit that answers a class this table does not name — a wrapper prototype
- * (String, Number, Boolean, BigInt, Symbol) is the one case today — registers
- * its provider with scr_dyn_member_provider_register, and the class then
- * answers through it as a Date does.
+ * A unit that answers a class this table does not name registers its provider
+ * with scr_dyn_member_provider_register, and the class then answers through it
+ * as a Date does. The intrinsic graph registers String, Number and Boolean
+ * that way, through the slot above: this unit cannot name the graph, and the
+ * graph is the only unit that may name the wrapper unit (t262-da A2).
  *
  * Identity is a JavaScript object-model behavior, so the partition lives in
  * the object-model build: a typed program's interner is the same object it
@@ -2017,6 +2086,7 @@ void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider memb
 
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
 #ifdef SCR_JS_OBJECT_MODEL
+  scr_dyn_wrapper_providers_ask();
   ScrDyn *native = scr_dyn_native_member(prototype, method);
   if (native) return native;
 #endif

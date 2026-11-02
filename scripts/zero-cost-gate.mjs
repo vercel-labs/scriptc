@@ -10,7 +10,8 @@
  * The good-code set: the runtime benchmark workloads (and benchmarks/builds
  * applications), the self-hosted compiler (IR and LLVM), and the TypeScript
  * corpus programs. A program whose sources match --allow (the change's
- * pattern signature) may differ. A program whose IR and LLVM are identical
+ * pattern signature), or whose emitted IR matches --allow-facts (a runtime
+ * feature the change selects), may differ. A program whose IR and LLVM are identical
  * and whose executable differs only through changed runtime objects is
  * "runtime-only", and a difference the baseline reproduces against itself is
  * "nondeterministic": both pass with a note unless --strict. Any other
@@ -73,6 +74,7 @@ const { values } = parseArgs({
     shard: { type: "string" },
     only: { type: "string" },
     allow: { type: "string" },
+    "allow-facts": { type: "string" },
     strict: { type: "boolean", default: false },
     "timing-runs": { type: "string" },
     "self-timing-runs": { type: "string", default: "0" },
@@ -92,6 +94,7 @@ if (values.help || values.baseline === undefined) {
   console.log(`Usage: node scripts/zero-cost-gate.mjs --baseline=<checkout> [--candidate=<checkout>]
        [--programs=baseline|candidate|<dir>] [--set=bench,self,corpus] [--quick]
        [--corpus=ts|all] [--shard=i/n] [--only=<regex>] [--allow=<regex>]
+       [--allow-facts=<regex>]
        [--strict] [--timing-runs=N] [--self-timing-runs=N]
        [--fixture-timing-runs=N] [--max-time-growth=2] [--max-size-growth=0]
        [--cachegrind] [--jobs=N] [--json=<file>] [--keep]
@@ -111,7 +114,11 @@ in shard 1. scripts/zero-cost-merge.mjs merges the shards' --json reports
 into one verdict. --only filters program ids.
 
 --allow=<regex> is the change's pattern signature: programs whose source
-files match it may differ (reported as "allowed").
+files match it may differ (reported as "allowed"). --allow-facts=<regex> is
+the same for a change that selects runtime code by a program fact: a program
+whose candidate IR matches it may differ. A fact can come from a source the
+source scan does not read (a dependency) or from a lowering, so the IR is
+the only place the selection shows.
 
 Other differences are classified:
   runtime-only      IR and LLVM identical; the executable differs only
@@ -189,6 +196,7 @@ assert.ok(Number.isInteger(jobs) && jobs >= 1, "--jobs must be >= 1");
 assert.ok(["ts", "all"].includes(values.corpus), "--corpus must be ts or all");
 const only = values.only ? new RegExp(values.only) : null;
 const allow = values.allow ? new RegExp(values.allow, "m") : null;
+const allowFacts = values["allow-facts"] ? new RegExp(values["allow-facts"], "m") : null;
 if (values.cachegrind)
   assert.equal(
     spawnSync("valgrind", ["--version"]).status,
@@ -693,6 +701,7 @@ const report = {
   ),
   programsRoot,
   allow: values.allow ?? null,
+  allowFacts: values["allow-facts"] ?? null,
   strict: values.strict,
   runtime:
     runtime === null
@@ -822,9 +831,18 @@ await pool(
               : settled.baseline;
         if (settled !== null) report.baselineCache.used++;
       }
-      const allowed =
+      const sourceAllowed =
         allow !== null &&
         programInputs(program.entry).some((f) => allow.test(readFileSync(f, "utf8")));
+      // A fact-selected runtime build shows in the IR, not always in the
+      // source: a dependency's file is not a program input, and a lowering
+      // can synthesize the selection. --allow-facts names that class.
+      const factAllowed =
+        allowFacts !== null &&
+        candidate.ok === true &&
+        typeof candidate.ir === "string" &&
+        allowFacts.test(readFileSync(candidate.ir, "utf8"));
+      const allowed = sourceAllowed || factAllowed;
       const artifacts =
         settled?.artifacts ??
         (baseline.ok && candidate.ok ? compareBuilds(baseline, candidate) : {});

@@ -13,6 +13,7 @@ import {
   BOOL,
   DYN,
   STRING,
+  VOID,
   isUnitType,
   type IrExpr,
   type IrStmt,
@@ -22,6 +23,13 @@ import {
 import { numLit, strLit } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
+import { heldEnvValueType } from "./builtins/environment.js";
+import {
+  erasedDeletePlan,
+  lowerDeleteKey,
+  lowerRecordDeleteExpr,
+} from "./expressions/erased-delete.js";
+import { lowerEnvironmentKey } from "./expressions/element-access.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { isStrictCode } from "./strict-mode.js";
 
@@ -220,13 +228,74 @@ export function throwAfterEach(values: readonly IrExpr[], thrown: IrExpr, loc: S
     : { kind: "seqExpr", stmts, result: thrown, type: thrown.type, loc };
 }
 
+/** Whether a member `delete` with this receiver deletes from the environment:
+ * the ambient `process.env` object itself or a value HELD from it
+ * (environment.ts), whose member accesses alias the live table. */
+function isEnvironmentReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
+  return lowerer.isProcessEnv(node) || heldEnvValueType(lowerer, node) !== null;
+}
+
+/** Expression-position `delete` of an environment member — `delete
+ * process.env.X`, a bracket key, or a member through a held or asserted view
+ * of the environment. Node's environment is one live object, so the delete
+ * unsets the variable and answers `true`: every environment entry is
+ * configurable, sloppy or strict. Lowering the receiver as the value its type
+ * gives would delete the member from a SNAPSHOT record instead, answering
+ * `true` while the actual variable stayed set. The delete therefore takes
+ * the same unset the statement form does (lower-stmts.ts), and the receiver
+ * — the ambient object or a binding read, neither of which runs program code
+ * — is not evaluated at all. */
+function lowerEnvironmentDeleteExpr(
+  lowerer: Lowerer,
+  expr: ts.DeleteExpression,
+  target: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): IrExpr {
+  const loc = locOf(expr);
+  const key = ts.isPropertyAccessExpression(target)
+    ? lowerDeleteKey(lowerer, target)
+    : lowerEnvironmentKey(lowerer, target.argumentExpression);
+  if (key.type.kind !== "string")
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'delete' of environment keys of '${lowerer.fmt(key.type)}' values (env keys are strings; a Symbol key removes nothing)`,
+    );
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "process.envUnset", args: [key], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: { kind: "boolLit", value: true, type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
+}
+
 /** Expression-position `delete` (`const ok = delete x.y`). Every receiver but
  * a primitive keeps the statement-position-only fence. */
 export function lowerDeleteExpression(lowerer: Lowerer, expr: ts.DeleteExpression): IrExpr {
   let target: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(target)) target = target.expression;
   if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
+    // The same rule as the statement form (erased-delete.ts): a delete
+    // through a chain of type assertions addresses the operand, in place.
+    const erased = erasedDeletePlan(lowerer, target);
+    if (erased !== null) {
+      if ("refuse" in erased) lowerer.unsupported("SC1090", expr, erased.refuse);
+      if (isEnvironmentReceiver(lowerer, erased.operand))
+        return lowerEnvironmentDeleteExpr(lowerer, expr, target);
+      return lowerRecordDeleteExpr(lowerer, expr, target, lowerer.lowerExpr(erased.operand));
+    }
+    // The environment is one live object in Node: the delete unsets the
+    // variable rather than removing a member from a snapshot of it.
+    if (isEnvironmentReceiver(lowerer, target.expression))
+      return lowerEnvironmentDeleteExpr(lowerer, expr, target);
     const obj = lowerer.lowerExpr(target.expression);
+    if (obj.type.kind === "record") return lowerRecordDeleteExpr(lowerer, expr, target, obj);
     if (
       isPrimitiveValueType(obj.type) &&
       !isBuiltinIdentityToken(lowerer, target.expression, obj)

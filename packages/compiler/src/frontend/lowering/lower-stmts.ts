@@ -39,7 +39,17 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
-import { literalFieldKeys, runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
+import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
+import {
+  OPTIONAL_CHECKED_DYN_DELETE,
+  constantDeleteKey,
+  declaredOptionalProperty,
+  declaresCheckedDynField,
+  erasedDeletePlan,
+  lowerDeleteComputedKey,
+  lowerDeleteKey,
+  lowerRecordMemberDelete,
+} from "./expressions/erased-delete.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -158,7 +168,6 @@ import {
   requireSpecOf,
 } from "../program.js";
 import { isStrictCode } from "./strict-mode.js";
-import { markSloppyRecordWrites } from "./frozen-records.js";
 import {
   COMPOUND_ASSIGN_OPS,
   type CompoundOp,
@@ -8107,62 +8116,6 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   };
 }
 
-/** The refusal for `delete` of an optional `unknown`/`any` field, whose
- * slot is the checked-dynamic one and so has no ABSENT state to write. */
-const OPTIONAL_CHECKED_DYN_DELETE =
-  "'delete' of optional 'unknown'/'any' fields (the checked-dynamic slot has no absent state yet — an omitted such field already reads as present)";
-
-/** TypeScript's declaration marks property `name` of `receiver` optional
- * (`?:`), in every union constituent. A mapped IR type cannot tell an
- * optional `unknown`/`any` field from a required one — both ride the
- * checked-dynamic slot — so a refused `delete`'s real reason comes from
- * the declaration. */
-function declaredOptionalProperty(
-  lowerer: Lowerer,
-  receiver: ts.Expression,
-  name: string,
-): boolean {
-  const receiverType = lowerer.typeOf(receiver);
-  const parts =
-    receiverType.flags & ts.TypeFlags.Union ? constituentTypes(receiverType) : [receiverType];
-  return parts.every((part) => {
-    const property = lowerer.checker.getPropertyOfType(part, name);
-    return property !== undefined && (property.flags & ts.SymbolFlags.Optional) !== 0;
-  });
-}
-
-/** `type` — a record or a union whose every arm is a non-tuple record —
- * declares `name` in the checked-dynamic slot, which has no ABSENT state:
- * an optional such field cannot be removed by a `delete`. */
-function declaresCheckedDynField(lowerer: Lowerer, type: IrType, name: string): boolean {
-  if (type.kind === "record") {
-    const shape = lowerer.shapes.get(type.shapeId);
-    if (!shape || shape.tuple) return false;
-    return shape.fields.find((f) => f.name === name)?.type.kind === "dyn";
-  }
-  if (type.kind !== "union") return false;
-  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
-  return arms.length > 0 && arms.every((arm) => declaresCheckedDynField(lowerer, arm, name));
-}
-
-/** The constant property key of a `delete` target: the name of a dot
- * access, or the one key of a bracket access spelled as a literal or
- * proved by a literal-typed binding (`const key = "a"`). A key of several
- * literals folds to nothing — deleting it would need per-key dispatch, so
- * the record branch refuses and names the keys. Consistent with keyed
- * record reads/writes (literalFieldKeys), the key expression is not
- * evaluated: only a literal or an identifier folds, and an identifier
- * read is pure. */
-function constantDeleteKey(lowerer: Lowerer, target: ts.Expression): string | null {
-  if (ts.isPropertyAccessExpression(target)) return target.name.text;
-  if (!ts.isElementAccessExpression(target)) return null;
-  const keyNode = target.argumentExpression;
-  if (ts.isStringLiteralLike(keyNode)) return keyNode.text;
-  if (!ts.isIdentifier(keyNode)) return null;
-  const keys = literalFieldKeys(lowerer, keyNode);
-  return keys?.length === 1 ? keys[0]! : null;
-}
-
 /** Statement-position `delete`: process.env keys → process.envUnset
  * (unsetenv), pure `Record<string, T>` keys → recordKeyDelete (the
  * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
@@ -8203,29 +8156,12 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       loc,
     };
   const lowerKey = (): IrExpr => {
-    if (ts.isPropertyAccessExpression(target)) {
-      return { kind: "strLit", value: target.name.text, type: STRING, loc: locOf(target.name) };
-    }
+    if (ts.isPropertyAccessExpression(target)) return lowerDeleteKey(lowerer, target);
     const keyNode = (target as ts.ElementAccessExpression).argumentExpression;
-    let key =
-      lowerer.isProcessEnv(target.expression) ||
+    return lowerer.isProcessEnv(target.expression) ||
       heldEnvValueType(lowerer, target.expression) !== null
-        ? lowerEnvironmentKey(lowerer, keyNode)
-        : lowerer.lowerExpr(keyNode);
-    if (key.type.kind === "dyn") {
-      key = { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
-    }
-    if (lowerer.runtimeOptionalWidening(key.type, STRING) !== null) {
-      key = lowerer.ensureString(key, keyNode);
-    }
-    if (key.type.kind !== "string") {
-      lowerer.unsupported(
-        "SC1090",
-        keyNode,
-        `'delete' with '${lowerer.fmt(key.type)}' keys (index-signature and env keys are strings)`,
-      );
-    }
-    return key;
+      ? lowerEnvironmentKey(lowerer, keyNode)
+      : lowerDeleteComputedKey(lowerer, keyNode);
   };
   if (
     lowerer.isProcessEnv(target.expression) ||
@@ -8245,7 +8181,19 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     const unionDelete = lowerUnionFieldDelete(lowerer, target);
     if (unionDelete) return unionDelete;
   }
-  let obj = lowerer.lowerExpr(target.expression);
+  // A delete through a chain of type assertions addresses the operand the
+  // assertions erase to (`(o as View).k` names `o`): the asserted view's
+  // conversion may build a copying width record, and the delete would land
+  // on that temporary. Delete in place from the operand when its own stored
+  // layout holds the member as a deletable slot; a view that names a member
+  // the layout does not hold has nothing to delete, so refuse by name.
+  const erased = erasedDeletePlan(lowerer, target);
+  if (erased !== null && "refuse" in erased) {
+    lowerer.unsupported("SC1090", target, erased.refuse);
+  }
+  let obj = lowerer.lowerExpr(
+    erased !== null && "operand" in erased ? erased.operand : target.expression,
+  );
   // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key,
   // and the base's type decides the answer — null and undefined throw
   // Node's TypeError, `?.` on a nullish base short-circuits to `true`
@@ -8350,71 +8298,7 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     declaresCheckedDynField(lowerer, obj.type, constantKey) &&
     declaredOptionalProperty(lowerer, target.expression, constantKey);
   if (obj.type.kind === "record") {
-    const shape = lowerer.shapes.get(obj.type.shapeId);
-    if (shape?.indexValue && shape.fields.length === 0 && !shape.tuple) {
-      return markSloppyRecordWrites(
-        lowerer,
-        { kind: "recordKeyDelete", obj, shapeId: obj.type.shapeId, key: lowerKey(), loc },
-        expr,
-      );
-    }
-    // `delete r.f` of a declared OPTIONAL field (undefined-armed slot)
-    // writes the field's ABSENT state: a monomorphic shape cannot remove
-    // its slot, but the slot remembers that no property exists, so `in`
-    // answers false, Object.keys skips it, and JSON.stringify drops it,
-    // while a later write makes it present again. Constant keys only
-    // (dot access or a literal bracket); required fields keep the honest
-    // fence below.
-    const field =
-      constantKey !== null && !shape?.tuple
-        ? shape?.fields.find((f) => f.name === constantKey)
-        : undefined;
-    if (field) {
-      const absent = lowerer.absentFieldValue(field.type, loc);
-      if (absent) {
-        return markSloppyRecordWrites(
-          lowerer,
-          {
-            kind: "recordSet",
-            obj,
-            shapeId: obj.type.shapeId,
-            field: field.name,
-            value: absent,
-            loc,
-          },
-          expr,
-          true,
-        );
-      }
-    }
-    if (shape?.indexValue) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "'delete' of hybrid index-signature keys (declared struct slots and overflow entries answer differently — model deletable dynamic keys with a pure Record<string, T>)",
-      );
-    }
-    if (optionalCheckedDynDelete) {
-      lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
-    }
-    // A key of SEVERAL literals names no single slot: say that instead of
-    // blaming a field the caller never named.
-    const keyNames =
-      constantKey === null && ts.isElementAccessExpression(target)
-        ? literalFieldKeys(lowerer, target.argumentExpression)
-        : null;
-    if (keyNames !== null && keyNames.length > 1) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        `'delete' through keys of ${keyNames.length} literals (${keyNames.map((k) => `'${k}'`).join(", ")}; delete one constant key at a time, or switch over the key)`,
-      );
-    }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "'delete' of required record fields (the shape's slot cannot be removed — only an optional field (`f?: T`) has an absent state, which Object.keys, 'in', and JSON.stringify follow; make the field optional if the program must remove it)",
-    );
+    return lowerRecordMemberDelete(lowerer, expr, target, obj, lowerKey);
   }
   if (optionalCheckedDynDelete) {
     lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);

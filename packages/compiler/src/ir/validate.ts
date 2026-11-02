@@ -1650,6 +1650,10 @@ function validateFunction(
         // choose ARRAY_VALUE versus ARRAY_UNDEFINED before the final result
         // is evaluated. Delegation also needs a local loop. Nested control
         // flow is checked recursively; jumps still cannot leave the region.
+        // A value-position `delete` of an index-signature key lowers to its
+        // recordKeyDelete (frozen-guarded into a block when the record can
+        // freeze), and a value-position `delete` of an optional field to the
+        // recordSet that writes its absent state.
         const allowed = new Set([
           "varDecl",
           "assign",
@@ -1657,6 +1661,7 @@ function validateFunction(
           "fieldSet",
           "recordSet",
           "recordKeySet",
+          "recordKeyDelete",
           "arraySet",
           "arraySetLength",
           "arraySetUndefined",

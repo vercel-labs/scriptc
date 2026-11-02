@@ -1294,7 +1294,7 @@ export function isDeclaredInAmbientNamespace(d: ts.Declaration, name: string): b
  * representation (TypeMapperCtx.generalNodeStreams) maps differently:
  * NodeJS.ReadableStream / NodeJS.WritableStream, @types/node's
  * stream.Readable / stream.Writable, or the fallback declarations'
- * ChildStdin. */
+ * ChildStdin / ChildStdout. */
 export function isGeneralNodeStreamInterface(
   type: ts.Type,
   ctx: Pick<TypeMapperCtx, "isStdlibFile">,
@@ -1306,7 +1306,8 @@ export function isGeneralNodeStreamInterface(
     if (!ctx.isStdlibFile(ts.getSourceFileOfNode(d))) return false;
     if (ts.symbolName(psym) === "ReadableStream" || ts.symbolName(psym) === "WritableStream")
       return ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS");
-    if (ts.symbolName(psym) === "ChildStdin") return isDeclaredInAmbientModule(d, "child_process");
+    if (ts.symbolName(psym) === "ChildStdin" || ts.symbolName(psym) === "ChildStdout")
+      return isDeclaredInAmbientModule(d, "child_process");
     return (
       (ts.symbolName(psym) === "Readable" || ts.symbolName(psym) === "Writable") &&
       isNodeTypesPath(ts.getSourceFileOfNode(d).fileName) &&
@@ -2193,6 +2194,20 @@ function spreadsCheckedDynamic(symbol: ts.Symbol | undefined, ctx: TypeMapperCtx
   );
 }
 
+/** The members a hand-written writable-pipe interface may name: the child
+ * stdin surface a `Pipe { write(chunk: string): boolean; end(): void }`
+ * declares (see the childWriter mapping in mapTypeInner). */
+const CHILD_WRITER_MEMBERS: ReadonlySet<string> = new Set([
+  "write",
+  "end",
+  "destroy",
+  "writable",
+  "on",
+  "once",
+  "off",
+  "removeListener",
+]);
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
@@ -3035,6 +3050,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     psym.declarations.some(
       (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
     );
+  // The async iteration protocols a `for await` source is annotated with
+  // (and the older spelling of an async generator's iterator object). Node's
+  // typings declare an interface named AsyncIterator too — the native handle
+  // timers/promises.setInterval answers, which that builtin's lowering
+  // builds — so only the ES lib's declarations take the protocol mapping.
+  const isLibAsyncInterface = (name: string): boolean =>
+    psym !== undefined &&
+    ts.symbolName(psym) === name &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        !isNodeTypesPath(ts.getSourceFileOfNode(d).fileName),
+    );
+  const isAsyncIterationProtocol = (): boolean =>
+    isLibAsyncInterface("AsyncIterable") ||
+    isLibAsyncInterface("AsyncIterator") ||
+    isLibAsyncInterface("AsyncIterableIterator");
   // The timer handles: an interface in the fallback and in @types/node 22+,
   // a class (`class Timeout implements Timer`) in @types/node 20 and older.
   const isStdlibTimerHandle = (name: string): boolean =>
@@ -4136,6 +4169,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           ts.isInterfaceDeclaration(d) &&
           ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
           isDeclaredInAmbientNamespace(d, "NodeJS"),
+      )) ||
+    (psym !== undefined &&
+      ts.symbolName(psym) === "ChildStdout" &&
+      psym.declarations.some(
+        (d) =>
+          ts.isInterfaceDeclaration(d) &&
+          ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+          isDeclaredInAmbientModule(d, "child_process"),
       ))
   ) {
     // The general representation: the runtime Readable, which child
@@ -4143,7 +4184,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // checked-dynamic stream slots, NodeJS.ReadableStream holds any
     // stream value (dyn-streams.ts); stream.Readable keeps the class.
     if (ctx.generalNodeStreams === true) {
-      if (ctx.dynNodeStreams === true && ts.symbolName(psym) === "ReadableStream") return DYN;
+      if (
+        ctx.dynNodeStreams === true &&
+        (ts.symbolName(psym) === "ReadableStream" || ts.symbolName(psym) === "ChildStdout")
+      )
+        return DYN;
       return { kind: "object", className: "%Readable" };
     }
     return { kind: "childStream" };
@@ -4364,8 +4409,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "generator", yieldT, retT: VOID, nextT: UNDEFINED_T };
   }
   // Generator<T, TReturn, TNext>, AsyncGenerator<T, TReturn, TNext> (and
-  // the lib's IterableIterator<T, ...>, the older sync annotation spelling):
-  // the generator kind. Channel normalization keeps the runtime honest:
+  // the lib's IterableIterator<T, ...>, the older sync annotation spelling;
+  // AsyncIterator<T>, AsyncIterableIterator<T> and AsyncIterable<T>, what
+  // `for await` consumes): the generator kind. Channel normalization keeps
+  // the runtime honest:
   //   yield channel  — T must be a real value type (a generator that could
   //                    only yield undefined has no C value form); `never`
   //                    (a generator that never yields) rides the VOID
@@ -4395,18 +4442,31 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("Iterator") ||
     // IteratorObject<T> is what the iterator helpers return: a helper
     // generator over its source (containers/iterator-helpers.ts).
-    isStdlibInterface("IteratorObject")
+    isStdlibInterface("IteratorObject") ||
+    isAsyncIterationProtocol()
   ) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     const channels = genChannels(args[0], args[1], args[2], ctx);
     if (!channels) return null;
+    // The async iteration protocols are what `for await` CONSUMES: the
+    // yield channel is the only promise they make. A for-await consumer
+    // sends nothing back, and a producer's own return and resume
+    // channels are its business, so the protocol spelling takes the
+    // return channel as valueless and the resume channel as the
+    // checked-dynamic one — the channels of the common
+    // `AsyncGenerator<T, void, unknown>` producer annotation.
+    const consumer = isAsyncIterationProtocol()
+      ? { ...channels, retT: VOID, nextT: DYN as IrType }
+      : channels;
     // The result record must exist too (its union must be legal), or
     // `.next()` could never answer — mapped generators always resume.
-    if (!genResultRecord(channels.yieldT, channels.retT, ctx.shapes, unions)) return null;
+    if (!genResultRecord(consumer.yieldT, consumer.retT, ctx.shapes, unions)) return null;
     return {
       kind: "generator",
-      ...(isStdlibInterface("AsyncGenerator") ? { async: true as const } : {}),
-      ...channels,
+      ...(isStdlibInterface("AsyncGenerator") || isAsyncIterationProtocol()
+        ? { async: true as const }
+        : {}),
+      ...consumer,
     };
   }
   // Iterable<T>: the iterable union (iterableUnionType) — the source value
@@ -5397,6 +5457,46 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         return true;
       });
     if (childShaped && core >= 2) return CHILD_T;
+    // A USER-declared writable-pipe interface — the writer half of the same
+    // idiom (a hand-written `Pipe { write(chunk: string): boolean; end():
+    // void }` naming child.stdin). Every member is named on the child
+    // stdin surface, `write` takes a chunk the writer takes (a string, or
+    // bytes such as a Uint8Array/Buffer) and answers the backpressure
+    // boolean, and at least one other member says writer (a lone `write`
+    // member is an ordinary record holding a function). The type maps to
+    // the child writer handle: in a compiled program the only VALUE
+    // producer is spawn's child.stdin, and the members lower against it.
+    const chunkIsWritten = (chunk: IrType): boolean => {
+      const arms = chunk.kind === "union" ? (ctx.unions.get(chunk.unionId)?.arms ?? []) : [chunk];
+      return (
+        arms.length > 0 &&
+        arms.every((arm) => arm.kind === "string" || (arm.kind === "bytes" && arm.elem === "u8"))
+      );
+    };
+    const writeMember = (p: ts.Symbol): boolean => {
+      const sigs = checker.getCallSignatures(checker.getTypeOfSymbol(p));
+      if (sigs.length !== 1) return false;
+      const sig = sigs[0]!;
+      const params = sig.getParameters();
+      if (params.length < 1 || params.length > 2) return false;
+      if ((checker.getReturnTypeOfSignature(sig).flags & ts.TypeFlags.Boolean) === 0) return false;
+      const chunk = mapType(checker.getTypeOfSymbol(params[0]!), ctx);
+      return chunk !== null && chunkIsWritten(chunk);
+    };
+    const writerProps = checker.getPropertiesOfType(widened);
+    const writerShaped =
+      writerProps.length >= 2 &&
+      writerProps.some((p) => ts.symbolName(p) === "write" && writeMember(p)) &&
+      writerProps.every(
+        (p) =>
+          CHILD_WRITER_MEMBERS.has(ts.symbolName(p)) &&
+          (ts.symbolName(p) !== "write" || writeMember(p)),
+      );
+    if (writerShaped) {
+      return ctx.generalNodeStreams === true
+        ? { kind: "object", className: "%Writable" }
+        : { kind: "childWriter" };
+    }
   }
   if (flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection) && callSigs.length === 0) {
     const viaMapped = mapBoundMappedType(widened, ctx);
@@ -5450,6 +5550,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     try {
       const byKey = new Map<string, IrType>();
       const recordParts: { source: ts.Type; mapped: IrType & { kind: "record" } }[] = [];
+      const classParts: { source: ts.Type; mapped: IrType & { kind: "object" } }[] = [];
       const substitutedUnions: IrUnionDef[] = [];
       // The lib's `T extends readonly unknown[] | []` idiom (Promise.all,
       // allSettled) maps an array input to `X[] | []`: the empty tuple is
@@ -5542,6 +5643,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
         byKey.set(typeKey(mapped), mapped);
         if (mapped.kind === "record") recordParts.push({ source: part, mapped });
+        if (mapped.kind === "object") classParts.push({ source: part, mapped });
+      }
+      // A subclass arm beside one of its ancestor classes (`Shape | Circle`
+      // with `class Circle extends Shape`) is that ancestor: every instance
+      // of the subclass is an instance of the ancestor, the ancestor's slot
+      // holds it as the same pointer, and `instanceof` and member dispatch
+      // read the instance's own class. A union would box each value.
+      if (classParts.length > 1) {
+        for (const { source, mapped } of classParts) {
+          if (programClassBases(source, ctx).some((base) => byKey.has(typeKey(base))))
+            byKey.delete(typeKey(mapped));
+        }
       }
       const arms = [...byKey.values()];
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
@@ -5659,6 +5772,35 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   return null;
+}
+
+/** The classes a non-generic program class extends, nearest first, as
+ * long as each is a non-generic class the program declares. Empty for
+ * other types. */
+function programClassBases(instance: ts.Type, ctx: TypeMapperCtx): IrType[] {
+  const bases: IrType[] = [];
+  let current = instance;
+  while (bases.length < MAP_TYPE_MAX_DEPTH) {
+    if (!programClassDeclaration(current, ctx)) break;
+    const base = ctx.checker.getBaseTypes(current as ts.InterfaceType)[0];
+    if (base === undefined || !programClassDeclaration(base, ctx)) break;
+    const mapped = mapType(base, ctx);
+    if (mapped?.kind !== "object") break;
+    bases.push(mapped);
+    current = base;
+  }
+  return bases;
+}
+
+/** Whether `type` is the instance type of a non-generic class declared in
+ * the program's source. */
+function programClassDeclaration(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  if ((type.flags & ts.TypeFlags.Object) === 0 || !type.isClassOrInterface()) return false;
+  const decl = type.getSymbol()?.valueDeclaration;
+  if (decl === undefined || !ts.isClassDeclaration(decl) || decl.typeParameters?.nodes.length)
+    return false;
+  const file = ts.getSourceFileOfNode(decl);
+  return !file.isDeclarationFile && ctx.isProgramFile(file);
 }
 
 /** One non-overloaded call signature's func type (mapTypeInner's

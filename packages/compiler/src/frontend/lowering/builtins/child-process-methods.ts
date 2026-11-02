@@ -3,7 +3,7 @@ import * as ts from "../../ts7/adapter.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { isChildSurfaceMember } from "../surfaces.js";
+import { isChildSurfaceMember, isChildWriterSurfaceMember } from "../surfaces.js";
 import { bufEncoding } from "../containers/bytes.js";
 import {
   BOOL,
@@ -526,7 +526,7 @@ export function lowerChildWriterMethodCall(
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "childWriter") return null;
-  if (!lowerer.isStdlibMember(access)) return null;
+  if (!isChildWriterSurfaceMember(lowerer, access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
 

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 import { moduleUsesDynTier } from "../src/ir/runtime-features.js";
@@ -95,6 +95,49 @@ console.log(JSON.stringify(make(1, "c")), top.t);
     expect(make.match(/@scr_dyn_key_set\(/g)).toHaveLength(2);
     expect(make).toContain("@scr_dyn_key_set_computed(");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SCRIPTC_DEBUG_JS_IC_WAYS=0 sends every access through the probe", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-ways-"));
+  process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] = "0";
+  try {
+    // The way count is a load-time constant, so the test compiles against a
+    // fresh module graph in which the variable is set.
+    vi.resetModules();
+    const fresh = await import("../src/index.js");
+    const { emitLlvmModule: emit } = await import("../src/backend/llvm/emitter.js");
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+function make(v, k) { return { a: v, b: 2, [k]: 3 }; }
+function read(o) { return o.a; }
+var top = { t: 1 };
+read(top);
+console.log(JSON.stringify(make(1, "c")), top.t);
+`,
+    );
+    const result = await fresh.compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = fresh.deserializeModule(await readFile(outPath, "utf8"));
+    const llvm = emit(mod);
+    const make = body(llvm, "make");
+    // Literal members keep their own entry point, so an attribution profile
+    // can tell them from other stores.
+    expect(make.match(/@scr_js_literal_probe\(/g)).toHaveLength(2);
+    expect(make).not.toContain("@scr_js_store_probe(");
+    // Zero ways: no cache entry is tested inline, so the site branches to
+    // the probe without loading an entry.
+    expect(body(llvm, "read")).not.toMatch(
+      /getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 \d+$/m,
+    );
+  } finally {
+    delete process.env["SCRIPTC_DEBUG_JS_IC_WAYS"];
+    vi.resetModules();
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -1552,9 +1552,10 @@ export function libExportUnresolvedDiag(
     message: `library export '${exportName}' cannot be resolved: ${detail}`,
     loc,
     hint:
-      "the export map may only name function declarations exported directly by the profile's ONE entry module; " +
-      "when a function lives in another module, the entry module declares an exported wrapper function that " +
-      "forwards to it, such as export function handle(msg: string) { return realHandle(msg); }",
+      "the export map may only name exports of the profile's ONE entry module, and the entry module decides " +
+      'where the function lives: re-export it from another module (export { handle } from "./sdk/handler", ' +
+      'or export * from "./sdk/handler"), declare it there and export it through a list (export { handle }), ' +
+      "or declare a forwarding wrapper function",
   };
 }
 

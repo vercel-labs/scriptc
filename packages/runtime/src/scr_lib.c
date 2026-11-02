@@ -130,6 +130,7 @@ static ScrStr *scr_fs_win_utf8(const WCHAR *text, size_t length) {
 #if defined(__linux__)
 #include <sched.h> /* sched_getaffinity, CPU_COUNT (os.availableParallelism) */
 #include <sys/prctl.h> /* PR_SET_NAME (process.title) */
+#include <sys/sendfile.h> /* sendfile (copyFileSync) */
 #include <sys/syscall.h> /* SYS_statx (fs stats) */
 #ifndef SYS_statx
 #if defined(__x86_64__)
@@ -3597,12 +3598,10 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data) {
   scr_fs_write_common(path, data, "wb");
 }
 
-/* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
- * argument — it applies at CREATION only (umask applying), and an
- * existing file keeps its permissions, exactly Node (which never chmods
- * here). Same error shapes as the plain form. */
-void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return;
+/* Node's parseFileMode for a numeric mode: a number that is an integer in
+ * 0..0xFFFFFFFF. Anything else throws Node's ERR_OUT_OF_RANGE and answers
+ * false. */
+static bool scr_fs_file_mode_valid(double mode) {
   char recv[48], msg[176];
   scr_num_received(mode, recv);
   if (!(isfinite(mode) && trunc(mode) == mode)) {
@@ -3610,15 +3609,25 @@ void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
                        "The value of \"mode\" is out of range. It must be an integer. Received %s",
                        recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
   if (mode < 0 || mode > 4294967295.0) {
     int len = snprintf(msg, sizeof msg,
                        "The value of \"mode\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
                        recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
+  return true;
+}
+
+/* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
+ * argument — it applies at CREATION only (umask applying), and an
+ * existing file keeps its permissions, exactly Node (which never chmods
+ * here). Same error shapes as the plain form. */
+void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
+  if (!scr_fs_file_mode_valid(mode)) return;
   /* O_BINARY: zero on POSIX; on Windows it keeps the CRT from translating
    * \n in these byte-exact writes (fopen's "wb" path already does). */
   int fd = open(path->data, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, (mode_t)mode);
@@ -3759,13 +3768,22 @@ void scr_fs_chown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, 
 void scr_fs_lchown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, -1, true, uid, gid); }
 void scr_fs_fchown(double fd, double uid, double gid) { scr_fs_chown_op(NULL, fd, false, uid, gid); }
 
-/* fs.openSync(path, flags) → the raw fd (as f64) — the pair behind
+/* fs.openSync(path, flags) → the raw fd, for program objects built before
+ * the call carried a mode. Node's 0o666 default is what open(2) saw then,
+ * so the pair keeps answering that. */
+double scr_fs_open(ScrStr *path, ScrStr *flags) {
+  return scr_fs_open_mode(path, flags, 0666);
+}
+
+/* fs.openSync(path, flags, mode) → the raw fd (as f64) — the pair behind
  * spawn's fd-stdio form (openSync → stdio: ["ignore", fd, fd] →
  * closeSync). flags is Node's string grammar; an unknown flag throws
  * Node's ERR_INVALID_ARG_VALUE TypeError text, an open(2) failure the
- * usual Node-shaped fs error. Mode is Node's 0666 default (the numeric
- * third argument is a compile fence). */
-double scr_fs_open(ScrStr *path, ScrStr *flags) {
+ * usual Node-shaped fs error. mode is open(2)'s creation mode, passed by
+ * the compiler with Node's 0o666 default; it is checked like
+ * parseFileMode before the open, and open(2) ignores it unless the flags
+ * create the file. */
+double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
   if (!scr_fs_path_ok(path, "path")) return 0;
   const char *f = flags->data;
   int of;
@@ -3789,7 +3807,8 @@ double scr_fs_open(ScrStr *path, ScrStr *flags) {
     scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
     return 0;
   }
-  int fd = open(path->data, of | O_BINARY, 0666);
+  if (!scr_fs_file_mode_valid(mode)) return 0;
+  int fd = open(path->data, of | O_BINARY, (mode_t)mode);
   if (fd < 0) {
     scr_fs_throw(errno, "open", path);
     return 0;
@@ -4645,11 +4664,93 @@ void scr_fs_link(ScrStr *source, ScrStr *dest) {
 #endif
 }
 
+/* Whether a kernel copy call declined this pair of descriptors rather than
+ * failing. copy_file_range refuses a pair on different filesystems
+ * (EXDEV), sendfile refuses a source or destination that is not a regular
+ * file (EINVAL), and either may be missing from the kernel or the
+ * filesystem (ENOSYS, EOPNOTSUPP). */
+static bool scr_fs_copy_declined(int error) {
+  return error == EXDEV || error == EINVAL || error == ENOSYS || error == EOPNOTSUPP;
+}
+
+/* Copies `in` to `out` from the offsets the two descriptors hold, returning
+ * 0 or the errno of the failing call. Both descriptors' offsets advance, so
+ * a kernel call that stops partway leaves the next one copying the rest.
+ * Linux prefers copy_file_range, which leaves the bytes on the same
+ * filesystem without a trip through the page cache; sendfile covers what it
+ * declines, and a buffer loop covers the rest. */
+static int scr_fs_copy_bytes(int in, int out) {
+#if defined(__linux__) && defined(SYS_copy_file_range)
+  for (;;) {
+    ssize_t n = syscall(SYS_copy_file_range, in, NULL, out, NULL, (size_t)1 << 30, 0u);
+    if (n > 0) continue;
+    if (n == 0) return 0;
+    if (errno == EINTR) continue;
+    if (!scr_fs_copy_declined(errno)) return errno;
+    break;
+  }
+#endif
+#if defined(__linux__)
+  for (bool first = true;; first = false) {
+    ssize_t n = sendfile(out, in, NULL, (size_t)1 << 30);
+    if (n > 0) continue;
+    if (n == 0) return 0;
+    if (errno == EINTR) continue;
+    if (!first || !scr_fs_copy_declined(errno)) return errno;
+    break;
+  }
+#endif
+  char buf[65536];
+  for (;;) {
+    ssize_t got = read(in, buf, sizeof buf);
+    if (got < 0) {
+      if (errno == EINTR) continue;
+      return errno;
+    }
+    if (got == 0) return 0;
+    ssize_t at = 0;
+    while (at < got) {
+      ssize_t wrote = write(out, buf + at, (size_t)(got - at));
+      if (wrote < 0) {
+        if (errno == EINTR) continue;
+        return errno;
+      }
+      at += wrote;
+    }
+  }
+}
+
+/* Whether two descriptors name the same file. POSIX compares the device
+ * and inode numbers. On Windows the CRT's struct stat carries a drive
+ * number and no file index, so distinct files on one drive compare
+ * equal; the handles' volume serial and file index identify the file
+ * there. */
+static bool scr_fs_same_file(int a, int b, const struct stat *sa, const struct stat *sb) {
+#if defined(_WIN32)
+  (void)sa;
+  (void)sb;
+  HANDLE ha = (HANDLE)_get_osfhandle(a);
+  HANDLE hb = (HANDLE)_get_osfhandle(b);
+  if (ha == INVALID_HANDLE_VALUE || hb == INVALID_HANDLE_VALUE) return false;
+  BY_HANDLE_FILE_INFORMATION fa;
+  BY_HANDLE_FILE_INFORMATION fb;
+  if (!GetFileInformationByHandle(ha, &fa) || !GetFileInformationByHandle(hb, &fb)) return false;
+  return fa.dwVolumeSerialNumber == fb.dwVolumeSerialNumber &&
+         fa.nFileIndexHigh == fb.nFileIndexHigh && fa.nFileIndexLow == fb.nFileIndexLow;
+#else
+  return sa->st_dev == sb->st_dev && sa->st_ino == sb->st_ino;
+#endif
+}
+
 /* copyFileSync(src, dest): contents copied into a created-or-truncated
  * destination carrying the SOURCE's permission bits — libuv's
- * uv_fs_copyfile behavior behind Node's copyFileSync (umask applies at
- * creation, like any open(2)). Every failure throws catchably with the
- * two-path message and the syscall name Node reports ("copyfile"). */
+ * uv_fs_copyfile behavior behind Node's copyFileSync. The destination is
+ * opened with the source's mode as open(2)'s creation mode (umask
+ * applying, like any open(2)) and then fchmod'ed to the source's bits, so
+ * an existing destination takes the source's permissions too. Copying a
+ * file onto itself succeeds without touching it. Every failure throws
+ * catchably with the two-path message and the syscall name Node reports
+ * ("copyfile"). */
 void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
   if (!scr_fs_path_ok(src, "src")) return;
   if (!scr_fs_path_ok(dest, "dest")) return;
@@ -4665,40 +4766,40 @@ void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
     scr_fs_throw2(e, "copyfile", src, dest);
     return;
   }
-  int out = open(dest->data, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, st.st_mode & 07777);
+  int out = open(dest->data, O_WRONLY | O_CREAT | O_BINARY, st.st_mode & 07777);
   if (out < 0) {
     int e = errno;
     close(in);
     scr_fs_throw2(e, "copyfile", src, dest);
     return;
   }
-  char buf[65536];
-  for (;;) {
-    ssize_t got = read(in, buf, sizeof buf);
-    if (got < 0) {
-      if (errno == EINTR) continue;
-      int e = errno;
-      close(in);
-      close(out);
-      scr_fs_throw2(e, "copyfile", src, dest);
-      return;
-    }
-    if (got == 0) break;
-    ssize_t at = 0;
-    while (at < got) {
-      ssize_t wrote = write(out, buf + at, (size_t)(got - at));
-      if (wrote < 0) {
-        if (errno == EINTR) continue;
-        int e = errno;
-        close(in);
-        close(out);
-        scr_fs_throw2(e, "copyfile", src, dest);
-        return;
-      }
-      at += wrote;
-    }
+  struct stat dst;
+  int err = 0;
+  if (fstat(out, &dst) != 0) err = errno;
+  else if (scr_fs_same_file(in, out, &st, &dst)) {
+    close(in);
+    close(out);
+    return;
   }
+  if (!err && ftruncate(out, 0) != 0) err = errno;
+#if !defined(_WIN32) && !defined(__wasi__)
+  /* libuv sets the destination's permissions to the source's after the
+   * open; the CRT has no descriptor form of this on Windows. */
+  if (!err && fchmod(out, st.st_mode & 07777) != 0) err = errno;
+#endif
+  if (err) {
+    close(in);
+    close(out);
+    scr_fs_throw2(err, "copyfile", src, dest);
+    return;
+  }
+  err = scr_fs_copy_bytes(in, out);
   close(in);
+  if (err) {
+    close(out);
+    scr_fs_throw2(err, "copyfile", src, dest);
+    return;
+  }
   if (close(out) != 0) scr_fs_throw2(errno, "copyfile", src, dest);
 }
 

@@ -12,10 +12,14 @@
  *                 same way, its text the baseline "Uncaught ..." line
  *   poisoned    — after a trap, any further entry aborts deterministically
  *   preregister — a trap before sink registration aborts
+ *   hostleak    — the HOST leaks a block and exits: the sanitized lane's
+ *                 control that its leak checker is still on (K10), so the
+ *                 trap's abandoned-heap hand-off cannot pass by disabling it
  */
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern void kp_init(void);
@@ -73,6 +77,14 @@ int main(int argc, char **argv) {
 
   kp_set_panic_sink(sink, NULL);
   kp_init();
+
+  if (strcmp(mode, "hostleak") == 0) {
+    void *leaked = malloc(64);
+    if (leaked == NULL) return 3;
+    printf("host leak left for LeakSanitizer\n");
+    fflush(stdout); /* the leak check exits without flushing stdio */
+    return 0;
+  }
 
   if (strcmp(mode, "trap") == 0) {
     if (setjmp(trap_jmp) == 0) {

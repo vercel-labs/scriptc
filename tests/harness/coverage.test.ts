@@ -1081,6 +1081,42 @@ test("a package the policy islands types its values as island handles", async ()
   ]);
 });
 
+test("a package a build islands by its module-init fence is the same island here", async () => {
+  // ni-sdk constructs a Promise subclass at module initialization, as the
+  // provider SDKs ship it, so a build runs the package in a Node island
+  // (executable/prepare.ts's growth rules). Its declarations then type the
+  // program's request objects as island handles, and the writes, pushes and
+  // reads in main.ts are dynamic operations on them. The analysis grows the
+  // same set from the same pass, so it reports the island and none of those
+  // uses as refusals — a build makes none of them.
+  const entry = fixture("node-islands-fenced-sdk-values/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-node-islands-fenced-sdk-values.txt",
+  );
+  const { coverage } = analyze(entry);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
+    ["ni-sdk", "gap"],
+  ]);
+  // The build decides the same island: its SC8001 note names the package the
+  // report lists.
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-fenced-sdk-"));
+  try {
+    const built = await compile(entry, {
+      outputKind: "ir",
+      outPath: join(outDir, "main.ir.json"),
+      outDir,
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const islands = (built.warnings ?? []).filter((d) => d.code === "SC8001");
+    expect(islands.map((d) => d.message)).toEqual([expect.stringContaining("ni-sdk")]);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
 test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
   const entry = fixture("node-islands-config/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-config-"));

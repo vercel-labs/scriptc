@@ -507,6 +507,51 @@ test("a store after a clobber makes the members after it recheck", () => {
   ]);
 });
 
+test("every member after a clobber checks the shape again", () => {
+  const fn = fnBody([
+    { loc, kind: "exprStmt", expr: read(getOf("price"), "item") },
+    {
+      loc,
+      kind: "exprStmt",
+      expr: { loc, kind: "call", callee: "observe", args: [num(0)], type: VOID },
+    },
+    { loc, kind: "exprStmt", expr: read(getOf("qty"), "item") },
+    { loc, kind: "exprStmt", expr: read(getOf("meta"), "item") },
+  ]);
+  // The first member after the call may take its own site's helper, which
+  // leaves the group's entry behind the subject's layout; the member after
+  // it cannot reuse the entry without checking the shape itself.
+  expect(summarize(fn)).toEqual([
+    { subject: "item", keys: ["price", "qty", "meta"], members: ["0", "1r", "2r"] },
+  ]);
+});
+
+test("an assignment inside an operand keeps the binding out of groups", () => {
+  const swap: IrExpr = {
+    loc,
+    kind: "assignExpr",
+    localId: "item",
+    value: ref("other"),
+    type: DYN,
+  };
+  const nested: IrExpr[] = [
+    { loc, kind: "call", callee: "use", args: [swap], type: VOID },
+    { loc, kind: "bin", op: "+", left: num(1), right: swap, type: DYN },
+    { loc, kind: "arrayLit", elems: [swap], type: { kind: "array", elem: DYN } },
+  ];
+  for (const expr of nested) {
+    const fn = fnBody([
+      { loc, kind: "exprStmt", expr: read(getOf("price"), "item") },
+      { loc, kind: "exprStmt", expr },
+      { loc, kind: "exprStmt", expr: read(getOf("qty"), "item") },
+      { loc, kind: "exprStmt", expr: read(getOf("meta"), "item") },
+    ]);
+    // The binding names another object after the operand runs, so no read
+    // of it can share a guard.
+    expect(summarize(fn)).toEqual([]);
+  }
+});
+
 test("a store to another binding does not join", () => {
   const fn = fnBody([
     { loc, kind: "exprStmt", expr: read(getOf("price"), "item") },

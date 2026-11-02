@@ -25,11 +25,13 @@
  *   member it answers;
  * - a group has at least two members and at most JS_GROUP_KEYS keys.
  *
- * The plan also marks members that follow a *clobber*: an operation that
- * may change any object's layout or slots, or run user code. A clean
- * member reads through the guard's entry directly; a member after a
- * clobber rechecks the subject's layout against the entry first. Both are
- * correct; the mark only decides whether the recheck is emitted.
+ * The plan also marks the members whose entry is not known to answer for
+ * the subject. A *clobber* is an operation that may change any object's
+ * layout or slots, or run user code; the member after it checks the
+ * subject's layout against the entry first, and a member that took the
+ * site's helper instead may have left the entry behind the subject's
+ * layout, so the members after that check too. A clean member reads
+ * through the guard's entry directly.
  *
  * What is not a clobber (design 3.3): grouped reads, grouped stores of a
  * primitive into a key the group holds, jsval arithmetic and comparison
@@ -52,8 +54,9 @@ export interface JsGroupMember {
   readonly position: number;
   /** The key's index in the group's key list. */
   readonly index: number;
-  /** Whether a clobbering operation lies between the previous member and
-   * this one. */
+  /** Whether the group's entry is not known to answer for the subject at
+   * this member: a clobbering operation may have reshaped it, or an earlier
+   * member's recheck may have found the entry stale. */
   readonly recheck: boolean;
   /** Whether the member reads the key or replaces its value. */
   readonly store: boolean;
@@ -176,11 +179,12 @@ export function planJsGroups(
       }
       const recheck = clobbered;
       run.members.push({ site: e, key, index, recheck, store });
-      // A store replaces a key the guard's entry holds, so the shape stays
-      // and the run continues clean. A store that rechecks may instead have
-      // taken its slow path, whose generic form can add a key: the members
-      // after it check the shape again.
-      clobbered = store && recheck;
+      // A member that rechecks may instead have taken its slow path, the
+      // site's own helper, which leaves the group's entry unanswered for
+      // the subject's current layout: every later member checks the shape
+      // again. (A store's slow path can also add a key.) Only a clean
+      // member keeps the entry that answers the members after it.
+      clobbered = recheck;
       return children;
     }
     if (!NEUTRAL.has(e.kind) && !neutralCall(e)) clobber();
@@ -394,12 +398,14 @@ const ERROR_SYNCED_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /** The `dyn` bindings a group may name: never reassigned and never
- * captured (a captured binding lives in a box a call can write). */
+ * captured (a captured binding lives in a box a call can write). The scan
+ * descends into expression operands: an assignment there changes which
+ * object the binding names just as a statement does. */
 function groupableSubjects(fn: IrFunction): Set<string> {
   const reassigned = new Set<string>();
   const note = (e: IrExpr): boolean => {
     if (e.kind === "assignExpr" || e.kind === "incDec") reassigned.add(e.localId);
-    return true;
+    return everyExprChild(e, note, noteStmt);
   };
   const noteStmt = (s: IrStmt): boolean => {
     if (s.kind === "assign" && s.initializes !== true) reassigned.add(s.localId);

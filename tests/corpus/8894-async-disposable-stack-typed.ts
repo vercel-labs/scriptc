@@ -27,6 +27,14 @@ class SyncResource {
     log.push("sync " + this.name);
   }
 }
+// A synchronous [Symbol.dispose] is wrapped by the async hint: the promise it
+// happens to return is never awaited, so disposal continues on schedule.
+class PendingSync {
+  [Symbol.dispose](): Promise<void> {
+    log.push("pending sync");
+    return new Promise<void>(() => {});
+  }
+}
 class Failing {
   readonly name: string;
   constructor(name: string) {
@@ -86,6 +94,15 @@ async function main(): Promise<void> {
   stack.use(undefined);
   const answer: unknown = await stack.disposeAsync();
   log.push("answer " + String(answer) + " disposed " + String(stack.disposed));
+  flush();
+
+  const pending = new AsyncDisposableStack();
+  pending.use(new PendingSync());
+  pending.defer(async () => {
+    log.push("after pending");
+  });
+  const pendingAnswer: unknown = await pending.disposeAsync();
+  log.push("pending answer " + String(pendingAnswer));
   flush();
 
   const moved = new AsyncDisposableStack();

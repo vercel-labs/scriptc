@@ -101,6 +101,14 @@ export function lowerAsyncDisposableStackUseCall(
       `${asyncFound ? "[Symbol.asyncDispose]" : "[Symbol.dispose]"} methods with parameters`,
     );
   }
+  // GetDisposeMethod with the async hint wraps a synchronous [Symbol.dispose]
+  // in a promise that answers undefined whatever the method returns, and
+  // DisposeResources awaits that wrapper: a promise the sync method happens to
+  // return is never awaited. The lifted helper therefore discards the result,
+  // so a sync-only resource settles in one hop and never suspends disposal on
+  // a promise the method left behind. The async method's answer is awaited as
+  // it is.
+  const helperRet: IrType = syncFound ? { kind: "void" } : found.sig.ret;
   const stack = lowerer.lowerExpr(access.expression);
   const value = lowerer.lowerExpr(argNode);
   const key = `asyncDisposableStack.use:${className}:${member}`;
@@ -108,22 +116,21 @@ export function lowerAsyncDisposableStackUseCall(
   if (!helper) {
     helper = keyedHelperName(lowerer, "%asyncDisposableStack.use", key);
     lowerer.valueHelpers.set(key, helper);
-    const context = newFnCtx(false, null, null, found.sig.ret);
+    const context = newFnCtx(false, null, null, helperRet);
     lowerer.fnStack.push(context);
     try {
       const param = lowerer.declareHiddenLocal("value", valueT);
       const self = varRef(param.id, valueT, loc);
+      const callExpr = lowerer.accessorCall(className, member, self, [], found.sig.ret, loc);
       lowerer.liftedFns.push({
         name: helper,
         params: [{ localId: param.id, name: "value", type: valueT }],
-        returnType: found.sig.ret,
+        returnType: helperRet,
         locals: context.locals,
         body: [
-          {
-            kind: "return",
-            value: lowerer.accessorCall(className, member, self, [], found.sig.ret, loc),
-            loc,
-          },
+          syncFound
+            ? { kind: "exprStmt", expr: callExpr, loc }
+            : { kind: "return", value: callExpr, loc },
         ],
         loc,
       });
@@ -133,7 +140,7 @@ export function lowerAsyncDisposableStackUseCall(
   }
   const stackLocal = lowerer.declareHiddenLocal("%asyncDisposableStack", DYN);
   const valueLocal = lowerer.declareHiddenLocal("%asyncDisposableValue", valueT);
-  const fnT: IrType = { kind: "func", params: [valueT], ret: found.sig.ret };
+  const fnT: IrType = { kind: "func", params: [valueT], ret: helperRet };
   const dispose: IrExpr = { kind: "closure", fnName: helper, captures: [], type: fnT, loc };
   return {
     kind: "seqExpr",

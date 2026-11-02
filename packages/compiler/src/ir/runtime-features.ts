@@ -1009,6 +1009,11 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "arrayBuffer.newResizable",
   "sharedArrayBuffer.newGrowable",
   "arrayBuffer.armMutable",
+  // A builtin constructor read as a value. Calling it — `RegExp(pattern,
+  // flags)` through a stored constructor — answers RegExp's IsRegExp and
+  // `constructor` short circuit and its flag and pattern validation, which
+  // only a JavaScript source reaches (scr_dyn_invoke.c's object model build).
+  "dyn.globalConstructor",
 ]);
 
 /** The JavaScript object model build's program facts (t262-da §J): every
@@ -1843,6 +1848,13 @@ function scanRuntimeFeatures(
     features.dynTier = mod.functions.some(
       (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
     );
+  // The object model build of scr_dyn_invoke.c answers `RegExp ( pattern,
+  // flags )` through a stored constructor, which builds its pattern with
+  // scr_regex.c and the vendored engine: every object model program links
+  // the regex unit so that call resolves, whether or not it names a pattern
+  // of its own. Programs outside the object model build keep the
+  // historical command line.
+  if (jsObjectModelFact(features)) features.regex = true;
   return features;
 }
 

@@ -2055,8 +2055,21 @@ static void dyn_global_ctors_cleanup(void) {
   }
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+static ScrDyn *dyn_regexp_call(const ScrDyn *pattern, const ScrDyn *flags);
+static ScrDyn *dyn_regexp_construct(const ScrDyn *pattern, const ScrDyn *flags);
+#endif
+
 static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const char *name = closure->fn;
+#ifdef SCR_JS_OBJECT_MODEL
+  /* RegExp(pattern, flags) as a call (a stored, or global, RegExp value).
+   * The object model build answers it; the default object keeps the refusal
+   * below, byte for byte. */
+  if (name == dyn_s25)
+    return dyn_regexp_call(argc ? args[0] : scr_dyn_undefined(),
+                           argc > 1 ? args[1] : scr_dyn_undefined());
+#endif
   for (size_t i = DYN_GLOBAL_NEW_ONLY; i < DYN_GLOBAL_CTORS; i++) {
     if (name != dyn_global_ctor_names[i]) continue;
     char message[64];
@@ -2100,6 +2113,10 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
   else if (strcmp(name, dyn_s31) == 0) *result = scr_dyn_native_set_new(first);
   else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
+#ifdef SCR_JS_OBJECT_MODEL
+  else if (strcmp(name, dyn_s25) == 0)
+    *result = dyn_regexp_construct(first, argc > 1 ? items[1] : scr_dyn_undefined());
+#endif
   else {
     char message[128];
     int length = snprintf(message, sizeof message, dyn_s33, name, strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
@@ -2129,6 +2146,56 @@ static ScrDyn *dyn_global_ctor(const char *name) {
   }
   return NULL;
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* RegExpAlloc + RegExpInitialize over dynamic values: scr_regex.c compiles
+ * the pattern eagerly, so an invalid pattern or flag set throws Node's
+ * SyntaxError here, and an empty or missing pattern stores the spec's
+ * "(?:)" source exactly as the constructor does. */
+static ScrDyn *dyn_regexp_build(const ScrDyn *pattern, const ScrDyn *flags) {
+  ScrRegex *re = scr_regex_new_checked(pattern, flags);
+  if (!re) return NULL;
+  ScrDyn *out = scr_dyn_native_regex(re);
+  scr_regex_release_v(re);
+  return out;
+}
+
+/* The interned constructor value for `name`, unretained: every entry point
+ * that asks is called through that value, so the slot is filled. */
+static const ScrDyn *dyn_global_ctor_value(const char *name) {
+  for (size_t i = 0; i < DYN_GLOBAL_CTORS; i++)
+    if (dyn_global_ctor_names[i] == name) return dyn_global_ctors[i];
+  return NULL;
+}
+
+/* `RegExp(pattern, flags)` with NewTarget undefined: the active function
+ * object is this very constructor, so a native pattern whose `constructor`
+ * is this value answers ITSELF when flags is undefined
+ * (RegExp ( pattern, flags ) step 2b). Node's `RegExp(/x/i) === /x/i`, and
+ * the read of `constructor` is observable, so it happens first. A native
+ * pattern keeps no `constructor` of its own (scr_regex.c models none on the
+ * handle), so a missing answer there IS this constructor, the member its
+ * prototype carries. A pattern that is only RegExp-LIKE (an object whose
+ * `Symbol.match` is truthy) keeps building here; its own `constructor` read
+ * would be the same comparison, and Symbol.match itself is not modeled. */
+static ScrDyn *dyn_regexp_call(const ScrDyn *pattern, const ScrDyn *flags) {
+  if (scr_dyn_native_regex_is(pattern) && flags->kind == SCR_DYN_UNDEF) {
+    ScrDyn *ctor = scr_dyn_obj_read(pattern, dyn_s14, sizeof dyn_s14 - 1);
+    if (!ctor) return NULL;
+    bool same = ctor->kind == SCR_DYN_UNDEF ||
+                (ctor->kind == SCR_DYN_FUNC && ctor == dyn_global_ctor_value(dyn_s25));
+    scr_dyn_release(ctor);
+    if (same) return scr_dyn_retain((ScrDyn *)pattern);
+  }
+  return dyn_regexp_build(pattern, flags);
+}
+
+/* `new RegExp(pattern, flags)`: always a fresh pattern, even over a native
+ * one (RegExp ( pattern, flags ) steps 4 and 7 with NewTarget defined). */
+static ScrDyn *dyn_regexp_construct(const ScrDyn *pattern, const ScrDyn *flags) {
+  return dyn_regexp_build(pattern, flags);
+}
+#endif
 
 static ScrDyn *dyn_function_probe_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure; (void)args; (void)argc;

@@ -25,6 +25,12 @@ export function withLibraryRuntimeFlavors(matrix) {
     // library flavors must carry the unit the executable flavors compile.
     "scr_js_buffers.c",
     "scr_js_intrinsics.c",
+    // The intrinsic graph answers String.prototype, Number.prototype and
+    // Boolean.prototype with the wrapper unit's objects, which only that unit
+    // builds (t262-da A2). A library whose program reads an intrinsic links
+    // the graph's js-om variant, so the library flavors must carry the wrapper
+    // the executable flavors select on the same fact.
+    "scr_js_wrapper.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

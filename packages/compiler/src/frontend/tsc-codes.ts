@@ -1273,13 +1273,9 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "Node throws a ReferenceError when the class is defined",
     ),
   ],
-  [
-    2511,
-    REFUSE(
-      "instantiating a class the declarations mark 'abstract'",
-      "the class throws TypeErrors under Node's own semantics; declare a concrete subclass or construct the value in a Node island",
-    ),
-  ],
+  // TS2511 (instantiating an abstract class) has LEFT this table: `new
+  // Iterator()` is a JS_OPINIONS `throw` row above, so no JavaScript site
+  // reaches this decision any more.
   [2524, KEEP(KEEP_GRAMMAR)],
   [
     2537,

@@ -797,8 +797,19 @@ static ScrDyn *scr_ds_method_value(unsigned index) {
  * interner answers the read by itself. The pointer, rather than a symbol, is
  * what keeps this unit — the stack, its methods and everything they call —
  * out of programs with no symbols at all, which only intern a builtin
- * method. */
-extern ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) __attribute__((weak));
+ * method.
+ *
+ * Darwin does not read a weak declaration of a data symbol as a weak import:
+ * the reference stays an ordinary undefined symbol, so a program that links
+ * this unit without the object-model build fails to link rather than starting
+ * with the slot empty. weak_import is the spelling that leaves an absent
+ * symbol at zero there; ELF's plain weak declaration already does. */
+#if defined(__APPLE__)
+#define SCR_DS_MEMBER_SLOT __attribute__((weak_import))
+#else
+#define SCR_DS_MEMBER_SLOT __attribute__((weak))
+#endif
+extern ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) SCR_DS_MEMBER_SLOT;
 
 static ScrDyn *scr_disposable_stack_member_value(const char *key, size_t len);
 

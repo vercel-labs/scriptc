@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8894-async-disposable-stack-typed.ts"
+ ],
+ "diags": []
+}

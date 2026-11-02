@@ -13953,6 +13953,20 @@ static const char *const scr_native_date_methods[] = {
   "setUTCSeconds", "setUTCMinutes", "setUTCHours", "setUTCDate", "setUTCMonth", "setUTCFullYear",
 };
 #define SCR_NATIVE_DATE_METHODS (sizeof scr_native_date_methods / sizeof scr_native_date_methods[0])
+/* The ECMAScript `length` of each method above, in the same order: the
+ * argument count the language defines for it, so a Date value answers the
+ * same number before a prototype exists as the prototype object does
+ * (toJSON takes the key JSON.stringify passes; a setter takes one to four
+ * fields). scr_dyn_stdlib_prototype.c defines the same counts on the
+ * prototype object's members. */
+static const uint32_t scr_native_date_method_lengths[] = {
+  0, 0, 0, 1, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  1, 1, 2, 3, 4, 1, 2, 3, 1, 2, 3, 4, 1, 2, 3,
+};
+_Static_assert(sizeof scr_native_date_method_lengths / sizeof scr_native_date_method_lengths[0] ==
+                   SCR_NATIVE_DATE_METHODS,
+               "one length per Date method");
 static SCR_TL ScrDyn *scr_native_date_method_values[SCR_NATIVE_DATE_METHODS];
 static SCR_TL bool scr_native_date_methods_registered;
 
@@ -14029,7 +14043,8 @@ static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len) {
     }
     if (!scr_native_date_method_values[i]) {
       scr_native_date_method_values[i] = scr_dyn_new_func(
-          scr_closure_new((void *)name, 0), scr_native_date_method_call, 0, "native:Date", name);
+          scr_closure_new((void *)name, 0), scr_native_date_method_call,
+          scr_native_date_method_lengths[i], "native:Date", name);
     }
     return scr_dyn_retain(scr_native_date_method_values[i]);
   }

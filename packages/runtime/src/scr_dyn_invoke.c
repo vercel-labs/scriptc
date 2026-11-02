@@ -1935,11 +1935,12 @@ extern ScrDyn *scr_native_date_member_value(const char *key, size_t key_len);
 
 /* The stack's member table stays in scr_symbol.c, and this unit must not name
  * it: a reference from here keeps the whole stack unit, and everything it
- * drags, in every JavaScript program that interns a builtin method whether or
- * not it ever holds a stack. The unit points this slot at its own table when
- * it installs its handle ops, which happens before any stack exists; until
- * then, and in a program that never creates one, the read answers the
- * interned function and none of the stack unit is linked. */
+ * drags, in every JavaScript program with no symbols at all that interns a
+ * builtin method. The unit fills this slot when it loads, so
+ * `DisposableStack.prototype.use` answers the function `stack.use` is even
+ * when the prototype is read before the first stack exists. Where the unit
+ * is not linked the slot stays NULL, and the read answers the interned
+ * function. */
 ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len);
 
 static ScrDyn *scr_dyn_disposable_stack_member_value(const char *key, size_t len) {

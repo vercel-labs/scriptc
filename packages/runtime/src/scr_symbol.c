@@ -722,6 +722,16 @@ static ScrDisposableStack *scr_ds_alloc(void);
 static ScrDyn *scr_ds_box(ScrDisposableStack *s);
 static void scr_ds_teardown(void);
 
+/* The method-value cache is kept for the lifetime of the program, like the
+ * invoke unit's interned method table; register its teardown once, on
+ * whichever path creates the first member value. */
+static void scr_ds_arm_methods(void) {
+  static SCR_TL bool armed;
+  if (armed) return;
+  armed = true;
+  scr_atexit(scr_ds_teardown);
+}
+
 static ScrDyn *scr_ds_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   unsigned index = (unsigned)scr_box_get_f64(clo->caps[0]);
   ScrDyn *self = scr_dyn_this_get();
@@ -766,6 +776,7 @@ static ScrDyn *scr_ds_method_call(ScrClosure *clo, ScrDyn *const *args, size_t a
 /* The function value of method `index` (+1), cached per thread. */
 static ScrDyn *scr_ds_method_value(unsigned index) {
   if (!scr_ds_method_values[index]) {
+    scr_ds_arm_methods();
     ScrClosure *clo = scr_closure_new(NULL, 1);
     clo->caps[0] = scr_box_new(SCR_BOX_F64);
     scr_box_set_f64(clo->caps[0], (double)index);
@@ -776,15 +787,25 @@ static ScrDyn *scr_ds_method_value(unsigned index) {
 }
 
 /* The slot the invoke unit's object-model build asks before it interns a
- * builtin method. This unit points it here when it installs its handle ops,
- * which happens before any stack exists, so `DisposableStack.prototype.use`
- * and `stack.use` are one function. The declaration is weak because the object
- * model is one runtime build among several and this unit is compiled for all
- * of them; where the slot does not exist, the interner answers the read by
- * itself. The pointer, rather than a symbol, is what keeps this unit — the
- * stack, its methods and everything they call — out of a program that interns
- * a builtin method but never holds a stack. */
+ * builtin method. This unit fills it when it loads, so
+ * `DisposableStack.prototype.use` and `stack.use` are one function whichever
+ * read comes first: a read the interner answers is kept by the prototype
+ * object for the program's lifetime, so the stack has to answer that read
+ * from its own table rather than only once a stack exists. The declaration
+ * is weak because the object model is one runtime build among several and
+ * this unit is compiled for all of them; where the slot does not exist, the
+ * interner answers the read by itself. The pointer, rather than a symbol, is
+ * what keeps this unit — the stack, its methods and everything they call —
+ * out of programs with no symbols at all, which only intern a builtin
+ * method. */
 extern ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) __attribute__((weak));
+
+static ScrDyn *scr_disposable_stack_member_value(const char *key, size_t len);
+
+__attribute__((constructor)) static void scr_ds_member_hook_install(void) {
+  if (&scr_dyn_disposable_stack_member)
+    scr_dyn_disposable_stack_member = scr_disposable_stack_member_value;
+}
 
 /* The function value a DisposableStack answers for the method named `key`
  * (+1), or NULL: the value `stack.use` is, which is what makes
@@ -858,8 +879,11 @@ static ScrDisposableStack *scr_ds_alloc(void) {
   if (!installed) {
     installed = true;
     scr_dyn_handle_install(SCR_DYNH_DISPOSABLE_STACK, &scr_ds_ops);
-    scr_atexit(scr_ds_teardown);
-    if (&scr_dyn_disposable_stack_member) scr_dyn_disposable_stack_member = scr_disposable_stack_member_value;
+    /* The load-time fill above answers a prototype read that comes first;
+     * this keeps the slot filled on a build whose startup does not run the
+     * constructor before the first stack is made. */
+    if (&scr_dyn_disposable_stack_member)
+      scr_dyn_disposable_stack_member = scr_disposable_stack_member_value;
   }
   static ScrCycType cyc_type = {&scr_ds_trace, &scr_ds_gcfree, SCR_CYC_KIND_NONE, 0};
   ScrDisposableStack *s = scr_cyc_alloc(sizeof *s, &cyc_type);

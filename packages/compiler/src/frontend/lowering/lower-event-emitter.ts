@@ -3065,19 +3065,57 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
   };
 }
 
-/** The EventEmitter argument of an events-module helper: an emitter
- * instance (not a stream, whose listener tuples the runtime pins). */
-function helperEmitter(lowerer: Lowerer, member: string, node: ts.Expression): IrExpr {
+/** The receiver of an events-module helper: an emitter, answered by its
+ * own methods, or an EventTarget (a plain target, an AbortSignal, or a
+ * compiled subclass), which crosses as a checked-dynamic value and is
+ * answered from its listener state. */
+function helperReceiver(
+  lowerer: Lowerer,
+  member: string,
+  node: ts.Expression,
+): { kind: "emitter" | "target"; value: IrExpr } {
   const value = lowerer.lowerExpr(node);
-  const info = value.type.kind === "object" ? lowerer.classes.get(value.type.className) : undefined;
-  if (!emitterRooted(lowerer, info) || streamSidesOf(lowerer, info) !== null) {
+  // A target's lowered value is a checked-dynamic handle, so the class
+  // comes from the static type the checker gives the expression.
+  const staticType = value.type.kind === "object" ? null : lowerer.mapTypeOf(lowerer.typeOf(node));
+  const type = value.type.kind === "object" ? value.type : staticType;
+  const info = type?.kind === "object" ? lowerer.classes.get(type.className) : undefined;
+  if (emitterRooted(lowerer, info)) {
+    if (streamSidesOf(lowerer, info) === null) return { kind: "emitter", value };
     lowerer.noLowering(
-      `events.${member} over this value`,
+      `events.${member} over a stream`,
       node,
-      "the argument must be an EventEmitter instance; EventTarget and stream arguments are not supported yet",
+      "a stream's own listenerCount/getMaxListeners/setMaxListeners/listeners answer its emitter; stream arguments are not supported yet",
     );
   }
-  return value;
+  // Everything else is resolved at runtime: an EventTarget (a plain target,
+  // an AbortSignal, a compiled subclass, or a value whose static type is
+  // checked-dynamic) answers from its own state, and any other value throws
+  // Node's ERR_INVALID_ARG_TYPE.
+  const dyn = lowerer.coerceToExpected(value, DYN);
+  if (dyn.type.kind === "dyn") return { kind: "target", value: dyn };
+  lowerer.noLowering(
+    `events.${member} over this value`,
+    node,
+    "pass an EventEmitter instance, an EventTarget, or a value of a checked-dynamic type",
+  );
+}
+
+/** The event name of a helper over a target: the string itself, or a
+ * checked-dynamic value (a value that is not a string matches no event
+ * type, which the runtime answers as an empty result). */
+function helperTypeName(lowerer: Lowerer, node: ts.Expression): { expr: IrExpr; dyn: boolean } {
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "string") return { expr: value, dyn: false };
+  const converted = lowerer.coerceToExpected(value, DYN);
+  if (converted.type.kind !== "dyn") {
+    lowerer.noLowering(
+      `an events helper with a '${lowerer.fmt(value.type)}' event name`,
+      node,
+      "pass a string, or a value whose type is checked-dynamic",
+    );
+  }
+  return { expr: converted, dyn: true };
 }
 
 /** setMaxListeners(n) with no targets: the process-wide default, through
@@ -3129,7 +3167,18 @@ export function lowerEventsEmitterHelper(
   if (member === "listenerCount") {
     if (args.length !== 2)
       lowerer.noLowering(`events.listenerCount with ${args.length} arguments`, call);
-    const receiver = helperEmitter(lowerer, member, args[0]!);
+    const helper = helperReceiver(lowerer, member, args[0]!);
+    if (helper.kind === "target") {
+      const type = helperTypeName(lowerer, args[1]!);
+      return {
+        kind: "libCall",
+        fn: type.dyn ? "event.targetListenerCountDyn" : "event.targetListenerCount",
+        args: [helper.value, type.expr],
+        type: F64,
+        loc,
+      };
+    }
+    const receiver = helper.value;
     const name = isErrorMonitorRef(lowerer, args[1]!)
       ? eventNameExpr(ERROR_MONITOR_EVENT, loc)
       : lowerer.lowerExprExpecting(args[1]!, STRING);
@@ -3144,8 +3193,14 @@ export function lowerEventsEmitterHelper(
   if (member === "getMaxListeners") {
     if (args.length !== 1)
       lowerer.noLowering(`events.getMaxListeners with ${args.length} arguments`, call);
-    const receiver = helperEmitter(lowerer, member, args[0]!);
-    return { kind: "libCall", fn: "emitter.getMax", args: [receiver], type: F64, loc };
+    const helper = helperReceiver(lowerer, member, args[0]!);
+    return {
+      kind: "libCall",
+      fn: helper.kind === "target" ? "event.targetGetMax" : "emitter.getMax",
+      args: [helper.value],
+      type: F64,
+      loc,
+    };
   }
   if (member === "setMaxListeners") {
     // An omitted n is the current default, assigned again.
@@ -3171,21 +3226,30 @@ export function lowerEventsEmitterHelper(
     const limit = lowerer.declareHiddenLocal("%maxListeners", F64);
     const stmts: IrStmt[] = [{ kind: "varDecl", localId: limit.id, init: n, loc }];
     const targets = args.slice(1).map((node) => {
-      const value = helperEmitter(lowerer, member, node);
-      const slot = lowerer.declareHiddenLocal("%maxListenersTarget", value.type);
-      stmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
-      return varRef(slot.id, value.type, loc);
+      const helper = helperReceiver(lowerer, member, node);
+      const slot = lowerer.declareHiddenLocal("%maxListenersTarget", helper.value.type);
+      stmts.push({ kind: "varDecl", localId: slot.id, init: helper.value, loc });
+      return { kind: helper.kind, value: varRef(slot.id, helper.value.type, loc) } as const;
     });
     for (const target of targets) {
       stmts.push({
         kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: "emitter.setMax",
-          args: [target, varRef(limit.id, F64, loc)],
-          type: target.type,
-          loc,
-        },
+        expr:
+          target.kind === "target"
+            ? {
+                kind: "libCall",
+                fn: "event.targetSetMax",
+                args: [target.value, varRef(limit.id, F64, loc)],
+                type: VOID,
+                loc,
+              }
+            : {
+                kind: "libCall",
+                fn: "emitter.setMax",
+                args: [target.value, varRef(limit.id, F64, loc)],
+                type: target.value.type,
+                loc,
+              },
         loc,
       });
     }
@@ -3196,9 +3260,27 @@ export function lowerEventsEmitterHelper(
   if (member === "getEventListeners") {
     if (args.length !== 2)
       lowerer.noLowering(`events.getEventListeners with ${args.length} arguments`, call);
+    const helper = helperReceiver(lowerer, member, args[0]!);
+    if (helper.kind === "target") {
+      // The target's listeners of the type, in registration order.
+      const type = helperTypeName(lowerer, args[1]!);
+      const listeners: IrExpr = {
+        kind: "libCall",
+        fn: type.dyn ? "event.targetListenersDyn" : "event.targetListeners",
+        args: [helper.value, type.expr],
+        type: DYN,
+        loc,
+      };
+      return {
+        kind: "dynCheck",
+        value: listeners,
+        type: arrayOf({ kind: "func", params: [], ret: { kind: "void" } }),
+        loc,
+      };
+    }
     // emitter.listeners(name): the event's listener array, typed by the
     // event's unified tuple (the instance method's rules).
-    const receiver = helperEmitter(lowerer, member, args[0]!);
+    const receiver = helper.value;
     const name = eventNameOf(lowerer, "events.getEventListeners", args[1]!);
     const table = emitterEvents(lowerer);
     const sig = table.get(name);

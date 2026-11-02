@@ -32,6 +32,15 @@ enum {
   SCR_ET_REMOVED = 1 << 4,
 };
 
+/* What a native listener node is: Node registers a function of its own in
+ * both cases, so getEventListeners reports one where scr_et_native_value
+ * builds it. */
+enum {
+  SCR_ET_VALUE_NONE = 0,
+  SCR_ET_VALUE_HOOK,    /* options.signal's removal hook */
+  SCR_ET_VALUE_HANDLER, /* an on<type> attribute's wrapper */
+};
+
 typedef struct ScrEtListener ScrEtListener;
 
 struct ScrEtListener {
@@ -46,6 +55,7 @@ struct ScrEtListener {
   void (*native)(void *ctx, ScrDyn *self, ScrDyn *event);
   void *ctx;
   void (*ctx_release)(void *ctx);
+  unsigned char native_kind; /* SCR_ET_VALUE_*, for a native node */
 };
 
 struct ScrEtRoot {
@@ -535,6 +545,7 @@ ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_
         scr_et_append(signal_core, abort, NULL, SCR_ET_ONCE | SCR_ET_RESIST, &duplicate);
     scr_str_release(abort);
     l->native = scr_et_hook_fire;
+    l->native_kind = SCR_ET_VALUE_HOOK;
     l->ctx = h; /* the creation reference moves in */
     l->ctx_release = scr_et_hook_release;
   }
@@ -934,6 +945,7 @@ void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn
   ScrEtListener *l = scr_et_append(core, h->type, NULL, 0, &duplicate);
   h->rc++;
   l->native = scr_et_handler_fire;
+  l->native_kind = SCR_ET_VALUE_HANDLER;
   l->ctx = h;
   l->ctx_release = scr_et_handler_release;
   scr_et_new_listener(core, l->root);
@@ -1274,6 +1286,185 @@ static const ScrDynHandleOps scr_event_target_ops = {
     .set = scr_event_target_set,
     .inspect_view = scr_event_target_inspect_view,
 };
+
+/* ── function values of native listeners ─────────────────────────────
+ * Node registers a function for an options.signal removal hook and for an
+ * on<type> attribute, so getEventListeners reports one for each. These
+ * build those functions on the first request: the node keeps the value, so
+ * repeated reads answer the same function, and dispatch still runs the
+ * native side. */
+
+static void *scr_et_hook_retain_v(void *p) {
+  ScrEtHook *h = p;
+  h->rc++;
+  return h;
+}
+
+static void *scr_et_handler_retain_v(void *p) {
+  ScrEtHandler *h = p;
+  h->rc++;
+  return h;
+}
+
+/* `() => this.removeEventListener(type, listener, options)`. */
+static ScrDyn *scr_et_hook_value_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrEtHook *h = scr_box_get_ref(clo->caps[0]);
+  if (!h) return scr_dyn_retain(scr_dyn_undefined());
+  if (h->target) {
+    ScrStr *type = scr_dyn_string_coerce_js(h->type);
+    if (type) {
+      scr_et_remove_matching(h->target, type, h->listener, h->capture);
+      scr_str_release(type);
+    }
+  }
+  scr_et_hook_release(h);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* `function eventHandler(...args) { if (typeof eventHandler.handler !==
+ * 'function') return; return handler.call(this, ...args); }`. */
+static ScrDyn *scr_et_handler_value_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  ScrEtHandler *h = scr_box_get_ref(clo->caps[0]);
+  if (!h) return scr_dyn_retain(scr_dyn_undefined());
+  if (!h->handler || !scr_dyn_is_callable(h->handler)) {
+    scr_et_handler_release(h);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  ScrDyn *handler = scr_dyn_retain(h->handler);
+  scr_et_handler_release(h);
+  ScrDyn *self = scr_dyn_this_get();
+  scr_dyn_this_push_dyn(self);
+  ScrDyn *result = scr_dyn_call(handler, args, argc, "handler");
+  scr_dyn_this_pop();
+  scr_dyn_release(self);
+  scr_dyn_release(handler);
+  return result;
+}
+
+/* The function value of a native listener node, +1. */
+static ScrDyn *scr_et_native_value(ScrEtListener *l) {
+  ScrClosure *clo = scr_closure_new(NULL, 1);
+  if (l->native_kind == SCR_ET_VALUE_HOOK) {
+    clo->caps[0] = scr_box_new_obj(scr_et_hook_retain_v, scr_et_hook_release,
+                                   NULL);
+    /* The box owns a reference of its own: set_ref takes the value over
+     * without retaining, and the node keeps the creation one. */
+    scr_box_set_ref(clo->caps[0], scr_et_hook_retain_v(l->ctx));
+    l->listener = scr_dyn_new_func(clo, scr_et_hook_value_call, 0, "", NULL);
+  } else {
+    clo->caps[0] = scr_box_new_obj(scr_et_handler_retain_v, scr_et_handler_release, NULL);
+    scr_box_set_ref(clo->caps[0], scr_et_handler_retain_v(l->ctx));
+    l->listener = scr_dyn_new_func(clo, scr_et_handler_value_call, 0, "", "eventHandler");
+  }
+  return scr_dyn_retain(l->listener);
+}
+
+/* ── the node:events helpers over EventTarget receivers ───────────────
+ * Node's getEventListeners, listenerCount, getMaxListeners and
+ * setMaxListeners take an EventTarget as well as an EventEmitter. An
+ * EventEmitter argument whose class the compiler knows is answered by the
+ * emitter paths; these read a checked-dynamic receiver as a target, and
+ * throw Node's ERR_INVALID_ARG_TYPE for any other value, an EventEmitter
+ * among them. No name is coerced: a type that is not a string matches no
+ * type root, so the helpers answer empty, as Node's do. */
+
+/* The EventTarget behind a helper's receiver, or NULL with the exception
+ * pending: Node's property read of `prop` for null and undefined (a plain
+ * TypeError; `plain_read` false for the helpers that read the property
+ * through optional chaining, which send those values to the type check),
+ * and its ERR_INVALID_ARG_TYPE for any other value that is neither an
+ * EventEmitter nor an EventTarget (`argname` is "emitter" or
+ * "eventTargets"). */
+static ScrEventTargetCore *scr_et_helper_target_of(const ScrDyn *self, const char *argname,
+                                                   const char *prop, bool plain_read) {
+  if (plain_read && (self->kind == SCR_DYN_NULL || self->kind == SCR_DYN_UNDEF)) {
+    char message[96];
+    snprintf(message, sizeof message, "Cannot read properties of %s (reading '%s')",
+             self->kind == SCR_DYN_NULL ? "null" : "undefined", prop);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    return NULL;
+  }
+  ScrEventTargetCore *core = scr_et_core_of(self);
+  if (!core) {
+    scr_dyn_arg_type_fail(argname, "an instance of EventEmitter or EventTarget", self);
+    return NULL;
+  }
+  return core;
+}
+
+static ScrEventTargetCore *scr_et_helper_target(const ScrDyn *self, const char *argname,
+                                                const char *prop) {
+  return scr_et_helper_target_of(self, argname, prop, true);
+}
+
+ScrDyn *scr_event_target_listeners(const ScrDyn *self, const ScrStr *type) {
+  ScrEventTargetCore *core = scr_et_helper_target(self, "emitter", "listeners");
+  /* The caller converts the array through a checked cast, which needs a
+   * value even when the exception is pending. */
+  if (!core) return scr_dyn_new_arr();
+  ScrDyn *out = scr_dyn_new_arr();
+  const ScrEtRoot *root = scr_et_root_find(core, type);
+  for (ScrEtListener *h = root ? root->head : NULL; h; h = h->next) {
+    if (h->listener) scr_dyn_arr_push(out, scr_dyn_retain(h->listener));
+    else if (h->native_kind != SCR_ET_VALUE_NONE) scr_dyn_arr_push(out, scr_et_native_value(h));
+  }
+  return out;
+}
+
+ScrDyn *scr_event_target_listeners_dyn(const ScrDyn *self, const ScrDyn *type) {
+  ScrEventTargetCore *core = scr_et_helper_target(self, "emitter", "listeners");
+  if (!core) return scr_dyn_new_arr();
+  if (type->kind != SCR_DYN_STR) return scr_dyn_new_arr();
+  return scr_event_target_listeners(self, type->v.str);
+}
+
+double scr_event_target_listener_count(const ScrDyn *self, const ScrStr *type) {
+  ScrEventTargetCore *core = scr_et_helper_target(self, "emitter", "listenerCount");
+  if (!core) return 0;
+  const ScrEtRoot *root = scr_et_root_find(core, type);
+  return root ? (double)root->size : 0;
+}
+
+/* Node reads the type's root straight off the target's map, so a type that
+ * is not a string finds none. */
+double scr_event_target_listener_count_dyn(const ScrDyn *self, const ScrDyn *type) {
+  ScrEventTargetCore *core = scr_et_helper_target(self, "emitter", "listenerCount");
+  if (!core) return 0;
+  if (type->kind != SCR_DYN_STR) return 0;
+  return scr_event_target_listener_count(self, type->v.str);
+}
+
+double scr_event_target_get_max(const ScrDyn *self) {
+  ScrEventTargetCore *core =
+      scr_et_helper_target_of(self, "emitter", "getMaxListeners", false);
+  return core ? core->max_listeners : 0;
+}
+
+/* Node's validateNumber(n, 'setMaxListeners', 0): a negative or NaN limit
+ * throws ERR_OUT_OF_RANGE (the ladder scr_emitter_set_max applies). It runs
+ * before the receiver is looked at, as Node's does. */
+static bool scr_et_max_ok(double n) {
+  if (n >= 0) return true;
+  char num[32];
+  size_t nlen = scr_f64_to_str(n, num);
+  char msg[128];
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"setMaxListeners\" is out of range. It must be >= 0. Received %.*s",
+                     (int)nlen, num);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+void scr_event_target_set_max(const ScrDyn *self, double n) {
+  if (!scr_et_max_ok(n)) return;
+  ScrEventTargetCore *core = scr_et_helper_target(self, "eventTargets", "setMaxListeners");
+  if (!core) return;
+  core->max_listeners = n;
+  /* Node clears the leak-warning latch with the limit. */
+  core->warned = false;
+}
 
 /* ── compiled subclasses (`class Bus extends EventTarget`) ─────────────
  * Instances are compiler-emitted hierarchy objects whose prefix points at

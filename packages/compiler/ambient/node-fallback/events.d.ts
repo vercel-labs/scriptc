@@ -50,11 +50,20 @@ declare module "events" {
       options?: { signal?: AbortSignal },
     ): Promise<unknown[]>;
     /* The emitter's own listenerCount/getMaxListeners/setMaxListeners/
-     * listeners, over EventEmitter instances. */
-    export function listenerCount(emitter: EventEmitter, eventName: string | symbol): number;
-    export function getMaxListeners(emitter: EventEmitter): number;
-    export function setMaxListeners(n?: number, ...eventTargets: EventEmitter[]): void;
-    export function getEventListeners(emitter: EventEmitter, name: string): Array<() => void>;
+     * listeners, over EventEmitter instances and EventTargets. */
+    export function listenerCount(
+      emitterOrTarget: EventEmitter | EventTarget,
+      eventName: string | symbol,
+    ): number;
+    export function getMaxListeners(emitterOrTarget: EventEmitter | EventTarget): number;
+    export function setMaxListeners(
+      n?: number,
+      ...eventTargets: Array<EventEmitter | EventTarget>
+    ): void;
+    export function getEventListeners(
+      emitterOrTarget: EventEmitter | EventTarget,
+      name: string | symbol,
+    ): Array<() => void>;
   }
   export = EventEmitter;
 }

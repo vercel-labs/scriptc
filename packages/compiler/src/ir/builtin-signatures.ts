@@ -96,6 +96,23 @@ function buildLibFnSignatures() {
     "event.handleEventReader": { argTypes: [DYN], result: VOID },
     "event.targetDispatch": { argTypes: [null, DYN, DYN], result: BOOL },
     "event.targetCall": { argTypes: [null, DYN, STRING, DYN], result: DYN },
+    /** events.getEventListeners over an EventTarget: the type's listeners
+     * in registration order, as a checked-dynamic array. The receiver is
+     * the target as a checked-dynamic value (a plain target, an
+     * AbortSignal, or a compiled subclass's capsule); `type` is the string
+     * name, or the checked-dynamic form, where a value that is not a string
+     * matches no type and the answer is empty. */
+    "event.targetListeners": { argTypes: [DYN, STRING], result: DYN },
+    "event.targetListenersDyn": { argTypes: [DYN, DYN], result: DYN },
+    /** events.listenerCount over an EventTarget: the type's listeners, 0
+     * for a type it has none of (the `_dyn` form answers 0 for a value that
+     * is not a string). */
+    "event.targetListenerCount": { argTypes: [DYN, STRING], result: F64 },
+    "event.targetListenerCountDyn": { argTypes: [DYN, DYN], result: F64 },
+    /** events.getMaxListeners and events.setMaxListeners over an
+     * EventTarget: the target's limit, and its assignment. */
+    "event.targetGetMax": { argTypes: [DYN], result: F64 },
+    "event.targetSetMax": { argTypes: [DYN, F64], result: VOID },
     "event.call": { argTypes: [null, STRING, DYN], result: DYN },
     "event.get": { argTypes: [null, STRING], result: DYN },
     "event.set": { argTypes: [null, STRING, DYN], result: VOID },

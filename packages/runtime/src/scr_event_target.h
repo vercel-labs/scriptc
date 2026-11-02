@@ -77,6 +77,29 @@ ScrDyn *scr_event_new(ScrDyn *args);
 ScrDyn *scr_custom_event_new(ScrDyn *args);
 /* `v instanceof Event` (kind 0), `CustomEvent` (1), `EventTarget` (2). */
 bool scr_event_is(const ScrDyn *v, double kind);
+/* The node:events helpers over EventTarget receivers: Node's
+ * getEventListeners(target, type) answers +1, an array of the type's
+ * listeners in registration order. `type` is the string name, or the
+ * checked-dynamic form (`_dyn`: a value that is not a string matches no
+ * type, so the answer is empty). A receiver that is not an EventTarget
+ * throws Node's ERR_INVALID_ARG_TYPE, and the answer is NULL with the
+ * exception pending. */
+ScrDyn *scr_event_target_listeners(const ScrDyn *self, const ScrStr *type);
+ScrDyn *scr_event_target_listeners_dyn(const ScrDyn *self, const ScrDyn *type);
+/* listenerCount(target, type): the type's listeners, 0 for a type it has
+ * none of. A null or undefined receiver throws Node's plain TypeError for
+ * the 'listenerCount' read. */
+double scr_event_target_listener_count(const ScrDyn *self, const ScrStr *type);
+double scr_event_target_listener_count_dyn(const ScrDyn *self, const ScrDyn *type);
+/* getMaxListeners(target) and setMaxListeners(n, target): the target's
+ * limit (10 for an EventTarget, 0 for an AbortSignal) and its assignment,
+ * which also clears the leak-warning latch. Node reads getMaxListeners
+ * through optional chaining, so a null or undefined receiver is a plain
+ * ERR_INVALID_ARG_TYPE; setMaxListeners validates the limit first and then
+ * reads the 'setMaxListeners' property, so null and undefined throw that
+ * read's TypeError. */
+double scr_event_target_get_max(const ScrDyn *self);
+void scr_event_target_set_max(const ScrDyn *self, double n);
 /* The AbortSignal unit's view of its handles for options.signal: the
  * signal's core and aborted flag, or NULL for a non-signal value.
  * Installed by the AbortSignal unit; NULL when no signal can exist. */

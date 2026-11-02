@@ -49,7 +49,11 @@ import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import type { NodeIslandScan } from "../node-islands/scan.js";
-import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
+import {
+  foldFenceGrowth,
+  growIslandSet,
+  type IslandGrowthContext,
+} from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 
@@ -89,6 +93,32 @@ interface RoundState {
   /** False only through the internal round options (the island-round tests
    * compare a compile with and without reuse). */
   reuseFirstLoad: boolean;
+  /** Whether a round that grew its island set also decides the fence-report
+   * growth from the same pass (foldFenceGrowth, node-islands/growth.ts). Off
+   * only through the internal round options, for the fold's own test. */
+  foldFenceGrowth: boolean;
+  /** The round this compile is in, for the round trace (1-based). */
+  round: number;
+}
+
+/** SCRIPTC_ISLAND_ROUNDS_TRACE=1 at build time prints each island round's
+ * starting set and the retry it decides: the evidence a build that folds its
+ * growth rules (D4) islanded exactly what the two-round sequence did. */
+function traceIslandRound(line: string): void {
+  const t = process.env["SCRIPTC_ISLAND_ROUNDS_TRACE"];
+  if (t === undefined || t === "" || t === "0") return;
+  process.stderr.write(`[island-round] ${line}\n`);
+}
+
+function traceSet<K>(known: ReadonlyMap<string, K> | null): string {
+  return known === null ? "null" : JSON.stringify([...known.keys()].sort());
+}
+
+/** Whether two lowering results are the same pass's: `fe.lower` may hand its
+ * result back wrapped in a copy (the declaration-boundary notes), and the
+ * retry it decided must still apply to it. */
+function sameLowering(a: LowerResult, b: LowerResult): boolean {
+  return a === b || (a.diagnostics === b.diagnostics && a.runtimeFences === b.runtimeFences);
 }
 
 /** Whether rounds may reuse the first load. Off with the shape overlay,
@@ -148,12 +178,19 @@ interface RoundRetry {
   islands: Map<string, IslandPackage> | null;
   modules: Map<string, IslandModule> | null;
   fences: Map<string, IslandPackage> | null;
+  /** Whether the next round may still run a fence rule. Off when this
+   * retry already carries the fence-report growth: the round after it is
+   * the last one, as it is after a report retry today. */
+  nextRetryFences: boolean;
 }
 
 /** Internal round options, a test seam: the island-round tests turn the
- * first-load reuse off to compare a compile with and without it. */
+ * first-load reuse off to compare a compile with and without it, and the
+ * fence-growth fold off to compare the merged round with the two-round
+ * sequence it replaces. */
 export interface PrepareRoundOptions {
   reuseFirstLoad?: boolean;
+  foldFenceGrowth?: boolean;
 }
 
 /** What every island round of one compile shares. */
@@ -218,6 +255,8 @@ export function prepareExecutableModule(
   const state: RoundState = {
     firstLoad: null,
     reuseFirstLoad: roundOptions.reuseFirstLoad !== false,
+    foldFenceGrowth: roundOptions.foldFenceGrowth !== false,
+    round: 1,
   };
   const inputs: PrepareInputs = {
     entryPath,
@@ -297,6 +336,10 @@ function prepareRound(
 ): RoundOutcome {
   const { entryPath, opts, createFrontend, timing, islandScan, buildPlatform, ffi } = inputs;
   const { islands: lowerIslands, modules: lowerModules, retryFences, unitStore } = request;
+  const round = state.round++;
+  traceIslandRound(
+    `round ${round} start islands=${traceSet(lowerIslands)} modules=${traceSet(lowerModules)} retryFences=${retryFences}`,
+  );
   // A round after the first decides from the first round's capture of the
   // no-island load (RoundState). A decision that needs the frontend itself
   // loads it as before: none (this round lowers the no-island program) or
@@ -375,22 +418,39 @@ function prepareRound(
   const pushDown: { retry: RoundRetry | null } = { retry: null };
   const decideRetry = (result: LowerResult): RoundRetry => {
     const growth = growthOf();
-    return {
-      result,
-      islands:
-        growth === null
-          ? null
-          : growIslandSet(growth, lowerIslands, { diagnostics: result.diagnostics }),
-      modules: loweringModules(entryPath, opts, result.diagnostics, lowerModules),
-      fences:
-        retryFences && growth !== null
-          ? growIslandSet(growth, lowerIslands, {
-              diagnostics: result.diagnostics,
-              fences: result.runtimeFences,
-              fenceMode: "report",
-            })
-          : null,
-    };
+    const modules = loweringModules(entryPath, opts, result.diagnostics, lowerModules);
+    let islands =
+      growth === null
+        ? null
+        : growIslandSet(growth, lowerIslands, { diagnostics: result.diagnostics });
+    let fences =
+      retryFences && growth !== null
+        ? growIslandSet(growth, lowerIslands, {
+            diagnostics: result.diagnostics,
+            fences: result.runtimeFences,
+            fenceMode: "report",
+          })
+        : null;
+    let nextRetryFences = retryFences;
+    if (state.foldFenceGrowth && growth !== null && islands !== null && fences !== null) {
+      // Both rules grew the set. The fence-report rule is consulted after the
+      // lowering rule finds nothing, so today's build reloads twice: once for
+      // the refusals, once for the fences the reloaded program still holds.
+      // Fold the second decision into this one (node-islands/growth.ts): the
+      // fence rule reads only what the reload still compiles, and the round
+      // that would make it is the one this retry becomes.
+      islands =
+        foldFenceGrowth(growth, islands, modules ?? lowerModules, {
+          diagnostics: result.diagnostics,
+          fences: result.runtimeFences,
+        }) ?? islands;
+      fences = null;
+      nextRetryFences = false;
+    }
+    traceIslandRound(
+      `round ${round} decide islands=${traceSet(islands)} modules=${traceSet(modules)} fences=${traceSet(fences)} nextRetryFences=${nextRetryFences}`,
+    );
+    return { result, islands, modules, fences, nextRetryFences };
   };
   // The frontend (and its tsgo server) is released as soon as lowering
   // ends — clang and the link never hold it open.
@@ -473,25 +533,23 @@ function prepareRound(
       // The decisions `fe.lower` already made from this exact result, when
       // it stopped after the push-down (or push-down-mode stream) pass;
       // otherwise from the pass that won.
-      const retried =
-        pushDown.retry !== null && pushDown.retry.result === lowered ? pushDown.retry : null;
+      // The decision `fe.lower` already made from this exact result, when it
+      // stopped after the push-down (or push-down-mode stream) pass;
+      // otherwise the same helper on the winning pass's own result. `fe.lower`
+      // may return the result it decided from wrapped in a copy (the
+      // declaration-boundary notes), so the decision is matched on the
+      // result's arrays, not on object identity.
+      const decided =
+        pushDown.retry !== null && sameLowering(pushDown.retry.result, lowered)
+          ? pushDown.retry
+          : decideRetry(lowered);
       // Packages whose own modules refused to lower run in Node islands
       // too (the authoritative lowering, DESIGN.md §1.4): build again with
-      // them as islands.
-      const growth = growthOf();
-      const grown =
-        retried !== null
-          ? retried.islands
-          : growth === null
-            ? null
-            : growIslandSet(growth, lowerIslands, { diagnostics: lowered.diagnostics });
-      // Sloppy user modules the lowering refused join the same retry
-      // (DESIGN.md note 1 §3.2): one reload with every island at once,
-      // never one round per module.
-      const grownModules =
-        retried !== null
-          ? retried.modules
-          : loweringModules(entryPath, opts, lowered.diagnostics, lowerModules);
+      // them as islands. Sloppy user modules the lowering refused join the
+      // same retry (DESIGN.md note 1 §3.2): one reload with every island at
+      // once, never one round per module.
+      const grown = decided.islands;
+      const grownModules = decided.modules;
       if (grown !== null || grownModules !== null) {
         fe.dispose();
         frontendDisposed();
@@ -501,7 +559,7 @@ function prepareRound(
           request: {
             islands: grown ?? lowerIslands,
             modules: grownModules ?? lowerModules,
-            retryFences,
+            retryFences: decided.nextRetryFences,
             unitStore,
           },
         };
@@ -513,16 +571,7 @@ function prepareRound(
       // declare (interfaces, aliases such as `Static<T>`) are `any`, so its
       // diagnostics describe a program the island build does not compile:
       // there the packages' declarations type the user code.
-      const marked =
-        retried !== null
-          ? retried.fences
-          : retryFences && growth !== null
-            ? growIslandSet(growth, lowerIslands, {
-                diagnostics: lowered.diagnostics,
-                fences: lowered.runtimeFences,
-                fenceMode: "report",
-              })
-            : null;
+      const marked = decided.fences;
       if (marked !== null) {
         fe.dispose();
         frontendDisposed();

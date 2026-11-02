@@ -72,6 +72,7 @@ export interface EarlyExecutableNativeFeatures {
   /** The proxy build of the json unit (SCR_JS_OBJECT_MODEL_PROXY): the
    * program's dynamic values may be proxies. */
   dynProxyTier?: boolean;
+  dynCtorValue?: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;

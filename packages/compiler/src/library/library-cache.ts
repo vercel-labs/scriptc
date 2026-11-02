@@ -86,6 +86,7 @@ export interface EarlyLibraryNativeFeatures {
   /** The archive's proxy build of its json unit
    * (SCR_JS_OBJECT_MODEL_PROXY). */
   dynProxyTier?: boolean;
+  dynCtorValue?: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }

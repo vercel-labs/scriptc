@@ -335,6 +335,24 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(created).dynProxyTier).toBe(true);
   });
 
+  test("a builtin constructor read as a value rides the constructor value build", () => {
+    // t262-w5: `const R = RegExp; R("a", "g")` answers RegExp's IsRegExp and
+    // `constructor` short circuit, so the answer lives in the
+    // SCR_JS_OBJECT_MODEL_CTOR_VALUE build of scr_dyn_invoke.c. The fact ORs
+    // into jsObjectModel, so it selects that twin and every other object
+    // model program keeps the plain object, byte for byte.
+    const plain = module();
+    expect(moduleRuntimeFeatures(plain).dynCtorValue).toBe(false);
+    const mod = module();
+    mod.functions[0]!.body.push(call("dyn.globalConstructor"));
+    const features = moduleRuntimeFeatures(mod);
+    expect(features.dynCtorValue).toBe(true);
+    // The builtin constructor value is itself an object model fact, so the
+    // program selects the object model build and its constructor value twin.
+    expect(features.jsObjectModel).toBe(true);
+    expect(jsObjectModelFact(features)).toBe(true);
+  });
+
   test("gates the BigInt typed-array element kinds on the constructor name", () => {
     // The two BigInt kinds have no double-backed element, so their code lives
     // in the JavaScript object model build (t262-da §J); every other typed

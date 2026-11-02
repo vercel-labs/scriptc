@@ -238,3 +238,31 @@ test("a dynamic global read selects the host-global build of the global unit", (
     selected("scr_node_builtin.c", { hostAbsentGlobals: true, workers: true }).defines,
   ).toEqual(["SCR_GLOBAL_HOST_ABSENT", "SCR_WORKERS"]);
 });
+
+test("scr_dyn_invoke builds the constructor value twin beside the object model", () => {
+  // `RegExp(pattern, flags)` through a constructor read as a value lives in
+  // the constructor value build (t262-w5): a program with the fact
+  // (dynCtorValue) selects the twin, and every other object model program
+  // keeps the plain build, byte for byte.
+  expect(variantsFor("scr_dyn_invoke.c").map((variant: { id: string }) => variant.id)).toEqual([
+    "default",
+    "js-om",
+    "js-om-ctor-value",
+  ]);
+  const plain = { workers: false };
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, dynCtorValue: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_JS_OBJECT_MODEL_CTOR_VALUE"]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, dynCtorValue: true }).id,
+  ).toBe("js-om-ctor-value");
+  // The proxy build names no constructor value build: a program with both
+  // facts selects the plain one, which is what its own read needs.
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, dynProxyTier: true }).id,
+  ).toBe("js-om");
+});

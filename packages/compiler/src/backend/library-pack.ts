@@ -40,6 +40,7 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     // A proxied program's archive carries the proxy build of the json unit,
     // the one its emitted calls name at link time.
     ...(options.dynProxyTier === true ? { dynProxyTier: true } : {}),
+    ...(options.dynCtorValue === true ? { dynCtorValue: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,

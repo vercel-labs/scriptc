@@ -2055,17 +2055,17 @@ static void dyn_global_ctors_cleanup(void) {
   }
 }
 
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_CTOR_VALUE
 static ScrDyn *dyn_regexp_call(const ScrDyn *pattern, const ScrDyn *flags);
 static ScrDyn *dyn_regexp_construct(const ScrDyn *pattern, const ScrDyn *flags);
 #endif
 
 static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const char *name = closure->fn;
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_CTOR_VALUE
   /* RegExp(pattern, flags) as a call (a stored, or global, RegExp value).
-   * The object model build answers it; the default object keeps the refusal
-   * below, byte for byte. */
+   * The constructor value build answers it; the plain object model build and
+   * the default object keep the refusal below, byte for byte. */
   if (name == dyn_s25)
     return dyn_regexp_call(argc ? args[0] : scr_dyn_undefined(),
                            argc > 1 ? args[1] : scr_dyn_undefined());
@@ -2113,7 +2113,7 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
   else if (strcmp(name, dyn_s31) == 0) *result = scr_dyn_native_set_new(first);
   else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_CTOR_VALUE
   else if (strcmp(name, dyn_s25) == 0)
     *result = dyn_regexp_construct(first, argc > 1 ? items[1] : scr_dyn_undefined());
 #endif
@@ -2147,7 +2147,7 @@ static ScrDyn *dyn_global_ctor(const char *name) {
   return NULL;
 }
 
-#ifdef SCR_JS_OBJECT_MODEL
+#ifdef SCR_JS_OBJECT_MODEL_CTOR_VALUE
 /* RegExpAlloc + RegExpInitialize over dynamic values: scr_regex.c compiles
  * the pattern eagerly, so an invalid pattern or flag set throws Node's
  * SyntaxError here, and an empty or missing pattern stores the spec's

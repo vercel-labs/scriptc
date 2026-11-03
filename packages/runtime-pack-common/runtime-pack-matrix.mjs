@@ -96,6 +96,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
+  // DataView.prototype as a value in JavaScript (`DataView.prototype`,
+  // its getter/setter family, its see-through accessors and its
+  // [[@@toStringTag]]); it builds that object on the dynamic object model.
+  ["scr_data_view_proto.c", all("dataViewPrototypeValue", "dynInvoke")],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],

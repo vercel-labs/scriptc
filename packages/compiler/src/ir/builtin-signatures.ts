@@ -4410,6 +4410,10 @@ function buildLibFnSignatures() {
      * in a JavaScript source), named by its constructor: the unit in
      * scr_dyn_stdlib_prototype.c. */
     "dyn.stdlibPrototype": { argTypes: [STRING], result: DYN },
+    /** DataView.prototype as a value (`DataView.prototype` read in a
+     * JavaScript source): the getter/setter family's prototype object, the
+     * unit in scr_data_view_proto.c. */
+    "dyn.dataViewPrototype": { argTypes: [DYN], result: DYN },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },

@@ -4864,8 +4864,10 @@ export class Lowerer {
     // fresh computation under SCRIPTC_LOWERING_FACTS_VERIFY.
     "facts",
     // SCRIPTC_LOWERING_FACTS_VERIFY only: this pass's own class protocol
-    // index, the answers the shared one is compared against.
+    // index and provenance hit check, the comparisons the shared answers
+    // are checked against.
     "ownClassProtocols",
+    "verifySymbolProvenance",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",

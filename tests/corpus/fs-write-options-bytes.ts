@@ -54,6 +54,28 @@ async function main(): Promise<void> {
   appendFileSync(logPath, "two\n", { encoding: "utf8" });
   console.log("log", JSON.stringify(readFileSync(logPath, "utf8")));
 
+  // The bare encoding spelling is the same option, and a Buffer payload
+  // carries its own bytes: no name converts them, so both spellings append
+  // the view verbatim.
+  appendFileSync(logPath, "three\n", "utf8");
+  appendFileSync(logPath, new Uint8Array([0x62, 0x79, 0x74, 0x65, 0x0a]), { encoding: "utf-8" });
+  appendFileSync(logPath, new Uint8Array([0x21, 0x0a]), "utf-8");
+  console.log("log bytes", JSON.stringify(readFileSync(logPath, "utf8")));
+
+  // writeFileSync(path, bytes, "utf8"): the bare spelling over byte data
+  // writes the view unchanged, exactly like the record form.
+  const bareBytes = join(dir, "bare-bytes.bin");
+  writeFileSync(bareBytes, new Uint8Array([0x72, 0x61, 0x77]), "utf8");
+  writeFileSync(bareBytes, new Uint8Array([0x21]), "utf-8");
+  console.log("bare bytes", JSON.stringify(readFileSync(bareBytes, "utf8")));
+
+  // A `string | Uint8Array` append: the live arm picks the writer.
+  const appendUnion = join(dir, "append-union.txt");
+  for (const payload of ["text ", new Uint8Array([0x62, 0x79, 0x74, 0x65])]) {
+    appendFileSync(appendUnion, payload, { encoding: "utf8" });
+  }
+  console.log("append union", JSON.stringify(readFileSync(appendUnion, "utf8")));
+
   // A `string | Uint8Array` payload reaching the same options record: the
   // value's kind decides the bytes written.
   const payloads: (string | Uint8Array)[] = ["plain ", new Uint8Array([0x62, 0x79, 0x74, 0x65])];

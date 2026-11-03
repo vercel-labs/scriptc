@@ -42,7 +42,11 @@ declare module "node:fs" {
     },
   ): void;
   /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
+  export function writeFileSync(
+    path: string | URL,
+    data: string | Uint8Array,
+    encoding: "utf8" | "utf-8",
+  ): void;
   export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
   /* The file-descriptor form: Node writes the whole data to an already
    * open descriptor and leaves it open (closeSync owns its lifetime, and
@@ -50,12 +54,18 @@ declare module "node:fs" {
   export function writeFileSync(fd: number, data: string): void;
   export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
+  /* The bare-encoding spelling is the options record's encoding key alone. */
+  export function appendFileSync(
+    path: string | URL,
+    data: string | Uint8Array,
+    encoding: "utf8" | "utf-8",
+  ): void;
   /* The options record: `encoding` may only spell the utf8 the runtime
    * appends; `mode` and any other flag keep their fence, since they change
    * what an append creates (see the writeFileSync stance). */
   export function appendFileSync(
     path: string | URL,
-    data: string,
+    data: string | Uint8Array,
     options?: {
       mode?: number;
       encoding?: "utf8" | "utf-8";

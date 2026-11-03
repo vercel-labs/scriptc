@@ -1296,14 +1296,16 @@ export function lowerFsWriteOptionsCall(
   };
   // The bare-encoding spelling — writeFileSync(p, data, "utf-8") — is
   // the options record's encoding key alone: utf8 is what the runtime
-  // writes anyway, so string data takes the plain write. Any OTHER
-  // encoding name changes bytes and keeps the fence below.
+  // writes anyway, so the data takes the plain write of its own shape. Any
+  // OTHER encoding name changes bytes and keeps the fence below; over byte
+  // data no name changes anything (Node never decodes a Buffer), but the
+  // declarations only spell the utf8 names there, so the same test serves.
   {
     const t = lowerer.typeOf(optsNode);
     if (
       t.isStringLiteralType() &&
       (t.value === "utf8" || t.value === "utf-8") &&
-      dataKind === "string"
+      dataKind !== null
     ) {
       return finishWrite([{ kind: "effect", value: lowerer.lowerExprExpecting(optsNode, STRING) }]);
     }
@@ -1384,17 +1386,49 @@ export function lowerFsAppendOptionsCall(
   loc: SrcLoc,
 ): IrExpr {
   const optsNode = expr.arguments.nodes[2]!;
-  const supported = 'the supported options are { encoding: "utf8" } over string data';
-  const plainAppend = (): IrExpr => ({
-    kind: "libCall",
-    fn: "fs.appendFileSync",
-    args: [
-      lowerFsPath(lowerer, expr.arguments.nodes[0]!),
-      lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING),
-    ],
-    type: VOID,
-    loc,
-  });
+  const supported = 'the supported options are { encoding: "utf8" } over string or Uint8Array data';
+  // A Buffer carries its own bytes, so the encoding name says nothing about
+  // them (Node never looks it up); a `string | Uint8Array` payload takes the
+  // same tag dispatch the two-argument forms use.
+  const dataNode = expr.arguments.nodes[1]!;
+  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
+  const appendArms =
+    dataIr?.kind === "union" ? (lowerer.unions.get(dataIr.unionId)?.arms ?? null) : null;
+  const unionArms =
+    appendArms !== null &&
+    appendArms.every((arm) => arm.kind === "string" || (arm.kind === "bytes" && arm.elem === "u8"))
+      ? appendArms
+      : null;
+  if (dataIr?.kind === "union" && unionArms === null) {
+    lowerer.noLowering(`fs.appendFileSync of '${lowerer.fmt(dataIr)}' data`, dataNode, supported);
+  }
+  const bytesData = dataIr?.kind === "bytes" && dataIr.elem === "u8";
+  if (dataIr?.kind === "bytes" && !bytesData) {
+    lowerer.noLowering(
+      `fs.appendFileSync of '${lowerer.fmt(dataIr)}' data`,
+      dataNode,
+      "byte appends take Uint8Array/Buffer data",
+    );
+  }
+  const plainAppend = (): IrExpr =>
+    unionArms !== null
+      ? lowerStringOrBytesWrite(
+          lowerer,
+          expr,
+          dataIr as Extract<IrType, { kind: "union" }>,
+          unionArms,
+          true,
+        )
+      : {
+          kind: "libCall",
+          fn: bytesData ? "fs.appendFileSyncBytes" : "fs.appendFileSync",
+          args: [
+            lowerFsPath(lowerer, expr.arguments.nodes[0]!),
+            lowerer.lowerExprExpecting(dataNode, bytesData ? BYTES_U8 : STRING),
+          ],
+          type: VOID,
+          loc,
+        };
   const t = lowerer.typeOf(optsNode);
   if (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")) return plainAppend();
   const literal = optionsLiteralOf(lowerer, optsNode);

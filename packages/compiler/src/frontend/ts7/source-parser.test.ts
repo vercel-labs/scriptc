@@ -240,3 +240,60 @@ test("a parser starts a new server once it has parsed its source budget, and ear
   expect(getTextOfNode(second.statements.nodes[0]!)).toBe("export const b = 2;");
   expect(getTextOfNode(third.statements.nodes[0]!)).toBe("export const b = 3;");
 });
+
+test("a retained parse answers a repeated read without a new server", () => {
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-source-parser-"),
+  );
+  directories.push(directory);
+  const servers: Ts7Api[] = [];
+  const parser = new Ts7SourceParser(
+    (options) => {
+      const api = new Ts7Api(options);
+      servers.push(api);
+      return api;
+    },
+    directory,
+    64,
+  );
+  parsers.push(parser);
+  // The package build re-reads the same sources: one npm-static rung per
+  // package, each rewriting the same file several ways.
+  const source = `export const a = ${"1 + ".repeat(20)}1;`;
+  const first = parser.parse("a.ts", source, "ts");
+  expect(servers).toHaveLength(1);
+  // This read crosses the server budget, as a large file does on its own.
+  parser.parse("b.ts", "export const b = 2;", "ts");
+  expect(servers).toHaveLength(2);
+  expect(parser.parse("a.ts", source, "ts")).toBe(first);
+  expect(servers).toHaveLength(2);
+  // A different text at the same path is a different parse.
+  expect(parser.parse("a.ts", "export const a = 2;", "ts")).not.toBe(first);
+});
+
+test("a source evicted from the retained budget is parsed again on its next read", () => {
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-source-parser-"),
+  );
+  directories.push(directory);
+  const servers: Ts7Api[] = [];
+  const parser = new Ts7SourceParser(
+    (options) => {
+      const api = new Ts7Api(options);
+      servers.push(api);
+      return api;
+    },
+    directory,
+    25,
+    20,
+  );
+  parsers.push(parser);
+  // Both sources are 19 code units, so retaining the second evicts the first.
+  parser.parse("a.ts", "export const a = 1;", "ts");
+  parser.parse("b.ts", "export const b = 2;", "ts");
+  expect(servers).toHaveLength(1);
+  // a.ts is gone from the cache: its miss crosses the server budget and
+  // starts a new server, where a hit would have answered it.
+  expect(parser.parse("a.ts", "export const a = 1;", "ts").text).toBe("export const a = 1;");
+  expect(servers).toHaveLength(2);
+});

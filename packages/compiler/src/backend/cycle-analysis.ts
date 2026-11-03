@@ -129,18 +129,26 @@ function analyzeCycles(
   const programLifetime = (className: string): boolean =>
     lifetimeRoots.size > 0 && lifetimeRoots.has(rootOf(className));
   const mutability = precomputed ?? computeCycleMutability(mod, unitOfClass, stores);
+  // Whether `name` is `base` or inherits from it. The runtime bases' state
+  // (an emitter's listeners, an event target's engine) belongs to every
+  // subclass instance too, so a slot of a subclass type reaches it.
+  const inherits = (name: string, base: string): boolean => {
+    for (let cur: string | null | undefined = name; cur; cur = baseOf.get(cur))
+      if (cur === base) return true;
+    return false;
+  };
   const shapeDefs = [
     ...classes.map((c) => ({
       key: `object:${c.name}`,
       unit: unitOfClass(c.name),
       fields: [
         ...c.fields,
-        ...(c.name === RUNTIME_EMITTER_CLASS
+        ...(inherits(c.name, RUNTIME_EMITTER_CLASS)
           ? [{ name: "<listeners>", type: funcOf([], VOID) }]
           : []),
         // The EventTarget state owns listener values and the target's own
         // capsule; an Event owns its target and detail.
-        ...(c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS
+        ...(inherits(c.name, RUNTIME_EVENT_TARGET_CLASS) || inherits(c.name, RUNTIME_EVENT_CLASS)
           ? [{ name: "<engine>", type: DYN }]
           : []),
         ...(c.localCaptures !== undefined

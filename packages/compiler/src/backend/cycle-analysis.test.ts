@@ -5,6 +5,8 @@ import {
   STRING,
   VOID,
   RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
   arrayOf,
   funcOf,
   mapOf,
@@ -176,6 +178,39 @@ test("the runtime emitter and its descendants retain listener tracing", () => {
     { name: RUNTIME_EMITTER_CLASS, loc, fields: [] },
   ];
   check(mod, ["object:Events", `object:${RUNTIME_EMITTER_CLASS}`]);
+});
+
+test("a slot of an emitter subclass reaches the listeners the subclass inherits", () => {
+  // A record that holds a class extending Writable: the stream's listeners
+  // can capture the record, so the record lies on a potential cycle even
+  // though neither it nor the classes declare a field that could close one.
+  const mod = module();
+  mod.classes = [
+    { name: "Sink", loc, base: "%Writable", fields: [] },
+    { name: "%Writable", loc, base: RUNTIME_EMITTER_CLASS, fields: [] },
+    { name: RUNTIME_EMITTER_CLASS, loc, fields: [] },
+  ];
+  mod.records = [shape("request", [{ kind: "object", className: "Sink" }, F64])];
+  checkExact(mod, [
+    "object:%Writable",
+    "object:Sink",
+    `object:${RUNTIME_EMITTER_CLASS}`,
+    "record:request",
+  ]);
+  mod.classes = [
+    { name: "Target", loc, base: RUNTIME_EVENT_TARGET_CLASS, fields: [] },
+    { name: RUNTIME_EVENT_TARGET_CLASS, loc, fields: [] },
+  ];
+  mod.records = [shape("holder", [{ kind: "object", className: "Target" }])];
+  checkExact(mod, ["object:Target", `object:${RUNTIME_EVENT_TARGET_CLASS}`, "record:holder"]);
+  // An event owns its target, so a slot of an Event subclass reaches the
+  // target's listeners too.
+  mod.classes = [
+    { name: "Notice", loc, base: RUNTIME_EVENT_CLASS, fields: [] },
+    { name: RUNTIME_EVENT_CLASS, loc, fields: [] },
+  ];
+  mod.records = [shape("holder", [{ kind: "object", className: "Notice" }])];
+  checkExact(mod, ["object:Notice", `object:${RUNTIME_EVENT_CLASS}`, "record:holder"]);
 });
 
 test("separate calls do not share mutable fixed-point state", () => {

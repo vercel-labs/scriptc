@@ -5946,6 +5946,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_WORKERS
     if (due > now) scr_sa_loop_waiting(true);
 #endif
+#if defined(SCR_MUSL) && !defined(SCR_LIB)
+    if (due > now) scr_musl_malloc_idle();
+#endif
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
     if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {

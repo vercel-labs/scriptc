@@ -230,6 +230,9 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
   <dt><code>SCRIPTC_NO_CACHE</code></dt>
   <dd>Set to <code>1</code> to bypass all build-cache reads and writes. An explicitly empty <code>SCRIPTC_CACHE_DIR</code> has the same effect.</dd>
 
+  <dt><code>SCRIPTC_STATE_DIR</code></dt>
+  <dd>Override the compiler-level store's root. It holds what a build derives from the installed files alone, such as the selected runtime pack and the Linux link driver's job, so a build whose build cache starts empty still skips that work. The default is <code>$XDG_CACHE_HOME/scriptc/compiler</code> when set, <code>$HOME/Library/Caches/scriptc/compiler</code> on macOS, <code>%LOCALAPPDATA%\scriptc\cache\compiler</code> on Windows, and <code>$HOME/.cache/scriptc/compiler</code> elsewhere. Each entry is verified against the files it was derived from and is derived again when they change. <code>SCRIPTC_NO_CACHE=1</code> and an explicitly empty <code>SCRIPTC_CACHE_DIR</code> disable the store, and an existing POSIX override must already be private.</dd>
+
   <dt><code>SCRIPTC_CACHE_MAX_MB</code></dt>
   <dd>Maximum build-cache size in megabytes. The default is <code>4096</code>; the default cache is swept periodically, while an explicitly configured cap is checked after every successful cache write. Least-recently-used entries are removed when the cache exceeds the cap.</dd>
 

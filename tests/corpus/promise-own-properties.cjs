@@ -43,6 +43,16 @@ setTimeout(() => {
 
   console.log(later.propertyIsEnumerable("status"), later.propertyIsEnumerable("hidden"));
 
+  // Object.assign reads each getter just before copying its value, and
+  // JSON.stringify's replacer and indentation see promise properties.
+  const getters = untyped(Promise.resolve(3));
+  const assigned = {};
+  Object.defineProperty(getters, "a", { enumerable: true, get() { return 1; } });
+  Object.defineProperty(getters, "b", { enumerable: true, get() { return assigned.a; } });
+  Object.assign(assigned, getters);
+  console.log(assigned.a, assigned.b);
+  console.log(JSON.stringify(getters, null, 1), JSON.stringify(getters, (key, value) => (key === "a" ? 2 : value)));
+
   const plain = untyped(Promise.resolve(0));
   console.log(Object.isExtensible(plain), Object.isSealed(plain), Object.isFrozen(plain), JSON.stringify(plain));
   const sealed = untyped(Promise.resolve(1));

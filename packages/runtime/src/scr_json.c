@@ -18488,7 +18488,7 @@ static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool 
     return;
   }
   if (src->kind != SCR_DYN_ARR && src->kind != SCR_DYN_STR &&
-      src->kind != SCR_DYN_BYTES && src->kind != SCR_DYN_PROMISE) {
+      src->kind != SCR_DYN_BYTES) {
     return;
   }
   ScrDyn *pairs = scr_dyn_obj_entries(src); /* +1; never throws here */

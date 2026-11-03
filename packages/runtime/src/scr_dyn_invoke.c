@@ -2056,10 +2056,12 @@ static ScrDyn *scr_dyn_async_disposable_stack_member_value(const char *cls, cons
  * `DisposableStack.prototype.use === stack.use`. The AsyncDisposableStack's
  * unit fills a slot on the same terms, in the build that carries its entry.
  * The three primitive wrapper prototypes answer through the intrinsic graph,
- * which wraps their members so the brand checks run on the primitive the
- * prototype wraps; a builtin whose instances already answer the interned
- * values — Map, Set, WeakMap, WeakSet, String, Object — needs no entry:
- * `map.get` and `Map.prototype.get` are one interned function.
+ * which answers the wrapper unit's own interned member for the prototype, so
+ * the brand checks and the String lowering run on the primitive the prototype
+ * wraps and a member read off a primitive, off a wrapper instance and off the
+ * prototype object is one function; a builtin whose instances already answer
+ * the interned values — Map, Set, WeakMap, WeakSet, String, Object — needs no
+ * entry: `map.get` and `Map.prototype.get` are one interned function.
  *
  * A unit that answers a class this table does not name registers its provider
  * with scr_dyn_member_provider_register, and the class then answers through it

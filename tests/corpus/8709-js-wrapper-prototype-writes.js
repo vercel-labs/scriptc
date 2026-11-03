@@ -124,10 +124,10 @@ show("natives", [
 ].join("|"));
 
 // A member read off a primitive, off a wrapper instance and off the prototype
-// object is one function, as in Node: the wrapper prototypes' members are the
-// invoke unit's interned functions, wrapped for the wrapper receivers, and one
-// value answers every reader. (A number's or a boolean's methods as values are
-// a separate frontend refusal, so the primitives here are strings.)
+// object is one function, as in Node: the prototype's members are the wrapper
+// unit's interned methods, which is also the value a primitive's or an
+// instance's member read answers. (A number's or a boolean's methods as values
+// are a separate frontend refusal, so the primitives here are strings.)
 show("identity", [
   "abc".slice === String.prototype.slice,
   "abc".startsWith === String.prototype.startsWith,

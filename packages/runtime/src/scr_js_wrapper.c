@@ -338,6 +338,11 @@ static const ScrJsWrapperMember scr_js_wrapper_number_members[] = {
 static const ScrJsWrapperMember scr_js_wrapper_boolean_members[] = {
   {"toString", 0}, {"valueOf", 0}, {NULL, 0},
 };
+/* The member cache is indexed by position in a kind's table, and the String
+ * table is the largest. */
+_Static_assert(sizeof scr_js_wrapper_string_members / sizeof *scr_js_wrapper_string_members <=
+                   SCR_JS_WRAPPER_MEMBER_SLOTS,
+               "a wrapper member table must fit the member cache");
 
 static const ScrJsWrapperMember *scr_js_wrapper_member_table(int kind) {
   return kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
@@ -431,11 +436,11 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   scr_js_wrapper_seed_prototype(constructor, prototype);
   const ScrJsWrapperMember *members = scr_js_wrapper_member_table(kind);
   for (const ScrJsWrapperMember *m = members; m->name; m++) {
+    /* The lookup's reference is the entry's: scr_dyn_obj_set takes
+     * ownership of the value it is given, and the interned member keeps the
+     * cache's own reference for the next read. */
     ScrDyn *member = scr_js_wrapper_member_lookup(kind, m->name, strlen(m->name));
-    if (member) {
-      scr_js_wrapper_define_hidden(prototype, m->name, member);
-      scr_dyn_release(member);
-    }
+    if (member) scr_js_wrapper_define_hidden(prototype, m->name, member);
   }
   scr_js_wrapper_prototypes[kind] = prototype;
   return prototype;

@@ -169,6 +169,7 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
   // Cover every prefetch entry on a separate facade: warm direct queries
   // above must not mask a broken batch path in the native compiler.
   const batch = new CheckerFacade(raw, { project: raw.project });
+  batch.prefetchTypeQueries([answerName, identity.name!, answerName]);
   batch.prefetchSourceFileStructures([root, root]);
   batch.prefetchSymbolRoots([identity, identity]);
   batch.prefetchSymbolNodesExact([answerName, answerName]);

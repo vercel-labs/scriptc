@@ -628,12 +628,16 @@ function ladderFor(services: FrontendServices): Ladder {
 }
 
 /** Everything a rung's answer is a function of besides the island set: the
- * entry, the npm-static list the rung loads with, and the external-type map
- * that decides what that load compiles. */
+ * entry, the npm-static list the rung loads with, the external-type map that
+ * decides what that load compiles, and the packages a `pkg...` selection
+ * opted in transitively. The last is not in the list: `runFrontend` strips
+ * the `...` before the load, so `pkg` and `pkg...` load the same list and
+ * answer differently — the transitive walk skips the declaration bar. */
 function ladderKey(
   entryPath: string,
   requested: readonly string[],
   externalTypes: Readonly<Record<string, string>> | undefined,
+  transitive: ReadonlySet<string>,
 ): string {
   const types =
     externalTypes === undefined
@@ -642,7 +646,7 @@ function ladderKey(
           .sort()
           .map((spec) => `${spec}=${externalTypes[spec]}`)
           .join("\n");
-  return `${entryPath}\n${requested.join("\n")}\n\n${types}`;
+  return `${entryPath}\n${requested.join("\n")}\n${[...transitive].sort().join("\n")}\n\n${types}`;
 }
 
 /** The recorded answer for this rung under an island set that answers the
@@ -854,7 +858,7 @@ function loadFrontend(
   let walked = false;
   if (npmStatic === "lib") {
     for (;;) {
-      const key = ladder === null ? "" : ladderKey(entryPath, requested, externalTypes);
+      const key = ladder === null ? "" : ladderKey(entryPath, requested, externalTypes, transitive);
       const known = ladder === null ? undefined : ladderRead(ladder, key, islandsForLadder);
       let grown: readonly string[];
       if (known !== undefined) {

@@ -62,13 +62,65 @@ function fixture(): string {
   return dir;
 }
 
+/** The entry's `outerpkg` requires `borrowed`, whose declarations come from
+ * another package: a plain opt-in refuses it at the declaration bar, while
+ * `outerpkg...` opts in the whole closure without that bar. */
+function transitiveFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-npm-ladder-"));
+  scratch.push(dir);
+  writePackage(
+    dir,
+    "outerpkg",
+    'const { half } = require("innerpkg");\nconst twice = require("borrowed");\nmodule.exports.double = function (n) { return half(twice(n)) * 4; };\n',
+    "export declare function double(n: number): number;\n",
+  );
+  writePackage(
+    dir,
+    "innerpkg",
+    "module.exports.half = function (n) { return n / 2; };\n",
+    "export declare function half(n: number): number;\n",
+  );
+  const donor = join(dir, "node_modules", "typesdonor");
+  mkdirSync(donor, { recursive: true });
+  writeFileSync(
+    join(donor, "package.json"),
+    JSON.stringify({ name: "typesdonor", version: "1.0.0", types: "index.d.ts" }),
+  );
+  writeFileSync(
+    join(donor, "index.d.ts"),
+    "declare function twice(n: number): number;\nexport = twice;\n",
+  );
+  const root = join(dir, "node_modules", "borrowed");
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "borrowed",
+      version: "1.0.0",
+      main: "index.js",
+      types: "../typesdonor/index.d.ts",
+    }),
+  );
+  writeFileSync(join(root, "index.js"), "module.exports = function (n) { return n * 2; };\n");
+  writeFileSync(
+    join(dir, "main.ts"),
+    'import { double } from "outerpkg";\nconsole.log(double(2));\n',
+  );
+  return dir;
+}
+
 interface Run {
   frontend: Frontend;
   /** The npm-static list of every program load, in load order. */
   loaded: string[][];
 }
 
-function compile(dir: string, shared: FrontendServices, islandPackages: ReadonlySet<string>): Run {
+function compile(
+  dir: string,
+  shared: FrontendServices,
+  islandPackages: ReadonlySet<string>,
+  optIn: readonly string[] = ["outerpkg"],
+): Run {
   const loaded: string[][] = [];
   const loader: ProgramLoader = (path, options) => {
     loaded.push([...(options.npmStatic ?? [])]);
@@ -77,7 +129,7 @@ function compile(dir: string, shared: FrontendServices, islandPackages: Readonly
       externalTypes: options.externalTypes,
     });
   };
-  const frontend = runFrontend(join(dir, "main.ts"), loader, "lib", undefined, ["outerpkg"], {
+  const frontend = runFrontend(join(dir, "main.ts"), loader, "lib", undefined, optIn, {
     islandPackages,
   });
   return { frontend, loaded };
@@ -121,6 +173,24 @@ test("an island package a rung judges is a changed answer, not a memo hit", () =
   expect(statuses(reload)).toEqual(["outerpkg:static"]);
   first.frontend.dispose();
   reload.frontend.dispose();
+});
+
+test("a `pkg...` selection does not take a rung walked for a plain `pkg`", () => {
+  const dir = transitiveFixture();
+  const shared = createNodeFrontendServices();
+  services.push(shared);
+  const plain = compile(dir, shared, new Set());
+  expect(statuses(plain)).toEqual(["borrowed:refused", "outerpkg:refused", "innerpkg:static"]);
+
+  // Same services, same entry, same npm-static list: only the trailing `...`
+  // differs, and it opts in the package's whole closure — `borrowed` with it.
+  // The first frontend's rung refused it, so its answer is no answer for this
+  // walk: taken from the memo, the dependency `outerpkg...` asked for would
+  // be silently missing.
+  const closure = compile(dir, shared, new Set(), ["outerpkg..."]);
+  expect(statuses(closure)).toEqual(["outerpkg:static", "innerpkg:static", "borrowed:static"]);
+  plain.frontend.dispose();
+  closure.frontend.dispose();
 });
 
 test("a build without a reload walks every rung once", () => {

@@ -16657,7 +16657,7 @@ export class Lowerer {
     // () => onSigInt; ...; const onSigInt = ...`). Pre-declare the const as
     // a TDZ box at its scope's entry and resolve again (the recursion finds
     // it in the origin frame and threads captures normally).
-    if (blame && predeclareForwardCapture(this, symbol)) {
+    if (blame && predeclareForwardCapture(this, symbol, blame)) {
       return this.resolveKey(symbol, blame);
     }
     // The FUNCTION-DECLARATION twin: JS hoists a nested `function f() {}`

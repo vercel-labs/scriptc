@@ -40,6 +40,7 @@ export interface CachedCoverage {
   diagnostics: ScrDiagnostic[];
   runtimeFences?: ScrDiagnostic[];
   unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[]; runtimeFences?: ScrDiagnostic[] };
+  reachedOnly?: boolean;
   divergences?: ScrDiagnostic[];
   performance?: ScrDiagnostic[];
   dynamicSlots?: DynamicSlotEntry[];
@@ -139,6 +140,10 @@ export function verdictKey(
       ...(opts.nodeIslands !== undefined
         ? [`node-islands=${nodeIslandOptionsKey(opts.nodeIslands)}`]
         : []),
+      // Reached-only coverage reports a different verdict than the
+      // whole-program one: the same program must not replay one for the
+      // other.
+      ...(opts.coverageReached === true ? ["coverage=reached"] : []),
     ].join("\0"),
   );
 }
@@ -158,6 +163,7 @@ function cacheable(coverage: AnalyzeResult["coverage"]): CachedCoverage | null {
   };
   if (coverage.runtimeFences !== undefined) out.runtimeFences = coverage.runtimeFences;
   if (coverage.unreached !== undefined) out.unreached = coverage.unreached;
+  if (coverage.reachedOnly !== undefined) out.reachedOnly = coverage.reachedOnly;
   if (coverage.divergences !== undefined) out.divergences = coverage.divergences;
   if (coverage.performance !== undefined) out.performance = coverage.performance;
   if (coverage.dynamicSlots !== undefined) out.dynamicSlots = coverage.dynamicSlots;
@@ -178,6 +184,7 @@ function restore(cached: CachedCoverage, sources: CachedSource[]): AnalyzeResult
   };
   if (cached.runtimeFences !== undefined) coverage.runtimeFences = cached.runtimeFences;
   if (cached.unreached !== undefined) coverage.unreached = cached.unreached;
+  if (cached.reachedOnly !== undefined) coverage.reachedOnly = cached.reachedOnly;
   if (cached.divergences !== undefined) coverage.divergences = cached.divergences;
   if (cached.performance !== undefined) coverage.performance = cached.performance;
   if (cached.dynamicSlots !== undefined) coverage.dynamicSlots = cached.dynamicSlots;

@@ -60,3 +60,33 @@ test("unchanged and comment-only reruns replay the verdict; code edits relower",
   expect(run().cache).toBe("miss");
   expect(lowered).toBe(2);
 });
+
+test("reached-only coverage caches under its own key", () => {
+  // The reached verdict is not the whole-program one: the same entry must
+  // not replay a full report for a reached run, or the reverse.
+  const entry = join(dir, "reached.ts");
+  writeFileSync(entry, `const [[a, b]] = [[1, 2]];\nconsole.log(a + b);\n`);
+  const entries = new Map<string, string>();
+  const store: VerdictStore = {
+    read: (k) => entries.get(k) ?? null,
+    write: (k, t) => void entries.set(k, t),
+  };
+  const run = (opts: { coverageReached?: boolean }) =>
+    analyzeWithVerdictCache(
+      entry,
+      opts,
+      { store, identity: "test", platform: process.platform, semanticReplay: commentOnlyReplay },
+      () => analyze(entry, opts),
+    );
+  const full = run({});
+  expect(full.outcome).toBe("miss");
+  const reached = run({ coverageReached: true });
+  expect(reached.outcome).toBe("miss");
+  expect(reached.result.coverage.unreached).toBeUndefined();
+  expect(reached.result.coverage.reachedOnly).toBe(true);
+  // Both verdicts replay from their own entries.
+  expect(run({}).outcome).toBe("hit");
+  expect(run({ coverageReached: true }).outcome).toBe("hit");
+  expect(run({}).result.coverage.unreached).toBeDefined();
+  expect(run({ coverageReached: true }).result.coverage.unreached).toBeUndefined();
+});

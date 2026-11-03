@@ -136,6 +136,27 @@ Some code compiles but can behave differently than under Node.js. Coverage repor
 - `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
 
+## Large programs
+
+Coverage and builds analyze a program as one unit, so a very large program (an
+application with thousands of modules behind one entrypoint) can run out of
+memory. Two ways to keep the analysis small:
+
+Compile per entrypoint. Split the single giant entry into several smaller
+programs, each with its own entry file, and analyze or build each one. Each
+program only holds the modules its entrypath imports, so no single analysis
+sees the whole graph at once.
+
+Use `--coverage=reached` for the report. It skips the pass over code the entry
+path does not reach, so the analysis stays on the entry path: the report has
+no `in unreached code` group, and its statement totals count reached
+statements only. A reached report is not comparable with a default (full)
+report; the report says so in its footer. `--coverage=reached --explain-dynamic`
+is rejected, because the explanation needs the remainder pass. The default
+stays `full`.
+
+<span id="gating-builds" />
+
 ## Gating builds and CI
 
 By default, `scriptc coverage` exits with status 0 whenever the program type-checks, so you can use the report to track progress. To fail a CI job instead, add `--fail-on`:

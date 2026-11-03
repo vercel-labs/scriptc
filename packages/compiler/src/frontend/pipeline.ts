@@ -804,12 +804,13 @@ function loadFrontend(
   // declaration-only members, or a .d.ts type-GUARD an inferred JS
   // function cannot reproduce). Those SC0001s anchor in USER files no
   // offender or
-  // message attribution reaches, so each package is probed by LEAVE-ONE-OUT
-  // (n is the opt-in count — a handful of extra analysis loads): the set
-  // minus that package is exactly the load that would follow dropping it. A
-  // package whose removal clears or changes the errors is a culprit and
-  // falls back with a note. A package whose absence leaves the errors
-  // untouched is not; and when NO package attributes, the flag's own typing
+  // message attribution reaches, so packages are probed by LEAVE-ONE-OUT
+  // (halved, so a handful of extra analysis loads): the set minus a group is
+  // the load that would follow dropping it, and a group whose absence
+  // changes the errors splits until one package remains. A package whose
+  // removal clears or changes the errors is a culprit and falls back with a
+  // note. A package whose absence leaves the errors untouched is not; and
+  // when NO package attributes, the flag's own typing
   // produced the diagnostic, so the set keeps every package and the error is
   // reported as the one diagnostic it is. Explicit opt-ins degrade the same
   // way — the ratified stance for bundle-shaped dists is graceful
@@ -884,14 +885,39 @@ function loadFrontend(
           .join("\n");
       const loadKeys = sc0001Keys(preflight);
       const culprits: string[] = [];
-      for (const p of [...effective]) {
-        const rest = [...effective].filter((q) => q !== p);
+      // The probe budget: a halving search spends one load per group it
+      // visits, so it never costs more than the linear scan it replaces.
+      let budget = effective.size;
+      const changes = (group: readonly string[]): boolean => {
+        if (budget === 0) return false;
+        budget--;
+        const rest = [...effective].filter((q) => !group.includes(q));
         const probe = loadProgram(entryPath, { npmStatic: rest, externalTypes });
         probeStateStale = true;
         const probeDiags = checkPreflight(probe);
         probe.dispose();
-        if (sc0001Keys(probeDiags) !== loadKeys) culprits.push(p);
-      }
+        return sc0001Keys(probeDiags) !== loadKeys;
+      };
+      // Attribute by halving: dropping a WHOLE group is one load, and a group
+      // whose absence leaves the errors exactly as they are holds no culprit
+      // (removing any package inside it would be part of a drop that changes
+      // nothing — the no-attribution stance below). A group whose absence
+      // does change them splits in two until a single package is left, which
+      // is the same leave-one-out comparison the linear scan made, so no
+      // package is ever a culprit the scan would not have named. pi's shape
+      // (21 packages, every single drop "unchanged") costs 3 loads instead of
+      // 21.
+      const attribute = (group: readonly string[]): void => {
+        if (group.length === 0 || !changes(group)) return;
+        if (group.length === 1) {
+          culprits.push(group[0]!);
+          return;
+        }
+        const mid = Math.ceil(group.length / 2);
+        attribute(group.slice(0, mid));
+        attribute(group.slice(mid));
+      };
+      attribute([...effective]);
       if (culprits.length > 0) {
         for (const p of culprits) dropWithNote(p);
         if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);

@@ -1253,22 +1253,35 @@ static ScrDyn *scr_dyn_invoke_impl(
        * without the fact keeps the build byte for byte. */
       ScrDyn *search = argc ? args[0] : scr_dyn_undefined();
       ScrDyn *replace = argc > 1 ? args[1] : scr_dyn_undefined();
+      /* Node converts the search value before it looks at the replacement:
+       * for a searchValue that is not a RegExp, ToString(searchValue) runs
+       * first, so a search object whose conversion throws wins over any
+       * replacement (and over the callable-replacement refusal below).
+       * `needle` is +1, and NULL when the conversion threw. */
+      bool search_is_regexp =
+          search->kind == SCR_DYN_HANDLE && search->v.handle.tag == SCR_DYNH_REGEXP;
+      ScrStr *needle = NULL;
+      if (!search_is_regexp) {
+        needle = scr_dyn_string_coerce_js(search);
+        if (!needle) return NULL;
+      }
       if (replace->kind == SCR_DYN_FUNC) {
+        if (needle) scr_str_release(needle);
         dyn_throw_unsupported("String", method);
         return NULL;
       }
       ScrStr *rep = scr_dyn_string_coerce_js(replace);
-      if (!rep) return NULL;
-      ScrStr *out = NULL;
-      if (search->kind == SCR_DYN_HANDLE && search->v.handle.tag == SCR_DYNH_REGEXP) {
-        dyn_throw_unsupported("String", method);
-      } else if (search->kind == SCR_DYN_STR) {
-        out = scr_str_replace_literal(s, search->v.str, rep, false);
-      } else {
-        ScrStr *needle = scr_dyn_string_coerce_js(search);
-        out = needle ? scr_str_replace_literal(s, needle, rep, false) : NULL;
+      if (!rep) {
         if (needle) scr_str_release(needle);
+        return NULL;
       }
+      ScrStr *out = NULL;
+      if (search_is_regexp) {
+        dyn_throw_unsupported("String", method);
+      } else {
+        out = scr_str_replace_literal(s, needle, rep, false);
+      }
+      if (needle) scr_str_release(needle);
       scr_str_release(rep);
       if (!out) return NULL;
       ScrDyn *result = scr_dyn_new_str(out); /* retains */

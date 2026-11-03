@@ -42,6 +42,12 @@ console.log("search", at("a5b6", 5, "five"));
 // A replacement whose toString answers another object: ToPrimitive fails.
 console.log("threw", at("a", "a", { toString: () => function () {} }));
 
+// The search value converts before the replacement (Node's step order), so
+// when both would throw the search's conversion is the one that is reached.
+const searchFirst = { toString: () => { throw new Error("search-first"); } };
+const replaceSecond = { toString: () => { throw new Error("replace-second"); } };
+console.log("order", at("ab", searchFirst, replaceSecond));
+
 // The same member found through a value of unknown type.
 function dynamic(value) {
   return value.replace("an", "AN");

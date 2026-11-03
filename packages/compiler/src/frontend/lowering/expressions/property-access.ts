@@ -6032,6 +6032,27 @@ export function isPromisePrototypeRead(lowerer: Lowerer, expr: ts.Expression | u
   );
 }
 
+/** Whether `expr` reads DataView.prototype, or a member read through it, in
+ * a JavaScript source. The checker types the read DataView — whose lowering
+ * is a bytes view — but the value is the prototype OBJECT
+ * (dyn.dataViewPrototype), so a binding inferred from it stays
+ * checked-dynamic: the bytes extraction would throw where Node answers the
+ * object. */
+export function isDataViewPrototypeRead(
+  lowerer: Lowerer,
+  expr: ts.Expression | undefined,
+): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
+  if (lowerer.stdlibGlobalMember(expr, "DataView") === "prototype") return true;
+  return (
+    ts.isPropertyAccessExpression(expr.expression) &&
+    lowerer.stdlibGlobalMember(expr.expression, "DataView") === "prototype"
+  );
+}
+
 /** A promise's `constructor` (the Promise constructor value), and
  * Promise.prototype read as `promise.constructor.prototype` or
  * `Promise.prototype` (execa's `(async () => {})().constructor.prototype`):

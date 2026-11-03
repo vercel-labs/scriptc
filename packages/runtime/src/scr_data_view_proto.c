@@ -24,9 +24,9 @@
  * DataView's internal slots), runs ToIndex on the offset with the view's one
  * RangeError, and then reads or writes through the base units' primitives
  * (scr_bytes.c and scr_bigint.c), which perform the bounds and detached
- * checks. %DataView.prototype% itself carries the internal slots with no
- * buffer, so the accessors answer undefined/0/0 on it and the methods throw
- * the TypeError a missing buffer produces.
+ * checks. %DataView.prototype% itself carries no [[DataView]] internal slot,
+ * so like any other non-view receiver it answers every member (the
+ * accessors included) with the brand check's TypeError.
  *
  * The unit links only into programs that read `DataView.prototype` as a
  * value in a JavaScript source (the frontend marks dyn.dataViewPrototype
@@ -76,10 +76,20 @@ static const ScrDataViewProtoMethod scr_dv_proto_methods[] = {
   {"setFloat16", 2, SCR_DV_F16, false, false, false},
 };
 
-/* The three see-through properties, in the specification's order. */
-static const char scr_dv_buffer[] = "buffer";
-static const char scr_dv_byte_length[] = "byteLength";
-static const char scr_dv_byte_offset[] = "byteOffset";
+/* The three see-through properties, in the specification's order. Each
+ * accessor function's own `name` is "get " plus its property name, and a
+ * function box keeps the pointer rather than a copy, so both strings need
+ * static storage. */
+typedef struct {
+  const char *property;
+  const char *fn_name;
+} ScrDvProtoAccessor;
+
+static const ScrDvProtoAccessor scr_dv_proto_accessors[] = {
+  {"buffer", "get buffer"},
+  {"byteLength", "get byteLength"},
+  {"byteOffset", "get byteOffset"},
+};
 
 /* %DataView.prototype% itself, one per thread, kept for the lifetime of the
  * program (the accessors and the brand-failure messages read it). */
@@ -205,17 +215,16 @@ static ScrDyn *scr_dv_proto_method_call(ScrClosure *closure, ScrDyn *const *args
 
 /* The buffer/byteLength/byteOffset getters (no setters). The closure's
  * function slot names the property; a DataView receiver answers the same
- * values its property reads do, and %DataView.prototype% answers the slots
- * it carries with no buffer. */
+ * values its property reads do. %DataView.prototype% carries no
+ * [[DataView]] internal slot, so it is an incompatible receiver like any
+ * other value — the specification's brand check. */
 static ScrDyn *scr_dv_proto_accessor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   const char *which = closure->fn;
   ScrDyn *receiver = scr_dyn_this_get();
   ScrDyn *result = NULL;
-  if (receiver == scr_dv_proto_object) {
-    result = which == scr_dv_buffer ? scr_dyn_retain(scr_dyn_undefined()) : scr_dyn_new_num(0);
-  } else if (receiver->kind == SCR_DYN_BYTES && receiver->v.bytes->is_data_view) {
+  if (receiver->kind == SCR_DYN_BYTES && receiver->v.bytes->is_data_view) {
     ScrStr *key = scr_str_new(which, strlen(which));
     result = scr_dyn_bytes_key_get(receiver, key);
     scr_str_release(key);
@@ -239,11 +248,9 @@ static ScrDyn *scr_dv_proto_method(size_t at) {
   return value;
 }
 
-static ScrDyn *scr_dv_proto_accessor(const char *which) {
-  char name[32];
-  snprintf(name, sizeof name, "get %s", which);
-  return scr_dyn_new_func(scr_closure_new((void *)which, 0), scr_dv_proto_accessor_call, 0,
-                          "native:prototype", name);
+static ScrDyn *scr_dv_proto_accessor(const ScrDvProtoAccessor *accessor) {
+  return scr_dyn_new_func(scr_closure_new((void *)accessor->property, 0),
+                          scr_dv_proto_accessor_call, 0, "native:prototype", accessor->fn_name);
 }
 
 /* DataView.prototype[@@toStringTag] is "DataView": a non-writable,
@@ -275,11 +282,11 @@ ScrDyn *scr_data_view_prototype(ScrDyn *tag_key) {
     scr_str_release(property);
     scr_dyn_release(value);
   }
-  const char *const accessors[] = {scr_dv_buffer, scr_dv_byte_length, scr_dv_byte_offset};
-  for (size_t i = 0; i < sizeof accessors / sizeof accessors[0]; i++) {
-    const char *which = accessors[i];
+  for (size_t i = 0; i < sizeof scr_dv_proto_accessors / sizeof scr_dv_proto_accessors[0]; i++) {
+    const ScrDvProtoAccessor *accessor = &scr_dv_proto_accessors[i];
+    const char *which = accessor->property;
     size_t length = strlen(which);
-    scr_dyn_obj_set_accessor(prototype, which, length, scr_dv_proto_accessor(which), NULL);
+    scr_dyn_obj_set_accessor(prototype, which, length, scr_dv_proto_accessor(accessor), NULL);
     /* An accessor property of a built-in prototype is non-enumerable (the
      * setter takes the language's default, which is enumerable). */
     scr_dyn_obj_set_attrs_at(prototype, scr_dyn_obj_index_of(prototype, which, length), false, false, true);

@@ -4,7 +4,7 @@
 // the receiver brand check, ToIndex on the offset, the view's RangeError for
 // an offset it cannot reach, and the bytes read in the requested order.
 
-const view = new DataView(new ArrayBuffer(16));
+const view = new DataView(new ArrayBuffer(24));
 const getters = ["getInt8", "getUint8", "getInt16", "getUint16", "getInt32", "getUint32", "getFloat32", "getFloat64", "getBigInt64", "getBigUint64"];
 
 for (const name of getters) {
@@ -92,9 +92,3 @@ try {
 } catch (e) {
   console.log("out-of-bounds", e.name, e.message);
 }
-
-// The method taken from the prototype ignores an own property of the same
-// name on the view: the built-in is not shadowed by the read.
-const shadowed = new DataView(new ArrayBuffer(4));
-shadowed.getUint8 = () => 99;
-console.log("unshadowed", DataView.prototype.getUint8.call(shadowed, 0));

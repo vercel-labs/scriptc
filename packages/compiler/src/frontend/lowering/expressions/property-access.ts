@@ -5751,24 +5751,21 @@ function readsBuiltinGlobalMembers(expr: ts.Expression): boolean {
 }
 
 /** Reports SC2020 when `access` reads a stdlib static member or the
- * prototype of a builtin constructor with an interned function value, or
- * of ArrayBuffer, through a receiver the checker types as the constructor's
- * static side (`MapConstructor`); null otherwise. Calls that lower
- * statically never reach the member read. */
+ * prototype of a builtin constructor with an interned function value through
+ * a receiver the checker types as the constructor's static side
+ * (`MapConstructor`); null otherwise. Calls that lower statically never
+ * reach the member read. */
 function fenceBuiltinConstructorStaticRead(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
 ): null {
   if (BUILTIN_VALUE_MEMBERS.has(access.name.text)) return null;
   const symbol = lowerer.typeOf(access.expression).getSymbol();
-  const symbolName = symbol === undefined ? "" : ts.symbolName(symbol);
-  const name = symbolName.endsWith("Constructor")
-    ? symbolName.slice(0, -"Constructor".length)
-    : null;
   if (
-    name !== null &&
-    (GLOBAL_CONSTRUCTOR_VALUES.has(name) || name === "ArrayBuffer") &&
-    !ERROR_CONSTRUCTOR_VALUES.has(name) &&
+    symbol !== undefined &&
+    ts.symbolName(symbol).endsWith("Constructor") &&
+    GLOBAL_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
+    !ERROR_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
     lowerer.isStdlibSymbol(symbol)
   )
     lowerer.stdlibMemberFence(access);

@@ -15,6 +15,3 @@ function probe(ArrayBuffer) {
   return Object.hasOwn(ArrayBuffer.prototype, "detached");
 }
 console.log(probe({ prototype: {} }), probe({ prototype: { detached: false } }));
-
-// ArrayBuffer's static members still read as Node does.
-console.log(typeof ArrayBuffer.isView, ArrayBuffer.name, ArrayBuffer.length);

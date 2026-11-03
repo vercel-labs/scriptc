@@ -68,19 +68,22 @@ function describeRow(row: ProcessRow): string {
   return `pid ${row.pid} (state ${row.state}) ${row.command}`;
 }
 
-/** The failure message for a step that outlived its deadline: the step, how
- * long it ran, and each live process below the test — the step's own children
- * first, then the rest of the tree (a compile's helper is a grandchild). */
-function timeoutMessage(label: string, timeoutMs: number, tracked: ChildProcess[]): string {
+/** Every live process below the test, as the message lists them — the step's
+ * registered children first, then the rest of the tree — with the pids to
+ * stop. A compile starts its LLVM helper itself, so most of a compile step's
+ * processes are ones no callback ever registers. */
+function liveProcesses(tracked: ChildProcess[]): { rows: string[]; pids: number[] } {
   const table = processTable();
   const byPid = new Map(table.map((row) => [row.pid, row]));
   const alive = (child: ChildProcess): boolean =>
     child.exitCode === null && child.signalCode === null;
   const rows: string[] = [];
+  const pids: number[] = [];
   const seen = new Set<number>();
   for (const child of tracked) {
     if (child.pid === undefined || !alive(child) || seen.has(child.pid)) continue;
     seen.add(child.pid);
+    pids.push(child.pid);
     const row = byPid.get(child.pid);
     rows.push(
       row === undefined
@@ -92,7 +95,14 @@ function timeoutMessage(label: string, timeoutMs: number, tracked: ChildProcess[
     if (seen.has(row.pid)) continue;
     seen.add(row.pid);
     rows.push(describeRow(row));
+    pids.push(row.pid);
   }
+  return { rows, pids };
+}
+
+/** The failure message for a step that outlived its deadline: the step, how
+ * long it ran, and each live process below the test. */
+function timeoutMessage(label: string, timeoutMs: number, rows: string[]): string {
   const suffix =
     rows.length === 0
       ? "no process remains under the test"
@@ -100,9 +110,25 @@ function timeoutMessage(label: string, timeoutMs: number, tracked: ChildProcess[
   return `${label}: no result after ${timeoutMs} ms; ${suffix}`;
 }
 
+/** Stops the processes an expired step still had running. Killing only the
+ * children a step registered would leave a compile's helper behind: the
+ * harness never starts it, so it is never registered, and it would outlive
+ * the case. */
+function stop(pids: number[]): void {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone: the step or its parent reaped it first.
+    }
+  }
+}
+
 /** Runs one step of a case under its own deadline. The step reports each
- * child it spawns to `track`, so a timeout names them; a step that times out
- * has its children killed, since the test has failed and nothing awaits them. */
+ * child it spawns to `track`, so a timeout names them; a step that expires
+ * stops everything the test still has running, registered or not — including
+ * the processes a compile starts on its own — since the case has failed and
+ * nothing awaits them. */
 export async function runStep<T>(
   label: string,
   step: (track: Track) => Promise<T>,
@@ -112,11 +138,11 @@ export async function runStep<T>(
   let handle: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_, reject) => {
     const timer = setTimeout(() => {
-      const error = new Error(timeoutMessage(label, timeoutMs, tracked));
-      for (const child of tracked) {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      }
-      reject(error);
+      // Describe the tree before stopping it, so the message reports what
+      // the deadline actually caught.
+      const { rows, pids } = liveProcesses(tracked);
+      stop(pids);
+      reject(new Error(timeoutMessage(label, timeoutMs, rows)));
     }, timeoutMs);
     // A resolved case must not keep the worker alive for the deadline.
     timer.unref();

@@ -4353,6 +4353,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   // Native collection iterators use checked runtime iterator objects.
   if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
+  // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
+  // types: any object implementing the protocol is assignable, so the value
+  // is checked-dynamic (like the Map/Set iterators above) and `for await`
+  // over it takes the runtime's source-agnostic async-iteration protocol
+  // (lowerForOfDyn): a compiled async generator steps natively, any other
+  // object through its Symbol.asyncIterator, and a synchronous iterable
+  // through its values awaited one by one. Answered BEFORE the generator
+  // spellings below, which name the generators a program builds rather than
+  // the protocol a value implements: a class or object literal implementing
+  // the protocol is no generator, so it must not be typed as one. An `async *`
+  // declaration whose return annotation is one of these spells the generator
+  // it builds, so function-returns.ts asks mapAsyncGeneratorAnnotation first.
+  if (
+    isStdlibInterface("AsyncIterable") ||
+    isStdlibInterface("AsyncIterableIterator") ||
+    isStdlibInterface("AsyncIterator")
+  )
+    return DYN;
   // Array iterators (`list.values()` and friends) are generators over the
   // live array: each step reads the current length and element. String
   // iterators (`s[Symbol.iterator]()`) are generators over the code points.
@@ -4417,21 +4435,6 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const elem = arg ? mapType(arg, ctx) : null;
     return elem ? iterableUnionType(elem, ctx.shapes, unions) : null;
   }
-  // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
-  // types: any object implementing the protocol is assignable, so the value
-  // is checked-dynamic (like the Map/Set iterators above) and `for await`
-  // over it takes the runtime's source-agnostic async-iteration protocol
-  // (lowerForOfDyn): a compiled async generator steps natively, any other
-  // object through its Symbol.asyncIterator, and a synchronous iterable
-  // through its values awaited one by one. An `async *` declaration whose
-  // return annotation is one of these spells the generator it builds, so
-  // function-returns.ts asks mapAsyncGeneratorAnnotation first.
-  if (
-    isStdlibInterface("AsyncIterable") ||
-    isStdlibInterface("AsyncIterableIterator") ||
-    isStdlibInterface("AsyncIterator")
-  )
-    return DYN;
   // IteratorResult<T, TReturn> — the checker's type of `g.next()` (an
   // alias for IteratorYieldResult<T> | IteratorReturnResult<TReturn>):
   // maps to the SAME interned record genResume answers, so `const r =

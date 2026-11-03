@@ -2418,6 +2418,10 @@ ScrPromise *scr_dyn_promise_of(const ScrDyn *d);
  * a promise. */
 ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k);
 extern SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len);
+/* The slot of the own-property table a promise box shares with every box
+ * and adapted twin of its promise (NULL when it has none and `create` is
+ * false). Installed by the gated async unit with the boxes. */
+extern SCR_TL ScrDyn **(*scr_dyn_promise_properties_fn)(const ScrDyn *d, bool create);
 /* Promise.all / allSettled / any over a spread dyn array (borrowed);
  * `reader` (borrowed) reads a program class instance's `then`. +1. */
 ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);

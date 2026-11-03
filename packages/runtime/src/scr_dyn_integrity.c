@@ -2,11 +2,12 @@
  *
  * Only the kinds whose integrity state the runtime models have an answer of
  * their own: a plain object, an array, a function, a class instance's checked
- * view, a typed-array view, and a Map or Set (from its backing map). A native
- * handle that is not a collection, and a promise, carry no integrity state
- * that scr_json.c tracks: Object.preventExtensions and Object.seal change
- * nothing on one and Object.freeze refuses, so scriptc cannot know whether a
- * program made it non-extensible, and Node's answer may be either. main
+ * view, a typed-array view, a promise (from its own-property table), and a
+ * Map or Set (from its backing map). A native handle that is not a
+ * collection carries no integrity state that scr_json.c tracks:
+ * Object.preventExtensions and Object.seal change nothing on one and
+ * Object.freeze refuses, so scriptc cannot know whether a program made it
+ * non-extensible, and Node's answer may be either. main
  * answered false for every such handle, silently; the query now refuses
  * loudly, as Object.isFrozen already did for the same kinds. Node island
  * values keep their own answer (their integrity belongs to
@@ -19,7 +20,6 @@
 #include "scr_runtime.h"
 
 static bool scr_dyn_integrity_unmodeled(const ScrDyn *object) {
-  if (object->kind == SCR_DYN_PROMISE) return true;
   if (object->kind != SCR_DYN_HANDLE) return false;
   if (object->v.handle.tag == SCR_DYNH_NODE_ISLAND) return false;
   return !scr_dyn_native_map_is(object) && !scr_dyn_native_set_is(object);
@@ -30,7 +30,7 @@ static void scr_dyn_integrity_query_fence(const ScrDyn *object, const char *what
   scr_jb_init(&buffer);
   scr_jb_puts(&buffer, what);
   scr_jb_puts(&buffer, " of a ");
-  scr_jb_puts(&buffer, object->kind == SCR_DYN_PROMISE ? "Promise" : scr_dyn_handle_cls(object));
+  scr_jb_puts(&buffer, scr_dyn_handle_cls(object));
   scr_jb_puts(&buffer, " is not supported yet");
   ScrStr *message = scr_jb_finish(&buffer);
   scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");

@@ -1558,9 +1558,16 @@ static ScrDyn *scr_dyn_promise_member(const char *key, size_t len) {
   return NULL;
 }
 
+static void scr_dyn_release_properties(void *table) { scr_dyn_release((ScrDyn *)table); }
+
+static ScrDyn **scr_dyn_promise_properties(const ScrDyn *d, bool create) {
+  return (ScrDyn **)scr_promise_properties_slot(d->v.promise, create, scr_dyn_release_properties);
+}
+
 ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_dyn_promise_properties_fn = scr_dyn_promise_properties;
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = scr_promise_retain(p);
   return d;
@@ -1578,6 +1585,7 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
   scr_promise_share_identity(dst, src);
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_dyn_promise_properties_fn = scr_dyn_promise_properties;
   scr_promise_race_add(dst, src, adapt);
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = dst; /* the constructor's +1 moves in */

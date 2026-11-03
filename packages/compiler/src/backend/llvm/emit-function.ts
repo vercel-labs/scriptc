@@ -153,6 +153,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const initializerBindings = emitter.initializerBindings.get(fn.name) ?? [];
   const numericFn = withInitializerBindings(fn, initializerBindings);
   emitter.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
+  emitter.constLengthParams.clear();
+  for (const param of numericFn.params)
+    if (param.constLength !== undefined)
+      emitter.constLengthParams.set(param.localId, param.constLength);
   emitter.borrowedParameters.clear();
   emitter.referenceWrites?.enter(fn);
   emitter.reboundOwnerSlots.clear();

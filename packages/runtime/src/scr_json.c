@@ -98,8 +98,8 @@ static SCR_TL ScrDyn *scr_iterator_symbol;
 static SCR_TL ScrDyn *scr_async_iterator_symbol;
 static SCR_TL ScrDyn *scr_to_primitive_symbol;
 static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint, bool *handled);
-/* ToNumber's Symbol.toPrimitive step, set by
- * scr_dyn_to_primitive_number_install: programs that never read
+/* ToPrimitive's Symbol.toPrimitive step for the number and default hints,
+ * set by scr_dyn_to_primitive_number_install: programs that never read
  * Symbol.toPrimitive do not link the step or the ToString its TypeError
  * messages use. External, so the optimizer does not turn the call through
  * it into a direct call. */
@@ -12736,6 +12736,14 @@ static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
     scr_dyn_release(value);
     return out;
   }
+  /* An object's Symbol.toPrimitive member runs before OrdinaryToPrimitive,
+   * with the number hint. The step is installed only for a program that
+   * reads the symbol; without it the ordinary conversion below is the whole
+   * of ToPrimitive's object case. */
+  if (scr_to_primitive_number_fn) {
+    ScrDyn *exotic = scr_to_primitive_number_fn(d, "number", &hooked);
+    if (hooked) return exotic;
+  }
   return scr_dyn_add_primitive(d);
 }
 
@@ -12788,9 +12796,11 @@ ScrBigInt *scr_dyn_bigint_coerce(const ScrDyn *d) {
   return scr_dyn_bigint_convert(d, false);
 }
 
-/* OrdinaryToPrimitive's default hint is numeric for the represented
- * ordinary objects. Retain the primitive itself: addition must choose
- * string concatenation before either side is converted to a number. */
+/* ToPrimitive with the default hint, as `+` and the abstract equality
+ * comparison apply it: an object's Symbol.toPrimitive member first, then
+ * OrdinaryToPrimitive's valueOf/toString order. Retain the primitive
+ * itself: addition must choose string concatenation before either side is
+ * converted to a number. */
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toPrimitive lookup");
@@ -12813,6 +12823,13 @@ static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
   }
 
   if (d->kind == SCR_DYN_OBJ) {
+    /* The hook runs before OrdinaryToPrimitive for every ordinary object,
+     * errors included, and only for a program that reads the symbol. */
+    if (scr_to_primitive_number_fn) {
+      bool handled;
+      ScrDyn *exotic = scr_to_primitive_number_fn(d, "default", &handled);
+      if (handled) return exotic;
+    }
     static const char *const methods[] = { "valueOf", "toString" };
     for (size_t i = 0; i < 2; i++) {
       const ScrDyn *owner = scr_dyn_property_owner(d, methods[i], strlen(methods[i]));

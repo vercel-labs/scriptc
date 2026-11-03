@@ -37,6 +37,23 @@ try { console.log({ valueOf: function () { return Symbol("s"); } } % 5n); } catc
 try { console.log(5n % { toString: function () { return Symbol("s"); } }); } catch (e) { console.log(e.name, e.message); }
 console.log(7n ** { valueOf: function () { return 2n; } });
 
+// Symbol.toPrimitive answers ahead of valueOf/toString, including through a
+// well-known symbol read into a local, and the hook runs with the operator's
+// own hint ("number" for the arithmetic, bitwise and comparison operators,
+// "default" for '+').
+const primitiveKey = Symbol.toPrimitive;
+console.log({ [primitiveKey]: function () { return 9n; } } % 5n);
+console.log(5n % { [Symbol.toPrimitive]: function () { return 4n; } });
+const hintedObject = { [primitiveKey]: function (hint) { return hint === "number" ? 3n : 7n; } };
+console.log(2n ** hintedObject, hintedObject % 5n, 2n < hintedObject, hintedObject + 1n);
+
+// A BigInt target's same-type partner computes. (A partner that is not a
+// BigInt keeps tsc's refusal: Node's `x += partner` can leave a string in
+// the binding, which BigInt storage cannot hold.)
+let added = 1n;
+added += 1n;
+console.log(added);
+
 // A partner whose ToPrimitive answers a string concatenates even though the
 // other operand is a BigInt, so the sum's type is only decided at runtime.
 console.log(1n + {}, 1n + [1], 1n + { toString: function () { return "s"; } });

@@ -258,10 +258,13 @@ class OutputBuffer {
   }
 }
 
-/** Stops a child and every process it started: its process group on POSIX, its tree on Windows. */
+/** Stops a child and every process it started: its process group on POSIX, even after the child
+ * itself exited, and its tree on Windows. */
 function killTree(child: ChildProcess): void {
   const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  if (pid === undefined) return;
+  if (process.platform === "win32" && (child.exitCode !== null || child.signalCode !== null))
+    return;
   try {
     if (process.platform === "win32") {
       spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => {

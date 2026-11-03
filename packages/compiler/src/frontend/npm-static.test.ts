@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { afterAll, expect, test } from "vitest";
 import {
   npmStaticFsShadow,
   npmStaticIneligibleReason,
@@ -8,6 +8,14 @@ import {
   setNpmStaticPackages,
 } from "./npm-static.js";
 import type { FrontendServices } from "./services.js";
+import { closeSourceParser, parseSourceFile } from "./ts7/source-parser-node.js";
+
+afterAll(closeSourceParser);
+
+/** The parser half of FrontendServices the shadow's declaration reading uses. */
+function testServices(): FrontendServices {
+  return { parse: parseSourceFile } as unknown as FrontendServices;
+}
 
 test("an unreadable runtime entry is an eligibility refusal", async () => {
   const dir = await mkdtemp("/tmp/scriptc-npm-static-unreadable-");
@@ -43,7 +51,7 @@ test("a hoisted node condition leaves no types claim behind", () => {
   });
 });
 
-test("a typed package's undeclared subpath keeps the flagless any surface", async () => {
+test("a typed package's ambient-declared subpath is typed from the declaration", async () => {
   const dir = await mkdtemp("/tmp/scriptc-npm-static-shadow-");
   try {
     const hidden = join(dir, "node_modules", "hiddenlang");
@@ -55,30 +63,74 @@ test("a typed package's undeclared subpath keeps the flagless any surface", asyn
     );
     // highlight.js 10 ships ONE package .d.ts and types the language
     // subpaths from an ambient block inside it. That block never answers a
-    // specifier the resolver answered with the JavaScript file itself.
+    // specifier the resolver answered with the JavaScript file itself, so the
+    // declaration's optional `hljs` meets the source's required one
+    // (a program-level SC0001 no package caused) unless the declared type is
+    // projected onto the file.
     await writeFile(
       join(hidden, "types", "index.d.ts"),
-      'declare module "hiddenlang/lib/languages/*" { export default function(hljs?: Api): Lang; }\n',
+      [
+        "type Api = { register(name: string, fn: LanguageFn): void };",
+        "type Lang = { name: string };",
+        "type LanguageDetail = Lang & { extra: number };",
+        "type LanguageFn = (api?: Api) => Lang;",
+        'declare module "hiddenlang/lib/languages/*" { export default function(hljs?: Api): LanguageDetail; }',
+        "",
+      ].join("\n"),
     );
     await writeFile(join(hidden, "lib", "core.js"), "module.exports = { register() {} };\n");
     const php = join(hidden, "lib", "languages", "php.js");
-    await writeFile(
-      php,
-      "/** @param {Api} hljs */\nfunction php(hljs) { return {}; }\nmodule.exports = php;\n",
-    );
+    const phpText =
+      "/** @param {Api} hljs */\nfunction php(hljs) { return { name: 'php' }; }\nmodule.exports = php;\n";
+    await writeFile(php, phpText);
     setNpmStaticPackages(["opted"]);
     try {
-      const shadow = npmStaticFsShadow({} as FrontendServices)!;
-      // Inferred, the JSDoc-required `hljs` disagrees with the declaration's
-      // optional one — a program-level SC0001 no package caused. The
-      // flagless build never types this file, so the import is `any`.
-      expect(shadow.readFile(php)).toContain("module.exports = (() => { let u; return u; })();");
+      const shadow = npmStaticFsShadow(testServices())!;
+      // The body, its offsets and every other byte survive: only the
+      // declared export type is added.
+      expect(shadow.readFile(php)).toBe(
+        phpText.replace(
+          "module.exports = php;",
+          "module.exports = /** @type {(hljs?: Api) => LanguageDetail} */ (php);",
+        ),
+      );
       // A sibling declaration types this very file: it keeps its own text.
       await writeFile(
         join(hidden, "lib", "core.d.ts"),
         "export declare function register(): void;\n",
       );
       expect(shadow.readFile(join(hidden, "lib", "core.js"))).toBeUndefined();
+    } finally {
+      setNpmStaticPackages([]);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unspellable declared type keeps the flagless any surface", async () => {
+  const dir = await mkdtemp("/tmp/scriptc-npm-static-shadow-unspellable-");
+  try {
+    const pkg = join(dir, "node_modules", "modtypes");
+    await mkdir(join(pkg, "lib"), { recursive: true });
+    await mkdir(join(pkg, "types"), { recursive: true });
+    await writeFile(
+      join(pkg, "package.json"),
+      '{"name":"modtypes","types":"types/index.d.ts","main":"lib/core.js"}',
+    );
+    // A MODULE declaration file: the names its blocks use are not globals,
+    // so the type cannot be spelled in the JavaScript.
+    await writeFile(
+      join(pkg, "types", "index.d.ts"),
+      'export interface Api { register(fn: LanguageFn): void }\nimport type { LanguageFn } from "./lang.js";\ndeclare module "modtypes/lib/*" { export default function(hljs?: Api): Api; }\n',
+    );
+    const thing = join(pkg, "lib", "thing.js");
+    await writeFile(thing, "function fn(hljs) { return {}; }\nmodule.exports = fn;\n");
+    setNpmStaticPackages(["opted"]);
+    try {
+      expect(npmStaticFsShadow(testServices())!.readFile(thing)).toContain(
+        "module.exports = (() => { let u; return u; })();",
+      );
     } finally {
       setNpmStaticPackages([]);
     }
@@ -99,10 +151,18 @@ test("an island package is typed by its declarations, not by its JavaScript", as
     );
     await writeFile(
       join(island, "types", "index.d.ts"),
-      'declare module "islandlang/lib/languages/*" { export default function(hljs?: Api): Lang; }\n',
+      [
+        "type Api = { register(name: string): void };",
+        "type Lang = { name: string };",
+        'declare module "islandlang/lib/languages/*" { export default function(hljs?: Api): Lang; }',
+        "",
+      ].join("\n"),
     );
     const php = join(island, "lib", "languages", "php.js");
-    await writeFile(php, "/** @param {Api} hljs */\nmodule.exports = function php(hljs) {};\n");
+    await writeFile(
+      php,
+      "/** @param {Api} hljs */\nfunction php(hljs) { return {}; }\nmodule.exports = php;\n",
+    );
     const { setFrontendIslands } = await import("../node-islands/boundary.js");
     // The island package is opted in (its declaration entry types the
     // program) but its bodies run in Node: inference would only add the
@@ -111,7 +171,10 @@ test("an island package is typed by its declarations, not by its JavaScript", as
     setNpmStaticPackages(["islandlang"]);
     setFrontendIslands(new Set(["islandlang"]));
     try {
-      expect(npmStaticFsShadow({} as FrontendServices)!.readFile(php)).toContain(
+      // Opted in, its declaration entry is hidden from the program, so the
+      // declared type names nothing and the subpath keeps the implicit-any
+      // surface.
+      expect(npmStaticFsShadow(testServices())!.readFile(php)).toContain(
         "module.exports = (() => { let u; return u; })();",
       );
     } finally {
@@ -121,7 +184,7 @@ test("an island package is typed by its declarations, not by its JavaScript", as
     // A package that is NOT judged an island keeps its inferred JavaScript.
     setNpmStaticPackages(["islandlang"]);
     try {
-      expect(npmStaticFsShadow({} as FrontendServices)!.readFile(php)).toBeUndefined();
+      expect(npmStaticFsShadow(testServices())!.readFile(php)).toBeUndefined();
     } finally {
       setNpmStaticPackages([]);
     }
@@ -146,7 +209,7 @@ test("an ES module package's JavaScript keeps its own text", async () => {
     try {
       // The any-surface stub is CommonJS-shaped, so an ES module file must
       // keep its text: a stubbed `module.exports` would erase its exports.
-      expect(npmStaticFsShadow({} as FrontendServices)!.readFile(core)).toBeUndefined();
+      expect(npmStaticFsShadow(testServices())!.readFile(core)).toBeUndefined();
     } finally {
       setNpmStaticPackages([]);
     }

@@ -1229,10 +1229,13 @@ extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
  * graph, the dynamic tier included (t262-da W4).
  *
  * The reading unit carries the fallback so a program that links it alone
- * still links: an absent symbol is zero, and the reader then answers what it
- * answered before the fold. Darwin refuses a weak reference to a symbol the
- * link lacks, so the fallback there is a weak definition the definer's strong
- * one overrides; ELF's weak reference already leaves it at zero. */
+ * still links: where no unit provides the slot, the fallback leaves it at
+ * NULL, and the reader then answers what it answered before the fold. The
+ * fallback is a weak definition of the slot, which the providing unit's
+ * strong one overrides. A weak reference would not do on either format:
+ * Darwin's linker refuses one to a symbol the link lacks, and on ELF it
+ * leaves the symbol's address at zero rather than the slot at NULL, so the
+ * reader's test of the slot would load it from address zero and fault. */
 /* The wrapper unit's prototype object for `id` ("String.prototype",
  * "Number.prototype" or "Boolean.prototype"), +1, without members: the
  * graph's fill defines them. */
@@ -1248,11 +1251,7 @@ typedef void (*ScrJsWrapperProvidersSlot)(void);
 extern ScrJsWrapperPrototypeSlot scr_js_wrapper_intrinsic_prototype_slot;
 extern ScrJsWrapperPrimitiveSlot scr_js_wrapper_primitive_value_slot;
 extern ScrJsWrapperProvidersSlot scr_js_wrapper_member_providers_slot;
-#if defined(__APPLE__)
 #define SCR_JS_SLOT_FALLBACK(type, name) __attribute__((weak)) type name
-#else
-#define SCR_JS_SLOT_FALLBACK(type, name) extern type name __attribute__((weak))
-#endif
 #endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */

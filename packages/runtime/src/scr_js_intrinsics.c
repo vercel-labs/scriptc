@@ -61,7 +61,7 @@
  * (scr_js_wrapper.c), and this unit reads them (t262-da A2). The fallback is
  * this unit's: a program that reads an intrinsic without naming a wrapper
  * links this unit alone, and then the slots are zero and the prototypes are
- * ordinary objects. See scr_dyn.h for the two spellings. */
+ * ordinary objects. See scr_dyn.h for the fallback. */
 SCR_JS_SLOT_FALLBACK(ScrJsWrapperPrototypeSlot, scr_js_wrapper_intrinsic_prototype_slot);
 SCR_JS_SLOT_FALLBACK(ScrJsWrapperPrimitiveSlot, scr_js_wrapper_primitive_value_slot);
 

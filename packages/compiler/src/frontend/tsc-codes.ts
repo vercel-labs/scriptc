@@ -201,6 +201,24 @@ const deprecatedBufferCall = (_node: ts.Node, d: ts.Diagnostic): boolean => {
   );
 };
 
+/** TS17013 inside a method or accessor body (including an arrow nested in
+ * one): `new.target` is legal there and always undefined, because a method is
+ * not constructable. Global code and class field initializers keep the early
+ * SyntaxError the specification makes them. */
+const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
+  for (let p: ts.Node | undefined = node; p !== undefined; p = p.parent) {
+    if (ts.isArrowFunction(p)) continue;
+    if (
+      ts.isMethodDeclaration(p) ||
+      ts.isGetAccessorDeclaration(p) ||
+      ts.isSetAccessorDeclaration(p)
+    )
+      return true;
+    if (ts.isFunctionLike(p) || ts.isSourceFile(p)) return false;
+  }
+  return false;
+};
+
 /* ---- family reasons ---- */
 
 const IMPLICIT_ANY =
@@ -958,6 +976,76 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  // ---- The checker's OPINIONS that need no lowering (TS2629 and friends) ----
+  // Each row below is a `checker` row: at the admitted site the checker's
+  // type is still a truthful bound on every runtime value, so the ordinary
+  // lowering already gives Node's answer. A JavaScript source only takes them;
+  // a checked project asked tsc for its opinion, so every row here is a
+  // `checkedJs: "enforce"` row (D3).
+  //
+  // 2408, a `return` in a set accessor: the value is discarded by [[Set]],
+  // exactly as a `return` in any other call is.
+  [
+    2408,
+    inCheckedJs(
+      CHECKER(
+        "a setter's `return` value is discarded by [[Set]], as Node discards every setter call's result",
+        ["tests/corpus/8944-js-setter-return-values.js"],
+      ),
+    ),
+  ],
+  // 17013, `new.target` in a method or accessor body: legal JavaScript, and
+  // always undefined because a method is not constructable (the lowering's
+  // method-body path answers undefined; every other site keeps the early
+  // SyntaxError Node raises).
+  [
+    17013,
+    inCheckedJs(
+      at(
+        newTargetInMethod,
+        CHECKER(
+          "`new.target` in a method body is undefined: a method is not constructable, so the meta-property never denotes a constructor there",
+          ["tests/corpus/8945-js-new-target-methods.js"],
+        ),
+      ),
+    ),
+  ],
+  // 4104, assigning a readonly array type to a mutable one: `readonly` is an
+  // annotation, and whether the write succeeds depends on the array's frozen
+  // state at run time.
+  [
+    4104,
+    inCheckedJs(
+      CHECKER(
+        "`readonly` is an annotation Node never sees: the assignment and the later write behave as the array's runtime state decides",
+        ["tests/corpus/8949-js-readonly-write-targets.js"],
+      ),
+    ),
+  ],
+  // 2839, a condition comparing two object references the checker proves
+  // distinct (`{} === {}`): the comparison lowering performs Node's
+  // reference test, which is the one the checker described.
+  [
+    2839,
+    inCheckedJs(
+      CHECKER(
+        "two distinct object references never pass a strict-equality test, and the comparison lowering performs that same reference test",
+        ["tests/corpus/8951-js-reference-condition-comparisons.js"],
+      ),
+    ),
+  ],
+  // 2845, a condition comparing a bigint with a non-finite number or a
+  // nullish value (`0n === Infinity`): strict equality compares the types
+  // first, and the comparison lowering applies that same test.
+  [
+    2845,
+    inCheckedJs(
+      CHECKER(
+        "a bigint never equals a non-finite number or a nullish value: the comparison lowering applies Node's type test",
+        ["tests/corpus/8952-js-bigint-non-finite-comparisons.js"],
+      ),
+    ),
+  ],
 ];
 
 /** Every JavaScript checker opinion, by TypeScript code. */
@@ -1201,7 +1289,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
-  [2408, KEEP(KEEP_GRAMMAR)],
   [
     2409,
     REWRITE(
@@ -1420,20 +1507,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [2815, KEEP(KEEP_GRAMMAR)],
   [
-    2839,
-    REFUSE(
-      "a comparison the checker proves constant (two object references)",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
-  [
-    2845,
-    REFUSE(
-      "a comparison the checker proves constant (a bigint against a non-finite number)",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
-  [
     2850,
     REWRITE(
       "a 'using' initializer that is not disposable",
@@ -1455,13 +1528,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
-  [
-    4104,
-    REFUSE(
-      "assigning to a readonly array type",
-      "readonly is an annotation: whether the write succeeds or throws depends on the array's frozen state at run time, which the lowering does not model",
-    ),
-  ],
   [5076, KEEP(KEEP_GRAMMAR)],
   [
     7036,
@@ -1473,7 +1539,9 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [17005, KEEP(KEEP_EARLY_ERROR)],
   [17009, KEEP(KEEP_EARLY_ERROR)],
   [17011, KEEP(KEEP_EARLY_ERROR)],
-  [17013, KEEP(KEEP_EARLY_ERROR)],
+  // 17013 has LEFT this table: `new.target` in a method or accessor body is a
+  // JS_OPINIONS row above, and every other site keeps the diagnostic
+  // unchanged, which is what KEEP did.
   [18013, KEEP(KEEP_EARLY_ERROR)],
   [18014, KEEP(KEEP_EARLY_ERROR)],
   [18016, KEEP(KEEP_GRAMMAR)],

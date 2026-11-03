@@ -1,8 +1,12 @@
-import { statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import type { CompileRequestOptions } from "../compile-types.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
-import type { NativeProfileMatch } from "../backend/native-profile.js";
+import {
+  profileBlocksPath,
+  recordProfileBlocksPath,
+  type NativeProfileMatch,
+} from "../backend/native-profile.js";
 import { toolchainEnvironmentFingerprint } from "../backend/toolchain-environment.js";
 import {
   frontendInputsStillMatch,
@@ -33,9 +37,14 @@ export interface UnchangedBuildRecord {
   /** The `--emit-ir` side artifact, when the build wrote one. */
   ir: InputIdentity | null;
   /** Files the build leaves beside the executable that a run needs — an Intl
-   * program's ICU data — and, on Darwin, the debug symbols of a dev build:
-   * they belong to the kept output, so a kept executable needs them too. */
+   * program's ICU data — and, on Darwin, the files of a dev build's `.dSYM`
+   * bundle: they belong to the kept output, so a kept executable needs them
+   * too. */
   beside: InputIdentity[];
+  /** The runtime pack artifacts the build consumed — the link's objects and
+   * archives, and the data it installs beside the executable. A pack edited
+   * in place leaves every identity the key holds as it was. */
+  packInputs: InputIdentity[];
   profileMatch?: NativeProfileMatch;
 }
 
@@ -56,7 +65,9 @@ function validRecord(value: unknown): value is UnchangedBuildRecord {
     validIdentity(record.translationUnit) &&
     (record.ir === null || (record.ir !== undefined && validIdentity(record.ir))) &&
     Array.isArray(record.beside) &&
-    record.beside.every(validIdentity)
+    record.beside.every(validIdentity) &&
+    Array.isArray(record.packInputs) &&
+    record.packInputs.every(validIdentity)
   );
 }
 
@@ -67,6 +78,7 @@ function recordedFiles(record: UnchangedBuildRecord): InputIdentity[] {
     record.translationUnit,
     ...(record.ir === null ? [] : [record.ir]),
     ...record.beside,
+    ...record.packInputs,
   ];
 }
 
@@ -101,6 +113,16 @@ function inputDigest(path: string): string | null {
   }
 }
 
+/** The identity of a file the build may not have: null when it does not
+ * exist, so that creating it changes the key. */
+function optionalIdentity(path: string): string | null {
+  try {
+    return nativeFileIdentity(path);
+  } catch {
+    return null;
+  }
+}
+
 export interface UnchangedBuildInputs {
   entry: string;
   options: CompileRequestOptions;
@@ -116,10 +138,16 @@ export interface UnchangedBuildInputs {
  * and configuration themselves are proved by the recorded probes, not by the
  * key), the backend tools that produced the kept output, and the files whose
  * bytes determine the code generated — a profile the options name only by
- * path, and the objects an FFI manifest links. Null when an input cannot be
- * read, or when provenance rewriting makes the sources a build product. */
+ * path, with the block-count file beside it, and the objects an FFI manifest
+ * links. Null when an input cannot be read, when provenance rewriting makes
+ * the sources a build product, when the build writes a block-count file (that
+ * file comes from the helper, and a kept output would leave it unwritten), or
+ * when it is sanitized (its runtime is compiled from sources outside the
+ * pack, which the key does not observe). */
 export function unchangedBuildKey(inputs: UnchangedBuildInputs): string | null {
   const { entry, options, ffi, ffiBytes, toolchain, output, translationUnitPath } = inputs;
+  if (recordProfileBlocksPath(process.env) !== undefined) return null;
+  if (options.sanitize === true) return null;
   const frontend = nativeFrontendCacheKey(entry, options, ffi, toolchain);
   if (frontend === null) return null;
   try {
@@ -136,11 +164,22 @@ export function unchangedBuildKey(inputs: UnchangedBuildInputs): string | null {
           nativeFileIdentity(toolchain.helperExecutable),
           nativeFileIdentity(join(toolchain.helperPackageRoot, "package.json")),
         ],
-        runtimePack: nativeFileIdentity(join(toolchain.runtimePackRoot, "package.json")),
+        // The pack's manifest selects the artifacts a link consumes; its
+        // package.json names the pack.
+        runtimePack: [
+          nativeFileIdentity(join(toolchain.runtimePackRoot, "package.json")),
+          optionalIdentity(join(toolchain.runtimePackRoot, "runtime-pack.json")),
+        ],
         linker: [toolchain.linker, toolchain.linkerArgs, commandIdentity(toolchain.linker)],
         dsymutil: debug ? commandIdentity(toolchain.dsymutil) : null,
         environment: toolchainEnvironmentFingerprint(),
-        profile: options.profileUse === undefined ? null : inputDigest(options.profileUse),
+        profile:
+          options.profileUse === undefined
+            ? null
+            : [
+                inputDigest(options.profileUse),
+                inputDigest(profileBlocksPath(resolve(options.profileUse))),
+              ],
         libraries: ffi === null ? null : ffi.libraries.map((path) => [path, inputDigest(path)]),
         ffi: ffiBytes,
         cwd: process.cwd(),
@@ -181,7 +220,58 @@ export interface UnchangedBuildOutput {
   irPath: string | null;
   /** Files the build leaves beside the executable (see the record's). */
   beside: readonly string[];
+  /** The runtime pack artifacts the build consumed (see the record's). */
+  packInputs: readonly string[];
   profileMatch?: NativeProfileMatch;
+}
+
+/** Highest number of files a recorded beside directory may hold; a larger one
+ * is not recorded, which only costs a rebuild. */
+const MAX_BESIDE_FILES = 4096;
+
+/** The identities a beside path contributes: the file itself, or, for a
+ * directory — a Darwin `.dSYM` bundle — its identity and the identity of every
+ * file in it. Tools that edit a build's debug information rewrite the DWARF
+ * file in place, which leaves the bundle directory's own identity unchanged;
+ * recording only the directory would let a kept executable stand beside debug
+ * information of an older build. */
+function besideIdentities(path: string): InputIdentity[] | null {
+  try {
+    if (!statSync(path).isDirectory()) return [identity(path)];
+  } catch {
+    return null;
+  }
+  const identities: InputIdentity[] = [];
+  const walk = (directory: string): boolean => {
+    let names;
+    try {
+      names = readdirSync(directory);
+      identities.push(identity(directory));
+    } catch {
+      return false;
+    }
+    for (const name of names) {
+      if (identities.length >= MAX_BESIDE_FILES) return false;
+      const child = join(directory, name);
+      let isDirectory: boolean;
+      try {
+        isDirectory = statSync(child).isDirectory();
+      } catch {
+        return false;
+      }
+      if (isDirectory) {
+        if (!walk(child)) return false;
+        continue;
+      }
+      try {
+        identities.push(identity(child));
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  };
+  return walk(path) ? identities : null;
 }
 
 /** Record a completed build, so the next build of the same key keeps its
@@ -210,9 +300,15 @@ export function recordUnchangedBuild(
       return;
     const beside: InputIdentity[] = [];
     for (const path of build.beside) {
-      const installed = file(path);
+      const installed = besideIdentities(path);
       if (installed === null) return;
-      beside.push(installed);
+      beside.push(...installed);
+    }
+    const packInputs: InputIdentity[] = [];
+    for (const path of build.packInputs) {
+      const input = file(path);
+      if (input === null) return;
+      packInputs.push(input);
     }
     const record: UnchangedBuildRecord = {
       schema: "scriptc.native-unchanged.v1",
@@ -221,6 +317,7 @@ export function recordUnchangedBuild(
       translationUnit,
       ir,
       beside,
+      packInputs,
       ...(build.profileMatch === undefined ? {} : { profileMatch: build.profileMatch }),
     };
     cache.write("unchanged", key, JSON.stringify(record));

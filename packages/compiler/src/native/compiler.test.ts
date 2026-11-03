@@ -36,14 +36,37 @@ vi.mock("./executable-cache.js", async (original) => ({
   ...(await original<typeof import("./executable-cache.js")>()),
   openNativeExecutableCache: vi.fn(),
 }));
+/** The selection the runtime pack mock returns; a test that needs pack
+ * artifacts replaces it. */
+const runtimePack = vi.hoisted(() => ({
+  selection: {
+    root: "/nonexistent",
+    licenses: [] as { path: string }[],
+    packageText: "",
+    manifestText: "",
+    selected: {
+      runtime: [] as { path: string }[],
+      archives: [] as { path: string }[],
+      data: [] as { path: string }[],
+      systemLibraries: [] as string[],
+    },
+    flavor: "release",
+  },
+}));
 vi.mock("../backend/runtime-pack-native.js", () => ({
-  selectNativeRuntimePack: () => ({}),
+  selectNativeRuntimePack: () => runtimePack.selection,
   stageNativeRuntimeSelection: () => ({ runtimeObjects: [], archives: [], systemLibraries: [] }),
 }));
 
 const directories: string[] = [];
 afterEach(() => {
   vi.resetAllMocks();
+  runtimePack.selection = {
+    ...runtimePack.selection,
+    root: "/nonexistent",
+    licenses: [],
+    selected: { runtime: [], archives: [], data: [], systemLibraries: [] },
+  };
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -485,6 +508,19 @@ test.skipIf(process.platform === "win32")(
     const packRoot = join(directory, "pack");
     mkdirSync(packRoot);
     writeFileSync(join(packRoot, "package.json"), '{"name":"pack","version":"0.0.0"}');
+    // The link consumes one artifact of the pack.
+    const archive = join(packRoot, "libruntime.a");
+    writeFileSync(archive, "runtime archive");
+    runtimePack.selection = {
+      ...runtimePack.selection,
+      root: packRoot,
+      selected: {
+        runtime: [],
+        archives: [{ path: "libruntime.a" }],
+        data: [],
+        systemLibraries: [],
+      },
+    };
     const entry = join(directory, "entry.ts");
     writeFileSync(entry, "export const value = 1;\n");
     // The input probes only name a file's identity once it has settled.
@@ -539,6 +575,7 @@ test.skipIf(process.platform === "win32")(
       return "";
     });
     const target = LINUX_X64_GNU_TARGET;
+    const cache = new NativeCache(join(directory, "cache"));
     const compiler = new NativeCompiler(
       {
         compilerVersion: "0.0.0",
@@ -552,11 +589,21 @@ test.skipIf(process.platform === "win32")(
         linkerArgs: [],
         dsymutil: tool("dsymutil"),
       },
-      new NativeCache(join(directory, "cache")),
+      cache,
     );
     const options = { outDir: directory, outPath: output, backend: "llvm" as const };
     expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
     expect(vi.mocked(runNativeFrontend)).toHaveBeenCalledTimes(1);
+    // The record names the pack artifact the link read, so a pack edited in
+    // place cannot leave this executable standing.
+    const recorded = readdirSync(join(cache.root, "unchanged")).filter(
+      (name) => !name.endsWith(".sha256"),
+    );
+    expect(recorded).toHaveLength(1);
+    const record: { packInputs: { path: string }[] } = JSON.parse(
+      readFileSync(join(cache.root, "unchanged", recorded[0]!), "utf8"),
+    );
+    expect(record.packInputs.map((input) => input.path)).toEqual([archive]);
     const kept = readFileSync(output, "utf8");
     expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
     // Nothing lowered, generated or linked the second time, and the

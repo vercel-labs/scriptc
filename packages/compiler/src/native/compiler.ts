@@ -808,9 +808,13 @@ export class NativeCompiler {
       // A build that found divergence warnings lowers again (their sources
       // are not part of the record), so it records nothing.
       if (unchangedKey !== null && probes !== null && sink.warnings.length === 0) {
+        // The pack's artifacts are this executable's link inputs and run-time
+        // data; a pack edited in place changes them, and only their
+        // identities tell.
+        const pack = selectPack();
         const beside = [
           ...(features.intl === true
-            ? (selectPack().selected.data ?? []).map((artifact) =>
+            ? (pack.selected.data ?? []).map((artifact) =>
                 join(dirname(output), basename(artifact.path)),
               )
             : []),
@@ -825,6 +829,11 @@ export class NativeCompiler {
           translationUnitPath: llvmPath,
           irPath: irPath ?? null,
           beside,
+          packInputs: [
+            ...pack.selected.runtime,
+            ...pack.selected.archives,
+            ...(features.intl === true ? (pack.selected.data ?? []) : []),
+          ].map((artifact) => join(pack.root, artifact.path)),
           ...(profileMatch === undefined ? {} : { profileMatch }),
         });
       }

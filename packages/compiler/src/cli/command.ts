@@ -40,6 +40,7 @@ import { setProvenanceSources } from "../frontend/provenance-registry.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
+import { serveMcp } from "./mcp.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
 
 /* The exit discipline: NEVER process.exit() after writing output. stdout/
@@ -103,6 +104,10 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
 
   const [command, inputArg] = positionals;
+  if (command === "mcp") {
+    if (args.length !== 1) fail(`scriptc mcp takes no arguments\n\n${USAGE}`);
+    return serveMcp(host);
+  }
   if (command === "cache") {
     if (inputArg !== "warm")
       fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);

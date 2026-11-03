@@ -18470,13 +18470,15 @@ static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool 
     return;
   }
   if (src->kind == SCR_DYN_UNDEF || src->kind == SCR_DYN_NULL) return;
-  if (src->kind == SCR_DYN_OBJ) {
-    ScrDyn *keys = scr_dyn_obj_own_keys(src);
+  if (src->kind == SCR_DYN_OBJ || src->kind == SCR_DYN_PROMISE) {
+    const ScrDyn *named = src->kind == SCR_DYN_PROMISE ? scr_promise_properties(src, false) : src;
+    if (!named) return;
+    ScrDyn *keys = scr_dyn_obj_own_keys(named);
     if (!keys) return;
     for (size_t i = 0; i < keys->v.arr.len; i++) {
       ScrStr *key = keys->v.arr.items[i]->v.str;
-      if (!scr_dyn_obj_enumerable(src, key->data, key->len)) continue;
-      ScrDyn *value = scr_dyn_obj_read(src, key->data, key->len);
+      if (!scr_dyn_obj_enumerable(named, key->data, key->len)) continue;
+      ScrDyn *value = scr_dyn_obj_read_receiver(named, key->data, key->len, src);
       if (!value) break;
       scr_dyn_copy_property(target, key, value, define);
       scr_dyn_release(value);

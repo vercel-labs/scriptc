@@ -287,13 +287,25 @@ export class NativeCompiler {
     let key: string | null = null;
     let identity: string | null = null;
     // A build that records block counts runs the helper on every partition.
+    // The helper's identity is needed for the partition cache whether or not
+    // an environment variable names the helper: the partition directory is
+    // keyed by that identity, so a named helper's partitions are as reusable
+    // as an installed one's. Only the whole-object entry below is limited to
+    // the installed helper, whose identity the cache's owner key holds.
+    if (this.cache !== null && profile?.recordBlocks === undefined) {
+      try {
+        identity = nativeFileIdentity(toolchain.helperExecutable);
+      } catch {
+        identity = null;
+      }
+    }
     if (
       this.cache !== null &&
+      identity !== null &&
       process.env["SCRIPTC_LLVM_HELPER"] === undefined &&
       profile?.recordBlocks === undefined
     ) {
       try {
-        identity = nativeFileIdentity(toolchain.helperExecutable);
         key = contentDigest(
           JSON.stringify({
             schema: 1,

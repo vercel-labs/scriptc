@@ -376,6 +376,56 @@ function coerceToHandle(lowerer: Lowerer, node: ts.Expression, want: IrType): Ir
   return recv;
 }
 
+/** server.off / listeners kind: 1–6 are net.Server lists; 7–13 are the
+ * HTTP parser lists (SCR_HTTP_OFF_*). Null when the literal is unknown. */
+function serverListenerKind(event: string | null): number | null {
+  switch (event) {
+    case "error":
+      return 1;
+    case "close":
+      return 2;
+    case "listening":
+      return 3;
+    case "connection":
+    case "secureConnection":
+      return 4;
+    case "timeout":
+      return 5;
+    case "drop":
+      return 6;
+    case "request":
+      return 7;
+    case "upgrade":
+      return 8;
+    case "connect":
+      return 9;
+    case "checkContinue":
+      return 10;
+    case "checkExpectation":
+      return 11;
+    case "clientError":
+      return 12;
+    case "newListener":
+      return 13;
+    default:
+      return null;
+  }
+}
+
+function httpListenerArrayElem(kind: number): IrType {
+  switch (kind) {
+    case 8:
+    case 9:
+      return funcOf([HTTPREQ_T, NETSOCKET_T, BYTES_U8], VOID);
+    case 12:
+      return funcOf([{ kind: "object", className: "%Error" }, NETSOCKET_T], VOID);
+    case 13:
+      return funcOf([STRING], VOID);
+    default:
+      return funcOf([HTTPREQ_T, HTTPRES_T], VOID);
+  }
+}
+
 /** Statements that build a header record `out` (a pre-declared local of
  * the pure-index record `shapeId`) from a flat [name, value, ...] pairs
  * local: every value wraps at the slot's string arm, and — when
@@ -2298,6 +2348,25 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "newListener") {
+      // Fires BEFORE each later HTTP listener add, with the event name.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "newListener listeners",
+        2,
+        (p, i) => (i === 0 ? p.kind === "string" : p.kind === "func"),
+        "use (event) or (event, listener)",
+        [STRING],
+      );
+      return {
+        kind: "libCall",
+        fn: "http.serverOnNewListener",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "sessionError") {
       const cb = lowerer.lowerExpr(args[1]!);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
@@ -2329,7 +2398,7 @@ function lowerNetServerMethodCall(
     lowerer.noLowering(
       `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"connection", "request", "checkContinue", "checkExpectation", "clientError", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
+      '"connection", "request", "checkContinue", "checkExpectation", "clientError", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", "sessionError", and "newListener" are the supported server events (as literals)',
     );
   }
   if ((name === "off" || name === "removeListener") && args.length === 2) {
@@ -2340,27 +2409,12 @@ function lowerNetServerMethodCall(
     requireStatementPosition(lowerer, call, `server.${name}(...)`);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
-    const kind =
-      event === null
-        ? null
-        : event === "error"
-          ? 1
-          : event === "close"
-            ? 2
-            : event === "listening"
-              ? 3
-              : event === "connection" || event === "secureConnection"
-                ? 4
-                : event === "timeout"
-                  ? 5
-                  : event === "drop"
-                    ? 6
-                    : null;
+    const kind = serverListenerKind(event);
     if (kind === null) {
       lowerer.noLowering(
         `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         args[0]!,
-        '"error", "close", "listening", "connection", "secureConnection", "timeout", and "drop" are the events off/removeListener removes (as literals)',
+        '"error", "close", "listening", "connection", "secureConnection", "timeout", "drop", "request", "upgrade", "connect", "checkContinue", "checkExpectation", "clientError", and "newListener" are the events off/removeListener removes (as literals)',
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
@@ -2374,9 +2428,30 @@ function lowerNetServerMethodCall(
     }
     return {
       kind: "libCall",
-      fn: "net.serverOff",
+      fn: kind >= 7 ? "http.serverOff" : "net.serverOff",
       args: [receiver, listener, numLit(kind, loc)],
       type: VOID,
+      loc,
+    };
+  }
+  if (name === "listeners" && args.length === 1) {
+    const evT = lowerer.typeOf(args[0]!);
+    const event = evT.isStringLiteralType() ? evT.value : null;
+    const kind = serverListenerKind(event);
+    if (kind === null || kind < 7) {
+      lowerer.noLowering(
+        `server.listeners(${event === null ? "non-literal event" : `"${event}"`})`,
+        args[0]!,
+        '"request", "upgrade", "connect", "checkContinue", "checkExpectation", "clientError", and "newListener" are the events listeners() reports (as literals)',
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    const elem = httpListenerArrayElem(kind);
+    return {
+      kind: "libCall",
+      fn: "http.serverListeners",
+      args: [receiver, numLit(kind, loc)],
+      type: arrayOf(elem),
       loc,
     };
   }
@@ -2546,7 +2621,7 @@ function lowerNetServerMethodCall(
   lowerer.noLowering(
     `Server.${name}`,
     call,
-    'listen, close, address().port, emit("connection", socket), and on/once of connection/request/upgrade/error/close/listening/sessionError are the supported Server members',
+    'listen, close, address().port, emit("connection", socket), off/removeListener/listeners of the supported events, and on/once of connection/request/upgrade/error/close/listening/sessionError/newListener are the supported Server members',
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

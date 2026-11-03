@@ -211,6 +211,9 @@ enum {
   SCR_NET_OFF_DROP = 6,
 };
 void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
+/* Last matching listener leaves `l` (Node's removeListener order). The
+ * SCR_NET_SERVER_OFF build defines it; http server meta reuses it. */
+void scr_net_ls_off(ScrNetLs *l, ScrClosure *cb /*borrowed*/);
 void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
 /* 'secureConnection' — the deferred-connection list (TLS handshake
  * timing); released unread on a server without deferral (a plain net

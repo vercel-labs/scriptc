@@ -104,6 +104,26 @@ void scr_http2_stream_undef_call(ScrStr *member);
  * server) the closure releases unregistered: 'request' never fires
  * there, like Node. */
 void scr_http_server_on_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once);
+/* HTTP Server EventEmitter meta: off, listeners, and newListener for the
+ * HTTP event lists (request, upgrade, connect, checkContinue,
+ * checkExpectation, clientError, newListener). Defined in the
+ * SCR_HTTP_SERVER_META build (processExtras). Kinds 7-13 match the
+ * compiler's http.serverOff / http.serverListeners numbers. */
+enum {
+  SCR_HTTP_OFF_REQUEST = 7,
+  SCR_HTTP_OFF_UPGRADE = 8,
+  SCR_HTTP_OFF_CONNECT = 9,
+  SCR_HTTP_OFF_CHECK_CONTINUE = 10,
+  SCR_HTTP_OFF_CHECK_EXPECTATION = 11,
+  SCR_HTTP_OFF_CLIENT_ERROR = 12,
+  SCR_HTTP_OFF_NEW_LISTENER = 13,
+};
+void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
+ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind); /* +1 closures */
+void scr_http_server_on_new_listener(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_http_new_listener_thunk2(ScrClosure *cb, ScrStr *name, ScrClosure *listener);
+void scr_http_new_listener_thunk1(ScrClosure *cb, ScrStr *name, ScrClosure *listener);
+void scr_http_new_listener_thunk0(ScrClosure *cb, ScrStr *name, ScrClosure *listener);
 void scr_http1_ctx_on_request(void *ctx, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
                               ScrNetOnce *shared_once /*moves, nullable*/);
 void scr_http1_ctx_on_connect(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once,

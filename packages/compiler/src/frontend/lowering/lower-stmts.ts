@@ -7613,6 +7613,8 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   // writes that coerce into the declared type keep it.
   // A write whose checker type is the declaration's own maps to the same
   // representation; the declared type is mapped only for the others.
+  // A union declaration (`var match = re.exec(text)`, later `match =
+  // "&lt;"`) counts a write that fits none of its arms.
   const declaredType = lowerer.typeOf(decl.name);
   const differing = candidates.filter(
     (node) =>
@@ -7621,7 +7623,9 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   );
   if (differing.length === 0) return false;
   const declared = lowerer.mapTypeOf(declaredType);
-  if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
+  if (declared === null || declared.kind === "dyn" || !lowerer.dynConvertible(declared))
+    return false;
+  const arms = declared.kind === "union" ? lowerer.unions.get(declared.unionId)!.arms : [declared];
   return differing.some((node) => {
     const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
     // A union a primitive binding cannot hold (`x = c ? 1 : "a"` into
@@ -7637,9 +7641,10 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
       written.kind !== "union" &&
       !isUnitType(written) &&
       lowerer.dynConvertible(written) &&
-      lowerer.dynConvertible(declared) &&
-      !typeEquals(written, declared) &&
-      (written.kind !== declared.kind || written.kind === "bytes")
+      arms.every(
+        (arm) =>
+          !typeEquals(written, arm) && (written.kind !== arm.kind || written.kind === "bytes"),
+      )
     );
   });
 }

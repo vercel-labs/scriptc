@@ -247,3 +247,30 @@ test("unique-symbol nested brands are Map keys", () => {
   `);
   expect(diagnostics).toEqual([]);
 });
+
+test("a self-referential marker does not recurse forever", () => {
+  const diagnostics = analyzeSource(`
+    interface Loop {
+      readonly next: Loop;
+    }
+    type Recursive = string & Loop;
+    const values = new Map<Recursive, number>();
+    console.log(values.size);
+  `);
+  expect(diagnostics).toEqual([]);
+});
+
+test("an expanding recursive marker stays a Map key", () => {
+  const diagnostics = analyzeSource(`
+    interface Expand<K extends string> {
+      readonly [Symbol.iterator]?: never;
+      readonly tag: Expand<\`\${K}x\`>;
+    }
+    type Recursive = string & Expand<"a">;
+    const values = new Map<Recursive, number>();
+    const value = "v" as Recursive;
+    values.set(value, 1);
+    console.log(values.get(value), values.size);
+  `);
+  expect(diagnostics).toEqual([]);
+});

@@ -8053,6 +8053,12 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
  * with a class identity, call/construct/index signature, accessor, or a
  * non-literal value field might describe runtime behavior, so it retains the
  * SC2008 refusal instead of borrowing the primitive representation. */
+
+/** A marker table on the walk's current path: the table's type and the
+ * declaration it instantiates (a type alias stands for the reference it
+ * aliases). */
+type MarkerPath = { type: ts.Type; symbol: ts.Symbol | undefined }[];
+
 function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (!widened.isIntersectionType()) return null;
   const { checker, resolveTypeParam, resolveTypeParamTs } = ctx;
@@ -8079,8 +8085,15 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     return null;
   };
-  const markerValue = (value: ts.Type, seen: Set<ts.Type>): boolean => {
-    if (seen.has(value)) return true;
+  // A marker table's members are type-level only, so the walk over them must
+  // not follow a table into itself. Both halves answer the same revisit the
+  // same way: a table already on the path stays a marker. A plain
+  // self-reference hits it directly; an expanding generic
+  // (`tag: Expand<`${K}x`>`) never repeats an instantiation, so the path
+  // carries the declaration each table instantiates — re-reaching it with
+  // grown arguments is the same cycle, and finitely many declarations bound
+  // the walk without a depth guess.
+  const markerValue = (value: ts.Type, path: MarkerPath): boolean => {
     if (
       value.flags &
       (ts.TypeFlags.StringLiteral |
@@ -8097,12 +8110,13 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
       return true;
     }
     if (value.isUnionType())
-      return ts.constituentTypes(value).every((arm) => markerValue(arm, seen));
+      return ts.constituentTypes(value).every((arm) => markerValue(arm, path));
     if (value.flags & ts.TypeFlags.TypeParameter) {
       const bound = resolveTypeParamTs?.(value) ?? null;
       if (bound) {
         contextResolutions++;
-        return markerValue(bound, seen);
+        // A binding that answers itself revisits: still a marker.
+        return bound === value ? true : markerValue(bound, path);
       }
     }
     // Number/string/boolean/bigint/symbol companions are runtime data, not
@@ -8120,9 +8134,9 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     ) {
       return false;
     }
-    return isPhantomBrandObject(value, seen);
+    return isPhantomBrandObject(value, path);
   };
-  const isPhantomBrandObject = (part: ts.Type, seen: Set<ts.Type>): boolean => {
+  const isPhantomBrandObject = (part: ts.Type, path: MarkerPath): boolean => {
     const partSym = part.getSymbol();
     if (
       (part.flags & ts.TypeFlags.Object) === 0 ||
@@ -8140,13 +8154,35 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
       return false;
     }
     if (checker.getIndexInfosOfType(part).length > 0) return false;
-    seen.add(part);
-    const props = checker.getPropertiesOfType(part);
-    return props.every(
-      (prop) =>
-        (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) === 0 &&
-        markerValue(checker.getTypeOfSymbol(prop), seen),
+    // An acyclic but exponentially wide chain (two distinct generics per
+    // level) stays unbounded without a fence, so a marker walk this deep is
+    // refused the way mapType refuses anything past its own ceiling.
+    if (path.length >= MAP_TYPE_MAX_DEPTH) return false;
+    const symbol =
+      part.getAliasSymbol() ??
+      (part.isTypeReference() ? part.getTarget()?.getSymbol() : part.getSymbol());
+    // The same declaration already on the path is the recursion, whatever the
+    // arguments this reach instantiates it with: a growing template-literal
+    // argument expands the table, it does not make a new shape. Anonymous
+    // tables have no symbol, so the type itself stands in. Revisit stays a
+    // marker, as markerValue answers for every other revisit on the path.
+    const cyclic = path.some((frame) =>
+      frame.symbol !== undefined
+        ? frame.symbol === symbol
+        : symbol === undefined && frame.type === part,
     );
+    if (cyclic) return true;
+    path.push({ type: part, symbol });
+    try {
+      const props = checker.getPropertiesOfType(part);
+      return props.every(
+        (prop) =>
+          (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) === 0 &&
+          markerValue(checker.getTypeOfSymbol(prop), path),
+      );
+    } finally {
+      path.pop();
+    }
   };
   let primitive: IrType | null = null;
   let markerParts = 0;
@@ -8157,7 +8193,7 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
       primitive = mappedPrimitive;
       continue;
     }
-    if (!isPhantomBrandObject(part, new Set())) return null;
+    if (!isPhantomBrandObject(part, [])) return null;
     markerParts++;
   }
   return primitive && markerParts > 0 ? primitive : null;

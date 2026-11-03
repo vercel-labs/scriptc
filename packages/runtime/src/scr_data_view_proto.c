@@ -24,9 +24,11 @@
  * DataView's internal slots), runs ToIndex on the offset with the view's one
  * RangeError, and then reads or writes through the base units' primitives
  * (scr_bytes.c and scr_bigint.c), which perform the bounds and detached
- * checks. %DataView.prototype% itself carries no [[DataView]] internal slot,
- * so like any other non-view receiver it answers every member (the
- * accessors included) with the brand check's TypeError.
+ * checks. The three accessors read the view's internal slots as well, so an
+ * own property a program defined on the instance does not reach them.
+ * %DataView.prototype% itself carries no [[DataView]] internal slot, so like
+ * any other non-view receiver it answers every member (the accessors
+ * included) with the brand check's TypeError.
  *
  * The unit links only into programs that read `DataView.prototype` as a
  * value in a JavaScript source (the frontend marks dyn.dataViewPrototype
@@ -214,10 +216,14 @@ static ScrDyn *scr_dv_proto_method_call(ScrClosure *closure, ScrDyn *const *args
 }
 
 /* The buffer/byteLength/byteOffset getters (no setters). The closure's
- * function slot names the property; a DataView receiver answers the same
- * values its property reads do. %DataView.prototype% carries no
- * [[DataView]] internal slot, so it is an incompatible receiver like any
- * other value — the specification's brand check. */
+ * function slot names the property. They answer the receiver's internal
+ * slots, not its properties: a view the program gave its own `buffer`,
+ * `byteLength` or `byteOffset` still answers the slots here, as the
+ * specification's [[ViewedArrayBuffer]]/[[ByteLength]]/[[ByteOffset]] reads
+ * do, while an ordinary property read still finds the own property first.
+ * %DataView.prototype% carries no [[DataView]] internal slot, so it is an
+ * incompatible receiver like any other value — the specification's brand
+ * check. */
 static ScrDyn *scr_dv_proto_accessor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
@@ -225,9 +231,21 @@ static ScrDyn *scr_dv_proto_accessor_call(ScrClosure *closure, ScrDyn *const *ar
   ScrDyn *receiver = scr_dyn_this_get();
   ScrDyn *result = NULL;
   if (receiver->kind == SCR_DYN_BYTES && receiver->v.bytes->is_data_view) {
-    ScrStr *key = scr_str_new(which, strlen(which));
-    result = scr_dyn_bytes_key_get(receiver, key);
-    scr_str_release(key);
+    ScrBytes *view = receiver->v.bytes;
+    if (strcmp(which, "buffer") == 0) {
+      result = scr_array_buffer_from_bytes(view);
+    } else {
+      /* A detached or out-of-bounds view throws the accessor's own
+       * TypeError, the same one the property read raises. */
+#ifdef SCR_JS_OBJECT_MODEL
+      double value = strcmp(which, "byteLength") == 0 ? scr_js_bytes_byte_length(view)
+                                                      : scr_js_bytes_byte_offset(view);
+#else
+      double value = strcmp(which, "byteLength") == 0 ? scr_bytes_byte_len(view)
+                                                      : scr_bytes_byte_offset(view);
+#endif
+      if (!scr_exc_pending()) result = scr_dyn_new_num(value);
+    }
   } else {
     char message[128];
     int length = snprintf(message, sizeof message,

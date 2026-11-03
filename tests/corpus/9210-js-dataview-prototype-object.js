@@ -71,6 +71,23 @@ console.log("view-buffer", bufferGetter.call(view) === view.buffer, bufferGetter
 console.log("view-byteLength", lengthGetter.call(view), lengthGetter.call(view) === view.byteLength);
 console.log("view-byteOffset", offsetGetter.call(view), offsetGetter.call(view) === view.byteOffset);
 
+// An own property the program defined on the instance shadows the ordinary
+// property read, but the accessors answer the view's internal slots — the
+// values the language's [[ViewedArrayBuffer]]/[[ByteLength]]/[[ByteOffset]]
+// reads return. The dynamic view of the instance is what the checker allows
+// the property definitions and the shadowed reads through.
+const shadowed = new DataView(new ArrayBuffer(20), 8, 5);
+const shadowedBuffer = shadowed.buffer;
+const shadowedDyn = /** @type {any} */ (shadowed);
+const shadowedView = /** @type {DataView} */ (shadowedDyn);
+Reflect.defineProperty(shadowedDyn, "buffer", { value: "own", configurable: true });
+Reflect.defineProperty(shadowedDyn, "byteLength", { value: "own", configurable: true });
+Reflect.defineProperty(shadowedDyn, "byteOffset", { value: "own", configurable: true });
+console.log("shadowed-read", shadowedDyn.buffer, shadowedDyn.byteLength, shadowedDyn.byteOffset);
+console.log("shadowed-buffer", bufferGetter.call(shadowedView) === shadowedBuffer);
+console.log("shadowed-byteLength", lengthGetter.call(shadowedView));
+console.log("shadowed-byteOffset", offsetGetter.call(shadowedView));
+
 // A subview shares the buffer and keeps its own offset, so the accessors
 // follow the view rather than the buffer.
 const subview = new DataView(bufferGetter.call(view), 2, 3);

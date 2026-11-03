@@ -22,11 +22,12 @@
  *   module.exports = php;
  *   module.exports = / * @type {(hljs?: HLJSApi) => LanguageDetail} * / (php);
  *
- * Only what can be spelled in the JavaScript's own scope is projected: an
- * `export default function` signature or an `export = <name>` inside a
- * declaration file that is a global script (no top-level imports or
- * exports), whose type names the file itself declares globally. Every other
- * ambient shape keeps the file's own text. */
+ * Only what can be spelled in the JavaScript's own scope is projected: the
+ * declared signatures of an `export default function` — every overload, so
+ * the whole call surface survives — or an `export = <name>`, inside a
+ * declaration file that is a global script (no top-level import or export in
+ * any of its spellings), whose type names the file itself declares globally.
+ * Every other ambient shape keeps the file's own text. */
 import { dirname, resolve as resolvePath } from "node:path";
 import type { FrontendServices } from "./services.js";
 import * as ts from "./ts7/syntax.js";
@@ -91,12 +92,26 @@ function globalNames(sf: ts.SourceFile): Set<string> {
   return names;
 }
 
-/** Whether the file is a global script: an ambient block in a MODULE file is
- * an augmentation, and the names its types use are not globals. */
+/** Whether the file is a global script. An ambient block in a MODULE file is
+ * an augmentation of the module's own scope, not a declaration of the
+ * JavaScript's: the names its types use are module-local (or merged into a
+ * module this package never runs), so projecting one would hand the
+ * JavaScript a name that resolves to something else entirely — or to nothing
+ * — in its own scope. Every form that makes a file a module counts, the ones
+ * an export statement does not spell: `export interface Api {}` carries the
+ * modifier on a declaration, `import x = require("y")` is an import-equals
+ * statement, and `declare global` exists only inside a module. */
 function isGlobalScript(sf: ts.SourceFile): boolean {
   return !sf.statements.nodes.some(
     (stmt) =>
-      ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt) || ts.isExportAssignment(stmt),
+      ts.isImportDeclaration(stmt) ||
+      ts.isImportEqualsDeclaration(stmt) ||
+      ts.isExportDeclaration(stmt) ||
+      ts.isExportAssignment(stmt) ||
+      ts.isNamespaceExportDeclaration(stmt) ||
+      hasModifier(stmt, ts.SyntaxKind.ExportKeyword) ||
+      hasModifier(stmt, ts.SyntaxKind.DefaultKeyword) ||
+      (ts.isModuleDeclaration(stmt) && ts.isIdentifier(stmt.name) && stmt.name.text === "global"),
   );
 }
 
@@ -141,11 +156,13 @@ function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
 
 /** The declared signatures an ambient block's export spells. `export default
  * function (...) {}` parses as a function declaration with the default
- * modifier. */
+ * modifier; a declaration that carries `body` is an implementation, whose
+ * signature types no call. */
 interface DeclaredSignature {
   typeParameters: ts.NodeArray<ts.TypeParameterDeclaration> | undefined;
   parameters: ts.NodeArray<ts.ParameterDeclaration>;
   type: ts.Node | undefined;
+  body?: ts.Node;
 }
 
 /** The export type one ambient module block declares, or null when the block
@@ -160,26 +177,52 @@ function blockType(
   const body = block.body;
   if (body === undefined || !ts.isModuleBlock(body)) return null;
   const text = (n: ts.Node): string => sf.text.slice(tokenStartOfNode(n), n.end);
+  // Every declared signature of the default export, in declaration order.
+  // Overloads are the declaration set, not one of them: a block that
+  // declares `(hljs: Api) => Lang` and `(hljs: Api, name: string) => Lang`
+  // accepts both calls, and projecting the first signature alone turned
+  // every call matching a later overload into a program type error.
+  const declared: DeclaredSignature[] = [];
+  const implementations: DeclaredSignature[] = [];
+  let assignment: string | null = null;
+  let assignmentUnspellable = false;
   for (const stmt of body.statements.nodes) {
     if (ts.isFunctionDeclaration(stmt) && hasModifier(stmt, ts.SyntaxKind.DefaultKeyword)) {
       const signature = stmt as unknown as DeclaredSignature;
-      if (signature.typeParameters !== undefined) return null;
-      const typed: ts.Node[] = [...signature.parameters.nodes];
-      if (signature.type !== undefined) typed.push(signature.type);
-      for (const name of referencedNames(typed))
-        if (!SPELLED_TYPES.has(name) && !globals.has(name)) return null;
-      const params = signature.parameters.nodes.map(text);
-      const ret = signature.type === undefined ? "any" : text(signature.type);
-      return `(${params.join(", ")}) => ${ret}`;
+      (signature.body === undefined ? declared : implementations).push(signature);
+      continue;
     }
-    if (ts.isExportAssignment(stmt) && ts.isIdentifier(stmt.expression)) {
+    if (
+      ts.isExportAssignment(stmt) &&
+      ts.isIdentifier(stmt.expression) &&
+      assignment === null &&
+      !assignmentUnspellable
+    ) {
       // `export = hljs` / `export default language`: the value's type.
       const name = stmt.expression.text;
-      if (SPELLED_TYPES.has(name) || globals.has(name)) return `typeof ${name}`;
-      return null;
+      if (SPELLED_TYPES.has(name) || globals.has(name)) assignment = `typeof ${name}`;
+      else assignmentUnspellable = true;
     }
   }
-  return null;
+  // An implementation body types no call on its own: when the block declares
+  // overloads they are the callable's type, and only a block with no
+  // declaration projects the implementation's signature.
+  const signatures = declared.length > 0 ? declared : implementations;
+  if (signatures.length === 0) return assignmentUnspellable ? null : assignment;
+  const spelled: string[] = [];
+  for (const signature of signatures) {
+    if (signature.typeParameters !== undefined) return null;
+    const typed: ts.Node[] = [...signature.parameters.nodes];
+    if (signature.type !== undefined) typed.push(signature.type);
+    for (const name of referencedNames(typed))
+      if (!SPELLED_TYPES.has(name) && !globals.has(name)) return null;
+    const params = signature.parameters.nodes.map(text);
+    const ret = signature.type === undefined ? "any" : text(signature.type);
+    spelled.push(`(${params.join(", ")}) => ${ret}`);
+  }
+  // An overload set is an intersection of its signatures: each call must
+  // match one of them, exactly as it does against the declaration.
+  return spelled.length === 1 ? spelled[0]! : spelled.map((s) => `(${s})`).join(" & ");
 }
 
 /** The declared export type of the ambient module a package-relative path

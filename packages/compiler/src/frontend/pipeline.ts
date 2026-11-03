@@ -843,7 +843,15 @@ function loadFrontend(
     // error is reported as the one diagnostic it is (the splice at the end
     // of this function has the same stance for a program that only fails
     // after the drop).
-    const diagKey = (d: ScrDiagnostic): string => `${d.code}|${d.loc.file}|${d.loc.start}`;
+    //
+    // Identity is the diagnostic's whole text, not its span: two SC0001s at
+    // one location are different errors when they say different things
+    // (another package's inferred export surface produces a different
+    // complaint at the same call site). Comparing spans alone made a drop
+    // that replaces an error look like a drop that changes nothing, which
+    // is exactly the evidence the halving below relies on.
+    const diagKey = (d: ScrDiagnostic): string =>
+      `${d.code}|${d.loc.file}|${d.loc.start}|${d.message}`;
     let baselineKeys: Set<string> | null = null;
     // Each load installs its own package set as npm-static's live state
     // (program.ts), and lowering and the program-source classification read
@@ -885,12 +893,15 @@ function loadFrontend(
           .join("\n");
       const loadKeys = sc0001Keys(preflight);
       const culprits: string[] = [];
-      // The probe budget: a halving search spends one load per group it
-      // visits, so it never costs more than the linear scan it replaces.
-      let budget = effective.size;
+      // No probe is skipped for want of a budget: a cut-off is what let the
+      // second of two packages go unprobed (the group probe above it spent
+      // the budget the leaf needed), turning a recoverable fallback into a
+      // reported error. The search visits the interior group of each split
+      // it follows, at most n-1 of them, plus the n leaves: 2n-1 loads in
+      // the worst case, and one load for the shape the attribution exists
+      // for (an error no subset removes, where the whole-set probe prunes
+      // every package at once).
       const changes = (group: readonly string[]): boolean => {
-        if (budget === 0) return false;
-        budget--;
         const rest = [...effective].filter((q) => !group.includes(q));
         const probe = loadProgram(entryPath, { npmStatic: rest, externalTypes });
         probeStateStale = true;
@@ -899,14 +910,14 @@ function loadFrontend(
         return sc0001Keys(probeDiags) !== loadKeys;
       };
       // Attribute by halving: dropping a WHOLE group is one load, and a group
-      // whose absence leaves the errors exactly as they are holds no culprit
-      // (removing any package inside it would be part of a drop that changes
-      // nothing — the no-attribution stance below). A group whose absence
-      // does change them splits in two until a single package is left, which
-      // is the same leave-one-out comparison the linear scan made, so no
-      // package is ever a culprit the scan would not have named. pi's shape
-      // (21 packages, every single drop "unchanged") costs 3 loads instead of
-      // 21.
+      // whose absence leaves every diagnostic identical — same code, span and
+      // text — is pruned without probing its members one by one. A group
+      // whose absence does change them splits in two until a single package
+      // is left, and a leaf is always probed: that comparison is the
+      // leave-one-out one the linear scan made, so a package whose own drop
+      // changes the errors is named however its neighbours behaved. pi's
+      // shape (21 packages, every single drop unchanged) costs one load for
+      // the whole set.
       const attribute = (group: readonly string[]): void => {
         if (group.length === 0 || !changes(group)) return;
         if (group.length === 1) {

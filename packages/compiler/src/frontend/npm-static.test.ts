@@ -139,6 +139,104 @@ test("an unspellable declared type keeps the flagless any surface", async () => 
   }
 });
 
+test("an augmentation in a module declaration file is never projected", async () => {
+  const dir = await mkdtemp("/tmp/scriptc-npm-static-shadow-module-");
+  try {
+    // Both entries are MODULES without an import or export STATEMENT: one
+    // exports an interface, the other has an import-equals. A global-script
+    // test that looks for import/export statements only misses both, and the
+    // ambient block's `Api` — module-local, or an augmentation of a module
+    // this package never loads at that specifier — lands in the JavaScript's
+    // unrelated global scope.
+    const exported = join(dir, "node_modules", "exportonly");
+    await mkdir(join(exported, "lib"), { recursive: true });
+    await mkdir(join(exported, "types"), { recursive: true });
+    await writeFile(
+      join(exported, "package.json"),
+      '{"name":"exportonly","types":"types/index.d.ts","main":"lib/core.js"}',
+    );
+    await writeFile(
+      join(exported, "types", "index.d.ts"),
+      'export interface Api { register(name: string): void }\ndeclare module "exportonly/lib/*" { export default function(api?: Api): Api; }\n',
+    );
+    const exportedFile = join(exported, "lib", "thing.js");
+    await writeFile(exportedFile, "function fn(api) { return api; }\nmodule.exports = fn;\n");
+    const required = join(dir, "node_modules", "importeq");
+    await mkdir(join(required, "lib"), { recursive: true });
+    await mkdir(join(required, "types"), { recursive: true });
+    await writeFile(
+      join(required, "package.json"),
+      '{"name":"importeq","types":"types/index.d.ts","main":"lib/core.js"}',
+    );
+    await writeFile(
+      join(required, "types", "index.d.ts"),
+      'declare class Api { register(name: string): void }\nimport helper = require("./helper.js");\ndeclare module "importeq/lib/*" { export default function(api?: Api): Api; }\n',
+    );
+    const requiredFile = join(required, "lib", "thing.js");
+    await writeFile(requiredFile, "function fn(api) { return api; }\nmodule.exports = fn;\n");
+    setNpmStaticPackages(["opted"]);
+    try {
+      const shadow = npmStaticFsShadow(testServices())!;
+      // Both files keep the implicit-any surface the flag gives an
+      // unprojected file; neither carries the module-local `Api`.
+      for (const file of [exportedFile, requiredFile]) {
+        expect(shadow.readFile(file)).toBe("module.exports = (() => { let u; return u; })();\n");
+      }
+    } finally {
+      setNpmStaticPackages([]);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("every declared overload of an ambient default export is projected", async () => {
+  const dir = await mkdtemp("/tmp/scriptc-npm-static-shadow-overloads-");
+  try {
+    const pkg = join(dir, "node_modules", "overloaded");
+    await mkdir(join(pkg, "lib"), { recursive: true });
+    await mkdir(join(pkg, "types"), { recursive: true });
+    await writeFile(
+      join(pkg, "package.json"),
+      '{"name":"overloaded","types":"types/index.d.ts","main":"lib/core.js"}',
+    );
+    // The declaration accepts a call with the language name and one without
+    // it. Projecting only the first signature made the two-argument form a
+    // program type error, which the package could do nothing about.
+    await writeFile(
+      join(pkg, "types", "index.d.ts"),
+      [
+        "type Api = { register(name: string, fn: LanguageFn): void };",
+        "type Lang = { name: string };",
+        "type LanguageDetail = Lang & { extra: number };",
+        "type LanguageFn = (api?: Api) => Lang;",
+        'declare module "overloaded/lib/*" {',
+        "  export default function(hljs?: Api): LanguageDetail;",
+        "  export default function(hljs: Api, name: string): LanguageDetail;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const lang = join(pkg, "lib", "lang.js");
+    const langText =
+      "/** @param {Api} hljs */\nfunction lang(hljs, name) { return { name: name ?? 'php' }; }\nmodule.exports = lang;\n";
+    await writeFile(lang, langText);
+    setNpmStaticPackages(["opted"]);
+    try {
+      expect(npmStaticFsShadow(testServices())!.readFile(lang)).toBe(
+        langText.replace(
+          "module.exports = lang;",
+          "module.exports = /** @type {((hljs?: Api) => LanguageDetail) & ((hljs: Api, name: string) => LanguageDetail)} */ (lang);",
+        ),
+      );
+    } finally {
+      setNpmStaticPackages([]);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("an island package is typed by its declarations, not by its JavaScript", async () => {
   const dir = await mkdtemp("/tmp/scriptc-npm-static-shadow-island-");
   try {

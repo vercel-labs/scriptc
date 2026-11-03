@@ -186,6 +186,49 @@ test("one program diagnostic does not refuse every package in the set", () => {
   frontend.dispose();
 });
 
+test("no probe budget can leave the second of two packages unprobed", () => {
+  // Two opt-ins, only the second a culprit. The group probe over the whole
+  // set and the first leaf used to exhaust the budget, so `beta` was never
+  // tested and a recoverable fallback was reported as an error instead.
+  preflight.mockImplementation(() => {
+    const set = loadPackages.get(opened.at(-1)!) ?? [];
+    return set.length === 0 ? [] : set.includes("beta") ? [typeError] : [];
+  });
+  const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
+  expect(frontend.npmStatic).toContainEqual({
+    package: "beta",
+    status: "refused",
+    detail: expect.any(String),
+  });
+  expect(frontend.npmStatic).toContainEqual({ package: "alpha", status: "static" });
+  expect(frontend.preflight).toEqual([]);
+  frontend.dispose();
+});
+
+test("a same-span replacement is not mistaken for an unchanged group", () => {
+  // Dropping the whole set leaves an SC0001 at the SAME span as the load's
+  // but saying something else (the program's own complaint with no package
+  // inferred), while dropping `alpha` alone clears the error. Span-only
+  // identity pruned the group and kept the error; the diagnostic's text
+  // separates the two, so the leaf is still probed and `alpha` falls back.
+  const atSamePlace = (message: string): ScrDiagnostic => ({ ...typeError, message });
+  preflight.mockImplementation(() => {
+    const set = loadPackages.get(opened.at(-1)!) ?? [];
+    if (set.length === 0) return [atSamePlace("the program reports its own error")];
+    if (set.length === 1 && set[0] === "beta") return [];
+    return [typeError];
+  });
+  const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
+  expect(frontend.npmStatic).toContainEqual({
+    package: "alpha",
+    status: "refused",
+    detail: expect.any(String),
+  });
+  expect(frontend.npmStatic).toContainEqual({ package: "beta", status: "static" });
+  expect(frontend.preflight).toEqual([]);
+  frontend.dispose();
+});
+
 test("halving attributes one culprit among many without probing every package", () => {
   // Only dropping `p5` clears the error. Halving visits the groups that still
   // fail and skips the ones whose absence leaves the errors untouched, so the

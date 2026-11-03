@@ -1845,6 +1845,15 @@ function scanRuntimeFeatures(
   // scr_dyn_function_apply), so the fact links it: a JavaScript source can
   // read an intrinsic without dispatching anything of its own (t262-da A1).
   if (!features.dynInvoke && features.jsObjectModel) features.dynInvoke = true;
+  // The intrinsic graph answers String.prototype, Number.prototype and
+  // Boolean.prototype with the wrapper unit's objects: only that unit builds
+  // the [[PrimitiveValue]] slot, and they are the prototypes
+  // `new String/Number/Boolean(v)` instances inherit from, so one intrinsic
+  // has one object (t262-da A2). The graph reaches the unit through slots
+  // (scr_dyn.h) rather than by name, so the unit rides the program's own
+  // wrapper use alone — the `wrapper.*` operations above, which is what a
+  // read of `X.prototype` emits — and a JavaScript program that never names
+  // a wrapper prototype links exactly what it did before the fold.
   // AsyncDisposableStack's unit awaits through the dyn-async helpers
   // (scr_async_dyn.c) and reads each resource's [Symbol.asyncDispose] and
   // [Symbol.dispose] through scr_symbol.c, so its fact links both.

@@ -1600,8 +1600,6 @@ const DYN_STRING_KIND_METHODS: ReadonlySet<string> = new Set([
   "codePointAt",
   "isWellFormed",
   "toWellFormed",
-  "trimLeft",
-  "trimRight",
 ]);
 
 /** Number methods a dyn receiver dispatches by runtime kind here. */

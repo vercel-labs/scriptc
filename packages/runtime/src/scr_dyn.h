@@ -1215,6 +1215,47 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
  * refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
 #endif
+#ifdef SCR_JS_OBJECT_MODEL
+/* String.prototype, Number.prototype and Boolean.prototype are the wrapper
+ * unit's objects — only it builds one with the [[PrimitiveValue]] slot their
+ * instances inherit — and their members are the intrinsic graph's, which
+ * wraps each member so the brand checks run on the primitive the prototype
+ * wraps (t262-da A2). A program links the graph when it reads an intrinsic,
+ * and the wrapper unit only when it names a wrapper, so neither unit may name
+ * the other: a reference from either side would drag the other into every
+ * program that links the first. Each edge is a slot instead, filled by the
+ * defining unit with a static initializer, which is data and not a
+ * constructor — a constructor is a link root that pulls its unit's whole call
+ * graph, the dynamic tier included (t262-da W4).
+ *
+ * The reading unit carries the fallback so a program that links it alone
+ * still links: where no unit provides the slot, the fallback leaves it at
+ * NULL, and the reader then answers what it answered before the fold. The
+ * fallback is a weak definition of the slot, which the providing unit's
+ * strong one overrides. A weak reference would not do on either format:
+ * Darwin's linker refuses one to a symbol the link lacks, and on ELF it
+ * leaves the symbol's address at zero rather than the slot at NULL, so the
+ * reader's test of the slot would load it from address zero and fault. */
+/* The wrapper unit's prototype object for `id` ("String.prototype",
+ * "Number.prototype" or "Boolean.prototype"), +1, without members: the
+ * graph's fill defines them, from the interned member values below. */
+typedef ScrDyn *(*ScrJsWrapperPrototypeSlot)(const char *id);
+/* The wrapper unit's interned member value of `kind` for `name` (+1): the
+ * value its prototype object holds and a primitive's or a wrapper instance's
+ * member read answers, so one prototype member is one function object. NULL
+ * when the kind's prototype has no such member (String's `[Symbol.iterator]`,
+ * or a name this build does not implement). */
+typedef ScrDyn *(*ScrJsWrapperMemberSlot)(double kind, const char *name, size_t name_length);
+/* The graph's registration of the three wrapper providers in the invoke
+ * unit's member table. The invoke unit asks once, before it answers the first
+ * builtin member read, so that even the first read of a wrapper member is the
+ * value the prototype object holds. */
+typedef void (*ScrJsWrapperProvidersSlot)(void);
+extern ScrJsWrapperPrototypeSlot scr_js_wrapper_intrinsic_prototype_slot;
+extern ScrJsWrapperMemberSlot scr_js_wrapper_member_slot;
+extern ScrJsWrapperProvidersSlot scr_js_wrapper_member_providers_slot;
+#define SCR_JS_SLOT_FALLBACK(type, name) __attribute__((weak)) type name
+#endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
@@ -1613,6 +1654,42 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
  * constructor value. */
 ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
 
+/* The wrapper unit's prototype object for `id` ("String.prototype",
+ * "Number.prototype" or "Boolean.prototype"), which the intrinsic table
+ * answers for that id (t262-da A2): only this unit can build an object with
+ * the [[PrimitiveValue]] slot, and it is the object `new String/Number/
+ * Boolean(v)` instances inherit from, so one intrinsic has one builder and a
+ * member the program writes through the prototype object is the member an
+ * instance walks to (§4.4). Returned without members: the table's fill
+ * defines them, and each is this unit's interned member value — the same
+ * function a primitive's member read answers through
+ * scr_js_wrapper_member_slot — so a call through the member runs this unit's
+ * method for the prototype the frontend recognizes (wrapper.isStringMethod).
+ * +1.
+ *
+ * The graph, not every program that links this unit, is the only caller: a
+ * program links this unit when it names a wrapper, and the graph when it
+ * reads an intrinsic, so the graph reaches this function through a slot
+ * (scr_js_wrapper_intrinsic_prototype_slot) this unit fills with a static
+ * initializer, and the graph's own weak fallback leaves the slot at zero when
+ * this unit is absent — the graph then answers an ordinary object instead.
+ * The pointer, not a call, is what crosses, so the column that decides
+ * linking stays the program's own wrapper use. */
+ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id);
+/* Installs the program's own conversion closure as the `constructor` of the
+ * intrinsic prototype `prototype` and seeds the closure's `prototype` with
+ * it, so `X.prototype.constructor` (and its descriptor value) is the value a
+ * read of `X` answers (t262-da A2). +1 (prototype). */
+ScrDyn *scr_js_wrapper_install_constructor(ScrDyn *prototype, ScrDyn *constructor);
+/* The interned member value of the wrapper prototype `kind` for `name`
+ * (+1) — the value the prototype object holds and a primitive's or a
+ * wrapper instance's member read answers, so a call through it runs this
+ * unit's method for that prototype and the frontend recognizes it as the
+ * builtin member — or NULL when the prototype has no member of that name.
+ * The graph reaches it through scr_js_wrapper_member_slot, for the reason
+ * above. */
+ScrDyn *scr_js_wrapper_member_for(double kind, const char *name, size_t name_length);
+
 /* Promise statics called with a foreign constructor (`Promise.all.call(C, …)`,
  * scr_js_promise_generic.c, linked only into programs that make the call):
  * the specification's algorithms over NewPromiseCapability(C) and
@@ -1822,6 +1899,24 @@ ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *argument
 ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what);
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
+/* A builtin that answers its instances' member values from a table of its own
+ * unit — a Date (scr_lib.c), the DisposableStack (scr_symbol.c), a wrapper
+ * prototype (String, Number, Boolean, BigInt, Symbol) — instead of by
+ * interning a function of the member's name: given the class and the member
+ * name, the member value (+1), or NULL for a name the builtin does not
+ * answer. A member read off an instance and off its prototype both pass
+ * through scr_dyn_builtin_method, so both answer this one value, as in Node
+ * (`stack.use === DisposableStack.prototype.use`,
+ * `"abc".slice === String.prototype.slice`). */
+typedef ScrDyn *(*ScrDynMemberProvider)(const char *cls, const char *key, size_t key_len);
+/* Answer `cls`'s member reads through `member`, beside the providers this unit
+ * already carries (Date, DisposableStack). One provider serves any number of
+ * classes, and one class keeps the first provider registered for it. A
+ * provider a program never reads costs it nothing: the unit that carries one
+ * is linked only when the program itself pays for it. Identity is an
+ * object-model behavior, so a build without the object model records and
+ * consults nothing. */
+void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider member);
 /* ── the builtin intrinsics (scr_js_intrinsics.c) ──────────────────────
  * The standard library's prototype and constructor objects as ordinary
  * checked-dynamic values, built from the table the pinned Node release

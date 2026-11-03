@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/js-disposable-stack-member-before-stack.js"
- ],
- "diags": []
-}

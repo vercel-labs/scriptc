@@ -87,7 +87,10 @@ export interface NativeLinkFeatures {
    * scr_module_namespace_dyn.c; absent (false) otherwise. */
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
-   * otherwise. */
+   * otherwise. The intrinsic graph answers String.prototype, Number.prototype
+   * and Boolean.prototype with that unit's objects, but reaches them through
+   * slots rather than by name, so only the program's own wrapper use — a read
+   * of `X.prototype`, a wrapper creation — carries the fact (t262-da A2). */
   primitiveWrapper?: boolean;
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor link scr_js_promise_generic.c; absent (false) otherwise. */

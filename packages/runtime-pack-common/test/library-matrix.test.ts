@@ -48,6 +48,12 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         "scr_console_native.c",
         "scr_copying.c",
         "scr_js_buffers.c",
+        // A library that reads an intrinsic links the graph's js-om variant,
+        // and a library whose program creates a wrapper or reads
+        // `X.prototype` links the wrapper unit: the library flavors carry both
+        // (t262-da A2).
+        "scr_js_intrinsics.c",
+        "scr_js_wrapper.c",
       ])
         expect(sources).toContain(source);
       // A library whose program moves a buffer names scr_js_buffers_arm, so

@@ -403,6 +403,14 @@ export function variantsFor(source) {
   // and its default object compiles empty. A program with the fact links
   // the unit at all (OPTIONAL_RUNTIME_SOURCES).
   if (source === "scr_js_buffers.c") withJsObjectModel(variants);
+  // The primitive wrapper unit defines the intrinsic graph's two slots, and
+  // the definition is the unit's object-model code (t262-da A2): the pack
+  // carries the twin a program that reads `X.prototype` in the object model
+  // selects. Without it the unit's default build defines no slot, and that
+  // program's `String.prototype` is the graph's ordinary object whose members
+  // are the interner's rather than the wrapper's. A program that never reads
+  // an intrinsic keeps the default build, byte for byte.
+  if (source === "scr_js_wrapper.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects. Its Node island
   // build is not the one these variants name: island output keeps its own

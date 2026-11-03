@@ -57,6 +57,14 @@
 
 #include "scr_js_intrinsics_table.h"
 
+/* The wrapper unit defines these two slots with a static initializer
+ * (scr_js_wrapper.c), and this unit reads them (t262-da A2). The fallback is
+ * this unit's: a program that reads an intrinsic without naming a wrapper
+ * links this unit alone, and then the slots are zero and the prototypes are
+ * ordinary objects. See scr_dyn.h for the fallback. */
+SCR_JS_SLOT_FALLBACK(ScrJsWrapperPrototypeSlot, scr_js_wrapper_intrinsic_prototype_slot);
+SCR_JS_SLOT_FALLBACK(ScrJsWrapperMemberSlot, scr_js_wrapper_member_slot);
+
 /* ── the generated table ─────────────────────────────────────────────── */
 
 typedef struct {
@@ -471,23 +479,27 @@ static void scr_js_method_owner(const char *owner, char *out, size_t room) {
   out[length] = '\0';
 }
 
+/* The wrapper unit's kind numbers (SCR_JS_WRAPPER_* in scr_js_wrapper.c). */
+enum {
+  SCR_JS_INTRINSIC_WRAPPER_STRING = 0,
+  SCR_JS_INTRINSIC_WRAPPER_NUMBER = 1,
+  SCR_JS_INTRINSIC_WRAPPER_BOOLEAN = 2,
+};
+
+/* Whether `id` names one of the three primitive wrapper prototypes, whose
+ * objects come from the wrapper unit (they carry the [[PrimitiveValue]] slot
+ * `new String/Number/Boolean(v)` inherits) and whose members this unit
+ * builds. */
+static bool scr_js_wrapper_id(const char *id) {
+  return strcmp(id, "Number.prototype") == 0 || strcmp(id, "String.prototype") == 0 ||
+         strcmp(id, "Boolean.prototype") == 0;
+}
+
 /* Whether `id` names a prototype object rather than a constructor. */
 static bool scr_js_id_is_prototype(const char *id) {
   size_t length = strlen(id);
   if (strstr(id, ".prototype") != NULL) return true;
   return length > 10 && strcmp(id + length - 10, "Prototype%") == 0;
-}
-
-/* Whether `id` names a prototype the runtime's own units already build and
- * answer (scr_js_wrapper.c, scr_dyn_builtin_prototype.c,
- * scr_dyn_stdlib_prototype.c). The frontend keeps lowering those reads
- * there, so this unit never builds a second object of the same intrinsic and
- * a wrapper prototype keeps naming the constructor the program's own closure
- * is (§4.4). */
-static bool scr_js_id_deferred(const char *id) {
-  return strcmp(id, "String.prototype") == 0 || strcmp(id, "Number.prototype") == 0 ||
-         strcmp(id, "Boolean.prototype") == 0 || strcmp(id, "BigInt.prototype") == 0 ||
-         strcmp(id, "Symbol.prototype") == 0 || strcmp(id, "Date.prototype") == 0;
 }
 
 /* The object `id` names: the runtime's singleton when it has one, else the
@@ -499,11 +511,21 @@ static ScrDyn *scr_js_create(const char *id) {
   if (strcmp(id, "Error.prototype") == 0) return scr_dyn_error_prototype();
   if (strcmp(id, "Function.prototype") == 0)
     return scr_dyn_new_func(scr_closure_new(NULL, 0), scr_js_function_prototype_call, 0, "native:prototype", "");
-  /* String, Number, Boolean and Date keep their own prototype builders
-   * (scr_js_wrapper.c, scr_dyn_builtin_prototype.c,
-   * scr_dyn_stdlib_prototype.c) and the frontend keeps answering those reads
-   * there, so no program links two builders of one intrinsic (§4.4) and a
-   * wrapper prototype names the constructor the program's own closure is. */
+  /* String, Number, Boolean, BigInt, Symbol and Date prototypes are built by
+   * this unit too (t262-da A2): one intrinsic, one builder, so a write the
+   * program makes through the prototype object is the object a read answers
+   * (§4.4). The three primitive wrapper prototypes are objects with a
+   * [[PrimitiveValue]] slot and the prototypes of `new String/Number/
+   * Boolean(v)`, which only the wrapper unit builds, so the table answers
+   * that unit's object through a slot and fills it with the table's members.
+   * A wrapper value keeps its own prototype builder for a program that never
+   * reads an intrinsic; a program that reads one walks into the graph through
+   * scr_js_intrinsic_prototype_of. A program that links the graph without
+   * naming a wrapper prototype fills no slot, and answers the ordinary table
+   * object this function made before the fold. */
+  if (scr_js_wrapper_id(id))
+    return scr_js_wrapper_intrinsic_prototype_slot ? scr_js_wrapper_intrinsic_prototype_slot(id)
+                                                   : scr_dyn_new_obj();
   if (!scr_js_id_is_prototype(id)) {
     ScrStr *name = scr_str_new(id, strlen(id));
     ScrDyn *constructor = scr_dyn_global_constructor_known(name) ? scr_dyn_global_constructor(name) : NULL;
@@ -513,6 +535,58 @@ static ScrDyn *scr_js_create(const char *id) {
   }
   return scr_dyn_new_obj();
 }
+
+/* ── the wrapper prototypes' members ─────────────────────────────────── */
+
+/* The wrapper kind of `owner` ("String", "Number" or "Boolean"). */
+static double scr_js_wrapper_kind_of(const char *owner) {
+  if (strcmp(owner, "String") == 0) return SCR_JS_INTRINSIC_WRAPPER_STRING;
+  if (strcmp(owner, "Number") == 0) return SCR_JS_INTRINSIC_WRAPPER_NUMBER;
+  return SCR_JS_INTRINSIC_WRAPPER_BOOLEAN;
+}
+/* Whether the providers above are in the invoke unit's table. The table is
+ * the unit's, not this thread's, so the flag is too. */
+static bool scr_js_wrapper_providers_registered;
+
+/* The provider the invoke unit's table asks for a wrapper prototype's
+ * member: the wrapper unit's interned member value for that owner and
+ * method, which is the member the prototype object itself holds. A member
+ * read on a primitive, on a wrapper instance and on the prototype object all
+ * pass through scr_dyn_builtin_method, so they answer this one value — the
+ * language's identity, `"abc".slice === String.prototype.slice` (§4.4's one
+ * intrinsic, one object, extended to the member value) — and a call through
+ * it runs the wrapper unit's method for the prototype, which is the function
+ * the frontend's wrapper.isStringMethod recognizes and lowers as the builtin
+ * String method (`new String("ab").repeat(2)` after a `String.prototype`
+ * read). +1, or NULL when the wrapper unit is not linked (this unit cannot be
+ * sure the program named a wrapper) or the prototype has no such member
+ * (String's `[Symbol.iterator]`); the table then keeps the interned function
+ * it answered before the fold. */
+static ScrDyn *scr_js_wrapper_member_value(const char *owner, const char *method, size_t method_len) {
+  if (!scr_js_wrapper_member_slot) return NULL;
+  return scr_js_wrapper_member_slot(scr_js_wrapper_kind_of(owner), method, method_len);
+}
+
+/* Registers the three providers in the invoke unit's table, once. The invoke
+ * unit asks for this on its first builtin member read (scr_dyn_invoke.c),
+ * which is before any wrapper prototype's members are filled or read; it
+ * cannot happen when this unit loads, because a load-time constructor is a
+ * link root and would pull the dynamic tier into programs that link the
+ * invoke unit alone (t262-da W4). A program that links this unit without the
+ * wrapper unit registers three providers that answer NULL, and keeps the
+ * interned functions it had before the fold. */
+static void scr_js_wrapper_member_providers_install(void) {
+  if (scr_js_wrapper_providers_registered) return;
+  scr_js_wrapper_providers_registered = true;
+  scr_dyn_member_provider_register("String", scr_js_wrapper_member_value);
+  scr_dyn_member_provider_register("Number", scr_js_wrapper_member_value);
+  scr_dyn_member_provider_register("Boolean", scr_js_wrapper_member_value);
+}
+/* The invoke unit asks for that through this slot (scr_dyn.h). The
+ * initializer is the whole of the wiring: this unit answers a program that
+ * links it, and the unit's own weak fallback answers the others. */
+ScrJsWrapperProvidersSlot scr_js_wrapper_member_providers_slot =
+    scr_js_wrapper_member_providers_install;
 
 /* The value of one member row, or NULL when the row defines nothing
  * (a constructor's `prototype`, which seeds the pair instead). */
@@ -533,6 +607,11 @@ static ScrDyn *scr_js_member_value(size_t index, const ScrJsIntrinsicRow *row) {
       size_t method_length = scr_js_member_name_length(row->a);
       ScrStr *prototype = scr_str_new(owner, strlen(owner));
       ScrStr *method = scr_str_new(row->a, method_length);
+      /* The wrapper owners' members are the wrapper unit's interned member
+       * values, which scr_dyn_builtin_method answers through the provider
+       * above — the same value a primitive's or a wrapper instance's member
+       * read gets, so `new String("ab").repeat` is the member the frontend
+       * recognizes as String.prototype.repeat. */
       ScrDyn *value = scr_dyn_builtin_method(prototype, method);
       scr_str_release(method);
       scr_str_release(prototype);
@@ -618,6 +697,13 @@ static ScrDyn *scr_js_member_value(size_t index, const ScrJsIntrinsicRow *row) {
  * present is a value the runtime's own builders installed and a call reaches
  * directly, so it stays. */
 static bool scr_js_replace_present(const ScrJsIntrinsicRow *row) {
+  /* The three primitive wrapper prototypes come from the wrapper unit, which
+   * defines members of its own when it built the object first (its methods,
+   * the `constructor` it was given): the table's members are the ones the
+   * program reads, so they replace them (t262-da A2). `length` is the
+   * exception: the wrapper object carries it as its own non-configurable
+   * property (String.prototype's is 0), which a redefine cannot replace. */
+  if (scr_js_wrapper_id(row->owner)) return strcmp(row->key, "length") != 0;
   if (scr_js_id_is_prototype(row->owner)) return false;
   return strcmp(row->key, "length") == 0 || strcmp(row->key, "name") == 0;
 }
@@ -636,10 +722,6 @@ static void scr_js_fill_row(size_t index, const ScrJsIntrinsicRow *row) {
    * so both directions of the link agree. */
   if (scr_js_kind_of(row->kind) == SCR_JS_INTRINSIC && strcmp(row->key, "prototype") == 0 &&
       !scr_js_id_is_prototype(row->owner) && key->kind != SCR_DYN_SYMBOL) {
-    if (scr_js_id_deferred(row->a)) {
-      scr_dyn_release(key);
-      return;
-    }
     ScrDyn *prototype = scr_js_intrinsic_sized(scr_js_object_index(row->a), row->a);
     scr_dyn_release(key);
     scr_dyn_fn_seed_prototype(object, prototype);
@@ -814,12 +896,25 @@ ScrDyn *scr_js_intrinsic_prototype_of(const ScrDyn *value) {
     if (!prototype_id) return NULL;
     if (strcmp(prototype_id, "null") == 0) return scr_dyn_new_null();
     if (strcmp(prototype_id, "?") == 0) return NULL;
-    if (scr_js_id_deferred(prototype_id)) return NULL;
     size_t prototype_index = scr_js_object_index(prototype_id);
     if (prototype_index == SIZE_MAX) return NULL;
     return scr_js_build(prototype_index);
   }
   switch (value->kind) {
+  /* A primitive answers the prototype the table builds for it: the same
+   * object `Number.prototype` reads, so a member the program writes there —
+   * a new key, or one it replaced through a dynamic receiver — is the member
+   * a dynamic read of a value finds. */
+  case SCR_DYN_BOOL:
+    return scr_js_intrinsic_sized(scr_js_object_index("Boolean.prototype"), "Boolean.prototype");
+  case SCR_DYN_NUM:
+    return scr_js_intrinsic_sized(scr_js_object_index("Number.prototype"), "Number.prototype");
+  case SCR_DYN_STR:
+    return scr_js_intrinsic_sized(scr_js_object_index("String.prototype"), "String.prototype");
+  case SCR_DYN_BIGINT:
+    return scr_js_intrinsic_sized(scr_js_object_index("BigInt.prototype"), "BigInt.prototype");
+  case SCR_DYN_SYMBOL:
+    return scr_js_intrinsic_sized(scr_js_object_index("Symbol.prototype"), "Symbol.prototype");
   case SCR_DYN_FUNC:
     return scr_js_intrinsic_sized(scr_js_object_index("Function.prototype"), "Function.prototype");
   case SCR_DYN_PROMISE:
@@ -827,8 +922,7 @@ ScrDyn *scr_js_intrinsic_prototype_of(const ScrDyn *value) {
   case SCR_DYN_HANDLE:
     switch (value->v.handle.tag) {
     case SCR_DYNH_DATE:
-      /* Date.prototype keeps scr_dyn_stdlib_prototype's object. */
-      return NULL;
+      return scr_js_intrinsic_sized(scr_js_object_index("Date.prototype"), "Date.prototype");
     case SCR_DYNH_REGEXP:
       return scr_js_intrinsic_sized(scr_js_object_index("RegExp.prototype"), "RegExp.prototype");
     case SCR_DYNH_MAP:

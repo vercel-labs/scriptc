@@ -75,11 +75,12 @@ console.log(typeof mapMethods, typeof get, typeof test);
   expect(reads.builtinPrototype).toBe(0);
 });
 
-// The primitive wrappers keep the runtime builders that already own their
-// prototype object: `Number.prototype` and `Boolean.prototype` never reach
-// the table, so one intrinsic never has two builders (§4.4), and the
-// constructor a wrapper prototype names is the program's own closure.
-test("a primitive wrapper prototype keeps its existing builder", async () => {
+// The primitive wrappers are the table's objects too (t262-da A2): the
+// runtime's own builders still exist for a program that never reads an
+// intrinsic, but a fact program reads the table's object, so one intrinsic
+// never has two builders (§4.4) and a write through the prototype object is
+// the object a read answers.
+test("a primitive wrapper prototype reads the table's object", async () => {
   const reads = await intrinsicReads(
     `
 const fixed = Number.prototype.toFixed;
@@ -87,10 +88,10 @@ const booleanMethods = Boolean.prototype.valueOf;
 console.log(typeof fixed, typeof booleanMethods);
 `,
   );
-  expect(reads.intrinsics).toEqual([]);
+  expect(reads.intrinsics).toEqual(["Number.prototype", "Boolean.prototype"]);
   expect(reads.stdlibPrototype).toBe(0);
-  expect(reads.builtinPrototype).toBe(1);
-  expect(reads.wrapperBooleanPrototype).toBe(1);
+  expect(reads.builtinPrototype).toBe(0);
+  expect(reads.wrapperBooleanPrototype).toBe(0);
 });
 
 // A program that never reads one of those objects has no fact: no

@@ -229,6 +229,31 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   }
 });
 
+test("the wrapper unit carries the object-model build a wrapper prototype selects", () => {
+  // The intrinsic graph reaches the wrapper unit's prototype builder through
+  // a slot the unit defines with a static initializer, and the definition is
+  // the unit's object-model code (scr_dyn.h, t262-da A2). A program that
+  // reads `Boolean.prototype` therefore needs the object-model build of the
+  // unit: its default build defines no slot, and the graph would answer an
+  // ordinary object with the interner's members. Every other program keeps
+  // the default object, byte for byte.
+  const plain = { primitiveWrapper: false, jsObjectModel: false, workers: false };
+  expect(selected("scr_js_wrapper.c", plain).defines).toEqual([]);
+  expect(selected("scr_js_wrapper.c", { ...plain, primitiveWrapper: true }).defines).toEqual([]);
+  expect(
+    selected("scr_js_wrapper.c", { ...plain, primitiveWrapper: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL"]);
+  // A worker program keeps its thread build beside it, so the unit's TLS
+  // agrees with the rest of the runtime.
+  expect(
+    selected("scr_js_wrapper.c", {
+      primitiveWrapper: true,
+      jsObjectModel: true,
+      workers: true,
+    }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_WORKERS"]);
+});
+
 test("the builtin intrinsic graph is one object-model unit", () => {
   const plain = { jsObjectModel: false, intrinsicObjects: false, workers: false };
   const unit = matrix.runtime_units.find(

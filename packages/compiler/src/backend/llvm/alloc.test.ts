@@ -4,6 +4,7 @@ import {
   disposeHookLoadLines,
   emitObjectAlloc,
   emitObjectFree,
+  emitSegmentFree,
   inlineAllocSupported,
 } from "./alloc.js";
 
@@ -176,6 +177,85 @@ describe("emitted object allocation", () => {
         expect(lines).toContain("  %sf.old = icmp eq i8 %sf.gen, 2");
       }
       expect(lines.at(-1)).toBe("sf.done:");
+    }
+  });
+
+  test("inline frees push only blocks whose chunk carries the thread's tag", () => {
+    const h = host(true);
+    const lines = emitObjectFree(h, false);
+    expectSingleDefinitions(lines);
+    // The chunk-table entry: the arena's tag above the size class.
+    expect(lines).toContain("  %sf.ci = lshr i64 %sf.off, 22");
+    expect(lines).toContain(
+      "  %sf.ep = getelementptr inbounds i16, ptr @scr_sa_chunks, i64 %sf.ci",
+    );
+    expect(lines).toContain("  %sf.tagp = getelementptr inbounds i8, ptr @scr_sa, i64 16");
+    // Entry xor tag is below 256 for the thread's chunks, and is their class.
+    expect(lines).toContain("  %sf.x = xor i32 %sf.e, %sf.tag");
+    expect(lines).toContain("  %sf.mine = icmp ult i32 %sf.x, 256");
+    expect(lines).toContain("  br i1 %sf.minex, label %sf.push, label %sf.sys");
+    expect(lines).toContain("  %sf.c8 = shl i64 %sf.xc, 3");
+    expect(h.decls).toContain("@scr_sa_chunks = external global [7168 x i16]");
+    // A teardown segment takes its class from its first block's chunk.
+    const segment = emitSegmentFree(h, "sg", "%first", "%last");
+    expectSingleDefinitions(segment);
+    expect(segment).toContain(
+      "  %sg.ep = getelementptr inbounds i16, ptr @scr_sa_chunks, i64 %sg.ci",
+    );
+    expect(segment).toContain("  %sg.c32 = and i32 %sg.e, 255");
+  });
+
+  test("a sized free compares the entry with its constant class and pushes without it", () => {
+    const h = host(true);
+    const lines = emitObjectFree(h, true, "weak", null, "40");
+    expectSingleDefinitions(lines);
+    // 40 bytes plus the 8-byte collector header: class 5.
+    expect(lines).toContain("  %sf.n = add i64 40, 8");
+    expect(lines).toContain("  %sf.entry = icmp eq i32 %sf.x, %sf.cls32");
+    expect(lines).toContain("  %sf.mine = and i1 %sf.entry, %sf.small");
+    expect(lines).toContain("  %sf.c8 = shl i64 %sf.cls, 3");
+    expect(lines.some((l) => l.includes("and i32 %sf.e, 255"))).toBe(false);
+  });
+
+  test("worker frees address the thread's state, and the chunk table as a global", () => {
+    const h = { ...host(true), threadLocalAlloc: true };
+    const lines = emitObjectFree(h, false);
+    expectSingleDefinitions(lines);
+    expect(lines).toContain(
+      "  %sf.ep = getelementptr inbounds i16, ptr @scr_sa_chunks, i64 %sf.ci",
+    );
+    expect(lines).toContain("  %sf.tagp = getelementptr inbounds i8, ptr %sf.tl.sa, i64 16");
+    expect(lines.some((l) => l.includes("ptr @scr_sa,") || l.endsWith(" ptr @scr_sa"))).toBe(false);
+  });
+
+  test("with the chunk map, worker frees index it by the block's address", () => {
+    const h = { ...host(true), windowMap: true, threadLocalAlloc: true };
+    const lines = emitObjectFree(h, false);
+    expectSingleDefinitions(lines);
+    expect(lines).toContain("  %sf.ci = lshr i64 %sf.bi, 22");
+    expect(lines).toContain("  %sf.in = icmp ult i64 %sf.ci, 8192");
+    expect(lines).toContain(
+      "  %sf.ep = getelementptr inbounds i16, ptr @scr_sa_chunk_map, i64 %sf.ci",
+    );
+    expect(lines).toContain("  %sf.x = xor i32 %sf.e, %sf.tag");
+    expect(h.decls).toContain("@scr_sa_chunk_map = external global [8192 x i16]");
+    expect(lines.some((l) => l.includes("@scr_sa_slice_span"))).toBe(false);
+  });
+
+  test("frees of a program without workers push a block of a slice by its offset", () => {
+    for (const keep of [null, "%kept"]) {
+      const h = { ...host(true), windowMap: true };
+      const lines = emitObjectFree(h, false, "weak", keep);
+      expectSingleDefinitions(lines);
+      expect(lines).toContain("  %sf.so = sub i64 %sf.sp, %sf.sb");
+      expect(lines).toContain("  %sf.sin = icmp ult i64 %sf.so, %sf.ss");
+      expect(lines).toContain("  br i1 %sf.sinx, label %sf.slice, label %sf.sys");
+      expect(lines).toContain("  %sf.sc = lshr i64 %sf.so, 28");
+      expect(h.decls).toContain("@scr_sa_slice_span = external global i64");
+      // Any other block takes the out-of-line free: no chunk lookup inline.
+      expect(lines.some((l) => l.includes("@scr_sa_chunk"))).toBe(false);
+      if (keep === null) expect(lines).toContain("  %sfs.c8 = shl i64 %sf.sc, 3");
+      else expect(lines).toContain("  store ptr %o, ptr %kept");
     }
   });
 

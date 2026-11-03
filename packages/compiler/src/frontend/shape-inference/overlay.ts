@@ -841,6 +841,57 @@ export function planShapeOverlay(
       countGetters(sf);
     }
 
+    // The local `const` whose literal initializer creates every record in
+    // `atoms`, when a type meant for another binding can move there. A
+    // binding initialized with another binding names the same record rather
+    // than copying it, so annotating the second name with a widened record
+    // type makes the lowering convert (copy) the record there, and writes
+    // through the first name stop being visible. The record's own
+    // declaration has no such aliasing: annotating it types the value where
+    // it is created.
+    const recordOwner = (atoms: ReadonlySet<Atom>): ts.Node | null => {
+      let owner: ts.Node | null = null;
+      for (const a of atoms) {
+        if (a.kind !== "object" && a.kind !== "array") continue;
+        let lit = a.node;
+        if (lit === undefined) return null;
+        while (ts.isParenthesizedExpression(lit)) lit = lit.expression;
+        const decl = lit.parent;
+        if (
+          decl === undefined ||
+          !ts.isVariableDeclaration(decl) ||
+          decl.initializer !== lit ||
+          !ts.isIdentifier(decl.name)
+        )
+          return null;
+        const list = decl.parent;
+        if (
+          list === undefined ||
+          !ts.isVariableDeclarationList(list) ||
+          (list.flags & ts.NodeFlags.Const) === 0 ||
+          list.declarations.nodes.length !== 1
+        )
+          return null;
+        const stmt = list.parent;
+        if (
+          stmt === undefined ||
+          !ts.isVariableStatement(stmt) ||
+          // A module-level binding, or a declaration in another file: the
+          // annotation this file emits must be a local statement of this
+          // file.
+          stmt.parent === sf ||
+          stmt.getSourceFile() !== sf
+        )
+          return null;
+        if (owner !== null && owner !== stmt) return null;
+        owner = stmt;
+      }
+      return owner;
+    };
+    // Record declarations already typed by an alias of them: the annotation
+    // is one per declaration, however many names refer to it.
+    const annotatedRecords = new Set<ts.Node>();
+
     const visit = (node: ts.Node): void => {
       if (ts.isMethodDeclaration(node)) receiverCasts(node);
       if (
@@ -924,12 +975,33 @@ export function planShapeOverlay(
               `[shape-overlay-why] ${d.name.text}@${sf.getLineAndCharacterOfPosition(ts.tokenStartOfNode(d)).line + 1}: ${t} <- ${[...analysis.declValues(d)].map((a) => `${a.kind}:${a.label}`).join(" | ")}\n`,
             );
           if (t !== null && !documented) {
-            // The statement's first declarator takes the statement-level tag
-            // (the only position the checker reads it from); a later one
-            // takes a tag in its own leading trivia.
-            const first = d === declarations[0];
-            annotate(ts.tokenStartOfNode(first ? node : d), `@type {${t}}`);
-            typedDecls.add(d);
+            // A binding initialized from another binding keeps the other
+            // name's record; the annotation belongs on the record's own
+            // declaration, where no conversion can copy a value that is
+            // still reachable through the first name. When the record is not
+            // created at a local `const` this file can type, the binding
+            // stays untyped instead of forcing that copy.
+            const aliases = ts.isIdentifier(init) && /__shape_\d|Array</.test(t);
+            const owner = aliases ? recordOwner(analysis.declValues(d)) : null;
+            if (!aliases) {
+              // The statement's first declarator takes the statement-level tag
+              // (the only position the checker reads it from); a later one
+              // takes a tag in its own leading trivia.
+              const first = d === declarations[0];
+              annotate(ts.tokenStartOfNode(first ? node : d), `@type {${t}}`);
+              typedDecls.add(d);
+            } else if (
+              owner !== null &&
+              !annotatedRecords.has(owner) &&
+              !packageDocOf(owner).type
+            ) {
+              const ownerDecl = (owner as ts.VariableStatement).declarationList.declarations
+                .nodes[0]!;
+              if (typeOf(analysis.declValues(ownerDecl), false, 0) === t) {
+                annotatedRecords.add(owner);
+                annotate(ts.tokenStartOfNode(owner), `@type {${t}}`);
+              }
+            }
           }
         }
       }

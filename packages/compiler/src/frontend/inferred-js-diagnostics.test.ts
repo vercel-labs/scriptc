@@ -189,3 +189,27 @@ test.for([
     diagnostics(library, 'import * as library from "./library.js"; console.log(library);').length,
   ).toBeGreaterThan(0);
 });
+
+test("a checked JavaScript file keeps a typed slot its JSDoc declared", () => {
+  // TS2322 is one of the opinion table's `checkedJs: "enforce"` rows: a
+  // project that asked tsc to check its JavaScript keeps the error, while
+  // the same file unchecked takes the opinion (nothing at runtime checks the
+  // annotation Node never reads).
+  const main = 'import * as library from "./library.js"; console.log(library);';
+  const library = "/** @type {string} */\nexport let box = 1;\n";
+  expect(diagnostics(`// @ts-check\n${library}`, main).map((d) => d.message)).toContain(
+    "Type 'number' is not assignable to type 'string'.",
+  );
+  expect(diagnostics(library, main)).toEqual([]);
+});
+
+test("a checked JavaScript file still takes the opinions its JSDoc never asked for", () => {
+  // TS7006 has no `checkedJs: "enforce"`: checkJs asks tsc to check the
+  // JSDoc a file carries, not to invent parameter annotations it does not.
+  expect(
+    diagnostics(
+      "// @ts-check\nexport function add(a, b) { return a + b; }\n",
+      'import { add } from "./library.js"; console.log(add(1, 2));',
+    ),
+  ).toEqual([]);
+});

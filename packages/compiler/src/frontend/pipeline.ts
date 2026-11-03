@@ -19,6 +19,7 @@ import { entryContractFacts, type ContractFacts } from "./lib-contract.js";
 import {
   canonicalBuiltinModule,
   npmBuiltinAliasOf,
+  checkModuleOrder,
   checkPreflight,
   isNodeTypesPath,
   locOf,
@@ -724,14 +725,22 @@ function loadFrontend(
   // count (every iteration settles
   // at least one new package for good).
   if (npmStatic === "lib") {
+    let reloaded = false;
     for (;;) {
       const grown = detectAutoPackages(load, statuses, "lib", judged, npmSites, transitive);
       if (grown.length === 0) break;
       requested = [...requested, ...grown];
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: requested, externalTypes });
-      preflight = checkPreflight(load);
+      // A rung's only consumer is the next `detectAutoPackages`, which reads
+      // the module order and the dynamic-import rejections. Its diagnostics
+      // are read only if it turns out to be the fixpoint's LAST rung, so they
+      // wait for the single full preflight below (which completes this walk
+      // rather than repeating it).
+      checkModuleOrder(load);
+      reloaded = true;
     }
+    if (reloaded) preflight = checkPreflight(load);
   }
   const effective = new Set(requested);
   // Packages refused only because the program does not typecheck against
@@ -795,13 +804,19 @@ function loadFrontend(
   // declaration-only members, or a .d.ts type-GUARD an inferred JS
   // function cannot reproduce). Those SC0001s anchor in USER files no
   // offender or
-  // message attribution reaches, so each remaining package is probed
-  // ALONE-dropped (n is the opt-in count — a handful of extra analysis
-  // loads); culprits whose removal clears the errors fall back with a
-  // note, and if no subset typechecks, everything drops. Explicit opt-ins
-  // degrade the same way — the ratified stance for bundle-shaped dists is
-  // graceful per-package degradation, never a failed gate the user cannot
-  // act on (the note carries the why).
+  // message attribution reaches, so each package is probed by LEAVE-ONE-OUT
+  // (n is the opt-in count — a handful of extra analysis loads): the set
+  // minus that package is exactly the load that would follow dropping it. A
+  // package whose removal clears or changes the errors is a culprit and
+  // falls back with a note. A package whose absence leaves the errors
+  // untouched is not; and when NO package attributes, the flag's own typing
+  // produced the diagnostic, so the set keeps every package and the error is
+  // reported as the one diagnostic it is. Explicit opt-ins degrade the same
+  // way — the ratified stance for bundle-shaped dists is graceful
+  // per-package degradation, never a failed gate the user cannot act on
+  // (the note carries the why). A diagnostic the program reports without ANY
+  // opt-in is not a package's either: that baseline keeps the set and the
+  // error is reported once.
   if (effective.size > 0 && preflight.some((d) => d.code === "SC0001")) {
     const lastResortDropped: string[] = [];
     const dropWithNote = (p: string): void => {
@@ -820,23 +835,73 @@ function loadFrontend(
               : "the program does not typecheck against its inferred surface (type-only declarations and .d.ts type guards have no JS value inference can chase)",
       });
     };
-    // Attribute per package by probing each SOLO (culprits are almost
-    // always independent — each package's inferred surface breaks its own
-    // import sites), then reload with the survivors; interaction effects
-    // that still fail drop everything left.
-    for (const p of [...effective]) {
-      const probe = loadProgram(entryPath, { npmStatic: [p], externalTypes });
-      const probeDiags = checkPreflight(probe);
-      probe.dispose();
-      if (probeDiags.some((d) => d.code === "SC0001")) dropWithNote(p);
+    // A diagnostic the program also reports with NO opt-in at all is the
+    // program's own type error: every package would "reproduce" it, so the
+    // per-package probe below cannot attribute it and would drop the whole
+    // set. Read that baseline once, and let the set keep its packages: the
+    // error is reported as the one diagnostic it is (the splice at the end
+    // of this function has the same stance for a program that only fails
+    // after the drop).
+    const diagKey = (d: ScrDiagnostic): string => `${d.code}|${d.loc.file}|${d.loc.start}`;
+    let baselineKeys: Set<string> | null = null;
+    // Each load installs its own package set as npm-static's live state
+    // (program.ts), and lowering and the program-source classification read
+    // that state after this function returns. A load opened here with a
+    // probe's set therefore has to be followed by one reload of the set the
+    // retained program keeps, unless a culprit reload already reset it.
+    let probeStateStale = false;
+    const programOwnsDiagnostic = (): boolean => {
+      if (baselineKeys === null) {
+        const bare = loadProgram(entryPath, { npmStatic: [], externalTypes });
+        probeStateStale = true;
+        try {
+          baselineKeys = new Set(
+            checkPreflight(bare)
+              .filter((d) => d.code === "SC0001")
+              .map(diagKey),
+          );
+        } finally {
+          bare.dispose();
+        }
+      }
+      const known = baselineKeys;
+      return known.size > 0 && preflight.every((d) => d.code !== "SC0001" || known.has(diagKey(d)));
+    };
+    // Attribute by LEAVE-ONE-OUT: the set minus one package is the load
+    // that would follow dropping it. A package whose removal clears — or
+    // changes — the errors is a culprit; a package whose absence leaves them
+    // exactly as they are is not. When no package attributes, the flag's own
+    // typing produced the diagnostic and the set keeps every package: one
+    // program diagnostic must never refuse the whole set (the pi shape: an
+    // error no subset removes, collapsed into a refusal per package, and
+    // the program still did not typecheck afterwards).
+    if (!programOwnsDiagnostic()) {
+      const sc0001Keys = (diags: readonly ScrDiagnostic[]): string =>
+        diags
+          .filter((d) => d.code === "SC0001")
+          .map(diagKey)
+          .sort()
+          .join("\n");
+      const loadKeys = sc0001Keys(preflight);
+      const culprits: string[] = [];
+      for (const p of [...effective]) {
+        const rest = [...effective].filter((q) => q !== p);
+        const probe = loadProgram(entryPath, { npmStatic: rest, externalTypes });
+        probeStateStale = true;
+        const probeDiags = checkPreflight(probe);
+        probe.dispose();
+        if (sc0001Keys(probeDiags) !== loadKeys) culprits.push(p);
+      }
+      if (culprits.length > 0) {
+        for (const p of culprits) dropWithNote(p);
+        if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
+        load.dispose();
+        load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
+        preflight = checkPreflight(load);
+        probeStateStale = false;
+      }
     }
-    if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
-    load.dispose();
-    load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
-    preflight = checkPreflight(load);
-    if (preflight.some((d) => d.code === "SC0001") && effective.size > 0) {
-      for (const p of [...effective]) dropWithNote(p);
-      if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
+    if (probeStateStale) {
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
       preflight = checkPreflight(load);
@@ -939,6 +1004,7 @@ function loadFrontend(
           ...opts,
           frontendServices: l.services,
           startupCrash: l.startupCrash ?? null,
+          admittedOpinions: l.admittedOpinions,
           inlineRequireCycleCalls: l.inlineRequireCycleCalls,
           moduleEdges: l.moduleEdges,
           dynamicImportRejections: l.dynamicImportRejections,

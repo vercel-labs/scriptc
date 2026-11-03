@@ -50,7 +50,7 @@ import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
-import { boundSpecifier, type SpecifierBound } from "../specifier-bounds.js";
+import { boundSpecifier } from "../specifier-bounds.js";
 import { tsgoPath } from "../dts-paths.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 
@@ -2252,12 +2252,23 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   // The specifier text must be known at build time. A written string literal
   // asks the checker: collectDynamicImports recorded that answer under the same
   // key, and it is the answer Node receives after compilation (`./a.js` maps to
-  // a.ts). A constant expression (`import("node:" + "fs")`, `import(FS)`) is a
-  // value the load names at run time, so it takes the same bounded path as any
-  // other computed specifier (SPEC §5.1): that path keys the table by each value
-  // exactly as collection did, and coerces each arm to this site's promise type.
-  if (!ts.isStringLiteralLike(arg)) return lowerBoundedDynamicImport(lowerer, call, arg);
-  const specifier = arg.text;
+  // a.ts). A constant expression (`import("node:" + "fs")`, `import(FS)`) names
+  // that same single module, so it lowers exactly as the literal site does and
+  // keeps the site's static namespace; only a specifier with more than one value
+  // needs the bounded selector (SPEC §5.1).
+  if (ts.isStringLiteralLike(arg)) return lowerResolvedImport(lowerer, call, arg.text);
+  const folded = staticString(lowerer, arg);
+  if (folded !== null) return lowerResolvedImport(lowerer, call, folded);
+  return lowerBoundedDynamicImport(lowerer, call, arg);
+}
+
+/** The single module a build-time specifier names, lowered the way the literal
+ * site of the same text is: its recorded entry answers the arm. */
+function lowerResolvedImport(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  specifier: string,
+): IrExpr {
   const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
@@ -2281,12 +2292,9 @@ function lowerBoundedDynamicImport(
   arg: ts.Expression,
 ): IrExpr {
   const loc = locOf(call);
-  // A constant expression has exactly one value (main folds it before the bound
-  // is asked); only the remaining forms need the bounder. Mirror
-  // collectDynamicImports so the site reads back the entries it recorded.
-  const folded = staticString(lowerer, arg);
-  const bound: SpecifierBound =
-    folded === null ? boundSpecifier(lowerer, arg) : { kind: "set", values: [folded] };
+  // Only a specifier with no single build-time value reaches here; the bounder
+  // answers the values it can, mirroring collectDynamicImports' entries.
+  const bound = boundSpecifier(lowerer, arg);
   if (bound.kind !== "set") {
     const at = ts.getSourceFileOfNode(bound.at);
     const line = ts.getLineAndCharacterOfPosition(at, ts.tokenStartOfNode(bound.at)).line + 1;

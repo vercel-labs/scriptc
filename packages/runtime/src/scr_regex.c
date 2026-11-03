@@ -1838,7 +1838,7 @@ ScrStr *scr_regex_replace_fn(ScrStr *s, ScrRegex *re, ScrClosure *f, uint32_t ar
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
- * Node v24.22.0's pattern (internal/util/inspect.js), applied with /g:
+ * Node v24.22.1's pattern (internal/util/inspect.js), applied with /g:
  *   (?:\u001B\][\s\S]*?(?:\u0007|\u001B\u005C|\u009C))
  *   |[\u001B\u009B][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?
  *    [\dA-PR-TZcf-nq-uy=><~]

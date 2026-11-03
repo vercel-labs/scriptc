@@ -43,7 +43,13 @@ import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
-import { hostedStorageView, hostsAll } from "./hosted-narrowing.js";
+import {
+  hostedStorageView,
+  hostsAll,
+  recordViewHosted,
+  viewHostedArmTags,
+} from "./hosted-narrowing.js";
+import { bindingIdentityUse } from "../divergences.js";
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
@@ -378,7 +384,7 @@ export function lowerTernary(
       (thenRaw.type.kind === "dyn" || elseRaw.type.kind === "dyn") &&
       lowerer.dynConvertible(thenRaw.type) &&
       lowerer.dynConvertible(elseRaw.type);
-    const type =
+    let type =
       callableJoin || checkedJsJoin
         ? DYN
         : thenRaw.type.kind === "array" && typeEquals(thenRaw.type, elseRaw.type)
@@ -386,6 +392,26 @@ export function lowerTernary(
           : dynJoin
             ? DYN
             : (anyJoin ?? (useCtx && ctxMapped ? ctxMapped : lowerer.irTypeOf(expr)));
+    // An arm the checker types at the join can still hold an absent value
+    // at run time (`flag ? empty.a : empty.b`): an unchecked key or element
+    // read whose storage carries the undefined arm. The join keeps that
+    // arm, so the ternary's result represents the missing value instead of
+    // coercing it into the checker's narrower type. The absent-capable
+    // origin is part of the test: an arm holding a declared optional that
+    // the ternary's own guard proved present (`h.via === undefined ? "-" :
+    // h.via`) is not an unchecked read, and its narrowed join stands.
+    const admitsUndefined = (t: IrType): boolean =>
+      t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
+    if (
+      !admitsUndefined(type) &&
+      ((lowerer.isRuntimeOptionalOrigin(expr.whenTrue) &&
+        lowerer.runtimeOptionalWidening(thenRaw.type, type) !== null) ||
+        (lowerer.isRuntimeOptionalOrigin(expr.whenFalse) &&
+          lowerer.runtimeOptionalWidening(elseRaw.type, type) !== null))
+    ) {
+      const widened = lowerer.runtimeOptionalType(type);
+      if (admitsUndefined(widened)) type = widened;
+    }
     // Each arm flows into the ternary's type through the slot-coercion
     // path: union arms wrap, dyn slots reject the non-dyn arm with
     // SC1101, mismatched record shapes get SC2002; coerceInto is
@@ -1128,8 +1154,24 @@ export function runtimeOptionalReceiverRead(
     // array mutation can leave any of the stored tags in the slot. Use
     // the checked helper so every other arm, including undefined, remains
     // a catchable TypeError rather than an unchecked payload read.
-    const helper = lowerer.narrowedArmHelper(local.type.unionId, narrowed, loc);
-    if (!helper) {
+    let extraction: { helper: string; target: IrType } | null = null;
+    const direct = lowerer.narrowedArmHelper(local.type.unionId, narrowed, loc);
+    if (direct) extraction = { helper: direct, target: narrowed };
+    else if (narrowedNode !== expr) {
+      // An erased wrapper types the WRAPPER, not the capture: `x as T`
+      // names T even where the checker's flow type at `x` itself proves
+      // one stored arm. Node erases the wrapper and the value keeps its
+      // stored layout, which is what the two-arm path reads through
+      // (maybeNarrow, below). Take that proved arm here too instead of
+      // refusing every capture whose storage has several arms.
+      const flow = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      const helper =
+        flow && !isUnitType(flow) && lowerer.armTag(local.type.unionId, flow) >= 0
+          ? lowerer.narrowedArmHelper(local.type.unionId, flow, loc)
+          : null;
+      if (flow && helper) extraction = { helper, target: flow };
+    }
+    if (!extraction) {
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -1137,7 +1179,12 @@ export function runtimeOptionalReceiverRead(
       );
     }
     return holeGuarded(
-      lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), narrowed, loc),
+      lowerer.checkedNarrowCall(
+        extraction.helper,
+        varRef(local.id, local.type, loc),
+        extraction.target,
+        loc,
+      ),
     );
   }
   // A predicate can strengthen a record's fields or narrow a base class
@@ -1391,6 +1438,23 @@ function freshEntriesRecordAssertion(
   return { kind: "dynCheck", value: lowerer.coerceToExpected(inner, DYN), type: target, loc };
 }
 
+/** Whether the assertion `expr` initializes a `const` binding whose identity
+ * a field copy would change: something writes through the binding, or
+ * compares it with `===`/`!==`. Node erases the assertion, so such a binding
+ * must reach the value itself; a read-only view answers the same members
+ * either way and keeps the copy (`divergences.ts`, `bindingIdentityUse`). */
+function assertedBindingUsesIdentity(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let node: ts.Node = expr;
+  while (
+    node.parent !== undefined &&
+    (ts.isParenthesizedExpression(node.parent) || ts.isNonNullExpression(node.parent))
+  )
+    node = node.parent;
+  const decl = node.parent;
+  if (decl === undefined || !ts.isVariableDeclaration(decl)) return false;
+  return bindingIdentityUse(decl, lowerer.checker);
+}
+
 /** `e as T` and the old-style assertion `<T>e` — one node shape (both
  * carry `.type` and `.expression`), one lowering. */
 export function lowerAsExpression(
@@ -1584,6 +1648,22 @@ export function lowerAsExpression(
     if (inner.type.kind === "record" && target && hostsAll(lowerer, inner.type, target)) {
       return inner;
     }
+    // `tagged as Labeled` on a record: the view names members the value
+    // already stores, so the assertion is pure typing (Node keeps the
+    // object) and the stored layout answers every read and write of them.
+    // Only a view with a member the value does not hold copies. A binding
+    // whose identity a copy would change (a write through it, an identity
+    // comparison) keeps the storage; a read-only view is equal either way
+    // and keeps the copy the width-copy report names.
+    if (
+      assertedBindingUsesIdentity(lowerer, expr) &&
+      inner.type.kind === "record" &&
+      target?.kind === "record" &&
+      recordViewHosted(lowerer, inner.type.shapeId, target.shapeId)
+    ) {
+      lowerer.layoutKeptNodes.add(expr);
+      return inner;
+    }
     // Static assertions normally erase, but record layouts are
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
@@ -1625,6 +1705,27 @@ export function lowerAsExpression(
       if (target && (target.kind === "union" || target.kind === "record")) {
         const hosted = hostedStorageView(lowerer, inner, target, locOf(expr));
         if (hosted) return hosted;
+      }
+      // A projection of ONE arm (`{ text: string }` over a
+      // `TextBlock | ThinkingBlock` value): that arm's own storage carries
+      // the view, so the checked extraction returns the arm itself and the
+      // binding keeps it — reads and writes through it reach the original
+      // object. A view no single arm presents keeps the coercion below, and
+      // so does a READ-ONLY binding: Node's read answers undefined for an
+      // arm that does not declare the member (`(entry as { when?: number })
+      // .when` over `Stamped | Unstamped`), which the coercion reproduces
+      // and the checked extraction would not (it traps on the other arm).
+      // Only a binding whose identity is observable reaches the arm itself.
+      if (target?.kind === "record" && assertedBindingUsesIdentity(lowerer, expr)) {
+        const tags = viewHostedArmTags(lowerer, inner.type.unionId, target);
+        if (tags !== null && tags.size === 1) {
+          const arm = lowerer.unions.get(inner.type.unionId)!.arms[[...tags][0]!]!;
+          const helper = lowerer.narrowedArmHelper(inner.type.unionId, arm, locOf(expr));
+          if (helper) {
+            lowerer.layoutKeptNodes.add(expr);
+            return lowerer.checkedNarrowCall(helper, inner, arm, locOf(expr));
+          }
+        }
       }
     }
     // `node.parent as Sub | undefined`: a union target whose class arm is
@@ -1763,9 +1864,24 @@ function checkedDynCast(
     !freshDynSource(lowerer, expr, inner) &&
     !resultOnlyRead(lowerer, expr)
   ) {
+    // An index-signature type keeps the keys it does not declare in an
+    // overflow map, which a record view does not share (plainShape in
+    // record-views.ts): the conversion answers a copy, so a
+    // write through the assertion would reach that copy alone and be lost
+    // to the record the source still names. The value keeps its dynamic
+    // form instead, and every key of the assertion rides the source's own
+    // keyed reads and writes.
+    if (overflowMapRecord(lowerer, target)) return inner;
     return adoptingCast(lowerer, inner, target, locOf(expr), "dyn.adoptShared");
   }
   return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
+}
+
+/** Whether `target` keeps undeclared keys in an overflow map, the one
+ * record storage a checked conversion cannot share with its source. */
+function overflowMapRecord(lowerer: Lowerer, target: IrType): boolean {
+  if (target.kind !== "record") return false;
+  return lowerer.shapes.get(target.shapeId)?.indexValue !== undefined;
 }
 
 /** A cast whose result only serves one read of a primitive member

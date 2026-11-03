@@ -9,6 +9,8 @@ import {
 } from "./emitter.js";
 import { type IrFunction, type IrModule, type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
 import { INT32_FALLBACK_SUFFIX } from "../../ir/parameter-versions.js";
+import { planJsGroups } from "../../ir/js-groups.js";
+import { jsImmediates } from "./jsval.js";
 import { BlockBuilder } from "./blocks.js";
 import { findPrivateSplitLocals } from "./split-loops.js";
 import {
@@ -28,6 +30,7 @@ import {
 } from "./map-read-lifetimes.js";
 import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
+import { findRecordEntryFusions } from "./record-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
 import { findLocalUnionStorage } from "./local-union-storage.js";
@@ -103,6 +106,13 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.findInt32Allocations(fn);
   emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
+  // Guard groups (js-groups.ts): dynamic-tier reads of one subject inside
+  // one statement share one layout probe.
+  emitter.groupRuns.clear();
+  emitter.jsGroupPlan =
+    fn.tier === "dynamic" && jsImmediates(emitter)
+      ? planJsGroups(fn, emitter.jsIcSites, emitter.int32Abis)
+      : null;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
   B.excCellInvariant = fn.async !== true && fn.generator === undefined;
@@ -252,6 +262,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
   emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
+  emitter.recordEntryFusion = emitter.debug === null ? findRecordEntryFusions(emitter, fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,
     emitter.callLifetimes,
@@ -279,7 +290,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   beginLoopEntryVersions(emitter, numericFn, slotFacts, rangeFacts);
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
-  emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
+  emitter.bytesBounds =
+    emitter.mod.bytesHeadersMutable === true
+      ? new Set()
+      : findBytesBounds(numericFn, emitter.integerRanges);
   emitter.bytesOwned = new Set();
   // Debug builds keep every number local a double for the debugger's
   // variable view. Lazily boxed captured parameters keep their double,

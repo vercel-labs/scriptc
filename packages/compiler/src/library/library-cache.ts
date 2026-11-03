@@ -80,6 +80,9 @@ export interface EarlyLibraryNativeFeatures {
   copying: boolean;
   textDecoderLegacy: boolean;
   bigintBytes: boolean;
+  /** The buffer views registry (scr_js_buffers.c) and the archive's
+   * JavaScript object model build of its bytes and json units. */
+  mutableBuffers: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }
@@ -140,6 +143,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "copying",
   "textDecoderLegacy",
   "bigintBytes",
+  "mutableBuffers",
 ] as const satisfies readonly (keyof EarlyLibraryNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeatures {

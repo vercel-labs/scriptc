@@ -99,6 +99,7 @@ const INERT_LIB_CALLS = new Set([
   "error.nodeThrow",
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
+  "dyn.classHash",
   "dyn.bagGet",
   "json.parse",
   "process.stderrWrite",

@@ -48,6 +48,7 @@ import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
+import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 
 export function refuseUnsupportedApi(
   lowerer: Lowerer,
@@ -2630,6 +2631,51 @@ export function lowerStdlibMethodCall(
         type: F64,
         loc,
       };
+    }
+    // A fixed number tuple spreads as its positions: Node walks the
+    // tuple's own array, and every position is already a number, so the
+    // fold is the plain variadic form (arguments convert like any other
+    // number position — an all-f64 tuple needs no ToNumber at all). The
+    // receiver is bound once, then each slot is read in order.
+    const tupleShape =
+      src.type.kind === "record" && lowerer.isArrayValueType(src.type)
+        ? lowerer.shapes.get(src.type.shapeId)
+        : undefined;
+    if (tupleShape?.fields.every((f) => f.type.kind === "f64")) {
+      const srcType = src.type;
+      const fields = [...tupleShape.fields].sort((a, b) => Number(a.name) - Number(b.name));
+      const stmts: IrStmt[] = [];
+      let recv = src;
+      if (!isSafeToRepeat(src)) {
+        const temp = lowerer.declareHiddenLocal("%tupleSpread", src.type);
+        stmts.push({ kind: "varDecl", localId: temp.id, init: src, loc });
+        recv = { kind: "varRef", localId: temp.id, type: src.type, loc };
+      }
+      const shapeId = (srcType as IrType & { kind: "record" }).shapeId;
+      const values = fields.map((f): IrExpr => ({
+        kind: "recordGet",
+        obj: recv,
+        shapeId,
+        field: f.name,
+        type: f.type,
+        loc,
+      }));
+      // No positions is the fold's seed, exactly the zero-argument call.
+      if (values.length === 0) {
+        const seed: IrExpr = {
+          kind: "numLit",
+          value: name === "max" ? -Infinity : Infinity,
+          type: F64,
+          loc,
+        };
+        return afterArguments(stmts, seed);
+      }
+      const fn = name === "max" ? "math.max" : "math.min";
+      let acc = values[0]!;
+      for (let i = 1; i < values.length; i++) {
+        acc = { kind: "libCall", fn, args: [acc, values[i]!], type: F64, loc };
+      }
+      return afterArguments(stmts, acc);
     }
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(

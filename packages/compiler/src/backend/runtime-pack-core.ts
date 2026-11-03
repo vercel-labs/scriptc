@@ -33,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls" | "icu";
+  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -112,6 +112,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c). */
   stdlibPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`
+   * (scr_global_host_absent.c). */
+  hostAbsentGlobals?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -120,12 +123,14 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   builtinPrototypeValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
-  recordViewPartial: boolean;
   /** The JavaScript object model build (t262-da §J): the runtime code every
    * feature reached only from JavaScript sources shares, the
    * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
    * dynTier. */
   jsObjectModel: boolean;
+  /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
+   * JavaScript source resizes, grows or detaches an ArrayBuffer. */
+  mutableBuffers?: boolean;
   stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
@@ -135,9 +140,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   stdioWriteSlot: boolean;
   nodeIsland: boolean;
   brotli: boolean;
+  zstd: boolean;
   moduleNamespace: boolean;
   moduleNamespaceDyn: boolean;
   primitiveWrapper: boolean;
+  iteratorProto: boolean;
   nativeFetch: boolean;
   abortSignalOnly: boolean;
   netEffective: boolean;
@@ -356,21 +363,24 @@ export function effectiveRuntimeFeatures(
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
+    hostAbsentGlobals: features.hostAbsentGlobals === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinPrototypeValue: features.builtinPrototypeValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
-    recordViewPartial: features.recordViewPartial === true,
     jsObjectModel,
+    mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioWriteSlot: features.stdioWriteSlot === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
+    zstd: features.zstd === true,
     moduleNamespace: features.moduleNamespace === true,
     moduleNamespaceDyn: features.moduleNamespaceDyn === true,
     primitiveWrapper: features.primitiveWrapper === true,
+    iteratorProto: features.iteratorProto === true,
     nativeFetch,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.

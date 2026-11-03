@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 import { moduleUsesDynTier } from "../src/ir/runtime-features.js";
@@ -95,6 +95,49 @@ console.log(JSON.stringify(make(1, "c")), top.t);
     expect(make.match(/@scr_dyn_key_set\(/g)).toHaveLength(2);
     expect(make).toContain("@scr_dyn_key_set_computed(");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SCRIPTC_DEBUG_JS_IC_WAYS=0 sends every access through the probe", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-ways-"));
+  process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] = "0";
+  try {
+    // The way count is a load-time constant, so the test compiles against a
+    // fresh module graph in which the variable is set.
+    vi.resetModules();
+    const fresh = await import("../src/index.js");
+    const { emitLlvmModule: emit } = await import("../src/backend/llvm/emitter.js");
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+function make(v, k) { return { a: v, b: 2, [k]: 3 }; }
+function read(o) { return o.a; }
+var top = { t: 1 };
+read(top);
+console.log(JSON.stringify(make(1, "c")), top.t);
+`,
+    );
+    const result = await fresh.compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = fresh.deserializeModule(await readFile(outPath, "utf8"));
+    const llvm = emit(mod);
+    const make = body(llvm, "make");
+    // Literal members keep their own entry point, so an attribution profile
+    // can tell them from other stores.
+    expect(make.match(/@scr_js_literal_probe\(/g)).toHaveLength(2);
+    expect(make).not.toContain("@scr_js_store_probe(");
+    // Zero ways: no cache entry is tested inline, so the site branches to
+    // the probe without loading an entry.
+    expect(body(llvm, "read")).not.toMatch(
+      /getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 \d+$/m,
+    );
+  } finally {
+    delete process.env["SCRIPTC_DEBUG_JS_IC_WAYS"];
+    vi.resetModules();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -314,6 +357,77 @@ console.log(lib.total([1, 2, 3]));
     // The length read answers from the native array's length.
     expect(fn).toContain("icg.rest");
     expect(fn).toContain("@scr_js_get_probe_native(");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a run of constant-key reads on one subject shares one guard", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-groups-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+function dyn(v) { return v; }
+function sum(o) { return o.a + o.b + o.c; }
+console.log(sum(dyn(JSON.parse('{"a":1,"b":2,"c":3}'))), sum(dyn(JSON.parse('{"c":3,"b":2,"a":1}'))));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    // The group's record and its key list are private to the module: four
+    // entries of a layout and a slot per key, and one pointer per key.
+    expect(llvm).toMatch(
+      /@sc_js_group_0 = internal (thread_local )?global \[9 x i64\] zeroinitializer/,
+    );
+    expect(llvm).toMatch(/@sc_gkeys_0 = internal constant \[3 x ptr\]/);
+    const sum = body(llvm, "sum");
+    // One layout probe answers all three members, so none of them keeps
+    // its own read site.
+    expect(sum.match(/@scr_js_group_probe\(/g)).toHaveLength(1);
+    expect(sum).not.toContain("@scr_js_get_probe(");
+    // The guard compares the subject's layout against the record's ways.
+    expect(sum).toContain("load ptr, ptr @sc_js_group_0");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a store of an inert value replaces a parse-region object's slot inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-store-region-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+function dyn(v) { return v; }
+function bump(doc) { doc.meta.n = (doc.meta.n + 1) % 7; return doc.meta.n; }
+function put(doc, v) { doc.meta.n = v; return doc.meta.n; }
+var doc = dyn(JSON.parse('{"meta":{"n":1}}'));
+console.log(bump(doc), put(doc, 5), JSON.stringify(doc));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    // A remainder is a number whatever its operands were, so the store's
+    // value is an f64 the pass boxes on the spot: inert, and a store of an
+    // inert value cannot clear the region's flag, so the site replaces the
+    // slot inline. A value of unknown kind (the parameter of `put`) keeps
+    // the region test that sends it to the probe.
+    const regionTest = /getelementptr inbounds i8, ptr %\w+, i64 72$/m;
+    expect(body(llvm, "bump")).not.toMatch(regionTest);
+    expect(body(llvm, "put")).toMatch(regionTest);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

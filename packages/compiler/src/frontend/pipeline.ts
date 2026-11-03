@@ -835,9 +835,16 @@ function loadFrontend(
     // after the drop).
     const diagKey = (d: ScrDiagnostic): string => `${d.code}|${d.loc.file}|${d.loc.start}`;
     let baselineKeys: Set<string> | null = null;
+    // Each load installs its own package set as npm-static's live state
+    // (program.ts), and lowering and the program-source classification read
+    // that state after this function returns. A load opened here with a
+    // probe's set therefore has to be followed by one reload of the set the
+    // retained program keeps, unless a culprit reload already reset it.
+    let probeStateStale = false;
     const programOwnsDiagnostic = (): boolean => {
       if (baselineKeys === null) {
         const bare = loadProgram(entryPath, { npmStatic: [], externalTypes });
+        probeStateStale = true;
         try {
           baselineKeys = new Set(
             checkPreflight(bare)
@@ -871,6 +878,7 @@ function loadFrontend(
       for (const p of [...effective]) {
         const rest = [...effective].filter((q) => q !== p);
         const probe = loadProgram(entryPath, { npmStatic: rest, externalTypes });
+        probeStateStale = true;
         const probeDiags = checkPreflight(probe);
         probe.dispose();
         if (sc0001Keys(probeDiags) !== loadKeys) culprits.push(p);
@@ -881,7 +889,13 @@ function loadFrontend(
         load.dispose();
         load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
         preflight = checkPreflight(load);
+        probeStateStale = false;
       }
+    }
+    if (probeStateStale) {
+      load.dispose();
+      load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
+      preflight = checkPreflight(load);
     }
   }
   for (const p of requested) {

@@ -4,13 +4,15 @@ import * as program from "./program.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 
 const opened: ReturnType<ProgramLoader>[] = [];
+const loadPackages = new Map<ReturnType<ProgramLoader>, readonly string[] | undefined>();
 const preflight = vi.spyOn(program, "checkPreflight");
 afterEach(() => {
   opened.length = 0;
+  loadPackages.clear();
   preflight.mockReset();
 });
 
-const loader: ProgramLoader = () => {
+const loader: ProgramLoader = (_path, options) => {
   // Resource-ownership tests inject only the load fields the orchestration
   // reads. Real program loading and native execution have integration tests.
   const load = {
@@ -19,8 +21,15 @@ const loader: ProgramLoader = () => {
     dispose: vi.fn(),
   } as unknown as ReturnType<ProgramLoader>;
   opened.push(load);
+  loadPackages.set(load, options.npmStatic);
   return load;
 };
+/** The load the frontend retains: the only one not disposed by the run. */
+function retainedLoad(): ReturnType<ProgramLoader> {
+  const live = opened.filter((load) => vi.mocked(load.dispose).mock.calls.length === 0);
+  expect(live).toHaveLength(1);
+  return live[0]!;
+}
 const typeError: ScrDiagnostic = {
   code: "SC0001",
   message: "the program does not typecheck",
@@ -140,7 +149,13 @@ test("keeps the whole set when no probe can attribute the diagnostic", () => {
     .mockReturnValueOnce([]) // the no-opt-in baseline: the program itself is clean
     .mockReturnValue([typeError]); // every solo probe reproduces the load's error
   const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
-  expect(opened).toHaveLength(5);
+  // The last load is the reload of the retained program: each probe installed
+  // its own package set as npm-static's live state, and lowering reads that
+  // state after runFrontend returns.
+  expect(opened).toHaveLength(6);
+  const retained = retainedLoad();
+  expect(retained).toBe(opened.at(-1));
+  expect(loadPackages.get(retained)).toEqual(["alpha", "beta"]);
   expect(frontend.npmStatic).toEqual([
     { package: "alpha", status: "static" },
     { package: "beta", status: "static" },
@@ -156,6 +171,11 @@ test("one program diagnostic does not refuse every package in the set", () => {
   // refusal per package hides the one diagnostic that is real.
   preflight.mockReturnValueOnce([]).mockReturnValue([typeError]);
   const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
+  // The no-opt-in baseline load left its empty set live; the retained program
+  // is reloaded so lowering reads the set it was compiled with.
+  const retained = retainedLoad();
+  expect(retained).toBe(opened.at(-1));
+  expect(loadPackages.get(retained)).toEqual(["alpha", "beta"]);
   expect(frontend.npmStatic).toEqual([
     { package: "alpha", status: "static" },
     { package: "beta", status: "static" },

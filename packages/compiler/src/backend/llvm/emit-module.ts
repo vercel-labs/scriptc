@@ -75,6 +75,7 @@ import {
   cpuLevelDefs,
   targetLevelDefs,
 } from "./cpu-dispatch.js";
+import { LANE_INIT_CALL, lanePlansEnabled, laneToggleDefs } from "./lanes.js";
 import type { IrFunction } from "../../ir/ir.js";
 import { type FunctionLayout, layoutTierOf } from "./function-layout.js";
 
@@ -775,6 +776,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       : emitter.cpuCopies === "target"
         ? targetLevelDefs()
         : []),
+    ...(lanePlansEnabled(emitter) ? laneToggleDefs((line) => emitter.declare(line)) : []),
   ];
   if (emitter.constantNumericTables.size > 0)
     emitter.declare(`declare double @scr_arr_get_number(ptr, double)`);
@@ -1255,6 +1257,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `entry:`,
     ...(emitter.runtimeAbiMarker ? [`  call void @${RUNTIME_ABI_MARKER}()`] : []),
     ...(emitter.cpuDispatch && !emitter.mod.workers ? [CPU_LEVEL_INIT_CALL] : []),
+    ...(lanePlansEnabled(emitter) ? [LANE_INIT_CALL] : []),
     ...(emitter.mod.workers ? [`  call void @scr_runtime_workers_v8()`] : []),
     `  call void @scr_init()`,
     // Compressed fields hold addresses in the program-lifetime region, which

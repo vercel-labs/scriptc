@@ -2566,6 +2566,8 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
 
 static void scr_http_res_fire_close(ScrHttpRes *res) {
   if (res->close_emitted) return;
+  /* A closed h2 stream cannot finish any pending end() callbacks. */
+  if (res->h2_stream != NULL) scr_net_ls_drop(&res->endcb_ls);
   /* Node's compat response emits 'finish' and then 'close' when its stream
    * closes, also when it never ended. */
   if (res->h2_stream != NULL && !res->writable_finished) {

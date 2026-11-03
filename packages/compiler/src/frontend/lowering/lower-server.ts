@@ -338,7 +338,7 @@ function lowerCallbackArg(
   node: ts.Expression,
   what: string,
   maxParams: number,
-  paramOk: (p: IrExpr["type"]) => boolean,
+  paramOk: (p: IrExpr["type"], index: number) => boolean,
   paramHint: string,
   dynTuple?: readonly IrType[],
 ): { cb: IrExpr; nparams: number } {

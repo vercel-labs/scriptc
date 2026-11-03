@@ -1152,9 +1152,12 @@ export function lowerFieldCompoundValue(
       return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
     }
   }
+  // The ordinary field target first: every write that resolved before keeps
+  // its byte-identical lowering. The asserted union view only answers where
+  // that target declined (SC1090 before this).
   const targetOf = (): FieldTarget | null =>
     ts.isPropertyAccessExpression(access)
-      ? (assertedUnionFieldTarget(lowerer, access) ?? lowerer.fieldTarget(access))
+      ? (lowerer.fieldTarget(access) ?? assertedUnionFieldTarget(lowerer, access))
       : (symbolFieldTarget(lowerer, access) ?? keyedFieldTarget(lowerer, access, true));
   const target = targetOf();
   if (!target)

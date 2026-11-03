@@ -22,7 +22,7 @@ import {
 } from "../builtins/array-classes.js";
 import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
 import { keyedHelperName } from "../stable-names.js";
-import { builtinNamespaceValue } from "../builtin-namespaces.js";
+import { builtinNamespaceValue, wellKnownSymbolValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import { wrapperConstructors } from "../primitive-wrappers.js";
@@ -2321,6 +2321,45 @@ export function lowerIntrinsicProperty(
     return { kind: "libCall", fn: "dyn.functionApply", args: [], type: DYN, loc: locOf(expr) };
   if (lowerer.stdlibGlobalMember(expr, "Array") === "prototype")
     return { kind: "libCall", fn: "dyn.arrayPrototype", args: [], type: DYN, loc: locOf(expr) };
+  // DataView.prototype as a value, and its members read through it: the
+  // prototype object the language defines — its see-through properties
+  // (buffer, byteLength, byteOffset), its getter/setter family and its
+  // constructor — not a view. A DataView method CALLED on the prototype
+  // object itself throws the TypeError its brand check answers. Typed
+  // sources keep the standard-library member fence: their views lower
+  // through the intrinsic path, and only a JavaScript source can pass a
+  // view around as a value.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    lowerer.stdlibGlobalMember(expr, "DataView") === "prototype"
+  ) {
+    return {
+      kind: "libCall",
+      fn: "dyn.dataViewPrototype",
+      args: [wellKnownSymbolValue("toStringTag", locOf(expr))],
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    lowerer.stdlibGlobalMember(expr.expression, "DataView") === "prototype"
+  ) {
+    return {
+      kind: "dynKeyGet",
+      value: {
+        kind: "libCall",
+        fn: "dyn.dataViewPrototype",
+        args: [wellKnownSymbolValue("toStringTag", locOf(expr.expression))],
+        type: DYN,
+        loc: locOf(expr.expression),
+      },
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
   // Date.prototype as a value, and its members read through it: the
   // prototype object the language defines (an ordinary object carrying the
   // interface's methods), not a Date. `Date.prototype.hasOwnProperty("x")`

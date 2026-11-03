@@ -1794,6 +1794,13 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
  * `prototype` is the same object). Named by the constructor whose interface
  * it carries; dyn.stdlibPrototype's implementation. */
 ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name);
+/* `DataView.prototype` as a value (+1, one object per thread): the
+ * getter/setter family, the buffer/byteLength/byteOffset accessors, the
+ * constructor and [[@@toStringTag]] = "DataView", over the view's brand
+ * check. `tag_key` is the Symbol.toStringTag key (borrowed), which the
+ * frontend passes so this unit needs no symbol entry points.
+ * dyn.dataViewPrototype's implementation (scr_data_view_proto.c). */
+ScrDyn *scr_data_view_prototype(ScrDyn *tag_key);
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
 ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
 ScrStr *scr_dyn_error_string(const ScrDyn *d);

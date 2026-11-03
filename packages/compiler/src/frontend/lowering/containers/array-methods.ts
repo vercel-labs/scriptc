@@ -1710,24 +1710,9 @@ function lowerArraySearchValues(
 
   // Preserve the existing fast path for an ordinary, non-union needle. Its
   // runtime implementation already has exact primitive/reference equality.
-  // Functions compare by identity regardless of parameter width (Node's
-  // Function ===), so listeners().includes(fn) works when the array is
-  // typed at the event's canonical arity and `fn` is a shorter prefix.
-  if (
-    method !== "lastIndexOf" &&
-    call.arguments.nodes.length === 1 &&
-    elem.kind === "func" &&
-    needle.type.kind === "func"
-  ) {
-    return {
-      kind: "arrIntrinsic",
-      method,
-      receiver,
-      args: [needle],
-      type: method === "includes" ? BOOL : F64,
-      loc,
-    };
-  }
+  // A func needle of another signature cannot take it: the intrinsic types
+  // its needle at the element type. The adapted path below keeps the
+  // original's identity root, so the search still compares by identity.
   if (
     method !== "lastIndexOf" &&
     call.arguments.nodes.length === 1 &&

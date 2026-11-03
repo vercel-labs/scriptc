@@ -136,4 +136,21 @@ show("identity", [
   new Boolean(true).toString === Boolean.prototype.toString,
 ].join("|"));
 
+// Reading a wrapper prototype is what installs the table's members, and a
+// wrapper instance's method call still runs the String lowering on ToString of
+// the receiver afterwards: the members a read answers are the wrapper unit's
+// own interned methods, the value an instance's member read answers, so
+// `new String("ab").repeat(2)` is the builtin call it was before the fold.
+const stringPrototype = String.prototype;
+const boxedString = new String("ab");
+show("instanceCalls", [
+  stringPrototype === Object.getPrototypeOf(boxedString),
+  boxedString.repeat(2),
+  boxedString.slice(1),
+  boxedString.toUpperCase(),
+  boxedString.indexOf("b"),
+  new Number(1).toFixed(1),
+  new Boolean(false).toString(),
+].join("|"));
+
 for (const line of lines.sort()) console.log(line);

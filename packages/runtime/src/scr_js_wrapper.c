@@ -41,6 +41,12 @@ static SCR_TL bool scr_js_wrapper_cleanup_registered;
 /* The interned Boolean.prototype.valueOf (0) and toString (1) values read
  * as functions in a JavaScript source. */
 static SCR_TL ScrDyn *scr_js_wrapper_boolean_methods[2];
+/* The interned member values, by kind and by position in the kind's member
+ * table (the String table is the largest). One value per kind and member:
+ * the prototype object's member, a primitive's member read and a wrapper
+ * instance's member read are the same function object. */
+#define SCR_JS_WRAPPER_MEMBER_SLOTS 64
+static SCR_TL ScrDyn *scr_js_wrapper_member_values[3][SCR_JS_WRAPPER_MEMBER_SLOTS];
 
 static void *scr_js_wrapper_slot_retain(void *p) {
   ((ScrJsWrapperSlot *)p)->rc++;
@@ -81,6 +87,12 @@ static void scr_js_wrapper_cleanup(void) {
     scr_js_wrapper_boolean_methods[i] = NULL;
     scr_dyn_release(method);
   }
+  for (int kind = 0; kind < 3; kind++)
+    for (int slot = 0; slot < SCR_JS_WRAPPER_MEMBER_SLOTS; slot++) {
+      ScrDyn *member = scr_js_wrapper_member_values[kind][slot];
+      scr_js_wrapper_member_values[kind][slot] = NULL;
+      scr_dyn_release(member);
+    }
 }
 
 static void scr_js_wrapper_register_cleanup(void) {
@@ -141,7 +153,8 @@ static ScrDyn *scr_js_wrapper_string_result(ScrStr *text) {
  * valueOf and String's toString answer the primitive; Number's methods
  * format through the runtime's number formatters; Boolean's toString
  * spells the value. The String methods the dynamic dispatch implements
- * (at, slice, indexOf, lastIndexOf, includes) run there; any other String
+ * (at, slice, indexOf, lastIndexOf, includes, and replace in the
+ * object-model build) run there; any other String
  * method called through its function value (`String.prototype.trim.call`,
  * a method value stored and called later) refuses, because the compiler
  * lowers those calls itself at their call sites. */
@@ -178,7 +191,7 @@ static ScrDyn *scr_js_wrapper_apply(int kind, const char *method, ScrDyn *primit
     return scr_dyn_retain(primitive);
   } else if (strcmp(method, "at") == 0 || strcmp(method, "slice") == 0 ||
              strcmp(method, "indexOf") == 0 || strcmp(method, "lastIndexOf") == 0 ||
-             strcmp(method, "includes") == 0) {
+             strcmp(method, "includes") == 0 || strcmp(method, "replace") == 0) {
     return scr_dyn_invoke(primitive, method, args, argc, method);
   }
   ScrJsonBuf text;
@@ -326,6 +339,31 @@ static const ScrJsWrapperMember scr_js_wrapper_boolean_members[] = {
   {"toString", 0}, {"valueOf", 0}, {NULL, 0},
 };
 
+static const ScrJsWrapperMember *scr_js_wrapper_member_table(int kind) {
+  return kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
+         : kind == SCR_JS_WRAPPER_NUMBER ? scr_js_wrapper_number_members
+                                         : scr_js_wrapper_boolean_members;
+}
+
+/* The interned member value of `kind` for `name` (+1), or NULL when the
+ * kind's prototype has no member of that name. The prototype object's
+ * members, and every member read a primitive or a wrapper instance answers
+ * through the graph, are these values: one member is one function object,
+ * whichever way the program reached it, and it is the function the
+ * frontend's wrapper.isStringMethod recognizes. */
+static ScrDyn *scr_js_wrapper_member_lookup(int kind, const char *name, size_t name_length) {
+  const ScrJsWrapperMember *members = scr_js_wrapper_member_table(kind);
+  size_t index = 0;
+  for (const ScrJsWrapperMember *m = members; m->name; m++, index++) {
+    if (strlen(m->name) != name_length || memcmp(m->name, name, name_length) != 0) continue;
+    scr_js_wrapper_register_cleanup();
+    if (!scr_js_wrapper_member_values[kind][index])
+      scr_js_wrapper_member_values[kind][index] = scr_js_wrapper_method_value(m->name, kind, m->length);
+    return scr_dyn_retain(scr_js_wrapper_member_values[kind][index]);
+  }
+  return NULL;
+}
+
 /* An object with the [[PrimitiveValue]] slot of kind `kind` over
  * `primitive` (borrowed; already the converted primitive) and, for a
  * String, its index properties and `length`. Its prototype is still
@@ -391,11 +429,14 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   // is, so `Object("x").constructor.prototype` is the prototype the boxed
   // value inherits from rather than undefined.
   scr_js_wrapper_seed_prototype(constructor, prototype);
-  const ScrJsWrapperMember *members = kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
-                                    : kind == SCR_JS_WRAPPER_NUMBER ? scr_js_wrapper_number_members
-                                    : scr_js_wrapper_boolean_members;
-  for (const ScrJsWrapperMember *m = members; m->name; m++)
-    scr_js_wrapper_define_hidden(prototype, m->name, scr_js_wrapper_method_value(m->name, kind, m->length));
+  const ScrJsWrapperMember *members = scr_js_wrapper_member_table(kind);
+  for (const ScrJsWrapperMember *m = members; m->name; m++) {
+    ScrDyn *member = scr_js_wrapper_member_lookup(kind, m->name, strlen(m->name));
+    if (member) {
+      scr_js_wrapper_define_hidden(prototype, m->name, member);
+      scr_dyn_release(member);
+    }
+  }
   scr_js_wrapper_prototypes[kind] = prototype;
   return prototype;
 }
@@ -457,24 +498,16 @@ ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id) {
   return scr_dyn_retain(prototype);
 }
 
-/* thisStringValue / thisNumberValue / thisBooleanValue for a caller that is
- * not `scr_js_wrapper_this_value`: the primitive `kind` that `value` is, or
- * the one the wrapper `value` is a wrapper of. NULL for any other receiver,
- * which lets the caller raise the TypeError its method names. +1. */
-ScrDyn *scr_js_wrapper_primitive_value(const ScrDyn *value, double kind_number) {
+/* The interned member value of `kind` for `name` (+1), the answer the graph's
+ * member provider gives for a wrapper prototype's member, or NULL when the
+ * kind's prototype has no member of that name (String's `[Symbol.iterator]`).
+ * The graph reaches it through a slot (scr_js_wrapper_member_slot), so a
+ * program links this unit only when it names a wrapper. */
+ScrDyn *scr_js_wrapper_member_for(double kind_number, const char *name, size_t name_length) {
   int kind = (int)kind_number;
-  ScrDynKind want = SCR_DYN_BOOL;
-  if (kind == SCR_JS_WRAPPER_STRING) want = SCR_DYN_STR;
-  if (kind == SCR_JS_WRAPPER_NUMBER) want = SCR_DYN_NUM;
-  if (value->kind == want) return scr_dyn_retain((ScrDyn *)value);
-  ScrJsWrapperSlot *slot = scr_js_wrapper_slot_of(value);
-  if (slot && slot->kind == kind) {
-    ScrDyn *primitive = scr_dyn_retain(slot->primitive);
-    scr_js_wrapper_slot_drop(slot);
-    return primitive;
-  }
-  scr_js_wrapper_slot_drop(slot);
-  return NULL;
+  if (kind != SCR_JS_WRAPPER_STRING && kind != SCR_JS_WRAPPER_NUMBER && kind != SCR_JS_WRAPPER_BOOLEAN)
+    return NULL;
+  return scr_js_wrapper_member_lookup(kind, name, name_length);
 }
 
 /* The wrapper of kind `kind` over `primitive` (borrowed; already the
@@ -751,5 +784,5 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name) {
  * that do not link this unit. */
 ScrJsWrapperPrototypeSlot scr_js_wrapper_intrinsic_prototype_slot =
     scr_js_wrapper_intrinsic_prototype;
-ScrJsWrapperPrimitiveSlot scr_js_wrapper_primitive_value_slot = scr_js_wrapper_primitive_value;
+ScrJsWrapperMemberSlot scr_js_wrapper_member_slot = scr_js_wrapper_member_for;
 #endif

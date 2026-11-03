@@ -1238,18 +1238,21 @@ extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
  * reader's test of the slot would load it from address zero and fault. */
 /* The wrapper unit's prototype object for `id` ("String.prototype",
  * "Number.prototype" or "Boolean.prototype"), +1, without members: the
- * graph's fill defines them. */
+ * graph's fill defines them, from the interned member values below. */
 typedef ScrDyn *(*ScrJsWrapperPrototypeSlot)(const char *id);
-/* thisStringValue / thisNumberValue / thisBooleanValue for `kind` (+1), NULL
- * for a receiver that is not that wrapper's value. */
-typedef ScrDyn *(*ScrJsWrapperPrimitiveSlot)(const ScrDyn *value, double kind);
+/* The wrapper unit's interned member value of `kind` for `name` (+1): the
+ * value its prototype object holds and a primitive's or a wrapper instance's
+ * member read answers, so one prototype member is one function object. NULL
+ * when the kind's prototype has no such member (String's `[Symbol.iterator]`,
+ * or a name this build does not implement). */
+typedef ScrDyn *(*ScrJsWrapperMemberSlot)(double kind, const char *name, size_t name_length);
 /* The graph's registration of the three wrapper providers in the invoke
  * unit's member table. The invoke unit asks once, before it answers the first
  * builtin member read, so that even the first read of a wrapper member is the
  * value the prototype object holds. */
 typedef void (*ScrJsWrapperProvidersSlot)(void);
 extern ScrJsWrapperPrototypeSlot scr_js_wrapper_intrinsic_prototype_slot;
-extern ScrJsWrapperPrimitiveSlot scr_js_wrapper_primitive_value_slot;
+extern ScrJsWrapperMemberSlot scr_js_wrapper_member_slot;
 extern ScrJsWrapperProvidersSlot scr_js_wrapper_member_providers_slot;
 #define SCR_JS_SLOT_FALLBACK(type, name) __attribute__((weak)) type name
 #endif
@@ -1658,7 +1661,11 @@ ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
  * Boolean(v)` instances inherit from, so one intrinsic has one builder and a
  * member the program writes through the prototype object is the member an
  * instance walks to (§4.4). Returned without members: the table's fill
- * defines them. +1.
+ * defines them, and each is this unit's interned member value — the same
+ * function a primitive's member read answers through
+ * scr_js_wrapper_member_slot — so a call through the member runs this unit's
+ * method for the prototype the frontend recognizes (wrapper.isStringMethod).
+ * +1.
  *
  * The graph, not every program that links this unit, is the only caller: a
  * program links this unit when it names a wrapper, and the graph when it
@@ -1674,12 +1681,14 @@ ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id);
  * it, so `X.prototype.constructor` (and its descriptor value) is the value a
  * read of `X` answers (t262-da A2). +1 (prototype). */
 ScrDyn *scr_js_wrapper_install_constructor(ScrDyn *prototype, ScrDyn *constructor);
-/* thisStringValue / thisNumberValue / thisBooleanValue over a value the
- * intrinsic table's wrapper-prototype members were called on: the primitive
- * of `kind` (the SCR_JS_WRAPPER_* number) that `value` is, or the one it
- * wraps, and NULL for any other receiver. +1 for the primitive. The graph
- * reaches it through a slot, for the reason above. */
-ScrDyn *scr_js_wrapper_primitive_value(const ScrDyn *value, double kind);
+/* The interned member value of the wrapper prototype `kind` for `name`
+ * (+1) — the value the prototype object holds and a primitive's or a
+ * wrapper instance's member read answers, so a call through it runs this
+ * unit's method for that prototype and the frontend recognizes it as the
+ * builtin member — or NULL when the prototype has no member of that name.
+ * The graph reaches it through scr_js_wrapper_member_slot, for the reason
+ * above. */
+ScrDyn *scr_js_wrapper_member_for(double kind, const char *name, size_t name_length);
 
 /* Promise statics called with a foreign constructor (`Promise.all.call(C, …)`,
  * scr_js_promise_generic.c, linked only into programs that make the call):

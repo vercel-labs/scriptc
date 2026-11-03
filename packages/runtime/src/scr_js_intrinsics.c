@@ -63,7 +63,7 @@
  * links this unit alone, and then the slots are zero and the prototypes are
  * ordinary objects. See scr_dyn.h for the fallback. */
 SCR_JS_SLOT_FALLBACK(ScrJsWrapperPrototypeSlot, scr_js_wrapper_intrinsic_prototype_slot);
-SCR_JS_SLOT_FALLBACK(ScrJsWrapperPrimitiveSlot, scr_js_wrapper_primitive_value_slot);
+SCR_JS_SLOT_FALLBACK(ScrJsWrapperMemberSlot, scr_js_wrapper_member_slot);
 
 /* ── the generated table ─────────────────────────────────────────────── */
 
@@ -536,152 +536,35 @@ static ScrDyn *scr_js_create(const char *id) {
   return scr_dyn_new_obj();
 }
 
-/* ── the wrapper prototypes as receivers ─────────────────────────────── */
+/* ── the wrapper prototypes' members ─────────────────────────────────── */
 
-/* The wrapper kind of `owner`. */
-static double scr_js_wrapper_kind(const ScrStr *owner) {
-  if (strcmp(owner->data, "String") == 0) return SCR_JS_INTRINSIC_WRAPPER_STRING;
-  if (strcmp(owner->data, "Number") == 0) return SCR_JS_INTRINSIC_WRAPPER_NUMBER;
+/* The wrapper kind of `owner` ("String", "Number" or "Boolean"). */
+static double scr_js_wrapper_kind_of(const char *owner) {
+  if (strcmp(owner, "String") == 0) return SCR_JS_INTRINSIC_WRAPPER_STRING;
+  if (strcmp(owner, "Number") == 0) return SCR_JS_INTRINSIC_WRAPPER_NUMBER;
   return SCR_JS_INTRINSIC_WRAPPER_BOOLEAN;
 }
-
-/* Node's brand-check TypeError for a member of `owner`'s prototype called on
- * a receiver that is not that wrapper's value: "Number.prototype.toFixed
- * requires that 'this' be a Number". NULL, the call's value. */
-static ScrDyn *scr_js_this_error(const ScrStr *owner, const ScrStr *method) {
-  char message[128];
-  snprintf(message, sizeof message, "%s.prototype.%s requires that 'this' be a %s", owner->data,
-           method->data, owner->data);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
-  return NULL;
-}
-
-/* Node's RequireObjectCoercible TypeError of a String member:
- * "String.prototype.slice called on null or undefined". NULL, the call's
- * value. */
-static ScrDyn *scr_js_null_error(const ScrStr *method) {
-  char message[128];
-  snprintf(message, sizeof message, "String.prototype.%s called on null or undefined",
-           method->data);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
-  return NULL;
-}
-
-/* Boolean.prototype.valueOf and Boolean.prototype.toString, which the invoke
- * unit's member does not answer: its dispatch has no Boolean receiver arm, so
- * it refuses every receiver. `primitive` is the receiver's boolean (a
- * primitive, the prototype object Node wraps around false, or a Boolean
- * wrapper). */
-static ScrDyn *scr_js_boolean_member(const ScrDyn *primitive, const ScrStr *method) {
-  if (strcmp(method->data, "valueOf") == 0) return scr_dyn_new_bool(primitive->v.b);
-  const char *text = primitive->v.b ? "true" : "false";
-  ScrStr *string = scr_str_new(text, strlen(text));
-  ScrDyn *result = scr_dyn_new_str(string);
-  scr_str_release(string);
-  return result;
-}
-
-/* A wrapped wrapper-prototype method: caps[0] the owner name, caps[1] the
- * method name, caps[2] the member function. */
-static ScrDyn *scr_js_wrapper_member_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  /* Every read is +1, so the values are released below. */
-  ScrStr *owner = scr_box_get_ref(closure->caps[0]);
-  ScrStr *method = scr_box_get_ref(closure->caps[1]);
-  ScrDyn *callee = scr_box_get_ref(closure->caps[2]);
-  ScrDyn *receiver = scr_dyn_this_get();
-  double kind = scr_js_wrapper_kind(owner);
-  ScrDyn *primitive = scr_js_wrapper_primitive_value_slot
-                          ? scr_js_wrapper_primitive_value_slot(receiver, kind)
-                          : NULL;
-  ScrDyn *result;
-  if (strcmp(owner->data, "Boolean") == 0) {
-    result = primitive ? scr_js_boolean_member(primitive, method) : scr_js_this_error(owner, method);
-  } else if (primitive) {
-    /* Node's prototypes are wrapper objects around +0 and "", so the
-     * prototype object itself, and a wrapper instance, answer the primitive
-     * they wrap: `Number.prototype.toFixed(1)` is "0.0". */
-    scr_dyn_this_push_dyn(primitive);
-    result = scr_dyn_call(callee, args, argc, method->data);
-    scr_dyn_this_pop();
-  } else if (kind == SCR_JS_INTRINSIC_WRAPPER_NUMBER) {
-    /* Number's members are not generic: thisNumberValue refuses every other
-     * receiver with the TypeError naming the method. */
-    result = scr_js_this_error(owner, method);
-  } else if (strcmp(method->data, "valueOf") == 0 || strcmp(method->data, "toString") == 0) {
-    /* String's two brand-checked members: thisStringValue refuses every
-     * receiver that is not a string (null and undefined included). */
-    result = scr_js_this_error(owner, method);
-  } else if (receiver->kind == SCR_DYN_UNDEF || receiver->kind == SCR_DYN_NULL) {
-    /* String's other members are generic: they coerce the receiver, and
-     * require it to be coercible first. */
-    result = scr_js_null_error(method);
-  } else {
-    result = scr_dyn_call(callee, args, argc, method->data);
-  }
-  if (primitive) scr_dyn_release(primitive);
-  scr_dyn_release(receiver);
-  scr_dyn_release(callee);
-  scr_str_release(owner);
-  scr_str_release(method);
-  return result;
-}
-
-/* `callee` (owned, consumed) as the member value of a wrapper prototype. */
-static ScrDyn *scr_js_wrapper_member(ScrDyn *callee, const ScrStr *owner, const ScrStr *method) {
-  ScrClosure *closure = scr_closure_new(NULL, 3);
-  closure->caps[0] = scr_box_new(SCR_BOX_STR);
-  scr_box_set_ref(closure->caps[0], scr_str_retain((ScrStr *)owner));
-  closure->caps[1] = scr_box_new(SCR_BOX_STR);
-  scr_box_set_ref(closure->caps[1], scr_str_retain((ScrStr *)method));
-  closure->caps[2] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
-  scr_box_set_ref(closure->caps[2], callee);
-  return scr_dyn_new_func(closure, scr_js_wrapper_member_call, 0, "native:prototype", method->data);
-}
-
-/* One reference per wrapped member, keyed "Owner.method". */
-static SCR_TL ScrDyn *scr_js_wrapper_members;
-/* Set while the provider asks scr_dyn_builtin_method for the plain member it
- * wraps, so the provider does not answer that call with itself. */
-static SCR_TL bool scr_js_wrapper_member_building;
 /* Whether the providers above are in the invoke unit's table. The table is
  * the unit's, not this thread's, so the flag is too. */
 static bool scr_js_wrapper_providers_registered;
 
-static void scr_js_wrapper_members_cleanup(void) {
-  scr_dyn_release(scr_js_wrapper_members);
-  scr_js_wrapper_members = NULL;
-}
-
 /* The provider the invoke unit's table asks for a wrapper prototype's
- * member: the member value, built once per owner and method. A member read on
- * a primitive, on a wrapper instance and on the prototype object all pass
- * through scr_dyn_builtin_method, so they answer this same value — the
+ * member: the wrapper unit's interned member value for that owner and
+ * method, which is the member the prototype object itself holds. A member
+ * read on a primitive, on a wrapper instance and on the prototype object all
+ * pass through scr_dyn_builtin_method, so they answer this one value — the
  * language's identity, `"abc".slice === String.prototype.slice` (§4.4's one
- * intrinsic, one object, extended to the member value). +1, or NULL when the
- * wrapper unit is not linked (this unit cannot be sure the program named a
- * wrapper) or when the plain member is the one being interned below the
- * provider. */
+ * intrinsic, one object, extended to the member value) — and a call through
+ * it runs the wrapper unit's method for the prototype, which is the function
+ * the frontend's wrapper.isStringMethod recognizes and lowers as the builtin
+ * String method (`new String("ab").repeat(2)` after a `String.prototype`
+ * read). +1, or NULL when the wrapper unit is not linked (this unit cannot be
+ * sure the program named a wrapper) or the prototype has no such member
+ * (String's `[Symbol.iterator]`); the table then keeps the interned function
+ * it answered before the fold. */
 static ScrDyn *scr_js_wrapper_member_value(const char *owner, const char *method, size_t method_len) {
-  if (scr_js_wrapper_member_building || !scr_js_wrapper_primitive_value_slot) return NULL;
-  if (!scr_js_wrapper_members) {
-    scr_js_wrapper_members = scr_dyn_new_obj_null_proto();
-    scr_atexit(scr_js_wrapper_members_cleanup);
-  }
-  char key[160];
-  int key_length = snprintf(key, sizeof key, "%s.%.*s", owner, (int)method_len, method);
-  if (key_length < 0 || (size_t)key_length >= sizeof key) return NULL;
-  ScrDyn *cached = scr_dyn_obj_get(scr_js_wrapper_members, key, (size_t)key_length);
-  if (cached) return scr_dyn_retain(cached);
-  ScrStr *owner_str = scr_str_new(owner, strlen(owner));
-  ScrStr *method_str = scr_str_new(method, method_len);
-  scr_js_wrapper_member_building = true;
-  ScrDyn *callee = scr_dyn_builtin_method(owner_str, method_str);
-  scr_js_wrapper_member_building = false;
-  ScrDyn *wrapped = scr_js_wrapper_member(callee, owner_str, method_str);
-  scr_str_release(method_str);
-  scr_str_release(owner_str);
-  scr_dyn_obj_set(scr_js_wrapper_members, key, (size_t)key_length, wrapped);
-  return scr_dyn_retain(wrapped);
+  if (!scr_js_wrapper_member_slot) return NULL;
+  return scr_js_wrapper_member_slot(scr_js_wrapper_kind_of(owner), method, method_len);
 }
 
 /* Registers the three providers in the invoke unit's table, once. The invoke
@@ -724,10 +607,11 @@ static ScrDyn *scr_js_member_value(size_t index, const ScrJsIntrinsicRow *row) {
       size_t method_length = scr_js_member_name_length(row->a);
       ScrStr *prototype = scr_str_new(owner, strlen(owner));
       ScrStr *method = scr_str_new(row->a, method_length);
-      /* The wrapper owners' members are the invoke unit's, wrapped to run on
-       * the primitive the prototype wraps, and scr_dyn_builtin_method answers
-       * that wrapped value through the hook above — the same one a primitive's
-       * or a wrapper instance's member read gets. */
+      /* The wrapper owners' members are the wrapper unit's interned member
+       * values, which scr_dyn_builtin_method answers through the provider
+       * above — the same value a primitive's or a wrapper instance's member
+       * read gets, so `new String("ab").repeat` is the member the frontend
+       * recognizes as String.prototype.repeat. */
       ScrDyn *value = scr_dyn_builtin_method(prototype, method);
       scr_str_release(method);
       scr_str_release(prototype);

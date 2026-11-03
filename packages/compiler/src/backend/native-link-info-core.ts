@@ -172,6 +172,9 @@ export interface NativeLinkFeatures {
   /** Number.prototype or Boolean.prototype read as a value:
    * scr_dyn_builtin_prototype.c. Absent (false) otherwise. */
   builtinPrototypeValue?: boolean;
+  /** A String.prototype trim method read as a value:
+   * scr_dyn_string_methods.c. Absent (false) otherwise. */
+  stringMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;

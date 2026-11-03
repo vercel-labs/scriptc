@@ -57,10 +57,49 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
     "replace",
     "toString",
     "valueOf",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "trimLeft",
+    "trimRight",
   ],
   Number: ["toString", "valueOf"],
   Object: ["hasOwnProperty", "propertyIsEnumerable", "toString", "valueOf"],
 };
+
+/** The canonical name of a string trim method read as a value, or null for
+ * every other member. Annex B's trimLeft/trimRight are the same function
+ * object as trimStart/trimEnd (B.2.3.14-15), so both spellings read the
+ * standard one. */
+export function stringTrimMethodName(name: string): string | null {
+  switch (name) {
+    case "trim":
+    case "trimStart":
+    case "trimEnd":
+      return name;
+    case "trimLeft":
+      return "trimStart";
+    case "trimRight":
+      return "trimEnd";
+    default:
+      return null;
+  }
+}
+
+/** A string trim method as a function value: one interned function per
+ * canonical name (scr_dyn_string_methods.c), so `String.prototype.trim`,
+ * `''.trim` and `s.trim` are the same object, and Function.prototype's
+ * call/apply run it on any receiver the way the specification's
+ * RequireObjectCoercible + ToString do. */
+export function stringTrimMethodValue(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.stringMethodValue",
+    args: [{ kind: "strLit", value: name, type: STRING, loc }],
+    type: DYN,
+    loc,
+  };
+}
 
 export function builtinPrototypeMethod(
   lowerer: Lowerer,

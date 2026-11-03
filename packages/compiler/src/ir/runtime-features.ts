@@ -362,6 +362,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
+  "dyn.stringMethodValue",
   "dyn.stdlibPrototype",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
@@ -1180,6 +1181,9 @@ const RUNTIME_FEATURE_RULES = {
   /** Number.prototype and Boolean.prototype as values
    * (scr_dyn_builtin_prototype.c). */
   builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
+  /** String.prototype's trim family as a function value
+   * (scr_dyn_string_methods.c). */
+  stringMethodValue: rule({ fns: ["dyn.stringMethodValue"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -1656,6 +1660,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
+    stringMethodValue: false,
     dynTier: false,
     ecdh: false,
     x509: false,

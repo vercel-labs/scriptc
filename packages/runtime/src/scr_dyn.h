@@ -1694,6 +1694,12 @@ ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args);
  * (scr_dyn_builtin_prototype.c, linked only into programs that read them
  * from a JavaScript source); `kind` is "Number" or "Boolean". +1. */
 ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind);
+/* String.prototype's trim family as a function value
+ * (scr_dyn_string_methods.c, linked only into programs that read one from a
+ * JavaScript source). `name` is the canonical spelling — "trim", "trimStart"
+ * or "trimEnd" — so trimLeft/trimRight answer the same object as their
+ * standard twin. +1, one function per name and thread. */
+ScrDyn *scr_dyn_string_method_value(const ScrStr *name);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
 ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
 /* Names the prototype object of a compiled class `name` for util.inspect

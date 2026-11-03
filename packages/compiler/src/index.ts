@@ -887,6 +887,7 @@ async function compileExecutableNative(
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
     ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
+    ...(features.stringMethodValue ? { stringMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     events: features.events,
     emitter: features.emitter,

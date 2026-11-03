@@ -194,7 +194,12 @@ import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
 } from "../builtins/module-resolution.js";
-import { builtinPrototypeMethod, lowerCheckedPredicateValue } from "../lower-builtin-values.js";
+import {
+  builtinPrototypeMethod,
+  lowerCheckedPredicateValue,
+  stringTrimMethodName,
+  stringTrimMethodValue,
+} from "../lower-builtin-values.js";
 import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js";
 import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
@@ -2284,7 +2289,12 @@ export function lowerIntrinsicProperty(
   const primitivePrototype = jsPrimitivePrototypeValue(lowerer, expr);
   if (primitivePrototype) return primitivePrototype;
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);
-  if (builtinPrototype)
+  if (builtinPrototype) {
+    // The trim family has a generic method value of its own
+    // (scr_dyn_string_methods.c); the invoke unit's table has no entry for
+    // it, and the interned value is shared with the `''.trim` spelling.
+    const trim = builtinPrototype === "String" ? stringTrimMethodName(expr.name.text) : null;
+    if (trim) return stringTrimMethodValue(trim, locOf(expr));
     return {
       kind: "libCall",
       fn: "dyn.builtinMethod",
@@ -2295,6 +2305,7 @@ export function lowerIntrinsicProperty(
       type: DYN,
       loc: locOf(expr),
     };
+  }
   if (
     ts.isPropertyAccessExpression(expr.expression) &&
     lowerer.stdlibGlobalMember(expr.expression, "Array") === "prototype"
@@ -3088,16 +3099,22 @@ export function lowerIntrinsicProperty(
     // runtime's interned function that runs it on its receiver.
     if (kind === "string" && isJsSourceFile(expr.getSourceFile()) && !expr.questionDotToken) {
       const receiver = lowerer.lowerExpr(expr.expression);
-      const method: IrExpr = {
-        kind: "libCall",
-        fn: "dyn.builtinMethod",
-        args: [
-          { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
-          { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
-        ],
-        type: DYN,
-        loc: locOf(expr),
-      };
+      // `''.trim` is the same interned function as String.prototype.trim, so
+      // its call/apply run the method generically (scr_dyn_string_methods.c
+      // rather than the invoke unit's table, which has no trim entry).
+      const trim = stringTrimMethodName(name);
+      const method: IrExpr = trim
+        ? stringTrimMethodValue(trim, locOf(expr))
+        : {
+            kind: "libCall",
+            fn: "dyn.builtinMethod",
+            args: [
+              { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
+              { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
+            ],
+            type: DYN,
+            loc: locOf(expr),
+          };
       return isSafeToDiscard(receiver)
         ? method
         : {

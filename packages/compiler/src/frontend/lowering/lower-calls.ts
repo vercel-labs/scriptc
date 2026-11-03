@@ -7,6 +7,7 @@ import {
 } from "./builtins/array-classes.js";
 import { structuralCallInstance } from "./structural-instances.js";
 import { classViewOf } from "./class-views.js";
+import { lowerPresentArmCall } from "./expressions/optional-chains.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { lowerStaticPrivateCall } from "./private-statics.js";
 import { assertFunctionAliasOf } from "./lower-assert.js";
@@ -1975,6 +1976,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // (m.keys(), p.then(f), Object.keys(o)) or an unlowered call FORM of
     // a lowered one (Math.min with three arguments, s.padStart(8),
     // x.toFixed()).
+    if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
+      const present = lowerPresentArmCall(
+        lowerer,
+        expr,
+        expr.expression.expression,
+        expr.expression.name.text,
+      );
+      if (present) return present;
+    }
     lowerer.stdlibMemberFence(expr.expression);
     // The npm METHOD-CALL chokepoint: a call on a package-typed receiver
     // in a static build — attributed to the package.

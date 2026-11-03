@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/nullable-receiver-present-arm.cjs"
+ ],
+ "diags": []
+}

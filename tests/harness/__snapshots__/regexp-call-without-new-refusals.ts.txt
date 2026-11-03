@@ -1,17 +1,26 @@
-regexp-call-without-new-refusals.ts:5:14 - error SC2020: 'RegExp() without new on a RegExp or untyped argument' is part of the standard library types but has no scriptc lowering yet
+regexp-call-without-new-refusals.ts:6:14 - error SC2020: 'RegExp() without new on a pattern that may be a RegExp, with flags that may be undefined' is part of the standard library types but has no scriptc lowering yet
 
-  4 | const source = /ab+c/i;
-  5 | const same = RegExp(source);
+  5 | const source = /ab+c/i;
+  6 | const same = RegExp(source);
     |              ^~~~~~~~~~~~~~
-  6 | 
+  7 | 
 
-  hint: a RegExp pattern may come back as the same object; string or undefined arguments are the lowered form
+  hint: a RegExp pattern with undefined flags comes back as the same object; pass flags, or a string pattern
 
-regexp-call-without-new-refusals.ts:8:17 - error SC2020: 'RegExp() without new on a RegExp or untyped argument' is part of the standard library types but has no scriptc lowering yet
+regexp-call-without-new-refusals.ts:9:16 - error SC2020: 'RegExp() without new on a pattern that may be a RegExp, with flags that may be undefined' is part of the standard library types but has no scriptc lowering yet
 
-  7 | const parsed: any = JSON.parse('"x+"');
-  8 | const fromAny = RegExp(parsed, "g");
-    |                 ^~~~~~~~~~~~~~~~~~~
-  9 | 
+   8 | const input = process.argv.length > 99 ? "x" : source;
+   9 | const either = RegExp(input);
+     |                ^~~~~~~~~~~~~
+  10 | 
 
-  hint: a RegExp pattern may come back as the same object; string or undefined arguments are the lowered form
+  hint: a RegExp pattern with undefined flags comes back as the same object; pass flags, or a string pattern
+
+regexp-call-without-new-refusals.ts:12:20 - error SC2020: 'RegExp() without new on a pattern that may be a RegExp, with flags that may be undefined' is part of the standard library types but has no scriptc lowering yet
+
+  11 | const flags = process.argv.length > 99 ? "g" : undefined;
+  12 | const maybeFlags = RegExp(source, flags);
+     |                    ^~~~~~~~~~~~~~~~~~~~~
+  13 | 
+
+  hint: a RegExp pattern with undefined flags comes back as the same object; pass flags, or a string pattern

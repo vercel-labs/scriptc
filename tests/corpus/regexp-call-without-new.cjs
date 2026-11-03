@@ -1,5 +1,6 @@
 // `RegExp(pattern, flags)` called without `new` constructs the same regex
-// `new RegExp` does when the pattern and flags are strings or undefined.
+// `new RegExp` does, except for a regex pattern without flags, which Node
+// returns unchanged (tests/diagnostics/regexp-call-without-new-refusals.ts).
 var attributeName = RegExp("^[:A-Z_a-z][:A-Z_a-z\\-.0-9]*$");
 console.log(attributeName.test("data-id"), attributeName.test("1bad"));
 
@@ -16,6 +17,11 @@ console.log(String(RegExp("a|b", maybeFlags)));
 
 // Other primitives convert with ToString, as in Node.
 console.log(String(RegExp(1 + 1)), String(RegExp(null)));
+
+// With flags, a regex or untyped pattern builds a new regex, as in Node.
+var source = /a+/g;
+var copy = RegExp(source, "i");
+console.log(copy === source, copy.source, copy.flags, String(RegExp(JSON.parse('"q+"'), "g")));
 
 // A local binding named RegExp is not the builtin.
 function build(RegExp) {

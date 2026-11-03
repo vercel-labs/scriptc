@@ -12566,16 +12566,26 @@ export function lowerRegExpConstruct(
   }
   if (args.some(ts.isSpreadElement)) lowerer.noLowering(`${form} with spread arguments`, expr);
   const values = args.map((arg) => lowerer.lowerExpr(arg));
-  // The call form returns a RegExp pattern itself rather than a copy, so a
-  // pattern that is or may be a RegExp refuses there.
+  // The call form returns a RegExp pattern itself when the flags are
+  // undefined (`RegExp(re) === re`), so a pattern that may be a RegExp
+  // refuses there unless flags that cannot be undefined come with it; with
+  // flags it builds a new regex, as `new RegExp(re, flags)` does.
+  const mayBe = (value: IrExpr | undefined, kinds: readonly IrType["kind"][]): boolean =>
+    value === undefined ||
+    kinds.includes(value.type.kind) ||
+    (value.type.kind === "union" &&
+      (lowerer.unions.get(value.type.unionId)?.arms.some((arm) => kinds.includes(arm.kind)) ??
+        false));
   if (
     !ts.isNewExpression(expr) &&
-    values.some((value) => value.type.kind === "dyn" || value.type.kind === "regex")
+    values[0] !== undefined &&
+    mayBe(values[0], ["dyn", "regex"]) &&
+    mayBe(values[1], ["dyn", "undefinedT", "void"])
   ) {
     lowerer.noLowering(
-      "RegExp() without new on a RegExp or untyped argument",
+      "RegExp() without new on a pattern that may be a RegExp, with flags that may be undefined",
       expr,
-      "a RegExp pattern may come back as the same object; string or undefined arguments are the lowered form",
+      "a RegExp pattern with undefined flags comes back as the same object; pass flags, or a string pattern",
     );
   }
   // The statically spelled form below needs a string or undefined in

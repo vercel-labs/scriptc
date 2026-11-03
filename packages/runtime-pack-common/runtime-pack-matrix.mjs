@@ -89,8 +89,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
   // Number.prototype and Boolean.prototype read as values in JavaScript.
   ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
-  // String.prototype's trim family read as a value in JavaScript.
-  ["scr_dyn_string_methods.c", all("stringMethodValue", "dynInvoke")],
+  // A builtin prototype method read as a value in JavaScript (String trim,
+  // RegExp exec/test/toString).
+  ["scr_dyn_builtin_methods.c", all("builtinMethodValue", "dynInvoke")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.

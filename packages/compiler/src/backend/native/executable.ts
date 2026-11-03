@@ -233,7 +233,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.builtinPrototypeValue === true && u.opts.dynInvoke,
     "scr_dyn_builtin_prototype.c",
   ),
-  unit((u) => u.opts.stringMethodValue === true && u.opts.dynInvoke, "scr_dyn_string_methods.c"),
+  unit((u) => u.opts.builtinMethodValue === true && u.opts.dynInvoke, "scr_dyn_builtin_methods.c"),
   // createRequire's computed require and require.resolve.
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),

@@ -121,9 +121,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** Number.prototype and Boolean.prototype as values
    * (scr_dyn_builtin_prototype.c). */
   builtinPrototypeValue?: boolean;
-  /** String.prototype's trim family as a function value
-   * (scr_dyn_string_methods.c). */
-  stringMethodValue?: boolean;
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
   /** The JavaScript object model build (t262-da §J): the runtime code every
@@ -369,7 +369,7 @@ export function effectiveRuntimeFeatures(
     hostAbsentGlobals: features.hostAbsentGlobals === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinPrototypeValue: features.builtinPrototypeValue === true,
-    stringMethodValue: features.stringMethodValue === true,
+    builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     jsObjectModel,

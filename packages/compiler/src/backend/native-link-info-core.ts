@@ -173,8 +173,8 @@ export interface NativeLinkFeatures {
    * scr_dyn_builtin_prototype.c. Absent (false) otherwise. */
   builtinPrototypeValue?: boolean;
   /** A String.prototype trim method read as a value:
-   * scr_dyn_string_methods.c. Absent (false) otherwise. */
-  stringMethodValue?: boolean;
+   * scr_dyn_builtin_methods.c. Absent (false) otherwise. */
+  builtinMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;

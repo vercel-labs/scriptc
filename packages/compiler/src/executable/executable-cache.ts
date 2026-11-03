@@ -132,9 +132,10 @@ export interface EarlyExecutableNativeFeatures {
   /** Number.prototype and Boolean.prototype as values:
    * scr_dyn_builtin_prototype.c. */
   builtinPrototypeValue?: boolean;
-  /** String.prototype's trim family as a function value:
-   * scr_dyn_string_methods.c. */
-  stringMethodValue?: boolean;
+  /** A builtin prototype method (String's trim family, RegExp's exec/test/
+   * toString) as a function value:
+   * scr_dyn_builtin_methods.c. */
+  builtinMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;

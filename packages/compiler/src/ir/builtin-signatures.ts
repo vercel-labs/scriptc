@@ -4406,10 +4406,11 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
-    /** A String.prototype trim method as a function value, by its canonical
-     * name (`trim`, `trimStart`, `trimEnd`): the unit in
-     * scr_dyn_string_methods.c. */
-    "dyn.stringMethodValue": { argTypes: [STRING], result: DYN },
+    /** A builtin prototype method as a function value, by its prototype
+     * (`String`, `RegExp`) and canonical member name (`trim`, `trimStart`,
+     * `trimEnd`; `exec`, `test`, `toString`): the unit in
+     * scr_dyn_builtin_methods.c. */
+    "dyn.builtinMethodValue": { argTypes: [STRING, STRING], result: DYN },
     /** A standard library prototype object as a value (`Date.prototype` read
      * in a JavaScript source), named by its constructor: the unit in
      * scr_dyn_stdlib_prototype.c. */

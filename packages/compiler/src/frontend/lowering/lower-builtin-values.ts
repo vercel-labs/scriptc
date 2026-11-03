@@ -65,6 +65,9 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   ],
   Number: ["toString", "valueOf"],
   Object: ["hasOwnProperty", "propertyIsEnumerable", "toString", "valueOf"],
+  // Only the callable members: the flag getters and `source` read as values
+  // are data reads, and the RegExp.prototype object itself has no value yet.
+  RegExp: ["exec", "test", "toString"],
 };
 
 /** The canonical name of a string trim method read as a value, or null for
@@ -86,16 +89,20 @@ export function stringTrimMethodName(name: string): string | null {
   }
 }
 
-/** A string trim method as a function value: one interned function per
- * canonical name (scr_dyn_string_methods.c), so `String.prototype.trim`,
- * `''.trim` and `s.trim` are the same object, and Function.prototype's
- * call/apply run it on any receiver the way the specification's
- * RequireObjectCoercible + ToString do. */
-export function stringTrimMethodValue(name: string, loc: SrcLoc): IrExpr {
+/** A builtin prototype method as a function value: one interned function
+ * per (prototype, member) in scr_dyn_builtin_methods.c, so
+ * `String.prototype.trim`, `''.trim` and `s.trim` are the same object (and
+ * likewise `RegExp.prototype.exec`, `/a/.exec` and `re.exec`), and
+ * Function.prototype's call/apply run it on any receiver the way the
+ * specification defines the method. */
+export function builtinMethodValue(owner: string, member: string, loc: SrcLoc): IrExpr {
   return {
     kind: "libCall",
-    fn: "dyn.stringMethodValue",
-    args: [{ kind: "strLit", value: name, type: STRING, loc }],
+    fn: "dyn.builtinMethodValue",
+    args: [
+      { kind: "strLit", value: owner, type: STRING, loc },
+      { kind: "strLit", value: member, type: STRING, loc },
+    ],
     type: DYN,
     loc,
   };

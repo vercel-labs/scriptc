@@ -1872,7 +1872,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",
-  "dyn.stringMethodValue": "scr_dyn_string_method_value",
+  "dyn.builtinMethodValue": "scr_dyn_builtin_method_value",
   "dyn.stdlibPrototype": "scr_dyn_stdlib_prototype",
   "dyn.classPrototype": "scr_dyn_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",

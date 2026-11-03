@@ -1081,6 +1081,9 @@ struct ScrHttpRes {
   bool wcb_queued;
   bool close_queued;
   bool close_emitted;
+  /* An http2 compat response to a HEAD request whose stream closed before
+   * end(): Node emits its 'finish' and 'close' only once end() runs. */
+  bool h2_close_held;
 };
 
 ScrHttpRes *scr_http_res_retain(ScrHttpRes *r) {
@@ -1144,6 +1147,11 @@ static bool scr_http_res_has_header(ScrHttpRes *r, const char *name);
  * with no transfer encoding and a body-bearing response. The stored header
  * string has already passed setHeader's validation; strtod matches Node's
  * numeric conversion for the ordinary decimal Content-Length values. */
+static bool scr_http_res_head_request(const ScrHttpRes *r) {
+  return r->req_ref && r->req_ref->method && r->req_ref->method->len == 4 &&
+         memcmp(r->req_ref->method->data, "HEAD", 4) == 0;
+}
+
 static bool scr_http_res_expected_length(ScrHttpRes *r, double *expected) {
   if (!r->strict_content_length || r->h2_stream || r->chunked ||
       (r->status >= 100 && r->status < 200) || r->status == 204 || r->status == 304 ||
@@ -2090,6 +2098,7 @@ void scr_http_res_set_timeout_plain(ScrHttpRes *r, double ms) {
 
 static void scr_http_conn_response_finished(struct ScrHttpConn *conn, bool keep_alive);
 static void scr_http_queue_res_finish(ScrHttpRes *res);
+static void scr_http_res_fire_close(ScrHttpRes *res);
 
 /* Flush corked bytes as one write (corked already zero, or forced by
  * end()). */
@@ -2137,10 +2146,16 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
     if (r->finished) return; /* a teardown inside the flush */
   }
   if (r->h2_stream != NULL) {
+    /* Node's compat response runs its end(cb) callbacks on the stream's
+     * 'finish', once END_STREAM goes out (scr_http_h2_res_local_end), and
+     * emits its own 'finish' right before 'close' (the RES_CLOSE emit). */
     if (!r->head_sent) scr_http_res_send_head(r, (long long)len);
     scr_http_h2_ops->end(r->h2_stream, data, len);
     r->finished = true;
-    scr_http_queue_res_finish(r);
+    if (r->h2_close_held) {
+      r->h2_close_held = false;
+      scr_http_res_fire_close(r);
+    }
     return;
   }
   if (!r->head_sent) {
@@ -2464,7 +2479,17 @@ void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
     return;
   }
   scr_net_ls_add(&r->finish_ls, cb, NULL, true);
-  if (r->finished) scr_http_queue_res_finish(r);
+  /* The h2 compat response emits 'finish' with 'close'. */
+  if (r->finished && r->h2_stream == NULL) scr_http_queue_res_finish(r);
+}
+
+static void scr_http_res_end_callback_nt(ScrClosure *self) {
+  ScrHttpRes *r = scr_box_get_ref(self->caps[0]);
+  ScrNetLs now = {0};
+  scr_net_ls_add(&now, scr_box_get_ref(self->caps[1]), NULL, true);
+  scr_net_fire0_this(&now, r, SCR_DYNH_HTTP_RES);
+  scr_net_ls_drop(&now);
+  scr_http_res_release(r);
 }
 
 /* res.end(cb)'s callback slot: registered just before the end call. The
@@ -2473,13 +2498,24 @@ void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
  * with the socket still attached. A callback registered after the
  * response finished runs synchronously, where Node passes
  * ERR_STREAM_ALREADY_FINISHED (this surface's callbacks take no
- * arguments). The h2 compat response keeps the 'finish' listener order. */
+ * arguments). The h2 compat response runs them on its stream's 'finish'
+ * (scr_http_h2_res_local_end), and one registered while the response is
+ * already ending or closed on the next tick, as Node's compat end() does.
+ * A HEAD request's stream ended its writable side when the request
+ * arrived, so there the callback waits for the response's own 'finish',
+ * in listener order. */
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
   if (r->h2_stream != NULL) {
-    /* Node runs an end(cb) callback registered after the compat response
-     * finished, too. */
-    scr_net_ls_add(&r->finish_ls, cb, NULL, true);
-    if (r->finished) scr_http_queue_res_finish(r);
+    if (!r->finished && !r->writable_finished) {
+      scr_net_ls_add(scr_http_res_head_request(r) ? &r->finish_ls : &r->endcb_ls, cb, NULL, true);
+      return;
+    }
+    ScrClosure *tick = scr_closure_new((void *)&scr_http_res_end_callback_nt, 2);
+    tick->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
+    scr_box_set_ref(tick->caps[0], scr_http_res_retain(r));
+    tick->caps[1] = scr_box_new_obj(&scr_closure_retain_v, &scr_closure_release_v, &scr_closure_trace_v);
+    scr_box_set_ref(tick->caps[1], cb);
+    scr_next_tick(tick);
     return;
   }
   if (r->writable_finished) {
@@ -2528,6 +2564,23 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
   }
 }
 
+static void scr_http_res_fire_close(ScrHttpRes *res) {
+  if (res->close_emitted) return;
+  /* Node's compat response emits 'finish' and then 'close' when its stream
+   * closes, also when it never ended. */
+  if (res->h2_stream != NULL && !res->writable_finished) {
+    res->writable_finished = true;
+    scr_net_fire0_this(&res->finish_ls, res, SCR_DYNH_HTTP_RES);
+    scr_net_ls_drop(&res->finish_ls);
+  }
+  res->close_emitted = true;
+  res->destroyed = true; /* Node: destroyed reads true inside 'close' */
+  res->socket_detached = true;
+  scr_net_fire0_this(&res->close_ls, res, SCR_DYNH_HTTP_RES);
+  scr_net_ls_drop(&res->close_ls);
+  scr_net_ls_drop(&res->timeout_ls);
+}
+
 static void scr_http_proto_sweep(void) {
   while (scr_http_emits_head < scr_http_emits_len) {
     ScrHttpEmit e = scr_http_emits[scr_http_emits_head++];
@@ -2535,14 +2588,19 @@ static void scr_http_proto_sweep(void) {
     switch (e.kind) {
     case SCR_HTTP_EMIT_RES_CLOSE: {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
-      if (!res->close_emitted) {
-        res->close_emitted = true;
-        res->destroyed = true; /* Node: destroyed reads true inside 'close' */
-        res->socket_detached = true;
-        scr_net_fire0_this(&res->close_ls, res, SCR_DYNH_HTTP_RES);
+      /* Node's compat response ignores its stream's close when it answers
+       * a HEAD request it never ended; a later end() emits both events.
+       * Node keeps the listeners for that end() and its collector frees
+       * them when none comes; here nothing could, so they go now. */
+      if (res->h2_stream != NULL && !res->close_emitted && !res->finished &&
+          scr_http_res_head_request(res)) {
+        res->h2_close_held = true;
+        scr_net_ls_drop(&res->finish_ls);
         scr_net_ls_drop(&res->close_ls);
         scr_net_ls_drop(&res->timeout_ls);
+        break;
       }
+      scr_http_res_fire_close(res);
       break;
     }
     case SCR_HTTP_EMIT_RES_WCB: {
@@ -2613,7 +2671,15 @@ static void scr_http_proto_sweep(void) {
       break;
     case SCR_HTTP_EMIT_RES_FINISH: {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
-      res->finish_queued = false; /* a later h2 compat end(cb) re-queues */
+      res->finish_queued = false;
+      if (res->h2_stream != NULL) {
+        /* The compat response's stream finished: its end(cb) callbacks. */
+        ScrNetLs endcbs = res->endcb_ls;
+        res->endcb_ls = (ScrNetLs){0};
+        scr_net_fire0_this(&endcbs, res, SCR_DYNH_HTTP_RES);
+        scr_net_ls_drop(&endcbs);
+        break;
+      }
       res->writable_finished = true;
       ScrNetLs endcbs = res->endcb_ls;
       res->endcb_ls = (ScrNetLs){0};
@@ -4531,6 +4597,10 @@ ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
 }
 
 void scr_http_h2_res_close(ScrHttpRes *r) { scr_http_queue_res_close(r); }
+
+/* The response's END_STREAM went out: its stream's 'finish', where Node's
+ * compat response runs its end(cb) callbacks (the RES_FINISH emit). */
+void scr_http_h2_res_local_end(ScrHttpRes *r) { scr_http_queue_res_finish(r); }
 
 bool scr_http_h2_res_finished(ScrHttpRes *r) { return r->finished; }
 

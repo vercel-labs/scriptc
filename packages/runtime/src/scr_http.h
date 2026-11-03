@@ -76,6 +76,7 @@ void scr_http_h2_req_close(ScrHttpReq *r);
 ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
                                  void *stream /*borrowed*/); /* +1 */
 void scr_http_h2_res_close(ScrHttpRes *r);
+void scr_http_h2_res_local_end(ScrHttpRes *r);
 bool scr_http_h2_res_finished(ScrHttpRes *r);
 void scr_http_req_on_aborted(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
 ScrStr *scr_http_req_http_version(ScrHttpReq *r); /* +1 — "1.0"/"1.1"/"2.0" */

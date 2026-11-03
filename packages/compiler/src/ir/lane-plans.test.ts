@@ -242,6 +242,46 @@ test("a write between the declaration and the loop keeps the scalar form", () =>
   expect(plan(body)).toBeUndefined();
 });
 
+test("a switch case ahead of the loop's own can fall into it and write the accumulator", () => {
+  const tag = { id: "tag", name: "tag", type: F64, mutable: false };
+  const ahead = (first: IrStmt[]): IrStmt[] => [
+    decl("t", num(0)),
+    {
+      kind: "switch",
+      disc: ref("tag"),
+      cases: [
+        { test: num(0), body: first },
+        { test: num(1), body: [countedLoop("a", sumBody())] },
+      ],
+      loc,
+    },
+  ];
+  const { fn: writes, locals } = fn(ahead([assign("t", num(5))]), [tag]);
+  expect(planLaneLoops(writes, locals, ALL).size).toBe(0);
+  const { fn: quiet, locals: quietLocals } = fn(ahead([decl("u", num(1))]), [tag]);
+  expect([...planLaneLoops(quiet, quietLocals, ALL).values()]).toMatchObject([{ shape: "sum" }]);
+});
+
+test("a loop in a catch or finally body sees the writes ahead of it", () => {
+  const attempt = (
+    tryBody: IrStmt[],
+    catchBody: IrStmt[] | null,
+    finallyBody: IrStmt[] | null,
+  ): IrStmt => ({ kind: "tryCatch", tryBody, catchBody, catchLocalId: "e", finallyBody, loc });
+  const writing = [assign("t", num(5))];
+  const quiet = [decl("u", num(1))];
+  const loop = (): IrStmt => countedLoop("a", sumBody());
+  const bodies = (held: IrStmt[]): IrStmt[] => [decl("t", num(0)), ...held];
+  // The try body ran, and possibly wrote the accumulator, before the catch
+  // or the finally: only a loop in the try body itself starts from +0.
+  expect(plan(bodies([attempt(writing, [loop()], null)]))).toBeUndefined();
+  expect(plan(bodies([attempt(writing, quiet, [loop()])]))).toBeUndefined();
+  expect(plan(bodies([attempt(quiet, writing, [loop()])]))).toBeUndefined();
+  expect(plan(bodies([attempt(quiet, [loop()], null)]))).toMatchObject({ shape: "sum" });
+  expect(plan(bodies([attempt(quiet, quiet, [loop()])]))).toMatchObject({ shape: "sum" });
+  expect(plan(bodies([attempt([loop()], writing, null)]))).toMatchObject({ shape: "sum" });
+});
+
 test("the declaration must come before the loop", () => {
   const loop = countedLoop("a", sumBody());
   expect(plan([loop, decl("t", num(0))])).toBeUndefined();
@@ -307,6 +347,16 @@ test("a count needs a limit the entry can evaluate once", () => {
     countedLoop("a", countBody(ref("limit"))),
   ];
   expect(plan(fromLocal)).toMatchObject({ shape: "count" });
+});
+
+test("a count's limit must not change inside the loop", () => {
+  // The entry evaluates the limit once, so a limit that the loop itself
+  // writes would be frozen at its starting value: neither the accumulator
+  // nor the counter may serve as one.
+  const fromAccumulator = [decl("c", num(0)), countedLoop("a", countBody(ref("c")))];
+  expect(plan(fromAccumulator)).toBeUndefined();
+  const fromInduction = [decl("c", num(0)), countedLoop("a", countBody(ref("i")))];
+  expect(plan(fromInduction)).toBeUndefined();
 });
 
 test("a count's branch must not have an else", () => {

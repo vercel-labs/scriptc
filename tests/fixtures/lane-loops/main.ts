@@ -114,6 +114,56 @@ function sumAfterWrite32(a: ThirtyTwo, seed: number): number {
   return t;
 }
 
+// A switch case falls into the one after it, so the case ahead of the loop
+// can leave the accumulator away from +0: the planner must refuse this loop.
+// `sumSwitchClean32` has the same shape with a quiet case first, so the
+// lowering really does plan loops written inside a switch case.
+function sumSwitchHuge32(a: ThirtyTwo, tag: number): number {
+  let t = 0;
+  switch (tag) {
+    case 0:
+      t = 9007199254740992;
+    case 1:
+      for (let i = 0; i < a.length; i++) t += a[i]!;
+      break;
+  }
+  return t;
+}
+
+function sumSwitchClean32(a: ThirtyTwo, tag: number): number {
+  let t = 0;
+  let seen = 0;
+  switch (tag) {
+    case 0:
+      seen = 1;
+    case 1:
+      for (let i = 0; i < a.length; i++) t += a[i]!;
+      break;
+  }
+  return t + seen;
+}
+
+// The count's limit is evaluated once at the lane entry, so the counter and
+// the accumulator cannot be one: both change every iteration, and freezing
+// either at its starting value would count a different number of elements.
+function countAgainstIndex32(a: ThirtyTwo): number {
+  let c = 0;
+  for (let i = 0; i < a.length; i++) if (a[i]! >= i) c++;
+  return c;
+}
+
+function countAgainstCount32(a: ThirtyTwo): number {
+  let c = 0;
+  for (let i = 0; i < a.length; i++) if (a[i]! >= c) c++;
+  return c;
+}
+
+function ones32(n: number): Uint32Array {
+  const a = new Uint32Array(n);
+  for (let i = 0; i < n; i++) a[i] = 1;
+  return a;
+}
+
 function raw(i: number, n: number, pattern: number): number {
   if (pattern === 0) return (i * 37 + n * 101 + 11) & 0xff;
   if (pattern === 1) return i % 7;
@@ -212,4 +262,14 @@ for (const n of [2097148, 2097151, 2097152, 2097156, 2098152, 4195304]) {
   const a = make32(n, 2);
   const b = makei32(n, 2);
   console.log("big", n, sum32(a), sumReverse32(a), sum32(b), sumReverse32(b));
+}
+
+// A switch's earlier case, and the element test's own values: both must print
+// what Node prints, with the lane loops the lowering keeps for the quiet case
+// and without them where the planner refuses.
+for (const n of [0, 1, 3, 4, 5, 8, 17]) {
+  const ones = ones32(n);
+  for (const tag of [0, 1, 2])
+    console.log("switch", n, tag, sumSwitchHuge32(ones, tag), sumSwitchClean32(ones, tag));
+  console.log("counts", n, countAgainstIndex32(ones), countAgainstCount32(ones));
 }

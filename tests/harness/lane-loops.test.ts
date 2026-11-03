@@ -80,6 +80,10 @@ test("the planned build really carries lane loops", async () => {
   expect(llvm).toMatch(/icmp ult i64 [^,]+, 2097152/);
   expect(llvm).toMatch(/icmp ult i64 [^,]+, 137438953472/);
   expect(llvm).toMatch(/icmp ult i64 [^,]+, 35184372088832/);
+  // The loop inside the switch's quiet case is planned, so the writing case
+  // next to it is refused by the accumulator rule and not by its shape.
+  const clean = llvm.slice(llvm.indexOf("sumSwitchClean32"));
+  expect(clean.slice(0, clean.indexOf("\ndefine "))).toMatch(/lane\.c\d+:/);
 }, 300_000);
 
 test("a build without the plan flag emits the scalar loops and no toggle", async () => {

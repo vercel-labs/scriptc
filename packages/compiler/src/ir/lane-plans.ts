@@ -93,9 +93,9 @@ export interface LaneCountPlan {
   receiver: string;
   elem: IrBytesElem;
   accumulator: string;
-  /** The element test. `limit` is loop-invariant (the body's shape leaves
-   * it no way to write it), so the emitter evaluates it once at the entry
-   * and compares lanes against an integer splat. */
+  /** The element test. `limit` is loop-invariant, which `invariantLimit`
+   * checks against the loop's own statements, so the emitter evaluates it
+   * once at the entry and compares lanes against an integer splat. */
   compare: { op: LaneCompareOp; limit: IrExpr };
 }
 
@@ -267,9 +267,19 @@ function matchCountBody(
   return null;
 }
 
-/** The limit test's operand: a value the lane entry can evaluate once. */
-function invariantLimit(e: IrExpr): boolean {
-  return e.kind === "numLit" || (e.kind === "varRef" && e.type.kind === "f64");
+/** The limit test's operand: a value the lane entry can evaluate once. The
+ * entry evaluates it before the loop, so it must be the same on every
+ * iteration: a literal, or a number local the loop itself never writes. That
+ * rules out the counter and the accumulator, which the entry would freeze at
+ * their starting values. */
+function invariantLimit(e: IrExpr, loop: IrStmt, induction: string): boolean {
+  if (e.kind === "numLit") return true;
+  return (
+    e.kind === "varRef" &&
+    e.type.kind === "f64" &&
+    e.localId !== induction &&
+    !writesLocal(loop, e.localId)
+  );
 }
 
 /** Whether the accumulator holds exactly +0 wherever this loop is entered.
@@ -278,7 +288,9 @@ function invariantLimit(e: IrExpr): boolean {
  * it must be declared as the literal 0, it must be declared inside the same
  * loops as the loop (so no back edge swings past it between two entries of
  * the loop), and it must be on the loop's path with nothing in front of it
- * writing it. Loop versioning rewrites one source loop into several copies,
+ * writing it, in the list that holds it or in a region that reaches the loop
+ * without being listed there. Loop versioning rewrites one source loop into
+ * several copies,
  * each in its own branch, so the declaration usually belongs to an enclosing
  * list rather than the loop's own. */
 function entryIsZero(
@@ -312,7 +324,39 @@ function entryIsZero(
     }
     if (step.cond !== null && exprWrites(step.cond, id)) return false;
   }
-  return declared;
+  return declared && !earlierRegionWrites(site, id);
+}
+
+/** Whether region code that runs before the loop, but that no path step
+ * lists, writes `id`. A switch case falls into the next one, so the cases
+ * ahead of the loop's own run before it; a catch body runs after the try
+ * body, and a finally body after both. Refusing the plan is always sound,
+ * so a case that ends in `break` counts like one that falls through. */
+function earlierRegionWrites(site: LoopSite, id: string): boolean {
+  for (let i = 0; i < site.path.length; i++) {
+    const step = site.path[i]!;
+    const holder = step.list[step.index]!;
+    const next = site.path[i + 1];
+    const inner = next === undefined ? site.stmt.body : next.list;
+    if (holder.kind === "switch") {
+      if (exprWrites(holder.disc, id)) return true;
+      for (const branch of holder.cases) {
+        if (branch.body === inner) break;
+        if (branch.body.some((s) => writesLocal(s, id))) return true;
+      }
+    } else if (holder.kind === "tryCatch") {
+      if (holder.tryBody === inner) continue;
+      if (holder.catchBody !== inner && holder.finallyBody !== inner) continue;
+      if (holder.tryBody.some((s) => writesLocal(s, id))) return true;
+      if (
+        holder.finallyBody === inner &&
+        holder.catchBody !== null &&
+        holder.catchBody.some((s) => writesLocal(s, id))
+      )
+        return true;
+    }
+  }
+  return false;
 }
 
 /** Whether an expression writes `id`. */
@@ -358,7 +402,7 @@ function planLoop(
     const matched = matchCountBody(only, receiver.localId, loop.localId);
     if (
       matched !== null &&
-      invariantLimit(matched.compare.limit) &&
+      invariantLimit(matched.compare.limit, stmt, loop.localId) &&
       entryIsZero(matched.accumulator, site, locals, facts)
     )
       return {

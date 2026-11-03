@@ -5381,6 +5381,8 @@ const DYN_STRING_ONLY_ARITY: Readonly<Record<string, number>> = {
   trim: 0,
   trimStart: 0,
   trimEnd: 0,
+  trimLeft: 0,
+  trimRight: 0,
   split: 2,
   padStart: 2,
   padEnd: 2,
@@ -5405,6 +5407,12 @@ const DYN_STRING_ONLY_METHODS = new Set([
   "trim",
   "trimStart",
   "trimEnd",
+  // The Annex B trim aliases stay beside the names they alias: a String
+  // wrapper receiver is an object, so the runtime kind test alone cannot
+  // reach the string lowering, and the wrapper-aware branch tests the member
+  // value against the canonical method the alias answers (t262-da A2).
+  "trimLeft",
+  "trimRight",
   "split",
   "padStart",
   "padEnd",

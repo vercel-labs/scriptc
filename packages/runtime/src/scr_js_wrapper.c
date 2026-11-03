@@ -350,6 +350,25 @@ static const ScrJsWrapperMember *scr_js_wrapper_member_table(int kind) {
                                          : scr_js_wrapper_boolean_members;
 }
 
+/* The member a name answers: the Annex B trim aliases are the methods they
+ * alias, so `trimLeft` is `trimStart` and `trimRight` is `trimEnd` (Node's
+ * `String.prototype.trimLeft === String.prototype.trimStart`). Both spellings
+ * reach one interned value, which carries the canonical name, so the
+ * frontend's wrapper.isStringMethod recognizes either spelling's read. */
+static const char *scr_js_wrapper_canonical_member(const char *name, size_t name_length,
+                                                   size_t *canonical_length) {
+  if (name_length == 8 && memcmp(name, "trimLeft", 8) == 0) {
+    *canonical_length = 9;
+    return "trimStart";
+  }
+  if (name_length == 9 && memcmp(name, "trimRight", 9) == 0) {
+    *canonical_length = 7;
+    return "trimEnd";
+  }
+  *canonical_length = name_length;
+  return name;
+}
+
 /* The interned member value of `kind` for `name` (+1), or NULL when the
  * kind's prototype has no member of that name. The prototype object's
  * members, and every member read a primitive or a wrapper instance answers
@@ -359,6 +378,7 @@ static const ScrJsWrapperMember *scr_js_wrapper_member_table(int kind) {
 static ScrDyn *scr_js_wrapper_member_lookup(int kind, const char *name, size_t name_length) {
   const ScrJsWrapperMember *members = scr_js_wrapper_member_table(kind);
   size_t index = 0;
+  name = scr_js_wrapper_canonical_member(name, name_length, &name_length);
   for (const ScrJsWrapperMember *m = members; m->name; m++, index++) {
     if (strlen(m->name) != name_length || memcmp(m->name, name, name_length) != 0) continue;
     scr_js_wrapper_register_cleanup();
@@ -744,13 +764,17 @@ ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer) {
 /* Whether `member`, the value a call read as the callee's member `name`,
  * is this unit's String.prototype method of that name: the compiler then
  * runs its own lowering of the method on ToString of the receiver
- * (scr_js_wrapper_this_string), which is what the builtin does. */
+ * (scr_js_wrapper_this_string), which is what the builtin does. The member
+ * carries its canonical name, so the alias spellings ask for theirs. */
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name) {
   if (member->kind != SCR_DYN_FUNC || member->v.fn.thunk != scr_js_wrapper_method) return false;
   ScrDyn *member_name = scr_box_get_ref(member->v.fn.clo->caps[0]);
   ScrDyn *kind = scr_box_get_ref(member->v.fn.clo->caps[1]);
-  bool builtin = (int)kind->v.num == SCR_JS_WRAPPER_STRING && member_name->v.str->len == name->len &&
-                 memcmp(member_name->v.str->data, name->data, name->len) == 0;
+  size_t name_length = name->len;
+  const char *canonical = scr_js_wrapper_canonical_member(name->data, name->len, &name_length);
+  bool builtin = (int)kind->v.num == SCR_JS_WRAPPER_STRING &&
+                 member_name->v.str->len == name_length &&
+                 memcmp(member_name->v.str->data, canonical, name_length) == 0;
   scr_dyn_release(kind);
   scr_dyn_release(member_name);
   return builtin;

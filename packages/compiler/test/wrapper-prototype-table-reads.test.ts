@@ -17,6 +17,12 @@ interface PrototypeReads {
   installs: number;
   /** dynChecks whose value is a wrapper.booleanPrototype read. */
   checkedPrototype: number;
+  /** `wrapper.isStringMethod` calls (a member a call read, tested against the
+   * wrapper unit's String method of that name). */
+  isStringMethod: number;
+  /** `strIntrinsic` method names, in IR order (the String lowering a call
+   * emitted). */
+  stringMethods: string[];
   /** Lowering-fence messages left in the IR (string literals naming SC2020). */
   fences: string[];
   /** Whether the module names the object model build and the wrapper unit. */
@@ -42,6 +48,8 @@ async function prototypeReads(source: string, extension = "js"): Promise<Prototy
       wrapper: 0,
       installs: 0,
       checkedPrototype: 0,
+      isStringMethod: 0,
+      stringMethods: [],
       fences: [],
       objectModel: false,
       linksWrapper: false,
@@ -64,6 +72,8 @@ async function prototypeReads(source: string, extension = "js"): Promise<Prototy
         reads.builtinPrototype.push(String(node.args?.[0]?.value));
       if (node.kind === "libCall" && node.fn === "wrapper.booleanPrototype") reads.wrapper++;
       if (node.kind === "libCall" && node.fn === "wrapper.installConstructor") reads.installs++;
+      if (node.kind === "libCall" && node.fn === "wrapper.isStringMethod") reads.isStringMethod++;
+      if (node.kind === "strIntrinsic") reads.stringMethods.push(String(node.method));
       if (
         node.kind === "dynCheck" &&
         (node.value as { kind?: unknown; fn?: unknown } | undefined)?.fn ===
@@ -195,4 +205,26 @@ test("a typed source keeps the Boolean method-value read refused", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// A String wrapper's member call answers the table's member by name, and the
+// Annex B aliases are the same methods as the names they alias: reading
+// `String.prototype` must not send `trimLeft`/`trimRight` down the dynamic
+// call path, which the wrapper unit's function value refuses (SC2020). They
+// lower like `trimStart`/`trimEnd`, through the wrapper's ToString.
+test("a wrapper's trim aliases trim after String.prototype is read", async () => {
+  const reads = await prototypeReads(
+    `const proto = String.prototype;
+const padded = new String("  value  ");
+console.log(padded.trimLeft(), padded.trimRight(), padded.trimStart(), padded.trimEnd());
+`,
+  );
+  expect(reads.isStringMethod).toBe(4);
+  expect(reads.stringMethods.slice().sort()).toEqual([
+    "trimEnd",
+    "trimEnd",
+    "trimStart",
+    "trimStart",
+  ]);
+  expect(reads.fences).toEqual([]);
 });

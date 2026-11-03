@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/package-value-shape-refusal/main.ts"
+ ],
+ "diags": []
+}

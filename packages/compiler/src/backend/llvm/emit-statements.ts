@@ -100,6 +100,7 @@ import { LOOPS } from "./loop-state.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
+import { emitFusedRecordSet } from "./record-entry-fusion.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
 const MAX_CALLBACK_VERSION_COST = 400;
@@ -311,10 +312,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // Whole-value uses still retain their own copies, so returning or
       // storing the alias preserves the ordinary heap representation.
       // Boxed captures, reassigned sources and projections need ownership.
+      // A tree value has one owner and no copy to lend: the alias would be
+      // a second pointer the source's scope exit still destroys.
       if (
         b.kind === "local" &&
         b.local &&
         isRefCounted(b.type) &&
+        !emitter.isTreeValue(b.type) &&
         emitter.stableCallBindings.has(s.localId) &&
         (emitter.canBorrowCallArgument(s.init) || emitter.unwrittenAlias(s))
       ) {
@@ -655,7 +659,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           s.value,
           null,
         );
-        emitter.emitNullableFieldStore(obj.name, s.className, s.field, nullable, s.value);
+        emitter.emitNullableFieldStore(
+          obj.name,
+          s.className,
+          s.field,
+          nullable,
+          s.value,
+          emitter.freshFieldStores.has(s),
+        );
         break;
       }
       if (s.kind === "fieldSet" && emitter.int32Slots.isField(s.className, s.field)) {
@@ -686,12 +697,43 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         );
       } else if (emitter.publishedTypes?.recordGuarded(s.shapeId) === true)
         emitter.emitPublishedFieldGuard(obj.name, null, s.field);
+      if (s.kind === "recordSet" && emitter.partialFieldMissing(s.shapeId, s.field)) {
+        // A field a partial record view may lack: the view keeps it as a
+        // boxed property when the viewed record does not declare it.
+        const fieldType = emitter
+          .recordShape(s.shapeId)
+          .fields.find((f) => f.name === s.field)!.type;
+        const fieldInline = emitter.recordFieldInline(s.shapeId, s.field);
+        emitter.storePartialField(
+          obj.name,
+          s.shapeId,
+          s.field,
+          fieldType,
+          v,
+          (slot) => {
+            // A result-slot entry fills zeroed caller storage, each field
+            // once; a constructor's first store to its own field fills the
+            // slot `new` left.
+            if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+              emitter.initField(slot, fieldType, fieldInline, v);
+            else emitter.replaceField(slot, fieldType, fieldInline, v);
+          },
+          // The store owns the value on the slot path; the extra-property
+          // path boxes it (retaining) and gives up the store's reference.
+          () => {
+            if (!fieldInline && isRefCounted(fieldType)) emitter.releaseHeap(v.name, fieldType);
+          },
+        );
+        break;
+      }
       const { ptr, type, inline } =
         s.kind === "fieldSet"
           ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
           : emitter.recordFieldPtr(obj.name, s.shapeId, s.field);
-      // A result-slot entry fills zeroed caller storage, each field once.
-      if (resultSlotStore(emitter.currentFunctionName, s)) emitter.initField(ptr, type, inline, v);
+      // A result-slot entry fills zeroed caller storage, each field once; a
+      // constructor's first store to its own field fills the slot `new` left.
+      if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+        emitter.initField(ptr, type, inline, v);
       else emitter.replaceField(ptr, type, inline, v);
       if (
         s.kind === "fieldSet" &&
@@ -735,6 +777,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // whose writes validate and can throw, stay refused), undeclared
       // keys insert/replace in the overflow map. Evaluation order: obj,
       // key, value; the write OWNS the value (+1 moves in).
+      const paired = emitter.recordEntryFusion?.writes.get(s);
+      const pairedIv = paired === undefined ? undefined : emitter.recordShape(s.shapeId).indexValue;
+      if (paired !== undefined && (pairedIv?.kind === "f64" || pairedIv?.kind === "bool")) {
+        // Paired with a fused read of the same object and key binding
+        // (record-entry-fusion.ts): the read already evaluated both and
+        // parked the overflow entry, so the write evaluates only the value
+        // and overwrites the entry's value slot in place. A miss takes the
+        // ordinary insert with the parked map and key.
+        const v = emitter.emitExpr(s.value);
+        const vAcc = pairedIv.kind === "f64" ? "f64" : "bool";
+        if (
+          emitFusedRecordSet(emitter, s, { name: v.name, access: vAcc }, (map, key) =>
+            emitter.mapSet(map, "str", vAcc, key, v.name),
+          )
+        )
+          break;
+        // The paired read took a non-fused lowering: finish with the
+        // ordinary set. Both bindings are plain variables, so reading them
+        // after the value is unobservable.
+        const objFallback = emitter.emitExpr(s.obj);
+        const keyFallback = emitter.emitExpr(s.key);
+        emitter.mapSet(
+          emitter.recordOvfPtr(objFallback.name, s.shapeId),
+          "str",
+          vAcc,
+          keyFallback.name,
+          v.name,
+        );
+        break;
+      }
       const obj = emitter.emitExpr(s.obj);
       const key = emitter.emitExpr(s.key);
       const v = emitter.emitExpr(s.value);
@@ -837,19 +909,32 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const ln = B.newLabel("rks.n");
         B.condBr(hit, lh, ln);
         B.startBlock(lh);
-        const { ptr, type, inline } = emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
-        if (inline) {
-          // The write owns the moved-in value; the slot copies its bits.
-          emitter.storeField(ptr, type, v.name, true);
-          emitter.releaseHeap(v.name, type);
-        } else if (isRefCounted(type)) {
-          const old = B.tmp();
-          B.line(`${old} = load ptr, ptr ${ptr}`);
-          emitter.storeField(ptr, type, v.name, false);
-          emitter.releaseHeap(old, type);
-        } else {
-          emitter.storeField(ptr, type, v.name, false);
-        }
+        const partial = emitter.partialFieldMissing(s.shapeId, f.name);
+        // A field a partial record view may lack has no slot to address:
+        // its write goes through the view's extra-property store.
+        const field = partial
+          ? { type: f.type, inline: emitter.recordFieldInline(s.shapeId, f.name), ptr: "" }
+          : emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
+        const { ptr, type, inline } = field;
+        const storeAt = (slot: string): void => {
+          if (inline) {
+            // The write owns the moved-in value; the slot copies its bits.
+            emitter.storeField(slot, type, v.name, true);
+            emitter.releaseHeap(v.name, type);
+          } else if (isRefCounted(type)) {
+            const old = B.tmp();
+            B.line(`${old} = load ptr, ptr ${slot}`);
+            emitter.storeField(slot, type, v.name, false);
+            emitter.releaseHeap(old, type);
+          } else {
+            emitter.storeField(slot, type, v.name, false);
+          }
+        };
+        if (partial)
+          emitter.storePartialField(obj.name, s.shapeId, f.name, type, v, storeAt, () => {
+            if (inline || isRefCounted(type)) emitter.releaseHeap(v.name, type);
+          });
+        else storeAt(ptr);
         B.br(join);
         B.startBlock(ln);
       }
@@ -1875,6 +1960,28 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
       );
       emitter.emitUnwind();
+      break;
+    }
+    case "genBindBarrier": {
+      // The end of a generator's parameter prologue (fn.generator.bindAtCall):
+      // suspend invisibly so the spawn wrapper can run the prologue at the
+      // call. No OUT value is produced and no IN value is taken — the first
+      // `.next(v)` argument stays unread, exactly as a suspendedStart
+      // generator discards it — but the resumption may carry an injected
+      // throw or the `.return()` sentinel, so it checks like a yield.
+      if (emitter.currentGenerator === null)
+        throw new InternalCompilerError(
+          "llvm emitter bug: genBindBarrier outside a generator body",
+        );
+      if (emitter.currentCoro !== null) {
+        emitter.emitCoroSuspendPrepared();
+      } else {
+        // A fiber body parks no OUT value and switches back to the resumer:
+        // the valueless yield form the runtime already offers.
+        emitter.declare(`declare void @scr_gen_yield_ref(ptr, ptr)`);
+        B.line(`call void @scr_gen_yield_ref(ptr null, ptr null)`);
+      }
+      emitter.emitPendingCheck();
       break;
     }
     case "tryCatch":

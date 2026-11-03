@@ -39,8 +39,21 @@ typedef enum ScrBytesElem {
   SCR_BYTES_I16, /* Int16Array */
   SCR_BYTES_U8C, /* Uint8ClampedArray */
   SCR_BYTES_F16, /* Float16Array (IEEE 754 binary16 storage) */
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The 64-bit BigInt kinds (BigInt64Array, BigUint64Array). An element is
+   * never representable as a double, so its element accesses go through
+   * scr_bytes_get_bigint / scr_bytes_set_bigint and the double-based
+   * accessors (compiled code never reaches these kinds) trap. Appended so
+   * every existing kind keeps its number. */
+  SCR_BYTES_I64, /* BigInt64Array (reads sign-extend; writes ToBigInt64) */
+  SCR_BYTES_U64, /* BigUint64Array (reads zero-extend; writes ToBigUint64) */
+#endif
 } ScrBytesElem;
+#ifdef SCR_JS_OBJECT_MODEL
+#define SCR_BYTES_ELEM_COUNT 12
+#else
 #define SCR_BYTES_ELEM_COUNT 10
+#endif
 
 /* Float16Array's element conversions: one round-to-nearest-even step from
  * the double (Float16Array stores, Math.f16round and DataView.setFloat16
@@ -177,6 +190,21 @@ size_t scr_bytes_elem_size(ScrBytesElem elem); /* 1, 2, 4, or 8 */
 const char *scr_bytes_elem_name(ScrBytesElem elem);
 double scr_bytes_to_u8_clamp(double value);
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The BigInt element kinds: every element access of a view whose elem is one
+ * of them goes through these, because a double cannot hold the element (see
+ * ScrBytesElem). Only the SCR_JS_OBJECT_MODEL build carries them (t262-da
+ * §J); a program selects that build by naming BigInt64Array or
+ * BigUint64Array, which ORs into its jsObjectModel fact. */
+bool scr_bytes_elem_is_bigint(ScrBytesElem elem);
+ScrDyn *scr_bytes_get_bigint(const ScrBytes *b, double i); /* +1; index checked like scr_bytes_get */
+bool scr_bytes_set_bigint(ScrBytes *b, double i, const ScrDyn *value); /* ToBigInt; false = exception pending */
+/* fill() over a BigInt view: the already-coerced ToBigInt(value) (borrowed),
+ * then the range store — the spec converts the fill value before it reads
+ * start and end. */
+ScrBytes *scr_bytes_fill_bigint(ScrBytes *b, ScrBigInt *value, double start, double end); /* +1 */
+#endif
+
 /* node:string_decoder's StringDecoder (scr_bytes.c, beside the decoders
  * it shares): the decoder value is a record holding the CANONICAL
  * encoding name and an f64 packing the pending partial sequence (count +
@@ -201,6 +229,12 @@ ScrStr *scr_strdec_encoding(const ScrDyn *enc); /* +1, or NULL with ERR_UNKNOWN_
  * canonical name of an encoding in any ASCII case (+1), or NULL with
  * ERR_UNKNOWN_ENCODING ("Unknown encoding: <raw>") pending. Borrows raw. */
 ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw);
+/* Node's normalizeEncoding (fill, write and Buffer.from): an empty name
+ * reads as utf8, any other name normalizes as above. */
+ScrStr *scr_bytes_normalize_encoding_empty_utf8(const ScrStr *raw);
+/* Buffer.byteLength's encoding read: an unknown name counts as utf8. Never
+ * throws. */
+ScrStr *scr_bytes_normalize_encoding_or_utf8(const ScrStr *raw);
 
 /* `new Uint8Array(n)` / Buffer.alloc(n): zero-filled. n goes through
  * ToIndex like JS (NaN → 0, truncate toward zero; negative or > 2^53-1
@@ -280,6 +314,78 @@ double scr_bytes_byte_len(const ScrBytes *b); /* len * elem size */
  * whole storage — SEMANTICS.md notes the divergence from Node's Buffer
  * pooling), the view's offset into its owner's storage for a DataView. */
 double scr_bytes_byte_offset(const ScrBytes *b);
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* ── mutable buffers (t262-dc) ────────────────────────────────────────
+ * A JavaScript program with the `mutableBuffers` fact may resize, grow or
+ * detach an ArrayBuffer, so a view's header (its length and data pointer)
+ * stops being fixed at construction. The registry that records each view's
+ * declared byte offset and length, and recomputes it on such an operation,
+ * lives in the optional unit scr_js_buffers.c — selected only when the fact
+ * is present (runtime-pack-matrix OPTIONAL_RUNTIME_SOURCES). The base units
+ * reach it through this one per-thread table, so a program without the fact
+ * links no part of the registry: the pointer stays NULL and each hook below
+ * costs one branch. scr_js_buffers_arm, lowered into the top of %main, sets
+ * the table. */
+typedef struct ScrJsBufferOps {
+  /* Record (or update) a view over its owner (`view->backing`) with the
+   * view's declared byte offset and either its fixed element count or, for
+   * a length-tracking view, none. */
+  void (*view_register)(ScrBytes *view, bool tracking);
+  /* The dispose observer: forget a freed view, and a freed owner's state. */
+  void (*disposed)(void *object);
+  /* Whether a view is unusable: its owner is detached, or the view is out
+   * of bounds (a fixed view past a shrink, a length-tracking view whose
+   * declared offset is past the end). Node throws for the DataView
+   * byteLength/byteOffset getters and for every typed-array method on
+   * both, and answers 0 for a typed array's length and byteOffset. */
+  bool (*view_invalid)(const ScrBytes *view);
+  /* Whether the view was constructed without a length over a buffer that
+   * can change size, so it follows the buffer (subarray of such a view with
+   * an omitted end makes another length-tracking view). */
+  bool (*view_tracks)(const ScrBytes *view);
+  bool (*owner_detached)(const ScrBytes *owner);
+  bool (*owner_resizable)(const ScrBytes *owner);
+  bool (*owner_growable)(const ScrBytes *owner);
+  /* maxByteLength: the reserved capacity of a resizable owner, the byte
+   * length of every other owner, 0 while detached. */
+  double (*owner_capacity)(const ScrBytes *owner, double fallback);
+  /* ArrayBuffer.prototype.transfer / transferToFixedLength (+1); NULL with
+   * the exception pending. */
+  ScrDyn *(*transfer)(ScrBytes *owner, bool has_length, double length, bool fixed);
+  /* ArrayBuffer.prototype.resize and SharedArrayBuffer.prototype.grow;
+   * false with the exception pending on a bad receiver or argument. */
+  bool (*resize)(ScrBytes *owner, double length);
+  bool (*grow)(ScrBytes *owner, double length);
+} ScrJsBufferOps;
+
+extern SCR_TL const ScrJsBufferOps *scr_js_buffer_ops;
+
+/* `new ArrayBuffer(len, options)` / `new SharedArrayBuffer(len, options)`
+ * (the options object's maxByteLength; undefined or a non-object is a
+ * fixed buffer). +1. */
+ScrDyn *scr_js_buffer_new_resizable(ScrDyn *length, ScrDyn *options);
+ScrDyn *scr_js_buffer_new_growable(ScrDyn *length, ScrDyn *options);
+/* arrayBuffer.armMutable: installs the table above and the dispose hook. */
+void scr_js_buffers_arm(void);
+
+/* The guard around code that Node refuses on such a view. `label` names the
+ * operation exactly as Node's message does ("%TypedArray%.prototype.fill",
+ * "DataView.prototype.getUint8", "get DataView.prototype.byteLength", ...):
+ * the message is "Cannot perform <label> on a detached ArrayBuffer".
+ * Answers true when the view is usable. */
+bool scr_js_bytes_live(const ScrBytes *b);
+void scr_js_bytes_throw_detached(const char *label);
+/* Whether `b` is a length-tracking view. */
+bool scr_js_bytes_tracking(const ScrBytes *b);
+/* `.byteLength` / `.byteOffset` for a view whose owner may move: a DataView
+ * throws when it is detached or out of bounds, a typed array answers 0. */
+double scr_js_bytes_byte_length(const ScrBytes *b);
+double scr_js_bytes_byte_offset(const ScrBytes *b);
+/* The dispose hook's installation point (scr_json.c): the registry must see
+ * frees even in a program with no weak collection. */
+void scr_js_dispose_hook_install(void);
+#endif
 
 /* `new DataView(src.buffer, byteOffset?, byteLength?)` — src is the bytes
  * value whose `.buffer` the program named (any elem kind; a DataView src
@@ -476,6 +582,9 @@ extern SCR_TL void (*scr_buffer_pool_publish_hook)(double size);
 ScrBytes *scr_buffer_alloc(double size);             /* zeroed, never pooled */
 ScrBytes *scr_buffer_alloc_unsafe(double size);      /* pooled */
 ScrBytes *scr_buffer_alloc_unsafe_slow(double size); /* never pooled */
+/* SlowBuffer(size) (scr_async_dyn.c): DEP0030 once, then allocUnsafeSlow's
+ * checks. +1, or NULL with the exception pending. */
+ScrBytes *scr_buffer_slow(const struct ScrDyn *size);
 ScrBytes *scr_buffer_from_str(const ScrStr *s, const ScrStr *enc);
 ScrBytes *scr_buffer_from_str_checked(const ScrStr *s, const ScrStr *enc);
 ScrBytes *scr_buffer_from_bytes(const ScrBytes *src); /* a copy of any typed array's values */
@@ -511,6 +620,17 @@ struct ScrDyn *scr_buffer_static_value(const ScrStr *name);
 /* `Buffer.prototype[key]` (scr_bytes_dyn.c). +1, or NULL with the
  * exception pending. */
 struct ScrDyn *scr_buffer_prototype_member(const struct ScrDyn *key);
+/* `Buffer.prototype` as a value (scr_bytes_dyn.c), one per thread. +1. */
+struct ScrDyn *scr_buffer_prototype_object(void);
+/* A Buffer instance's own Buffer.prototype method by a key computed at run
+ * time (`buf[name]`): the function `Buffer.prototype[name]` answers. +1, or
+ * NULL when the key names no own Buffer.prototype method. NULL until
+ * scr_bytes_buffer_members_install runs. */
+extern struct ScrDyn *(*scr_bytes_buffer_member_fn)(const struct ScrDyn *value, const ScrStr *key);
+/* Installs scr_bytes_buffer_member_fn (scr_bytes_dyn.c). The program calls it
+ * before its entry when its checked-dynamic reads can answer
+ * Buffer.prototype methods by name (RuntimeFeatures dynBufferMembers). */
+void scr_bytes_buffer_members_install(void);
 ScrBytes *scr_buffer_concat_len_dyn(const struct ScrDyn *list, double total);
 /* Drops the pool's slab reference and restores Buffer.poolSize (process
  * exit audits and library session resets). */
@@ -625,6 +745,13 @@ double scr_bytes_copy_into(const ScrBytes *src, ScrBytes *dst, double nargs,
 ScrBytes *scr_bytes_swap(ScrBytes *b, double width);
 double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
                            double offset, double len, bool has_len);
+/* As scr_bytes_write_str, with `enc` a name only known at run time: the
+ * range checks run before the name is read, and an empty name is utf8. */
+double scr_bytes_write_str_dyn(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
+                               double offset);
+double scr_bytes_write_str_dyn_len(ScrBytes *b, const ScrStr *s,
+                                   const ScrStr *enc, double offset,
+                                   double len);
 ScrBytes *scr_bytes_concat_len(const ScrArr *list, double total);
 
 /* Buffer.concat(list): list is a SCR_ELEM_BYTES array of u8 bytes values;

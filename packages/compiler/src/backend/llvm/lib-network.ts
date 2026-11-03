@@ -64,14 +64,21 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.requestDyn" ||
     e.fn === "http.requestDynCb" ||
     e.fn === "https.requestDyn" ||
-    e.fn === "https.requestDynCb"
+    e.fn === "https.requestDynCb" ||
+    e.fn === "http.requestUrlDyn" ||
+    e.fn === "http.requestUrlDynCb" ||
+    e.fn === "https.requestUrlDyn" ||
+    e.fn === "https.requestUrlDynCb"
   ) {
-    // [options, autoEnd(, cb)]: the runtime walks the options record and
-    // attaches its signal through events.addAbortListener (the event-target
-    // unit, linked for these calls by runtime-features).
+    // [options, autoEnd(, cb)] — [url, options, autoEnd(, cb)] for the
+    // URL+options form: the runtime walks the options record (after merging
+    // the URL's fields for the latter) and attaches its signal through
+    // events.addAbortListener (the event-target unit, linked for these
+    // calls by runtime-features).
+    const isUrl = e.fn.includes("UrlDyn");
     const args = e.args.map((arg) => host.emitExpr(arg));
     host.usesTimers = true;
-    const cb = args[2];
+    const cb = args[isUrl ? 3 : 2];
     const handler =
       cb === undefined
         ? [ptr(), ptr()]
@@ -84,17 +91,20 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
             ["ptr", "ptr"],
           );
     host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
-    return finishRuntimeCall(
-      host,
-      e,
-      e.fn.startsWith("https.") ? "scr_https_request_dyn" : "scr_http_request_dyn",
-      [
-        abiValue(host, args[0]!),
-        abiValue(host, args[1]!),
-        ...handler,
-        ptr("@scr_events_add_abort_listener"),
-      ],
-    );
+    const entry = e.fn.startsWith("https.")
+      ? isUrl
+        ? "scr_https_request_url_dyn"
+        : "scr_https_request_dyn"
+      : isUrl
+        ? "scr_http_request_url_dyn"
+        : "scr_http_request_dyn";
+    return finishRuntimeCall(host, e, entry, [
+      abiValue(host, args[0]!),
+      abiValue(host, args[1]!),
+      ...(isUrl ? [abiValue(host, args[2]!)] : []),
+      ...handler,
+      ptr("@scr_events_add_abort_listener"),
+    ]);
   }
   const B = host.B;
   if (e.fn === "net.listenPath" || e.fn === "net.listenPathCb") {
@@ -660,6 +670,20 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.declare(`declare void @${entry}(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
       `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
+    );
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "http.serverOnClientError") {
+    const cbT = e.args[1]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[1]!);
+    const adapter = `scr_http_client_error_thunk${Math.min(cbT.params.length, 2)}`;
+    host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
+    host.declare(`declare void @scr_http_server_on_client_error(ptr, ptr, ptr, i1 zeroext)`);
+    B.line(
+      `call void @scr_http_server_on_client_error(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
     return { name: "", type: e.type };
   }

@@ -15,10 +15,11 @@ export function exprFunctionReference(expr: IrExpr): string | undefined {
 export const FUNCTION_REFERENCE_KINDS = ["closure", "orDefault"] as const;
 
 /** Functions the module's metadata names: the entry, library exports,
- * closures' jsval entries and the class prototype helpers the runtime
- * calls. Class methods and constructors follow the `%<class>.<method>`
- * convention instead of being named here; callers that need them derive
- * them from `mod.classes`. */
+ * closures' jsval entries, the class prototype helpers the runtime calls
+ * and the record links' compose helpers the record walkers call. Class
+ * methods and constructors follow the `%<class>.<method>` convention
+ * instead of being named here; callers that need them derive them from
+ * `mod.classes`. */
 export function moduleFunctionReferences(mod: IrModule): string[] {
   const names = [mod.entry];
   for (const entry of mod.lib?.exports ?? []) names.push(entry.fnName);
@@ -30,5 +31,6 @@ export function moduleFunctionReferences(mod: IrModule): string[] {
     if (cls.arraySpecies !== undefined) names.push(cls.arraySpecies);
     if (cls.stringTagHelper !== undefined) names.push(cls.stringTagHelper);
   }
+  for (const link of mod.recordLinks ?? []) names.push(link.compose);
   return names;
 }

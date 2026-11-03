@@ -94,7 +94,9 @@ const KNOWN: Record<string, Known> = {
   "node24-no-error-assertions": { run: "SC2020" },
   "node24-parseargs": { run: "SC1090" },
   "node24-promise-timers": { run: "SC2020" },
-  "node24-string-decoder": { run: "SC2020" },
+  // The decoding, encoding and input-error lines match Node; the closing
+  // `d.encoding = 'hex'` assignment refuses.
+  "node24-string-decoder": { run: "SC1090" },
   "node24-style-text": { run: "SC2020" },
   "node24-system-errors": { run: "SC1090" },
   "node24-text-encoding": { run: "SC2020" },

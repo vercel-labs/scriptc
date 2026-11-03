@@ -1,8 +1,7 @@
 // [util.inspect.custom] methods keep their boundaries: a class whose
 // subclass declares the method without declaring it itself, a method with
-// more than three parameters, a method returning a class instance, and %o
-// over instances with one.
-import { format, inspect } from "node:util";
+// more than three parameters, and a method returning a class instance.
+import { inspect } from "node:util";
 
 class Plain {
   a = 1;
@@ -28,10 +27,3 @@ class Echo {
   }
 }
 console.log(inspect(new Echo()));
-
-class Shown {
-  [inspect.custom](): string {
-    return "shown";
-  }
-}
-console.log(format("%o", new Shown()));

@@ -287,13 +287,25 @@ export class NativeCompiler {
     let key: string | null = null;
     let identity: string | null = null;
     // A build that records block counts runs the helper on every partition.
+    // The helper's identity is needed for the partition cache whether or not
+    // an environment variable names the helper: the partition directory is
+    // keyed by that identity, so a named helper's partitions are as reusable
+    // as an installed one's. Only the whole-object entry below is limited to
+    // the installed helper, whose identity the cache's owner key holds.
+    if (this.cache !== null && profile?.recordBlocks === undefined) {
+      try {
+        identity = nativeFileIdentity(toolchain.helperExecutable);
+      } catch {
+        identity = null;
+      }
+    }
     if (
       this.cache !== null &&
+      identity !== null &&
       process.env["SCRIPTC_LLVM_HELPER"] === undefined &&
       profile?.recordBlocks === undefined
     ) {
       try {
-        identity = nativeFileIdentity(toolchain.helperExecutable);
         key = contentDigest(
           JSON.stringify({
             schema: 1,
@@ -516,7 +528,7 @@ export class NativeCompiler {
       const { llvm, features } = prepared;
       // The executable and object caches key the same LLVM text.
       let llvmDigest: string | undefined;
-      const digestLlvm = (): string => (llvmDigest ??= partsDigest(llvm));
+      const digestLlvm = (): string => (llvmDigest ??= prepared.llvmDigest ?? partsDigest(llvm));
       const inputDirectory = join(stage, "input");
       mkdirSync(inputDirectory);
       const llvmInput = outputKind === "llvm" ? stagedOutput : join(inputDirectory, "program.ll");
@@ -544,12 +556,21 @@ export class NativeCompiler {
         ));
       const executableCache =
         outputKind === "exe"
-          ? openNativeExecutableCache(this.cache, toolchain, digestLlvm, options, ffi, {
-              root: toolchain.runtimePackRoot,
-              features,
-              flavor: optimization,
-              select: selectPack,
-            })
+          ? openNativeExecutableCache(
+              this.cache,
+              toolchain,
+              // The same count emitProgramObject derives from the staged LLVM.
+              nativeProgramPartitions(statSync(llvmInput).size, optimization === "dev"),
+              digestLlvm,
+              options,
+              ffi,
+              {
+                root: toolchain.runtimePackRoot,
+                features,
+                flavor: optimization,
+                select: selectPack,
+              },
+            )
           : null;
       // An unchanged rebuild keeps the executable the last build left.
       const kept = executableCache?.keep(output) ?? false;

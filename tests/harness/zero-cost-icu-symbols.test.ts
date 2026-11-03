@@ -36,6 +36,9 @@ const NON_ICU_SYMBOLS = [
   "scr_intl_segmenter_refusing",
   "scr_dyn_call",
   "scr_string_concat",
+  // Emitted program functions are numbered, and a number can be 78.
+  "sc_f__x25_dyn_class_property_78",
+  "sc_bf__x25_arr_loop_78",
 ];
 
 describe("icuSymbols", () => {

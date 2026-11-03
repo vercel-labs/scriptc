@@ -539,6 +539,7 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.arrLen",
   "dyn.bagGet",
   "dyn.bitwise",
+  "dyn.classHash",
   "dyn.compare",
   // Adoption reads the native value it was built into and turns shared
   // source nodes into capsules of it; it stores no property into a capsule.
@@ -592,6 +593,7 @@ const DYN_READ_ONLY = new Set<string>([
   "fs.utimesSync",
   // Buffer.prototype members read as values: a lookup by key.
   "buffer.prototypeMember",
+  "buffer.prototypeObject",
   // Buffer.from(value, offset[, length]) over checked values: an
   // ArrayBuffer's view after Node's offset and length conversions, or a copy
   // of a string, array-like or typed array's values.
@@ -642,6 +644,11 @@ const DYN_READ_ONLY = new Set<string>([
   "process.onUncaughtException",
   "process.onUnhandledRejection",
   "process.onWarning",
+  // A record link keeps and answers native records (record-links.ts).
+  "record.link",
+  "record.linkIs",
+  "record.linkSource",
+  "record.sourceShare",
   "sharedArrayBuffer.new",
   "text.decodeStream",
   "worker.new",

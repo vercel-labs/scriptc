@@ -357,7 +357,7 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
 
 static ScrStr *scr_str_alloc(size_t len, size_t cap) {
   if (len > cap || cap > SCR_STR_MAX_CAP) scr_oom();
-  ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + cap + 1);
+  ScrStr *s = scr_mem_alloc_ref(sizeof(ScrStr) + cap + 1);
   if (!s) scr_oom();
   s->rc = 1;
   s->len = len;
@@ -470,7 +470,7 @@ ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
   scr_short_forget(s);
   scr_str_hash_forget(s);
   scr_sidx_purge(s); /* realloc may move; the old address may be recycled */
-  ScrStr *r = scr_mem_realloc(s, sizeof(ScrStr) + newcap + 1);
+  ScrStr *r = scr_mem_realloc_ref(s, sizeof(ScrStr) + newcap + 1);
   if (!r) scr_oom();
   r->cap = newcap;
   return r;
@@ -1045,6 +1045,8 @@ static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
 
 static ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
 
+ScrStr *scr_str_empty_value(void) { return scr_str_empty(); }
+
 /* Empty/ASCII characters are immortal; tiny spans share live heap strings. */
 static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   if (len == 0) return scr_str_empty();
@@ -1063,6 +1065,8 @@ static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   }
   return scr_str_new(bytes, len);
 }
+
+ScrStr *scr_str_intern_span(const char *bytes, size_t len) { return scr_str_from_span(bytes, len); }
 
 /* scr_str_from_span for a span of a proven-ASCII string: the result is
  * ASCII without another scan. */
@@ -3935,6 +3939,30 @@ ScrStr *scr_qs_escape(ScrStr *s) {
     return out ? out : scr_str_empty();
   }
   return scr_str_encode_uri_component(s);
+}
+
+/* querystring.escape(value) of a value that may not be a string: Node's
+ * qsEscape converts an object or null with String(value) and any other
+ * value with value + "", so a symbol throws TypeError. A function converts
+ * to its source text, which a compiled binary does not keep: SC2020. +1, or
+ * NULL with the exception pending. */
+ScrStr *scr_qs_escape_value(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_SYMBOL) {
+    static const char message[] = "Cannot convert a Symbol value to a string";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_FUNC) {
+    static const char message[] =
+        "querystring.escape of a function converts its source text, which a compiled binary does not keep";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (!text) return NULL;
+  ScrStr *out = scr_qs_escape(text);
+  scr_str_release(text);
+  return out;
 }
 
 /* One %XX escape's byte, or -1 (bad hex / truncated). */

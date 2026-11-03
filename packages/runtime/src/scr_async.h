@@ -454,6 +454,29 @@ ScrPromise *scr_immediate_promise(void);
 void scr_clear_interval(double handle);
 
 double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves in */
+/* A setTimeout/setInterval delay as given (after ToNumber): emits the
+ * warning Node's Timeout constructor emits when it sets the delay to 1
+ * (TimeoutOverflowWarning; TimeoutNegativeWarning and TimeoutNaNWarning
+ * once per process) on the next tick, and returns the delay unchanged.
+ * `kind` is 0 for the global setTimeout, 1 for the global setInterval,
+ * which emit nothing while mock.timers mocks them, and 2 for a node:timers
+ * import, which mock.timers leaves alone; bit 4 marks a delay read from an
+ * array element, whose NaN may be the undefined of a read past the end,
+ * which warns nothing. */
+double scr_timer_user_delay(double after, double kind);
+/* The handle of the timer or immediate whose callback is running: the id
+ * setTimeout's handle form, setInterval or setImmediate returned, or 0
+ * outside one and for a setTimeout called as a statement, which has no
+ * handle. */
+double scr_timer_running_handle(void);
+/* A timer callback that runs with `this` bound to its handle, as Node
+ * calls a timer callback with the Timeout or Immediate (scr_async_dyn.c):
+ * the ambient receiver a plain JavaScript function reads at entry, and
+ * that test/common's mustCall forwards. cb borrowed; +1. */
+ScrClosure *scr_timer_this_callback(ScrClosure *cb);
+/* The mocked global timer functions (scr_test.c): bit 0 setTimeout, bit 1
+ * setInterval. */
+extern SCR_TL int scr_timer_mocked_apis;
 /* Queues `cb` (moved) on the MockTimers that mocks AbortSignal.timeout
  * (scr_test.c), NULL while it is not mocked. AbortSignal.timeout then
  * aborts its signal from that queue instead of arming a loop timer. */

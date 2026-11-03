@@ -19,6 +19,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { invalidateTrackedPath } from "../input-tracker.js";
 
 export interface OverlayMemo {
   /** The build compiled without the overlay. */
@@ -100,6 +101,7 @@ export function writeOverlayMemo(key: string, memo: OverlayMemo): void {
     const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(temp, JSON.stringify(memo), { mode: 0o600 });
     renameSync(temp, path);
+    invalidateTrackedPath(path);
   } catch {
     // The memo only saves work; a build that cannot write it is unaffected.
   }

@@ -70,7 +70,7 @@ import {
 } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
-import type { WalkerHost } from "./walkers.js";
+import { emitLinkedRecordBranches, type WalkerHost } from "./walkers.js";
 import type { LlStreamTypedRefAdapter } from "./expr-context.js";
 
 /** typeKey with `?` after every `(T | undefined)[]` (optionalElements),
@@ -102,6 +102,25 @@ export function recordDynKeepsIdentity(shape: IrRecordShape): boolean {
     (shape.fields.length === 0 && !shape.indexValue) ||
     shape.fields.some((f) => f.name === "handleEvent" && f.type.kind === "func")
   );
+}
+
+/** Whether a promise's fulfillment payload crosses to a checked-dynamic
+ * value as a LIVE capsule of the same record or array (the `dynFrom
+ * liveRef` spelling, lowerer.ts's `liveReference`), so `(await p) ===
+ * shared` holds as it does in Node. Arrays always do; records do when
+ * they declare fields or an index signature (an empty record keeps its
+ * identity through `recordDynKeepsIdentity`'s source access instead). */
+function promisePayloadIsLive(host: DynHost, t: IrType): boolean {
+  if (t.kind === "array") return true;
+  if (t.kind === "record") {
+    const shape = host.recordsById.get(t.shapeId);
+    return shape !== undefined && (shape.fields.length > 0 || shape.indexValue !== undefined);
+  }
+  if (t.kind === "union")
+    return (host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+      promisePayloadIsLive(host, arm),
+    );
+  return false;
 }
 
 /** ScrDynKind values (scr_runtime.h). */
@@ -1214,10 +1233,13 @@ export class LlDyn {
           `${offsetTable} = internal constant [${offsets.length} x ${S}] [${offsets.join(", ")}]`,
         );
         const key = typeKey({ kind: "record", shapeId: sourceId });
-        return `{ ptr, ${S}, ptr } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable} }`;
+        // The source's declared names describe the record a partial view's
+        // writes add properties to (scr_record_view_extra).
+        const names = this.recordNameTable(sourceId, source);
+        return `{ ptr, ${S}, ptr, ptr, ptr, ${S}, ${S}, ${S} } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable}, ptr ${names.names}, ptr ${names.lens}, ${S} ${S === "i64" ? 8 : 4}, ${S} ${S === "i64" ? 8 : 4}, ${S} ${source.fields.length} }`;
       });
       this.defs.push(
-        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr }] [${entries.join(", ")}]`,
+        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr, ptr, ptr, ${S}, ${S}, ${S} }] [${entries.join(", ")}]`,
         ``,
       );
     }
@@ -3599,6 +3621,12 @@ export class LlDyn {
           this.textCodecToDyn(B, t, shape, codec);
           break;
         }
+        // A copy linked to its source converts as its composed record.
+        emitLinkedRecordBranches(host, B, t.shapeId, "%v", (sourceT, composed) => {
+          const r = B.tmp();
+          B.line(`${r} = call ptr @${this.toDynHelper(sourceT)}(ptr ${composed})`);
+          return `ret ptr ${r}`;
+        });
         const struct = mangleRecordStruct(t.shapeId);
         const base = host.nullableUnions.fieldBase(t.shapeId);
         const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));
@@ -4148,10 +4176,18 @@ export class LlDyn {
         // Ref-payload inners (records, arrays, bytes, %Error, unions,
         // nested promises, handles): extract (+1 via the stored retain),
         // convert through the shared to-dyn spelling, release the extract.
+        // A record or array payload crosses the way `dynFrom liveRef` boxes
+        // one — a LIVE capsule of the settled record — so the settled
+        // payload and the record the producer holds stay one object
+        // (`(await p) === shared`). Everything else keeps the to-dyn
+        // spelling: maps, sets, class instances and bytes box by reference
+        // there already.
         host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
         const pv = B.tmp();
         B.line(`${pv} = call ptr @scr_promise_payload_ref(ptr %src) ; +1`);
-        const dv = this.toDynExpr(B, inner, pv);
+        const dv = promisePayloadIsLive(host, inner)
+          ? (this.liveToDyn(B, inner, pv) ?? this.toDynExpr(B, inner, pv))
+          : this.toDynExpr(B, inner, pv);
         if (isRefCounted(inner)) B.line(`call void ${releaseSym(host, inner)}(ptr ${pv})`);
         fulfill(dv);
         break;
@@ -5351,10 +5387,15 @@ export class LlDyn {
    * BORROWED in every arm. Emits into the given builder. */
   /** A live capsule of a record or array value (+1; the value is
    * borrowed), as `dynFrom` with `liveRef` builds it; null for other
-   * types. Closures boxed in a declaration-typed boundary program return
-   * their records and arrays this way. */
+   * types. Every typed value crossing into the dynamic tier this way keeps
+   * its identity — a boxed closure's result and a settled promise payload
+   * included, so `f()`/`await p` hand out the object the producer holds,
+   * as Node does, not a snapshot. A TextEncoder, TextDecoder or
+   * StringDecoder record is null too: it boxes as its own handle, which
+   * holds the record by reference (toDynHelper). */
   private liveToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
     const host = this.host;
+    if (textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null) return null;
     if (t.kind === "union") {
       const arms = host.unionsById.get(t.unionId)?.arms ?? [];
       if (!arms.some((arm) => arm.kind === "record" || arm.kind === "array")) return null;
@@ -5372,6 +5413,16 @@ export class LlDyn {
     );
     for (const line of bindLiveArrayOps(host, adapter, boxed)) B.line(line);
     return boxed;
+  }
+
+  /** A static value handed OUT by a container read (a record field a runtime
+   * key selects) as a checked-dynamic value (+1; the value is BORROWED): a
+   * record, an array or a union holding one boxes as a LIVE capsule of the
+   * value itself, the way `dynFrom` with `liveRef` boxes it, so a write
+   * through the result reaches the field; every other type converts by
+   * value. Reading a keyed field is one object either way in JavaScript. */
+  liveReadToDyn(B: BlockBuilder, t: IrType, expr: string): string {
+    return this.liveToDyn(B, t, expr) ?? this.toDynExpr(B, t, expr);
   }
 
   private toDynExpr(B: BlockBuilder, t: IrType, expr: string): string {
@@ -5556,10 +5607,12 @@ export class LlDyn {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
       this.pendingBail(B, "dfkr", () => {}, "ptr null");
-      const out =
-        this.host.declBoundary?.() === true
-          ? (this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r))
-          : this.toDynExpr(B, t.ret, r);
+      // A record or array result crosses the way `dynFrom liveRef` boxes
+      // one — a LIVE capsule of the closure's own object — so the caller's
+      // `() => shared` through an untyped slot still answers `shared`
+      // (`(r as Row) === shared`), as Node does. Everything else keeps the
+      // to-dyn spelling (handles box by reference there already).
+      const out = this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r);
       if (isRefCounted(t.ret)) B.line(`call void ${releaseSym(host, t.ret)}(ptr ${r})`);
       B.terminate(`ret ptr ${out}`);
     }

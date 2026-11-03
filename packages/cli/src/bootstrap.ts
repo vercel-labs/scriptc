@@ -83,7 +83,10 @@ async function tryFastPath(): Promise<number | null> {
     // The full compiler writes the representation report and keys the heap
     // census build (backend/llvm/repr-report.ts, heap-census.ts).
     (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
-    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== ""
+    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== "" ||
+    // An attribution build emits a different way count, and the full compiler
+    // keys the build by it (backend/llvm/js-ic.ts).
+    (process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] ?? "") !== ""
   )
     return null;
   const backend = values.backend;
@@ -181,6 +184,10 @@ async function tryFastPath(): Promise<number | null> {
     libnodeIdentity: () => startup.libnodeCacheKey(values.libnode, process.env, dirname(input)),
   });
   if (hit === null) return null;
+  // A restored executable links nothing, so the ICU data file its Intl
+  // program reads at run time was not installed beside it; the full compiler
+  // restores the same executable and installs that file.
+  if (hit.native.intl === true) return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
   if (command === "build") {
     // A cached build repeats its performance warning (SC6101).

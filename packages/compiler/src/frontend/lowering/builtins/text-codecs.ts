@@ -159,11 +159,16 @@ export function lowerStringDecoderMethodCall(
     };
   }
   if (!(chunk.type.kind === "bytes" && chunk.type.elem === "u8")) {
-    lowerer.noLowering(
-      `StringDecoder.${name} of '${lowerer.fmt(chunk.type)}' data`,
-      node,
-      "pass a string or typed-array view (narrow unions first)",
-    );
+    // Any other value decides at run time, as Node's write does: a string
+    // passes through, an ArrayBufferView decodes, and anything else throws.
+    const op = name === "end" ? "endDyn" : "writeDyn";
+    return {
+      kind: "call",
+      callee: stringDecoderHelper(lowerer, op, receiver.type.shapeId, loc),
+      args: [receiver, lowerer.coerceInto(node, chunk, DYN)],
+      type: STRING,
+      loc,
+    };
   }
   const helper = stringDecoderHelper(
     lowerer,

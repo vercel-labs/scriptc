@@ -1,0 +1,17 @@
+regexp-call-without-new-refusals.ts:5:14 - error SC2020: 'RegExp() without new on a RegExp or untyped argument' is part of the standard library types but has no scriptc lowering yet
+
+  4 | const source = /ab+c/i;
+  5 | const same = RegExp(source);
+    |              ^~~~~~~~~~~~~~
+  6 | 
+
+  hint: a RegExp pattern may come back as the same object; string or undefined arguments are the lowered form
+
+regexp-call-without-new-refusals.ts:8:17 - error SC2020: 'RegExp() without new on a RegExp or untyped argument' is part of the standard library types but has no scriptc lowering yet
+
+  7 | const parsed: any = JSON.parse('"x+"');
+  8 | const fromAny = RegExp(parsed, "g");
+    |                 ^~~~~~~~~~~~~~~~~~~
+  9 | 
+
+  hint: a RegExp pattern may come back as the same object; string or undefined arguments are the lowered form

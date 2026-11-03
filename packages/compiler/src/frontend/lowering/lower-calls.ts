@@ -243,6 +243,7 @@ import {
   exactInstanceClassOf,
   findGenericMethodOn,
   lowerClassGenericMethodCall,
+  lowerRegExpConstruct,
   lowerStaticMethodCall,
   lowerStaticFieldRead,
   returnsOnlyThis,
@@ -1054,6 +1055,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   ) {
     return lowerer.lowerComptime(expr);
   }
+
+  // `RegExp(pattern, flags?)` without `new` constructs as `new RegExp` does
+  // (lowerRegExpConstruct).
+  if (lowerer.isStdlibGlobal(expr.expression, "RegExp")) return lowerRegExpConstruct(lowerer, expr);
 
   // The lib constructors-as-functions with STATIC conversion semantics:
   // String(x) is exactly the template-literal ToString, Boolean(x) is

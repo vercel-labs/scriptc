@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/regexp-call-without-new-refusals.ts"
+ ],
+ "diags": []
+}

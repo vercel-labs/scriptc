@@ -592,11 +592,16 @@ jobs:
   # Optimized builds of the native compiler use the committed profile and
   # layout. The share of the profile's functions a build matches falls as
   # compiler code changes, and a stale profile leaves the compiler's cold code
-  # inline (11 MB more text at 85.4% than with a fresh one). The seed above
-  # builds without the layout, so this build keeps the committed one, as local
-  # builds do, and fails below the floor (scripts/build-native-cli-profile.mjs).
-  # It runs on the profile lane, which follows compiler code, code generation
-  # and the native CLI build, where the profile goes stale.
+  # inline (11 MB more text at 85.4% than with a fresh one). This job reports
+  # that share on the run page and below 95% posts a warning
+  # (scripts/build-native-cli-profile.mjs); a stale profile does not fail it,
+  # because the nightly profile refresh (.github/workflows/profile-refresh.yml)
+  # moves the profile forward. It fails only when the profile cannot be judged:
+  # missing, unreadable, or a build laid out differently from the instrumented
+  # build. The seed above builds without the layout, so this build keeps the
+  # committed one, as local builds do. It runs on the profile lane, which
+  # follows compiler code, code generation and the native CLI build, where the
+  # profile goes stale.
   native_profile:
     needs: [validation_scope, lanes]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.profile == 'true' }}

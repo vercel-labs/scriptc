@@ -175,6 +175,14 @@ export class Ts7Host {
   readonly cwd: string;
   /** The loads this host has served: 1, and one more for each rebind. */
   loads = 1;
+  /** The declaration-file module member each alias resolves to, keyed by the
+   * alias declaration's AST identity (see `declarationKey` in
+   * `frontend/fork-target.ts`), as a module name and symbol name, or null
+   * when the alias resolves elsewhere. Programs of one load share it: the
+   * load's option set and file shadow are one, so a declaration resolves the
+   * same way in every program the load builds. The next load can resolve
+   * differently, so `rebind` drops it. */
+  readonly aliasMembers = new Map<string, readonly [string, string] | null>();
   /** Called instead of closing the connection when the host is reusable. */
   private release: ((host: Ts7Host) => void) | undefined;
   /** Whether a load holds this reusable host: from its creation or rebind
@@ -337,6 +345,9 @@ export class Ts7Host {
     this.virtualFiles.clear();
     this.virtualChanges.clear();
     this.invalidateAll = true;
+    // Another load may resolve the same declaration differently: its option
+    // set, path mappings, provenance and file shadow are not this one's.
+    this.aliasMembers.clear();
   }
 
   /** Close the server connection, even when the host is pooled. */
@@ -362,6 +373,7 @@ export class Ts7Host {
       this.virtualFiles.clear();
       this.virtualChanges.clear();
       this.closingProjects.clear();
+      this.aliasMembers.clear();
     }
   }
 }
@@ -371,6 +383,9 @@ export class Ts7Host {
  * releases the snapshot (and the host, when this program spawned it). */
 export class Ts7Program {
   readonly analysis = new ProgramAnalysis();
+  /** See Ts7Host#aliasMembers: the answers this program shares with every
+   * other program of the same host load. */
+  readonly aliasMembers: Ts7Host["aliasMembers"];
   private sourceFilesCache: readonly SourceFile[] | null = null;
   private implementationFilesCache: readonly SourceFile[] | null = null;
   private sourceFileNamesCache: readonly string[] | null = null;
@@ -384,7 +399,9 @@ export class Ts7Program {
     private readonly host: Ts7Host,
     private readonly sharedHost: boolean,
     private readonly configPath: string,
-  ) {}
+  ) {
+    this.aliasMembers = host.aliasMembers;
+  }
 
   getCompilerOptions(): Ts7CompilerOptions {
     return this.project.program.getCompilerOptions();

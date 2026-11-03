@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-prototype-feature-checks.cjs"
+ ],
+ "diags": []
+}

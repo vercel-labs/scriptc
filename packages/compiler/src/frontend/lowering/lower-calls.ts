@@ -305,7 +305,7 @@ import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.j
 import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
-import { nullishValueUnitOf } from "./binding-analysis.js";
+import { bindingNeverReassigned, nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
   completeFuncValueArgs,
@@ -465,6 +465,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const prototypeOf = hostGlobalPrototypeMemberOf(lowerer, expr.expression);
     if (prototypeOf !== null) lowerer.hostGlobalFence(prototypeOf, expr.expression);
   }
+  const ownCheck = builtinPrototypeOwnCheck(lowerer, expr);
+  if (ownCheck !== null) return { kind: "boolLit", value: ownCheck, type: BOOL, loc };
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (
@@ -12916,4 +12918,85 @@ export function lowerBase64Call(
     type: STRING,
     loc,
   };
+}
+
+/** Node 24's own property keys of the builtin prototypes that have no value
+ * here: no write, delete or redefinition through them succeeds, so a
+ * program cannot change them. */
+const TYPED_ARRAY_PROTOTYPE_KEYS = ["constructor", "BYTES_PER_ELEMENT"];
+const UNMODELED_PROTOTYPE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
+  [
+    "ArrayBuffer",
+    [
+      "constructor",
+      "byteLength",
+      "slice",
+      "maxByteLength",
+      "resizable",
+      "resize",
+      "transfer",
+      "transferToFixedLength",
+      "detached",
+    ],
+  ],
+  ...Object.values(BYTES_ELEMENT_NAME).map((name) => [name, TYPED_ARRAY_PROTOTYPE_KEYS] as const),
+]);
+
+/** The answer of a feature check of a literal key against one of those
+ * prototypes (`hasOwnProperty.call(ArrayBuffer.prototype, "detached")`,
+ * also through `Object.prototype.hasOwnProperty` held in a binding that is
+ * never reassigned, and `Object.hasOwn`), or null for any other call. */
+function builtinPrototypeOwnCheck(lowerer: Lowerer, call: ts.CallExpression): boolean | null {
+  const args = call.arguments.nodes;
+  const callee = call.expression;
+  if (
+    args.length !== 2 ||
+    !ts.isPropertyAccessExpression(callee) ||
+    callee.questionDotToken ||
+    !(
+      lowerer.stdlibGlobalMember(callee, "Object") === "hasOwn" ||
+      (callee.name.text === "call" && isObjectHasOwnProperty(lowerer, callee.expression))
+    )
+  )
+    return null;
+  let target = args[0]!;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  const key = args[1]!;
+  if (
+    !ts.isPropertyAccessExpression(target) ||
+    target.questionDotToken ||
+    target.name.text !== "prototype" ||
+    !ts.isStringLiteralLike(key)
+  )
+    return null;
+  const owner = stdlibGlobalNameOf(lowerer, target.expression);
+  const keys = owner === null ? undefined : UNMODELED_PROTOTYPE_KEYS.get(owner);
+  return keys === undefined ? null : keys.includes(key.text);
+}
+
+/** Whether `expr` is `Object.prototype.hasOwnProperty`, directly or through
+ * a variable initialized with it and never reassigned. */
+function isObjectHasOwnProperty(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isIdentifier(expr)) {
+    const symbol = lowerer.resolveValueSymbol(expr);
+    const decl = symbol?.valueDeclaration;
+    return (
+      decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      !ts.isIdentifier(decl.initializer) &&
+      isObjectHasOwnProperty(lowerer, decl.initializer) &&
+      bindingNeverReassigned(lowerer, symbol!, decl)
+    );
+  }
+  return (
+    ts.isPropertyAccessExpression(expr) &&
+    !expr.questionDotToken &&
+    expr.name.text === "hasOwnProperty" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    !expr.expression.questionDotToken &&
+    lowerer.stdlibGlobalMember(expr.expression, "Object") === "prototype" &&
+    lowerer.isStdlibMember(expr)
+  );
 }

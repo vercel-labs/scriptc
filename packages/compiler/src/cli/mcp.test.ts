@@ -100,7 +100,6 @@ const SAMPLES: Record<string, Json> = {
   node_island: ["left-pad"],
   native: ["right-pad"],
   node: process.execPath,
-  explain_island: "left-pad",
   wasm: [join(scratch, "module.wasm")],
   range: "^1.0.0",
   profile: join(scratch, "profile.json"),
@@ -134,7 +133,10 @@ test("a tool's properties are unique and its required names exist", () => {
   for (const cmd of CLI_COMMANDS) {
     const schema = toolDefinition(cmd)["inputSchema"] as JsonObject;
     const properties = Object.keys(schema["properties"] as JsonObject);
-    const declared = cmd.positionals.length + cmd.options.length - (cmd.diagnostics ? 1 : 0);
+    const hidden = cmd.diagnostics
+      ? cmd.options.filter((option) => option === "print" || option === "explain-island").length
+      : 0;
+    const declared = cmd.positionals.length + cmd.options.length - hidden;
     expect(properties.length, cmd.name).toBe(declared);
     for (const name of (schema["required"] as string[] | undefined) ?? [])
       expect(properties, cmd.name).toContain(name);

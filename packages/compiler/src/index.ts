@@ -1,7 +1,13 @@
 import { createRequire } from "node:module";
 import { setShapeOverlayMemoDir, shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
 import { jsInferenceEnabled } from "./frontend/js-inference.js";
-import { createNodeFrontendServices, nodeFrontendServices } from "./frontend/services-node.js";
+import {
+  beginCompileServices,
+  compileFrontendServices,
+  createNodeFrontendServices,
+  endCompileServices,
+  nodeFrontendServices,
+} from "./frontend/services-node.js";
 import {
   runTypePatchCommand,
   type TypePatchCommandRequest,
@@ -10,7 +16,7 @@ import {
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
-import { prepareExecutableModule } from "./executable/prepare.js";
+import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
 import { setIslandResolver } from "./node-islands/resolve.js";
 import {
@@ -41,6 +47,7 @@ import type {
   CompileRequestResult,
   CompileLibraryOptions,
   CompileLibraryResult,
+  CompileFailure,
   AnalyzeOptions,
   AnalyzeResult,
 } from "./compile-types.js";
@@ -444,7 +451,15 @@ export function sourceTargetPlatform(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 export function analyze(entryPath: string, opts: AnalyzeOptions = {}): AnalyzeResult {
-  return analyzeWithFrontend(entryPath, opts, buildTargetPlatform(), nodeFrontend);
+  // One scope for the whole analysis: its island reload and retry lowerings
+  // load the program again, and they reuse the checker that answered the
+  // first load instead of starting a cold one.
+  const services = beginCompileServices();
+  try {
+    return analyzeWithFrontend(entryPath, opts, buildTargetPlatform(), nodeFrontend);
+  } finally {
+    endCompileServices(services);
+  }
 }
 
 /** analyze() behind the coverage verdict cache (the CLI's `scriptc
@@ -489,8 +504,12 @@ const nodeFrontend: FrontendFactory = (
   options,
 ) => {
   // One syntax parser for every load of this compile, and program hosts
-  // that serve several loads (FrontendServices.reuseProgramHosts).
-  const services = createNodeFrontendServices();
+  // that serve several loads (FrontendServices.reuseProgramHosts). Inside a
+  // compile scope (beginCompileServices) the later frontends — the island
+  // reload and each retry round's loads — share the hosts this one leaves
+  // idle instead of starting a cold checker each.
+  const shared = compileFrontendServices();
+  const services = shared ?? createNodeFrontendServices();
   try {
     services.reuseProgramHosts(programHostLoads());
     const frontend = runFrontend(
@@ -507,12 +526,13 @@ const nodeFrontend: FrontendFactory = (
         try {
           frontend.dispose();
         } finally {
-          services.close();
+          // A shared scope closes its services when the compile ends.
+          if (shared === null) services.close();
         }
       },
     };
   } catch (error) {
-    services.close();
+    if (shared === null) services.close();
     throw error;
   }
 };
@@ -833,6 +853,7 @@ async function compileExecutableNative(
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
     ...(features.primitiveWrapper ? { primitiveWrapper: true } : {}),
+    ...(features.iteratorProto ? { iteratorProto: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
     ...(features.zstd ? { zstd: true } : {}),
@@ -1123,17 +1144,29 @@ async function prepareExecutableInput(
   warningSink?: CompileWarningSink,
 ): Promise<PreparedExecutable | CompileRequestResult> {
   const outputKind = opts.outputKind ?? "exe";
-  const prepared = prepareExecutableModule(
-    entryPath,
-    opts,
-    ffi,
-    buildPlatform,
-    nodeFrontend,
-    timing,
-    new Map(),
-    true,
-    await nodeUnitStore(entryPath, opts, ffi, buildPlatform),
-  );
+  // The frontend loads of one build — the island decision's reload and every
+  // retry round's load — share one services scope, so each load after the
+  // first rebinds the checker the previous one leaves idle instead of
+  // starting a cold one. The scope ends with the last load: LLVM emission and
+  // native code generation run after it, and no idle checker process holds
+  // its heap through them.
+  const services = beginCompileServices();
+  let prepared: PreparedExecutableModule | CompileFailure;
+  try {
+    prepared = prepareExecutableModule(
+      entryPath,
+      opts,
+      ffi,
+      buildPlatform,
+      nodeFrontend,
+      timing,
+      new Map(),
+      true,
+      await nodeUnitStore(entryPath, opts, ffi, buildPlatform),
+    );
+  } finally {
+    endCompileServices(services);
+  }
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
   // Calls into Node record the libnode pack an executable loads at run

@@ -79,6 +79,9 @@ export interface NativeLinkFeatures {
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
   promiseGeneric?: boolean;
+  /** %Iterator% and %Iterator.prototype% as values link
+   * scr_js_iterator.c; absent (false) otherwise. */
+  iteratorProto?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;

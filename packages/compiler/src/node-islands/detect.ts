@@ -17,6 +17,7 @@ import type { SrcLoc } from "../ir/ir.js";
 import * as ts from "../frontend/ts7/adapter.js";
 import { SUPPORTED_BUILTIN_MODULES } from "../frontend/builtin-modules.js";
 import type { NodeIslandRule } from "./rules.js";
+import { ModuleBindings } from "./bindings.js";
 
 export interface NodeIslandMarker {
   rule: NodeIslandRule;
@@ -395,14 +396,16 @@ class ModuleScanner {
    * variables). */
   private readonly functions = new Set<string>();
   private readonly classes = new Set<string>();
-  /** Local name → the builtin module (or `module.member`) it is bound to. */
-  private readonly builtinBindings = new Map<string, string>();
-  /** Local names bound to a createRequire(...) result. */
-  private readonly createdRequires = new Set<string>();
-  /** Local names bound to a builtin module's CommonJS object: require(),
+  /** Value binding → the builtin module (or `module.member`) it is bound to. */
+  private readonly builtinBindings = new Map<ts.Node, string>();
+  /** Value bindings bound to a createRequire(...) result. */
+  private readonly createdRequires = new Set<ts.Node>();
+  /** Value bindings bound to a builtin module's CommonJS object: require(),
    * a createRequire'd require's result, a default import, or an alias of
    * one. Writes through these names are patches of the module object. */
-  private readonly cjsBuiltinObjects = new Set<string>();
+  private readonly cjsBuiltinObjects = new Set<ts.Node>();
+  private readonly aliasNames = new Set<string>();
+  private bindings: ModuleBindings | undefined;
   /** Members read through a CommonJS builtin object (H3.4). */
   readonly cjsReads: CjsRead[] = [];
   /** Reads of names the file declares nowhere and no builtin provides: each
@@ -468,12 +471,17 @@ class ModuleScanner {
       else if (ts.isClassExpression(value)) this.classes.add(name.text);
       const bound = this.builtinOf(value);
       if (bound !== null) {
-        this.builtinBindings.set(name.text, bound);
-        if (!bound.includes(".") && this.isCjsObjectValue(value))
-          this.cjsBuiltinObjects.add(name.text);
+        const binding = this.aliasBinding(name);
+        if (binding !== undefined) {
+          this.builtinBindings.set(binding, bound);
+          if (!bound.includes(".") && this.isCjsObjectValue(value))
+            this.cjsBuiltinObjects.add(binding);
+        }
       }
-      if (ts.isCallExpression(value) && this.isCreateRequireCallee(value.expression))
-        this.createdRequires.add(name.text);
+      if (ts.isCallExpression(value) && this.isCreateRequireCallee(value.expression)) {
+        const binding = this.aliasBinding(name);
+        if (binding !== undefined) this.createdRequires.add(binding);
+      }
       return;
     }
     if (ts.isObjectBindingPattern(name)) {
@@ -485,7 +493,8 @@ class ModuleScanner {
         if (local !== undefined && ts.isIdentifier(local) && base !== null) {
           const key = element.propertyName;
           const member = key !== undefined && ts.isIdentifier(key) ? key.text : local.text;
-          this.builtinBindings.set(local.text, `${base}.${member}`);
+          const binding = this.aliasBinding(local);
+          if (binding !== undefined) this.builtinBindings.set(binding, `${base}.${member}`);
         }
         this.bindName(local, undefined);
       }
@@ -501,11 +510,11 @@ class ModuleScanner {
   /** A value that is a builtin module's CommonJS object: a require() or a
    * createRequire'd require's result of a builtin, or an alias of one. */
   private isCjsObjectValue(value: ts.Node): boolean {
-    if (ts.isIdentifier(value)) return this.cjsBuiltinObjects.has(value.text);
+    if (ts.isIdentifier(value)) return this.isCjsBinding(value);
     if (!ts.isCallExpression(value)) return false;
     return (
       this.isRequireCallee(value.expression) ||
-      (ts.isIdentifier(value.expression) && this.createdRequires.has(value.expression.text))
+      (ts.isIdentifier(value.expression) && this.isCreatedRequire(value.expression))
     );
   }
 
@@ -515,7 +524,7 @@ class ModuleScanner {
     if (
       ts.isCallExpression(value) &&
       (this.isRequireCallee(value.expression) ||
-        (ts.isIdentifier(value.expression) && this.createdRequires.has(value.expression.text)))
+        (ts.isIdentifier(value.expression) && this.isCreatedRequire(value.expression)))
     ) {
       const spec = literalText(value.arguments.nodes[0]);
       return spec === null ? null : builtinModuleName(spec);
@@ -525,8 +534,33 @@ class ModuleScanner {
       const name = propertyName(value);
       return base === null || name === null ? null : `${base}.${name}`;
     }
-    if (ts.isIdentifier(value)) return this.builtinBindings.get(value.text) ?? null;
+    if (ts.isIdentifier(value)) return this.builtinBinding(value) ?? null;
     return null;
+  }
+
+  /** Only modules with alias facts need the lexical index. */
+  private aliasBinding(name: ts.Identifier): ts.Node | undefined {
+    this.aliasNames.add(name.text);
+    return (this.bindings ??= new ModuleBindings(this.sf)).resolve(name);
+  }
+
+  private knownBinding(name: ts.Identifier): ts.Node | undefined {
+    return this.aliasNames.has(name.text) ? this.bindings?.resolve(name) : undefined;
+  }
+
+  private builtinBinding(name: ts.Identifier): string | undefined {
+    const binding = this.knownBinding(name);
+    return binding === undefined ? undefined : this.builtinBindings.get(binding);
+  }
+
+  private isCjsBinding(name: ts.Identifier): boolean {
+    const binding = this.knownBinding(name);
+    return binding !== undefined && this.cjsBuiltinObjects.has(binding);
+  }
+
+  private isCreatedRequire(name: ts.Identifier): boolean {
+    const binding = this.knownBinding(name);
+    return binding !== undefined && this.createdRequires.has(binding);
   }
 
   private isRequireCallee(node: ts.Node): boolean {
@@ -535,10 +569,7 @@ class ModuleScanner {
 
   private isCreateRequireCallee(node: ts.Node): boolean {
     if (ts.isIdentifier(node)) {
-      return (
-        node.text === "createRequire" ||
-        this.builtinBindings.get(node.text) === "module.createRequire"
-      );
+      return node.text === "createRequire" || this.builtinBinding(node) === "module.createRequire";
     }
     return propertyName(node) === "createRequire";
   }
@@ -589,17 +620,21 @@ class ModuleScanner {
         if (clause !== undefined) {
           if (clause.name !== undefined) {
             this.declared.add(clause.name.text);
-            if (module !== null) {
-              this.builtinBindings.set(clause.name.text, module);
+            const binding =
+              module === null || clause.isTypeOnly ? undefined : this.aliasBinding(clause.name);
+            if (module !== null && binding !== undefined) {
+              this.builtinBindings.set(binding, module);
               // A default import is the CommonJS object (unlike a namespace
               // or named import, through which Node refuses writes).
-              this.cjsBuiltinObjects.add(clause.name.text);
+              this.cjsBuiltinObjects.add(binding);
             }
           }
           const bindings = clause.namedBindings;
           if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
             this.declared.add(bindings.name.text);
-            if (module !== null) this.builtinBindings.set(bindings.name.text, module);
+            const binding =
+              module === null || clause.isTypeOnly ? undefined : this.aliasBinding(bindings.name);
+            if (module !== null && binding !== undefined) this.builtinBindings.set(binding, module);
           } else if (bindings !== undefined && ts.isNamedImports(bindings)) {
             for (const element of bindings.elements.nodes) {
               this.declared.add(element.name.text);
@@ -608,8 +643,12 @@ class ModuleScanner {
                 imported !== undefined && ts.isIdentifier(imported)
                   ? imported.text
                   : element.name.text;
-              if (module !== null)
-                this.builtinBindings.set(element.name.text, `${module}.${member}`);
+              const binding =
+                module === null || clause.isTypeOnly || element.isTypeOnly
+                  ? undefined
+                  : this.aliasBinding(element.name);
+              if (module !== null && binding !== undefined)
+                this.builtinBindings.set(binding, `${module}.${member}`);
             }
           }
         }
@@ -769,8 +808,8 @@ class ModuleScanner {
    * so it is recorded as the whole module ("fs.*"). */
   private recordCjsRead(node: ts.PropertyAccessExpression | ts.ElementAccessExpression): void {
     const root = chainRoot(node);
-    if (root === null || !this.cjsBuiltinObjects.has(root.text)) return;
-    const module = this.builtinBindings.get(root.text);
+    if (root === null || !this.isCjsBinding(root)) return;
+    const module = this.builtinBinding(root);
     if (module === undefined) return;
     const text = chainText(node);
     const parent = node.parent;
@@ -884,7 +923,7 @@ class ModuleScanner {
     }
     if (
       this.isRequireCallee(callee) ||
-      (ts.isIdentifier(callee) && this.createdRequires.has(callee.text))
+      (ts.isIdentifier(callee) && this.isCreatedRequire(callee))
     ) {
       if (first !== undefined && !isFoldableSpecifier(first))
         this.add("R1.2", "dynamic-require", "require() with a computed specifier", call);
@@ -924,7 +963,7 @@ class ModuleScanner {
       return;
     }
     const root = chainRoot(target);
-    const rootBinding = root === null ? undefined : this.builtinBindings.get(root.text);
+    const rootBinding = root === null ? undefined : this.builtinBinding(root);
     const resolved =
       rootBinding !== undefined && root !== null
         ? rootBinding + text.slice(root.text.length)
@@ -978,8 +1017,8 @@ class ModuleScanner {
       // code loading that object must see (R2.5, H3.1.4).
       const target = first === undefined ? undefined : stripWrappers(first);
       const builtin =
-        target !== undefined && ts.isIdentifier(target) && this.cjsBuiltinObjects.has(target.text)
-          ? (this.builtinBindings.get(target.text) ?? null)
+        target !== undefined && ts.isIdentifier(target) && this.isCjsBinding(target)
+          ? (this.builtinBinding(target) ?? null)
           : null;
       if (builtin !== null) {
         const key = literalText(args[1] === undefined ? undefined : stripWrappers(args[1]));
@@ -1000,8 +1039,8 @@ class ModuleScanner {
     // literal key is a patch (R2.5, H3.1.4).
     if (text === "Object.assign" && this.isGlobal("Object") && first !== undefined) {
       const target = stripWrappers(first);
-      if (ts.isIdentifier(target) && this.cjsBuiltinObjects.has(target.text)) {
-        const builtin = this.builtinBindings.get(target.text) ?? null;
+      if (ts.isIdentifier(target) && this.isCjsBinding(target)) {
+        const builtin = this.builtinBinding(target) ?? null;
         if (builtin !== null) {
           const source = args.length === 2 ? stripWrappers(args[1]!) : undefined;
           const keys =
@@ -1154,7 +1193,7 @@ class ModuleScanner {
       return;
     }
     if (root === null) return;
-    const binding = this.builtinBindings.get(root.text);
+    const binding = this.builtinBinding(root);
     // Module internals: Module._load = …, Module.prototype.require = …
     if (text !== null) {
       const resolved = binding !== undefined ? binding + text.slice(root.text.length) : text;
@@ -1192,7 +1231,7 @@ class ModuleScanner {
       if (!this.allowedWrite(member)) {
         // A write through a builtin module's CommonJS object patches that
         // object; only code sharing Node's builtin can see it (H3.1).
-        const patch = this.cjsBuiltinObjects.has(root.text);
+        const patch = this.isCjsBinding(root);
         this.add(
           "R2.5",
           patch ? "builtin-patch" : "builtin-write",

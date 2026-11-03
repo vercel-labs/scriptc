@@ -260,6 +260,123 @@ describe("R2.5 builtin patches (H3.1)", () => {
     ]);
   });
 
+  test.each([
+    ["function parameter", "function local(fs) { fs.extra = 1; }"],
+    ["arrow parameter", "const local = (fs) => { fs.extra = 1; };"],
+    ["destructured parameter", "function local({ fs }) { fs.extra = 1; }"],
+    ["rest parameter", "function local(...fs) { fs.extra = 1; }"],
+    ["method parameter", "const local = { set(fs) { fs.extra = 1; } };"],
+    ["constructor parameter", "class Local { constructor(fs) { fs.extra = 1; } }"],
+    ["catch binding", "try {} catch (fs) { fs.extra = 1; }"],
+    ["block binding", "{ const fs = {}; fs.extra = 1; }"],
+    ["loop binding", "for (const fs of values) { fs.extra = 1; }"],
+    ["hoisted var", "function local() { fs.extra = 1; var fs; }"],
+    ["function declaration", "function local() { function fs() {} fs.extra = 1; }"],
+    ["named expression", "const local = function fs() { fs.extra = 1; };"],
+    ["named class", "const local = class fs { static set() { fs.extra = 1; } };"],
+  ])("a shadowed %s is not a builtin patch", (_name, source) => {
+    expect(patches(`'use strict'; const fs = require('fs'); ${source}`)).toEqual([]);
+  });
+
+  test("a default import can be shadowed without hiding later patches", () => {
+    expect(
+      patches(
+        "import fs from 'node:fs'; fs.before = 1; function local(fs) { fs.extra = 1; } fs.after = 1;",
+        "mjs",
+      ),
+    ).toEqual(["builtin-patch fs.before", "builtin-patch fs.after"]);
+  });
+
+  test("an alias of a shadowed parameter stays local", () => {
+    expect(
+      patches(
+        "const fs = require('fs'); function local(fs) { const alias = fs; alias.extra = 1; } fs.after = 1;",
+      ),
+    ).toEqual(["builtin-patch fs.after"]);
+  });
+
+  test("sibling scopes keep their own builtin aliases", () => {
+    expect(
+      patches(
+        "function a() { const x = require('fs'); x.extra = 1; } function b() { const x = require('path'); x.extra = 1; } function c() { const x = {}; x.extra = 1; }",
+      ),
+    ).toEqual(["builtin-patch fs.extra", "builtin-patch path.extra"]);
+  });
+
+  test("a closure still patches the captured builtin", () => {
+    expect(
+      patches("const fs = require('fs'); function local() { return () => { fs.extra = 1; }; }"),
+    ).toEqual(["builtin-patch fs.extra"]);
+    expect(patches("var fs = require('fs'); var fs; fs.extra = 1;")).toEqual([
+      "builtin-patch fs.extra",
+    ]);
+  });
+
+  test("a recorded loader can be shadowed without hiding captured loader calls", () => {
+    expect(
+      patches(
+        "const { createRequire } = require('module'); const r = createRequire(__filename); function local(r) { const fs = r('fs'); fs.extra = 1; } function captured() { const fs = r('fs'); fs.after = 1; }",
+      ),
+    ).toEqual(["builtin-patch fs.after"]);
+  });
+
+  test("CommonJS wrapper redeclarations retain the existing loader recognition", () => {
+    expect(patches("var require; const fs = require('fs'); fs.extra = 1;")).toEqual([
+      "builtin-patch fs.extra",
+    ]);
+    expect(
+      patches(
+        "if (false) { function require() {} } const fs = require('fs'); fs.extra = 1;",
+      ).filter((m) => m.startsWith("builtin-patch")),
+    ).toEqual(["builtin-patch fs.extra"]);
+  });
+
+  test("all patch forms distinguish a local object from a captured builtin", () => {
+    const source =
+      "function local(fs) { Object.defineProperty(fs, 'x', { value: 1 }); Object.assign(fs, { y: 1 }); delete fs.z; fs.n++; }";
+    expect(
+      patches(`const fs = require('fs'); ${source}`).filter((m) => m.startsWith("builtin-patch")),
+    ).toEqual([]);
+    expect(
+      patches(`const fs = require('fs'); ${source} Object.assign(fs, { after: 1 });`).filter((m) =>
+        m.startsWith("builtin-patch"),
+      ),
+    ).toEqual(["builtin-patch fs.after"]);
+  });
+
+  test("a var initializer can assign a builtin to a catch binding", () => {
+    expect(
+      patches(
+        "function local() { try { throw null; } catch (fs) { var fs = require('fs'); fs.extra = 1; } }",
+      ),
+    ).toEqual(["builtin-patch fs.extra"]);
+  });
+
+  test.each([
+    "const { Module } = require('module'); const r = Module.createRequire(__filename);",
+    "const r = module.constructor.createRequire(__filename);",
+    "const { Module } = require('module'); const r = new Module(__filename).constructor.createRequire(__filename);",
+  ])("property-form createRequire retains genuine patches: %s", (source) => {
+    expect(patches(`${source} const fs = r('fs'); fs.extra = 1;`)).toEqual([
+      "builtin-patch fs.extra",
+    ]);
+  });
+
+  test("erased loader declarations do not hide genuine builtin patches", () => {
+    expect(
+      patches(
+        "declare function require(name: string): unknown; const fs = require('fs'); fs.extra = 1;",
+        "ts",
+      ),
+    ).toEqual(["builtin-patch fs.extra"]);
+    expect(
+      patches(
+        "declare const require: (name: string) => unknown; const fs = require('fs'); fs.extra = 1;",
+        "ts",
+      ),
+    ).toEqual(["builtin-patch fs.extra"]);
+  });
+
   test("defineProperty, Object.assign, delete and bind are patches too", () => {
     expect(
       patches("const fs = require('fs'); Object.defineProperty(fs, 'readFileSync', { value: f });"),
@@ -294,6 +411,17 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
     return scanModuleFacts(sf).cjsReads.map((read) => read.member);
   };
   expect(reads("const fs = require('fs'); fs.readFileSync(p);")).toEqual(["fs.readFileSync"]);
+  expect(
+    reads(
+      "const fs = require('fs'); function local(fs) { fs.readFileSync(p); const { readFileSync } = fs; } fs.readFileSync(p);",
+    ),
+  ).toEqual(["fs.readFileSync"]);
+  expect(
+    reads(
+      "import fs from 'node:fs'; function local(fs) { fs.readFileSync(p); } fs.readFileSync(p);",
+      "mjs",
+    ),
+  ).toEqual(["fs.readFileSync"]);
   expect(reads("import { readFileSync } from 'node:fs'; readFileSync(p);", "mjs")).toEqual([]);
   // A write is not a read; an ES module read through the namespace import
   // is not the CommonJS object either.

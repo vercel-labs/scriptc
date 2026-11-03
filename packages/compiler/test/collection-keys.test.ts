@@ -190,3 +190,60 @@ test.each(["map", "set"] as const)("validator checks the arms behind a %s key un
     ),
   ).toBe(true);
 });
+
+function analyzeSource(source: string) {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-branded-keys-"));
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(entry, source);
+    const { coverage } = analyze(entry, {});
+    expect(coverage.preflightFailed).toBe(false);
+    return coverage.diagnostics;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("literal-marker branded primitives are Map keys and Set elements", () => {
+  const diagnostics = analyzeSource(`
+    type Brand<Value, Name extends string> = Value & { readonly __brand: Name };
+    type UserId = Brand<string, "UserId">;
+    const ids = new Map<UserId, number>();
+    const id = "ada" as UserId;
+    ids.set(id, 1);
+    console.log(ids.get(id), ids.has(id));
+    const seen = new Set<UserId>([id]);
+    console.log(seen.has(id));
+  `);
+  expect(diagnostics).toEqual([]);
+});
+
+test("nested Effect-style brand tables are Map keys", () => {
+  const diagnostics = analyzeSource(`
+    const BrandTypeId = "~effect/Brand";
+    interface Brand<Keys extends string> {
+      readonly [BrandTypeId]: { readonly [K in Keys]: Keys };
+    }
+    type DriverKind = string & Brand<"ProviderDriverKind">;
+    const byKind = new Map<DriverKind, number>();
+    const kind = "codex" as DriverKind;
+    byKind.set(kind, 1);
+    console.log(byKind.get(kind));
+  `);
+  expect(diagnostics).toEqual([]);
+});
+
+test("unique-symbol nested brands are Map keys", () => {
+  const diagnostics = analyzeSource(`
+    declare const BrandTypeId: unique symbol;
+    interface Brand<Keys extends string> {
+      readonly [BrandTypeId]: { readonly [K in Keys]: typeof BrandTypeId };
+    }
+    type ThreadId = string & Brand<"ThreadId">;
+    const threads = new Map<ThreadId, string>();
+    const id = "t1" as ThreadId;
+    threads.set(id, "ok");
+    console.log(threads.get(id));
+  `);
+  expect(diagnostics).toEqual([]);
+});

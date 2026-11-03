@@ -1135,7 +1135,7 @@ export function overloadedSignatureTypeDiag(typeText: string, loc: SrcLoc): ScrD
 /** An intersection type that resolved to no lowering. The intersections
  * that DO compile never reach this: object-member intersections resolve
  * through the record path (`A & B` interns the combined shape), branded
- * primitives erase their literal marker shapes, function-with-properties
+ * primitives erase their literal and nested marker shapes, function-with-properties
  * hybrids map to `%call` records, and mixin-instantiation intersections
  * resolve by chain structure to their pinned instantiation. What lands here
  * is the remainder — an intersection part outside those rules, or a mixin

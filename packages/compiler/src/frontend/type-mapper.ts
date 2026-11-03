@@ -8041,10 +8041,13 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
 
 /** A conventional primitive brand has one runtime-carrying primitive part
  * and one or more phantom object parts whose fields are literal marker
- * values. The marker can use a string or unique-symbol key, can be imported
- * from a declaration file, and can be expressed through a generic alias;
- * none of those facts changes the runtime value. Empty `{}` refinements are
- * the marker-free form of the same primitive narrowing.
+ * values, or nested objects of the same marker shape. Effect Schema's
+ * `string & Brand<"Id">` is `{ readonly ["~effect/Brand"]: { readonly Id: "Id" } }`
+ * beside the primitive; the nested table is type-level only. The marker
+ * can use a string or unique-symbol key, can be imported from a
+ * declaration file, and can be expressed through a generic alias; none of
+ * those facts changes the runtime value. Empty `{}` refinements are the
+ * marker-free form of the same primitive narrowing.
  *
  * Arbitrary primitive/object intersections do not erase here. A companion
  * with a class identity, call/construct/index signature, accessor, or a
@@ -8076,7 +8079,8 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     return null;
   };
-  const markerValue = (value: ts.Type): boolean => {
+  const markerValue = (value: ts.Type, seen: Set<ts.Type>): boolean => {
+    if (seen.has(value)) return true;
     if (
       value.flags &
       (ts.TypeFlags.StringLiteral |
@@ -8092,15 +8096,57 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     ) {
       return true;
     }
-    if (value.isUnionType()) return ts.constituentTypes(value).every(markerValue);
+    if (value.isUnionType())
+      return ts.constituentTypes(value).every((arm) => markerValue(arm, seen));
     if (value.flags & ts.TypeFlags.TypeParameter) {
       const bound = resolveTypeParamTs?.(value) ?? null;
       if (bound) {
         contextResolutions++;
-        return markerValue(bound);
+        return markerValue(bound, seen);
       }
     }
-    return false;
+    // Number/string/boolean/bigint/symbol companions are runtime data, not
+    // nested brand tables. Their interface members must not look empty.
+    if (
+      value.flags &
+      (ts.TypeFlags.Number |
+        ts.TypeFlags.String |
+        ts.TypeFlags.Boolean |
+        ts.TypeFlags.BigInt |
+        ts.TypeFlags.ESSymbol |
+        ts.TypeFlags.Any |
+        ts.TypeFlags.Unknown |
+        ts.TypeFlags.NonPrimitive)
+    ) {
+      return false;
+    }
+    return isPhantomBrandObject(value, seen);
+  };
+  const isPhantomBrandObject = (part: ts.Type, seen: Set<ts.Type>): boolean => {
+    const partSym = part.getSymbol();
+    if (
+      (part.flags & ts.TypeFlags.Object) === 0 ||
+      (part.flags &
+        (ts.TypeFlags.Number |
+          ts.TypeFlags.String |
+          ts.TypeFlags.Boolean |
+          ts.TypeFlags.BigInt |
+          ts.TypeFlags.ESSymbol)) !==
+        0 ||
+      checker.getCallSignatures(part).length > 0 ||
+      checker.getConstructSignatures(part).length > 0 ||
+      (partSym !== undefined && (partSym.flags & ts.SymbolFlags.Class) !== 0)
+    ) {
+      return false;
+    }
+    if (checker.getIndexInfosOfType(part).length > 0) return false;
+    seen.add(part);
+    const props = checker.getPropertiesOfType(part);
+    return props.every(
+      (prop) =>
+        (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) === 0 &&
+        markerValue(checker.getTypeOfSymbol(prop), seen),
+    );
   };
   let primitive: IrType | null = null;
   let markerParts = 0;
@@ -8111,22 +8157,7 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
       primitive = mappedPrimitive;
       continue;
     }
-    const partSym = part.getSymbol();
-    const props = checker.getPropertiesOfType(part);
-    if (
-      (part.flags & ts.TypeFlags.Object) === 0 ||
-      checker.getCallSignatures(part).length > 0 ||
-      checker.getConstructSignatures(part).length > 0 ||
-      checker.getIndexInfosOfType(part).length > 0 ||
-      (partSym !== undefined && (partSym.flags & ts.SymbolFlags.Class) !== 0) ||
-      props.some(
-        (prop) =>
-          (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0 ||
-          !markerValue(checker.getTypeOfSymbol(prop)),
-      )
-    ) {
-      return null;
-    }
+    if (!isPhantomBrandObject(part, new Set())) return null;
     markerParts++;
   }
   return primitive && markerParts > 0 ? primitive : null;

@@ -1,9 +1,12 @@
 // setInterval schedules each tick from the time its callback started, as
-// Node does: a callback that takes 30 ms of a 50 ms interval keeps the ticks
-// 50 ms apart, and one that takes 70 ms makes the next tick due at once (70
-// ms apart, not 120). Each line prints whether every gap after the first
-// tick stays under a bound between those spacings and the ones a re-arm
-// after the callback would give (80 and 120 ms).
+// Node does: a callback that takes 150 ms of a 200 ms interval keeps the
+// ticks 200 ms apart, and one longer than the interval makes the next tick
+// due at once (the gap is the callback's own duration, not that duration
+// plus an interval). Each line prints whether the smallest gap after the
+// first tick stayed under a bound between those two spacings. The smallest,
+// and not every gap, because a loaded runner can only delay a wakeup: the
+// two behaviors stay one interval apart (75 ms and 100 ms here), so a single
+// late tick on either side does not decide the comparison.
 function run(work: number, bound: number, done: () => void): void {
   const gaps: number[] = [];
   let last = -1;
@@ -11,13 +14,14 @@ function run(work: number, bound: number, done: () => void): void {
     const now = performance.now();
     if (last >= 0) gaps.push(now - last);
     last = now;
-    while (performance.now() - now < work) {}
-    if (gaps.length === 4) {
+    const until = now + work;
+    while (performance.now() < until) {}
+    if (gaps.length === 2) {
       clearInterval(interval);
-      console.log(`work ${work} ms:`, gaps.every((gap) => gap < bound));
+      console.log(`work ${work} ms:`, Math.min(...gaps) < bound);
       done();
     }
-  }, 50);
+  }, 200);
 }
 
-run(30, 75, () => run(70, 110, () => console.log("done")));
+run(150, 275, () => run(320, 420, () => console.log("done")));

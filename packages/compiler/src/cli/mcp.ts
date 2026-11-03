@@ -48,17 +48,20 @@ function propertyName(option: CliOptionName): string {
   return option.replaceAll("-", "_");
 }
 
-/** The options a tool exposes: the command's options, less `--print`, which the server owns for
- * commands that write the diagnostics envelope. */
+/** The options a tool exposes: the command's options, less those the diagnostics envelope makes
+ * meaningless for commands that write it: `--print`, which the server owns, and
+ * `--explain-island`, which only changes the human-readable report. */
 function toolOptions(command: CliCommand): readonly CliOptionName[] {
-  return command.options.filter((option) => !(command.diagnostics && option === "print"));
+  return command.options.filter(
+    (option) => !(command.diagnostics && (option === "print" || option === "explain-island")),
+  );
 }
 
 function optionSummary(option: CliOptionName): string {
   const doc = CLI_OPTION_DOCS[option] ?? { entries: [] };
   const lines = doc.entries.map((entry) => {
     const text = entry.help.join(" ");
-    return entry.term.startsWith("--no-") ? `false means ${entry.term}: ${text}` : text;
+    return `${entry.term.startsWith("--no-") ? "false means " : ""}${entry.term}: ${text}`;
   });
   return [...(doc.summary === undefined ? [] : [doc.summary]), ...lines].join(" ");
 }
@@ -231,7 +234,11 @@ export function callResult(command: CliCommand, output: CallOutput): JsonObject 
 }
 
 function errorResult(message: string): JsonObject {
-  return { content: [{ type: "text", text: message }], isError: true };
+  return {
+    content: [{ type: "text", text: message }],
+    structuredContent: { exitCode: null, stderr: message },
+    isError: true,
+  };
 }
 
 /** Collects one output stream up to `MAX_OUTPUT_CHARS`. */

@@ -211,6 +211,7 @@ export class NativeCache {
         "sanitizer",
         "executable",
         "kept",
+        "unchanged",
         "linker-job",
         "runtime-pack",
         "helper",

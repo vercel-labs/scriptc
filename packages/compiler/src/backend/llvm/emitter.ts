@@ -7,6 +7,7 @@ import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsImmediates, jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
+import type { JsGroup, JsGroupPlan } from "../../ir/js-groups.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
@@ -99,6 +100,7 @@ import {
 import { inlineArraysApply, programLifetimeClassOf } from "./inline-arrays.js";
 import { pairRowSums } from "../../ir/row-pairs.js";
 import { jamSaturatingLoops } from "../../ir/saturating-loop-jams.js";
+import { jamRuntimeCountLoops } from "../../ir/runtime-jam-loops.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -622,10 +624,12 @@ export interface LlvmTargetOptions {
   /** Translated WebAssembly memories check bounds explicitly instead of
    * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
   wasmBoundsChecks?: boolean;
-  /** The executable can reserve its program-lifetime region below 32 GiB
-   * (lowRegionTarget): fields that refer to compact class instances then
-   * store the instance's address over 8 in 32 bits (classes.ts
-   * compactRefLoadLines). Elsewhere they keep 8-byte pointers. */
+  /** The executable can reserve the allocator's window, which holds its
+   * program-lifetime region, below 32 GiB (lowRegionTarget): compact class
+   * fields that refer to compact class instances, or to arrays, maps, sets
+   * and class instances in the window, then store the object's address over
+   * 8 in 32 bits (classes.ts compactRefLoadLines). Elsewhere they keep 8-byte
+   * pointers. */
   lowRegion?: boolean;
   /** The x86-64 level the program's code may require (`--target-cpu`):
    * every emitted function carries it as its `target-cpu`. Unset, code
@@ -797,18 +801,21 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
               specializeNumericCalls(
                 specializeTypedArguments(
                   pairRowSums(
-                    jamSaturatingLoops(
-                      inlineArraysPass(
-                        options,
-                        inlineExpressionFunctions(
-                          foldConstantGlobals(
-                            copyStableCaptures(
-                              resolveSelfCaptures(
-                                hoistFinalFieldReads(
-                                  freezeInitOnlyGlobals(
-                                    holdCharLocalsAsUnits(
-                                      dropUnwrittenPropertyBags(
-                                        runPairedWhileLoopsAsFor(mod, nodes),
+                    jamRuntimeCountLoops(
+                      jamSaturatingLoops(
+                        inlineArraysPass(
+                          options,
+                          inlineExpressionFunctions(
+                            foldConstantGlobals(
+                              copyStableCaptures(
+                                resolveSelfCaptures(
+                                  hoistFinalFieldReads(
+                                    freezeInitOnlyGlobals(
+                                      holdCharLocalsAsUnits(
+                                        dropUnwrittenPropertyBags(
+                                          runPairedWhileLoopsAsFor(mod, nodes),
+                                          nodes,
+                                        ),
                                         nodes,
                                       ),
                                       nodes,
@@ -823,8 +830,8 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                             ),
                             nodes,
                           ),
-                          nodes,
                         ),
+                        nodes,
                       ),
                       nodes,
                     ),
@@ -1149,7 +1156,7 @@ export class LlEmitter {
   readonly fieldAliasTags = new Map<string, number>();
   readonly fieldPointerTags = new Map<string, number>();
   /** The field pointers (classFieldPtr) of this function whose fields hold
-   * 32-bit references to compact class instances (LlClassMeta.compressed):
+   * 32-bit references (LlClassMeta.compressed):
    * loadField/loadRef decode them and storeField/storeRef encode them. */
   readonly compressedFieldPtrs = new Set<string>();
   /** Compact class instances live in the program-lifetime region below
@@ -1157,6 +1164,13 @@ export class LlEmitter {
    * classes): main reserves it before compiled code runs (scr_plr_init), and
    * fields and arrays of compactRefType hold 32-bit references. */
   compactRegion = false;
+
+  /** A compact class has a field holding an array, a map, a set or a heap
+   * instance (windowRefType), so a reference to it is a 32-bit address of
+   * the allocator's window: main requires the window to serve every
+   * reference block (scr_sa_require_window), and ends the process when it
+   * cannot, rather than hand out an address a field would truncate. */
+  windowRefs = false;
 
   /** Native class fields with different property names cannot occupy the
    * same slot of one object. Inherited views of the same property share a
@@ -1804,6 +1818,18 @@ export class LlEmitter {
    * zero-initialized ScrJsIc per site (scr_js.h). */
   jsIcSiteCount = 0;
   private jsIcSitesMemo: JsIcSites | undefined;
+  /** Guard-group records of dynamic-tier functions (js-groups.ts): one
+   * zero-initialized ScrJsGroup per group, and the key arrays the probes
+   * read (scr_js.h). */
+  jsGroupCount = 0;
+  private jsGroupKeysCount = 0;
+  private readonly jsGroupKeysByName = new Map<string, readonly string[]>();
+  private readonly jsGroupKeysByText = new Map<string, string>();
+  /** The guard of each group the function being emitted has entered: the
+   * entry value, and the position of the member that comes next. */
+  readonly groupRuns = new Map<JsGroup, { entry: string; next: number }>();
+  /** The guard groups of the function being emitted (ir/js-groups.ts). */
+  jsGroupPlan: JsGroupPlan | null = null;
   /** The tier of the function being emitted. */
   currentTier: IrFunction["tier"] = undefined;
   /** The class graph (buildClassGraph): preorder numbering, hierarchy
@@ -2529,6 +2555,8 @@ export class LlEmitter {
       // Worker programs keep one allocator per script thread: the inline
       // paths address its thread-local state.
       threadLocalAlloc: mod.workers === true,
+      // Linux executables find a block's owner in the chunk map.
+      windowMap: options.lowRegion === true,
       rcHelpers: this.rcHelpers,
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
@@ -2714,17 +2742,23 @@ export class LlEmitter {
         this.classMeta,
         (root) => programLifetimeClass(this.shapeHost, root) && !root.threadSlot,
         (cls) => classFieldTypes(this.shapeHost, cls, this.int32Slots),
-        // Executables whose region lies below 32 GiB hold compact class
-        // instances there (scr_plr_alloc), so fields referring to one store
-        // a 32-bit reference: the field's type, the class of a
-        // `C | undefined` or `C | null` pointer, or the reference arm of a
-        // nullable pointer field, is a compact class. `C | null | undefined`
-        // keeps the pointer: its null is a sentinel outside the region.
+        // Executables whose window lies below 32 GiB hold compact class
+        // instances there (scr_plr_alloc), and arrays, maps, sets and other
+        // class instances too, so fields referring to one store a 32-bit
+        // reference: the field's type, the class of a `C | undefined` or
+        // `C | null` pointer, or the reference arm of a nullable pointer
+        // field, is a compact class, or windowRefType holds. `C | null |
+        // undefined` keeps the pointer: its null is a sentinel outside the
+        // region.
         mod.lib === undefined && options.lowRegion === true
           ? (cls, i, isCompact) => {
               const f = cls.fields[i]!;
               if (this.inlineUnions.classField(cls.name, f.name)) return false;
               if (this.compactRefType(f.type, isCompact)) return true;
+              if (this.windowRefType(f.type, isCompact)) {
+                this.windowRefs = true;
+                return true;
+              }
               const nullable =
                 f.type.kind === "union" && this.nullableUnions.single(f.type.unionId) === null
                   ? this.nullableFields.get(cls.name, f.name)
@@ -5093,6 +5127,26 @@ export class LlEmitter {
       single.arm.kind === "object" &&
       isCompact(single.arm.className)
     );
+  }
+
+  /** Whether values of `t` are NULL or a refcounted object that lies in the
+   * allocator's window below 32 GiB, so that a compact class field of type
+   * `t` can store it as a 32-bit reference: an array, map or set, or an
+   * instance of a class that is not compact and that the program allocates
+   * (not the runtime's Error hierarchy, whose instances the runtime
+   * allocates), or one of these or `undefined`/`null` (NULL). Strings keep
+   * 8-byte pointers: literals lie in the executable's image. */
+  windowRefType(t: IrType, isCompact: (className: string) => boolean): boolean {
+    const target = (u: IrType): boolean => {
+      if (u.kind === "array" || u.kind === "map" || u.kind === "set") return true;
+      if (u.kind !== "object" || isCompact(u.className)) return false;
+      const meta = this.classMeta.get(u.className);
+      return meta !== undefined && meta.root.def.runtime !== true;
+    };
+    if (target(t)) return true;
+    if (t.kind !== "union") return false;
+    const single = this.nullableUnions.single(t.unionId);
+    return single !== null && single.nullTag < 0 && target(single.arm);
   }
 
   /** Whether arrays of `elem` hold 32-bit references (SCR_ELEM_CREF). */
@@ -8487,6 +8541,31 @@ export class LlEmitter {
     return name;
   }
 
+  /** A fresh guard-group record (js-groups.ts). */
+  jsGroup(): string {
+    const name = `@sc_js_group_${this.jsGroupCount++}`;
+    this.journal?.site(name, "jsGroup");
+    return name;
+  }
+
+  /** The constant key array `keys` (string literal symbols) that a group's
+   * probe reads, shared by every group with the same keys. */
+  jsGroupKeys(keys: readonly string[]): string {
+    const text = keys.join("\u0000");
+    let name = this.jsGroupKeysByText.get(text);
+    if (name !== undefined) return name;
+    name = `@sc_gkeys_${this.jsGroupKeysCount++}`;
+    this.jsGroupKeysByText.set(text, name);
+    this.jsGroupKeysByName.set(name, keys);
+    this.journal?.site(name, "jsGroupKeys", [keys]);
+    return name;
+  }
+
+  /** The key array of each of this module's guard groups, by name. */
+  get jsGroupKeysTable(): ReadonlyMap<string, readonly string[]> {
+    return this.jsGroupKeysByName;
+  }
+
   /** A fresh read-site cache for one constant-key dyn read. */
   dynReadIcSite(): string {
     const name = `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
@@ -8996,6 +9075,8 @@ function addNumberedSymbol<V extends { sym: string }>(
 }
 
 registerReplay("jsIcSite", (emitter) => emitter.jsIcSite());
+registerReplay("jsGroup", (emitter) => emitter.jsGroup());
+registerReplay("jsGroupKeys", (emitter, args) => emitter.jsGroupKeys(args[0] as string[]));
 registerReplay("dynReadIcSite", (emitter) => emitter.dynReadIcSite());
 registerReplay("speculativeLoopSite", (emitter) => emitter.speculativeLoopSite());
 for (const op of [

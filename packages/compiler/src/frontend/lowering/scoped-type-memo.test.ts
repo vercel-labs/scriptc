@@ -88,3 +88,25 @@ test("an entry written under one context is invisible to another", () => {
   // the lowerer's hot path takes (Lowerer.lastMemo).
   expect(inBindings(subject, first, null, () => subject.currentTypeMemo().get(7))).toBe(entry);
 });
+
+test("the shared memo is the lowerer's own and never a scope's", () => {
+  const subject = lowerer();
+  const bindings = new Map<TsSymbol, IrType>();
+  expect(subject.sharedTypeMemo).not.toBe(subject.typeMemo);
+  expect(subject.typeCtx.typeMemoShared).toBe(subject.sharedTypeMemo);
+  expect(inBindings(subject, bindings, null, () => subject.currentTypeMemo())).not.toBe(
+    subject.sharedTypeMemo,
+  );
+});
+
+test("the shared memo outlives the scope that filled it", () => {
+  const subject = lowerer();
+  const bindings = new Map<TsSymbol, IrType>();
+  const entry: IrType = { kind: "void" };
+  inBindings(subject, bindings, null, () => subject.sharedTypeMemo.set(9, entry));
+  // Both a later scope and the top level answer from it: an entry only lands
+  // here when its mapping read no binding (noteScopeSensitiveMapping).
+  const later = new Map<TsSymbol, IrType>();
+  expect(inBindings(subject, later, null, () => subject.sharedTypeMemo.get(9))).toBe(entry);
+  expect(subject.sharedTypeMemo.get(9)).toBe(entry);
+});

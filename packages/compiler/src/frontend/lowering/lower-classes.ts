@@ -126,6 +126,7 @@ import {
   checkerTypeDescription,
   isGenericCallableMemberType,
   jsOpenObjectType,
+  noteScopeSensitiveMapping,
   typeKey,
   withUnitArm,
   X509_DER_FIELD,
@@ -4950,6 +4951,9 @@ export function genericClassInstanceType(
     // body (`this.v = v` types the receiver as `this`, not a reference).
     // Inside an instantiation the CURRENT bindings are the arguments;
     // anywhere else the reference is honestly unmappable.
+    // The current instance's bindings ARE the arguments: the mapping
+    // belongs to that instance.
+    noteScopeSensitiveMapping();
     for (const tp of gci.typeParams) {
       const b = lowerer.typeParamBindings?.get(tp);
       if (!b) return null;
@@ -10565,6 +10569,43 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
   return ref?.kind === "collection" || ref?.kind === "error";
 }
 
+/** `new url.URL(...)` / `new url.URLSearchParams(...)`: the member of a
+ * node:url binding (a namespace import, a require result, or an import=
+ * alias) resolves to the stdlib class symbol the named import binds, so the
+ * construction takes the same lowering. A binding that holds the class
+ * (`const U = url.URL`) follows its initializer to the same symbol. */
+function stdlibUrlClassOf(
+  lowerer: Lowerer,
+  callee: ts.Expression,
+): "URL" | "URLSearchParams" | null {
+  const classNamed = (sym: ts.Symbol | undefined): "URL" | "URLSearchParams" | null => {
+    if (!sym || !lowerer.isStdlibSymbol(sym)) return null;
+    const name = ts.symbolName(sym);
+    return name === "URL" || name === "URLSearchParams" ? name : null;
+  };
+  const aliased = (raw: ts.Symbol | undefined): ts.Symbol | undefined =>
+    raw && raw.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(raw) : raw;
+  let selected: ts.Expression = callee;
+  for (let hops = 0; hops < 4; hops++) {
+    while (ts.isParenthesizedExpression(selected)) selected = selected.expression;
+    if (ts.isPropertyAccessExpression(selected) && !selected.questionDotToken) {
+      return classNamed(aliased(lowerer.checker.getSymbolAtLocation(selected.name)));
+    }
+    if (!ts.isIdentifier(selected)) return null;
+    const sym = aliased(lowerer.checker.getSymbolAtLocation(selected));
+    if (!sym) return null;
+    const known = classNamed(sym);
+    if (known !== null) return known;
+    const decl = sym.valueDeclaration;
+    if (!decl || !ts.isVariableDeclaration(decl) || !decl.initializer) return null;
+    let next: ts.Expression = decl.initializer;
+    while (ts.isParenthesizedExpression(next)) next = next.expression;
+    if (next === selected) return null;
+    selected = next;
+  }
+  return null;
+}
+
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
   // Constructing a Node 24 global the native runtime does not provide
@@ -10601,6 +10642,14 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
+  }
+  // `new url.URL(input)` / `new url.URLSearchParams(init?)`: the node:url
+  // member names the same class the named import does, so both take the
+  // class's own lowering (including its argument diagnostics).
+  {
+    const urlClass = stdlibUrlClassOf(lowerer, expr.expression);
+    if (urlClass === "URL") return lowerUrlNew(lowerer, expr);
+    if (urlClass === "URLSearchParams") return lowerSearchParamsNew(lowerer, expr, loc);
   }
   const wrapper = lowerWrapperNew(lowerer, expr);
   if (wrapper) return wrapper;
@@ -11195,7 +11244,26 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       if (args.some(ts.isSpreadElement))
         lowerer.noLowering("new RegExp with spread arguments", expr);
       const values = args.map((arg) => lowerer.lowerExpr(arg));
-      if (values.some((value) => value.type.kind === "dyn" || value.type.kind === "regex")) {
+      // The statically spelled form below needs a string or undefined in
+      // each slot. Every other value — a `dyn` or `regex` argument, and
+      // any primitive or object the static form cannot spell, such as a
+      // boolean, number or null flags argument — reaches the runtime's
+      // JavaScript ToString, exactly the coercion the spec's RegExp
+      // builtin performs, so an invalid flags string throws Node's
+      // SyntaxError at construction instead of refusing the build.
+      const stringSlot = (value: IrExpr): boolean =>
+        value.type.kind === "string" ||
+        value.type.kind === "undefinedT" ||
+        (value.type.kind === "union" &&
+          (lowerer.unions
+            .get(value.type.unionId)
+            ?.arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT") ??
+            false));
+      if (
+        values.some(
+          (value) => value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value),
+        )
+      ) {
         const checked = [0, 1].map((index): IrExpr =>
           values[index]
             ? lowerer.coerceInto(args[index]!, values[index]!, DYN)
@@ -11209,7 +11277,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           loc,
         };
       }
-      const strArg = (a: ts.Expression | undefined, what: string): IrExpr => {
+      // Every slot reaches here as a string or a nullish cover of one: the
+      // checked path above took every other value.
+      const strArg = (a: ts.Expression | undefined): IrExpr => {
         if (!a) return { kind: "strLit", value: "", type: STRING, loc };
         const v = values[args.indexOf(a)]!;
         const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
@@ -11223,25 +11293,13 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
             loc,
           };
         }
-        if (
-          v.type.kind === "union" &&
-          lowerer.unions
-            .get(v.type.unionId)
-            ?.arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT")
-        ) {
+        if (v.type.kind === "union") {
           return { kind: "nullish", left: v, right: empty, type: STRING, loc: locOf(a) };
-        }
-        if (v.type.kind !== "string") {
-          lowerer.noLowering(
-            `new RegExp with a '${lowerer.fmt(v.type)}' ${what}`,
-            a,
-            "string or undefined arguments are the lowered form (a RegExp copy or ToString coercion has no lowering)",
-          );
         }
         return v;
       };
-      const pattern = strArg(args[0], "pattern");
-      const flags = strArg(args[1], "flags argument");
+      const pattern = strArg(args[0]);
+      const flags = strArg(args[1]);
       // Node accepts the 'd' flag the engine does not have; a literal
       // flags string refuses here like the literal regex form.
       if (flags.kind === "strLit" && args[1] !== undefined && flags.value.includes("d")) {

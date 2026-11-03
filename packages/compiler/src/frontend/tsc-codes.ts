@@ -51,10 +51,14 @@ export const ADOPTED_OPTIONS = [
  * switch statement list), SC0006 (lexical declaration colliding with a
  * `var` in the same block), SC0007 (declaration in a single-statement
  * position), SC0008 (an ImportCall argument list the grammar does not
- * allow), SC0009 (a private name with no declaring enclosing class) and
- * SC0010 (an assignment target that is not a variable or property access).
- * A relaxation that needs one of those rules to keep firing must
- * land with the matching rule in that pass, not rely on this table. */
+ * allow), SC0009 (a private name with no declaring enclosing class),
+ * SC0010 (an assignment target that is not a variable or property access),
+ * SC0011 (`await` where the grammar makes it an operator), SC0012
+ * (`arguments` in a class field initializer or static block), SC0013 (a
+ * script-top-level `using` declaration), SC0014 (assignment to `eval` or
+ * `arguments` in strict code), and SC0015 (a catch parameter the block
+ * redeclares). A relaxation that needs one of those rules to keep firing
+ * must land with the matching rule in that pass, not rely on this table. */
 
 /* ── The JavaScript opinion table (read this before admitting a code) ───
  *

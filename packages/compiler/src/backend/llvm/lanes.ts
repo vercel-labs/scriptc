@@ -717,15 +717,6 @@ function storeReads(node: LaneValueNode, role: LaneValueNode["role"]): boolean {
   );
 }
 
-/** Whether a stored value computes anything. */
-function storeComputes(node: LaneValueNode): boolean {
-  return (
-    node.op !== null ||
-    (node.left !== null && storeComputes(node.left)) ||
-    (node.right !== null && storeComputes(node.right))
-  );
-}
-
 /** A scalar double that no lane of the stored value exceeds in magnitude,
  * computed with each operand at its own largest: the element at the widest
  * value its type holds, an invariant at its magnitude, the counter at the
@@ -768,13 +759,12 @@ function emitValueBound(
  *
  * Every lane computes the value with the operations the scalar body uses,
  * on the same operands, so the stored bits are the scalar loop's. Entry
- * tests keep that true where the scalar body may have taken an integer
- * shortcut instead of the double form: a length bound when the value is an
- * exact integer built from the induction, a magnitude bound when it is an
- * element times an exact integer, and a bound on the value's own magnitude
- * when the lanes must take ToUint32's direct conversion. All are
- * loop-invariant, so the scalar remainder still answers with its own bytes
- * whenever they fail. */
+ * tests keep that true where the lanes take a different route than the
+ * scalar body: the exact integer the integer lanes compute must stay below
+ * 2^53 in magnitude, an element times an exact integer must keep every
+ * product it meets exact, and a value converted straight to ToUint32 must
+ * stay below 2^63. All are loop-invariant, so the scalar remainder still
+ * answers with its own bytes whenever they fail. */
 function emitLaneStore(
   emitter: LlEmitter,
   plan: LaneStorePlan,
@@ -795,18 +785,10 @@ function emitLaneStore(
     return integer === null ? [] : [{ name: value.name, integer }];
   });
   const usesElement = storeReads(plan.value, "element");
-  const usesInduction = storeReads(plan.value, "induction");
   const size = emitter.sizeType;
   // Entry tests beyond the shared guard, each a loop-invariant condition on
   // the values the scalar body is about to read.
   const tests: ((entry: LaneEntry) => void)[] = [];
-  const bound = (literal: number): void => {
-    tests.push((entry) => {
-      const test = B.tmp();
-      B.line(`${test} = icmp ult ${size} ${entry.length}, ${literal}`);
-      entry.tighten(test);
-    });
-  };
   const magnitude = (name: string, range: IntegerRange, limit: number): void => {
     if (range.min > -limit && range.max < limit) return;
     tests.push((entry) => {
@@ -825,19 +807,22 @@ function emitLaneStore(
   // lane body applies the same operations to the same operands, so its
   // result is bit-identical and needs no test.
   let int = false;
-  let ok = true;
   if (!info.float) {
     if (!usesElement && exact.length === invariants.size) {
+      // The integer route stores the low bits of the exact integer its lane
+      // arithmetic produces. Those are the scalar body's bytes only while
+      // the value stays below 2^53 in magnitude: below it every integer is
+      // its own double, so the scalar body's double form stores the same
+      // bits, and above it the double rounds and its low bits differ. A
+      // clamped element rounds and clamps the double, so it needs no test.
       int = true;
-      if (usesInduction) {
-        // Every counter value is below the array's length; below 2^31 the sum
-        // with an int32 invariant is an exact double, so the scalar body's
-        // integer and double forms store the same bytes.
-        if (exact.every((e) => withinInt32(e.integer.range))) bound(2147483648);
-        else ok = false;
-      } else if (storeComputes(plan.value)) {
-        ok = exact.every((e) => withinInt32(e.integer.range));
-      }
+      if (!info.clamped)
+        tests.push((entry) => {
+          const limit = emitValueBound(emitter, plan.value, invariants, info.max, entry.length);
+          const within = B.tmp();
+          B.line(`${within} = fcmp olt double ${limit}, 9007199254740992.0`);
+          entry.tighten(within);
+        });
     } else if (exact.length > 0 && usesElement) {
       // An element operand and an exact integer in one operation: the scalar
       // body may have done the operation on the integers. Below 2^53 the
@@ -857,13 +842,6 @@ function emitLaneStore(
         entry.tighten(inside);
       });
     }
-  }
-  if (!ok) {
-    // The lane body cannot reproduce this value's stored bits: the loop runs
-    // its scalar form, and nothing emitted so far has an effect.
-    B.br(cont);
-    B.startBlock(cont);
-    return;
   }
   const entry = emitLaneEntry(emitter, plan, receiver, inductionSlot);
   const steps = laneIndices(emitter, width);

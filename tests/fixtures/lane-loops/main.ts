@@ -229,6 +229,22 @@ function fillLit32(a: ThirtyTwo): void {
   for (let i = 0; i < a.length; i++) a[i] = -7;
 }
 
+// Exact integer lanes from a value the loop does not change: the lanes
+// multiply the exact integers, while above 2^53 the scalar body stores the low
+// bits of the double it rounds to, so a product that can pass 2^53 keeps its
+// scalar body and the lanes run only below the entry bound. `rampK32`
+// multiplies the counter instead, where the bound is the array's length times
+// the factor.
+function squareK32(a: ThirtyTwo, n: number): void {
+  const k = n | 0;
+  for (let i = 0; i < a.length; i++) a[i] = k * k;
+}
+
+function rampK32(a: ThirtyTwo, n: number): void {
+  const k = n | 0;
+  for (let i = 0; i < a.length; i++) a[i] = i * k;
+}
+
 // The magnitude test: an element times a literal above the bound an element's
 // product may keep must be taken by the loop's scalar body, which converts
 // the double itself.
@@ -563,6 +579,12 @@ const storeFactors = [
 ];
 const storeFills = [0, -0, 1, -1, 255, 256, -128.5, 1e300, NaN, Infinity, -Infinity, 0.49999999999999994];
 const storeBases = [0, 1, -1, 3, 255, 256, -129, 65535, 1e10, 9007199254740992, NaN];
+// Integer factors around the points where a product leaves exact integers:
+// 46341 squared passes int32, 134217729 squared passes 2^53, and the counter
+// times the largest int32 stays a double for every length here.
+const storeInts = [
+  0, 1, 3, -3, 46340, 46341, 65536, -65536, 134217729, -134217729, 2147483647, -2147483648,
+];
 
 for (const n of storeLengths) {
   for (let j = 0; j < storeFactors.length; j++) {
@@ -648,5 +670,14 @@ for (const n of storeLengths) {
     const litw = make32(n, j % 5);
     fillLit32(litw);
     console.log("filllit32", n, j, litw.join(" "));
+  }
+  for (let j = 0; j < storeInts.length; j++) {
+    const k = storeInts[j]!;
+    const sq = make32(n, j % 5);
+    squareK32(sq, k);
+    console.log("squarek32", n, j, sq.join(" "));
+    const rm = make32(n, (j + 1) % 5);
+    rampK32(rm, k);
+    console.log("rampk32", n, j, rm.join(" "));
   }
 }

@@ -208,6 +208,11 @@ function frac(a: Bytes3): void {
   for (let i = 0; i < a.length; i++) a[i] = a[i]! * 2.5;
 }
 
+function square(a: Bytes3, n: number): void {
+  const k = n | 0;
+  for (let i = 0; i < a.length; i++) a[i] = k * k;
+}
+
 const b = new Uint8Array(8);
 fill(b, 1);
 ramp(b);
@@ -220,6 +225,7 @@ const c = new Uint8ClampedArray(8);
 clamp(c, 2);
 ratio(b, 2);
 frac(b);
+square(b, 3);
 console.log(b[0], h[0], f[0], c[0]);
 `;
 
@@ -237,16 +243,30 @@ test("a planned store writes whole vectors and advances the counter", async () =
 test("an exact integer value is stored from its integer lanes", async () => {
   const llvm = await emittedLlvm("store-int", STORE_SOURCE, { plan: "store" });
   // `i * 2`: the counter and the literal are exact integers, so the lanes
-  // multiply them and truncate to the element.
+  // multiply them and truncate to the element. The entry test bounds the
+  // value below 2^53, where the integer and the double are the same number.
   const ramp = body(llvm, "sc_bf_ramp");
   expect(ramp).toMatch(/mul nsw <4 x i64> [^,]+, [^,]+/);
   expect(ramp).toMatch(/trunc <4 x i64> [^ ]+ to <4 x i8>/);
-  expect(ramp).toMatch(/icmp ult i64 [^,]+, 2147483648/);
+  expect(ramp).toMatch(/uitofp i64 [^ ]+ to double/);
+  expect(ramp).toMatch(/fmul double %\w+, %\w+/);
+  expect(ramp).toMatch(/fcmp olt double %\w+, 9007199254740992\.0/);
   // `i + 70000`: the sum is exact below the same bound.
   const shift = body(llvm, "sc_bf_shift");
   expect(shift).toMatch(/add nsw <4 x i64> [^,]+, [^,]+/);
   expect(shift).toMatch(/trunc <4 x i64> [^ ]+ to <4 x i16>/);
-  expect(shift).toMatch(/icmp ult i64 [^,]+, 2147483648/);
+  expect(shift).toMatch(/fcmp olt double %\w+, 9007199254740992\.0/);
+});
+
+test("exact integer lanes whose product can pass 2^53 stay scalar", async () => {
+  const llvm = await emittedLlvm("store-square", STORE_SOURCE, { plan: "store" });
+  // `k * k`: both operands are exact integers, so the lanes compute the exact
+  // product, while the scalar body above 2^53 stores the rounded double's low
+  // bits. The lanes are kept only where the entry test bounds the product.
+  const fn = body(llvm, "sc_bf_square");
+  expect(fn).toMatch(/mul nsw <4 x i64> [^,]+, [^,]+/);
+  expect(fn).toMatch(/fmul double %\w+, %\w+/);
+  expect(fn).toMatch(/fcmp olt double %\w+, 9007199254740992\.0/);
 });
 
 test("an element's product takes ToUint32's direct lanes", async () => {

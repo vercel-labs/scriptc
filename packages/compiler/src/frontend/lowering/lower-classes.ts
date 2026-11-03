@@ -11080,7 +11080,14 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       (lowerer.isStdlibGlobal(expr.expression.expression, "globalThis") ||
         // `new mod.M()` over an exported `const M = Map` or `const E =
         // TypeError`
-        isCollectionOrErrorClass(builtinClassRefOf(lowerer, expr.expression))))
+        isCollectionOrErrorClass(builtinClassRefOf(lowerer, expr.expression)) ||
+        // `new util.TextEncoder()` over a builtin module binding
+        // (`import * as util`, `var util = require("util")`) constructs the
+        // class a named import of it does. Members that are not classes
+        // (`new util.inspect()`) keep the refusal below.
+        (!expr.expression.questionDotToken &&
+          lowerer.builtinNamespaceModuleOf(expr.expression.expression) !== null &&
+          lowerer.checker.getConstructSignatures(lowerer.typeOf(expr.expression)).length > 0)))
   ) {
     // `import C = N.C; new C()` — the alias's own source-order guards
     // (a no-op for every non-import= binding).

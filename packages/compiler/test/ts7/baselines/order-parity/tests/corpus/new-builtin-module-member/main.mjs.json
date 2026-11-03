@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/new-builtin-module-member/encode.cjs",
+  "<repo>/tests/corpus/new-builtin-module-member/main.mjs"
+ ],
+ "diags": []
+}

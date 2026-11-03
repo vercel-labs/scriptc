@@ -90,8 +90,14 @@ test("the nightly profile refresh collects a profile on main and opens a pull re
   // collected with a fresh one would describe partitions builds on main do
   // not use, and the check would fail on it.
   expect(collect.env).toBeUndefined();
-  const build = steps.find((step) => step.run?.startsWith("pnpm build:native-compiler"))!;
+  const build = steps.find((step) => step.run?.includes("pnpm build:native-compiler"))!;
   expect(build.env).toEqual({ SCRIPTC_NATIVE_PROFILE_CHECK: "1" });
+  // `tee` reports its own exit status, so without pipefail a build that fails
+  // after printing its summary would pass this step, and the refresh would
+  // open a pull request for a profile it could not build with.
+  const pipefail = build.run!.indexOf("set -o pipefail");
+  expect(pipefail).toBeGreaterThanOrEqual(0);
+  expect(pipefail).toBeLessThan(build.run!.indexOf("pnpm build:native-compiler"));
   expect(steps.some((step) => step.run?.includes("git push"))).toBe(true);
   expect(steps.some((step) => step.run?.includes("gh pr create"))).toBe(true);
 });

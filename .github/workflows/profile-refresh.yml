@@ -77,11 +77,15 @@ jobs:
         run: cp "$RUNNER_TEMP/cli-profile/cli.profdata.gz" packages/compiler/native/cli.profdata.gz
       # A profile that does not build or does not read fails here, on the
       # refresh that produced it, rather than in the pull request or in main's
-      # CI. The build also prints the match the pull request describes.
+      # CI. The build also prints the match the pull request describes. `tee`
+      # reports its own status, so the step sets pipefail to keep the build's:
+      # a build that fails after printing its summary has to fail the refresh.
       - name: Build the native compiler with the refreshed profile
         env:
           SCRIPTC_NATIVE_PROFILE_CHECK: "1"
-        run: pnpm build:native-compiler 2>&1 | tee "$RUNNER_TEMP/profile-check.log"
+        run: |
+          set -o pipefail
+          pnpm build:native-compiler 2>&1 | tee "$RUNNER_TEMP/profile-check.log"
       - name: Open the pull request
         env:
           GH_TOKEN: ${{ secrets.PROFILE_REFRESH_TOKEN || github.token }}

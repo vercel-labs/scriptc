@@ -19,16 +19,21 @@ afterEach(() => {
   closeSourceParser();
 });
 
-function create() {
+function create(budgets: { sourceBudget?: number; parsedSourceBudget?: number } = {}) {
   const directory = mkdtempSync(
     join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-source-parser-"),
   );
   directories.push(directory);
   let filesystem!: Ts7FileSystem;
-  const parser = new Ts7SourceParser((options) => {
-    filesystem = options.fs;
-    return new Ts7Api(options);
-  }, directory);
+  const parser = new Ts7SourceParser(
+    (options) => {
+      filesystem = options.fs;
+      return new Ts7Api(options);
+    },
+    directory,
+    budgets.sourceBudget,
+    budgets.parsedSourceBudget,
+  );
   parsers.push(parser);
   return { parser, directory, fs: filesystem };
 }
@@ -51,6 +56,20 @@ test("each parse owns its text and nodes across same-path edits, deletion and cl
   expect(second.statements.nodes[0]!.parent).toBe(second);
   expect(getTextOfNode(other.statements.nodes[0]!)).toBe("exports.third = 3;");
   expect(() => parser.parse("late.ts", "", "ts")).toThrow("closed");
+});
+
+test("the parse cache evicts older versions until the retained source fits its budget", () => {
+  const { parser } = create({ parsedSourceBudget: 12 });
+  // Five two-code-unit versions of one path, then a longer one: the newest
+  // result puts the cache six code units over the budget, more than the
+  // oldest version holds, so the three oldest versions must go, not one.
+  const versions = ["aa", "bb", "cc", "dd", "ee"].map((text) =>
+    parser.parse("input.ts", text, "ts"),
+  );
+  const longer = parser.parse("input.ts", "var x=1;", "ts");
+  expect(parser.parse("input.ts", "dd", "ts")).toBe(versions[3]);
+  expect(parser.parse("input.ts", "cc", "ts")).not.toBe(versions[2]);
+  expect(parser.parse("input.ts", "var x=1;", "ts")).toBe(longer);
 });
 
 test("the syntax filesystem hides project configuration, dependencies and libraries", () => {

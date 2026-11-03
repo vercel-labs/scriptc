@@ -46,6 +46,10 @@ export class Ts7SourceParser {
   private readonly cwd: string;
   /** Results by path and exact source text, oldest first. */
   private readonly parsed = new Map<string, ParsedSource[]>();
+  /** One path per retained result, in the order the results were retained.
+   * A path parsed again appears once per retained result, so the head of
+   * this queue names the path of the oldest retained result. */
+  private readonly retentionOrder: string[] = [];
   private retainedSource = 0;
 
   constructor(
@@ -166,14 +170,18 @@ export class Ts7SourceParser {
     let entries = this.parsed.get(path);
     if (entries === undefined) this.parsed.set(path, (entries = []));
     entries.push({ source, file });
+    this.retentionOrder.push(path);
     this.retainedSource += source.length;
-    for (const [oldest, list] of this.parsed) {
-      if (this.retainedSource <= this.parsedSourceBudget) break;
-      const gone = list.shift();
-      if (gone === undefined) {
-        this.parsed.delete(oldest);
-        continue;
-      }
+    // The newest result can put the retained source over the budget by more
+    // than the oldest result holds, so keep evicting, oldest first, until it
+    // is within the budget again; one eviction per path is not enough when a
+    // path has several retained versions.
+    while (this.retainedSource > this.parsedSourceBudget) {
+      const oldest = this.retentionOrder.shift();
+      if (oldest === undefined) break;
+      const list = this.parsed.get(oldest);
+      const gone = list?.shift();
+      if (list === undefined || gone === undefined) continue;
       this.retainedSource -= gone.source.length;
       if (list.length === 0) this.parsed.delete(oldest);
     }
@@ -184,6 +192,7 @@ export class Ts7SourceParser {
     this.closed = true;
     this.files.clear();
     this.parsed.clear();
+    this.retentionOrder.length = 0;
     this.retainedSource = 0;
     this.previousPath = undefined;
     this.previousText = undefined;

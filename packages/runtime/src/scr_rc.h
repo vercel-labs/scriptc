@@ -593,6 +593,13 @@ void scr_sa_free_foreign(void *p);
 #endif
 #endif
 
+#if defined(SCR_MUSL) && !defined(SCR_LIB)
+/* The event loop of the calling thread is about to wait with nothing ready:
+ * the musl lane's malloc hands the blocks the thread holds for other
+ * threads to their owners (scr_musl_malloc.h). */
+void scr_musl_malloc_idle(void);
+#endif
+
 #if SCR_SMALL_ALLOC
 /* Refill miss: reserves on first use, falls back to the system allocator
  * for large blocks, n == 0, an exhausted window, or a refused reservation. */

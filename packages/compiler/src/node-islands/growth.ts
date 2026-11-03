@@ -332,13 +332,20 @@ export function stillCompiled(
 ): (file: string) => boolean {
   const notCompiled = new Set<string>(modules.keys());
   for (const m of ctx.scan.modules) if (m.dropped) notCompiled.add(m.file);
-  // The imports of each package (and of user code, keyed null), so the walk
-  // visits every reachable package once.
-  const imports = new Map<string | null, { to: string; fromFile: string }[]>();
+  // The imports of each package, and of user code, so the walk visits every
+  // reachable package once. User code keeps its own list rather than a null
+  // key: a collection keyed by `string | null` would make that union a
+  // tagged box throughout the self-hosted compiler (nullable-unions.ts).
+  const imports = new Map<string, { to: string; fromFile: string }[]>();
+  const userImports: { to: string; fromFile: string }[] = [];
   for (const edge of ctx.scan.edges) {
     if (edge.shim || edge.toDir === null) continue;
     const from = packageKeyOf(edge.fromFile);
     const hop = { to: edge.to, fromFile: edge.fromFile };
+    if (from === null) {
+      userImports.push(hop);
+      continue;
+    }
     const known = imports.get(from);
     if (known === undefined) imports.set(from, [hop]);
     else known.push(hop);
@@ -350,7 +357,7 @@ export function stillCompiled(
     compiled.add(name);
     queue.push(name);
   };
-  for (const hop of imports.get(null) ?? []) if (!notCompiled.has(hop.fromFile)) visit(hop.to);
+  for (const hop of userImports) if (!notCompiled.has(hop.fromFile)) visit(hop.to);
   while (queue.length > 0) {
     const name = queue.pop()!;
     for (const hop of imports.get(name) ?? []) if (!notCompiled.has(hop.fromFile)) visit(hop.to);

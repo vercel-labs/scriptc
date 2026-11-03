@@ -1,7 +1,8 @@
-- **Resource disposal:** Top-level and switch-clause `using` declarations, and `AsyncDisposableStack`, are unsupported.
+- **Resource disposal:** Top-level and switch-clause `using` declarations are unsupported.
   Block- and function-scoped `using` and `await using` support compiled classes with zero-parameter disposal methods, object literals and other `Disposable`- or `AsyncDisposable`-typed values, and supported FileHandle, timer, immediate, child-process, and readline handles.
   A class instance reached through a `Disposable`- or `unknown`-typed value throws an SC2020 error when its declaration runs; declare the variable with the class type.
   Array `for (using ... of ...)` loops also compile.
   `SuppressedError` values expose `error` and `suppressed`; `extends SuppressedError` and casting `unknown` to `SuppressedError` are unsupported (narrow with `instanceof`).
   `DisposableStack` supports `use`, `adopt`, `defer`, `move`, `dispose`, `disposed` and `[Symbol.dispose]`, and works with `using`; `use` accepts class instances, object literals and other `Disposable`-typed values, and refuses unions that include class instances (narrow the value first).
   Disposal runs in reverse order and raises Node's `SuppressedError` chain when more than one callback throws.
+  `AsyncDisposableStack` supports `use`, `adopt`, `defer`, `move`, `disposeAsync`, `disposed` and `[Symbol.asyncDispose]`, awaits each disposal in reverse order, and raises Node's `SuppressedError` chain when more than one callback fails; its `use` accepts the same values as `DisposableStack`'s.

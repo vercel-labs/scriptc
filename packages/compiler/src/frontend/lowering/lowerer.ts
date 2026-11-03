@@ -631,6 +631,7 @@ import {
   lowerTracingChannelMethodCall,
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
+import { lowerAsyncDisposableStackNew } from "./builtins/async-disposable-stack.js";
 import { lowerDisposableStackNew } from "./builtins/disposable-stack.js";
 import { lowerErrorCodeProperty, lowerErrorFunctionCall } from "./builtins/errors.js";
 import { noteDateClassMethods } from "./builtins/date-classes.js";
@@ -17441,6 +17442,7 @@ export class Lowerer {
       lowerThreadSlotsNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
       lowerDisposableStackNew(this, expr) ??
+      lowerAsyncDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??

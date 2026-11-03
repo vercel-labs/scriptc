@@ -188,6 +188,7 @@ import {
 import { lowerErrorCaptureStackTraceCall, lowerErrorIsErrorCall } from "./builtins/errors.js";
 import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
+import { lowerAsyncDisposableStackUseCall } from "./builtins/async-disposable-stack.js";
 import {
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
@@ -1841,6 +1842,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.fenceStaticHeadersMember(expr.expression, "call") ??
       lowerer.fenceStaticReadableStreamMember(expr.expression, "call") ??
       lowerDisposableStackUseCall(lowerer, expr, expr.expression) ??
+      lowerAsyncDisposableStackUseCall(lowerer, expr, expr.expression) ??
       lowerer.lowerStdlibMethodCall(expr, expr.expression) ??
       // crypto.getRandomValues / randomUUID on the WebCrypto global
       // (untyped in fallback builds, so before the dyn receiver path) or

@@ -785,17 +785,18 @@ static ScrDyn *scr_ds_method_value(unsigned index) {
  * stack, its methods and everything they call — out of a program that interns
  * a builtin method but never holds a stack.
  *
- * Darwin does not read a weak declaration of a data symbol as a weak import:
- * the reference stays an ordinary undefined symbol, so a program that links
- * this unit without the object-model build fails to link rather than starting
- * with the slot empty. weak_import is the spelling that leaves an absent
- * symbol at zero there; ELF's plain weak declaration already does. */
+ * Darwin does not bind a weak declaration of a data symbol to zero: the
+ * reference stays an ordinary undefined symbol and a program that links this
+ * unit without the object-model build fails to link. The unit therefore
+ * defines the slot there, weakly, and the object-model build's definition
+ * replaces it when it links. ELF binds the declaration itself to zero, and a
+ * definition beside it would put the pointer in every ELF program that links
+ * this unit and move the code that writes it, so ELF keeps the declaration. */
 #if defined(__APPLE__)
-#define SCR_DS_MEMBER_SLOT __attribute__((weak_import))
+ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) __attribute__((weak)) = 0;
 #else
-#define SCR_DS_MEMBER_SLOT __attribute__((weak))
+extern ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) __attribute__((weak));
 #endif
-extern ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) SCR_DS_MEMBER_SLOT;
 
 /* The function value a DisposableStack answers for the method named `key`
  * (+1), or NULL: the value `stack.use` is, which is what makes

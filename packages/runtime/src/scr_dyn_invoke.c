@@ -2020,18 +2020,33 @@ static void scr_dyn_wrapper_providers_ask(void) {
   if (scr_js_wrapper_member_providers_slot) scr_js_wrapper_member_providers_slot();
 }
 
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
+/* The AsyncDisposableStack answers its members through the table its own unit
+ * builds (scr_async_disposable_stack.c), which this build names directly:
+ * this entry exists in a column only a program with that unit's fact selects,
+ * so the call always resolves, and a program without the class compiles
+ * neither the call nor the row. The column also keeps this unit's object
+ * identical for every other program, byte for byte — a static function and
+ * one more table row would change it. */
+static ScrDyn *scr_dyn_async_disposable_stack_member_value(const char *cls, const char *key, size_t len) {
+  (void)cls;
+  return scr_async_disposable_stack_member_value(key, len);
+}
+#endif
+
 /* The builtins that answer a member from a table of their own unit instead of
  * from the interner below, and the function that answers one. A Date's
  * methods run the Date receiver checks and a DisposableStack's carry the
  * interface's brand errors, so neither can be this unit's dispatch function;
  * the unit that builds the prototype answers its members from the same table
  * the instances use, so `Date.prototype.getTime === date.getTime` and
- * `DisposableStack.prototype.use === stack.use`. The three primitive wrapper
- * prototypes answer through the intrinsic graph, which wraps their members
- * so the brand checks run on the primitive the prototype wraps; a builtin
- * whose instances already answer the interned values — Map, Set, WeakMap,
- * WeakSet, Object — needs no entry: `map.get` and `Map.prototype.get` are one
- * interned function.
+ * `DisposableStack.prototype.use === stack.use`. The AsyncDisposableStack's
+ * unit fills a slot on the same terms, in the build that carries its entry.
+ * The three primitive wrapper prototypes answer through the intrinsic graph,
+ * which wraps their members so the brand checks run on the primitive the
+ * prototype wraps; a builtin whose instances already answer the interned
+ * values — Map, Set, WeakMap, WeakSet, String, Object — needs no entry:
+ * `map.get` and `Map.prototype.get` are one interned function.
  *
  * A unit that answers a class this table does not name registers its provider
  * with scr_dyn_member_provider_register, and the class then answers through it
@@ -2050,10 +2065,17 @@ static struct {
 } scr_dyn_member_providers[SCR_DYN_MEMBER_PROVIDERS_MAX] = {
   { "Date", scr_dyn_date_member },
   { "DisposableStack", scr_dyn_disposable_stack_member_value },
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
+  { "AsyncDisposableStack", scr_dyn_async_disposable_stack_member_value },
+#endif
 };
 /* The rows above are the providers this unit carries; a unit that answers its
  * own class's members registers beside them. */
-static size_t scr_dyn_member_provider_count = 2;
+static size_t scr_dyn_member_provider_count = 2
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
+    + 1
+#endif
+    ;
 
 void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider member) {
   if (!cls || !member || scr_dyn_member_provider_count == SCR_DYN_MEMBER_PROVIDERS_MAX) return;

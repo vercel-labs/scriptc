@@ -123,6 +123,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     "scr_async_dyn.c",
     any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
   ],
+  // AsyncDisposableStack (t262 W4): the `await using` stack, whose
+  // disposeAsync awaits each resource. It awaits through the dyn-async unit
+  // and reads its resources' disposal methods through the symbol unit, both
+  // of which the fact selects, and no program without the class links it.
+  ["scr_async_disposable_stack.c", "asyncDisposableStack"],
   // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
   // the specification's algorithms over the checked-dynamic tier. Its
   // feature also selects dynInvoke and dynAsync, whose units it calls.
@@ -282,6 +287,24 @@ function withJsObjectModel(variants) {
   return variants;
 }
 
+/** One SCR_ASYNC_DISPOSABLE_STACK twin of each variant of a unit the
+ * AsyncDisposableStack reaches (t262 W4). The class's handle tag exists only
+ * in a program that constructs one, so the unit's clauses for it are built
+ * only in the twins, each a superset of the variant it copies: a program
+ * selects the twin of the build it would otherwise have, with that build's
+ * defines intact, and every other program keeps its object byte for byte. */
+function withAsyncDisposableStack(variants) {
+  for (const { id, when, defines } of variants.slice()) {
+    const suffix = id === "default" ? "" : `-${id}`;
+    variants.push({
+      id: `async-disposable-stack${suffix}`,
+      when: { ...when, asyncDisposableStack: true },
+      defines: [...defines, "SCR_ASYNC_DISPOSABLE_STACK"],
+    });
+  }
+  return variants;
+}
+
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths
@@ -315,6 +338,13 @@ export function variantsFor(source) {
     // tier's primitives and each one gets its object model twin. Every other
     // program keeps the default object, byte for byte.
     withJsObjectModel(variants);
+    // `Object.prototype.toString.call(stack)` and String() read the class's
+    // tag from the handle tag (scr_dyn_object_tag), and the
+    // AsyncDisposableStack tag exists only in a program that constructs the
+    // class, so that clause is a column of its own: these twins are the only
+    // builds carrying SCR_ASYNC_DISPOSABLE_STACK, and every other program —
+    // the object model's included — keeps the object it had, byte for byte.
+    withAsyncDisposableStack(variants);
   }
   // The builtin intrinsic graph (t262-da A1) is one unit written entirely
   // for the JavaScript object model build. Its default object is the fill
@@ -328,6 +358,17 @@ export function variantsFor(source) {
       id: "js-om",
       when: { intrinsicObjects: true },
       defines: ["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS"],
+    });
+    // A program that also constructs an AsyncDisposableStack links that
+    // class's own unit, whose prototype member values the graph defines
+    // (disposeAsync is the same function off the prototype and off a
+    // stack). The class unit is gated on its own fact, so the arm is a
+    // third build: the two facts together select it, and every other
+    // object-model program keeps the earlier object byte for byte.
+    variants.push({
+      id: "js-om-async-disposable-stack",
+      when: { intrinsicObjects: true, asyncDisposableStack: true },
+      defines: ["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS", "SCR_ASYNC_DISPOSABLE_STACK"],
     });
   }
   // util.inspect and instanceof of Node island handles; Node's report for
@@ -377,6 +418,12 @@ export function variantsFor(source) {
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);
   }
+  // The member provider table above names an entry per builtin class whose
+  // members come from its own unit. The AsyncDisposableStack's row (and the
+  // slot it reads) exist only in a program that constructs the class, so that
+  // build is a column of its own: every other object model program keeps the
+  // object it had, byte for byte.
+  if (source === "scr_dyn_invoke.c") withAsyncDisposableStack(variants);
   // console.table reads the cells of a row's typed array, so a BigInt view
   // needs the element accessor that answers BigInts. The default object keeps
   // the numeric read, byte for byte.

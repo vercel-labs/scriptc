@@ -1475,12 +1475,27 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: exactValueParams(STRING, F64, F64),
       },
       // access' omitted mode and truncate's omitted len complete to 0 in
-      // lowerBuiltinModuleCall, like their sync spellings.
-      access: { fn: "fsp.access", params: [STRING, F64], result: { kind: "promise", inner: VOID } },
+      // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
+      // fixed (path plus one optional number), so they box as function values
+      // too: the bounded builtin namespace box serves them, and an omitted
+      // mode/len completes to the same 0 through the value adapter.
+      access: {
+        fn: "fsp.access",
+        params: [STRING, F64],
+        result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
+      },
       truncate: {
         fn: "fsp.truncate",
         params: [STRING, F64],
         result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
       },
       // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
       // lowerBuiltinModuleCall.

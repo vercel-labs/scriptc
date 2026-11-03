@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "38fbaf504aaf737f";
+export const IR_CODEC_LAYOUT = "4dd8a832b9b84c03";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -91,9 +91,9 @@ const KEYS63: readonly string[] = ["name","symbol","library","callbackOperation"
 const KEYS64: readonly string[] = ["buildIdSymbol","abiVersionSymbol","buildId","abiVersion"];
 const KEYS65: readonly string[] = ["sha256","bytes"];
 const KEYS66: readonly string[] = ["sha256","size","reason"];
-const KEYS67: readonly string[] = ["localId","name","type","owned"];
+const KEYS67: readonly string[] = ["localId","name","type","owned","constLength"];
 const KEYS68: readonly string[] = ["id","name","type","mutable","source","boxed","tdz"];
-const KEYS69: readonly string[] = ["localId","name","type","owned","slot"];
+const KEYS69: readonly string[] = ["localId","name","type","owned","constLength","slot"];
 const KEYS70: readonly string[] = ["kind","arr","index","loc"];
 const KEYS71: readonly string[] = ["kind","arr","index","value","loc"];
 const KEYS72: readonly string[] = ["kind","arr","length","loc","pop","reserve"];
@@ -1839,13 +1839,19 @@ function encIrParam(w: IrWriter, v: IrParam): void {
     w.byte(1);
     w.bool(v.owned);
   }
+  if (v.constLength === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.num(v.constLength);
+  }
 }
 function decIrParam(r: IrReader): IrParam {
   const f0 = r.str();
   const f1 = r.str();
   const f2 = decIrType(r);
   const f3 = r.tag(2, "IrFunction.params[].owned") === 0 ? undefined : (r.bool() as NonNullable<IrParam["owned"]>);
-  const o: IrParam = { localId: f0, name: f1, type: f2, ...(f3 !== undefined ? { owned: f3 } : {}) };
+  const f4 = r.tag(2, "IrFunction.params[].constLength") === 0 ? undefined : r.num();
+  const o: IrParam = { localId: f0, name: f1, type: f2, ...(f3 !== undefined ? { owned: f3 } : {}), ...(f4 !== undefined ? { constLength: f4 } : {}) };
   return o;
 }
 
@@ -1906,6 +1912,11 @@ function encT40(w: IrWriter, v: NonNullable<NonNullable<IrFunction["classCapture
     w.byte(1);
     w.bool(v.owned);
   }
+  if (v.constLength === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.num(v.constLength);
+  }
   w.num(v.slot);
 }
 function decT40(r: IrReader): NonNullable<NonNullable<IrFunction["classCaptures"]>[number]> {
@@ -1913,8 +1924,9 @@ function decT40(r: IrReader): NonNullable<NonNullable<IrFunction["classCaptures"
   const f1 = r.str();
   const f2 = decIrType(r);
   const f3 = r.tag(2, "IrFunction.classCaptures[].owned") === 0 ? undefined : (r.bool() as NonNullable<NonNullable<NonNullable<IrFunction["classCaptures"]>[number]>["owned"]>);
-  const f4 = r.num();
-  const o: NonNullable<NonNullable<IrFunction["classCaptures"]>[number]> = { localId: f0, name: f1, type: f2, ...(f3 !== undefined ? { owned: f3 } : {}), slot: f4 };
+  const f4 = r.tag(2, "IrFunction.classCaptures[].constLength") === 0 ? undefined : r.num();
+  const f5 = r.num();
+  const o: NonNullable<NonNullable<IrFunction["classCaptures"]>[number]> = { localId: f0, name: f1, type: f2, ...(f3 !== undefined ? { owned: f3 } : {}), ...(f4 !== undefined ? { constLength: f4 } : {}), slot: f5 };
   return o;
 }
 

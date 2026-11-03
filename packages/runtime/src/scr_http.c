@@ -2454,9 +2454,12 @@ static void scr_http_res_mark_unflushed(ScrHttpRes *res) {
 }
 
 /* res.on('finish', cb): fires deferred once the body went out, after the
- * end(cb) callbacks and after the response detached its socket. */
+ * end(cb) callbacks and after the response detached its socket. 'finish'
+ * is emitted once, so a listener added after it, or after the socket
+ * closed before the body went out, never runs; this surface does not list
+ * listeners, so it is released now. */
 void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
-  if (r->unflushed) {
+  if (r->unflushed || r->writable_finished) {
     scr_closure_release(cb);
     return;
   }
@@ -2473,7 +2476,10 @@ void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
  * arguments). The h2 compat response keeps the 'finish' listener order. */
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
   if (r->h2_stream != NULL) {
-    scr_http_res_on_finish(r, cb);
+    /* Node runs an end(cb) callback registered after the compat response
+     * finished, too. */
+    scr_net_ls_add(&r->finish_ls, cb, NULL, true);
+    if (r->finished) scr_http_queue_res_finish(r);
     return;
   }
   if (r->writable_finished) {
@@ -2607,7 +2613,7 @@ static void scr_http_proto_sweep(void) {
       break;
     case SCR_HTTP_EMIT_RES_FINISH: {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
-      res->finish_queued = false; /* a later on('finish') on the finished res re-queues */
+      res->finish_queued = false; /* a later h2 compat end(cb) re-queues */
       res->writable_finished = true;
       ScrNetLs endcbs = res->endcb_ls;
       res->endcb_ls = (ScrNetLs){0};

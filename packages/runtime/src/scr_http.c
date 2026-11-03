@@ -2591,14 +2591,12 @@ static void scr_http_proto_sweep(void) {
     case SCR_HTTP_EMIT_RES_CLOSE: {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
       /* Node's compat response ignores its stream's close when it answers
-       * a HEAD request it never ended; a later end() emits both events.
-       * Node keeps the listeners for that end() and its collector frees
-       * them when none comes; here nothing could, so they go now. */
+       * a HEAD request it never ended; a later end() emits both events,
+       * so their listeners stay until then. No timeout fires on a closed
+       * stream. */
       if (res->h2_stream != NULL && !res->close_emitted && !res->finished &&
           scr_http_res_head_request(res)) {
         res->h2_close_held = true;
-        scr_net_ls_drop(&res->finish_ls);
-        scr_net_ls_drop(&res->close_ls);
         scr_net_ls_drop(&res->timeout_ls);
         break;
       }

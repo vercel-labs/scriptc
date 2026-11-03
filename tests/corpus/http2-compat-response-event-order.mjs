@@ -6,20 +6,21 @@
 // never runs. A HEAD request's stream ends its writable side when the
 // request arrives, so its end(cb) callback runs with the 'finish'
 // listeners, and its response emits nothing when the stream closes before
-// end().
+// end(); a later end() emits both events. A stream reset before its body
+// went out never runs the end(cb) callback.
 import http2 from "node:http2";
 
 const lines = [];
 const log = (line) => lines.push(line);
 
-function listen(handler, request) {
+function listen(handler, request, read = true) {
   return new Promise((resolve) => {
     const server = http2.createServer(handler);
     server.listen(0, () => {
       const client = http2.connect(`http://localhost:${server.address().port}`);
       const stream = request(client);
       stream.on("error", () => {});
-      stream.resume();
+      if (read) stream.resume();
       stream.on("close", () => {
         client.close();
         server.close(() => setTimeout(resolve, 10));
@@ -56,15 +57,30 @@ function respondHead(req, res) {
   res.on("finish", () => log("HEAD: finish listener added after end"));
 }
 
-function abandon(label) {
+function abandon(label, endAfterClose) {
   return (req, res) => {
     res.on("finish", () => {
       log(`${label}: finish`);
       res.end(() => log(`${label}: end callback added in finish`));
     });
     res.on("close", () => log(`${label}: close`));
-    req.on("close", () => log(`${label}: request close`));
+    req.on("close", () => {
+      log(`${label}: request close`);
+      if (endAfterClose)
+        setTimeout(() => {
+          log(`${label}: end after the stream closed`);
+          res.end(() => log(`${label}: late end callback`));
+        }, 5);
+    });
   };
+}
+
+// The body does not fit the stream's flow-control window, and the client
+// resets the stream without reading it.
+function respondLarge(req, res) {
+  res.on("finish", () => log("reset body: finish"));
+  res.on("close", () => log("reset body: close"));
+  res.end("x".repeat(1 << 20), () => log(`reset body: end callback ${res.statusCode}`));
 }
 
 function cancelSoon(stream) {
@@ -78,9 +94,20 @@ await listen(respond("GET"), (client) => {
   return stream;
 });
 await listen(respondHead, (client) => client.request({ ":path": "/", ":method": "HEAD" }));
-await listen(abandon("aborted GET"), (client) => cancelSoon(client.request({ ":path": "/" })));
-await listen(abandon("aborted HEAD"), (client) =>
+await listen(abandon("aborted GET", false), (client) =>
+  cancelSoon(client.request({ ":path": "/" })),
+);
+await listen(abandon("aborted HEAD", true), (client) =>
   cancelSoon(client.request({ ":path": "/", ":method": "HEAD" })),
+);
+await listen(
+  respondLarge,
+  (client) => {
+    const stream = client.request({ ":path": "/" });
+    stream.on("response", () => stream.close(http2.constants.NGHTTP2_CANCEL));
+    return stream;
+  },
+  false,
 );
 await new Promise((resolve) => setTimeout(resolve, 20));
 for (const line of lines) console.log(line);

@@ -3,7 +3,14 @@
  * backend/llvm/lanes.test.ts and the differential half is
  * tests/harness/lane-loops.test.ts. */
 import { expect, test } from "vitest";
-import { type LanePlan, laneShapesKeyParts, parseLaneShapes, planLaneLoops } from "./lane-plans.js";
+import {
+  type LanePlan,
+  type LaneShape,
+  type LaneStorePlan,
+  laneShapesKeyParts,
+  parseLaneShapes,
+  planLaneLoops,
+} from "./lane-plans.js";
 import {
   BOOL,
   F64,
@@ -17,7 +24,7 @@ import {
 } from "./ir.js";
 
 const loc = { file: "lane-plans.test.ts", start: 0, end: 0 };
-const ALL = new Set(["sum", "count"] as const);
+const ALL: ReadonlySet<LaneShape> = new Set<LaneShape>(["sum", "count", "store"]);
 
 const bytes = (elem: IrBytesElem): IrType => ({ kind: "bytes", elem });
 const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
@@ -112,6 +119,10 @@ function fn(
     ["t", { id: "t", name: "t", type: F64, mutable: true }],
     ["c", { id: "c", name: "c", type: F64, mutable: true }],
     ["a", { id: "a", name: "a", type: bytes(elem), mutable: false }],
+    ["base", { id: "base", name: "base", type: F64, mutable: false }],
+    ["factor", { id: "factor", name: "factor", type: F64, mutable: false }],
+    ["b", { id: "b", name: "b", type: bytes("u32"), mutable: false }],
+    ["v", { id: "v", name: "v", type: F64, mutable: true }],
     ...extra.map((l) => [l.id, l] as const),
   ]);
   return {
@@ -122,7 +133,7 @@ function fn(
 
 function plan(
   body: IrStmt[],
-  shapes: ReadonlySet<"sum" | "count"> = ALL,
+  shapes: ReadonlySet<LaneShape> = ALL,
   elem: IrBytesElem = "u32",
 ): LanePlan | undefined {
   const { fn: f, locals } = fn(body, [], elem);
@@ -140,6 +151,7 @@ test("a typed-array sum gets a sum plan", () => {
     shape: "sum",
     induction: "i",
     receiver: "a",
+    container: "bytes",
     elem: "u32",
     accumulator: "t",
     lengthBound: 2 ** 21,
@@ -394,16 +406,244 @@ test("a receiver that is not a typed array has no plan", () => {
   expect(planLaneLoops(f, locals, ALL).size).toBe(0);
 });
 
+const set = (
+  receiver: string,
+  index: IrExpr,
+  value: IrExpr,
+  elem: IrBytesElem = "u32",
+): IrStmt => ({
+  kind: "bytesSet",
+  arr: ref(receiver, bytes(elem)),
+  index,
+  value,
+  loc,
+});
+
+const storePlanOf = (body: IrStmt[], elem: IrBytesElem = "u32") =>
+  plan(body, ALL, elem) as LaneStorePlan | undefined;
+
+test("an elementwise store gets a store plan", () => {
+  const fill = countedLoop("a", [set("a", ref("i"), bin("+", ref("base"), ref("i")))]);
+  const p = storePlanOf([fill], "u32");
+  expect(p).toMatchObject({ shape: "store", induction: "i", receiver: "a", elem: "u32" });
+  expect(p?.value).toMatchObject({
+    op: "+",
+    left: { role: "invariant", expr: { kind: "varRef", localId: "base" } },
+    right: { role: "induction", expr: null },
+  });
+});
+
+test("the stored value may be one temp holding the expression", () => {
+  // The IR binds the value to a temp before the store.
+  const body = [
+    {
+      kind: "block" as const,
+      body: [decl("v", bin("*", ref("base"), ref("i"))), set("a", ref("i"), ref("v"))],
+      loc,
+    },
+  ];
+  expect(storePlanOf([countedLoop("a", body)])).toMatchObject({
+    shape: "store",
+    value: { op: "*", left: { role: "invariant" }, right: { role: "induction" } },
+  });
+});
+
+test("a versioned union arm's store is read through the blocks that group it", () => {
+  // The union arm pass folds the arm's tag test away, which leaves the store
+  // inside a block inside the body's own block: the same shape as an
+  // unversioned body, and the same plan.
+  const body = [
+    {
+      kind: "block" as const,
+      body: [
+        decl("v", bin("*", ref("base"), ref("i"))),
+        { kind: "block" as const, body: [set("a", ref("i"), ref("v"))], loc },
+      ],
+      loc,
+    },
+  ];
+  expect(storePlanOf([countedLoop("a", body)])).toMatchObject({
+    shape: "store",
+    value: { op: "*", left: { role: "invariant" }, right: { role: "induction" } },
+  });
+});
+
+test("an element read may be the stored value or one operand", () => {
+  const read = get(ref("a", bytes("u32")), ref("i"));
+  expect(storePlanOf([countedLoop("a", [set("a", ref("i"), read)])])?.value).toMatchObject({
+    role: "element",
+  });
+  const scaled = bin("*", get(ref("a", bytes("u32")), ref("i")), ref("factor"));
+  expect(storePlanOf([countedLoop("a", [set("a", ref("i"), scaled)])])?.value).toMatchObject({
+    op: "*",
+    left: { role: "element" },
+    right: { role: "invariant" },
+  });
+});
+
+test("a store to a float array and the clamped array get plans", () => {
+  expect(
+    storePlanOf([countedLoop("a", [set("a", ref("i"), ref("i"), "f64")], 0, "f64")], "f64"),
+  ).toMatchObject({ shape: "store", elem: "f64" });
+  expect(
+    storePlanOf([countedLoop("a", [set("a", ref("i"), ref("i"), "u8c")], 0, "u8c")], "u8c"),
+  ).toMatchObject({ shape: "store", elem: "u8c" });
+});
+
+test("a store keeps its scalar form when the lane body would need more work", () => {
+  const read = (): IrExpr => get(ref("a", bytes("u32")), ref("i"));
+  const cases: IrStmt[][] = [
+    // Two element reads.
+    [countedLoop("a", [set("a", ref("i"), bin("+", read(), read()))])],
+    // The induction twice.
+    [countedLoop("a", [set("a", ref("i"), bin("+", ref("i"), ref("i")))])],
+    // An operator the lanes do not transcribe.
+    [countedLoop("a", [set("a", ref("i"), bin("/", ref("base"), ref("i")))])],
+    // An element read at another index.
+    [countedLoop("a", [set("a", ref("i"), get(ref("a", bytes("u32")), ref("base")))])],
+    // A second statement besides the store.
+    [
+      countedLoop("a", [
+        set("a", ref("i"), bin("+", ref("base"), ref("i"))),
+        assign("base", num(1)),
+      ]),
+    ],
+    // The write goes to another array than the one that bounds the loop.
+    [countedLoop("a", [set("b", ref("i"), bin("+", ref("base"), ref("i")))])],
+    // The induction is not the index.
+    [countedLoop("a", [set("a", ref("base"), bin("+", ref("base"), ref("i")))])],
+  ];
+  for (const body of cases) expect(plan(body)).toBeUndefined();
+});
+
+const array = (): IrType => arrayOf(F64);
+const arrayGet = (receiver: string, index: IrExpr = ref("i")): IrExpr => ({
+  kind: "arrayGet",
+  arr: ref(receiver, array()),
+  index,
+  type: F64,
+  loc,
+});
+const number = (receiver: string, index: IrExpr = ref("i")): IrExpr => ({
+  kind: "arrIntrinsic",
+  method: "getNumber",
+  receiver: ref(receiver, array()),
+  args: [index],
+  type: F64,
+  loc,
+});
+const arraySet = (receiver: string, value: IrExpr): IrStmt => ({
+  kind: "arraySet",
+  arr: ref(receiver, array()),
+  index: ref("i"),
+  value,
+  loc,
+});
+/** `for (let i = 0; i < a.length; i++) body` over a dense number array. */
+const arrayLoop = (receiver: string, body: IrStmt[]): IrStmt[] => [
+  {
+    kind: "for",
+    init: decl("i", num(0)),
+    cond: bin(
+      "<",
+      ref("i"),
+      {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver: ref(receiver, array()),
+        args: [],
+        type: F64,
+        loc,
+      },
+      BOOL,
+    ),
+    update: assign("i", bin("+", ref("i"), num(1))),
+    body,
+    loc,
+  },
+];
+
+const DENSE: IrLocal = { id: "a", name: "a", type: array(), mutable: false };
+
+function densePlan(body: IrStmt[], shapes: ReadonlySet<LaneShape> = ALL): LanePlan | undefined {
+  const { fn: f, locals } = fn(body, [DENSE]);
+  return [...planLaneLoops(f, locals, shapes).values()][0];
+}
+
+test("a dense number array's sum and count are planned on its int32 slots", () => {
+  // Only the int32 storage holds values an integer sum can be exact over, so
+  // the plan names that slot kind and the emitter tests for it at the entry.
+  const sum = densePlan([
+    decl("t", num(0)),
+    ...arrayLoop("a", [assign("t", bin("+", ref("t"), arrayGet("a")))]),
+  ]);
+  expect(sum).toEqual({
+    shape: "sum",
+    induction: "i",
+    receiver: "a",
+    container: "array",
+    elem: "i32slot",
+    accumulator: "t",
+    lengthBound: 2 ** 22,
+  });
+  const count = densePlan([
+    decl("c", num(0)),
+    ...arrayLoop("a", [
+      {
+        kind: "if",
+        cond: bin(">=", number("a"), num(3), BOOL),
+        then: [assign("c", bin("+", ref("c"), num(1)))],
+        else_: null,
+        loc,
+      },
+    ]),
+  ]);
+  expect(count).toMatchObject({ shape: "count", container: "array", elem: "i32slot" });
+});
+
+test("a dense number array's store is planned on its double slots", () => {
+  const p = densePlan(arrayLoop("a", [arraySet("a", bin("*", ref("i"), ref("factor")))]));
+  expect(p).toMatchObject({
+    shape: "store",
+    induction: "i",
+    receiver: "a",
+    container: "array",
+    elem: "f64slot",
+    value: { op: "*", left: { role: "induction" }, right: { role: "invariant" } },
+  });
+  expect(densePlan(arrayLoop("a", [arraySet("a", arrayGet("a"))]))).toMatchObject({
+    shape: "store",
+    value: { role: "element" },
+  });
+});
+
+test("a dense loop the integer loop matcher refuses has no plan", () => {
+  // A loop that starts from an outer counter is not the canonical zero-based
+  // form the dense matcher accepts here, and a receiver of another element
+  // type is not a number array.
+  const nested = arrayLoop("a", [assign("t", bin("+", ref("t"), arrayGet("a")))]);
+  const start = decl("i", bin("+", ref("base"), num(1)));
+  nested[0] = { ...(nested[0] as IrStmt & { kind: "for" }), init: start };
+  expect(densePlan([decl("t", num(0)), ...nested])).toBeUndefined();
+  const other = { ...DENSE, type: arrayOf({ kind: "string" } as IrType) };
+  const { fn: f, locals } = fn(
+    [decl("t", num(0)), ...arrayLoop("a", [assign("t", bin("+", ref("t"), arrayGet("a")))])],
+    [other],
+  );
+  expect(planLaneLoops(f, locals, ALL).size).toBe(0);
+});
+
 test("SCRIPTC_LANES_PLAN names the shapes", () => {
   expect([...parseLaneShapes(undefined)]).toEqual([]);
   expect([...parseLaneShapes("")]).toEqual([]);
   expect([...parseLaneShapes("sum")]).toEqual(["sum"]);
   expect([...parseLaneShapes(" count , sum ")]).toEqual(["count", "sum"]);
-  expect([...parseLaneShapes("all")]).toEqual(["sum", "count"]);
+  expect([...parseLaneShapes("all")]).toEqual(["sum", "count", "store"]);
   expect([...parseLaneShapes("sum,nonsense")]).toEqual(["sum"]);
 });
 
 test("a build without plans keeps the cache keys it had", () => {
   expect(laneShapesKeyParts(new Set())).toEqual([]);
   expect(laneShapesKeyParts(new Set(["sum", "count"]))).toEqual(["lane-plans-sum+count"]);
+  expect(laneShapesKeyParts(new Set(["store"]))).toEqual(["lane-plans-store"]);
 });

@@ -158,6 +158,179 @@ function countAgainstCount32(a: ThirtyTwo): number {
   return c;
 }
 
+/* Store loops: an elementwise write the lane store lowers. Every one writes
+ * the array it reads, so a wrong vector width, a dropped group or a wrong
+ * store conversion changes what the program prints. The entry tests (the
+ * element count, and the magnitude of an element's multiplier) are exercised
+ * from both sides by the values the drivers pass. */
+
+type Floats = Float64Array | Float32Array;
+
+function fill32(a: ThirtyTwo, v: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = v;
+}
+
+function scale32(a: ThirtyTwo, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * k;
+}
+
+function bump8(a: Eight, add: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! + add;
+}
+
+function drop8(a: Eight, add: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! - add;
+}
+
+function ramp16(a: Sixteen, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = i * k;
+}
+
+function index16(a: Sixteen, base: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = i + base;
+}
+
+function back16(a: Sixteen, base: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = base - i;
+}
+
+function clampScale(a: Uint8ClampedArray, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * k;
+}
+
+function fillF(a: Floats, v: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = v;
+}
+
+function scaleF(a: Floats, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * k;
+}
+
+function offsetF(a: Floats, add: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! - add;
+}
+
+// Literal forms: these take the integer route, where the stored integer is
+// the exact value below the element count's bound and the lane body multiplies
+// or adds without converting to double.
+function rampLit16(a: Sixteen): void {
+  for (let i = 0; i < a.length; i++) a[i] = i * 3;
+}
+
+function shiftLit8(a: Eight): void {
+  for (let i = 0; i < a.length; i++) a[i] = i + 70000;
+}
+
+function backLit16(a: Sixteen): void {
+  for (let i = 0; i < a.length; i++) a[i] = 70000 - i;
+}
+
+function fillLit32(a: ThirtyTwo): void {
+  for (let i = 0; i < a.length; i++) a[i] = -7;
+}
+
+// The magnitude test: an element times a literal above the bound an element's
+// product may keep must be taken by the loop's scalar body, which converts
+// the double itself.
+function wideScale8(a: Eight): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * 1e15;
+}
+
+function narrowScale8(a: Eight): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * 3;
+}
+
+// A fractional literal is not an exact integer, so the value keeps the double
+// route and its lanes convert directly, under the entry bound on the value's
+// magnitude.
+function fracScale8(a: Eight): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * 2.5;
+}
+
+// Shapes the planner must refuse, kept scalar: the element and the counter in
+// one operation, a division, and a second element read.
+function mix16(a: Sixteen): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * i;
+}
+
+function ratio32(a: ThirtyTwo, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! / k;
+}
+
+function pair16(a: Sixteen, b: Sixteen): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! - b[i]!;
+}
+
+/** Each float element's sign as a reciprocal, so a stored -0 is visible
+ * where `join` would print it as 0. */
+function signs(a: Floats): string {
+  let s = "";
+  for (let i = 0; i < a.length; i++) {
+    const one = 1 / a[i]!;
+    s = i === 0 ? "" + one : s + " " + one;
+  }
+  return s;
+}
+
+/* Dense number arrays. A sum or count lanes the array's int32 slots and a
+ * store lanes its double slots; both test the storage kind and that every
+ * slot below the length holds a value when the loop is entered, so a
+ * double-stored, holed or mixed array takes the scalar loop, which is what
+ * Node's semantics need. */
+
+function denseSum(a: number[]): number {
+  let t = 0;
+  for (let i = 0; i < a.length; i++) t += a[i]!;
+  return t;
+}
+
+function denseSumReverse(a: number[]): number {
+  let t = 0;
+  for (let i = 0; i < a.length; i++) t = a[i]! + t;
+  return t;
+}
+
+// The count stays in an int32 slot, so its loop is the integer copy's.
+function denseCountBelow(a: number[]): number {
+  let c = 0;
+  for (let i = 0; i < a.length; i++) if (a[i]! < 3) c++;
+  return c;
+}
+
+// A non-integer write after the loop keeps the count in a double slot, which
+// is the slot the lane body folds into.
+function denseCountRoot(a: number[]): number {
+  let c = 0;
+  for (let i = 0; i < a.length; i++) if (a[i]! < 3) c++;
+  c = Math.sqrt(c);
+  return c;
+}
+
+function denseZero(a: number[]): void {
+  for (let i = 0; i < a.length; i++) a[i] = 0;
+}
+
+function denseFill(a: number[], v: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = v;
+}
+
+function denseScale(a: number[], k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * k;
+}
+
+function denseShift(a: number[], add: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! + add;
+}
+
+function denseRamp(a: number[]): void {
+  for (let i = 0; i < a.length; i++) a[i] = i * 3;
+}
+
+// A division cannot be reordered onto lanes.
+function denseHalve(a: number[], k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! / k;
+}
+
 function ones32(n: number): Uint32Array {
   const a = new Uint32Array(n);
   for (let i = 0; i < n; i++) a[i] = 1;
@@ -214,6 +387,52 @@ function makei32(n: number, pattern: number): Int32Array {
   return a;
 }
 
+function makeF64(n: number, pattern: number): Float64Array {
+  const a = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    if (pattern === 0) a[i] = (i - 2) * 1.5;
+    else if (pattern === 1) a[i] = i === 0 ? -0 : 1 / i;
+    else if (pattern === 2) a[i] = i % 3 === 0 ? NaN : i;
+    else if (pattern === 3) a[i] = i % 2 === 0 ? Infinity : -Infinity;
+    else a[i] = (i * 1e300) / 3;
+  }
+  return a;
+}
+
+function makeF32(n: number, pattern: number): Float32Array {
+  const a = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (pattern === 0) a[i] = (i - 2) * 0.25;
+    else if (pattern === 1) a[i] = i === 0 ? -0 : 1 / i;
+    else if (pattern === 2) a[i] = i % 3 === 0 ? NaN : i * 3;
+    else if (pattern === 3) a[i] = i % 2 === 0 ? Infinity : -Infinity;
+    else a[i] = (i * 1e30) / 7;
+  }
+  return a;
+}
+
+function denseMake(n: number, pattern: number): number[] {
+  const a: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (pattern === 0) a[i] = i - 2;
+    else if (pattern === 1) a[i] = (i * 37 + 11) % 97;
+    else if (pattern === 2) a[i] = i === 0 ? -0 : i * 1.5;
+    else if (pattern === 3) a[i] = i % 5 === 0 ? NaN : i;
+    else if (pattern === 4) a[i] = i * 1e300;
+    else a[i] = i === n - 1 ? 1 : 0;
+  }
+  return a;
+}
+
+/** An array with holes: filling fewer slots than its length leaves the
+ * entries the lane entry test has to see. Reading one traps as the scalar
+ * access does, so only the store loops take a sparse array here. */
+function denseSparse(n: number, step: number): number[] {
+  const a: number[] = new Array(n);
+  for (let i = 0; i < n; i++) if (i % step !== 0) a[i] = i;
+  return a;
+}
+
 const lengths = [
   0, 1, 2, 3, 4, 5, 7, 8, 9, 12, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 1023, 1024,
   1025,
@@ -257,6 +476,65 @@ for (const n of lengths) {
   }
 }
 
+const denseLengths = [0, 1, 2, 3, 4, 5, 7, 8, 9, 16, 17, 31, 63];
+const denseFactors = [0, 1, 2, -1, 0.5, 2.5, 1e15, NaN, Infinity];
+const denseFills = [0, -0, 1, -1, 255, 1e300, NaN, Infinity, 0.49999999999999994];
+
+for (const n of denseLengths) {
+  for (let p = 0; p < 6; p++) {
+    const a = denseMake(n, p);
+    console.log(
+      "dense",
+      n,
+      p,
+      denseSum(a),
+      denseSumReverse(a),
+      denseCountBelow(a),
+      denseCountRoot(a),
+    );
+    for (let j = 0; j < denseFactors.length; j++) {
+      const k = denseFactors[j]!;
+      const b = denseMake(n, p);
+      denseScale(b, k);
+      console.log("densescale", n, p, j, b.join(" "));
+      const c = denseMake(n, p);
+      denseShift(c, k);
+      console.log("denseshift", n, p, j, c.join(" "));
+      const d = denseMake(n, p);
+      denseHalve(d, k);
+      console.log("densehalve", n, p, j, d.join(" "));
+    }
+    for (let j = 0; j < denseFills.length; j++) {
+      const f = denseMake(n, p);
+      denseFill(f, denseFills[j]!);
+      console.log("densefill", n, p, j, f.join(" "));
+    }
+    const r = denseMake(n, p);
+    denseRamp(r);
+    console.log("denseramp", n, p, r.join(" "));
+    const z = denseMake(n, p);
+    denseZero(z);
+    console.log("densezero", n, p, z.join(" "));
+  }
+  // A sparse array's fill writes every slot: the lane entry test sees the
+  // holes in it and leaves the loop to the scalar body.
+  const s = denseSparse(n, 3);
+  denseFill(s, 4);
+  console.log("densefilled", n, s.join(" "));
+  const u = denseSparse(n, 4);
+  denseRamp(u);
+  console.log("denserampholes", n, u.join(" "));
+}
+
+// The dense sum's element count bound, from both sides, with elements at the
+// top of the int32 range: below it the lane order's partial sums are exact
+// doubles, at it the loop takes the scalar path.
+for (const n of [4194300, 4194304]) {
+  const a: number[] = [];
+  for (let i = 0; i < n; i++) a[i] = i % 2 === 0 ? 2147483647 : 2147483646;
+  console.log("densebig", n, denseSum(a), denseSumReverse(a));
+}
+
 // The element count bound, from both sides.
 for (const n of [2097148, 2097151, 2097152, 2097156, 2098152, 4195304]) {
   const a = make32(n, 2);
@@ -272,4 +550,103 @@ for (const n of [0, 1, 3, 4, 5, 8, 17]) {
   for (const tag of [0, 1, 2])
     console.log("switch", n, tag, sumSwitchHuge32(ones, tag), sumSwitchClean32(ones, tag));
   console.log("counts", n, countAgainstIndex32(ones), countAgainstCount32(ones));
+}
+
+// Store loops, from both sides of the element count's vector width and of
+// each entry test: multipliers below and above the magnitude bound an
+// element's product may keep, and values that convert through ToUint32,
+// ToUint8Clamp or the float narrowing. Lengths include the exact multiples of
+// four and their neighbours.
+const storeLengths = [0, 1, 3, 4, 5, 8, 9, 17];
+const storeFactors = [
+  0, 1, 2, -1, 0.5, -0.5, 2.5, 1e15, -1e15, 9007199254740992, NaN, Infinity,
+];
+const storeFills = [0, -0, 1, -1, 255, 256, -128.5, 1e300, NaN, Infinity, -Infinity, 0.49999999999999994];
+const storeBases = [0, 1, -1, 3, 255, 256, -129, 65535, 1e10, 9007199254740992, NaN];
+
+for (const n of storeLengths) {
+  for (let j = 0; j < storeFactors.length; j++) {
+    const k = storeFactors[j]!;
+    const w = make32(n, j % 5);
+    scale32(w, k);
+    console.log("scale32", n, j, w.join(" "));
+    const mi = makei32(n, j % 5);
+    scale32(mi, k);
+    console.log("scalei32", n, j, mi.join(" "));
+    const b = make8(n, j % 5);
+    bump8(b, k);
+    console.log("bump8", n, j, b.join(" "));
+    const c = make8(n, (j + 1) % 5);
+    drop8(c, k);
+    console.log("drop8", n, j, c.join(" "));
+    const cl = make8c(n, j % 5);
+    clampScale(cl, k);
+    console.log("clamp", n, j, cl.join(" "));
+    const f = makeF64(n, j % 5);
+    scaleF(f, k);
+    console.log("scalef64", n, j, f.join(" "), signs(f));
+    const g = makeF32(n, j % 5);
+    scaleF(g, k);
+    console.log("scalef32", n, j, g.join(" "), signs(g));
+    const h = makeF64(n, j % 5);
+    offsetF(h, k);
+    console.log("offsetf64", n, j, h.join(" "), signs(h));
+    const r = make32(n, j % 5);
+    ratio32(r, k);
+    console.log("ratio", n, j, r.join(" "));
+    const s8 = make8(n, j % 5);
+    wideScale8(s8);
+    console.log("wide8", n, j, s8.join(" "));
+    const n8 = make8(n, (j + 2) % 5);
+    narrowScale8(n8);
+    console.log("narrow8", n, j, n8.join(" "));
+    const f8 = make8(n, (j + 3) % 5);
+    fracScale8(f8);
+    console.log("frac8", n, j, f8.join(" "));
+  }
+  for (let j = 0; j < storeFills.length; j++) {
+    const v = storeFills[j]!;
+    const w = make32(n, j % 5);
+    fill32(w, v);
+    console.log("fill32", n, j, w.join(" "));
+    const mi = makei32(n, j % 5);
+    fill32(mi, v);
+    console.log("filli32", n, j, mi.join(" "));
+    const f = makeF64(n, j % 5);
+    fillF(f, v);
+    console.log("fillf64", n, j, f.join(" "), signs(f));
+    const g = makeF32(n, j % 5);
+    fillF(g, v);
+    console.log("fillf32", n, j, g.join(" "), signs(g));
+  }
+  for (let j = 0; j < storeBases.length; j++) {
+    const base = storeBases[j]!;
+    const a = make16(n, j % 5);
+    ramp16(a, base);
+    console.log("ramp16", n, j, a.join(" "));
+    const b = make16(n, (j + 2) % 5);
+    index16(b, base);
+    console.log("index16", n, j, b.join(" "));
+    const c = makei16(n, j % 5);
+    back16(c, base);
+    console.log("back16", n, j, c.join(" "));
+    const d = makei16(n, (j + 1) % 5);
+    mix16(d);
+    console.log("mix16", n, j, d.join(" "));
+    const e = make16(n, j % 5);
+    pair16(e, make16(n, (j + 3) % 5));
+    console.log("pair16", n, j, e.join(" "));
+    const lit = make16(n, j % 5);
+    rampLit16(lit);
+    console.log("ramplit16", n, j, lit.join(" "));
+    const lit8 = make8(n, j % 5);
+    shiftLit8(lit8);
+    console.log("shiftlit8", n, j, lit8.join(" "));
+    const back = makei16(n, (j + 1) % 5);
+    backLit16(back);
+    console.log("backlit16", n, j, back.join(" "));
+    const litw = make32(n, j % 5);
+    fillLit32(litw);
+    console.log("filllit32", n, j, litw.join(" "));
+  }
 }

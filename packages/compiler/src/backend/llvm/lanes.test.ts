@@ -173,6 +173,241 @@ test("only the shapes the plan flag names are lowered", async () => {
   expect(body(counts, "sc_bf_count")).toMatch(/load <4 x i16>/);
 });
 
+const STORE_SOURCE = `type Bytes3 = Uint8Array | Uint8ClampedArray | Int8Array;
+type Halves = Uint16Array | Int16Array;
+
+function fill(a: Bytes3, v: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = v;
+}
+
+function ramp(a: Bytes3): void {
+  for (let i = 0; i < a.length; i++) a[i] = i * 2;
+}
+
+function shift(a: Halves): void {
+  for (let i = 0; i < a.length; i++) a[i] = i + 70000;
+}
+
+function scale(a: Bytes3, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * k;
+}
+
+function narrow(a: Float32Array, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * k;
+}
+
+function clamp(a: Uint8ClampedArray, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * k;
+}
+
+function ratio(a: Bytes3, k: number): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! / k;
+}
+
+function frac(a: Bytes3): void {
+  for (let i = 0; i < a.length; i++) a[i] = a[i]! * 2.5;
+}
+
+const b = new Uint8Array(8);
+fill(b, 1);
+ramp(b);
+scale(b, 2);
+const h = new Uint16Array(8);
+shift(h);
+const f = new Float32Array(8);
+narrow(f, 0.5);
+const c = new Uint8ClampedArray(8);
+clamp(c, 2);
+ratio(b, 2);
+frac(b);
+console.log(b[0], h[0], f[0], c[0]);
+`;
+
+test("a planned store writes whole vectors and advances the counter", async () => {
+  const llvm = await emittedLlvm("store", STORE_SOURCE, { plan: "store" });
+  const fn = body(llvm, "sc_bf_fill");
+  expect(fn).toMatch(/lane\.b\d*:/);
+  expect(fn).toMatch(/store <4 x i8> [^,]+, ptr [^,]+, align 1/);
+  expect(fn).toMatch(/add nuw i64 [^,]+, 4/);
+  // The lane loop's exit falls through to the loop's own copies, which write
+  // the elements the lanes left.
+  expect(fn).toMatch(/store i8 [^,]+, ptr %\w+/);
+});
+
+test("an exact integer value is stored from its integer lanes", async () => {
+  const llvm = await emittedLlvm("store-int", STORE_SOURCE, { plan: "store" });
+  // `i * 2`: the counter and the literal are exact integers, so the lanes
+  // multiply them and truncate to the element.
+  const ramp = body(llvm, "sc_bf_ramp");
+  expect(ramp).toMatch(/mul nsw <4 x i64> [^,]+, [^,]+/);
+  expect(ramp).toMatch(/trunc <4 x i64> [^ ]+ to <4 x i8>/);
+  expect(ramp).toMatch(/icmp ult i64 [^,]+, 2147483648/);
+  // `i + 70000`: the sum is exact below the same bound.
+  const shift = body(llvm, "sc_bf_shift");
+  expect(shift).toMatch(/add nsw <4 x i64> [^,]+, [^,]+/);
+  expect(shift).toMatch(/trunc <4 x i64> [^ ]+ to <4 x i16>/);
+  expect(shift).toMatch(/icmp ult i64 [^,]+, 2147483648/);
+});
+
+test("an element's product takes ToUint32's direct lanes", async () => {
+  const llvm = await emittedLlvm("store-scale", STORE_SOURCE, { plan: "store" });
+  const fn = body(llvm, "sc_bf_scale");
+  expect(fn).toMatch(/load <4 x i8>, ptr [^,]+, align 1/);
+  expect(fn).toMatch(/fmul <4 x double> [^,]+, [^,]+/);
+  // The entry test bounds the value by the element's widest and the factor's
+  // magnitude; below 2^63 the lanes convert directly, with no per-vector
+  // range test and no bit path.
+  expect(fn).toMatch(/fneg double [^ ]+/);
+  expect(fn).toMatch(/fmul double (?:128\.0, %\w+|%\w+, 128\.0)/);
+  expect(fn).toMatch(/fcmp olt double [^,]+, 9223372036854775808\.0/);
+  expect(fn).toMatch(/fptosi <4 x double> [^ ]+ to <4 x i64>/);
+  expect(fn).toMatch(/trunc <4 x i64> [^ ]+ to <4 x i32>/);
+  expect(fn).not.toMatch(/bitcast <4 x i1>/);
+  expect(fn).not.toMatch(/shl <4 x i64>/);
+});
+
+test("a fractional literal keeps the double route", async () => {
+  const llvm = await emittedLlvm("store-frac", STORE_SOURCE, { plan: "store" });
+  const fn = body(llvm, "sc_bf_frac");
+  expect(fn).toMatch(/fmul <4 x double> [^,]+, [^,]+/);
+  // 2.5 is not an exact integer, so the value is not built from the integer
+  // lanes; the lanes convert the product directly, below the entry bound.
+  expect(fn).toMatch(/fptosi <4 x double> [^ ]+ to <4 x i64>/);
+  expect(fn).not.toMatch(/i64 2\.5/);
+});
+
+test("a clamped element rounds and clamps the lanes", async () => {
+  const llvm = await emittedLlvm("store-clamp", STORE_SOURCE, { plan: "store" });
+  const fn = body(llvm, "sc_bf_clamp");
+  expect(fn).toMatch(/fcmp ogt <4 x double> [^,]+, splat \(double 0\.0\)/);
+  expect(fn).toMatch(/fcmp oge <4 x double> [^,]+, splat \(double 255\.0\)/);
+  expect(fn).toMatch(/fadd <4 x double> [^,]+, splat \(double 4503599627370496\.0\)/);
+  expect(fn).toMatch(/fptoui <4 x double> [^ ]+ to <4 x i32>/);
+  expect(fn).toMatch(/trunc <4 x i32> [^ ]+ to <4 x i8>/);
+});
+
+test("a float store narrows the lanes and leaves the double alone", async () => {
+  const llvm = await emittedLlvm("store-float", STORE_SOURCE, { plan: "store" });
+  const narrow = body(llvm, "sc_bf_narrow");
+  expect(narrow).toMatch(/fptrunc <4 x double> [^ ]+ to <4 x float>/);
+  expect(narrow).toMatch(/store <4 x float> [^,]+, ptr [^,]+, align 1/);
+  expect(narrow).not.toMatch(/fptosi/);
+});
+
+test("a store the lanes cannot reproduce keeps its scalar loop", async () => {
+  const llvm = await emittedLlvm("store-refused", STORE_SOURCE, { plan: "store" });
+  const fn = body(llvm, "sc_bf_ratio");
+  expect(fn).not.toMatch(/lane\./);
+  expect(fn).not.toMatch(/store <4 x i8>/);
+});
+
+test("the store shape alone does not lower a sum or a count", async () => {
+  const llvm = await emittedLlvm("store-only", STORE_SOURCE, { plan: "store" });
+  expect(body(llvm, "sc_bf_fill")).toMatch(/store <4 x i8>/);
+  // No loop here reduces, so no lane accumulator is ever reduced out: the
+  // reduction's vector load from the slot is the sum's and the count's mark.
+  expect(llvm).not.toMatch(/load <4 x i64>, ptr %s/);
+});
+
+const DENSE_SOURCE = `function total(a: number[]): number {
+  let t = 0;
+  for (let i = 0; i < a.length; i++) t += a[i]!;
+  return t;
+}
+
+function below(a: number[]): number {
+  let c = 0;
+  for (let i = 0; i < a.length; i++) if (a[i]! < 3) c++;
+  // A non-integer write after the loop keeps the count in a double slot,
+  // which is the slot the lane body folds into.
+  c = Math.sqrt(c);
+  return c;
+}
+
+function plain(a: number[]): number {
+  let c = 0;
+  for (let i = 0; i < a.length; i++) if (a[i]! < 3) c++;
+  return c;
+}
+
+function ramp(dst: number[]): void {
+  for (let i = 0; i < dst.length; i++) dst[i] = i * 2;
+}
+
+function fillIt(dst: number[], v: number): void {
+  for (let i = 0; i < dst.length; i++) dst[i] = v;
+}
+
+function twice(dst: number[]): void {
+  for (let i = 0; i < dst.length; i++) dst[i] = dst[i]! * 2;
+}
+
+function halves(dst: number[], k: number): void {
+  for (let i = 0; i < dst.length; i++) dst[i] = dst[i]! / k;
+}
+
+const a = [1, 2, 3, 4, 5];
+console.log(total(a), below(a), plain(a));
+const d: number[] = new Array(8).fill(0);
+fillIt(d, 3);
+ramp(d);
+twice(d);
+halves(d, 2);
+console.log(d.join(" "));
+`;
+
+test("a dense sum lanes the int32 slots of a number array", async () => {
+  const llvm = await emittedLlvm("dense-sum", DENSE_SOURCE, { plan: "sum" });
+  const fn = body(llvm, "sc_bf_total");
+  // The storage kind is checked once: only int32 slots hold values an
+  // integer sum is exact over.
+  expect(fn).toMatch(/icmp eq i8 [^,]+, 7/);
+  expect(fn).toMatch(/icmp ule i64 [^,]+, %t\d+/);
+  expect(fn).toMatch(/icmp ult i64 [^,]+, 4194304/);
+  expect(fn).toMatch(/load <4 x i32>, ptr [^,]+, align 1/);
+  expect(fn).toMatch(/sext <4 x i32> [^ ]+ to <4 x i64>/);
+});
+
+test("a dense count compares int32 lanes against the exact limit", async () => {
+  const llvm = await emittedLlvm("dense-count", DENSE_SOURCE, { plan: "count" });
+  const fn = body(llvm, "sc_bf_below");
+  expect(fn).toMatch(/icmp eq i8 [^,]+, 7/);
+  expect(fn).toMatch(/fptosi double [^ ]+ to i64/);
+  expect(fn).toMatch(/icmp slt <4 x i32> [^,]+, %t\d+/);
+  expect(fn).toMatch(/zext <4 x i1> [^ ]+ to <4 x i64>/);
+});
+
+test("a count the integer locals hold keeps its scalar loop", async () => {
+  const llvm = await emittedLlvm("dense-count-slot", DENSE_SOURCE, { plan: "count" });
+  // The lane body stores a double count into the accumulator's slot; the
+  // integer copies keep an int32 there, so their loops stay scalar.
+  const fn = body(llvm, "sc_bf_plain");
+  expect(fn).toMatch(/alloca i32 ; c/);
+  expect(fn).not.toMatch(/lane\./);
+});
+
+test("a dense store writes whole vectors of doubles", async () => {
+  const llvm = await emittedLlvm("dense-store", DENSE_SOURCE, { plan: "store" });
+  const ramp = body(llvm, "sc_bf_ramp");
+  // Double slots, checked once at the entry: the stored value is the
+  // scalar body's own double.
+  expect(ramp).toMatch(/icmp eq i8 [^,]+, 0/);
+  expect(ramp).toMatch(/store <4 x double> [^,]+, ptr [^,]+, align 1/);
+  expect(ramp).not.toMatch(/mul nsw <4 x i64>/);
+  const twice = body(llvm, "sc_bf_twice");
+  expect(twice).toMatch(/load <4 x double>, ptr [^,]+, align 1/);
+  expect(twice).toMatch(/fmul <4 x double> [^,]+, [^,]+/);
+  expect(twice).toMatch(/store <4 x double> [^,]+, ptr [^,]+, align 1/);
+  // An invariant value is splatted from its own double slot.
+  const fill = body(llvm, "sc_bf_fillIt");
+  expect(fill).toMatch(/store <4 x double> [^,]+, ptr [^,]+, align 1/);
+});
+
+test("a dense store the lanes cannot reproduce keeps its scalar loop", async () => {
+  const llvm = await emittedLlvm("dense-refused", DENSE_SOURCE, { plan: "store" });
+  expect(body(llvm, "sc_bf_halves")).not.toMatch(/lane\./);
+});
+
 test("the toggle is read once at start-up, not per loop", async () => {
   const llvm = await emittedLlvm("toggle", SOURCE, { plan: "sum" });
   expect(llvm).toMatch(/@sc_lanes = internal global i32 1/);

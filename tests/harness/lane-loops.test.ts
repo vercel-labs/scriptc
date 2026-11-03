@@ -84,6 +84,26 @@ test("the planned build really carries lane loops", async () => {
   // next to it is refused by the accumulator rule and not by its shape.
   const clean = llvm.slice(llvm.indexOf("sumSwitchClean32"));
   expect(clean.slice(0, clean.indexOf("\ndefine "))).toMatch(/lane\.c\d+:/);
+  // Dense number arrays: the sum and the double-accumulator count lane the
+  // int32 slots, the store loops write whole vectors of doubles, and the
+  // entry tests ask the storage kind and that every slot below the length
+  // holds a value.
+  const dense = (name: string): string => {
+    const at = llvm.indexOf(`@sc_bf_${name}(`);
+    return llvm.slice(at, llvm.indexOf("\ndefine ", at));
+  };
+  const sum = dense("denseSum");
+  expect(sum).toMatch(/icmp eq i8 [^,]+, 7/);
+  expect(sum).toMatch(/icmp ule i64 [^,]+, %t\d+/);
+  expect(sum).toMatch(/load <4 x i32>, ptr [^,]+, align 1/);
+  expect(dense("denseCountRoot")).toMatch(/lane\.c\d+:/);
+  const store = dense("denseZero");
+  expect(store).toMatch(/icmp eq i8 [^,]+, 0/);
+  expect(store).toMatch(/store <4 x double> [^,]+, ptr [^,]+, align 1/);
+  // The count whose accumulator stays in an int32 slot, and the division,
+  // keep their scalar loops.
+  expect(dense("denseCountBelow")).not.toMatch(/lane\./);
+  expect(dense("denseHalve")).not.toMatch(/lane\./);
 }, 300_000);
 
 test("a build without the plan flag emits the scalar loops and no toggle", async () => {
@@ -93,4 +113,6 @@ test("a build without the plan flag emits the scalar loops and no toggle", async
   expect(plain.llvm).not.toMatch(/@sc_lanes/);
   expect(plain.llvm).not.toMatch(/lane\./);
   expect(plain.llvm).not.toMatch(/load <4 x i(8|16|32|64)>/);
+  expect(plain.llvm).not.toMatch(/load <4 x double>/);
+  expect(plain.llvm).not.toMatch(/store <4 x double>/);
 }, 300_000);

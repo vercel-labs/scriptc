@@ -19,6 +19,7 @@ import { entryContractFacts, type ContractFacts } from "./lib-contract.js";
 import {
   canonicalBuiltinModule,
   npmBuiltinAliasOf,
+  checkModuleOrder,
   checkPreflight,
   isNodeTypesPath,
   locOf,
@@ -724,14 +725,22 @@ function loadFrontend(
   // count (every iteration settles
   // at least one new package for good).
   if (npmStatic === "lib") {
+    let reloaded = false;
     for (;;) {
       const grown = detectAutoPackages(load, statuses, "lib", judged, npmSites, transitive);
       if (grown.length === 0) break;
       requested = [...requested, ...grown];
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: requested, externalTypes });
-      preflight = checkPreflight(load);
+      // A rung's only consumer is the next `detectAutoPackages`, which reads
+      // the module order and the dynamic-import rejections. Its diagnostics
+      // are read only if it turns out to be the fixpoint's LAST rung, so they
+      // wait for the single full preflight below (which completes this walk
+      // rather than repeating it).
+      checkModuleOrder(load);
+      reloaded = true;
     }
+    if (reloaded) preflight = checkPreflight(load);
   }
   const effective = new Set(requested);
   // Packages refused only because the program does not typecheck against

@@ -200,9 +200,6 @@ export interface CcOptions {
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype or Boolean.prototype read as a value in a JavaScript
-   * source: compiles scr_dyn_builtin_prototype.c. */
-  builtinPrototypeValue?: boolean;
   /** A builtin prototype method read as a value in a JavaScript source:
    * compiles scr_dyn_builtin_methods.c. */
   builtinMethodValue?: boolean;

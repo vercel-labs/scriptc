@@ -1788,10 +1788,13 @@ ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
  * (scr_dyn_array_like.c, linked only into programs that call them from a
  * JavaScript source): +1, or NULL with the exception pending. */
 ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args);
-/* Number.prototype or Boolean.prototype as a value, one object per thread
- * (scr_dyn_builtin_prototype.c, linked only into programs that read them
- * from a JavaScript source); `kind` is "Number" or "Boolean". +1. */
-ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind);
+/* Number.prototype or Boolean.prototype as a value, from the primitive
+ * wrapper unit that owns it (scr_js_wrapper.c): ONE object per kind, also
+ * the compiled constructor's `prototype` member (linked only into programs
+ * that read the values from a JavaScript source or create wrappers).
+ * `kind` is "Number" or "Boolean"; `constructor` is the compiled
+ * constructor value (borrowed). +1. */
+ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor);
 /* A builtin prototype method as a function value (scr_dyn_builtin_methods.c,
  * linked only into programs that read one from a JavaScript source).
  * `owner` is "String" or "RegExp" and `member` its canonical spelling — the

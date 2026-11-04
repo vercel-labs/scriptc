@@ -479,6 +479,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.staticValue",
   "buffer.prototypeMember",
   "buffer.prototypeObject",
+  // The array-like unit reads a receiver's @@isConcatSpreadable through
+  // scr_sym_well_known before it spreads that receiver's elements.
+  "dyn.arrayLikeProtoCall",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -1338,9 +1341,6 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
   arrayLikeDispatch: rule({ fns: ["dyn.arrayLikeProtoCall"] }),
-  /** Number.prototype and Boolean.prototype as values
-   * (scr_dyn_builtin_prototype.c). */
-  builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
   /** A builtin prototype method as a function value (String's trim family,
    * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
   builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
@@ -1731,8 +1731,11 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
-  /** Primitive wrapper objects (scr_js_wrapper.c). */
-  primitiveWrapper: rule({ prefixes: ["wrapper."] }),
+  /** Primitive wrapper objects (scr_js_wrapper.c), which also own
+   * Number.prototype and Boolean.prototype: the value a JavaScript source
+   * reads through dyn.builtinPrototype, and the compiled constructor's
+   * `prototype` member of the same object. */
+  primitiveWrapper: rule({ prefixes: ["wrapper."], fns: ["dyn.builtinPrototype"] }),
   /** %Iterator% and %Iterator.prototype% as values (scr_js_iterator.c). */
   iteratorProto: rule({ prefixes: ["iterator."] }),
   /** The WebAssembly API (scr_wasm.c). */
@@ -1836,7 +1839,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
-    builtinPrototypeValue: false,
     builtinMethodValue: false,
     dynTier: false,
     ecdh: false,

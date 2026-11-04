@@ -10498,12 +10498,56 @@ ScrDyn *scr_dyn_array_from_iterator(const ScrDyn *source) {
   return checked;
 }
 
+static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn *key,
+                                               bool optional, const ScrDyn *receiver);
+
+/* Get(O, key) on a Proxy for a symbol key: the handler's get trap answers
+ * when it has one, and the target answers when it has none. A trap's result
+ * must agree with an own non-configurable, non-writable symbol property of
+ * the target, the same invariant the string-key path checks. */
+static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, bool optional) {
+  ScrDyn *trap = scr_dyn_proxy_trap(proxy, "get");
+  if (scr_exc_pending()) return NULL;
+  if (!trap) {
+    ScrDyn *target = proxy->v.proxy.target;
+    ScrDyn *view = target->kind == SCR_DYN_TYPED_REF
+      ? scr_dyn_typed_ref_materialize(target) : scr_dyn_retain(target);
+    ScrDyn *result = scr_exc_pending() ? NULL
+      : scr_dyn_symbol_key_get_receiver(view, key, optional, proxy);
+    scr_dyn_release(view);
+    return result;
+  }
+  ScrDyn *args[] = { proxy->v.proxy.target, (ScrDyn *)key, (ScrDyn *)proxy };
+  ScrDyn *result = scr_dyn_proxy_call(proxy, trap, args, 3);
+  ScrDynEntry *entry = scr_dyn_symbol_entry(proxy->v.proxy.target, key, true);
+  if (result && entry && !entry->configurable &&
+      ((entry->accessor && !entry->getter && result->kind != SCR_DYN_UNDEF) ||
+       (!entry->accessor && !entry->writable &&
+        !scr_dyn_property_same_value(entry->value, result)))) {
+    scr_dyn_release(result);
+    scr_dyn_proxy_invariant();
+    return NULL;
+  }
+  return result;
+}
+
 ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool optional) {
+  return scr_dyn_symbol_key_get_receiver(value, key, optional, value);
+}
+
+/* A symbol read on `value` where an accessor's getter runs with `receiver` as
+ * `this`. The two differ when the read arrives through a Proxy without a get
+ * trap: the property is found on the target, and the getter still receives the
+ * Proxy. */
+static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn *key,
+                                               bool optional, const ScrDyn *receiver) {
   if (scr_dyn_generator(value)) return scr_dyn_generator_symbol(value, key)
     ? scr_iterator_function(4, &scr_iterator_self_call, "[Symbol.iterator]") : scr_dyn_retain(scr_dyn_undefined());
+  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, key, optional);
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
-    ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_symbol_key_get(view, key, optional);
+    ScrDyn *result = scr_exc_pending() ? NULL
+      : scr_dyn_symbol_key_get_receiver(view, key, optional, receiver);
     scr_dyn_release(view);
     return result;
   }
@@ -10526,9 +10570,9 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
     ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
     if (member || scr_exc_pending()) return member;
   }
-  ScrDyn *receiver = scr_dyn_symbol_receiver(value);
-  if (!receiver && scr_exc_pending()) return NULL;
-  ScrDynEntry *entry = receiver ? scr_dyn_symbol_entry(receiver, key, false) : NULL;
+  ScrDyn *table = scr_dyn_symbol_receiver(value);
+  if (!table && scr_exc_pending()) return NULL;
+  ScrDynEntry *entry = table ? scr_dyn_symbol_entry(table, key, false) : NULL;
   /* A Buffer inherits Buffer.prototype[Symbol(nodejs.util.inspect.custom)],
    * its inspect function, unless an own symbol property shadows it. */
   if (!entry && value->kind == SCR_DYN_BYTES && value->buffer && scr_bytes_buffer_member_fn &&
@@ -10536,22 +10580,22 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
     ScrStr *name = scr_str_new("inspect", 7);
     ScrDyn *inspect = scr_bytes_buffer_member_fn(value, name);
     scr_str_release(name);
-    scr_dyn_release(receiver);
+    scr_dyn_release(table);
     return inspect ? inspect : scr_dyn_retain(scr_dyn_undefined());
   }
-  if (!receiver) return scr_dyn_retain(scr_dyn_undefined());
+  if (!table) return scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *out;
   if (!entry) out = scr_dyn_retain(scr_dyn_undefined());
   else if (!entry->accessor) out = scr_dyn_retain(entry->value);
   else if (!entry->getter) out = scr_dyn_retain(scr_dyn_undefined());
   else {
     ScrDyn *getter = scr_dyn_retain(entry->getter);
-    scr_dyn_this_push_dyn(value);
+    scr_dyn_this_push_dyn(receiver);
     out = scr_dyn_call(getter, NULL, 0, "symbol getter");
     scr_dyn_this_pop();
     scr_dyn_release(getter);
   }
-  scr_dyn_release(receiver);
+  scr_dyn_release(table);
   return out;
 }
 

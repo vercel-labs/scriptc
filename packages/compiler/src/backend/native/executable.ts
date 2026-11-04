@@ -228,14 +228,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // DataView.prototype as a value in a JavaScript source: the getter/setter
   // family's prototype object, the dynamic tier's gated unit.
   unit((u) => u.opts.dataViewPrototypeValue === true && u.opts.dynInvoke, "scr_data_view_proto.c"),
-  // Array.prototype's generic algorithms over array-like receivers, and the
-  // Number/Boolean prototype objects as values: the dynamic tier's gated
-  // units, whose work is JavaScript-only.
+  // Array.prototype's generic algorithms over array-like receivers: the
+  // dynamic tier's gated unit, whose work is JavaScript-only.
   unit((u) => u.opts.arrayLikeDispatch === true && u.opts.dynInvoke, "scr_dyn_array_like.c"),
-  unit(
-    (u) => u.opts.builtinPrototypeValue === true && u.opts.dynInvoke,
-    "scr_dyn_builtin_prototype.c",
-  ),
   unit((u) => u.opts.builtinMethodValue === true && u.opts.dynInvoke, "scr_dyn_builtin_methods.c"),
   // createRequire's computed require and require.resolve.
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),

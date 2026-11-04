@@ -25,7 +25,6 @@ import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue, wellKnownSymbolValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
-import { wrapperConstructors } from "../primitive-wrappers.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
@@ -5759,7 +5758,35 @@ const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set([
  * redefinition (`Object.hasOwn(Object, "hasOwn")`,
  * `Object.defineProperty(Promise, ...)`, `hasOwnProperty.call(Map, ...)`),
  * which would observe or change members the interned value does not
- * model. */
+ * model — except an own-key query whose answer the value does model
+ * (faithfulOwnKeyQuery). */
+/** The interned values whose own properties the runtime models exactly as
+ * Node's constructor has them: Proxy is the one builtin constructor with no
+ * `prototype` own property, and the runtime's Proxy value carries Node's
+ * other own keys (length, name, revocable). The other interns would answer
+ * `hasOwnProperty(..., "prototype")` false where Node answers true. */
+const BUILTIN_VALUE_OWN_KEYS_FAITHFUL: ReadonlySet<string> = new Set(["Proxy"]);
+
+/** `Object.prototype.hasOwnProperty.call(<interned value>, key)` asks which
+ * own keys the value has; it neither reads nor redefines a member. The
+ * answer is Node's when the interned value's own keys are
+ * (BUILTIN_VALUE_OWN_KEYS_FAITHFUL). */
+function faithfulOwnKeyQuery(
+  lowerer: Lowerer,
+  callee: ts.PropertyAccessExpression,
+  canonical: string,
+): boolean {
+  if (!BUILTIN_VALUE_OWN_KEYS_FAITHFUL.has(canonical) || callee.name.text !== "call") return false;
+  const method = callee.expression;
+  return (
+    ts.isPropertyAccessExpression(method) &&
+    method.name.text === "hasOwnProperty" &&
+    ts.isPropertyAccessExpression(method.expression) &&
+    method.expression.name.text === "prototype" &&
+    stdlibGlobalNameOf(lowerer, method.expression.expression) === "Object"
+  );
+}
+
 export function builtinGlobalValueAt(
   lowerer: Lowerer,
   expr: ts.Expression,
@@ -5798,7 +5825,8 @@ export function builtinGlobalValueAt(
               ? callee.expression.name
               : callee.expression,
           ),
-        ));
+        ) &&
+        !faithfulOwnKeyQuery(lowerer, callee, canonical));
     if (reflects) {
       const name =
         owner !== null
@@ -6226,7 +6254,7 @@ function jsPrimitivePrototypeValue(
 ): IrExpr | null {
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const loc = locOf(expr);
-  const value = (kind: string): IrExpr =>
+  const value = (kind: "Number" | "Boolean"): IrExpr =>
     kind === "Boolean"
       ? // The wrapper unit's Boolean.prototype is the object Boolean
         // instances inherit from, so its valueOf/toString are the interned
@@ -6236,14 +6264,20 @@ function jsPrimitivePrototypeValue(
         {
           kind: "libCall",
           fn: "wrapper.booleanPrototype",
-          args: [wrapperConstructors(lowerer, loc)[2]!],
+          args: [lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN)],
           type: DYN,
           loc,
         }
       : {
           kind: "libCall",
           fn: "dyn.builtinPrototype",
-          args: [{ kind: "strLit", value: kind, type: STRING, loc }],
+          args: [
+            { kind: "strLit", value: kind, type: STRING, loc },
+            // The compiled constructor value the prototype belongs to: the
+            // unit answers it as the constructor's `prototype` member, so
+            // `Object(1).constructor.prototype === Number.prototype`.
+            lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN),
+          ],
           type: DYN,
           loc,
         };

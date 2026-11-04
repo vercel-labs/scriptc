@@ -1,6 +1,6 @@
 import { runFrontend, type Frontend, type FrontendOptions } from "./pipeline.js";
 import { loadProgram } from "./program.js";
-import { FrontendServices, type ComptimeEvaluator } from "./services.js";
+import { FrontendServices, programHostLoads, type ComptimeEvaluator } from "./services.js";
 import { createNativeTs7Api } from "./ts7/native-api.js";
 
 /** Native callers supply the installed TS7 executable explicitly. The
@@ -22,6 +22,7 @@ export function runNativeFrontend(
     undefined,
   );
   try {
+    services.reuseProgramHosts(programHostLoads());
     const frontend = runFrontend(
       entryPath,
       (path, options) =>

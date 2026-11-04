@@ -124,3 +124,33 @@ test(
     );
   },
 );
+
+// shape-alias: one record with two names. The overlay types the declaration
+// that creates the record, so the second name still refers to the same
+// object and the increment through one name is visible through the other.
+const aliasEntry = join(repoRoot, "tests/fixtures/npm/cases/shape-overlay-alias/main.ts");
+
+test(
+  "the overlay keeps an alias's writes visible and Node's output",
+  { timeout: 900_000 },
+  async () => {
+    mkdirSync(outDir, { recursive: true });
+    const result = await withOverlay(() =>
+      compile(aliasEntry, { outPath: join(outDir, "alias"), outDir, sanitize }),
+    );
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const report = (result.warnings ?? []).find((w) => w.code === "SC6103");
+    expect(report?.message).toMatch(/of 1 package \(shape-alias\)/);
+    const native = await execFileAsync(result.binaryPath, [], {
+      cwd: dirname(aliasEntry),
+      encoding: "utf8",
+    });
+    const node = await execFileAsync(process.execPath, [aliasEntry], {
+      cwd: dirname(aliasEntry),
+      encoding: "utf8",
+    });
+    expect(native.stdout).toBe(node.stdout);
+    expect(native.stdout).toBe("[42,1]\n");
+  },
+);

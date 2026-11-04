@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/timer-this-hosted-loop/main.mjs"
+ ],
+ "diags": []
+}

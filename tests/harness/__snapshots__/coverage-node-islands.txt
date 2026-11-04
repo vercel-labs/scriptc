@@ -1,8 +1,8 @@
 scriptc coverage tests/coverage-fixtures/node-islands/main.ts
 
   statements analyzed   29
-  compile statically    27  (93%)
-    in dynamic tier     13  (operate on values typed only at runtime; --explain-dynamic lists them)
+  compile statically    28  (96%)
+    in dynamic tier     14  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     ni-bundled  refused (its shipped JS carries build-transform markers (bundled/transpiled dist))
@@ -31,9 +31,6 @@ scriptc coverage tests/coverage-fixtures/node-islands/main.ts
           hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
 
   blockers:
-      ×2  SC2013  cannot compile npm package 'ni-bundled' statically: its implementation is not part of the compiled module graph
-          at tests/coverage-fixtures/node-islands/main.ts:8:1, tests/coverage-fixtures/node-islands/main.ts:16:13
-          hint: use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback
       ×1  SC2013  cannot compile npm package 'ni-bundled' statically: its shipped JS carries build-transform markers (bundled/transpiled dist)
           at tests/coverage-fixtures/node-islands/main.ts:8:1
           hint: to compile it anyway, name it with --npm-static=ni-bundled (or --npm-static=ni-bundled... to include its dependencies)

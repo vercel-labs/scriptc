@@ -1,0 +1,25 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/early-error-private-names.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property '#value' is not accessible outside class 'Box' because it has a private identifier.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-private-names.js",
+    "start": 532,
+    "end": 538
+   }
+  },
+  {
+   "code": "SC0009",
+   "message": "the private name '#value' is not declared in an enclosing class",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-private-names.js",
+    "start": 528,
+    "end": 538
+   }
+  }
+ ]
+}

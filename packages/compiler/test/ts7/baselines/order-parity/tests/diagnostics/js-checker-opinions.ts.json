@@ -1,0 +1,43 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/js-checker-opinions.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Left side of comma operator is unused and has no side effects.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-checker-opinions.ts",
+    "start": 453,
+    "end": 454
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "The value 'null' cannot be used here.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-checker-opinions.ts",
+    "start": 477,
+    "end": 481
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "The value 'undefined' cannot be used here.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-checker-opinions.ts",
+    "start": 484,
+    "end": 493
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-checker-opinions.ts",
+    "start": 532,
+    "end": 537
+   }
+  }
+ ]
+}

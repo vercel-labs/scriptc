@@ -40,8 +40,9 @@ const MODULE_FIELDS = new Set([
 
 function cjsGlobal(lowerer: Lowerer, node: ts.Expression, name: "module" | "require"): boolean {
   if (!ts.isIdentifier(node) || node.text !== name) return false;
-  // Node defines no `require` (or `module`) binding in an ES module, though
-  // the ambient declarations still declare them; the read throws.
+  // An ES module defines neither binding, whatever the stdlib declares for
+  // them: Node's read throws ReferenceError, so no CommonJS-global claim may
+  // answer a `require(...)`/`module.*` use there.
   if (isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program)) return false;
   if (lowerer.isStdlibGlobal(node, name)) return true;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
@@ -58,7 +59,7 @@ function cjsGlobal(lowerer: Lowerer, node: ts.Expression, name: "module" | "requ
         ts.isNamespaceImport(decl) ||
         ts.isImportEqualsDeclaration(decl)),
   );
-  return !sourceShadow && !isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program);
+  return !sourceShadow;
 }
 
 function graphSyntax(lowerer: Lowerer, sf: ts.SourceFile): boolean {

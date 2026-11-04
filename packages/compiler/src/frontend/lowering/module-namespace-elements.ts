@@ -428,7 +428,13 @@ const BUILTIN_NAMESPACE_MEMBERS: Record<string, readonly string[]> = {
  * `moduleNamespaceDynValue` builds for a compiled module). A member with no
  * value lowering is left out of the box, so a read of it fails the checked
  * cast rather than answering a value Node would not give. Null when the
- * module has no servable member at all. */
+ * module has no servable member at all.
+ *
+ * A node:path family is not an ECMAScript namespace: `require("path")`
+ * answers Node's plain module object, so a direct value goes through
+ * pathModuleValue (moduleNamespaceDyn leaves the families alone) and keeps
+ * Node's property order. An `import()` namespace still boxes here, which is
+ * the sorted-key object an ES module namespace is. */
 export function moduleNamespaceBuiltinDynValue(
   lowerer: Lowerer,
   moduleId: string,

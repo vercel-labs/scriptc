@@ -42,22 +42,21 @@ Parsing, type checking, lowering, and LLVM IR generation run one after another o
 
 ### Partitions
 
-The LLVM helper divides an executable's LLVM IR into partitions by its size. Up to 128 KiB of LLVM text is one partition. Larger programs get one partition per 4 MiB of LLVM text, rounded up to a power of two, and at least 8 and at most 64. `--emit=llvm` writes this text, so its file size shows how many partitions a program gets. `dev` executables, whose partitions are compiled on their own with nothing imported, are divided from 64 KiB: up to 128 KiB is four partitions. An edit compiles again only the partitions whose code it changes, or that inline a function it changes.
+The LLVM helper divides an executable's LLVM IR into partitions by its size and the threads the host offers. Up to 128 KiB of LLVM text is one partition. A larger program gets one partition per 4 MiB of LLVM text and two per hardware thread of the host, whichever is more, though a host's threads add no more partitions than the program can fill at 32 KiB of text each. The count is rounded up to a power of two, and is at least 8 and at most 64. `--emit=llvm` writes this text, so its file size and the host's thread count show how many partitions a program gets. `dev` executables, whose partitions are compiled on their own with nothing imported, are divided from 64 KiB: up to 128 KiB is four partitions. An edit compiles again only the partitions whose code it changes, or that inline a function it changes.
 
 <table>
   <thead>
-    <tr><th>LLVM text</th><th>Partitions</th></tr>
+    <tr><th>Hardware threads</th><th>Partitions of a program of 32 MiB or more</th></tr>
   </thead>
   <tbody>
-    <tr><td>Up to 128 KiB</td><td>1</td></tr>
-    <tr><td>Over 128 KiB, up to 32 MiB</td><td>8</td></tr>
-    <tr><td>Over 32 MiB, up to 64 MiB</td><td>16</td></tr>
-    <tr><td>Over 64 MiB, up to 128 MiB</td><td>32</td></tr>
-    <tr><td>Over 128 MiB</td><td>64</td></tr>
+    <tr><td>Up to 4</td><td>8</td></tr>
+    <tr><td>5 to 8</td><td>16</td></tr>
+    <tr><td>9 to 16</td><td>32</td></tr>
+    <tr><td>17 or more</td><td>64</td></tr>
   </tbody>
 </table>
 
-The count depends only on the size of the LLVM text, so a program has the same partitions, and builds the same executable, on every host. In programs with 32 partitions or more, functions from the same source file are placed in the same partition, so that their calls to each other stay inside it; a file larger than 1 MiB of LLVM text or than an average partition is divided into parts by function name. Other functions, and the functions of smaller programs, are placed by their name, and a small internal function goes with the one function that calls it. An edit leaves almost every other function in its partition.
+A smaller program gets the count its own text fills: on a host with 16 hardware threads, a program of just over 128 KiB gets 8 partitions, one of 512 KiB 16, and one of 1 MiB 32. Two hosts with the same number of hardware threads give a program the same partitions, and build the same executable; a host with more threads divides the program more finely unless its size already asks for more partitions than the threads do. In programs with 32 partitions or more, functions from the same source file are placed in the same partition, so that their calls to each other stay inside it; a file larger than 1 MiB of LLVM text or than an average partition is divided into parts by function name. Other functions, and the functions of smaller programs, are placed by their name, and a small internal function goes with the one function that calls it. An edit leaves almost every other function in its partition.
 
 An optimized partition is optimized twice: on its own, and again after the small functions of other partitions it calls are imported for inlining. So in optimized builds, a program whose largest partition would hold more than two thirds of its function text is optimized whole instead, as one partition, and its code is generated in parts on several threads.
 
@@ -84,7 +83,9 @@ With two or more partitions, the helper keeps each partition's summary and objec
 
 A program of one partition has no partition cache: a rebuild after an edit compiles the whole program again, and a rebuild that leaves the LLVM text unchanged takes the compiled code from the build cache.
 
-When the LLVM text grows past a partition boundary (4, 8, 16 MiB, and so on), the partition count doubles, functions move to new partitions, and the next build compiles every partition again.
+The partition count is part of a cached partition's key, and a cached executable records the count it was linked from, so a build cache shared between hosts that divide a program differently serves each host its own builds.
+
+When the LLVM text grows past a partition boundary (128 KiB, 512 KiB, 1 MiB, 2 MiB, and on in 4 MiB steps for large programs), the partition count doubles, functions move to new partitions, and the next build compiles every partition again.
 
 ### Profile-guided optimization
 

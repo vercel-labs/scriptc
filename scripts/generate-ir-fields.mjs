@@ -259,6 +259,100 @@ export function generateIrFields(irText = readFileSync(irPath, "utf8")) {
     lines.push("  }", "}", "");
   }
 
+  // The child replacer: assigns one expression slot of a node, the field or
+  // array element that holds a given child, so a pass can replace a child
+  // through its parent instead of rewriting the child in place (the native
+  // compiler cannot change an object's kind or delete its declared fields).
+  const exprMembers = members.get("IrExpr");
+  /** Whether `type` (or an element of it) can be an IrExpr. */
+  function holdsExpr(type) {
+    const parts = type.isUnion() ? type.types : [type];
+    return parts.some((part) => exprMembers.has(part));
+  }
+  /** Lines that replace `from` with `to` where `expr` of `type` holds it:
+   * the slot itself, an array element, or a field of a plain object (or of
+   * an array of them) that is not an IR node. */
+  function replaceLines(expr, type, assignTarget, depth) {
+    if (depth > 12) throw new Error(`field type nests too deep at ${expr}`);
+    const parts = type.isUnion() ? type.types : [type];
+    const present = parts.filter((part) => (part.flags & nullish) === 0);
+    const optional = present.length !== parts.length;
+    const objects = present.filter(
+      (part) => (part.flags & (ts.TypeFlags.StringLike | scalar)) === 0,
+    );
+    if (objects.length === 0) return [];
+    const kinds = new Set(objects.map(irKind));
+    let body = [];
+    if (kinds.size === 1 && !kinds.has(null)) {
+      // An IR node: the slot itself, when it can hold an expression.
+      if (kinds.has("IrExpr") && assignTarget !== null)
+        body = [`if (${expr} === from) {`, `  ${assignTarget} = to;`, "  return true;", "}"];
+    } else if (objects.every((part) => checker.isArrayType(part))) {
+      if (objects.length !== 1) throw new Error(`several array types at ${expr}`);
+      const itemType = checker.getTypeArguments(objects[0])[0];
+      const item = `item${temp++}`;
+      const index = `index${temp++}`;
+      const inner = replaceLines(item, itemType, `${expr}[${index}]`, depth + 1);
+      if (inner.length > 0)
+        body = [
+          `for (let ${index} = 0; ${index} < ${expr}.length; ${index}++) {`,
+          `  const ${item} = ${expr}[${index}]!;`,
+          ...inner.map((l) => `  ${l}`),
+          "}",
+        ];
+    } else if (kinds.has(null) && objects.length === 1) {
+      for (const property of checker.getPropertiesOfType(objects[0])) {
+        if (property.name === "loc" || property.name === "type") continue;
+        const fieldType = checker.getTypeOfSymbol(property);
+        const field = `${expr}.${property.name}`;
+        body.push(...replaceLines(field, fieldType, field, depth + 1));
+      }
+    }
+    if (body.length > 0 && optional)
+      body = [
+        `if (${expr} !== undefined && ${expr} !== null) {`,
+        ...body.map((l) => `  ${l}`),
+        "}",
+      ];
+    return body;
+  }
+  lines.push(
+    "/** Replaces the child expression `from` of `node` with `to`: the field,",
+    " * array element or field of a plain object under it that holds `from`",
+    " * (child IR nodes are not entered). Returns false when no slot holds it. */",
+    "export function replaceChildExpr(node: IrExpr | IrStmt, from: IrExpr, to: IrExpr): boolean {",
+    "  switch (node.kind) {",
+  );
+  const byNodeKind = new Map();
+  for (const name of ["IrExpr", "IrStmt"]) {
+    for (const member of members.get(name)) {
+      const kind = checker.getTypeOfSymbol(member.getProperty("kind")).value;
+      const list = byNodeKind.get(kind) ?? [];
+      list.push(member);
+      byNodeKind.set(kind, list);
+    }
+  }
+  for (const [kind, list] of [...byNodeKind].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const body = [];
+    for (const member of list) {
+      for (const property of member.getProperties()) {
+        if (property.name === "loc" || property.name === "type") continue;
+        const fieldType = checker.getTypeOfSymbol(property);
+        if (!holdsExpr(fieldType) && replaceLines("x", fieldType, "x", 0).length === 0) continue;
+        const field = `node.${property.name}`;
+        body.push(...replaceLines(field, fieldType, field, 0));
+      }
+    }
+    if (body.length === 0) continue;
+    lines.push(
+      `    case ${JSON.stringify(kind)}: {`,
+      ...body.map((l) => `      ${l}`),
+      "      return false;",
+      "    }",
+    );
+  }
+  lines.push("  }", "  return false;", "}", "");
+
   // Type checking fails below when ir.ts gives a walked object a field this
   // file does not know, or lets a field that held no string and no object hold
   // one before this file is regenerated.

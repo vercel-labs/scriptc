@@ -2,10 +2,10 @@
  *
  * A sharded gate runs scripts/zero-cost-gate.mjs several times over one
  * good-code set (--shard=i/n for the bench and corpus programs, the self
- * program in shard 1 or its own --set=self run), each with --json. This
- * script merges those reports: program verdicts and failures are
- * concatenated, and the compile-time verdicts and the "nothing was
- * compared" check are recomputed over every shard's rows. */
+ * program and the emitter fixtures in shard 1 or their own --set=self run),
+ * each with --json. This script merges those reports: program verdicts and
+ * failures are concatenated, and the compile-time verdicts and the "nothing
+ * was compared" check are recomputed over every shard's rows. */
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { mergeReports, programLines } from "./zero-cost-compare.mjs";

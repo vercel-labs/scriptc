@@ -105,6 +105,16 @@ static void scr_child_error_spawn_fields(ScrError *e, double uv_errno, const cha
   scr_error_set_prop(e, "spawnargs", 9, spawnargs);
 }
 
+#ifdef SCR_CHILD_ERR_FIELDS
+/* Node copies the spawn argument list before running the child, so
+ * `spawnargs` answers the values the call was given even when the program
+ * rewrites its array after the call; a snapshot of the same values keeps
+ * the two equal. +1; NULL for no arguments. */
+static ScrArr *scr_child_snapshot_args(ScrArr *args) {
+  return args != NULL ? scr_arr_slice(args, 0, (double)scr_arr_len(args)) : NULL;
+}
+#endif
+
 /* exec/execFile's command failure: code (the exit status, or null after a
  * signal), killed and signal, before cmd. */
 static void scr_child_error_exit_fields(ScrError *e, bool has_code, double code,
@@ -1144,7 +1154,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     r->cmd = scr_str_retain(cmd);
 #ifdef SCR_CHILD_ERR_FIELDS
     r->spawn_errno = (double)scr_win_uv_errno(w.spawn_errname);
-    r->args = scr_arr_retain(args);
+    r->args = scr_child_snapshot_args(args);
 #endif
     return r;
   }
@@ -1167,7 +1177,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   /* libuv's UV_ETIMEDOUT (uv-errno.h); scr_win_uv_errno maps the spawn
    * failure names and answers UV_UNKNOWN for the timeout's. */
   r->spawn_errno = -4039.0;
-  r->args = scr_arr_retain(args);
+  r->args = scr_child_snapshot_args(args);
 #endif
   return r;
 }
@@ -3483,7 +3493,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     r->cmd = scr_str_retain(cmd);
 #ifdef SCR_CHILD_ERR_FIELDS
     r->spawn_errno = -(double)spawn_err;
-    r->args = scr_arr_retain(args);
+    r->args = scr_child_snapshot_args(args);
 #endif
     return r;
   }
@@ -3570,7 +3580,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
       r->cmd = scr_str_retain(cmd);
 #ifdef SCR_CHILD_ERR_FIELDS
       r->spawn_errno = -(double)ETIMEDOUT;
-      r->args = scr_arr_retain(args);
+      r->args = scr_child_snapshot_args(args);
 #endif
     }
   }

@@ -602,7 +602,7 @@ import {
 import { lowerSpawnSyncCall, lowerSpawnCall, lowerExecFileCall } from "./builtins/child-process.js";
 import { lowerExecSyncCall } from "./builtins/child-process-sync.js";
 import {
-  isProcessEnv,
+  isAmbientProcessEnv,
   envValueType,
   lowerProcessEnvGet,
   refuseHeldEnvWrite,
@@ -729,6 +729,7 @@ import {
   lowerDestructuringDecl,
   lowerDestructuringAssignParts,
   lowerBindingPattern,
+  assertedOnlyFieldRead,
   checkBindingElement,
   bindPatternTarget,
   isParseArgsDynCheckerType,
@@ -4036,8 +4037,9 @@ export class Lowerer {
    * record types (finalizeRecordLinks checks them against link sources). */
   readonly recordMethodCalls: { shapeId: string; method: string; loc: SrcLoc }[] = [];
   /** Completions of "custom" linked helpers (record-links.ts), which
-   * finalizeRecordLinks runs once the links are known. */
-  readonly linkedHelperFinalizers: (() => void)[] = [];
+   * finalizeRecordLinks runs once the links are known, with the record
+   * shapes a checked conversion can leave holding a kept source. */
+  readonly linkedHelperFinalizers: ((sourced: ReadonlySet<string>) => void)[] = [];
   /** Helpers over record types that finalizeRecordLinks completes. */
   readonly linkedHelpers: LinkedHelper[] = [];
   /** The JavaScript names of object literals' methods, by lifted function
@@ -16874,6 +16876,19 @@ export class Lowerer {
     return lowerDestructuringAssignParts(this, target, rhs, loc);
   }
 
+  /** The asserted-only member answer (lower-stmts.ts): the value one
+   * element reads from a record shape for a property only an asserted
+   * intersection declares, answered from the shape's kept source. */
+  assertedOnlyFieldRead(
+    propName: string,
+    srcType: IrType & { kind: "record" },
+    srcRef: () => IrExpr,
+    bodyT: IrType | null,
+    loc: SrcLoc,
+  ): IrExpr | null {
+    return assertedOnlyFieldRead(this, propName, srcType, srcRef, bodyT, loc);
+  }
+
   lowerBindingPattern(
     pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
     srcRef: () => IrExpr,
@@ -18628,8 +18643,11 @@ export class Lowerer {
     return lowerProcessStreamProperty(this, expr);
   }
 
+  /** Whether `node` is the ambient `process.env` object a receiver names:
+   * parentheses and the erased wrappers (`as`, `!`, `satisfies`) are looked
+   * through (environment.ts). */
   isProcessEnv(node: ts.Expression): boolean {
-    return isProcessEnv(this, node);
+    return isAmbientProcessEnv(this, node);
   }
 
   envValueType(): IrType {

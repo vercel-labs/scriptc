@@ -74,7 +74,7 @@ static ScrDyn *al_get(ScrDyn *recv, const ScrStr *key) {
   }
   if (recv->kind == SCR_DYN_ARR || recv->kind == SCR_DYN_STR || recv->kind == SCR_DYN_BYTES) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) {
-      double length = recv->kind == SCR_DYN_ARR ? (double)recv->v.arr.len
+      double length = recv->kind == SCR_DYN_ARR ? (double)scr_dyn_arr_length(recv)
         : recv->kind == SCR_DYN_STR ? scr_str_utf16_len(recv->v.str)
         : (double)recv->v.bytes->len;
       return scr_dyn_new_num(length);

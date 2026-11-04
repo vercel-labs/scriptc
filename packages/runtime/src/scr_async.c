@@ -187,7 +187,8 @@ typedef struct { size_t rc; } ScrPromiseIdentity;
 struct ScrPromise {
   size_t rc; /* The cycle collector reads the reference count at offset zero. */
   /* Shared identity cell for promises adopted across inner types (NULL
-   * until scr_promise_share_identity first links this promise). */
+   * until scr_promise_share_identity first links this promise or a Set or
+   * Map keys it, scr_promise_map_identity). */
   ScrPromiseIdentity *identity;
   int state;
   bool top_level_handled; /* uncaughtException handled entry evaluation */
@@ -394,10 +395,11 @@ void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
   dst->identity->rc++;
 }
 
-#ifdef SCR_NODE_ISLANDS
-/* Node islands (NI-5) key their export table by a promise's identity
- * (scr_node_island_export.c); other programs link none of this. */
-const void *scr_promise_identity_key(ScrPromise *p) {
+/* A Set's or Map's key identity of a promise (ScrMapIdentityOps): the
+ * identity cell its adapter boxes share, created on the first call so a
+ * stored key's hash does not change when a box of it appears later. */
+void *scr_promise_map_identity(void *promise) {
+  ScrPromise *p = promise;
   if (!p->identity) {
     p->identity = malloc(sizeof *p->identity);
     if (!p->identity) scr_oom();
@@ -405,6 +407,11 @@ const void *scr_promise_identity_key(ScrPromise *p) {
   }
   return p->identity;
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* Node islands (NI-5) key their export table by a promise's identity
+ * (scr_node_island_export.c); other programs link none of this. */
+const void *scr_promise_identity_key(ScrPromise *p) { return scr_promise_map_identity(p); }
 
 void scr_promise_identity_hold(const void *key) { ((ScrPromiseIdentity *)key)->rc++; }
 

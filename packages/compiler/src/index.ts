@@ -871,6 +871,7 @@ async function compileExecutableNative(
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),

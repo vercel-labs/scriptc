@@ -1577,6 +1577,14 @@ void scr_class_throw_read_only(ScrStr *field, ScrStr *owner);
 void scr_class_throw_not_extensible(ScrStr *field);
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key);
 ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
+/* Array.prototype's generic methods over an array-like receiver
+ * (scr_dyn_array_like.c, linked only into programs that call them from a
+ * JavaScript source): +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args);
+/* Number.prototype or Boolean.prototype as a value, one object per thread
+ * (scr_dyn_builtin_prototype.c, linked only into programs that read them
+ * from a JavaScript source); `kind` is "Number" or "Boolean". +1. */
+ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
 ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
 /* Names the prototype object of a compiled class `name` for util.inspect
@@ -2297,7 +2305,7 @@ void scr_dyn_this_push_dyn(const ScrDyn *v);          /* retained for the window
  * constant (kind: 0 plain, 1 observed, 2 traced capsule). `view` names the
  * live view bound to the new capsule, as eager boxing binds it: 0 none,
  * 1 array ops, 2 record ops, 3 class ops (`ops`). */
-typedef struct {
+typedef struct ScrDynTypedRefRecipe {
   void *(*retain)(void *);
   void (*release)(void *);
   const char *type_key;

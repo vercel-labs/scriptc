@@ -60,7 +60,8 @@ int version(int Argc, char **Argv) {
       {"data_layout", Machine->createDataLayout().getStringRepresentation()},
       // Commands and options added within one protocol version, for callers
       // that also run against older helpers.
-      {"features", json::Array{"runtime-unit-profile", "profile-functions"}},
+      {"features", json::Array{"runtime-unit-profile", "profile-functions",
+                                "runtime-unit-optional-bitcode"}},
   };
   outs() << formatv("{0}\n", json::Value(std::move(Response)));
   return 0;

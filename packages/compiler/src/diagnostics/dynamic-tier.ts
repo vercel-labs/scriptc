@@ -108,6 +108,8 @@ export function renderPerformanceWarnings(diags: readonly ScrDiagnostic[]): stri
   );
   const closing = diags.every((d) => d.code === "SC6104")
     ? "The program compiled. Declared types that compile keep these slots static."
-    : "The program compiled. Adding types to these functions lets scriptc compile them to faster code.";
+    : diags.every((d) => d.code === "SC6105")
+      ? "The program compiled. These fields keep their elements in ordinary arrays."
+      : "The program compiled. Adding types to these functions lets scriptc compile them to faster code.";
   return `${blocks.join("\n\n")}\n\n${closing}`;
 }

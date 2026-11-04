@@ -18,6 +18,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -544,13 +545,18 @@ export function patchAndBump(): number {
       // Node strips types only outside node_modules, and the shared island
       // cache of these tests lives below the repository's node_modules.
       const islandCache = mkdtempSync(join(tmpdir(), "scriptc-island-cache-"));
+      // A cache reached through a symbolic link (macOS's temporary directory
+      // is under /var, which is /private/var): Node resolves the island's
+      // import to the shared module's real path.
+      const linkedCache = `${islandCache}-link`;
+      symlinkSync(islandCache, linkedCache);
       try {
-        const out = await run(join(dir, "main"), [], {
-          ...process.env,
-          XDG_CACHE_HOME: islandCache,
-        });
-        expect(out).toEqual({ stdout: "2 2\n", stderr: "", code: 0 });
+        for (const cache of [islandCache, linkedCache]) {
+          const out = await run(join(dir, "main"), [], { ...process.env, XDG_CACHE_HOME: cache });
+          expect(out).toEqual({ stdout: "2 2\n", stderr: "", code: 0 });
+        }
       } finally {
+        rmSync(linkedCache, { force: true });
         rmSync(islandCache, { recursive: true, force: true });
       }
     }, 300_000);

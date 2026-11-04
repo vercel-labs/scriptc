@@ -11,7 +11,7 @@ import {
   definedFunctionNames,
   dynamicTierSymbols,
   linkedRuntimeFiles,
-  llvmFunctionHashes,
+  objectFunctionHashes,
   mergeReports,
   nmOutput,
   programInputsHash,
@@ -279,21 +279,30 @@ test("the zero-cost gate names the runtime pack files and functions that changed
     removed: [],
   });
 
-  const ll = (body: string, attrs: number) =>
+  // llvm-objdump -d -r --no-show-raw-insn --no-leading-addr output.
+  const objdump = (offset: number, call: string) =>
     [
-      `define i32 @scr_same(i32 %x) #${attrs} {`,
-      "  ret i32 %x, !dbg !" + attrs,
-      "}",
-      "define internal void @scr_changed() {",
-      `  ${body}`,
-      "}",
+      "scr_a.o:\tfile format elf64-x86-64",
+      "",
+      "Disassembly of section .text:",
+      "",
+      "<scr_same>:",
+      `               \tjl\t0x${(offset + 0x12).toString(16)} <scr_same+0x12>`,
+      `               \tcallq\t0x${(offset + 0xb).toString(16)} <scr_same+0xb>`,
+      "\t\tR_X86_64_PLT32\tscr_g-0x4",
+      "               \tretq",
+      "",
+      "<scr_changed>:",
+      `               \tcallq\t0x0 <scr_changed>`,
+      `\t\tR_X86_64_PLT32\t${call}-0x4`,
+      "               \tretq",
       "",
     ].join("\n");
-  const before = llvmFunctionHashes(ll("ret void", 0));
-  const after = llvmFunctionHashes(
-    ll("call void @f()\n  ret void", 7) + 'define void @"scr new"() {\n}\n',
+  const before = objectFunctionHashes(objdump(0, "scr_g"));
+  const after = objectFunctionHashes(
+    objdump(0x40, "scr_h") + "<scr new>:\n               \tretq\n",
   );
-  // Renumbered attribute groups and metadata are not changes.
+  // A function that only moved within its section is not a change.
   expect(changedFunctions(before, after)).toEqual({
     changed: ["scr_changed"],
     added: ["scr new"],

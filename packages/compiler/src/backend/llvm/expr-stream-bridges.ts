@@ -281,10 +281,13 @@ export function streamTypedRefCommitAdapter(
         });
     }
     const symbols = new Map((meta.def.symbolFields ?? []).map((symbol) => [symbol.field, symbol]));
+    // An inline array field is never written through a view
+    // (inline-array-views.ts), so its elements stay as they are.
     const fields = meta.def.fields.filter(
       (field) =>
         (isClassOwnEnumerableFieldName(field.name) || symbols.has(field.name)) &&
-        !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")),
+        !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")) &&
+        inlineFieldTail(host, t.className, field.name) === undefined,
     );
     for (const [index, field] of fields.entries()) {
       const next = `f${index}_next`;

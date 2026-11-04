@@ -833,7 +833,7 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${raw} = call ptr @scr_sp_get(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
     return host.wrapNullable(raw, raw, STRING, strTag, e.type, nullTag);
   }
-  if (e.fn === "qs.parse") {
+  if (e.fn === "qs.parse" || e.fn === "qs.parseCustom") {
     // The ParsedUrlQuery dictionary: a fresh pure-index-signature
     // record whose overflow map the runtime scan fills
     // (scr_qs_parse_into groups repeats into string[] buckets).
@@ -851,7 +851,12 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (strTag < 0 || arrTag < 0)
       throw new InternalCompilerError("llvm emitter bug: qs.parse index union lacks its arms");
     const args = e.args.map((a) => host.emitExpr(a));
-    host.declare(`declare void @scr_qs_parse_into(ptr, ptr, ptr, ptr, double, i32, i32)`);
+    const custom = e.fn === "qs.parseCustom";
+    host.declare(
+      custom
+        ? `declare void @scr_qs_parse_into_custom(ptr, ptr, ptr, ptr, double, ptr, i32, i32)`
+        : `declare void @scr_qs_parse_into(ptr, ptr, ptr, ptr, double, i32, i32)`,
+    );
     const dict = B.tmp();
     B.line(`${dict} = call ptr @${mangleRecordNew(e.type.shapeId)}()`);
     const out = host.own({ name: dict, type: e.type });
@@ -859,8 +864,12 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(dict, e.type.shapeId)}`);
     const ovf = host.recordOvfPtr(dict, e.type.shapeId);
     B.line(
-      `call void @scr_qs_parse_into(ptr ${ovf}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, double ${args[3]!.name}, i32 ${strTag}, i32 ${arrTag})`,
+      custom
+        ? `call void @scr_qs_parse_into_custom(ptr ${ovf}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, double ${args[3]!.name}, ptr ${args[4]!.name}, i32 ${strTag}, i32 ${arrTag})`
+        : `call void @scr_qs_parse_into(ptr ${ovf}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, double ${args[3]!.name}, i32 ${strTag}, i32 ${arrTag})`,
     );
+    // A custom decoder can answer a value the dictionary cannot hold.
+    if (custom) host.emitPendingCheck();
     return out;
   }
   if (e.fn === "os.networkInterfaces") {

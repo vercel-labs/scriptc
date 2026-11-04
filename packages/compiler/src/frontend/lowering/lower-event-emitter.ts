@@ -54,6 +54,8 @@ import { dynFallbackType, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
+import { functionUsesThis } from "./cjs-exports-object.js";
+import { isThisParameter } from "./call-signatures.js";
 import {
   arrayOf,
   BOOL,
@@ -1829,6 +1831,7 @@ export function lowerEmitterMethodCall(
         args: [receiver, eventNameExpr(name, loc), cb, boolLit(once, loc), boolLit(prepend, loc)],
         type: receiver.type,
         loc,
+        ...(listenerReadsThis(lowerer, args[1]!) ? { bindsThis: true as const } : {}),
       };
     }
     // Stream-rooted receivers consult the per-base FORCED tuples first
@@ -1872,6 +1875,7 @@ export function lowerEmitterMethodCall(
         : [receiver, eventNameExpr(name, loc), cb],
       type: receiver.type,
       loc,
+      ...(registering && listenerReadsThis(lowerer, args[1]!) ? { bindsThis: true as const } : {}),
     };
   }
 
@@ -3109,4 +3113,44 @@ export function lowerEventsEmitterHelper(
     };
   }
   return null;
+}
+
+/** Whether a typed listener can read the `this` its calls bind (Node calls
+ * listeners with the emitter as `this`): a function expression, or a
+ * function declaration or `const` function binding, whose own body reads
+ * `this`; any other listener value except an arrow in a JavaScript source;
+ * and in a TypeScript source, where a function reads `this` only through a
+ * declared `this` parameter, a value whose call signature declares one.
+ * Arrows read the enclosing `this`. */
+function listenerReadsThis(lowerer: Lowerer, node: ts.Expression): boolean {
+  let listener = node;
+  while (ts.isParenthesizedExpression(listener)) listener = listener.expression;
+  if (ts.isArrowFunction(listener)) return false;
+  if (ts.isFunctionExpression(listener)) return functionUsesThis(listener);
+  if (ts.isIdentifier(listener)) {
+    const decls = lowerer.checker.getSymbolAtLocation(listener)?.declarations ?? [];
+    // An overloaded function's implementation is the declaration with a
+    // body; its overload signatures have none.
+    const fn = decls.find((d) => ts.isFunctionDeclaration(d) && d.body !== undefined);
+    if (fn !== undefined) return functionUsesThis(fn as ts.FunctionDeclaration);
+    const binding = decls.find(ts.isVariableDeclaration);
+    let init = binding?.initializer;
+    while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
+    if (
+      binding !== undefined &&
+      init !== undefined &&
+      (ts.getCombinedNodeFlags(binding) & ts.NodeFlags.Const) !== 0
+    ) {
+      if (ts.isArrowFunction(init)) return false;
+      if (ts.isFunctionExpression(init)) return functionUsesThis(init);
+    }
+  }
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) return true;
+  return lowerer.checker
+    .getCallSignatures(lowerer.typeOf(listener))
+    .some((signature) =>
+      ((signature.declaration?.parameters?.nodes ?? []) as ts.ParameterDeclaration[]).some(
+        isThisParameter,
+      ),
+    );
 }

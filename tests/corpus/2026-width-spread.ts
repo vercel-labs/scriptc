@@ -1,7 +1,8 @@
 // Width subtyping in SPREAD clothing: `{ ...wider }` building a narrower
 // literal drops the extra fields and lifts the rest per field — the same
-// copy-reshape rule as slot flows (SEMANTICS.md 36; Node's object would
-// keep the extra keys, so reads-after-narrow only).
+// copy-reshape rule as slot flows (SEMANTICS.md 36; the extra keys are kept
+// when the program observes the target — width-spread-kept-keys.ts — so this
+// program only reads declared fields).
 type A = { a: string; b: string };
 const extra1 = { a: "a", b: "b", extra: "extra" };
 const a1: A = { ...extra1 };

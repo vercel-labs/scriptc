@@ -1651,7 +1651,7 @@ function emitNumericIndexRead(
 
 /** The recipe a lazily boxed receiver of type `t` is built from: its RC
  * adapters, type key and live view, one per type. */
-function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
+export function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
   const key = typeKey(t);
   let recipe = host.typedRefRecipes.get(key);
   if (recipe !== undefined) return recipe;

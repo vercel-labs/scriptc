@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { RUNTIME_PACK_MATRIX } from "../runtime-pack-matrix.mjs";
 import {
-  buildImportBitcode,
   buildRuntimeUnit,
   resolveRuntimeUnitHelper,
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
@@ -80,8 +79,8 @@ async function build() {
   const ZLIB_BUILD = zlibInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
 
   // Speed-flavor executable units are emitted through the host LLVM helper
-  // so their object and import bitcode come from one promoted module. The
-  // helper also reduces release units' bitcode to what programs can import.
+  // (runtime-unit.mjs), which promotes their local symbols and applies the
+  // runtime profile.
   const unitHelper = await resolveRuntimeUnitHelper(
     repoRoot,
     RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -137,7 +136,7 @@ async function build() {
     const flavors = {};
     // The executable `speed` flavor (--optimization=speed) exists only when
     // it differs from release: its static units are emitted through the host
-    // LLVM helper with import bitcode.
+    // LLVM helper.
     const flavorPlan = [
       ...Object.entries(RUNTIME_PACK_MATRIX.flavors),
       ...("release" in RUNTIME_PACK_MATRIX.flavors && unitHelper !== null
@@ -183,8 +182,6 @@ async function build() {
               ...variant.defines.map((define) => `-D${define}`),
               ...includeFlags,
             ];
-            let bitcode;
-            const bitcodeOutput = output.replace(/\.o$/, ".bc");
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
             if (
               flavor === "speed" &&
@@ -201,7 +198,6 @@ async function build() {
                     optimized,
                   ]),
                 object: output,
-                bitcode: bitcodeOutput,
                 triple: RUNTIME_PACK_MATRIX.target.llvm_triple,
                 tag: unit.source.replace(/\.c$/, ""),
                 sections:
@@ -210,38 +206,8 @@ async function build() {
                   ),
               }))
             ) {
-              bitcode = {
-                path: artifactPath(bitcodeOutput),
-                sha256: await sha256(bitcodeOutput),
-                size: (await stat(bitcodeOutput)).size,
-              };
             } else {
               await compile(join(runtimeSrc, unit.source), output, unitFlags);
-              if (
-                flavor === "release" &&
-                unitHelper !== null &&
-                (await buildImportBitcode({
-                  helper: unitHelper,
-                  compileBitcode: (optimized) =>
-                    run(compiler, [
-                      ...sourcePathFlags,
-                      ...unitFlags,
-                      "-emit-llvm",
-                      "-c",
-                      join(runtimeSrc, unit.source),
-                      "-o",
-                      optimized,
-                    ]),
-                  bitcode: bitcodeOutput,
-                  tag: unit.source.replace(/\.c$/, ""),
-                }))
-              ) {
-                bitcode = {
-                  path: artifactPath(bitcodeOutput),
-                  sha256: await sha256(bitcodeOutput),
-                  size: (await stat(bitcodeOutput)).size,
-                };
-              }
             }
             const built = {
               id: variant.id,
@@ -250,7 +216,6 @@ async function build() {
               path: artifactPath(output),
               sha256: await sha256(output),
               size: (await stat(output)).size,
-              ...(bitcode === undefined ? {} : { bitcode }),
             };
             variants.push(built);
           }

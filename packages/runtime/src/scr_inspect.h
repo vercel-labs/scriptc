@@ -77,6 +77,9 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface);
  * SC2020 refusal pending for values that have no lowering. */
 bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o);
 ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOptions *o);
+/* new StringDecoder(encoding) for an encoding of any type: Node's
+ * normalizeEncoding, ERR_UNKNOWN_ENCODING formatted with %s (+1 or NULL). */
+ScrStr *scr_strdec_encoding_value(const ScrDyn *enc);
 /* util.format(...pack) and util.formatWithOptions(options, ...pack) over a
  * dyn array of the arguments (+1). */
 ScrStr *scr_insp_format_pack(ScrDyn *pack);

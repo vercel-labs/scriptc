@@ -8,6 +8,7 @@ const os = require("os");
 const { inspect } = require("util");
 
 const hasIntl = true;
+const enoughTestMem = os.totalmem() > 0x70000000; /* 1.75 Gb */
 const isDebug = false;
 const isWindows = process.platform === "win32";
 const isAIX = os.type() === "AIX";
@@ -127,11 +128,37 @@ function invalidArgTypeHelper(input) {
   return ` Received type ${typeof input} (${inspected})`;
 }
 
-function spawnPromisified(...args) {
+function getArrayBufferViews(buf) {
+  const { buffer, byteOffset, byteLength } = buf;
+  const out = [];
+  const arrayBufferViews = [
+    Int8Array,
+    Uint8Array,
+    Uint8ClampedArray,
+    Int16Array,
+    Uint16Array,
+    Int32Array,
+    Uint32Array,
+    Float16Array,
+    Float32Array,
+    Float64Array,
+    BigInt64Array,
+    BigUint64Array,
+    DataView,
+  ];
+  for (const type of arrayBufferViews) {
+    const { BYTES_PER_ELEMENT = 1 } = type;
+    if (byteLength % BYTES_PER_ELEMENT === 0)
+      out.push(new type(buffer, byteOffset, byteLength / BYTES_PER_ELEMENT));
+  }
+  return out;
+}
+
+function spawnPromisified(command, args, options) {
   const { spawn } = require("child_process");
   let stderr = "";
   let stdout = "";
-  const child = spawn(...args);
+  const child = spawn(command, args, options);
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (data) => {
     stderr += data;
@@ -147,6 +174,7 @@ function spawnPromisified(...args) {
 }
 
 module.exports = {
+  enoughTestMem,
   hasCrypto,
   hasIntl,
   isAIX,
@@ -160,6 +188,7 @@ module.exports = {
   mustSucceed,
   skip,
   expectWarning,
+  getArrayBufferViews,
   expectsError,
   invalidArgTypeHelper,
   platformTimeout,

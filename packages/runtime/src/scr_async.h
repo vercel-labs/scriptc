@@ -454,6 +454,19 @@ ScrPromise *scr_immediate_promise(void);
 void scr_clear_interval(double handle);
 
 double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves in */
+/* A setTimeout/setInterval delay as given (after ToNumber): emits the
+ * warning Node's Timeout constructor emits when it sets the delay to 1
+ * (TimeoutOverflowWarning; TimeoutNegativeWarning and TimeoutNaNWarning
+ * once per process) on the next tick, and returns the delay unchanged.
+ * `kind` is 0 for the global setTimeout, 1 for the global setInterval,
+ * which emit nothing while mock.timers mocks them, and 2 for a node:timers
+ * import, which mock.timers leaves alone; bit 4 marks a delay read from an
+ * array element, whose NaN may be the undefined of a read past the end,
+ * which warns nothing. */
+double scr_timer_user_delay(double after, double kind);
+/* The mocked global timer functions (scr_test.c): bit 0 setTimeout, bit 1
+ * setInterval. */
+extern SCR_TL int scr_timer_mocked_apis;
 /* Queues `cb` (moved) on the MockTimers that mocks AbortSignal.timeout
  * (scr_test.c), NULL while it is not mocked. AbortSignal.timeout then
  * aborts its signal from that queue instead of arming a loop timer. */

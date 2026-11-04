@@ -2873,8 +2873,8 @@ ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
 /* new StringDecoder(encoding) with an encoding known only at run time:
  * Node's normalizeEncoding. undefined, null and "" are utf8; a Buffer
  * encoding name in any ASCII case answers its canonical name (+1); any
- * other string throws ERR_UNKNOWN_ENCODING (NULL). Encodings that are not
- * strings have no lowering. */
+ * other string throws ERR_UNKNOWN_ENCODING (NULL). Encodings that may not
+ * be strings go through scr_strdec_encoding_value (scr_inspect.c). */
 ScrStr *scr_strdec_encoding(const ScrDyn *enc) {
   if (enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL) return scr_str_new("utf8", 4);
   if (enc->kind != SCR_DYN_STR) {

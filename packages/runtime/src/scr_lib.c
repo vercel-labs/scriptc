@@ -3466,7 +3466,15 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
   int error = scr_file_read_all(f, -1, false, &out);
   fclose(f);
   if (error) { scr_fs_throw(error, "read", path); return NULL; }
+#ifdef SCR_FS_BUFFER_BRAND
+  /* Node answers a Buffer: the brand is observable (Buffer.isBuffer,
+   * .constructor, instanceof, inspect), so the read's bytes carry it. */
+  ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+#else
   return scr_bytes_take_data(out.bytes, out.len);
+#endif
 }
 
 /* readFileSync(path, "utf8") and fs.promises.readFile(path, "utf8"): the
@@ -5299,7 +5307,15 @@ ScrBytes *scr_fs_read_fd_bytes(double fd) {
   ScrFileRead out;
   int error = scr_file_read_all(NULL, (int)fd, false, &out);
   if (error) { scr_fs_throw_nopath(error, "read"); return NULL; }
+#ifdef SCR_FS_BUFFER_BRAND
+  /* Node answers a Buffer here too (the fd form of readFileSync and
+   * FileHandle#readFile). */
+  ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+#else
   return scr_bytes_take_data(out.bytes, out.len);
+#endif
 }
 
 /* ── the tty probes ──────────────────────────────────────────────────── */

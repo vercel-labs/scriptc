@@ -41,6 +41,7 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Set: ["add", "has", "delete", "clear", "keys", "values", "entries", "forEach"],
   WeakMap: ["get", "set", "has", "delete"],
   WeakSet: ["add", "has", "delete"],
+  Boolean: ["valueOf", "toString"],
   String: [
     "split",
     "startsWith",
@@ -67,7 +68,13 @@ export function builtinPrototypeMethod(
   const prototype = expr.expression;
   if (!ts.isPropertyAccessExpression(prototype) || prototype.name.text !== "prototype") return null;
   const owner = stdlibGlobalNameOf(lowerer, prototype.expression);
-  return owner && PROTOTYPE_METHODS[owner]?.includes(expr.name.text) ? owner : null;
+  if (owner === null || !PROTOTYPE_METHODS[owner]?.includes(expr.name.text)) return null;
+  // The Boolean pair has a value form only in a JavaScript source (the
+  // brand-check tests call it on a foreign receiver); a typed source keeps
+  // the SC2020 member fence, since the runtime has no Boolean receiver
+  // branch and `Boolean.prototype.valueOf.call(true)` would be wrong.
+  if (owner === "Boolean" && !isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  return owner;
 }
 
 /** These native callables own their argument checks. Unannotated JS aliases

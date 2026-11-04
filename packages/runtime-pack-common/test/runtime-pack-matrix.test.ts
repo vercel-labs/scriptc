@@ -73,6 +73,28 @@ test("web streams and Node islands select an async build that defines both", () 
   ).toEqual([]);
 });
 
+test("a file read whose bytes the program can observe selects the branded build", () => {
+  const plain = { workers: false, watchFile: false, fsBufferBrand: false };
+  // Alone, the brand selects its own build.
+  expect(selected("scr_lib.c", { ...plain, fsBufferBrand: true }).defines).toEqual([
+    "SCR_FS_BUFFER_BRAND",
+  ]);
+  // Beside the poll it keeps both units' entry points.
+  expect(selected("scr_lib.c", { ...plain, watchFile: true, fsBufferBrand: true }).defines).toEqual(
+    ["SCR_FS_WATCH_FILE", "SCR_FS_BUFFER_BRAND"],
+  );
+  expect(selected("scr_lib.c", { ...plain, workers: true, fsBufferBrand: true }).defines).toEqual([
+    "SCR_FS_BUFFER_BRAND",
+    "SCR_WORKERS",
+  ]);
+  // A program that reads bytes without observing the brand keeps the default
+  // object, byte for byte.
+  expect(selected("scr_lib.c", plain).defines).toEqual([]);
+  expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([
+    "SCR_FS_WATCH_FILE",
+  ]);
+});
+
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
   const unit = matrix.runtime_units.find(
     (u: { source: string }) => u.source === "scr_stats_bigint.c",

@@ -46,7 +46,7 @@ import {
   definedFunctionNames,
   dynamicTierSymbols,
   linkedRuntimeFiles,
-  llvmFunctionHashes,
+  objectFunctionHashes,
   median,
   icuSymbols,
   nodeIslandSymbols,
@@ -465,21 +465,22 @@ async function instructionCounts(binary, args, out) {
 
 const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
-/** llvm-dis from PATH or the pinned LLVM install, or null. */
-function llvmDis() {
-  for (const candidate of ["llvm-dis", "llvm-dis-22", "/usr/lib/llvm-22/bin/llvm-dis"])
+/** llvm-objdump from PATH or the pinned LLVM install, or null. */
+function llvmObjdump() {
+  for (const candidate of ["llvm-objdump", "llvm-objdump-22", "/usr/lib/llvm-22/bin/llvm-objdump"])
     if (spawnSync(candidate, ["--version"]).status === 0) return candidate;
   const config = spawnSync("llvm-config", ["--bindir"], { encoding: "utf8" });
-  const fromConfig = config.status === 0 ? join(config.stdout.trim(), "llvm-dis") : null;
+  const fromConfig = config.status === 0 ? join(config.stdout.trim(), "llvm-objdump") : null;
   return fromConfig !== null && existsSync(fromConfig) ? fromConfig : null;
 }
 
 /** What differs between the two checkouts' runtime packs for this host, or
  * null when no object or archive does: the changed pack files, whether the
  * LLVM helper is the same, the symbols the changed objects define (on either
- * side), and the functions that changed in the bitcode of the changed
- * release and speed objects. Bitcode alone is not a change: it records the
- * checkout's source path, so it differs between any two checkouts. */
+ * side), and the functions whose code changed in the changed release and
+ * speed objects. Bitcode, which packs built before 0.4.7 also list, is not
+ * a change: it records the checkout's source path, so it differs between
+ * any two checkouts. */
 function runtimeChanges() {
   const pack = (root) =>
     readdirSync(join(root, "packages"))
@@ -523,22 +524,22 @@ function runtimeChanges() {
       });
       for (const symbol of parseNm(listed.stdout ?? "")) symbols.add(symbol.name);
     }
-  // Changed functions, by unit, from the bitcode of the release and speed
-  // flavors (the ones the gate builds with).
-  const dis = llvmDis();
+  // Changed functions, by unit, from the disassembly of the release and
+  // speed flavors' objects (the ones the gate builds with).
+  const dis = llvmObjdump();
   const functions = { changed: new Set(), added: new Set(), removed: new Set(), units: new Set() };
   for (const object of objects)
     functions.units.add(object.replace(/^.*\//, "").replace(/\.o$/, ".c"));
-  const bitcode = objects
-    .filter((path) => /^artifacts\/(release|speed)\//.test(path))
-    .map((path) => path.replace(/\.o$/, ".bc"));
-  for (const path of bitcode) {
+  for (const path of objects.filter((path) => /^artifacts\/(release|speed)\//.test(path))) {
     if (dis === null) continue;
     const text = (root) => {
       const file = join(packDir(root), path);
       if (!existsSync(file)) return new Map();
-      const out = spawnSync(dis, [file, "-o", "-"], { encoding: "utf8", maxBuffer: 1 << 30 });
-      return llvmFunctionHashes(out.stdout ?? "");
+      const out = spawnSync(dis, ["-d", "-r", "--no-show-raw-insn", "--no-leading-addr", file], {
+        encoding: "utf8",
+        maxBuffer: 1 << 30,
+      });
+      return objectFunctionHashes(out.stdout ?? "");
     };
     const delta = changedFunctions(text(trees.baseline), text(trees.candidate));
     for (const kind of ["changed", "added", "removed"])
@@ -698,7 +699,7 @@ if (runtime !== null) {
       (runtime.helperSame ? "" : "; the LLVM helper differs too, so nothing is runtime-only"),
   );
   if (runtime.disassembler === null)
-    console.log("runtime functions: llvm-dis not found, so changed functions are not listed");
+    console.log("runtime functions: llvm-objdump not found, so changed functions are not listed");
   else
     console.log(
       `runtime functions: ${runtime.functions.changed.length} changed` +

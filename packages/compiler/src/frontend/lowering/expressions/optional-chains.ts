@@ -173,6 +173,21 @@ function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boole
   );
 }
 
+/** `f?.()` where the checker types the callee never-nullish: the guard can
+ * never short-circuit, so the step IS `f()`. `any`/`unknown` stay out — a
+ * type that could hold anything could hold nullish. */
+function neverNullishCallee(lowerer: Lowerer, node: ts.Expression): boolean {
+  const nullable =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  const parts = (type: ts.Type): readonly ts.Type[] =>
+    type.flags & ts.TypeFlags.Union ? constituentTypes(type) : [type];
+  return parts(lowerer.typeOf(node)).every((part) => !(part.flags & nullable));
+}
+
 /** `proc?.env` for `const proc = (globalThis as { process?: P }).process`,
  * and `globalThis.process?.env`: the receiver is a global Node always
  * defines (a snapshot alias is plumbing for the global itself), so the
@@ -253,6 +268,25 @@ export function lowerOptionalChain(
     }
   }
   let loweredReceiver: IrExpr | null;
+  // `rmSync?.(…)`: a callee the checker types never-nullish whose value has
+  // NO lowering at all — a module function exists only as a call (its value
+  // form is fenced). The guard cannot short-circuit, so the step is the
+  // plain call; re-dispatch it and let it report its own diagnostics when
+  // it has no lowering either.
+  if (
+    dotNode === expr &&
+    ts.isCallExpression(expr) &&
+    !alwaysPresentStdlibMethod(lowerer, recvNode) &&
+    neverNullishCallee(lowerer, recvNode) &&
+    tryLowerExpression(lowerer, recvNode) === null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
   if (dotNode === expr && alwaysPresentStdlibMethod(lowerer, recvNode)) {
     loweredReceiver = tryLowerExpression(lowerer, recvNode);
     if (loweredReceiver === null) {

@@ -2353,6 +2353,9 @@ function lowerBufferStaticValue(
   const member = access.name.text;
   const loc = locOf(call);
   const args = call.arguments.nodes;
+  // Buffer.of(...items): Node's own `of`, a new unpooled Buffer of the items
+  // converted in order, as Uint8Array.of converts them.
+  if (member === "of") return lowerBytesOf(lowerer, call, "u8");
   if (member === "from") {
     if (
       args.length >= 1 &&

@@ -2259,6 +2259,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.querystring.unescapeBuffer",
+      "kind": "node-builtin",
+      "name": "querystring.unescapeBuffer",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.readline",
       "kind": "node-builtin",
       "name": "readline",

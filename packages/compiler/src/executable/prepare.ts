@@ -108,6 +108,7 @@ export function prepareExecutableModule(
   }
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
+  let contractWarnings: ScrDiagnostic[] = [];
   let disposed = false;
   let fenceGrown: Map<string, IslandPackage> | null = null;
   const fenceSure = new Set<string>();
@@ -275,6 +276,7 @@ export function prepareExecutableModule(
       timing("contracts");
       if (checked.diagnostics.length > 0) return fail(checked.diagnostics);
       if (checked.contracts) lowered.module.contracts = checked.contracts;
+      contractWarnings = checked.warnings;
     }
     if (retryFences)
       fenceGrown = fenceIslands(entryPath, opts, fe, lowered, lowerIslands, true, fenceSure);
@@ -296,6 +298,7 @@ export function prepareExecutableModule(
       ...(fe.warnings ?? []),
       ...(lowered.divergences ?? []),
       ...(lowered.performance ?? []),
+      ...contractWarnings,
     ],
     ...(islandDecision === null
       ? {}

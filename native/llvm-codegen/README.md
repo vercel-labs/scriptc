@@ -49,19 +49,19 @@ Runtime-pack builds emit each unit of the executable `speed` flavor through the 
 
 ```console
 scriptc-llvm-codegen runtime-unit --input unit.opt.bc --object unit.o \
-  --bitcode unit.bc --target x86_64-unknown-linux-gnu --tag scr_array \
+  --target x86_64-unknown-linux-gnu --tag scr_array \
   [--function-sections --data-sections]
 ```
 
-The input is the runtime compiler's optimized bitcode. The command promotes unit-local symbols to hidden `<name>.scrunit.<tag>` globals and writes the object and the import bitcode from that one module, so imported bodies can reference the unit's private state and helpers.
+The input is the runtime compiler's bitcode for the unit. The command promotes unit-local symbols to hidden `<name>.scrunit.<tag>` globals and writes the object. With `--bitcode unit.bc` it also writes import bitcode from the same module, so imported bodies can reference the unit's private state and helpers. Runtime packs ship no bitcode, since program builds don't import it.
 
-Release units keep the runtime compiler's own objects. Their import bitcode is the same compilation with `-emit-llvm`, reduced by the helper:
+`prune-import` reduces a unit's `-emit-llvm` bitcode to import bitcode without promotion:
 
 ```console
 scriptc-llvm-codegen prune-import --input unit.opt.bc --output unit.bc
 ```
 
-Both commands keep only what a program build can import: the importable bodies within the size limit at their call distance from any public function, and the constants they copy. Every other definition becomes a declaration, so a program imports exactly what it would from the whole unit while reading a fraction of it. Unpromoted unit-local symbols stay local, so release bitcode offers only bodies that need none of them.
+Import bitcode keeps only what a program build can import: the importable bodies within the size limit at their call distance from any public function, and the constants they copy. Every other definition becomes a declaration, so a program imports exactly what it would from the whole unit while reading a fraction of it. Unpromoted unit-local symbols stay local, so `prune-import` bitcode offers only bodies that need none of them.
 
 ## Linux release builds
 

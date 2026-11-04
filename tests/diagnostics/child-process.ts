@@ -20,11 +20,9 @@ spawn("true", [], options);
 spawn("printf", ["unsafe"], { stdio: "ignore", shell: true });
 const c = spawn("true", [], { stdio: "ignore" });
 
-// `() => 5` IS assignable to a void-returning listener slot and now ADOPTS
-// the slot's void (JS ignores the value); an ANNOTATED value-returning
-// listener keeps its word and stays fenced — the registry calls listeners
-// as void.
-c.on("exit", (): number => 5);
+// Value-returning listeners — inferred, annotated, or async — ADOPT the
+// slot's void: Node drops whatever a listener returns, and the closure
+// adapter discards it (tests/corpus/child-listener-return-values.ts).
 // Methods have no bound-value form — call on directly.
 const f = c.on;
 // The callback slice accepts inline utf8/maxBuffer options, but not all of

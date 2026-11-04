@@ -139,6 +139,7 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
+import { isPrimitivePrototypeRead } from "./expressions/property-access.js";
 import {
   lowerBufferConstruct,
   lowerBytesPrototypeSetCall,
@@ -192,7 +193,7 @@ import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
 } from "./builtins/process.js";
-import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
+import { recordMayKeepSource, recordSourceTest, throughRecordSource } from "./record-sources.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
@@ -2889,6 +2890,30 @@ function immediateObjectTagReceiver(
   return null;
 }
 
+/** Array.prototype methods whose `.<name>.call(receiver, ...)` form the
+ * array-like unit runs generically when `receiver` is not a native array:
+ * the rest of the prototype's methods besides the invoke unit's own set
+ * (at, slice, indexOf, lastIndexOf, includes and the higher-order
+ * callbacks). */
+const ARRAY_LIKE_BORROW_METHODS = new Set([
+  "concat",
+  "copyWithin",
+  "fill",
+  "flat",
+  "flatMap",
+  "join",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "splice",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "unshift",
+  "with",
+]);
+
 const ARRAY_BORROW_METHODS = new Set([
   "at",
   "every",
@@ -2925,7 +2950,9 @@ function lowerArrayPrototypeBorrowCall(
   const method = access.expression;
   if (
     method.questionDotToken ||
-    !ARRAY_BORROW_METHODS.has(method.name.text) ||
+    !(
+      ARRAY_BORROW_METHODS.has(method.name.text) || ARRAY_LIKE_BORROW_METHODS.has(method.name.text)
+    ) ||
     !ts.isPropertyAccessExpression(method.expression) ||
     method.expression.questionDotToken ||
     method.expression.name.text !== "prototype" ||
@@ -2940,7 +2967,12 @@ function lowerArrayPrototypeBorrowCall(
   const args = call.arguments.nodes.slice(1).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
   return {
     kind: "libCall",
-    fn: "dyn.arrayProtoCall",
+    // The array-like unit runs an extended method's algorithm over a
+    // receiver that is not a native array and delegates the rest to the
+    // invoke unit's dispatch.
+    fn: ARRAY_LIKE_BORROW_METHODS.has(method.name.text)
+      ? "dyn.arrayLikeProtoCall"
+      : "dyn.arrayProtoCall",
     args: [
       receiver,
       { kind: "strLit", value: method.name.text, type: STRING, loc },
@@ -4010,6 +4042,12 @@ function lowerDynReceiverMethodCall(
   )
     recv = lowerer.coerceToExpected(recv, DYN);
   if (recv.type.kind !== "dyn") return null;
+  // `Number.prototype.m(...)` reads the prototype OBJECT, whose `m` is its
+  // own member, so every primitive specialization below — which assumes a
+  // primitive receiver and coerces the value it is given — would be wrong.
+  // The shared dispatch reads the member and calls it with the prototype as
+  // `this`, which is Node's answer for the wrapper around +0 / false.
+  const prototypeReceiver = isPrimitivePrototypeRead(lowerer, access.expression);
   if (
     access.name.text === "normalize" &&
     call.arguments.nodes.length <= 1 &&
@@ -4120,7 +4158,7 @@ function lowerDynReceiverMethodCall(
   // prototype declares (Array carries includes/indexOf/slice too), so no
   // other kind inherits them. Shared names would need a receiver-kind
   // dispatch — they keep the fence.
-  if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable) {
+  if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable && !prototypeReceiver) {
     // A checked-dynamic object can still carry its OWN member of that
     // name: zod's schemas assign `trim`, `toLowerCase` and `startsWith`
     // in their constructors (`z.string().trim().min(1)`), an object's
@@ -4151,6 +4189,7 @@ function lowerDynReceiverMethodCall(
   // runtime dispatch.
   if (
     !ownCallable &&
+    !prototypeReceiver &&
     isDynPrimitiveKindMethod(access.name.text) &&
     !lowerer.chainBlocked(access, call)
   ) {
@@ -4171,6 +4210,7 @@ function lowerDynReceiverMethodCall(
     access.name.text === "toString" &&
     call.arguments.nodes.length <= 1 &&
     !ownCallable &&
+    !prototypeReceiver &&
     !(checkerUntyped && jsAssignsOwnToString(lowerer, access.expression))
   ) {
     const argument = call.arguments.nodes[0];
@@ -4189,7 +4229,7 @@ function lowerDynReceiverMethodCall(
   // Every dyn kind's prototype chain declares valueOf, and the runtime
   // answers each kind's own: primitives and plain objects themselves, a
   // Date its time value, an own or inherited valueOf member its result.
-  if (access.name.text === "valueOf" && call.arguments.nodes.length === 0) {
+  if (access.name.text === "valueOf" && call.arguments.nodes.length === 0 && !prototypeReceiver) {
     const webAssembly = lowerWebAssemblyValueOf(lowerer, access.expression, recv, locOf(call));
     if (webAssembly !== null) return webAssembly;
     return {
@@ -7673,6 +7713,35 @@ export function recordKeysArrayCall(
       }
       body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
+      // A record that kept undeclared keys answers for-in through its live
+      // kept view, exactly as Object.keys does at its call site. Gated on
+      // the shape being one a kept width spread builds (a shape that keeps
+      // no source stays byte-identical to main) and on the shape holding a
+      // source at all.
+      if (
+        lowerer.keyOrder.keptSourceShapes.has(argIr.shapeId) &&
+        recordMayKeepSource(lowerer, argIr)
+      ) {
+        body.unshift({
+          kind: "if",
+          cond: recordSourceTest(ref, loc),
+          then: [
+            {
+              kind: "return",
+              value: {
+                kind: "libCall",
+                fn: "dyn.objKeyStrings",
+                args: [{ kind: "dynFrom", value: ref, liveRef: true, type: DYN, loc }],
+                type: resultT,
+                loc,
+              },
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
       fn.body = body;
     };
     finalize();
@@ -7734,6 +7803,33 @@ export function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLo
     body,
     loc,
   });
+  // A record that kept undeclared keys answers an undeclared key through
+  // its kept view: the declared branches above stay exact (the table's
+  // placeholders only fill declared names the record owns), and the
+  // closed-shape `false` fallback becomes the view's own-key test when a
+  // kept width spread builds this shape.
+  if (!shape.indexValue && recordMayKeepSource(lowerer, recT)) {
+    const fn = lowerer.liftedFns[lowerer.liftedFns.length - 1]!;
+    lowerer.shapeOrderHelperFinalizers.push(() => {
+      if (!lowerer.keyOrder.keptSourceShapes.has(shapeId)) return;
+      const last = fn.body[fn.body.length - 1]!;
+      if (last.kind !== "return") return;
+      last.value = {
+        kind: "logical",
+        op: "&&",
+        left: recordSourceTest(rRef, loc),
+        right: {
+          kind: "libCall",
+          fn: "dyn.hasOwn",
+          args: [{ kind: "dynFrom", value: rRef, liveRef: true, type: DYN, loc }, kRef],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    });
+  }
   return helper;
 }
 
@@ -8503,8 +8599,16 @@ function lowerObjectStaticCall(
       const sProbe = tryLowerExpression(lowerer, call.arguments.nodes[1]!);
       // CHECKED-DYNAMIC target and source (the JS file-scope
       // object-literal identity story): the runtime dyn copy — own
-      // members of the source land on the target, which returns.
-      if (tProbe?.type.kind === "dyn") {
+      // members of the source land on the target, which returns. A
+      // CLASS-INSTANCE target joins them when the call's own RESULT type
+      // is checked-dynamic: that is the `C & { extra }` intersection
+      // (mapClassExpandoIntersection), whose value IS the instance, so
+      // the same dyn copy writes the expando members onto its view and
+      // answers the instance — identity and prototype intact.
+      if (
+        tProbe?.type.kind === "dyn" ||
+        (tProbe?.type.kind === "object" && lowerer.mapTypeOf(lowerer.typeOf(call))?.kind === "dyn")
+      ) {
         const loc = locOf(call);
         const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
         const rawSource = lowerer.lowerExpr(call.arguments.nodes[1]!);
@@ -8514,8 +8618,10 @@ function lowerObjectStaticCall(
         if (ts.isObjectLiteralExpression(targetNode))
           fenceClassCopyIntoFreshObject(lowerer, call, call.arguments.nodes[1]!, rawSource);
         const source = lowerer.coerceToExpected(rawSource, DYN);
-        if (target.type.kind === "dyn" && source.type.kind === "dyn") {
-          return { kind: "libCall", fn: "dyn.assign", args: [target, source], type: DYN, loc };
+        const dynTarget =
+          target.type.kind === "dyn" ? target : lowerer.coerceToExpected(target, DYN);
+        if (dynTarget.type.kind === "dyn" && source.type.kind === "dyn") {
+          return { kind: "libCall", fn: "dyn.assign", args: [dynTarget, source], type: DYN, loc };
         }
       }
       // A CLASS-INSTANCE target and a plain record source whose fields are

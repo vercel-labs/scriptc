@@ -143,6 +143,8 @@ export function cleanFuncAdaptable(
 ): boolean {
   if (restPackingAdapterFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
+  // In checked mode (a method field's adapter, WidthLift funcAdaptChecked)
+  // the width conversions below include checked retags.
   // Recursive function types (`type Handler = (h: Handler) => void`) reach
   // the same pair again one parameter down: assume it converts, the same
   // coinductive answer recordWidthPlan gives its own back-edges.

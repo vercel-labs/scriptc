@@ -389,6 +389,15 @@ export function lowerTernary(
   }
 }
 
+/** Whether `expr` is the checked-dynamic Number/Boolean prototype value a
+ * JavaScript source read (jsPrimitivePrototypeValue), or one of its
+ * members: the value is the prototype OBJECT, not the wrapper's primitive,
+ * so the checker's wrapper type must not extract a scalar from it. */
+function isPrimitivePrototypeValue(expr: IrExpr): boolean {
+  if (expr.kind === "libCall") return expr.fn === "dyn.builtinPrototype";
+  return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -430,6 +439,10 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   // instead of misreading the payload (the dyn boundary's usual stance).
   // Object/array narrowings stay dyn-typed and keep their fences.
   if (expr.type.kind === "dyn") {
+    // Number.prototype and Boolean.prototype (and their members) are the
+    // prototype OBJECTS, though @types/node declares them with the wrapper
+    // interface: extracting the wrapper's numeric value would throw.
+    if (isPrimitivePrototypeValue(expr)) return expr;
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));

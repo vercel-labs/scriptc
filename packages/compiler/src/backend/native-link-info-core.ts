@@ -128,6 +128,13 @@ export interface NativeLinkFeatures {
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** An Array.prototype method runs over an array-like receiver:
+   * scr_dyn_array_like.c. Absent (false) otherwise, so programs that never
+   * call one over an array-like keep their exact link line. */
+  arrayLikeDispatch?: boolean;
+  /** Number.prototype or Boolean.prototype read as a value:
+   * scr_dyn_builtin_prototype.c. Absent (false) otherwise. */
+  builtinPrototypeValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -144,6 +151,10 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
+  /** A typed fs read whose bytes value the program can observe as a Buffer:
+   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
+   * brand keep the default object. */
+  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;

@@ -71,7 +71,13 @@ export type {
 import { compilePackedLibrary } from "./backend/library-pack.js";
 import { node24FetchCompatProfile } from "./compat/fetch-profile.js";
 import { libFnSignatures } from "./ir/builtin-signatures.js";
-import { type FunctionLayout, parseFunctionLayout } from "./backend/llvm/function-layout.js";
+import {
+  type FunctionLayout,
+  hasStartupTier,
+  parseFunctionLayout,
+  startupCalleesOf,
+  startupSymbolsOf,
+} from "./backend/llvm/function-layout.js";
 import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -772,6 +778,7 @@ async function compileExecutableNative(
   llvmVisiblePath?: string,
   profileLayout = false,
   hugeText = true,
+  startupSymbols: readonly string[] = [],
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(llvmPath);
   const runtimePackTarget = programIsObject && !sanitize ? nativeCodegenTarget() : null;
@@ -790,6 +797,7 @@ async function compileExecutableNative(
       ...(profileGenerate ? { profileGenerate: true } : {}),
       ...(profileLayout ? { profileLayout: true } : {}),
       ...(hugeText ? {} : { hugeText: false }),
+      ...(startupSymbols.length === 0 ? {} : { startupSymbols }),
       programObjectDependencies,
     });
     const cacheableLinker =
@@ -1044,6 +1052,18 @@ async function readNativeProfile(
   };
 }
 
+/** The start-up symbols the module a build links carries (function-layout.ts).
+ * A layout without a start-up tier has none, and then the module text need not
+ * be read at all. */
+async function startupSymbolsOfModule(
+  opts: CompileRequestOptions,
+  path: string,
+): Promise<string[]> {
+  if (!hasStartupTier((await readFunctionLayout(opts)).functionLayout)) return [];
+  const parts = await readTextParts(path);
+  return [...startupSymbolsOf(parts), ...startupCalleesOf(parts)];
+}
+
 /** The digest of the request's function layout file, which keys the
  * executable cache: the layout changes the code's order, not its frontend
  * input. */
@@ -1253,6 +1273,7 @@ async function prepareExecutableInput(
         // Textual output shows the code an executable gets; objects keep
         // the pending flag, since their link may not add an unwinder.
         unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
+        startupSection: buildPlatform === "linux",
         ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
         objectAudit: opts.sanitize === true,
         sanitizeAttributes: opts.sanitize === true,
@@ -1333,6 +1354,7 @@ async function prepareExecutableInput(
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
       unwindAbi: buildPlatform === "linux",
+      startupSection: buildPlatform === "linux",
       objectAudit: opts.sanitize === true,
       sanitizeAttributes: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
@@ -2234,6 +2256,7 @@ async function compileTracked(
         nativeSources = staged.sources;
         nativeInputPath = nativeSources.llvmSourcePath;
       }
+      const startupSymbols = await startupSymbolsOfModule(opts, nativeSources.llvmSourcePath);
       await compileExecutableNative(
         earlyHit.native,
         nativeInputPath,
@@ -2266,6 +2289,7 @@ async function compileTracked(
         hitSources.llvmPath,
         nativeProfileLayout(profile),
         opts.hugeText !== false,
+        startupSymbols,
       );
       if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
         await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
@@ -2386,6 +2410,7 @@ async function compileTracked(
       stagedDir = staged.dir;
       ({ llvmSourcePath, irSourcePath } = staged.sources);
     }
+    const startupSymbols = await startupSymbolsOfModule(opts, llvmSourcePath);
     await compileExecutableNative(
       nativeFeatures,
       nativeProgramObject?.linkPath ?? llvmSourcePath,
@@ -2419,6 +2444,7 @@ async function compileTracked(
       llvmPath,
       nativeProfileLayout(profile),
       opts.hugeText !== false,
+      startupSymbols,
     );
     timing("native-link");
     if (nativeProgramObject !== null && opts.nativeProgramObject === true) {

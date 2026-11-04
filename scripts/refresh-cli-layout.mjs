@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 /* Refreshes packages/compiler/native/cli.layout.gz, the function layout that
  * builds of the native compiler use (scripts/build-native-cli.mts). The
- * layout lists the functions the compiler runs, in tiers: tier 1 for
- * `--version` and rebuilds of unchanged programs, then the functions of the
- * other builds by the share of training builds that run them (COLD_TIERS).
+ * layout lists the functions the compiler runs, in tiers: tier 0 for the
+ * functions `--version` runs, tier 1 for the other functions rebuilds of
+ * unchanged programs run, then the functions of the other builds by the share
+ * of training builds that run them (COLD_TIERS).
  * The emitter writes the listed functions first, by tier, so the code a build
  * runs sits together in the compiler's executable and a run maps fewer of its
  * pages: a function nearly every build runs sits with the others that do, not
- * among functions only a few programs need.
+ * among functions only a few programs need. Tier 0 additionally goes in a
+ * section of its own, which the linker places before the rest of the text
+ * (function-layout.ts), so `--version` touches one block at the front of the
+ * image.
  *
  * Builds an instrumented native compiler for this Linux host (or reuses one
  * with --instrumented), builds each training program cold and then again
@@ -142,12 +146,14 @@ const training = [
     .map((name) => ({ file: join(root, "tests/corpus", name), optimization: "release" })),
 ];
 
+// Tier 0 is the start-up tier: every function a `--version` run executes.
 // Tier 1 collects each run that took the warm path from its own profile; a
 // rebuild that missed a cache (it shows no `frontend-cache-hit` or
 // `executable-cache-hit` phase) is left out. The first builds each write
 // their own profile (cold-<program>-*), merged across the build's processes.
 // Each profile is read and deleted when its build finishes: a profile is
 // about 23 MB, and keeping every build's until the end takes about 9 GB.
+const startup = new Set();
 const warm = new Set();
 let skipped = 0;
 // For each function, how many of the first builds ran it.
@@ -164,17 +170,18 @@ function countColdRun(index) {
   for (const fn of ran) runs.set(fn, (runs.get(fn) ?? 0) + 1);
   coldBuilds++;
 }
-async function warmRun(args, cache, name, cacheHits) {
+async function warmRun(args, cache, name, cacheHits, sets = [warm]) {
   const profile = join(raw, `warm-${name}.profraw`);
   const { ok, text } = await run(args, { cwd: root, cache, profile });
   if (ok && cacheHits.every((phase) => text.includes(`"phase":"${phase}"`)))
-    for (const fn of executedFunctions(profile)) warm.add(fn);
+    for (const fn of executedFunctions(profile)) for (const set of sets) set.add(fn);
   else skipped++;
   rmSync(profile, { force: true });
 }
 
 const started = Date.now();
-await warmRun(["--version"], join(work, "cache-version"), "version", []);
+// `--version` runs only start-up code, so everything it executes is tier 0.
+await warmRun(["--version"], join(work, "cache-version"), "version", [], [startup, warm]);
 console.log(`training: ${training.length} programs, cold then unchanged, ${jobs} at a time`);
 const passed = await pool(
   training.map((program, index) => async () => {
@@ -274,7 +281,11 @@ const coldTier = (count) => {
   return 2 + (index < 0 ? COLD_TIERS.length : index);
 };
 const lines = [
-  ...[...warm].sort().map((name) => `1 ${name}`),
+  ...[...startup].sort().map((name) => `0 ${name}`),
+  ...[...warm]
+    .filter((name) => !startup.has(name))
+    .sort()
+    .map((name) => `1 ${name}`),
   ...[...runs]
     .filter(([name]) => !warm.has(name))
     .map(([name, count]) => [coldTier(count), name])

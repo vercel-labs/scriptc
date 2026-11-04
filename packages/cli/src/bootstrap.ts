@@ -58,6 +58,10 @@ async function tryFastPath(): Promise<number | null> {
   }
   const [command, inputArg] = positionals;
   if (command === "coverage") return coverageFastPath(values, inputArg, positionals.length);
+  // Computed-access sites emit different code by default; an explicit value
+  // other than "1" is an opt-out or one the full compiler validates
+  // (backend/llvm/js-ic.ts).
+  const indexFastpath = process.env["SCRIPTC_DYN_INDEX_FASTPATH"];
   if (
     (command !== "build" && command !== "run") ||
     inputArg === undefined ||
@@ -86,7 +90,8 @@ async function tryFastPath(): Promise<number | null> {
     (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== "" ||
     // An attribution build emits a different way count, and the full compiler
     // keys the build by it (backend/llvm/js-ic.ts).
-    (process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] ?? "") !== ""
+    (process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] ?? "") !== "" ||
+    (indexFastpath !== undefined && indexFastpath !== "" && indexFastpath !== "1")
   )
     return null;
   const backend = values.backend;
@@ -158,6 +163,9 @@ async function tryFastPath(): Promise<number | null> {
     ...(values["cpu-dispatch"] === true ? { cpuDispatch: true as const } : {}),
     ...(checker === undefined ? {} : { checker }),
     npmStatic,
+    // Only builds with the computed-access shape reach this route, and the
+    // full compiler keys those builds by it (backend/llvm/js-ic.ts).
+    dynIndexFastpath: true as const,
     // Mirrors the full compiler's key: shape inference's overlay is opt-in
     // (SCRIPTC_SHAPE_OVERLAY=1) and --no-shape-overlay turns it off.
     ...(process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" && values["shape-overlay"] !== false

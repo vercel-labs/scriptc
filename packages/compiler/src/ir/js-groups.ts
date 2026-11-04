@@ -148,7 +148,13 @@ export function planJsGroups(
       let subject: string | null = null;
       let key: string | null = null;
       let store = false;
-      if (site !== null && site.kind !== "keyed" && site.key !== "length" && site.key !== "next") {
+      if (
+        site !== null &&
+        site.kind !== "keyed" &&
+        site.kind !== "keyedSet" &&
+        site.key !== "length" &&
+        site.key !== "next"
+      ) {
         if (site.kind === "get") subject = memberSubject(e);
         else {
           subject = storeSubject(e, site.key);

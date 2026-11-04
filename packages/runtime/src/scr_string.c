@@ -2620,6 +2620,10 @@ ScrStr *scr_str_trim(ScrStr *s) {
   return scr_str_from_span(s->data + b, e - b);
 }
 
+ScrStr *scr_str_ascii_char(unsigned code) {
+  return (ScrStr *)&scr_ascii1[code & 0x7f];
+}
+
 ScrStr *scr_str_char_at(ScrStr *s, double i) {
   double idx = scr_to_integer_or_infinity(i);
   if (!(idx >= 0)) return scr_str_empty();

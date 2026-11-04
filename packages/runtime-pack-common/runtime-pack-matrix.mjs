@@ -583,6 +583,15 @@ export function variantsFor(source) {
       when: { childErrorFields: true },
       defines: ["SCR_CHILD_ERR_FIELDS"],
     });
+    // A program that passes the extended options AND reads `.error` needs
+    // both builds in one object: the extended core answers the result the
+    // error fields are stamped from, so a build with the options alone
+    // would drop them.
+    variants.push({
+      id: "cp-options-err-fields",
+      when: { childOptionExt: true, childErrorFields: true },
+      defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
+    });
   }
   return variants;
 }

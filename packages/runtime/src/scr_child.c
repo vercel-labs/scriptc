@@ -3067,6 +3067,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = w.spawn_errname;
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = (double)scr_win_uv_errno(w.spawn_errname);
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
@@ -3081,6 +3085,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   if (r->signal_name == NULL) r->signal_name = "SIGTERM";
   r->spawn_errname = "ETIMEDOUT";
   r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = -4039.0;
+  r->args = scr_child_snapshot_args(args);
+#endif
   return r;
 }
 
@@ -6287,6 +6295,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = -(double)spawn_err;
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
 
@@ -6391,6 +6403,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
       if (r->signal_name == NULL) r->signal_name = scr_signal_name(killsig);
       r->spawn_errname = "ETIMEDOUT";
       r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+      r->spawn_errno = -(double)ETIMEDOUT;
+      r->args = scr_child_snapshot_args(args);
+#endif
     }
   }
   return r;

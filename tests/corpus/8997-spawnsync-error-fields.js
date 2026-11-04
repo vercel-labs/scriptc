@@ -31,6 +31,24 @@ const slow = spawnSync("/bin/sleep", ["30"], { encoding: "utf8", timeout: 150 })
 console.log("timeout status:", slow.status, "signal:", slow.signal);
 report("timeout", slow.error);
 
+// The cwd/input options route through the extended spawn core (the
+// SCR_CHILD_CP_OPTIONS build of scr_child.c): a failure and a timeout there
+// carry the same errnoException fields.
+const missingCwd = spawnSync("definitely-not-a-binary-xyz", ["-h", "two words"], {
+  encoding: "utf8",
+  cwd: process.cwd(),
+});
+console.log("missing cwd status:", missingCwd.status, "signal:", missingCwd.signal);
+report("missing cwd", missingCwd.error);
+
+const slowCwd = spawnSync("/bin/sleep", ["30"], {
+  encoding: "utf8",
+  cwd: process.cwd(),
+  timeout: 150,
+});
+console.log("timeout cwd status:", slowCwd.status, "signal:", slowCwd.signal);
+report("timeout cwd", slowCwd.error);
+
 // Success and a plain non-zero exit stay error-free.
 const ok = spawnSync("/bin/sh", ["-c", "exit 0"], { encoding: "utf8" });
 console.log("ok error:", ok.error === undefined, ok.status);

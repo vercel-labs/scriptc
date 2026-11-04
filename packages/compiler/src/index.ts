@@ -115,9 +115,10 @@ import {
   llvmInputBytes,
   type LlvmInput,
   NativeCodegenError,
+  readProfileFunctionNames,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./backend/native-codegen-core.js";
+import { nativeBuildPartitions, nativePartitionPaths } from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import {
   nativeCodegenTarget,
@@ -879,6 +880,7 @@ async function compileExecutableNative(
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
@@ -896,7 +898,6 @@ async function compileExecutableNative(
     ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
-    ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
     ...(features.builtinMethodValue ? { builtinMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     events: features.events,
@@ -950,9 +951,8 @@ interface NativeProgramObject {
   linkPath: string;
   /** Further partition objects linked after linkPath. */
   partitionPaths: string[];
-  /** The partitions the helper compiled: one for a module small enough to
-   * stay whole (nativeProgramPartitions). Absent when the link took one
-   * object the helper did not compile from partitions. */
+  /** The partitions the helper compiled (nativeBuildPartitions). Absent when
+   * the link took one object the helper did not compile from partitions. */
   partitions?: number;
   artifactPath: string;
   dependencies: NativeArtifactDependency[];
@@ -973,9 +973,12 @@ async function emitNativeProgramObject(
   const linkPath = `${privateSiblingPath(artifactPath, "native-program-object")}.o`;
   // The validated program-object artifact is a single object by contract.
   const target = nativeCodegenTarget();
-  const llvmBytes = llvmInputBytes(llvm);
   const single = opts.nativeProgramObject === true || target === null;
-  const partitions = single ? 1 : nativeProgramPartitions(llvmBytes, opts.optimization === "dev");
+  const partitions = nativeBuildPartitions(llvmInputBytes(llvm), {
+    singleObject: single,
+    cpuDispatch: opts.cpuDispatch === true,
+    unoptimized: opts.optimization === "dev",
+  });
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
@@ -1062,6 +1065,29 @@ async function startupSymbolsOfModule(
   if (!hasStartupTier((await readFunctionLayout(opts)).functionLayout)) return [];
   const parts = await readTextParts(path);
   return [...startupSymbolsOf(parts), ...startupCalleesOf(parts)];
+}
+
+/** The program functions a `--cpu-dispatch` build's profile names, when the
+ * build uses one: emission copies only these, with the functions whose loop
+ * x86-64-v3 widens. The profile names a function of a source file
+ * `<file>;<name>`, and a profile collected before the build stopped copying
+ * while recording names its copies `<name>.base`/`<name>.v3`, so both are
+ * dropped here. Undefined without a profile, or when the helper cannot
+ * report its functions. */
+async function cpuCopyFunctions(
+  opts: CompileRequestOptions,
+): Promise<ReadonlySet<string> | undefined> {
+  if (opts.cpuDispatch !== true || opts.profileUse === undefined) return undefined;
+  const names = await readProfileFunctionNames(resolve(opts.profileUse));
+  if (names === null) return undefined;
+  const functions = new Set<string>();
+  for (const name of names) {
+    const local = name.slice(name.lastIndexOf(";") + 1).replace(/\.(?:base|v3)$/, "");
+    if (local !== "") functions.add(local);
+  }
+  // A profile the helper read but that names no function of the program
+  // leaves the build its own rule rather than copying nothing.
+  return functions.size === 0 ? undefined : functions;
 }
 
 /** The digest of the request's function layout file, which keys the
@@ -1344,6 +1370,7 @@ async function prepareExecutableInput(
   const backend = "llvm" as const;
   const useRuntimePack =
     opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, backend);
+  const cpuCopyFunctionNames = await cpuCopyFunctions(opts);
   let llvmSource: string | readonly string[];
   try {
     llvmSource = emitLlvmModuleSource(mod, {
@@ -1367,6 +1394,8 @@ async function prepareExecutableInput(
       ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
       ...targetCpuField(opts.targetCpu),
       ...(opts.cpuDispatch === true ? { cpuDispatch: true } : {}),
+      ...(opts.profileGenerate === undefined ? {} : { profileGenerate: true }),
+      ...(cpuCopyFunctionNames === undefined ? {} : { cpuCopyFunctions: cpuCopyFunctionNames }),
     });
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -1659,7 +1688,10 @@ async function prepareExecutableInputInChild(
   if (result.kind === "diagnostics")
     return { ok: false, diagnostics: result.diagnostics, sourceTexts };
   return {
-    llvmSource: { file: result.nativeInputPath, bytes: result.llvmBytes },
+    llvmSource: {
+      file: result.nativeInputPath,
+      bytes: result.llvmBytes,
+    },
     llvmPath: result.llvmPath,
     llvmSourcePath: result.nativeInputPath,
     irPath: result.irPath,

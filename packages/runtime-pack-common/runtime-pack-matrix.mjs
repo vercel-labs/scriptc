@@ -87,8 +87,6 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
-  // Number.prototype and Boolean.prototype read as values in JavaScript.
-  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
   // A builtin prototype method read as a value in JavaScript (String trim,
   // RegExp exec/test/toString).
   ["scr_dyn_builtin_methods.c", all("builtinMethodValue", "dynInvoke")],
@@ -571,6 +569,26 @@ export function variantsFor(source) {
       id: "host-absent-globals",
       when: { hostAbsentGlobals: true },
       defines: ["SCR_GLOBAL_HOST_ABSENT"],
+    });
+  }
+  // The spawnSync result's `.error` property: the build that keeps the spawn
+  // errno and argv on the result and stamps Node's errnoException fields
+  // (errno, syscall, path, spawnargs). A program that never reads `.error`
+  // keeps the default object and the result container exactly as they were.
+  if (source === "scr_child.c") {
+    variants.push({
+      id: "err-fields",
+      when: { childErrorFields: true },
+      defines: ["SCR_CHILD_ERR_FIELDS"],
+    });
+    // A program that passes the extended options AND reads `.error` needs
+    // both builds in one object: the extended core answers the result the
+    // error fields are stamped from, so a build with the options alone
+    // would drop them.
+    variants.push({
+      id: "cp-options-err-fields",
+      when: { childOptionExt: true, childErrorFields: true },
+      defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
     });
   }
   return variants;

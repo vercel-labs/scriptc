@@ -46,11 +46,18 @@ interface KeyedTerm extends Term {
 
 /** Every access of `receiver` at a while loop counter `c + d` happens while
  * `c < bound` (`c <= bound` when `inclusive`) holds and before the counter
- * advances, so it is in bounds when `bound + slack <= length`. */
+ * advances, so it is in bounds when `bound + slack <= length`.
+ *
+ * A descending index `base - c + d` is largest at `c = 0` and smallest at
+ * the counter's last value below the bound, so it is in bounds when
+ * `base + slack <= length` and `bound <= base + 1 - adj + d`. */
 interface BoundedCheck {
   receiver: number;
   bound: IrExpr;
   slack: number;
+  /** The invariant `base` of a descending index and its term key, and the
+   * offset the bound's test adds to it. */
+  descending?: { base: IrExpr; key: string; lower: number };
 }
 
 /** A while loop counter whose entry value the guard tests: an exact
@@ -552,19 +559,42 @@ export function matchBytesLoopVersion(
     const bounded = whileAccesses?.accesses.get(node);
     const loopCounter = bounded && whileAccesses!.counters.get(bounded.counter);
     if (bounded && loopCounter && (!loopCounter.wraps || loopCounter.bounds !== null)) {
-      const receiver = receiverOf(ref);
-      const key = `${receiver}|${bounded.key}|${bounded.adj}`;
-      const slack = bounded.offset + width - 1 + bounded.adj;
-      const group = boundedChecks.get(key);
-      if (group) {
-        group.check.slack = Math.max(group.check.slack, slack);
-        group.nodes.push({ node, access: bounded });
-      } else
-        boundedChecks.set(key, {
-          check: { receiver, bound: bounded.bound, slack },
-          nodes: [{ node, access: bounded }],
-        });
-      return;
+      // A descending index needs an invariant minuend; one that involves a
+      // counter stays checked.
+      const baseKey = bounded.base === undefined ? null : pureKey(bounded.base);
+      if (bounded.base === undefined || baseKey !== null) {
+        const receiver = receiverOf(ref);
+        const descending = bounded.base !== undefined;
+        const key = descending
+          ? `${receiver}|d${baseKey}|${bounded.key}|${bounded.adj}|${bounded.offset}`
+          : `${receiver}|${bounded.key}|${bounded.adj}`;
+        const slack = descending
+          ? bounded.offset + width
+          : bounded.offset + width - 1 + bounded.adj;
+        const group = boundedChecks.get(key);
+        if (group) {
+          group.check.slack = Math.max(group.check.slack, slack);
+          group.nodes.push({ node, access: bounded });
+        } else
+          boundedChecks.set(key, {
+            check: {
+              receiver,
+              bound: bounded.bound,
+              slack,
+              ...(descending
+                ? {
+                    descending: {
+                      base: bounded.base!,
+                      key: baseKey!,
+                      lower: bounded.offset + 1 - bounded.adj,
+                    },
+                  }
+                : {}),
+            },
+            nodes: [{ node, access: bounded }],
+          });
+        return;
+      }
     }
     const range = facts.ranges.get(index);
     if (!range) return;
@@ -721,9 +751,11 @@ export function matchBytesLoopVersion(
     used.add(group.check.receiver);
     for (const { node, access } of group.nodes) {
       bounds.add(node);
-      const min = 0 - access.offset;
+      // A descending index is at its largest at counter 0.
+      const descending = access.base !== undefined;
+      const min = descending ? 0 : 0 - access.offset;
       counterMins.set(access.counter, Math.max(counterMins.get(access.counter) ?? -SAFE, min));
-      narrow(access.ref, { min: -MAX_OFFSET, max: SAFE });
+      narrow(access.ref, { min: descending ? 0 : -MAX_OFFSET, max: SAFE });
       if (access.index !== access.ref) narrow(access.index, { min: 0, max: SAFE });
     }
   }
@@ -809,6 +841,7 @@ export function matchBytesLoopVersion(
       receiver: renumber.get(g.check.receiver)!,
       bound: g.check.bound,
       slack: g.check.slack,
+      ...(g.check.descending !== undefined ? { descending: g.check.descending } : {}),
     })),
     counters: counterChecks,
     guarded,
@@ -829,7 +862,8 @@ export function matchBytesLoopVersion(
 }
 
 /** A typed-array access at a while loop counter: `counter + offset`, read
- * or written while `counter < bound` (`<=` when `adj` is 1) holds. */
+ * or written while `counter < bound` (`<=` when `adj` is 1) holds, or a
+ * descending `base - counter` with a loop-invariant `base`. */
 interface WhileAccess {
   counter: string;
   /** The index, and the counter's read in it. */
@@ -839,6 +873,8 @@ interface WhileAccess {
   key: string;
   adj: number;
   offset: number;
+  /** The invariant minuend of a descending index (`base - counter`). */
+  base?: IrExpr;
 }
 
 interface WhileCounter {
@@ -978,20 +1014,51 @@ function findWhileCounterAccesses(
   };
   const accesses = new Map<Node, WhileAccess>();
   const record = (node: Node, index: IrExpr, clean: Clean): void => {
-    let ref: IrExpr = index,
-      offset = 0;
-    if (index.kind === "bin" && (index.op === "+" || index.op === "-")) {
-      const literal =
-        index.right.kind === "numLit" ? index.right : index.op === "+" ? index.left : null;
-      const other = literal === index.right ? index.left : index.right;
-      if (literal?.kind !== "numLit" || !Number.isSafeInteger(literal.value)) return;
-      if (Math.abs(literal.value) > MAX_OFFSET || Object.is(literal.value, -0)) return;
-      offset = index.op === "-" ? -literal.value : literal.value;
-      ref = other;
+    let rest = index,
+      offset = 0,
+      base: IrExpr | undefined,
+      ref: IrExpr;
+    // Peel a literal offset: `… + k` or `… - k`.
+    if (
+      rest.kind === "bin" &&
+      (rest.op === "+" || rest.op === "-") &&
+      rest.right.kind === "numLit"
+    ) {
+      const literal = rest.right;
+      if (!Number.isSafeInteger(literal.value) || Object.is(literal.value, -0)) return;
+      if (Math.abs(literal.value) > MAX_OFFSET) return;
+      offset = rest.op === "-" ? -literal.value : literal.value;
+      rest = rest.left;
     }
+    // A literal first term: `k + counter`.
+    if (rest.kind === "bin" && rest.op === "+" && rest.left.kind === "numLit") {
+      const literal = rest.left;
+      if (!Number.isSafeInteger(literal.value) || Object.is(literal.value, -0)) return;
+      if (Math.abs(literal.value) + Math.abs(offset) > MAX_OFFSET) return;
+      offset += literal.value;
+      rest = rest.right;
+    }
+    if (
+      rest.kind === "bin" &&
+      rest.op === "-" &&
+      rest.right.kind === "varRef" &&
+      clean.has(rest.right.localId)
+    ) {
+      // A descending index `base - counter`: the minuend is any
+      // loop-invariant expression and the loop's bound limits the counter,
+      // not the index.
+      base = rest.left;
+      ref = rest.right;
+    } else ref = rest;
     if (ref.kind !== "varRef") return;
     const fact = clean.get(ref.localId);
-    if (fact) accesses.set(node, { counter: ref.localId, index, ref, ...fact, offset });
+    if (!fact) return;
+    accesses.set(
+      node,
+      base === undefined
+        ? { counter: ref.localId, index, ref, ...fact, offset }
+        : { counter: ref.localId, index, ref, ...fact, offset, base },
+    );
   };
   const expr = (e: IrExpr, clean: Clean): void => {
     if (e.kind === "bytesIntrinsic") {
@@ -1270,9 +1337,38 @@ export function emitBytesLoopVersionGuard(
     }
   }
   for (const check of version.bounded) {
+    const bound = host.emitExpr(check.bound).name;
+    if (check.descending !== undefined) {
+      // `base - counter + offset`: the index is largest at counter 0 and
+      // smallest at the counter's last value below the bound. The base is a
+      // loop-entry value, so the guard tests it as an exact integer within
+      // GUARDED_TERM: `base + lower` (`lower` at most 2^31 + 1) and the
+      // integer comparison with the length are then exact.
+      const { base, lower } = check.descending;
+      const tested = emitValueIntegerTest(
+        host,
+        host.emitExpr(base),
+        base,
+        GUARDED_TERM.min,
+        GUARDED_TERM.max,
+      );
+      if (tested.ok !== "true") conditions.push(tested.ok);
+      const asDouble = B.tmp(),
+        last = B.tmp(),
+        above = B.tmp();
+      B.line(`${asDouble} = sitofp i64 ${tested.integer} to double`);
+      B.line(`${last} = fadd double ${asDouble}, ${f64Lit(lower)}`);
+      B.line(`${above} = fcmp ole double ${bound}, ${last}`);
+      conditions.push(above);
+      const room = B.tmp(),
+        below = B.tmp();
+      B.line(`${room} = sub i64 ${lengths[check.receiver]}, ${check.slack}`);
+      B.line(`${below} = icmp sle i64 ${tested.integer}, ${room}`);
+      conditions.push(below);
+      continue;
+    }
     // `bound <= length - slack` in doubles: both sides are exact (a length
     // is below 2^53 and a slack below 2^32), and NaN fails.
-    const bound = host.emitExpr(check.bound).name;
     const length = B.tmp(),
       room = B.tmp(),
       ok = B.tmp();

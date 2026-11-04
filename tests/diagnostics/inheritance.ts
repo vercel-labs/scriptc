@@ -57,6 +57,24 @@ class Bivariant extends Animal {
   }
 }
 
+// An override may add TRAILING optional or defaulted parameters (corpus
+// 8540): the inherited slot keeps the base arity and fills the omitted
+// values. A call that supplies one of the extras still needs the override's
+// own body, which a virtual slot cannot carry — a subclass below makes this
+// receiver virtual, so the surplus argument fences instead of vanishing.
+class TrailingOption extends Animal {
+  feed(other: Animal, note: string = "n"): string {
+    return other.name + note;
+  }
+}
+class TrailingOptionChild extends TrailingOption {
+  feed(other: Animal, note: string = "c"): string {
+    return other.name + note;
+  }
+}
+const trailingOption: TrailingOption = new TrailingOption();
+trailingOption.feed(new Animal(), "x");
+
 // Conditional super() is supported; both branches initialize the receiver.
 class Conditional extends Animal {
   constructor(flag: boolean) {

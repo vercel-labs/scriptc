@@ -108,6 +108,10 @@ export interface NativeLinkFeatures {
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */
   childOptionExt?: boolean;
+  /** The spawnSync result's `.error` errnoException fields (errno, syscall,
+   * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
+   * (false) otherwise. */
+  childErrorFields?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
@@ -173,9 +177,6 @@ export interface NativeLinkFeatures {
    * scr_dyn_array_like.c. Absent (false) otherwise, so programs that never
    * call one over an array-like keep their exact link line. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype or Boolean.prototype read as a value:
-   * scr_dyn_builtin_prototype.c. Absent (false) otherwise. */
-  builtinPrototypeValue?: boolean;
   /** A String.prototype trim method read as a value:
    * scr_dyn_builtin_methods.c. Absent (false) otherwise. */
   builtinMethodValue?: boolean;

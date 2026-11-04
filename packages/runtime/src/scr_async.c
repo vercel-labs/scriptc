@@ -6077,6 +6077,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       }
       double wait = due > now ? due - now : 0;
       if (wait > 1e9) wait = 1e9; /* poll takes int ms */
+      /* The loop is about to sleep: a build that buffers stdout
+       * (--stdout-buffering) publishes what the program has written so a
+       * reader waiting on it — an interactive consumer, a test harness —
+       * is not left looking at an empty pipe until the next wakeup. */
+      scr_stdout_settle();
       (void)poll(fds, (nfds_t)nfds, (int)(wait + 0.999));
       /* Consume queued child-exit events NOW (zero-timeout drain) — an
        * unconsumed event keeps the kqueue fd readable and would turn the

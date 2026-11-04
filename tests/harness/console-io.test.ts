@@ -26,12 +26,20 @@ interface ClosedChild {
   signal: NodeJS.Signals | null;
 }
 
-async function build(name: string): Promise<{ binary: string; sourceFile: string }> {
+interface BuildOptions {
+  stdoutBuffering?: boolean;
+}
+
+async function build(
+  name: string,
+  options: BuildOptions = {},
+): Promise<{ binary: string; sourceFile: string }> {
   const sourceFile = join(fixtureDir, `${name}.ts`);
   const key = createHash("sha256")
     .update(sourceFile)
     .update(readFileSync(sourceFile))
     .update(sanitize ? "san" : "plain")
+    .update(options.stdoutBuffering === true ? "buffered" : "default")
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, `console-io-${key}`);
@@ -41,6 +49,7 @@ async function build(name: string): Promise<{ binary: string; sourceFile: string
     outDir,
     sanitize,
     backend: "llvm",
+    ...(options.stdoutBuffering === true ? { stdoutBuffering: true } : {}),
   });
   if (!result.ok) {
     throw new Error(
@@ -120,6 +129,70 @@ function runToClose(cmd: string, args: string[]): Promise<ClosedChild> {
         stderr: Buffer.concat(stderr),
         code,
         signal,
+      });
+    });
+  });
+}
+
+/** Kill the child with SIGKILL after `ms`; collect what reached stdout. */
+function killAfter(cmd: string, args: string[], ms: number): Promise<ClosedChild> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    const timer = setTimeout(() => child.kill("SIGKILL"), ms);
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), code, signal });
+    });
+  });
+}
+
+/** Answer the probe's prompt only after it is visible, then read its reply. */
+function runPrompt(
+  cmd: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let answered = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(
+        new Error(
+          `prompt was not visible before the read; stdout=${JSON.stringify(
+            Buffer.concat(stdout).toString("utf8"),
+          )}`,
+        ),
+      );
+    }, 5_000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout.push(chunk);
+      if (!answered && Buffer.concat(stdout).includes("prompt> ")) {
+        answered = true;
+        child.stdin.write("hello\n");
+        child.stdin.end();
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        code,
       });
     });
   });
@@ -254,4 +327,95 @@ describe(`console/process output visibility${sanitize ? " (sanitized)" : ""}`, (
       expect(nativeRes.signal).toBe(nodeRes.signal);
     },
   );
+});
+
+/* The opt-in lane: `stdoutBuffering: true` keeps stdout in the runtime's
+ * 64 KiB buffer when fd 1 is not a terminal. These cases pin the behavior
+ * the option promises — merged order, the exit and error flushes, the
+ * prompt flush before a blocking read, and the stated SIGKILL loss window —
+ * while the cases above keep the default per-call contract pinned. */
+describe(`buffered stdout (--stdout-buffering)${sanitize ? " (sanitized)" : ""}`, () => {
+  const buffered: BuildOptions = { stdoutBuffering: true };
+  const posix = process.platform !== "win32";
+
+  test.skipIf(!posix)("small merged stdout/stderr keep Node's order", async () => {
+    const probe = await build("merged-order", buffered);
+    const merged = (cmd: string, args: string[]) =>
+      runToClose("sh", ["-c", 'exec "$@" 2>&1', "sh", cmd, ...args]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      merged("node", [probe.sourceFile, "--small"]),
+      merged(probe.binary, ["--small"]),
+    ]);
+    expect(nodeRes.code).toBe(0);
+    expect(nativeRes.code).toBe(0);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+  });
+
+  test("process.exit publishes buffered stdout", async () => {
+    const probe = await build("buffered-exit", buffered);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runToClose("node", [probe.sourceFile]),
+      runToClose(probe.binary, []),
+    ]);
+    expect(nodeRes.stdout.toString()).toBe("before-exit\n");
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(nativeRes.code).toBe(nodeRes.code);
+  });
+
+  test.skipIf(!posix)("an uncaught error publishes buffered stdout first", async () => {
+    const probe = await build("buffered-throw", buffered);
+    const merged = (cmd: string, args: string[]) =>
+      runToClose("sh", ["-c", 'exec "$@" 2>&1', "sh", cmd, ...args]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      merged("node", [probe.sourceFile]),
+      merged(probe.binary, []),
+    ]);
+    const nodeText = nodeRes.stdout.toString();
+    const nativeText = nativeRes.stdout.toString();
+    expect(nodeText.startsWith("before-throw\n")).toBe(true);
+    expect(nativeText.startsWith("before-throw\n")).toBe(true);
+    expect(nativeText).toContain("buffered-throw");
+    expect(nativeRes.code).toBe(nodeRes.code);
+  });
+
+  test.skipIf(!posix)("a prompt is visible before a blocking stdin read", async () => {
+    const probe = await build("buffered-prompt", buffered);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runPrompt("node", [probe.sourceFile]),
+      runPrompt(probe.binary, []),
+    ]);
+    expect(nodeRes.stdout).toBe("prompt> got:hello\n");
+    expect(nativeRes.stdout).toBe(nodeRes.stdout);
+    expect(nativeRes.code).toBe(nodeRes.code);
+  });
+
+  test.skipIf(!posix)("a prompt is visible before a blocking readSync", async () => {
+    const probe = await build("buffered-readsync", buffered);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runPrompt("node", [probe.sourceFile]),
+      runPrompt(probe.binary, []),
+    ]);
+    expect(nodeRes.stdout).toBe("prompt> got:hello\n");
+    expect(nativeRes.stdout).toBe(nodeRes.stdout);
+    expect(nativeRes.code).toBe(nodeRes.code);
+  });
+
+  test.skipIf(!posix)("a SIGKILL before any flush loses the buffer", async () => {
+    const probe = await build("buffered-kill-window", buffered);
+    // 32,000 bytes stay below the 64 KiB buffer: the spinning child is
+    // killed with no settle point in between, so nothing is published.
+    const res = await killAfter(probe.binary, ["32000"], 400);
+    expect(res.signal).toBe("SIGKILL");
+    expect(res.stdout.length).toBe(0);
+  });
+
+  test.skipIf(!posix)("a full buffer is published before a SIGKILL", async () => {
+    const probe = await build("buffered-kill-window", buffered);
+    // 200,000 bytes fill the buffer three times; those flushes survive the
+    // kill, the tail below 64 KiB does not.
+    const res = await killAfter(probe.binary, ["200000"], 800);
+    expect(res.signal).toBe("SIGKILL");
+    expect(res.stdout.length).toBeGreaterThanOrEqual(65536);
+    expect(res.stdout.length).toBeLessThan(200000);
+  });
 });

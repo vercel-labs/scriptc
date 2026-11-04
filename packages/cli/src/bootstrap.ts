@@ -75,6 +75,9 @@ async function tryFastPath(): Promise<number | null> {
     values.libnode === "beside" ||
     // The full compiler resolves `native` against the build host.
     values["target-cpu"] !== undefined ||
+    // The experimental stdout policy changes the program object, which the
+    // routed cache key would need to carry; the full compiler owns it.
+    values["stdout-buffering"] ||
     // The full CLI validates the value.
     values.exceptions !== undefined ||
     (values["external-types"] ?? []).length > 0 ||
@@ -247,6 +250,7 @@ async function coverageFastPath(
     values.static ||
     values["detached-exit"] ||
     values["large-pages"] ||
+    values["stdout-buffering"] ||
     values.exceptions !== undefined ||
     values["target-cpu"] !== undefined ||
     values["cpu-dispatch"] !== undefined ||

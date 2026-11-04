@@ -503,6 +503,9 @@ export function prepareNativeExecutable(
           timing,
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
+          ...(options.stdoutBuffering === true && outputKind === "exe"
+            ? { stdoutBuffering: true }
+            : {}),
           ...(options.exceptions === "rare" ? { rareExceptions: true } : {}),
           ...targetCpuField(options.targetCpu),
           ...(options.cpuDispatch === true && outputKind === "exe" ? { cpuDispatch: true } : {}),

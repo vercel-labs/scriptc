@@ -32,6 +32,15 @@
 #define SCR_STDIO_DIRECT 0
 #endif
 
+/* Build-time stdout policy (`--stdout-buffering`). The program object defines
+ * scr_stdout_buffering = 1, overriding this weak default; the runtime then
+ * keeps JavaScript-visible stdout bytes in the C stdout buffer when fd 1 is
+ * not a terminal, and settles them where the runtime settles output (see
+ * scr_stdout_settle). Off, every chunk is submitted before the call
+ * returns. */
+__attribute__((weak)) const unsigned char scr_stdout_buffering = 0;
+static bool scr_stdout_buffered = false;
+
 /* Set by scr_async.c at loop exhaustion; lives here (unconditionally) so
  * binaries that link the console without the async runtime still link, and
  * plain builds satisfy scr_async's reference. */
@@ -72,6 +81,10 @@ extern long scr_bytes_live_count(void);   /* scr_bytes.c */
 
 static void scr_rc_audit_at_exit(void) {
   scr_buffer_pool_reset(); /* the pool's own slab reference */
+  /* atexit runs this before scr_flush_at_exit, and every audit message goes
+   * to stderr: settle stdout first so a --stdout-buffering build keeps the
+   * program's lines ahead of the audit's on a shared fd. */
+  fflush(stdout);
   /* Fibers suspended forever at loop exhaustion (awaits nobody resolves —
    * Node exits 0 there too) still hold their stacks and owned values by
    * design; a strict audit would only report that deliberate abandonment. */
@@ -182,6 +195,13 @@ void scr_init(void) {
    * stream immediately. */
   static char outbuf[1 << 16];
   setvbuf(stdout, outbuf, _IOFBF, sizeof outbuf);
+#if SCR_STDIO_DIRECT
+  /* --stdout-buffering: a destination that is not a terminal keeps its bytes
+   * in the buffer above until it fills or the runtime settles them. A
+   * terminal keeps one submission per call, as Node writes synchronously
+   * there. */
+  if (scr_stdout_buffering && !isatty(1)) scr_stdout_buffered = true;
+#endif
 #if !defined(_WIN32) && !defined(__wasi__)
   /* Node ignores SIGPIPE and SIGXFSZ: a write to a closed pipe or past
    * RLIMIT_FSIZE fails with EPIPE or EFBIG, on any thread, instead of
@@ -336,6 +356,24 @@ static inline void scr_fd_stream_unlock(FILE *stream) {
   (void)stream;
 #endif
 }
+
+/* Settle buffered JavaScript-visible stdout before an observable boundary:
+ * a terminal keeps the per-call policy, and builds without the option never
+ * buffer. The async, process, fs and trap units call this unconditionally,
+ * so a configuration that cannot buffer defines a no-op. */
+void scr_stdout_settle(void) {
+  if (!scr_stdout_buffered) return;
+#ifdef SCR_WORKERS
+  /* Another runtime thread may be appending under the same stream lock. */
+  FILE *locked = scr_fd_stream_lock(1);
+  fflush(stdout);
+  scr_fd_stream_unlock(locked);
+#else
+  fflush(stdout);
+#endif
+}
+#else
+void scr_stdout_settle(void) {}
 #endif
 
 /* Render args into line (capacity from scr_console_capacity): space-joined
@@ -476,12 +514,24 @@ void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_e
  * retain stdout until a later stderr write, a 64 KiB threshold, or process
  * exit. The runtime remains synchronous internally, so its backpressure
  * surface is still constantly true, but the bytes are observable promptly.
+ * A build with `--stdout-buffering` opts out of that promptness on a
+ * non-terminal destination (see scr_stdout_settle).
  *
  * Buffered runtime-internal stdout bytes go out first (for both streams) to
  * preserve stdout order and the merged-fd ordering convention. */
 int scr_stdio_write_raw(int fd, const void *data, size_t len) {
   if (__builtin_expect(scr_stdio_capture != NULL, 0) && scr_stdio_capture(fd == 2 ? 2 : 1, data, len)) return 0;
 #if SCR_STDIO_DIRECT
+  if (scr_stdout_buffered && fd != 2) {
+    /* Append to the stream buffer; stdio submits it when it fills, and
+     * scr_stdout_settle submits the rest at an observable boundary. The
+     * stream lock keeps a worker's append from interleaving with another
+     * thread's settle. */
+    FILE *locked = scr_fd_stream_lock(1);
+    bool ok = len == 0 || fwrite(data, 1, len, stdout) == len;
+    scr_fd_stream_unlock(locked);
+    return ok ? 0 : (errno ? errno : EIO);
+  }
   FILE *locked = scr_fd_stream_lock(fd == 2 ? 2 : 1);
   if (scr_stdout_pending()) fflush(stdout);
   struct iovec iov = {(void *)data, len};

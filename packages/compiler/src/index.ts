@@ -1339,6 +1339,7 @@ async function prepareExecutableInput(
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
+      ...(opts.stdoutBuffering === true ? { stdoutBuffering: true } : {}),
       ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
       ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
       ...targetCpuField(opts.targetCpu),
@@ -1805,6 +1806,19 @@ async function compileTracked(
       sourceTexts: new Map(),
     };
   }
+  if (opts.stdoutBuffering === true && outputKind !== "exe") {
+    return {
+      ok: false,
+      diagnostics: [
+        nativeCodegenDiag(
+          "SC3002",
+          "--stdout-buffering is only supported for executable output",
+          entryPath,
+        ),
+      ],
+      sourceTexts: new Map(),
+    };
+  }
   if (opts.largePages === true && outputKind !== "exe") {
     return {
       ok: false,
@@ -2052,6 +2066,7 @@ async function compileTracked(
       ...(opts.staticLink === true ? { staticLink: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...(opts.stdoutBuffering === true ? { stdoutBuffering: true as const } : {}),
       // Calls into Node record the libnode pack; their entries record its
       // identity (node-islands/libnode.ts) and a hit requires it unchanged.
       libnodeIdentity: () => libnodeCacheKey(opts.libnode, process.env, dirname(entryPath)),

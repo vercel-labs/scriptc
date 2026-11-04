@@ -2426,30 +2426,31 @@ static ScrDyn scr_dyn_small_ints[384];
 
 /* Single-character ASCII strings are primitives with one value each, so
  * their boxes are shared the way the small integers are. The character
- * strings themselves are the runtime's immortal ASCII statics; each box
- * fills on its first use, because a load-time constructor would keep the
- * string unit's ASCII table in every program's image. */
+ * strings themselves are the runtime's immortal ASCII statics in
+ * scr_string.c, and a constructor that filled these boxes would make every
+ * program link them, so they are filled on first use instead. 0 empty, 1
+ * being filled by one thread, 2 complete. */
 static ScrDyn scr_dyn_ascii_chars[128];
-/* 0 empty, 1 being filled by one thread, 2 complete. */
-static int scr_dyn_ascii_state[128];
+static int scr_dyn_ascii_state;
 
-/* Returns the shared box for `c`, or NULL when another thread is filling it
- * right now; the caller then makes a box of its own, which the language
- * cannot tell apart from the shared one. */
-static ScrDyn *scr_dyn_ascii_char(unsigned char c) {
-  int *state = &scr_dyn_ascii_state[c];
-  if (__atomic_load_n(state, __ATOMIC_ACQUIRE) == 2) return &scr_dyn_ascii_chars[c];
+/* Fills the table on first use, so the fast path in scr_dyn_new_str stays a
+ * load and a branch. Returns the shared box for `c`, or NULL when another
+ * thread is filling the table right now; the caller then makes a box of its
+ * own, which the language cannot tell apart from the shared one. */
+static ScrDyn *scr_dyn_ascii_fill(unsigned char c) {
   int empty = 0;
-  if (!__atomic_compare_exchange_n(state, &empty, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+  if (!__atomic_compare_exchange_n(&scr_dyn_ascii_state, &empty, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
     return NULL;
-  ScrDyn *d = &scr_dyn_ascii_chars[c];
+  for (unsigned i = 0; i < 128; i++) {
+    ScrDyn *d = &scr_dyn_ascii_chars[i];
+    d->rc = SIZE_MAX;
+    d->kind = SCR_DYN_STR;
+    d->v.str = scr_str_ascii_char(i);
+  }
   /* The fields publish before the complete state, so a thread that loads it
-   * sees a filled box. */
-  d->rc = SIZE_MAX;
-  d->kind = SCR_DYN_STR;
-  d->v.str = scr_str_ascii_char(c);
-  __atomic_store_n(&scr_dyn_ascii_state[c], 2, __ATOMIC_RELEASE);
-  return d;
+   * sees filled boxes. */
+  __atomic_store_n(&scr_dyn_ascii_state, 2, __ATOMIC_RELEASE);
+  return &scr_dyn_ascii_chars[c];
 }
 
 const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
@@ -2477,7 +2478,10 @@ ScrDyn *scr_dyn_new_str(ScrStr *s) {
   /* A one-byte ASCII string is one of 128 shared values. The caller keeps
    * its own reference to `s`, which the shared box does not need. */
   if (s->ascii && s->len == 1) {
-    ScrDyn *shared = scr_dyn_ascii_char((unsigned char)s->data[0]);
+    unsigned char c = (unsigned char)s->data[0];
+    ScrDyn *shared = __builtin_expect(__atomic_load_n(&scr_dyn_ascii_state, __ATOMIC_ACQUIRE) == 2, 1)
+                         ? &scr_dyn_ascii_chars[c]
+                         : scr_dyn_ascii_fill(c);
     if (shared != NULL) return shared;
   }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);

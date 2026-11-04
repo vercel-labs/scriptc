@@ -740,6 +740,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.stdinIsRaw",
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  "process.stdioWriteStr",
   "stdin.nextChunk",
   "stdin.onData",
   "stdin.onEnd",
@@ -1495,12 +1496,15 @@ const RUNTIME_FEATURE_RULES = {
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
   /** The program reaches the process output streams' write slot — the
    * write method as a value (process.stdioSlot), its replacement, a patched
-   * program's typed writes, or a run-time-typed chunk
-   * (process.stdioWriteDyn): the SCR_STDIO_WRITE_SLOT build of the events
-   * unit carries the shared write body, the dynamic-chunk entry point and
-   * Node's anonymous write function. Every other program links the default
-   * object, byte for byte. */
-  stdioWriteSlot: rule({ fns: ["process.stdioSlot", "process.stdioWriteDyn"] }),
+   * program's typed writes, a run-time-typed chunk
+   * (process.stdioWriteDyn), or the untyped one-string write
+   * (process.stdioWriteStr): the SCR_STDIO_WRITE_SLOT build of the events
+   * unit carries the shared write body, the dynamic-chunk entry point,
+   * the string entry point and Node's anonymous write function. Every
+   * other program links the default object unchanged. */
+  stdioWriteSlot: rule({
+    fns: ["process.stdioSlot", "process.stdioWriteDyn", "process.stdioWriteStr"],
+  }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],

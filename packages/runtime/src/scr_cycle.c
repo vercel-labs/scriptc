@@ -971,6 +971,15 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
                          gen == SCR_CYC_OLD ? old_reclaimed : freed);
 }
 
+/* The counters a pass re-arms on its way out, for a decision that finds the
+ * nursery buffer empty and runs no pass: the release path then counts from
+ * the candidates still buffered instead of from the last pass. */
+static SCR_CYC_SCHEDULING void scr_cyc_rearm_over_buffered(void) {
+  scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
+  scr_cyc_alloc_trigger = scr_cyc_live + SCR_CYC_NURSERY_ALLOCATIONS;
+  scr_cyc_window_update();
+}
+
 /* Cold half of the release path: pick the level and collect. It runs once
  * per pass, so it is kept out of line and built for size, which leaves the
  * hot buffering path in scr_cyc_on_release small. */
@@ -1002,9 +1011,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(bool routed) {
    * again; a probe the pass would have consumed stays open for the next
    * point that has young candidates to measure. */
   if (gen == SCR_CYC_NURSERY && scr_roots[SCR_CYC_NURSERY].n == 0) {
-    scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
-    scr_cyc_alloc_trigger = scr_cyc_live + SCR_CYC_NURSERY_ALLOCATIONS;
-    scr_cyc_window_update();
+    scr_cyc_rearm_over_buffered();
     return;
   }
   scr_cyc_probe_due = false;
@@ -1034,6 +1041,18 @@ void scr_cyc_collect_scheduled(void) {
   } else if (++scr_cyc_scheduled_mature_age
              >= scr_cyc_nursery_base()) {
     scr_cyc_scheduled_pass(SCR_CYC_OLD, false, false, true);
+    return;
+  }
+  /* The decision below is the release path's: it tests the heap and the
+   * older buffers against the growth, backlog and death rules, and every
+   * release runs the same test when the arrival counters fire. A turn whose
+   * nursery buffer is empty holds only older candidates, which the age rule
+   * above and the release path collect, so the decision is skipped here and
+   * the counters are re-armed over the candidates the turn leaves buffered;
+   * a program that reaches a turn between every message would otherwise
+   * compare the same numbers on every turn. */
+  if (scr_roots[SCR_CYC_NURSERY].n == 0) {
+    scr_cyc_rearm_over_buffered();
     return;
   }
   scr_cyc_collect_due(true);

@@ -76,6 +76,7 @@ const { values } = parseArgs({
     strict: { type: "boolean", default: false },
     "timing-runs": { type: "string" },
     "self-timing-runs": { type: "string", default: "0" },
+    "fixture-timing-runs": { type: "string", default: "1" },
     "max-time-growth": { type: "string", default: "2" },
     "max-size-growth": { type: "string", default: "0" },
     cachegrind: { type: "boolean", default: false },
@@ -91,8 +92,8 @@ if (values.help || values.baseline === undefined) {
   console.log(`Usage: node scripts/zero-cost-gate.mjs --baseline=<checkout> [--candidate=<checkout>]
        [--programs=baseline|candidate|<dir>] [--set=bench,self,corpus] [--quick]
        [--corpus=ts|all] [--shard=i/n] [--only=<regex>] [--allow=<regex>]
-       [--strict] [--timing-runs=N] [--self-timing-runs=N] [--max-time-growth=2]
-       [--max-size-growth=0]
+       [--strict] [--timing-runs=N] [--self-timing-runs=N]
+       [--fixture-timing-runs=N] [--max-time-growth=2] [--max-size-growth=0]
        [--cachegrind] [--jobs=N] [--json=<file>] [--keep]
        [--baseline-cache=<file>] [--record-baseline-cache=<file>]
 
@@ -127,10 +128,16 @@ note; --strict fails them too, so any difference fails as before.
 
 --timing-runs=N (default 5) times N paired --emit=llvm builds per bench
 program, baseline and candidate side by side. The self-hosted compiler's
-comparison build is its first pair; --self-timing-runs adds more. The gate
-fails when the 95% bootstrap interval of the bench geomean ratio, or of the
-self-hosted ratio, lies entirely above --max-time-growth percent; an interval
-that straddles it is reported as inconclusive.
+and the self-hosting fixtures' comparison builds are their first pairs;
+--self-timing-runs and --fixture-timing-runs add more. The gate fails when
+the 95% bootstrap interval of the bench geomean ratio, of the self-hosted
+ratio, or of the fixture ratio lies entirely above --max-time-growth
+percent; an interval that straddles it is reported as inconclusive.
+
+The fixtures are the largest modules the compiler lowers: the complete LLVM
+emitter and the complete layout emitter, each importing most of the backend.
+A pass whose cost follows the module's node count rather than the program's
+own work shows up there at a size the bench and corpus programs never reach.
 --max-size-growth bounds executable growth (percent) of allowed programs.
 
 Dynamic-tier symbols (two-tier invariant I3): no executable may gain
@@ -173,6 +180,7 @@ const sets = new Set((values.quick ? "bench" : values.set).split(","));
 for (const set of sets) assert.ok(["bench", "self", "corpus"].includes(set), `unknown set ${set}`);
 const timingRuns = Number(values["timing-runs"] ?? (values.quick ? 0 : 5));
 const selfTimingRuns = Number(values["self-timing-runs"]);
+const fixtureTimingRuns = Number(values["fixture-timing-runs"]);
 const maxTimeGrowth = Number(values["max-time-growth"]) / 100;
 const maxSizeGrowth = Number(values["max-size-growth"]) / 100;
 const jobs = Number(values.jobs);
@@ -191,6 +199,12 @@ if (values.cachegrind)
 const work = mkdtempSync("/tmp/scriptc-zero-cost-");
 
 /* ── the good-code set ─────────────────────────────────────────────────── */
+
+/** The self-hosting emitter fixtures under tests/fixtures/self-hosting,
+ * compiled and timed beside the self-hosted compiler. Each is a complete
+ * emitter over most of the compiler, so a compile costs a minute or more:
+ * the gate times its comparison build plus --fixture-timing-runs more pairs. */
+const FIXTURE_PROGRAMS = ["llvm-emitter", "llvm-layouts"];
 
 /** Every file a program reads: the entry and its relative imports. */
 function programInputs(entry) {
@@ -232,12 +246,23 @@ function goodCodeSet() {
       programs.push({ id: `bench/${w.name}`, entry, kind: "exe", workload: w });
     }
   }
-  if (sets.has("self"))
+  if (sets.has("self")) {
     programs.push({
       id: "self/cli",
       entry: join(programsRoot, "packages/compiler/src/native/cli.ts"),
       kind: "source",
     });
+    // The self-hosting emitter fixtures lower the whole emitter over the
+    // compiler's complete IR surface. They are the timed programs that show a
+    // pass whose cost follows the module's size (the fs Buffer brand scan of
+    // #2636 spent most of a compile in one walk and left the IR unchanged).
+    for (const name of FIXTURE_PROGRAMS)
+      programs.push({
+        id: `fixture/${name}`,
+        entry: join(programsRoot, "tests/fixtures/self-hosting", `${name}.ts`),
+        kind: "fixture",
+      });
+  }
   if (sets.has("corpus")) {
     const corpus = join(programsRoot, "tests/corpus");
     const exts = values.corpus === "all" ? ["ts", "js", "mjs", "cjs"] : ["ts"];
@@ -267,10 +292,11 @@ function goodCodeSet() {
     Number.isInteger(index) && Number.isInteger(count) && index >= 1 && index <= count,
     "--shard must be i/n with 1 <= i <= n",
   );
-  // The self program takes minutes and pairs its own timing: shard 1 owns it.
-  const self = selected.filter((p) => p.kind === "source");
-  const rest = selected.filter((p) => p.kind !== "source");
-  return [...(index === 1 ? self : []), ...rest.filter((_, k) => k % count === index - 1)];
+  // The self program and the fixtures take minutes and pair their own
+  // timing: shard 1 owns them.
+  const heavy = selected.filter((p) => p.kind !== "exe");
+  const rest = selected.filter((p) => p.kind === "exe");
+  return [...(index === 1 ? heavy : []), ...rest.filter((_, k) => k % count === index - 1)];
 }
 
 /* ── builds ────────────────────────────────────────────────────────────── */
@@ -312,8 +338,9 @@ function compile(tree, args) {
 
 /** Build one program with one checkout. Executable programs build once,
  * keeping the LLVM and IR beside the release executable. The self-hosted
- * compiler emits LLVM only: each of its frontend runs takes minutes, and its
- * LLVM names the first differing function as well as its IR would. */
+ * compiler and the self-hosting fixtures emit LLVM only: each of their
+ * frontend runs takes minutes, and their LLVM names the first differing
+ * function as well as their IR would. */
 async function buildProgram(program, label, tree = trees[label]) {
   const dir = join(work, label, program.id.replace(/[^\w.-]+/g, "_"));
   mkdirSync(dir, { recursive: true });
@@ -324,7 +351,7 @@ async function buildProgram(program, label, tree = trees[label]) {
       .trim()
       .slice(0, 4000),
   });
-  if (program.kind === "source") {
+  if (program.kind === "source" || program.kind === "fixture") {
     const llvm = join(dir, "program.ll");
     const result = await compile(tree, [program.entry, "--emit=llvm", "-o", llvm]);
     if (result.status !== 0) return failure(result);
@@ -627,7 +654,7 @@ function inputsHash(program) {
   return programInputsHash(
     programsRoot,
     programInputs(program.entry),
-    program.kind === "source" ? "source" : (program.optimization ?? "release"),
+    program.kind === "exe" ? (program.optimization ?? "release") : "source",
     (file) => readFileSync(file),
   );
 }
@@ -654,7 +681,7 @@ if (recordPath === undefined && values["baseline-cache"] !== undefined) {
     );
 }
 
-const programs = goodCodeSet().filter((p) => recordPath === undefined || p.kind !== "source");
+const programs = goodCodeSet().filter((p) => recordPath === undefined || p.kind === "exe");
 assert.ok(programs.length > 0, "the selected good-code set is empty");
 const runtime = recordPath === undefined ? runtimeChanges() : null;
 const report = {
@@ -769,10 +796,10 @@ const earlyCandidateSelf =
 
 await pool(
   programs.map((program) => ({
-    heavy: program.kind === "source",
+    heavy: program.kind !== "exe",
     run: async () => {
       const recorded =
-        program.kind === "source" || baselineCache === null
+        program.kind !== "exe" || baselineCache === null
           ? undefined
           : recordedBaseline(baselineCache, program.id, inputsHash(program));
       let baseline;
@@ -928,8 +955,13 @@ if (timingRuns > 0) {
       row.candidateMs.push(Math.round(sample[1]));
       row.ratios.push(sample[1] / sample[0]);
     };
-    const runs = program.kind === "source" ? selfTimingRuns : timingRuns;
-    if (program.kind === "source") {
+    const runs =
+      program.kind === "source"
+        ? selfTimingRuns
+        : program.kind === "fixture"
+          ? fixtureTimingRuns
+          : timingRuns;
+    if (program.kind === "source" || program.kind === "fixture") {
       const built = report.programs.find((p) => p.id === program.id)?.buildMs;
       if (built?.baseline && built?.candidate) add([built.baseline, built.candidate]);
     }

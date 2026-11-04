@@ -2516,7 +2516,9 @@ static void test_states_on_demand(void) {
 /* Elements outside the element type (SCR_ARR_FOREIGN): stores, reads,
  * copies, sorting and removal keep the stored value's count balanced. */
 static void test_foreign_elements(void) {
-  ScrStr *text = scr_str_new("x", 1);
+  /* Two characters: a one-character ASCII value is one of the shared
+   * interned cells, which keeps no count of its own. */
+  ScrStr *text = scr_str_new("xy", 2);
   ScrDyn *x = scr_dyn_new_str(text);
   scr_str_release(text);
   ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -2529,12 +2531,12 @@ static void test_foreign_elements(void) {
   check(got == x, "get_foreign answers the stored value");
   scr_dyn_release(got);
   check(scr_arr_get_foreign(a, 0) == NULL, "a number is not a foreign element");
-  check(isnan(scr_arr_get_number(a, 2)), "numeric read of a foreign 'x' is NaN");
+  check(isnan(scr_arr_get_number(a, 2)), "numeric read of a foreign 'xy' is NaN");
   check(scr_arr_set_foreign(a, 3, scr_dyn_undefined()), "undefined store");
   check_f64(scr_arr_state(a, 3), SCR_ARR_UNDEFINED, "undefined is a present undefined");
   ScrStr *sep = scr_str_new(",", 1);
   ScrStr *joined = scr_arr_join(a, sep);
-  check(joined->len == 6 && memcmp(joined->data, "1,2,x,", 6) == 0, "join converts foreign");
+  check(joined->len == 7 && memcmp(joined->data, "1,2,xy,", 7) == 0, "join converts foreign");
   scr_str_release(joined);
   ScrArr *copy = scr_arr_slice(a, 0, INFINITY);
   check_f64(scr_arr_state(copy, 2), SCR_ARR_FOREIGN, "slice keeps a foreign element");

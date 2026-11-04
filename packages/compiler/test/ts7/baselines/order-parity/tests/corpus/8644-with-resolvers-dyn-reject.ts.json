@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8644-with-resolvers-dyn-reject.ts"
+ ],
+ "diags": []
+}

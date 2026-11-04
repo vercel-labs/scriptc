@@ -41,6 +41,7 @@ function fixture(): Fixture {
     keyOrder: notes,
     unions: new Map([["u0", { id: "u0", arms: [F64, { kind: "undefinedT" }] }]]),
     classes: new Map(),
+    recordLinks: new Map(),
     methodAccessSites: new Map(),
     dynConvertible: () => true,
     armTag: (unionId: string, arm: IrType): number =>

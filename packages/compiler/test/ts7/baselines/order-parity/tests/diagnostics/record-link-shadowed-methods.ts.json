@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/record-link-shadowed-methods.ts"
+ ],
+ "diags": []
+}

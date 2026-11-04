@@ -19,7 +19,11 @@ import {
   NativeCodegenError,
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./native-codegen-core.js";
+import {
+  nativeBuildPartitions,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "./native-codegen-core.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -480,6 +484,22 @@ test("program partitions follow module size and the host's threads", () => {
     "C:\\build.d\\program",
     "C:\\build.d\\program.part1",
   ]);
+});
+
+test("a dispatching build compiles the module whole", () => {
+  const kilobyte = 1024;
+  const megabyte = 1024 * kilobyte;
+  // A module's own text would divide, and the copies only add to it, but the
+  // copies and the functions they call stay one object so LLVM can inline
+  // between them.
+  expect(nativeBuildPartitions(4 * megabyte, { cpuDispatch: true })).toBe(1);
+  expect(nativeBuildPartitions(4 * megabyte, { cpuDispatch: true, unoptimized: true })).toBe(1);
+  // Every other build keeps the partitions of its size.
+  expect(nativeBuildPartitions(4 * megabyte, {})).toBe(nativeProgramPartitions(4 * megabyte));
+  expect(nativeBuildPartitions(4 * megabyte, { unoptimized: true })).toBe(
+    nativeProgramPartitions(4 * megabyte, true),
+  );
+  expect(nativeBuildPartitions(4 * megabyte, { singleObject: true })).toBe(1);
 });
 
 test("partitioned objects are emitted, cached and restored together", async () => {

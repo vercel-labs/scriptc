@@ -74,7 +74,6 @@ import {
 import {
   everyExprChild,
   everyStmtChild,
-  everyStmtList,
   everyTypeChild,
   transformStmtList,
 } from "../../ir/traverse.js";
@@ -541,6 +540,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (opaque) shapesIn(type, opaqueShapes, opaqueSeen);
     else shapesIn(type, runtimeShapes, runtimeSeen, true);
   };
+  /** The shapes a checked conversion in this program builds, which are the
+   * only values that already hold a source when this pass runs (the ones
+   * this pass keeps join keptSourceShapes as it decides). Collected by the
+   * walk below, which already meets every conversion. */
+  const convertedShapes = new Set<string>();
+  const convertedSeen = new Set<string>();
 
   // ── collection ──────────────────────────────────────────────────────
   let pos = 0;
@@ -705,6 +710,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         return;
       }
       case "dynCheck":
+        conversionShapes(lowerer, e.type, convertedShapes, convertedSeen);
         if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
         // Conversions that build no record: a boxed primitive, and a
         // replaceable method's result while no replacement the program can
@@ -781,21 +787,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   // another width spread's target, so this runs until no site joins.
   const keptWidths = new Set<IrExpr>();
   const keptClones = new Set<IrExpr>();
-  /** The shapes a checked conversion in this program builds, which are the
-   * only values that already hold a source when this pass runs (the ones
-   * this pass keeps join keptSourceShapes as it decides). */
-  const convertedShapes = new Set<string>();
-  {
-    const seen = new Set<string>();
-    for (const fn of fns)
-      everyStmtList(fn.body, {
-        expr: (expr) => {
-          if (expr.kind === "dynCheck") conversionShapes(lowerer, expr.type, convertedShapes, seen);
-          return true;
-        },
-        stmt: () => true,
-      });
-  }
   /** The statements each kept site's literal evaluates in (the wrapper's
    * prologue), which the per-instance order plan reads a spread's source
    * binding from after keepWidthSpreads moved the literal into a
@@ -1141,7 +1132,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     return out;
   };
 
-  /** Today's table with every witness edge applied, or "unknown". */
+  /** Today's table with every witness edge applied, or "unknown".
+   *
+   * Kahn's algorithm takes the ready key the table holds first, which is
+   * the order the tables have always used. Ranks are unique, so a scan for
+   * the smallest ready rank settles each step exactly as reordering the
+   * whole ready set did. */
   const merge = (table: readonly string[], edges: readonly [string, string][]): Resolved => {
     const rank = new Map(table.map((k, i) => [k, i]));
     const succ = new Map<string, Set<string>>(table.map((k) => [k, new Set<string>()]));
@@ -1156,8 +1152,18 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const order: string[] = [];
     const ready = table.filter((k) => indeg.get(k) === 0);
     while (ready.length > 0) {
-      ready.sort((a, b) => rank.get(a)! - rank.get(b)!);
-      const k = ready.shift()!;
+      let at = 0;
+      let best = rank.get(ready[0]!)!;
+      for (let i = 1; i < ready.length; i++) {
+        const r = rank.get(ready[i]!)!;
+        if (r < best) {
+          best = r;
+          at = i;
+        }
+      }
+      const k = ready[at]!;
+      ready[at] = ready[ready.length - 1]!;
+      ready.pop();
       order.push(k);
       for (const next of succ.get(k)!) {
         indeg.set(next, indeg.get(next)! - 1);
@@ -1173,6 +1179,9 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
 
   // ── resolution over inheritance edges ───────────────────────────────
   const result = new Map<string, Resolved>();
+  /** A shape's late-write edges: they read that shape's facts only, so they
+   * stay valid until the facts change (a shape becomes built at run time,
+   * below). */
   const late = new Map<string, [string, string][] | "unknown">();
   const dependencies = (id: string): string[] => {
     const f = facts.get(id);
@@ -1289,7 +1298,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   };
   const resolveAll = (): void => {
     result.clear();
-    late.clear();
     for (const scc of sccs) {
       const members = new Set(scc);
       const guess = new Map<string, Resolved>();
@@ -1334,7 +1342,11 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       const self = target.kind === "record" && target.shapeId === first.shapeId;
       if ((source === "unknown" && !self) || !ordersSpread(segments, sites)) continue;
       orderedSpreads.add(segments);
-      if (target.kind === "record") factsOf(target.shapeId).runtime = true;
+      if (target.kind === "record") {
+        factsOf(target.shapeId).runtime = true;
+        // Its presence answers and late-write edges just changed.
+        late.delete(target.shapeId);
+      }
       grew = true;
     }
     if (grew) resolveAll();

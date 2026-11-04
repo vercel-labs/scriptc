@@ -87,8 +87,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
-  // Number.prototype and Boolean.prototype read as values in JavaScript.
-  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
+  // A builtin prototype method read as a value in JavaScript (String trim,
+  // RegExp exec/test/toString).
+  ["scr_dyn_builtin_methods.c", all("builtinMethodValue", "dynInvoke")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
@@ -96,6 +97,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
+  // DataView.prototype as a value in JavaScript (`DataView.prototype`,
+  // its getter/setter family, its see-through accessors and its
+  // [[@@toStringTag]]); it builds that object on the dynamic object model.
+  ["scr_data_view_proto.c", all("dataViewPrototypeValue", "dynInvoke")],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
@@ -130,10 +135,13 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
   // Primitive wrapper objects.
   ["scr_js_wrapper.c", "primitiveWrapper"],
+  // %Iterator% and %Iterator.prototype% as values.
+  ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
+  ["scr_zstd.c", all("zlib", "zstd")],
   // Intl over ICU (scr_intl.c): the default-locale number/date formats and
   // word segmentation, over the packed ICU archive and its data file.
   // Every engine-free Intl form (the en-US fast paths, default grapheme
@@ -248,6 +256,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // The dynamic global object's answer for the Node globals the native runtime
+  // does not implement (host-globals.ts): the compiler hands over its derived
+  // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
+  // instead of answering undefined.
+  ["scr_global_host_absent.c", "hostAbsentGlobals"],
 ];
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
@@ -547,6 +560,37 @@ export function variantsFor(source) {
       defines: ["SCR_YIN"],
     });
   }
+  // A program that reads the global object through a computed key or asks
+  // `… in globalThis` arms the runtime check for the Node globals the native
+  // runtime does not implement (scr_global_host_absent.c). Every other
+  // program keeps the default object, byte for byte.
+  if (source === "scr_node_builtin.c") {
+    variants.push({
+      id: "host-absent-globals",
+      when: { hostAbsentGlobals: true },
+      defines: ["SCR_GLOBAL_HOST_ABSENT"],
+    });
+  }
+  // The spawnSync result's `.error` property: the build that keeps the spawn
+  // errno and argv on the result and stamps Node's errnoException fields
+  // (errno, syscall, path, spawnargs). A program that never reads `.error`
+  // keeps the default object and the result container exactly as they were.
+  if (source === "scr_child.c") {
+    variants.push({
+      id: "err-fields",
+      when: { childErrorFields: true },
+      defines: ["SCR_CHILD_ERR_FIELDS"],
+    });
+    // A program that passes the extended options AND reads `.error` needs
+    // both builds in one object: the extended core answers the result the
+    // error fields are stamped from, so a build with the options alone
+    // would drop them.
+    variants.push({
+      id: "cp-options-err-fields",
+      when: { childOptionExt: true, childErrorFields: true },
+      defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
+    });
+  }
   return variants;
 }
 
@@ -565,6 +609,7 @@ export function createRuntimePackMatrix({
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];

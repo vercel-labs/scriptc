@@ -58,6 +58,7 @@
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -1084,7 +1085,13 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.collectAnnotated(Weigher.Annotated);
         P.afterProfileAnnotation(PartitionMatch);
       }
-      OptimizationLevel PreLink = preLinkLevel(Level, Annotating);
+      // Experiment only: one binary runs either pre-link level, chosen per
+      // build by SCRIPTC_PRELINK_LEVEL=o1, so a timing comparison between the
+      // two levels holds the helper binary fixed.
+      const char *PreLinkMode = std::getenv("SCRIPTC_PRELINK_LEVEL");
+      bool OldPreLink = PreLinkMode && std::string(PreLinkMode) == "o1";
+      OptimizationLevel PreLink =
+          OldPreLink ? preLinkLevel(Level, Annotating) : Level;
       if (PreLink != Level)
         addPreLinkValuePropagation(P.PB);
       ModulePassManager MPM =

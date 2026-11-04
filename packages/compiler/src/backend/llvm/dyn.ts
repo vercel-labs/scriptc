@@ -227,6 +227,10 @@ export interface DynHost extends WalkerHost {
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
   /** See moduleUsesDynBuiltinStream. */
   usesDynBuiltinStream?(): boolean;
+  /** The JavaScript object model build is on: an array it holds may keep
+   * elements past its dense prefix, so the keyed read answers `length`
+   * from the array's own length rather than the prefix field. */
+  jsObjectModel?(): boolean;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
   declBoundary?(): boolean;
@@ -873,6 +877,21 @@ export class LlDyn {
     return n;
   }
 
+  /** The object model build's v.arr.length, one field past region (see the
+   * arr payload's comment): the dense prefix unless a far write or a length
+   * assignment moved it. Its offset follows the payload's: 64-bit pointers
+   * put region at +64 and the length at +72, wasm32's 4-byte ones at +48 and
+   * +56 of the payload, +44 absolute. */
+  private arrLengthOf(B: BlockBuilder, d: string): string {
+    const p = B.tmp();
+    const n = B.tmp();
+    B.line(
+      `${p} = getelementptr inbounds i8, ptr ${d}, i64 ${this.abiOffset(72, 44)} ; ->v.arr.length`,
+    );
+    B.line(`${n} = load ${this.S}, ptr ${p}`);
+    return n;
+  }
+
   /** Loads v.arr.items / v.obj.entries after two size_t fields. */
   private itemsOf(B: BlockBuilder, d: string): string {
     const p = B.tmp();
@@ -1233,10 +1252,13 @@ export class LlDyn {
           `${offsetTable} = internal constant [${offsets.length} x ${S}] [${offsets.join(", ")}]`,
         );
         const key = typeKey({ kind: "record", shapeId: sourceId });
-        return `{ ptr, ${S}, ptr } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable} }`;
+        // The source's declared names describe the record a partial view's
+        // writes add properties to (scr_record_view_extra).
+        const names = this.recordNameTable(sourceId, source);
+        return `{ ptr, ${S}, ptr, ptr, ptr, ${S}, ${S}, ${S} } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable}, ptr ${names.names}, ptr ${names.lens}, ${S} ${S === "i64" ? 8 : 4}, ${S} ${S === "i64" ? 8 : 4}, ${S} ${source.fields.length} }`;
       });
       this.defs.push(
-        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr }] [${entries.join(", ")}]`,
+        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr, ptr, ptr, ${S}, ${S}, ${S} }] [${entries.join(", ")}]`,
         ``,
       );
     }
@@ -5014,7 +5036,12 @@ export class LlDyn {
         const lStr = B.newLabel("kg.asr");
         B.condBr(isA, lArr, lStr);
         B.startBlock(lArr);
-        const n = this.lenOf(B, "%d");
+        // The object model build keeps elements past the dense prefix in the
+        // array's own property table, so the prefix field is no longer the
+        // length. Every other program loads that field, byte for byte as
+        // before: the load comes first so the temps it takes keep their
+        // numbering.
+        const n = host.jsObjectModel?.() ? this.arrLengthOf(B, "%d") : this.lenOf(B, "%d");
         const nd = B.tmp();
         const r = B.tmp();
         B.line(`${nd} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${n} to double`);
@@ -5215,7 +5242,14 @@ export class LlDyn {
     const okB = B.tmp();
     const ok01 = B.tmp();
     const ok = B.tmp();
-    B.line(`${okA} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
+    if (host.jsObjectModel?.()) {
+      // An array may keep elements past its dense prefix; the runtime's
+      // array iterator reads those through the property table, so arrays
+      // take it instead of this helper's item walk.
+      B.line(`${okA} = icmp eq i32 0, 1 ; arrays iterate through the runtime`);
+    } else {
+      B.line(`${okA} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
+    }
     B.line(`${okS} = icmp eq i32 ${kd}, ${DYN_KIND.STR}`);
     B.line(`${okB} = icmp eq i32 ${kd}, ${DYN_KIND.BYTES}`);
     B.line(`${ok01} = or i1 ${okA}, ${okS}`);

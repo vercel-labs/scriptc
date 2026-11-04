@@ -193,3 +193,44 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
     expect(selected(source, plain).defines).toEqual([]);
   }
 });
+
+test("a dynamic global read selects the host-global build of the global unit", () => {
+  // A computed read of the global object, or `… in globalThis`, arms the
+  // check for the Node globals the native runtime does not implement
+  // (host-globals.ts); every other program keeps the default object.
+  const plain = { hostAbsentGlobals: false, workers: false };
+  expect(selected("scr_node_builtin.c", plain).defines).toEqual([]);
+  expect(selected("scr_node_builtin.c", { ...plain, hostAbsentGlobals: true }).defines).toEqual([
+    "SCR_GLOBAL_HOST_ABSENT",
+  ]);
+  // A worker program keeps its thread-state build AND the check.
+  expect(
+    selected("scr_node_builtin.c", { hostAbsentGlobals: true, workers: true }).defines,
+  ).toEqual(["SCR_GLOBAL_HOST_ABSENT", "SCR_WORKERS"]);
+});
+
+test("reading a spawnSync result's error selects the child build with its fields", () => {
+  // A program that reads `.error` links the build that keeps the spawn errno
+  // and argv on the result and stamps Node's errnoException fields.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: true }).defines).toEqual([
+    "SCR_CHILD_ERR_FIELDS",
+  ]);
+  // A program that spawns but never reads `.error` keeps the default object
+  // and the result container exactly as they were, byte for byte.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: false }).defines).toEqual([]);
+});
+
+test("extended spawn options beside an error read keep both child builds", () => {
+  // The cwd/input/shell entries and the errnoException fields live in two
+  // builds of scr_child.c; a program that passes those options and reads
+  // `.error` needs one object carrying both, not the options build alone.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"]);
+  // Each feature alone keeps its own build.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: false })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
+});

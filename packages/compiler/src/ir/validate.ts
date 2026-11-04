@@ -537,6 +537,24 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         });
       }
     }
+    for (const accessor of cls.viewAccessors ?? []) {
+      const helper = functionsByName.get(accessor.helper);
+      const receiver = helper?.params[0]?.type;
+      if (
+        !helper ||
+        helper.params.length !== 1 ||
+        receiver?.kind !== "object" ||
+        receiver.className !== cls.name ||
+        helper.returnType.kind !== "dyn" ||
+        helper.captures !== undefined ||
+        helper.classCaptures !== undefined
+      ) {
+        errors.push({
+          message: `class ${cls.name}: view accessor helper for ${accessor.member} must be a noncapturing (instance) => dyn function`,
+          loc: cls.loc,
+        });
+      }
+    }
     for (const symbol of cls.symbolFields ?? []) {
       const global =
         "globalId" in symbol ? mod.globals?.find((global) => global.id === symbol.globalId) : null;
@@ -1650,6 +1668,10 @@ function validateFunction(
         // choose ARRAY_VALUE versus ARRAY_UNDEFINED before the final result
         // is evaluated. Delegation also needs a local loop. Nested control
         // flow is checked recursively; jumps still cannot leave the region.
+        // A value-position `delete` of an index-signature key lowers to its
+        // recordKeyDelete (frozen-guarded into a block when the record can
+        // freeze), and a value-position `delete` of an optional field to the
+        // recordSet that writes its absent state.
         const allowed = new Set([
           "varDecl",
           "assign",
@@ -1657,6 +1679,7 @@ function validateFunction(
           "fieldSet",
           "recordSet",
           "recordKeySet",
+          "recordKeyDelete",
           "arraySet",
           "arraySetLength",
           "arraySetUndefined",
@@ -5384,7 +5407,8 @@ function validateFunction(
       e.fn === "process.onExit" ||
       e.fn === "process.offExit" ||
       e.fn === "stdin.onData" ||
-      e.fn === "stdin.onError"
+      e.fn === "stdin.onError" ||
+      e.fn === "stdin.onReadable"
     ) {
       // The listener: a void closure with no params, or exactly the
       // one supported parameter shape per event (code number / data
@@ -5396,7 +5420,7 @@ function validateFunction(
         if (e.fn === "stdin.onData")
           ok = (p.kind === "bytes" && p.elem === "u8") || p.kind === "string";
         else if (e.fn === "stdin.onError") ok = p.kind === "object" && p.className === "%Error";
-        else ok = p.kind === "f64";
+        else ok = e.fn !== "stdin.onReadable" && p.kind === "f64";
       }
       if (!ok) {
         err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);
@@ -5413,6 +5437,19 @@ function validateFunction(
         def.arms[1]!.kind === "nullT";
       if (!ok) {
         err(`libCall spawnRes.status must return the 'number | null' union`, e.loc);
+      }
+      return true;
+    }
+    if (e.fn === "stdin.read") {
+      // Result is the module's interned `Uint8Array | null` union.
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "bytes") &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) {
+        err(`libCall stdin.read must return the 'Uint8Array | null' union`, e.loc);
       }
       return true;
     }

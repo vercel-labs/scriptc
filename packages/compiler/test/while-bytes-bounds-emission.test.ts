@@ -146,5 +146,9 @@ console.log(
   expect(checks(ll, "ahead")).toBe(1);
   // The read before the nested loop is in bounds. The nested loop's
   // condition is not a bound, and the read after the loop can be at -1.
-  expect(checks(ll, "nested")).toBe(2);
+  // The outer loop is versioned for the nested condition's read, so its
+  // body is emitted twice: the checked copy keeps both reads' checks, and
+  // the proven copy keeps the read after the loop, which the guard cannot
+  // bound (i can reach len and put the index at -1).
+  expect(checks(ll, "nested")).toBe(3);
 });

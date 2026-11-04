@@ -112,6 +112,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c). */
   stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (scr_data_view_proto.c). */
+  dataViewPrototypeValue?: boolean;
   /** A computed read of the global object, or `… in globalThis`
    * (scr_global_host_absent.c). */
   hostAbsentGlobals?: boolean;
@@ -121,6 +124,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** Number.prototype and Boolean.prototype as values
    * (scr_dyn_builtin_prototype.c). */
   builtinPrototypeValue?: boolean;
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
   /** The JavaScript object model build (t262-da §J): the runtime code every
@@ -363,9 +369,11 @@ export function effectiveRuntimeFeatures(
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
+    dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinPrototypeValue: features.builtinPrototypeValue === true,
+    builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     jsObjectModel,

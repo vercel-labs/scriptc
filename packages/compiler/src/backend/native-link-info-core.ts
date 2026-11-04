@@ -145,6 +145,10 @@ export interface NativeLinkFeatures {
    * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
    * (false) otherwise, so other programs keep their exact link line. */
   stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (`DataView.prototype`) links scr_data_view_proto.c; absent (false)
+   * otherwise, so other programs keep their exact link line. */
+  dataViewPrototypeValue?: boolean;
   /** A computed read of the global object, or `… in globalThis`, links
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c; absent (false) otherwise. */
@@ -172,6 +176,9 @@ export interface NativeLinkFeatures {
   /** Number.prototype or Boolean.prototype read as a value:
    * scr_dyn_builtin_prototype.c. Absent (false) otherwise. */
   builtinPrototypeValue?: boolean;
+  /** A String.prototype trim method read as a value:
+   * scr_dyn_builtin_methods.c. Absent (false) otherwise. */
+  builtinMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;

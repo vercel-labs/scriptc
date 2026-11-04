@@ -6760,7 +6760,19 @@ export class Lowerer {
    * calls of these names. Runs in every pass so the ids are
    * deterministic. */
   prepareModuleInits(parts: FileParts[]): void {
-    parts.forEach((fp, i) => this.initNameOf.set(fp.sf, `%init.${i}`));
+    // The entry module's %init is %init.0; every other module's number comes
+    // from its stable file name, so adding or reordering modules leaves every
+    // other module's init name unchanged.
+    const initNumbers = new Set<number>([0]);
+    for (const fp of parts) {
+      if (fp.sf === this.entry) {
+        this.initNameOf.set(fp.sf, "%init.0");
+        continue;
+      }
+      const n = moduleTagNumber(this.stableFileName(fp.sf), initNumbers);
+      initNumbers.add(n);
+      this.initNameOf.set(fp.sf, `%init.${n}`);
+    }
     for (const fp of parts) {
       const rawTag = this.fileTag.get(fp.sf) ?? "";
       const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");

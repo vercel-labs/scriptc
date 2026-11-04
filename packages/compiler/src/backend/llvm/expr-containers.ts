@@ -1518,8 +1518,9 @@ export function emitMapLikeIntrinsic(
       // runtime knows no tags. Ref values come back +1 (ownership MOVES
       // into the fresh union box on a hit); scalars ride an out-param
       // behind a found flag; a miss is the interned undefined-arm
-      // instance. When V is itself a union, the stored box IS the
-      // result (`undefined` sorts last in canonical arm order).
+      // instance. When V is itself a union and both are tagged boxes, the
+      // stored box IS the result (`undefined` sorts last in canonical arm
+      // order); a pointer union on either side widens instead (below).
       const k = emitMapLookupKey(host, e.args[0]!, borrowInputs);
       const kAcc = k.access;
       const kTy = k.types;
@@ -1545,11 +1546,15 @@ export function emitMapLikeIntrinsic(
       const absent = host.unitInstanceRef(e.type.unionId, undefTag);
       if (
         value.kind === "union" &&
-        host.nullableUnions.has(value.unionId) &&
+        (host.nullableUnions.has(value.unionId) || host.nullableUnions.has(e.type.unionId)) &&
         !typeEquals(value, e.type)
       ) {
         // A nullable `C | null` value widens into `C | null | undefined`:
         // NULL is the stored null, so presence decides the undefined arm.
+        // A boxed value whose result is a pointer union widens the same
+        // way: the stored box is not the result's encoding (a `string |
+        // null` boxed because some map or set keys by it, read as the plain
+        // pointer of `string | null | undefined`).
         host.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);
         host.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
         const has = B.tmp();

@@ -401,6 +401,13 @@ typedef struct {
   /* A namespace object's function member (scr_dyn_namespace_define), which
    * static member calls bypass: a change to its value fences instead. */
   bool fenced : 1;
+  /* An accessor a class instance's checked view installs for one of the
+   * class's accessor-backed members (scr_dyn_class_view_accessors). The
+   * view answers the member with the getter, but the member belongs to the
+   * class: own-property queries (Object.getOwnPropertyNames, a descriptor,
+   * hasOwnProperty) answer as they do on the instance, where the accessor
+   * is a prototype member. */
+  bool class_view : 1;
   /* Ordinary object insertion sets all three attributes true. */
   bool writable;
   bool enumerable;
@@ -492,6 +499,16 @@ typedef struct ScrDynTypedClassOps {
    * instance (+1), or NULL with a pending exception from the getter;
    * NULL when the class has no such getter. */
   ScrStr *(*string_tag)(void *instance);
+  /* The class's accessor-backed members, nearest declaration first: one
+   * entry per name that a `get` accessor at or above the class answers.
+   * The view installs each as a non-enumerable accessor of its own, so a
+   * field copied behind a getter reads the value the getter answers
+   * instead of undefined.
+   *   accessor_get: +1 value member `index` answers for `instance`, or
+   *                 NULL with a pending exception from the getter. */
+  size_t accessor_count;
+  ScrStr *const *accessor_names; /* immortal member-name strings */
+  ScrDyn *(*accessor_get)(void *instance, size_t index);
 } ScrDynTypedClassOps;
 
 /* A compiled JavaScript class whose instances record their own properties
@@ -1543,6 +1560,31 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index);
  * (other receivers, holes, out-of-range and non-index numbers), and the
  * caller takes the keyed path. Never throws. */
 ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index);
+/* d[index] on a dynamic string (+1): the one-character string at an
+ * in-range integral UTF-16 index. NULL otherwise (out of range and
+ * non-integral numbers), and the caller takes the keyed path. Never
+ * throws. */
+ScrDyn *scr_dyn_string_index_get(const ScrDyn *d, double index);
+/* d[index] on a typed array or Buffer (+1): the element at an in-range
+ * integral index. NULL for a DataView (numeric keys name properties), out
+ * of range and non-integral numbers. Never throws. */
+ScrDyn *scr_dyn_bytes_index_get(const ScrDyn *d, double index);
+/* The answers of scr_dyn_index_set: the shortcut stored the element (or
+ * ignored an index the receiver does not have), raised while coercing the
+ * value or while fencing a receiver, or does not apply and the string-key
+ * path must answer. */
+typedef enum {
+  SCR_DYN_INDEX_NOT_HANDLED = 0,
+  SCR_DYN_INDEX_STORED = 1,
+  SCR_DYN_INDEX_THREW = 2,
+} ScrDynIndexSet;
+/* d[index] = value for a Number key (+0 control): the element store of a
+ * typed array or a dense array, without forming the key string. A number
+ * spells itself as the string-key path spells it, so the index -0 is the
+ * element 0. Borrows both operands; anything outside those receivers and
+ * their plain element stores answers SCR_DYN_INDEX_NOT_HANDLED, and the
+ * caller takes the keyed path (whose mode decides an assignment failure). */
+int scr_dyn_index_set(ScrDyn *recv, double index, ScrDyn *value);
 void *scr_dyn_typed_ref_cached_cast(
     const ScrDyn *d, const char *type_key, size_t type_key_len); /* +1/NULL */
 void scr_dyn_typed_ref_cache_cast(
@@ -1694,6 +1736,13 @@ ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args);
  * (scr_dyn_builtin_prototype.c, linked only into programs that read them
  * from a JavaScript source); `kind` is "Number" or "Boolean". +1. */
 ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind);
+/* A builtin prototype method as a function value (scr_dyn_builtin_methods.c,
+ * linked only into programs that read one from a JavaScript source).
+ * `owner` is "String" or "RegExp" and `member` its canonical spelling — the
+ * String trims ("trim", "trimStart", "trimEnd", so trimLeft/trimRight
+ * answer the same object as their standard twin) and RegExp's "exec",
+ * "test" and "toString". +1, one function per (owner, member) and thread. */
+ScrDyn *scr_dyn_builtin_method_value(const ScrStr *owner, const ScrStr *member);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
 ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
 /* Names the prototype object of a compiled class `name` for util.inspect
@@ -1794,6 +1843,13 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
  * `prototype` is the same object). Named by the constructor whose interface
  * it carries; dyn.stdlibPrototype's implementation. */
 ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name);
+/* `DataView.prototype` as a value (+1, one object per thread): the
+ * getter/setter family, the buffer/byteLength/byteOffset accessors, the
+ * constructor and [[@@toStringTag]] = "DataView", over the view's brand
+ * check. `tag_key` is the Symbol.toStringTag key (borrowed), which the
+ * frontend passes so this unit needs no symbol entry points.
+ * dyn.dataViewPrototype's implementation (scr_data_view_proto.c). */
+ScrDyn *scr_data_view_prototype(ScrDyn *tag_key);
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
 ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
 ScrStr *scr_dyn_error_string(const ScrDyn *d);
@@ -1896,6 +1952,15 @@ void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e
 void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);
 /* The getter or setter of an own accessor property, +1 (undefined when none). */
 ScrDyn *scr_dyn_obj_accessor_fn(const ScrDyn *obj, const char *key, size_t key_len, bool setter);
+/* A class instance's checked view answers the class's accessor-backed
+ * members through their getters: every member `ops` lists that the view
+ * does not already hold as an own property gets a non-enumerable accessor
+ * entry whose getter runs the member's getter on `instance` (the view keeps
+ * the instance alive, ±1 through `retain`/`release`). Own data fields are
+ * set before this runs, so a field that shadows a getter keeps its value.
+ * `view` borrowed; `instance` borrowed, NULL leaves the view unchanged. */
+void scr_dyn_class_view_accessors(ScrDyn *view, const ScrDynTypedClassOps *ops, void *instance,
+                                  void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
 void scr_error_commit_dyn(ScrError *e, const ScrDyn *view);
 /* The reverse extraction, riding the same identity cache: a dyn error
  * that came from a runtime ScrError answers THAT instance (+1;

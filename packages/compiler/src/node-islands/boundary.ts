@@ -253,6 +253,16 @@ export function setFrontendIslands(names: ReadonlySet<string>): void {
   frontendIslands = names;
 }
 
+/* Packages a caller wants to know this set was asked about. The npm-static
+ * ladder records them around one rung, so a recorded rung can tell which
+ * island sets answer it identically (see pipeline.ts's LadderRung). */
+let islandReads: Set<string> | null = null;
+
+export function recordFrontendIslandReads(into: Set<string> | null): void {
+  islandReads = into;
+}
+
 export function isFrontendIsland(pkg: string): boolean {
+  islandReads?.add(pkg);
   return frontendIslands.size > 0 && frontendIslands.has(pkg);
 }

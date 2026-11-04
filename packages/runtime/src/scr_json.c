@@ -19979,16 +19979,41 @@ bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
   return scr_dyn_sync_generator(value);
 }
 
+/* Whether a native iterator seed reads its values from internal slots. A
+ * string, Map, Set or stepping-handle iterator (any kind but the array one)
+ * answers from its source's own records. An array iterator answers its
+ * source's own elements too, but a hole reads through the prototype chain,
+ * where an inherited indexed getter the program installed runs: the
+ * collection constructor has to step such a seed so each read sees the
+ * entries the earlier steps inserted. An array-like iterator reads
+ * properties of an arbitrary object, which also runs program code. A keys()
+ * iterator only forms index numbers. */
+static bool scr_native_iterator_packs(const ScrDyn *seed) {
+  const ScrNativeIterator *iterator = seed->v.handle.ptr;
+  if (iterator->kind != 0) return true;
+  const ScrDyn *source = iterator->source;
+  if (!source) return true;
+  if (iterator->array_like) return false;
+  if (iterator->selection == 1) return true;
+  if (source->kind == SCR_DYN_ARR) return !source->v.arr.presence;
+  /* A live compiled array answers its own elements; a hole sends the read
+   * to the materialized view's prototype chain. */
+  if (source->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(source))
+    return !scr_arr_has_states(source->v.typed_ref.ptr);
+  return false;
+}
+
 /* Whether a collection constructor's seed gives its values without running
  * program code: arrays, strings, bytes and collections pack, a native
- * iterator drains. Any other iterable walks the iterator protocol, whose
- * steps run the program. */
+ * iterator over internal slots drains (scr_native_iterator_packs). Any other
+ * iterable walks the iterator protocol, whose steps run the program. */
 bool scr_dyn_seed_packs_natively(const ScrDyn *seed) {
   if (seed->kind == SCR_DYN_ARR || seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES)
     return true;
   if (seed->kind == SCR_DYN_TYPED_REF) return !scr_dyn_iterates_by_protocol(seed);
   if (seed->kind != SCR_DYN_HANDLE) return false;
-  if (seed->v.handle.tag == SCR_DYNH_ITERATOR || seed->v.handle.tag == SCR_DYNH_MAP) return true;
+  if (seed->v.handle.tag == SCR_DYNH_ITERATOR) return scr_native_iterator_packs(seed);
+  if (seed->v.handle.tag == SCR_DYNH_MAP) return true;
   const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(seed);
   return ops->iter_step || ops->iter_pack;
 }

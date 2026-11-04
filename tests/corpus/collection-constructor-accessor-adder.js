@@ -253,6 +253,103 @@ function setStepsSeeInsertedValues() {
   console.log("set steps see sizes:", sizes.join(","), "size:", set.size, "has 3:", set.has(3));
 }
 
+// A hole reaches an inherited indexed getter through the prototype chain. The
+// getter sits on a plain object between the seed and Array.prototype, because
+// an indexed accessor cannot be defined on an array.
+function sparseSeed(elements, getter) {
+  const seed = JSON.parse(elements);
+  delete seed[1];
+  const proto = Object.create(Array.prototype);
+  Object.defineProperty(proto, "1", { configurable: true, get: getter });
+  Object.setPrototypeOf(seed, proto);
+  return seed;
+}
+
+function mapIteratorSeedSeesInsertedEntries() {
+  let captured;
+  Object.defineProperty(Map.prototype, "set", {
+    configurable: true,
+    get() {
+      captured = this;
+      return builtinSet;
+    },
+  });
+  const sizes = [];
+  // An array iterator reads a hole through the prototype chain, so this
+  // inherited getter runs between the steps that insert the entries on
+  // either side of it.
+  const seed = sparseSeed('[["a",1],["b",2],["c",3]]', () => {
+    sizes.push(captured.size);
+    return ["b", 2];
+  });
+  const map = new Map(seed.values());
+  restoreMapSet();
+  console.log(
+    "map iterator seed sees sizes:",
+    sizes.join(","),
+    "size:",
+    map.size,
+    "get b:",
+    map.get("b"),
+  );
+}
+
+function setIteratorSeedSeesInsertedValues() {
+  let captured;
+  Object.defineProperty(Set.prototype, "add", {
+    configurable: true,
+    get() {
+      captured = this;
+      return builtinAdd;
+    },
+  });
+  const sizes = [];
+  const seed = sparseSeed("[1,2,3]", () => {
+    sizes.push(captured.size);
+    return 2;
+  });
+  const set = new Set(seed.values());
+  restoreSetAdd();
+  console.log(
+    "set iterator seed sees sizes:",
+    sizes.join(","),
+    "size:",
+    set.size,
+    "has 2:",
+    set.has(2),
+  );
+}
+
+function setKeysSeedSkipsGetter() {
+  let captured;
+  Object.defineProperty(Set.prototype, "add", {
+    configurable: true,
+    get() {
+      captured = this;
+      return builtinAdd;
+    },
+  });
+  let calls = 0;
+  // A keys() iterator forms the index numbers without reading an element, so
+  // the hole is never a property read and the prototype getter stays out.
+  const seed = sparseSeed("[1,2,3]", () => {
+    calls += 1;
+    return 99;
+  });
+  const set = new Set(seed.keys());
+  restoreSetAdd();
+  console.log(
+    "set keys seed getter calls:",
+    calls,
+    "size:",
+    set.size,
+    "has 0:",
+    set.has(0),
+    "has 2:",
+    set.has(2),
+  );
+}
+
 mapGetterSeesInstance();
 mapAccessorAdder();
 mapGetterThrows();
@@ -262,3 +359,6 @@ setAccessorAdder();
 setNullishSkipsGetter();
 mapStepsSeeInsertedEntries();
 setStepsSeeInsertedValues();
+mapIteratorSeedSeesInsertedEntries();
+setIteratorSeedSeesInsertedValues();
+setKeysSeedSkipsGetter();

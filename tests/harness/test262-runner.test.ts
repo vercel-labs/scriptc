@@ -430,10 +430,12 @@ test("a path list selects exactly the listed tests, tolerating path spellings", 
 
     ./test/built-ins/DataView/getUint8/b.js
     /vercel/sandbox/snap/test/language/expressions/addition/S11.6.1_A4_T1.js
+    /vercel/sandbox/test/test262-latest/test/language/expressions/addition/S11.6.1_A4_T1.js
   `);
   expect(list).toEqual([
     "test/built-ins/DataView/getUint8/a.js",
     "test/built-ins/DataView/getUint8/b.js",
+    "test/language/expressions/addition/S11.6.1_A4_T1.js",
     "test/language/expressions/addition/S11.6.1_A4_T1.js",
   ]);
   expect([...resolveListedPaths(list, inventory)].sort()).toEqual(inventory);

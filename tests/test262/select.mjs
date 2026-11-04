@@ -34,8 +34,11 @@ export function readPathList(text) {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) continue;
     let path = line.replaceAll("\\", "/");
-    const at = path.indexOf("test/");
-    if (at > 0) path = path.slice(at);
+    // An absolute entry carries the snapshot root in front of its `test/` segment; a root may
+    // itself sit under a directory named `test`, so take the last `/test/` boundary rather than
+    // the first `test/` substring.
+    const at = path.lastIndexOf("/test/");
+    if (at > 0) path = path.slice(at + 1);
     while (path.startsWith("./")) path = path.slice(2);
     lines.push(path.replace(/^\/+/, ""));
   }

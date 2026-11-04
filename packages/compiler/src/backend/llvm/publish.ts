@@ -30,6 +30,9 @@ import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
 export interface PublishHost {
+  /** The window base compressed references decode with (classes.ts
+   * compactRefBaseOf). */
+  readonly compactRefBase: bigint;
   /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,
    * opened, used and entry. */
   journalAllocated?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
@@ -591,7 +594,7 @@ export class PublishWalkers {
         ...(member.compressed === true
           ? [
               `  %v${n}.i = load i32, ptr %f${n}`,
-              ...compactRefLoadLines(`%v${n}.i`, `%v${n}`, `%v${n}.d`),
+              ...compactRefLoadLines(this.host.compactRefBase, `%v${n}.i`, `%v${n}`, `%v${n}.d`),
             ]
           : [`  %v${n} = load ptr, ptr %f${n}`]),
         ...this.push(`%v${n}`, fn, `${n}`, this.compactRef(member.type)),
@@ -616,7 +619,7 @@ export class PublishWalkers {
         `tail.body:`,
         `  %tail.p = getelementptr inbounds i32, ptr %tail.at, i32 %tail.i`,
         `  %tail.r = load i32, ptr %tail.p`,
-        ...compactRefLoadLines(`%tail.r`, `%tail.v`, `%tail.d`),
+        ...compactRefLoadLines(this.host.compactRefBase, `%tail.r`, `%tail.v`, `%tail.d`),
         ...this.push(`%tail.v`, tailFn, `tail`, this.compactRef(tail.elem)),
         `  br label %tail.latch`,
         `tail.latch:`,

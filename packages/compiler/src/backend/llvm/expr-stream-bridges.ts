@@ -359,7 +359,12 @@ export function streamTypedRefCommitAdapter(
         ...(compressed
           ? [
               `  %f${index}_oldidx = load i32, ptr %f${index}_ptr`,
-              ...compactRefLoadLines(`%f${index}_oldidx`, `%f${index}_old`, `%f${index}_od`),
+              ...compactRefLoadLines(
+                host.compactRefBase,
+                `%f${index}_oldidx`,
+                `%f${index}_old`,
+                `%f${index}_od`,
+              ),
             ]
           : [`  %f${index}_old = load ${fieldTy}, ptr %f${index}_ptr`]),
       );
@@ -1861,7 +1866,7 @@ function classFieldDynValue(
   else if (compressed) {
     const idx = B.tmp();
     B.line(`${idx} = load i32, ptr ${fieldPtr}`);
-    for (const line of compactRefLoadLines(idx, fieldValue, `${fieldValue}.r`))
+    for (const line of compactRefLoadLines(host.compactRefBase, idx, fieldValue, `${fieldValue}.r`))
       B.line(line.trimStart());
   } else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
   if (llFieldType(field.type, false) === "i8") {

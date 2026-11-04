@@ -591,7 +591,8 @@ function emitDenseReferenceArrayRead(
   if (loadType === "cref") {
     const ref = B.tmp();
     B.line(`${ref} = load i32, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
-    for (const line of compactRefLoadLines(ref, raw, `${raw}.r`)) B.line(line.trimStart());
+    for (const line of compactRefLoadLines(host.compactRefBase, ref, raw, `${raw}.r`))
+      B.line(line.trimStart());
   } else {
     B.line(`${raw} = load ${loadType}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   }
@@ -649,7 +650,8 @@ export function emitBorrowedArrayRead(
       );
       host.markMemoryPointer(valuePtr, "array:elements");
       B.line(`${ref} = load i32, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
-      for (const line of compactRefLoadLines(ref, value, `${value}.r`)) B.line(line.trimStart());
+      for (const line of compactRefLoadLines(host.compactRefBase, ref, value, `${value}.r`))
+        B.line(line.trimStart());
       B.line(`store ptr ${value}, ptr ${slot}`);
       return;
     }

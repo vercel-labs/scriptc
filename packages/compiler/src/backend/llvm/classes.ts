@@ -716,16 +716,51 @@ export function compactHeaderWord(meta: LlClassMeta): number {
 
 /** Lines that decode the 32-bit reference `idx` (an i32) of a compressed
  * field into the pointer `out`. The allocator's window, which holds the
- * program-lifetime region, lies below 32 GiB (LlvmTargetOptions.lowRegion),
- * so a reference is the object's address over 8 and 0 is NULL: one shift,
- * which x86-64 folds into the address of the next load. `t` names the
- * temporaries. */
-export function compactRefLoadLines(idx: string, out: string, t: string): string[] {
+ * program-lifetime region, lies in [base, base + 32 GiB)
+ * (LlvmTargetOptions.lowRegion, compactRefBaseOf), so a reference is the
+ * object's offset over 8 and 0 is NULL. With base 0 (Linux) that is one
+ * shift, which x86-64 folds into the address of the next load. `t` names
+ * the temporaries. */
+export function compactRefLoadLines(base: bigint, idx: string, out: string, t: string): string[] {
+  if (base === 0n)
+    return [
+      `  ${t}.z = zext i32 ${idx} to i64`,
+      `  ${t}.o = shl nuw nsw i64 ${t}.z, 3`,
+      `  ${out} = inttoptr i64 ${t}.o to ptr`,
+    ];
+  return [
+    ...compactRefAddressLines(base, idx, `${t}.a`, t),
+    `  ${out} = inttoptr i64 ${t}.a to ptr`,
+  ];
+}
+
+/** Lines that decode the 32-bit reference `idx` into the i64 address `out`:
+ * 0 stays 0 (NULL); any other reference is its offset over 8 with `base`
+ * ORed in, which every offset's bits lie below. */
+export function compactRefAddressLines(
+  base: bigint,
+  idx: string,
+  out: string,
+  t: string,
+): string[] {
+  if (base === 0n)
+    return [`  ${t}.z = zext i32 ${idx} to i64`, `  ${out} = shl nuw nsw i64 ${t}.z, 3`];
   return [
     `  ${t}.z = zext i32 ${idx} to i64`,
     `  ${t}.o = shl nuw nsw i64 ${t}.z, 3`,
-    `  ${out} = inttoptr i64 ${t}.o to ptr`,
+    `  ${t}.b = or disjoint i64 ${t}.o, ${base}`,
+    `  ${t}.n = icmp eq i32 ${idx}, 0`,
+    `  ${out} = select i1 ${t}.n, i64 0, i64 ${t}.b`,
   ];
+}
+
+/** The window base 32-bit references are offsets from (scr_core.h
+ * SCR_WINDOW_BASE) for a target triple, or the host when it is empty: 0 for
+ * Linux, whose window lies in the low 32 GiB, and 1 TiB for macOS. Encoding
+ * is the same for both: the address over 8 truncated to 32 bits drops the
+ * base's bits. */
+export function compactRefBaseOf(targetTriple: string | undefined): bigint {
+  return /apple|darwin/.test(targetTriple || process.platform) ? 1n << 40n : 0n;
 }
 
 /** Lines that encode the pointer `ptr` (NULL or an object in the window)

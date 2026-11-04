@@ -82,8 +82,12 @@ function checkReport(report: MappingReport): void {
   ]);
 }
 
+// Main SAN CI passed this full test in 289 s, leaving 11 s below the
+// default whole-test bound. Keep the compiler and execution limits below.
+const testTimeout = sanitize ? 600_000 : undefined;
+
 for (const backend of ["llvm"] as const) {
-  test(`production type mapper runs against native TS7 (${backend})`, async () => {
+  const runNativeCase = async () => {
     const directory = mkdtempSync(
       join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-type-mapper-"),
     );
@@ -209,5 +213,6 @@ for (const backend of ["llvm"] as const) {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  });
+  };
+  test(`production type mapper runs against native TS7 (${backend})`, runNativeCase, testTimeout);
 }

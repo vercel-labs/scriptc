@@ -364,8 +364,12 @@ function verify(reports: Report[]): void {
   expect(get("npm-restored").order).toEqual(get("npm-static").order);
 }
 
+// Main SAN CI hits the 300 s whole-test bound while this test includes
+// separate bounded analysis, compilation and Node/native verification.
+const testTimeout = sanitize ? 600_000 : undefined;
+
 for (const backend of ["llvm"] as const) {
-  test(`production program loading and preflight run without Node (${backend})`, async () => {
+  const runNativeCase = async () => {
     const directory = mkdtempSync(join(tempRoot, "scriptc-frontend-program-"));
     try {
       const object = join(directory, "process.o");
@@ -429,5 +433,10 @@ for (const backend of ["llvm"] as const) {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  });
+  };
+  test(
+    `production program loading and preflight run without Node (${backend})`,
+    runNativeCase,
+    testTimeout,
+  );
 }

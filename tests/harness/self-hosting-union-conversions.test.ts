@@ -15,8 +15,11 @@ const execFileAsync = promisify(execFile);
 const runOptions = { encoding: "utf8" as const, timeout: 60_000, maxBuffer: 32 * 1024 * 1024 };
 
 for (const fixture of ["ir-refinements", "union-conversions"]) {
+  // Main SAN CI passed union-conversions in 283 s. Its full test also
+  // compiles and executes generated IR; retain every per-process bound.
+  const testTimeout = sanitize && fixture === "union-conversions" ? 600_000 : undefined;
   for (const backend of ["llvm"] as const) {
-    test(`self-hosting ${fixture} executes natively (${backend})`, async () => {
+    const runNativeCase = async () => {
       const dir = mkdtempSync(
         join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-union-conversions-"),
       );
@@ -151,6 +154,7 @@ for (const fixture of ["ir-refinements", "union-conversions"]) {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
-    });
+    };
+    test(`self-hosting ${fixture} executes natively (${backend})`, runNativeCase, testTimeout);
   }
 }

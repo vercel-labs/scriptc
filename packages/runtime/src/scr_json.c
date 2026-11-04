@@ -1869,7 +1869,9 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len) {
     return slot ? *slot : NULL;
   }
   ScrDynEntry *entry = scr_dyn_find_entry(d, key, key_len);
-  return entry ? entry->value : NULL;
+  /* A class member the view answers with its getter is not an own data
+   * property of the view. */
+  return entry && !entry->class_view ? entry->value : NULL;
 }
 
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len) {
@@ -2424,6 +2426,35 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
  * later, and it neither grows nor owns heap references. */
 static ScrDyn scr_dyn_small_ints[384];
 
+/* Single-character ASCII strings are primitives with one value each, so
+ * their boxes are shared the way the small integers are. The character
+ * strings themselves are the runtime's immortal ASCII statics in
+ * scr_string.c, and a constructor that filled these boxes would make every
+ * program link them, so they are filled on first use instead. 0 empty, 1
+ * being filled by one thread, 2 complete. */
+static ScrDyn scr_dyn_ascii_chars[128];
+static int scr_dyn_ascii_state;
+
+/* Fills the table on first use, so the fast path in scr_dyn_new_str stays a
+ * load and a branch. Returns the shared box for `c`, or NULL when another
+ * thread is filling the table right now; the caller then makes a box of its
+ * own, which the language cannot tell apart from the shared one. */
+static ScrDyn *scr_dyn_ascii_fill(unsigned char c) {
+  int empty = 0;
+  if (!__atomic_compare_exchange_n(&scr_dyn_ascii_state, &empty, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+    return NULL;
+  for (unsigned i = 0; i < 128; i++) {
+    ScrDyn *d = &scr_dyn_ascii_chars[i];
+    d->rc = SIZE_MAX;
+    d->kind = SCR_DYN_STR;
+    d->v.str = scr_str_ascii_char(i);
+  }
+  /* The fields publish before the complete state, so a thread that loads it
+   * sees filled boxes. */
+  __atomic_store_n(&scr_dyn_ascii_state, 2, __ATOMIC_RELEASE);
+  return &scr_dyn_ascii_chars[c];
+}
+
 const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
 
 __attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
@@ -2446,6 +2477,15 @@ ScrDyn *scr_dyn_new_num(double n) {
 }
 
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
+  /* A one-byte ASCII string is one of 128 shared values. The caller keeps
+   * its own reference to `s`, which the shared box does not need. */
+  if (s->ascii && s->len == 1) {
+    unsigned char c = (unsigned char)s->data[0];
+    ScrDyn *shared = __builtin_expect(__atomic_load_n(&scr_dyn_ascii_state, __ATOMIC_ACQUIRE) == 2, 1)
+                         ? &scr_dyn_ascii_chars[c]
+                         : scr_dyn_ascii_fill(c);
+    if (shared != NULL) return shared;
+  }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
   return d;
@@ -3812,7 +3852,7 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   }
   if (value->kind == SCR_DYN_OBJ) {
     ScrDynEntry *entry = scr_dyn_entry((ScrDyn *)value, key);
-    if (!entry) return scr_dyn_retain(scr_dyn_undefined());
+    if (!entry || entry->class_view) return scr_dyn_retain(scr_dyn_undefined());
     ScrDyn *out = scr_dyn_new_obj();
     if (entry->accessor) {
       scr_dyn_obj_set(out, "get", 3, scr_dyn_retain(entry->getter ? entry->getter : scr_dyn_undefined()));
@@ -4143,6 +4183,20 @@ ScrDyn *scr_dyn_proxy_revocable(const ScrDyn *target, const ScrDyn *handler) {
  * gate uses. */
 static void scr_ih_describe_value(ScrJsonBuf *b, const ScrDyn *v);
 
+/* The native function values the construction path builds: the interned
+ * global and error constructors, Array, ArrayBuffer, the typed arrays and
+ * Buffer. The other builtins carry a "native:" signature too — a static such
+ * as Math.max, a prototype method, a module wrapper — but they are not
+ * constructors in Node, and a proxy over one must not run its construct
+ * trap. */
+static bool scr_dyn_native_constructor(const ScrDyn *fn) {
+  const char *sig = fn->v.fn.sig;
+  if (sig == NULL) return false;
+  return strcmp(sig, "native:constructor") == 0 || strcmp(sig, "native:Array") == 0 ||
+         strcmp(sig, "native:ArrayBuffer") == 0 || strcmp(sig, "native:Buffer") == 0 ||
+         strcmp(sig, "typed-array-constructor") == 0;
+}
+
 /* IsConstructor: a function that carries its own prototype (an ordinary
  * function or a class) or a proxy over one. A compiled arrow function or
  * method carries none, so neither it nor a proxy over it constructs.
@@ -4151,13 +4205,7 @@ static void scr_ih_describe_value(ScrJsonBuf *b, const ScrDyn *v);
 static bool scr_dyn_reflect_constructor(const ScrDyn *value) {
   if (value->kind == SCR_DYN_FUNC) {
     if (value->v.fn.class_obj != NULL) return true;
-    /* A native function value keeps the construction path's answer: the
-     * interned constructors build, the other builtins name themselves in
-     * the refusal. */
-    const char *sig = value->v.fn.sig;
-    if (sig != NULL &&
-        (strncmp(sig, "native:", 7) == 0 || strcmp(sig, "typed-array-constructor") == 0))
-      return true;
+    if (scr_dyn_native_constructor(value)) return true;
     return (scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) ==
            SCR_CLOSURE_KIND_OWN_PROTOTYPE;
   }
@@ -4621,6 +4669,19 @@ static void scr_record_source_put(const ScrRecordSource *entry) {
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
+/* The own property descriptor of `key` on `source`, or NULL when it has no
+ * own property there. A class member a checked view answers with its getter
+ * is not an own property of the view: reading it is a read, and copying it
+ * as a property has nothing to copy. */
+static ScrDyn *scr_dyn_own_descriptor_or_null(const ScrDyn *source, const ScrStr *key) {
+  ScrDyn *descriptor = scr_dyn_own_descriptor(source, key);
+  if (descriptor && descriptor->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(descriptor);
+    return NULL;
+  }
+  return descriptor;
+}
+
 /* Called by the checked record builder after it filled `rec` from `src`;
  * `names` lists the shape's fields in declaration order. Keeps nothing
  * unless the source has an own property the shape does not declare, or
@@ -4652,7 +4713,7 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
     } else {
       ScrStr *name = scr_str_new(entry->key, entry->key_len);
       ScrDyn *key = scr_dyn_new_str(name);
-      ScrDyn *descriptor = scr_dyn_own_descriptor(src, name);
+      ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(src, name);
       ScrDyn *defined = descriptor ? scr_dyn_define_property(view, key, descriptor) : NULL;
       scr_dyn_release(defined);
       scr_dyn_release(descriptor);
@@ -4874,7 +4935,7 @@ static ScrDyn *scr_record_source_merge(const ScrRecordSource *source, const ScrD
     }
     ScrStr *name = scr_str_new(entry->key, entry->key_len);
     ScrDyn *key = scr_dyn_new_str(name);
-    ScrDyn *descriptor = scr_dyn_own_descriptor(cached, name);
+    ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(cached, name);
     ScrDyn *defined = descriptor ? scr_dyn_define_property(out, key, descriptor) : NULL;
     scr_dyn_release(defined);
     scr_dyn_release(descriptor);
@@ -5364,7 +5425,7 @@ void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry 
   } else {
     /* Properties defined through a view keep their attributes. */
     ScrDyn *name = scr_dyn_new_str(key);
-    ScrDyn *descriptor = scr_dyn_own_descriptor(source, key);
+    ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(source, key);
     if (descriptor) scr_dyn_release(scr_dyn_define_property(target, name, descriptor));
     scr_dyn_release(descriptor);
     scr_dyn_release(name);
@@ -5432,8 +5493,8 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
         if (scr_dyn_obj_get(fresh, entry->key, entry->key_len)) continue;
         ScrStr *name = scr_str_new(entry->key, entry->key_len);
         ScrDyn *key = scr_dyn_new_str(name);
-        ScrDyn *descriptor = scr_dyn_own_descriptor(cached, name);
-        ScrDyn *defined = scr_dyn_define_property(fresh, key, descriptor);
+        ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(cached, name);
+        ScrDyn *defined = descriptor ? scr_dyn_define_property(fresh, key, descriptor) : NULL;
         scr_dyn_release(defined);
         scr_dyn_release(descriptor);
         scr_dyn_release(key);
@@ -5794,6 +5855,66 @@ ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
   if (d->kind != SCR_DYN_TYPED_REF || scr_event_ref_hooks || !scr_dyn_typed_ref_array_ops(d))
     return NULL;
   return scr_dyn_typed_ref_element(d, i);
+}
+
+ScrDyn *scr_dyn_string_index_get(const ScrDyn *d, double index) {
+  if (!(index >= 0 && index < scr_str_utf16_len(d->v.str)) || trunc(index) != index) return NULL;
+  ScrStr *character = scr_str_char_at(d->v.str, index);
+  ScrDyn *out = scr_dyn_new_str(character);
+  scr_str_release(character);
+  return out;
+}
+
+ScrDyn *scr_dyn_bytes_index_get(const ScrDyn *d, double index) {
+  const ScrBytes *bytes = d->v.bytes;
+  if (bytes->is_data_view) return NULL;
+  /* A number key spells itself the way the string-key path spells it, so
+   * the index -0 is the element 0 (its spelling is "0"). */
+  if (!(index >= 0 && index < (double)bytes->len) || trunc(index) != index) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_bytes_elem_is_bigint(bytes->elem)) return scr_bytes_get_bigint(bytes, index);
+#endif
+  return scr_dyn_new_num(scr_bytes_get(bytes, index));
+}
+
+int scr_dyn_index_set(ScrDyn *recv, double index, ScrDyn *value) {
+  if (recv->kind == SCR_DYN_BYTES) {
+    ScrBytes *bytes = recv->v.bytes;
+    /* A DataView has no elements: its numeric keys are named properties. */
+    if (bytes->is_data_view) return SCR_DYN_INDEX_NOT_HANDLED;
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem))
+      return scr_bytes_set_bigint(bytes, index, value) ? SCR_DYN_INDEX_STORED : SCR_DYN_INDEX_THREW;
+#endif
+    /* Every Number's ToString is a canonical numeric key, so the string-key
+     * path reaches the same element branch: coerce the value first, then
+     * ignore an index the array does not have. */
+    double number;
+    if (!scr_dyn_number_coerce_js(value, &number)) return SCR_DYN_INDEX_THREW;
+    if (index >= 0 && index < (double)bytes->len && trunc(index) == index)
+      scr_bytes_set(bytes, index, number);
+    return SCR_DYN_INDEX_STORED;
+  }
+  if (recv->kind != SCR_DYN_ARR) return SCR_DYN_INDEX_NOT_HANDLED;
+  /* -0 is the element 0 of an array (its spelling is "0"). */
+  if (!(index >= 0 && index < 4294967295.0) || trunc(index) != index)
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  size_t idx = (size_t)index;
+  /* The prototype fence throws its own error; the cases the string-key path
+   * answers with an assignment failure keep it (the write's mode decides). */
+  if (scr_dyn_array_prototype_element_fence(recv)) return SCR_DYN_INDEX_THREW;
+  if (recv->v.arr.frozen && idx < recv->v.arr.len && scr_dyn_arr_has_index(recv, idx))
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx))
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  if (idx > recv->v.arr.len + 1000000) return SCR_DYN_INDEX_NOT_HANDLED;
+  while (recv->v.arr.len <= idx) scr_dyn_arr_push_hole(recv);
+  scr_dyn_region_store(recv, value);
+  ScrDyn *old = recv->v.arr.items[idx];
+  recv->v.arr.items[idx] = scr_dyn_retain(value);
+  if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
+  scr_dyn_release(old);
+  return SCR_DYN_INDEX_STORED;
 }
 
 static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d);
@@ -7977,6 +8098,8 @@ static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 
 /* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
 SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
+/* BroadcastChannel's listener core lookup (scr_worker_events_install). */
+SCR_TL ScrEventTargetCore *(*scr_et_broadcast_core_fn)(const ScrDyn *d) = NULL;
 
 void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops) {
   scr_dynh_ops[tag] = ops;
@@ -8686,6 +8809,51 @@ void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrD
   entry->setter = setter;
 }
 
+/* A view's accessor-backed member: the closure holds the class table (fn),
+ * the member's index (caps[1]) and the instance (caps[0], ±1). The view
+ * pushes itself as `this`, which is not what the getter reads, so the thunk
+ * runs the member's getter on the captured instance instead. */
+static ScrDyn *scr_dyn_view_accessor_get(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  const ScrDynTypedClassOps *ops = closure->fn;
+  if (!ops || !ops->accessor_get) return scr_dyn_retain(scr_dyn_undefined());
+  ScrBox *instance_box = closure->caps[0];
+  void *instance = scr_box_get_ref(instance_box); /* +1 */
+  if (!instance) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *value = ops->accessor_get(instance, (size_t)scr_box_get_f64(closure->caps[1]));
+  instance_box->obj_release(instance);
+  return value;
+}
+
+void scr_dyn_class_view_accessors(ScrDyn *view, const ScrDynTypedClassOps *ops, void *instance,
+                                  void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace) {
+  if (!view || view->kind != SCR_DYN_OBJ || !ops || !instance || !ops->accessor_get) return;
+  for (size_t i = 0; i < ops->accessor_count; i++) {
+    const ScrStr *name = ops->accessor_names[i];
+    if (!name || name->len == 0) continue;
+    /* An own property the view already holds wins: a field that shadows a
+     * getter keeps its value, and a member listed twice keeps the nearest
+     * declaration's getter. */
+    if (scr_dyn_find_entry(view, name->data, name->len)) continue;
+    ScrClosure *closure = scr_closure_new((void *)ops, 2);
+    closure->caps[0] = scr_box_new_obj(retain, release, trace);
+    scr_box_set_ref(closure->caps[0], retain(instance));
+    closure->caps[1] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(closure->caps[1], (double)i);
+    ScrDyn *getter = scr_dyn_new_func(closure, scr_dyn_view_accessor_get, 0, "", name->data);
+    scr_dyn_obj_set_accessor(view, name->data, name->len, getter, NULL);
+    /* A class member, not one of the instance's own fields: the view
+     * answers it on a read, while serializing, enumerating and own-property
+     * queries treat it as the prototype accessor it is on the instance. */
+    ScrDynEntry *entry = scr_dyn_find_entry(view, name->data, name->len);
+    if (entry) {
+      entry->enumerable = false;
+      entry->class_view = true;
+    }
+  }
+}
+
 /* A class instance's view takes its native field values whatever the
  * attributes copied into it (a frozen instance's view is built the same way
  * as any other). Consumes value. */
@@ -9219,8 +9387,34 @@ static ScrDyn *scr_dyn_construct_new_target(const ScrDyn *callee, const ScrDyn *
     return scr_dyn_proxy_construct((ScrDyn *)callee, (ScrDyn *)args, new_target, what);
   }
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
-      (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
-    return scr_bytes_construct(callee, args, what);
+      (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE) {
+    /* GetPrototypeFromConstructor applies to a builtin target as well: the
+     * newTarget's `prototype` is read (through a proxy's get trap) before the
+     * construction, and an object becomes the instance's prototype. A value
+     * that is not an object keeps the builtin's own prototype, as Node's fall
+     * to the intrinsic default does. A native record or island handle keeps
+     * its own prototype: there the prototype is not part of the value, and
+     * its reader is the one that refuses. */
+    ScrDyn *prototype = NULL;
+    if (new_target) {
+      prototype = scr_dyn_construct_prototype(new_target);
+      if (!prototype) return NULL;
+    }
+    ScrDyn *result = scr_bytes_construct(callee, args, what);
+    if (!result || !prototype || !scr_iterator_object(prototype) ||
+        (result->kind != SCR_DYN_OBJ && result->kind != SCR_DYN_ARR)) {
+      scr_dyn_release(prototype);
+      return result;
+    }
+    ScrDyn *applied = scr_dyn_set_prototype(result, prototype);
+    scr_dyn_release(prototype);
+    if (!applied) {
+      scr_dyn_release(result);
+      return NULL;
+    }
+    scr_dyn_release(applied);
+    return result;
+  }
   ScrDyn *prototype = scr_dyn_construct_prototype(new_target ? new_target : callee);
   if (!prototype) return NULL;
   ScrDyn *receiver = scr_iterator_object(prototype) ? scr_dyn_obj_create(prototype) : scr_dyn_new_obj();
@@ -11206,13 +11400,21 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
   ScrDyn *e = fields[0], *c = fields[1], *value = fields[2];
   ScrDyn *w = fields[3], *get = fields[4], *set = fields[5];
   ScrDynEntry *prior = scr_dyn_entry(target, name);
+  /* A checked view's accessor for a class member stands for the prototype
+   * member, not an own property of the view (scr_dyn_class_view_accessors).
+   * A definition creates a real own property where Node creates one, so its
+   * attributes default as they do for an absent property. */
+  bool synthetic = prior && prior->class_view;
   bool accessor_descriptor = get || set;
   bool data_descriptor = value || w;
-  bool accessor = accessor_descriptor || (!data_descriptor && prior && prior->accessor);
-  bool writable = w ? scr_dyn_truthy(w) : prior && !prior->accessor && !accessor ? prior->writable : false;
-  bool enumerable = e ? scr_dyn_truthy(e) : prior ? prior->enumerable : false;
-  bool configurable = c ? scr_dyn_truthy(c) : prior ? prior->configurable : false;
-  if (!prior && target->non_extensible) {
+  bool accessor =
+      accessor_descriptor || (!data_descriptor && prior && prior->accessor && !synthetic);
+  bool writable = w                       ? scr_dyn_truthy(w)
+                  : prior && !prior->accessor && !synthetic && !accessor ? prior->writable
+                                                                         : false;
+  bool enumerable = e ? scr_dyn_truthy(e) : prior && !synthetic ? prior->enumerable : false;
+  bool configurable = c ? scr_dyn_truthy(c) : prior && !synthetic ? prior->configurable : false;
+  if ((!prior || synthetic) && target->non_extensible) {
     ScrJsonBuf buffer;
     scr_jb_init(&buffer);
     scr_jb_puts(&buffer, "Cannot define property ");
@@ -11223,7 +11425,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return NULL;
   }
-  if (prior && !prior->configurable &&
+  if (!synthetic && prior && !prior->configurable &&
       (configurable || enumerable != prior->enumerable ||
        accessor != prior->accessor ||
        (accessor && ((get && !scr_dyn_property_same_value(get, prior->getter ? prior->getter : scr_dyn_undefined())) ||
@@ -11247,7 +11449,9 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     return NULL;
   }
   if (prior) {
-    if (accessor != prior->accessor) {
+    /* The synthetic accessor of a class member gives way to whatever the
+     * descriptor defines, so the entry is cleared before it is written. */
+    if (synthetic || accessor != prior->accessor) {
       ScrDyn *old_value = prior->value, *old_getter = prior->getter, *old_setter = prior->setter;
       prior->value = scr_dyn_retain(scr_dyn_undefined());
       prior->getter = prior->setter = NULL;
@@ -11255,6 +11459,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
       scr_dyn_release(old_getter);
       scr_dyn_release(old_setter);
     }
+    prior->class_view = false;
     if (value && !accessor) {
       ScrDyn *replacement = scr_dyn_retain(value);
       ScrDyn *old = prior->value;
@@ -18084,6 +18289,14 @@ ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v) {
   for (size_t i = 0; i < v->v.obj.len; i++) {
     const ScrDynProp entry_prop = scr_dyn_obj_prop_at(v, order ? order[i] : i);
     const ScrDynProp *entry = &entry_prop;
+    /* A class view's accessor for a class member answers a read but is
+     * not an own property (Object.getOwnPropertyNames and the walks that
+     * copy own keys). Only an accessor can be one, so other objects pay
+     * no lookup. */
+    if (entry->accessor) {
+      const ScrDynEntry *own = scr_dyn_find_entry(v, entry->key, entry->key_len);
+      if (own && own->class_view) continue;
+    }
     scr_dyn_arr_push(keys, scr_dyn_objwalk_key(entry->key, entry->key_len));
   }
   free(order);
@@ -19166,6 +19379,9 @@ ScrDyn *scr_dyn_object_rest(const ScrDyn *source, const ScrDyn *excluded) {
  * including nonenumerable data, without invoking accessors. */
 static void scr_dyn_copy_property_descriptor(ScrDyn *target, const ScrDyn *src,
                                              const ScrDynEntry *from) {
+  /* A class member a checked view answers with its getter is not one of the
+   * view's own properties, so there is no property to copy. */
+  if (from->class_view) return;
   /* Exactly scr_dyn_define_property(target, key, own descriptor of key)
    * when `target` has no such property and accepts new ones: the entry
    * takes the source's attributes, value or accessor pair. */
@@ -19173,7 +19389,7 @@ static void scr_dyn_copy_property_descriptor(ScrDyn *target, const ScrDyn *src,
   if (prior || target->non_extensible) {
     ScrStr *name = scr_str_new(from->key, from->key_len);
     ScrDyn *key = scr_dyn_new_str(name);
-    ScrDyn *descriptor = scr_dyn_own_descriptor(src, name);
+    ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(src, name);
     ScrDyn *result = descriptor ? scr_dyn_define_property(target, key, descriptor) : NULL;
     scr_dyn_release(descriptor);
     scr_dyn_release(result);
@@ -19224,7 +19440,7 @@ ScrDyn *scr_dyn_copy_property_descriptors(ScrDyn *target, const ScrDyn *src) {
     if (!keys) return NULL;
     for (size_t i = 0; i < keys->v.arr.len; i++) {
       ScrDyn *key = keys->v.arr.items[i];
-      ScrDyn *descriptor = scr_dyn_own_descriptor(src, key->v.str);
+      ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(src, key->v.str);
       ScrDyn *result = descriptor ? scr_dyn_define_property(target, key, descriptor) : NULL;
       scr_dyn_release(descriptor);
       scr_dyn_release(result);
@@ -20998,16 +21214,25 @@ ScrDyn *scr_dyn_from_entries(ScrDyn *seed) {
   return result;
 }
 
-ScrDyn *scr_array_buffer_new(ScrDyn *length) {
+/* ToIndex of the length a buffer constructor was given, with Node's
+ * "Invalid array buffer length" RangeError; false when it threw. */
+static bool scr_array_buffer_length(ScrDyn *length, size_t *bytes) {
   double number;
-  if (!scr_dyn_number_coerce_js(length, &number)) return NULL;
+  if (!scr_dyn_number_coerce_js(length, &number)) return false;
   double size = isnan(number) ? 0 : trunc(number);
   if (!(size >= 0) || size > 9007199254740991.0 || size > (double)(SIZE_MAX / 8)) {
     static const char msg[] = "Invalid array buffer length";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
-    return NULL;
+    return false;
   }
-  ScrBytes *storage = scr_bytes_new(SCR_BYTES_U8, size);
+  *bytes = (size_t)size;
+  return true;
+}
+
+ScrDyn *scr_array_buffer_new(ScrDyn *length) {
+  size_t bytes;
+  if (!scr_array_buffer_length(length, &bytes)) return NULL;
+  ScrBytes *storage = scr_bytes_new(SCR_BYTES_U8, (double)bytes);
   if (!storage) return NULL;
   ScrDyn *result = scr_array_buffer_from_bytes(storage);
   scr_bytes_release(storage);
@@ -21015,12 +21240,14 @@ ScrDyn *scr_array_buffer_new(ScrDyn *length) {
 }
 
 ScrDyn *scr_shared_array_buffer_new(ScrDyn *length) {
-  ScrDyn *buffer = scr_array_buffer_new(length);
-  if (!buffer) return NULL;
-  ScrBytes *storage = buffer->v.handle.ptr;
-  scr_bytes_make_shared(storage);
+  size_t bytes;
+  if (!scr_array_buffer_length(length, &bytes)) return NULL;
+  /* Shared storage from its first byte: a large one is a mapping of its own
+   * (scr_bytes_new_shared), which leaves the heap alone. */
+  ScrBytes *storage = scr_bytes_new_shared(bytes, bytes);
+  if (!storage) return NULL;
   ScrDyn *result = scr_array_buffer_from_bytes(storage);
-  scr_dyn_release(buffer);
+  scr_bytes_release(storage);
   return result;
 }
 

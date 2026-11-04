@@ -2,7 +2,9 @@
 // `null` third argument is checked like any other value instead of falling
 // back to the two-argument form, a proxy without a construct trap forwards
 // newTarget to its target, and a proxy over a value that is not a constructor
-// is not one either, so its construct trap never runs.
+// is not one either, so its construct trap never runs. A builtin constructor
+// takes the forwarded newTarget's prototype the same way a function does, and
+// a proxy over a builtin method is not a constructor.
 
 function Point(x) {
   this.x = x;
@@ -100,3 +102,53 @@ try {
   console.log(error.name, calls.length);
 }
 console.log(calls.length);
+
+// A builtin constructor target reads the forwarded newTarget's `prototype`
+// too: Array builds an array whose prototype is that object, and a
+// newTarget whose `prototype` is not an object keeps Array.prototype.
+function Marker() {}
+const overArray = new Proxy(Array, {});
+const viaMarker = Reflect.construct(overArray, [1, 2], Marker);
+console.log(
+  Object.getPrototypeOf(viaMarker) === Marker.prototype,
+  Array.isArray(viaMarker),
+  viaMarker.length,
+  viaMarker[1],
+);
+const primitivePrototype = new Proxy(Marker, {
+  get(target, key, receiver) {
+    if (key === "prototype") return 7;
+    return Reflect.get(target, key, receiver);
+  },
+});
+const viaPrimitive = Reflect.construct(overArray, [3], primitivePrototype);
+console.log(Object.getPrototypeOf(viaPrimitive) === Array.prototype, viaPrimitive.length);
+const builtArray = new overArray(4);
+console.log(Array.isArray(builtArray), builtArray.length);
+const overMarker = new Proxy(Marker, {});
+const viaWrapped = Reflect.construct(overArray, [5], overMarker);
+console.log(Object.getPrototypeOf(viaWrapped) === Marker.prototype, viaWrapped.length);
+
+// A proxy over a builtin method is not a constructor either.
+const overMax = new Proxy(Math.max, {
+  construct() {
+    calls.push("construct");
+    return {};
+  },
+});
+try {
+  Reflect.construct(overMax, [1, 2]);
+} catch (error) {
+  console.log(error.name, calls.length);
+}
+try {
+  new overMax();
+} catch (error) {
+  console.log(error.name, calls.length);
+}
+const overTrim = new Proxy("text".trim, {});
+try {
+  Reflect.construct(overTrim, []);
+} catch (error) {
+  console.log(error.name);
+}

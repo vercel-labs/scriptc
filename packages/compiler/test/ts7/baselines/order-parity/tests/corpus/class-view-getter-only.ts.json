@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-view-getter-only.ts"
+ ],
+ "diags": []
+}

@@ -269,8 +269,13 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.userName": "scr_os_user_name",
   "os.userShell": "scr_os_user_shell",
   "os.userHomedir": "scr_os_user_homedir",
+  "url.revokeObjectURL": "scr_url_revoke_object_url",
+  "os.userNameBuf": "scr_os_user_name_bytes",
+  "os.userShellBuf": "scr_os_user_shell_bytes",
+  "os.userHomedirBuf": "scr_os_user_homedir_bytes",
   "os.userUid": "scr_os_user_uid",
   "os.userGid": "scr_os_user_gid",
+  "os.userInfoBegin": "scr_os_user_info_begin",
   "os.tmpdir": "scr_os_tmpdir",
   "process.argv": "scr_process_argv",
   "process.execArgv": "scr_process_exec_argv",
@@ -411,6 +416,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stdio": "scr_process_stdio",
   "process.stdioSlot": "scr_process_stdio",
   "process.stdioWriteDyn": "scr_process_stdio_write_dyn",
+  "process.stdioWriteStr": "scr_stdio_write_str_dyn",
   "process.stderrWrite": "scr_process_stderr_write",
   "process.isTTY": "scr_process_is_tty",
   "process.isTTYValue": "scr_process_is_tty_value",
@@ -1109,6 +1115,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "event.handleEventReader": "scr_event_handle_event_reader",
   "event.targetDispatch": "scr_event_target_obj_dispatch",
   "event.targetCall": "scr_event_target_obj_call",
+  "event.targetListeners": "scr_event_target_listeners",
+  "event.targetListenersDyn": "scr_event_target_listeners_dyn",
+  "event.targetListenerCount": "scr_event_target_listener_count",
+  "event.targetListenerCountDyn": "scr_event_target_listener_count_dyn",
+  "event.targetGetMax": "scr_event_target_get_max",
+  "event.targetSetMax": "scr_event_target_set_max",
   "event.call": "scr_event_obj_call",
   "event.get": "scr_event_obj_get",
   "event.set": "scr_event_obj_set",
@@ -1861,7 +1873,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",
+  "dyn.builtinMethodValue": "scr_dyn_builtin_method_value",
   "dyn.stdlibPrototype": "scr_dyn_stdlib_prototype",
+  "dyn.dataViewPrototype": "scr_data_view_prototype",
   "dyn.classPrototype": "scr_dyn_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
@@ -2017,6 +2031,9 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // object as process.stdio and call back from a nextTick.
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  // The untyped one-string write reaches the same stream objects and calls
+  // a replacement, so it links the events unit too.
+  "process.stdioWriteStr",
   // stdin.resume() and stdin.read() start the runtime's stdin watch (a
   // resumed stream, a read demand above the held input, or a parked
   // for-await), which the loop services until end-of-input: without the

@@ -266,3 +266,29 @@ test("scr_dyn_invoke builds the constructor value twin beside the object model",
     selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, dynProxyTier: true }).id,
   ).toBe("js-om");
 });
+
+test("reading a spawnSync result's error selects the child build with its fields", () => {
+  // A program that reads `.error` links the build that keeps the spawn errno
+  // and argv on the result and stamps Node's errnoException fields.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: true }).defines).toEqual([
+    "SCR_CHILD_ERR_FIELDS",
+  ]);
+  // A program that spawns but never reads `.error` keeps the default object
+  // and the result container exactly as they were, byte for byte.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: false }).defines).toEqual([]);
+});
+
+test("extended spawn options beside an error read keep both child builds", () => {
+  // The cwd/input/shell entries and the errnoException fields live in two
+  // builds of scr_child.c; a program that passes those options and reads
+  // `.error` needs one object carrying both, not the options build alone.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"]);
+  // Each feature alone keeps its own build.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: false })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
+});

@@ -14,7 +14,9 @@ function stdioValue(): "pipe" | "ignore" {
   return "ignore";
 }
 
-const child = spawn("/bin/true", {
+// `true` through PATH: the program runs on Linux and macOS, where the
+// command lives in different directories.
+const child = spawn("true", {
   ...(detachedCondition() ? { detached: true } : {}),
   stdio: stdioValue(),
 });

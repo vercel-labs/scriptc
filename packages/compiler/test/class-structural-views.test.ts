@@ -232,6 +232,39 @@ console.log(call(cursor));
   expect(kinds["origin"]).toBe("dyn");
 });
 
+test("a compound assignment of a non-primitive local keeps the interface a live view", async () => {
+  // `+=` coerces its operands, and a valueOf hook runs program code while
+  // the copy is the callee's parameter.
+  const kinds = await recordFields(
+    shapeOfPoint(`
+const patch = { valueOf(): number { cursor.x += 1; return 1; } };
+function read(p: Point): number {
+  let n: any = 0;
+  n += patch;
+  return p.x;
+}
+console.log(read(cursor));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
+test("an increment of a non-primitive local keeps the interface a live view", async () => {
+  const kinds = await recordFields(
+    shapeOfPoint(`
+function read(p: Point): number {
+  let n: any = { valueOf(): number { cursor.x += 1; return 1; } };
+  n++;
+  return p.x;
+}
+console.log(read(cursor));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
 test("a call to a shadowed parseInt keeps the interface a live view", async () => {
   const kinds = await recordFields(
     shapeOfPoint(`

@@ -893,9 +893,18 @@ export class ClassProtocols {
         node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
       ) {
         // Only the body's own locals may be written: a write through any
-        // other value could reach the instance.
+        // other value could reach the instance. A compound assignment also
+        // coerces both sides, and a non-primitive operand runs its value
+        // hook.
         const left = unwrapExpression(node.left);
         if (!ts.isIdentifier(left) || !locals.has(left.text)) {
+          ok = false;
+          return "stop";
+        }
+        if (
+          node.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+          !primitiveOperands(left, node.right, this.checker)
+        ) {
           ok = false;
           return "stop";
         }
@@ -907,7 +916,11 @@ export class ClassProtocols {
           node.operator === ts.SyntaxKind.MinusMinusToken)
       ) {
         const operand = unwrapExpression(node.operand);
-        if (!ts.isIdentifier(operand) || !locals.has(operand.text)) {
+        if (
+          !ts.isIdentifier(operand) ||
+          !locals.has(operand.text) ||
+          !primitiveNode(operand, this.checker)
+        ) {
           ok = false;
           return "stop";
         }
@@ -1870,10 +1883,8 @@ function expressionRunsCode(node: ts.Node, checker: ts.TypeChecker): boolean {
   if (ts.isElementAccessExpression(node)) return true;
   if (ts.isPropertyAccessExpression(node)) return accessRunsCode(node, checker);
   if (ts.isTemplateExpression(node)) {
-    for (const span of node.templateSpans.nodes) {
-      const type = attempt(() => checker.getTypeAtLocation(span.expression));
-      if (type === undefined || !primitiveValue(type)) return true;
-    }
+    for (const span of node.templateSpans.nodes)
+      if (!primitiveNode(span.expression, checker)) return true;
     return false;
   }
   if (ts.isBinaryExpression(node)) {
@@ -1893,8 +1904,7 @@ function expressionRunsCode(node: ts.Node, checker: ts.TypeChecker): boolean {
       operator !== ts.SyntaxKind.TildeToken
     )
       return false;
-    const type = attempt(() => checker.getTypeAtLocation(node.operand));
-    return type === undefined || !primitiveValue(type);
+    return !primitiveNode(node.operand, checker);
   }
   if (ts.isPostfixUnaryExpression(node)) return true;
   if (ts.isDeleteExpression(node) || ts.isAwaitExpression(node) || ts.isYieldExpression(node))
@@ -1911,7 +1921,7 @@ function accessRunsCode(access: ts.PropertyAccessExpression, checker: ts.TypeChe
   const symbol = attempt(() => checker.getSymbolAtLocation(access.name));
   if (symbol === undefined) return true;
   if ((symbol.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0) return true;
-  const receiver = attempt(() => checker.getTypeAtLocation(access.expression));
+  const receiver = valueType(access.expression, checker);
   if (receiver === undefined) return true;
   return (
     (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0
@@ -1925,9 +1935,27 @@ function primitiveOperands(
   right: ts.Expression,
   checker: ts.TypeChecker,
 ): boolean {
-  const l = attempt(() => checker.getTypeAtLocation(left));
-  const r = attempt(() => checker.getTypeAtLocation(right));
-  return l !== undefined && r !== undefined && primitiveValue(l) && primitiveValue(r);
+  return primitiveNode(left, checker) && primitiveNode(right, checker);
+}
+
+/** The type of `node`'s value, ignoring parentheses, non-null assertions and
+ * type assertions: a cast does not change what the value is at run time. */
+function valueType(node: ts.Expression, checker: ts.TypeChecker): ts.Type | undefined {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isAssertionExpression(current)
+  )
+    current = current.expression;
+  return attempt(() => checker.getTypeAtLocation(current));
+}
+
+/** Whether the value of `node` has a primitive type, so coercing it runs no
+ * value hook. */
+function primitiveNode(node: ts.Expression, checker: ts.TypeChecker): boolean {
+  const type = valueType(node, checker);
+  return type !== undefined && primitiveValue(type);
 }
 
 /** Whether `root` contains an expression that runs program code. */

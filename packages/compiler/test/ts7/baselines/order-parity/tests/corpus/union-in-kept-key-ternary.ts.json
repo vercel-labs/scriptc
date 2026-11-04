@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-in-kept-key-ternary.ts"
+ ],
+ "diags": []
+}

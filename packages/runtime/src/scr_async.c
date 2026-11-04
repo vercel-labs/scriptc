@@ -187,7 +187,8 @@ typedef struct { size_t rc; } ScrPromiseIdentity;
 struct ScrPromise {
   size_t rc; /* The cycle collector reads the reference count at offset zero. */
   /* Shared identity cell for promises adopted across inner types (NULL
-   * until scr_promise_share_identity first links this promise). */
+   * until scr_promise_share_identity first links this promise or a Set or
+   * Map keys it, scr_promise_map_identity). */
   ScrPromiseIdentity *identity;
   int state;
   bool top_level_handled; /* uncaughtException handled entry evaluation */
@@ -394,10 +395,11 @@ void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
   dst->identity->rc++;
 }
 
-#ifdef SCR_NODE_ISLANDS
-/* Node islands (NI-5) key their export table by a promise's identity
- * (scr_node_island_export.c); other programs link none of this. */
-const void *scr_promise_identity_key(ScrPromise *p) {
+/* A Set's or Map's key identity of a promise (ScrMapIdentityOps): the
+ * identity cell its adapter boxes share, created on the first call so a
+ * stored key's hash does not change when a box of it appears later. */
+void *scr_promise_map_identity(void *promise) {
+  ScrPromise *p = promise;
   if (!p->identity) {
     p->identity = malloc(sizeof *p->identity);
     if (!p->identity) scr_oom();
@@ -405,6 +407,11 @@ const void *scr_promise_identity_key(ScrPromise *p) {
   }
   return p->identity;
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* Node islands (NI-5) key their export table by a promise's identity
+ * (scr_node_island_export.c); other programs link none of this. */
+const void *scr_promise_identity_key(ScrPromise *p) { return scr_promise_map_identity(p); }
 
 void scr_promise_identity_hold(const void *key) { ((ScrPromiseIdentity *)key)->rc++; }
 
@@ -1260,6 +1267,7 @@ static void scr_timer_warn_tick(ScrClosure *self) {
     snprintf(type, sizeof type, "%.*s", (int)name->len, name->data);
     scr_warning_emit_hook(type, NULL, message);
   } else {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)name->len, name->data,
             (int)message->len, message->data);
@@ -3188,8 +3196,28 @@ static void scr_promise_rethrow(ScrPromise *p) {
   case SCR_EXC_F64: scr_throw_f64(p->f64); break;
   case SCR_EXC_BOOL: scr_throw_bool(p->b); break;
   case SCR_EXC_STR: scr_throw_str(scr_str_retain((ScrStr *)p->payload)); break;
+#ifdef SCR_PROMISE_REJECT_DYN
+  /* A checked-dynamic reason re-throws like `throw reason` does: a boxed
+   * native Error arrives as that %Error instance (the dyn cache keeps it
+   * reference-equal both ways), a primitive as the primitive, anything
+   * else as the REF payload its typeof deserves. Re-throwing the raw dyn
+   * payload instead left an `await`ed Error reason opaque to a caught
+   * `(e as Error)` cast, which failed its instance check. */
+  case SCR_EXC_REF:
+  case SCR_EXC_PRIMITIVE_REF:
+    if (p->retain_fn == scr_dyn_retain_v) {
+      scr_dyn_throw(scr_dyn_retain((ScrDyn *)p->payload));
+      break;
+    }
+    if (p->payload_kind == SCR_EXC_REF)
+      scr_throw_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn);
+    else
+      scr_throw_primitive_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn);
+    break;
+#else
   case SCR_EXC_REF: scr_throw_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
   case SCR_EXC_PRIMITIVE_REF: scr_throw_primitive_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
+#endif
   case SCR_EXC_OBJ: scr_throw_obj(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
   case SCR_EXC_NONE:
   case SCR_EXC_TERMINATE:
@@ -5946,6 +5974,17 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_WORKERS
     if (due > now) scr_sa_loop_waiting(true);
 #endif
+#if defined(SCR_MUSL) && !defined(SCR_LIB)
+    if (due > now) scr_musl_malloc_idle();
+#endif
+    /* The loop is about to wait, whichever arm below takes the wait: a
+     * build that buffers stdout (--stdout-buffering) publishes what the
+     * program has written so a reader waiting on it — an interactive
+     * consumer, a test harness — is not left looking at an empty pipe until
+     * the next wakeup. Every wait arm is covered, including the worker
+     * pool's, the child watch's, and the plain timer sleep of a loop with
+     * nothing else pending. */
+    scr_stdout_settle();
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
     if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
@@ -6299,6 +6338,36 @@ bool scr_loop_run(ScrPromise *top_level) {
  * listener threw (the uncaught crash path). */
 SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p) = NULL;
 
+#ifdef SCR_PROMISE_REJECT_DYN
+/* Prints a checked-dynamic rejection reason for the default unhandled-
+ * rejection report: a boxed native Error as "name: message", a string as
+ * its text, and a number, boolean, null or undefined by its name. Returns
+ * false for any other value, which the report prints as "[object]". */
+static bool scr_unhandled_print_dyn(const ScrDyn *d) {
+  ScrError *error = scr_errdyn_err_of(d);
+  if (error != NULL) {
+    ScrStr *s = scr_error_to_string(error);
+    fwrite(s->data, 1, s->len, stderr);
+    scr_str_release(s);
+    scr_error_release(error);
+    return true;
+  }
+  switch (d->kind) {
+  case SCR_DYN_STR: fwrite(d->v.str->data, 1, d->v.str->len, stderr); return true;
+  case SCR_DYN_NUM: {
+    char buf[32];
+    size_t len = scr_f64_to_str(d->v.num, buf);
+    fwrite(buf, 1, len, stderr);
+    return true;
+  }
+  case SCR_DYN_BOOL: fputs(d->v.b ? "true" : "false", stderr); return true;
+  case SCR_DYN_NULL: fputs("null", stderr); return true;
+  case SCR_DYN_UNDEF: fputs("undefined", stderr); return true;
+  default: return false;
+  }
+}
+#endif
+
 /* Unhandled rejections at a completed nextTick/microtask checkpoint:
  * Node prints an error and exits 1 when no listener handles the event.
  * Snapshot the ledger: a listener can reject another promise, but that
@@ -6340,6 +6409,7 @@ bool scr_report_unhandled_rejections(void) {
           continue;
         }
 #endif
+        scr_stdout_settle();
         fflush(stdout);
         fputs("Unhandled promise rejection: ", stderr);
         switch (p->payload_kind) {
@@ -6360,7 +6430,17 @@ bool scr_report_unhandled_rejections(void) {
             break;
           }
           /* fall through */
-        default: fputs("[object]", stderr); break;
+        default:
+#ifdef SCR_PROMISE_REJECT_DYN
+          /* A checked-dynamic reason renders like the uncaught path renders
+           * `throw reason`: a boxed native Error as "name: message", a
+           * primitive by its text. */
+          if (p->release_fn == scr_dyn_release_v && p->payload != NULL &&
+              scr_unhandled_print_dyn((const ScrDyn *)p->payload))
+            break;
+#endif
+          fputs("[object]", stderr);
+          break;
         }
         fputc('\n', stderr);
       }
@@ -6493,6 +6573,44 @@ ScrClosure *scr_make_reject(ScrPromise *p) {
   c->caps[0] = b;
   return c;
 }
+
+#ifdef SCR_PROMISE_REJECT_DYN
+/* The checked-dynamic promise's reject closure: a promise whose settled
+ * value is unknown has no typed payload to protect, so its reason is the
+ * dyn value the program rejected with (undefined for a bare reject(), a
+ * number, a string, an object — JS-exact). It stores as the dyn payload
+ * kind, the representation scr_promise_reason_dyn hands back identity-
+ * preserving, so a catch handler receives the very value that was
+ * rejected. First settle wins, like scr_reject_thunk.
+ *
+ * Only a program with such a promise (the promiseRejectDyn feature) links
+ * this build of the unit; every other program keeps the default object,
+ * byte for byte. */
+static void scr_reject_dyn_thunk(ScrClosure *self, ScrDyn *reason) {
+  ScrPromise *p = scr_resolve_target(self);
+  if (p->state != SCR_PROM_PENDING) {
+    scr_dyn_release(reason);
+  } else {
+    p->state = SCR_PROM_REJECTED;
+    p->payload_kind = SCR_EXC_REF;
+    p->payload = reason; /* ownership moves in */
+    p->retain_fn = scr_dyn_retain_v;
+    p->release_fn = scr_dyn_release_v;
+    p->trace_fn = scr_dyn_trace_v;
+    scr_promise_settle_wake(p);
+  }
+  scr_promise_release(p);
+}
+
+ScrClosure *scr_make_reject_dyn(ScrPromise *p) {
+  ScrClosure *c = scr_closure_new((void *)&scr_reject_dyn_thunk, 1);
+  ScrBox *b = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v,
+                               scr_promise_trace_v);
+  scr_box_set_ref(b, scr_promise_retain(p));
+  c->caps[0] = b;
+  return c;
+}
+#endif /* SCR_PROMISE_REJECT_DYN */
 
 /* Shared executor epilogue: an escaping throw rejects a still-pending
  * promise (payload moved out of the active exception cell); a throw after

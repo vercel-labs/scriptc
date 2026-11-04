@@ -148,6 +148,7 @@ function expressionPreservesEdges(
         // Class brand tests compare a capsule's key; they run no user code.
         e.fn === "dyn.typedRefKeyIs" ||
         e.fn === "dyn.typedRefIs" ||
+        e.fn === "dyn.classHash" ||
         // jsval conversions (ir/jsval.ts) answer as the dyn forms they
         // replace: moving a value between dyn and jsval reads it, and a
         // number, boolean or string crosses like its dynFrom box.

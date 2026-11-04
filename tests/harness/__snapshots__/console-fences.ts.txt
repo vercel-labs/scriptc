@@ -52,15 +52,6 @@ console-fences.ts:16:40 - error SC2020: 'console.dir with customInspect: true' i
 
   hint: only customInspect: false (console.dir's default) is lowered
 
-console-fences.ts:17:25 - error SC2020: 'console.dir with the 'showHidden' option' is part of the standard library types but has no scriptc lowering yet
-
-  16 | console.dir({ a: 1 }, { customInspect: true });
-  17 | console.dir({ a: 1 }, { showHidden: true });
-     |                         ^~~~~~~~~~~~~~~~
-  18 | 
-
-  hint: the lowered options are depth (numeric literal or null), colors: false, showHidden: false, compact (false or a number), breakLength, maxArrayLength (a non-negative integer or null), sorted (true or false), and customInspect: false
-
 console-fences.ts:22:35 - error SC2020: 'console.assert with a format string and computed arguments' is part of the standard library types but has no scriptc lowering yet
 
   21 | }

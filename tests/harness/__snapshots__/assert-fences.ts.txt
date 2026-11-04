@@ -21,18 +21,18 @@ assert-fences.ts:27:25 - error SC2020: 'assert.strictEqual of 'unknown' and '{ n
   26 | const unk: unknown = JSON.parse("{}");
   27 | assert.strictEqual(unk, { n: 1 }); // strict + composite static side: reference identity does not survive the unknown boundary
      |                         ^~~~~~~~
-  28 | assert.deepStrictEqual(unk, new Uint8Array([1])); // bytes static side: the dyn copy cannot carry the brand
+  28 | assert.deepStrictEqual(unk, new Uint8Array([1]) as ArrayBufferView); // bytes static side whose constructor the type does not name
 
   hint: strictEqual on objects is reference equality, which does not survive the unknown boundary (values copy when they cross) — deepStrictEqual compares structure, or narrow the unknown side first
 
 assert-fences.ts:28:29 - error SC2020: 'assert.deepStrictEqual of 'unknown' and 'Uint8Array' values' is part of the standard library types but has no scriptc lowering yet
 
   27 | assert.strictEqual(unk, { n: 1 }); // strict + composite static side: reference identity does not survive the unknown boundary
-  28 | assert.deepStrictEqual(unk, new Uint8Array([1])); // bytes static side: the dyn copy cannot carry the brand
-     |                             ^~~~~~~~~~~~~~~~~~~
+  28 | assert.deepStrictEqual(unk, new Uint8Array([1]) as ArrayBufferView); // bytes static side whose constructor the type does not name
+     |                             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   29 | assert.deepStrictEqual(unk, new Map<string, number>()); // not dyn-convertible
 
-  hint: the unknown boundary cannot carry the Buffer-vs-Uint8Array brand Node compares — narrow the unknown side to a typed array and compare those
+  hint: Node compares prototypes (a Buffer is never deep-equal to a plain Uint8Array), and the static type here does not name the typed array's constructor — annotate it (Buffer, Uint8Array, ...)
 
 assert-fences.ts:31:1 - error SC2020: 'assert.deepStrictEqual of 'number[]' and 'string[]' values' is part of the standard library types but has no scriptc lowering yet
 

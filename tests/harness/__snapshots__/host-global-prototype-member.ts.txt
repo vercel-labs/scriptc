@@ -1,0 +1,8 @@
+host-global-prototype-member.ts:9:1 - error SC2020: 'FormData' is a Node global that native code does not provide
+
+   8 | declare var FormData: { new (): HostBody; readonly prototype: HostBody };
+   9 | FormData.prototype.append("value");
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~
+  10 | 
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use

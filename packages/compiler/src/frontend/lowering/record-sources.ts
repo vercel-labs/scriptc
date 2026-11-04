@@ -12,7 +12,15 @@
  * converts anything into one at all (a program without such a conversion
  * answers the test false everywhere, so its captures keep static copies). */
 import type { IrExpr, IrFunction, IrLocal, IrType, SrcLoc } from "../../ir/ir.js";
-import { BOOL, DYN, VOID, recordTextCodecClass, shapeHasAccessorSlots } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  STRING,
+  VOID,
+  recordTextCodecClass,
+  shapeHasAccessorSlots,
+  typeKey,
+} from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { replaceThroughParents } from "../../ir/replace-children.js";
 import { varRef } from "../../ir/build.js";
@@ -231,6 +239,9 @@ export interface PendingSourceAnswer {
   readonly key: string;
   /** Builds the answer over a parameter ref, inside the helper's body. */
   readonly build: (recv: () => IrExpr, declare: DeclareLocal) => IrExpr;
+  /** Helper-name prefix when the answer needs a lifted function; the
+   * deferred `in` answers share `%record.in`. */
+  readonly helperName?: string;
 }
 
 /** Record a `in` answer that must be settled after the pass ends; returns
@@ -241,9 +252,129 @@ export function deferSourceAnswer(
   recv: IrExpr,
   key: string,
   build: (recv: () => IrExpr, declare: DeclareLocal) => IrExpr,
+  helperName?: string,
 ): IrExpr {
-  lowerer.pendingSourceAnswers.push({ node, recv, key, build });
+  const pending: PendingSourceAnswer =
+    helperName === undefined ? { node, recv, key, build } : { node, recv, key, build, helperName };
+  lowerer.pendingSourceAnswers.push(pending);
   return node;
+}
+
+/** A deferred answer's static form, held so the construct around it cannot
+ * settle on the constant: a bare boolLit folds the branch that contains it
+ * before the pass knows whether the source-aware answer replaces the site.
+ * The wrapper asks the same question of the value at run time and is the
+ * node the finalizer replaces in place. */
+export function holdDeferredAnswer(node: IrExpr): IrExpr {
+  if (node.kind !== "boolLit") return node;
+  return {
+    kind: "logical",
+    op: "&&",
+    left: { kind: "boolLit", value: true, type: BOOL, loc: node.loc },
+    right: node,
+    type: BOOL,
+    loc: node.loc,
+  };
+}
+
+/** Whether a record arm declares `field` as a slot, so a kept source is not
+ * the only place the key can come from. */
+function armDeclaresField(
+  lowerer: Lowerer,
+  arm: IrType & { kind: "record" },
+  field: string,
+): boolean {
+  const shape = lowerer.shapes.get(arm.shapeId);
+  return shape !== undefined && shape.fields.some((f) => f.name === field);
+}
+
+/** A read that tsc's narrowing proved, where a source kept by another arm can
+ * make the proof false: `if ("alphaField" in v)` narrows `v` to the arm that
+ * declares the key, and the narrowed read's guard traps when the value is a
+ * different arm whose kept source carries the key (the `in` answered true from
+ * the source rather than from a slot). The answer dispatches on the runtime
+ * tag: the proved arm reads its slot, every other arm that may keep a source
+ * and does not declare the field reads the live keyed view, and the site's
+ * static answer covers the remaining arms. Returns null when no other arm can
+ * keep a source, so the static read is already right. */
+export function deferSourceAwareArmRead(
+  lowerer: Lowerer,
+  node: IrExpr,
+  recv: IrExpr,
+  tag: number,
+  field: string,
+  fieldType: IrType,
+  loc: SrcLoc,
+  slotRead: (union: IrExpr) => IrExpr,
+): IrExpr | null {
+  if (recv.type.kind !== "union") return null;
+  const unionId = recv.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  const sourceArms: { tag: number; arm: IrType }[] = [];
+  arms.forEach((arm, index) => {
+    if (index === tag || arm.kind !== "record") return;
+    if (!recordMayKeepSource(lowerer, arm) || armDeclaresField(lowerer, arm, field)) return;
+    sourceArms.push({ tag: index, arm });
+  });
+  if (sourceArms.length === 0) return null;
+  const build = (union: IrExpr): IrExpr => {
+    let answer = slotRead(union);
+    for (const source of sourceArms) {
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag: source.tag,
+        value: union,
+        type: source.arm,
+        loc,
+      };
+      const view: IrExpr = { kind: "dynFrom", value: narrowed, liveRef: true, type: DYN, loc };
+      answer = {
+        kind: "ternary",
+        cond: {
+          kind: "unionIsTag",
+          unionId,
+          tag: source.tag,
+          negated: false,
+          value: union,
+          type: BOOL,
+          loc,
+        },
+        then: lowerer.coerceToExpected(
+          {
+            kind: "dynKeyGet",
+            key: { kind: "strLit", value: field, type: STRING, loc },
+            value: view,
+            type: DYN,
+            loc,
+          },
+          fieldType,
+        ),
+        else_: answer,
+        type: fieldType,
+        loc,
+      };
+    }
+    return answer;
+  };
+  return deferSourceAnswer(
+    lowerer,
+    node,
+    recv,
+    `read:${unionId}:${tag}:${field}:${typeKey(fieldType)}`,
+    (union, declare) => {
+      if (isSafeToRepeat(recv)) return build(union());
+      const local = declare("%sourceArmRead", recv.type);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: local.id, init: union(), loc }],
+        result: build(varRef(local.id, recv.type, loc)),
+        type: fieldType,
+        loc,
+      };
+    },
+    "%record.read",
+  );
 }
 
 /** Settle the deferred answers (deferSourceAnswer) once the pass knows
@@ -282,7 +413,7 @@ export function finalizePendingSourceAnswers(
       replacements.set(site.node, inline);
       continue;
     }
-    const name = keyedHelperName(lowerer, "%record.in", site.key);
+    const name = keyedHelperName(lowerer, site.helperName ?? "%record.in", site.key);
     if (!built.has(name)) {
       built.add(name);
       const param: IrLocal = { id: "v.0", name: "value", type: site.recv.type, mutable: false };
@@ -309,13 +440,19 @@ export function finalizePendingSourceAnswers(
       lowerer.liftedFns.push({
         name,
         params: [{ localId: param.id, name: param.name, type: param.type }],
-        returnType: BOOL,
+        returnType: site.node.type,
         locals: [param, ...helperLocals],
         body: [{ kind: "return", value: answer, loc }],
         loc,
       });
     }
-    replacements.set(site.node, { kind: "call", callee: name, args: [site.recv], type: BOOL, loc });
+    replacements.set(site.node, {
+      kind: "call",
+      callee: name,
+      args: [site.recv],
+      type: site.node.type,
+      loc,
+    });
   }
   for (const fn of functions) replaceThroughParents(fn.body, replacements);
 }

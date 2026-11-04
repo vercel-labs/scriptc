@@ -41,6 +41,7 @@ const BASE: NativeLinkFeatures = {
   regex: false,
   copying: false,
   textDecoderLegacy: false,
+  bigintBytes: false,
   fileHandle: false,
   fetch: false,
   zlib: false,
@@ -69,7 +70,6 @@ const BASE: NativeLinkFeatures = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
-  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -107,6 +107,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
   const base = await artifact("artifacts/base.o", "base");
   const legacy = await artifact("artifacts/legacy.o", "legacy");
   const fileHandle = await artifact("artifacts/fileHandle.o", "fileHandle");
+  const staticPasswd = await artifact("artifacts/static.o", "static");
   const regex = await artifact("artifacts/regex.a", "regex");
   const zlib = await artifact("artifacts/zlib.a", "zlib");
   await writeFile(join(root, "license.txt"), "license");
@@ -127,6 +128,12 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
           when: { fileHandle: true },
           defines: ["SCR_TEST_FILE_HANDLE"],
           ...fileHandle,
+        },
+        {
+          id: "static",
+          when: { staticLink: true },
+          defines: ["SCR_STATIC_PASSWD"],
+          ...staticPasswd,
         },
       ],
     },
@@ -150,7 +157,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       target: target.llvmTriple,
     },
     macros: {
-      executable: ["SCR_TEST_FILE_HANDLE", "SCR_TEXT_DECODER_LEGACY"],
+      executable: ["SCR_TEST_FILE_HANDLE", "SCR_TEXT_DECODER_LEGACY", "SCR_STATIC_PASSWD"],
       excluded: ["SCR_LIB", "SCR_THREAD_INSTANCES", "SCR_RC_AUDIT"],
       sanitizer: "external-toolchain-required",
     },
@@ -331,6 +338,17 @@ describe("runtime pack manifests", () => {
     });
     expect(evaluateRuntimePredicate({ all: ["fetch"], not: ["regex"] }, features)).toBe(true);
     expect(evaluateRuntimePredicate({ any: ["regex", "fileHandle"] }, features)).toBe(true);
+    // The JavaScript object model build implies the dynamic tier (t262-da
+    // §J): its code is the dynamic tier's, so a program with it links the
+    // dynamic-tier units too. A program without it keeps both off.
+    const objectModel = effectiveRuntimeFeatures({ ...BASE, jsObjectModel: true });
+    expect(objectModel).toMatchObject({ jsObjectModel: true, dynTier: true });
+    // The features that share the build OR into it: BigInt views today, so a
+    // program with them selects the object model build without naming it.
+    const bigint = effectiveRuntimeFeatures({ ...BASE, bigintBytes: true });
+    expect(bigint).toMatchObject({ bigintBytes: true, jsObjectModel: true, dynTier: true });
+    const plain = effectiveRuntimeFeatures(BASE);
+    expect(plain).toMatchObject({ jsObjectModel: false, dynTier: false, bigintBytes: false });
   });
 
   test("static runtime-pack executable links dead-strip too", async () => {
@@ -435,6 +453,31 @@ describe("runtime pack manifests", () => {
       "fileHandle.o",
     ]);
     expect(fileHandle.archives.map((path) => path.split("/").at(-1))).toEqual(["zlib.a"]);
+  });
+
+  test("a static link selects the static executable's unit variant", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    const dynamic = await createNativeLinkPlan(options);
+    const staticPlan = await createNativeLinkPlan({ ...options, staticLink: true });
+    expect(dynamic.runtimePack.features.staticLink).toBe(false);
+    expect(dynamic.runtimePack.selectedRuntimeArtifacts.map((a) => a.path)).toEqual([
+      "artifacts/base.o",
+    ]);
+    // The link mode, not a program fact, selects the pack's /etc/passwd
+    // build of the os unit: a static executable cannot load NSS modules.
+    expect(staticPlan.runtimePack.features.staticLink).toBe(true);
+    expect(staticPlan.runtimePack.selectedRuntimeArtifacts.map((a) => a.path)).toEqual([
+      "artifacts/static.o",
+    ]);
   });
 
   test("a stale manifest reports its identity independently from the package", async () => {

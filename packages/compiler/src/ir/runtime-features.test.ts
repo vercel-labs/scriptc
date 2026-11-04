@@ -309,6 +309,26 @@ describe("runtime feature snapshots", () => {
     // A computed key reaches scr_native_date_methods, which lists both names,
     // so a Date value in the module needs the dispatch that answers them.
     expect(moduleRuntimeFeatures(makesDate(computedRead(dyn))).dateAnnexB).toBe(true);
+    // A stored Date constructor builds the same Date without a date call of
+    // its own, so reading the global constructor counts as holding one.
+    const globalConstructor = (name: string): IrModule => {
+      const mod = computedRead(dyn);
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.globalConstructor",
+          args: [{ kind: "strLit", value: name, type: STRING, loc }],
+          type: DYN,
+          loc,
+        },
+      });
+      return mod;
+    };
+    expect(moduleRuntimeFeatures(globalConstructor("Date")).dateAnnexB).toBe(true);
+    // A constructor of another builtin builds no Date.
+    expect(moduleRuntimeFeatures(globalConstructor("Error")).dateAnnexB).toBe(false);
     // A Date-typed receiver answers them without the construction call.
     expect(
       moduleRuntimeFeatures(

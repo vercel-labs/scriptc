@@ -1004,7 +1004,10 @@ function mentionsDate(t: IrType, tables: TypeTables): boolean {
  * through scr_lib.c's name table, so a computed key reaches them without
  * naming them statically (scr_native_date_get looks the key up in
  * scr_native_date_methods), and so does a Date.prototype member read through
- * that key (the table always lists the two names). The annexB entries exist
+ * that key (the table always lists the two names). A Date built through a
+ * stored constructor counts as a Date value in the module: the constructor
+ * is a `dyn.globalConstructor` load, so the module holds the value whatever
+ * the call site does with it. The annexB entries exist
  * only in the SCR_JS_OBJECT_MODEL build (t262-da §J); jsObjectModelFact ORs
  * this fact into jsObjectModel, so the program selects that build. A program
  * that merely reads the Date prototype object for other members keeps the
@@ -1021,6 +1024,13 @@ function dateAnnexBScan(mod: IrModule): RuleScan {
   const isDatePrototype = (node: IrExpr): boolean =>
     node.kind === "libCall" &&
     node.fn === "dyn.stdlibPrototype" &&
+    node.args[0]?.kind === "strLit" &&
+    node.args[0].value === "Date";
+  // `Date` read as a value (a stored constructor, an alias) and the
+  // constructor reached through `globalThis.Date`.
+  const isDateConstructor = (node: IrExpr): boolean =>
+    node.kind === "libCall" &&
+    node.fn === "dyn.globalConstructor" &&
     node.args[0]?.kind === "strLit" &&
     node.args[0].value === "Date";
   let named = false;
@@ -1040,7 +1050,8 @@ function dateAnnexBScan(mod: IrModule): RuleScan {
           if (mentionsDate(node.value.type, typeTables())) named = true;
         }
       } else if (node.kind === "libCall") {
-        if (node.fn.startsWith("date.") || isDatePrototype(node)) dateValue = true;
+        if (node.fn.startsWith("date.") || isDatePrototype(node) || isDateConstructor(node))
+          dateValue = true;
       } else if (node.kind === "dynFrom") {
         if (mentionsDate(node.value.type, typeTables())) dateValue = true;
       } else if (node.kind === "dynCheck") {

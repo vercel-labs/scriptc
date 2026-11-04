@@ -24,6 +24,7 @@ import {
   type IrType,
   STRING,
   type SrcLoc,
+  VOID,
   UNDEFINED_T,
   arrayOf,
   funcOf,
@@ -929,6 +930,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         isJsSourceFile(ts.getSourceFileOfNode(expr)),
       );
       if (builtinValue !== null) return builtinValue;
+      if (canonical === "queueMicrotask") {
+        const typed = queueMicrotaskValue(lowerer, expr, loc);
+        if (typed !== null) return typed;
+      }
       if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
       }
@@ -1369,4 +1374,47 @@ function closureDynRead(
     type: DYN,
     loc,
   };
+}
+
+/** `queueMicrotask` as a typed function value (`const schedule =
+ * queueMicrotask`): a helper that queues its zero-parameter callback the
+ * way a direct call does. */
+function queueMicrotaskValue(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr | null {
+  const type = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const cb =
+    type?.kind === "func" && !type.rest && type.params.length === 1 ? type.params[0]! : null;
+  if (
+    type?.kind !== "func" ||
+    type.ret.kind !== "void" ||
+    cb?.kind !== "func" ||
+    cb.params.length !== 0 ||
+    cb.rest
+  )
+    return null;
+  if (cb.ret.kind !== "void") return null;
+  const name = "%queueMicrotask.value";
+  if (!lowerer.arrHofHelpers.has(name)) {
+    lowerer.arrHofHelpers.set(name, name);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "cb.0", name: "callback", type: cb }],
+      returnType: VOID,
+      locals: [{ id: "cb.0", name: "callback", type: cb, mutable: false }],
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "timers.queueMicrotask",
+            args: [{ kind: "varRef", localId: "cb.0", type: cb, loc }],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName: name, captures: [], type, loc };
 }

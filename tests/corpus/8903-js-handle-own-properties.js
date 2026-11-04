@@ -96,3 +96,21 @@ console.log("peek keys", JSON.stringify(Object.keys(peek)));
 console.log("peek values", JSON.stringify(Object.values(peek)));
 console.log("peek entries", JSON.stringify(Object.entries(peek)));
 console.log("peek again", JSON.stringify(Object.values(peek)), JSON.stringify(Object.keys(peek)));
+
+// An accessor reached for an earlier key can reveal a later one; the walk
+// reads each key's descriptor when it reaches it, so the revealed property
+// joins the values and entries even though the key was not enumerable when
+// the walk began.
+const reveal = new Date(0);
+Object.defineProperty(reveal, "reveal", {
+  get() {
+    Object.defineProperty(reveal, "hidden", { enumerable: true });
+    return "revealed";
+  },
+  enumerable: true,
+  configurable: true,
+});
+Object.defineProperty(reveal, "hidden", { value: 7, enumerable: false, configurable: true });
+console.log("reveal keys", JSON.stringify(Object.keys(reveal)));
+console.log("reveal values", JSON.stringify(Object.values(reveal)));
+console.log("reveal entries", JSON.stringify(Object.entries(reveal)));

@@ -180,6 +180,41 @@ try {
   expect(stderr).toBe("");
 });
 
+test("an untyped Date toJSON skips a conversion member that is not callable", async () => {
+  // ToPrimitive reads each conversion member and skips one that is not
+  // callable, so a valueOf the program set to a non-function falls through to
+  // toString instead of throwing "valueOf is not a function".
+  const { stdout, stderr } = await run(`"use strict";
+function toJson(x) {
+  return x.toJSON();
+}
+const d = new Date(0);
+d.valueOf = 5;
+console.log("data", toJson(d));
+d.toString = 7;
+try {
+  console.log("both", toJson(d));
+} catch (error) {
+  console.log("both", error.message);
+}
+const object = new Date(0);
+object.valueOf = { toString() { return 5; } };
+console.log("object", toJson(object));
+const restored = new Date(0);
+restored.valueOf = 5;
+delete restored.valueOf;
+restored.toString = 7;
+console.log("restored", toJson(restored));
+`);
+  expect(stdout).toBe(
+    "data 1970-01-01T00:00:00.000Z\n" +
+      "both Cannot convert object to primitive value\n" +
+      "object 1970-01-01T00:00:00.000Z\n" +
+      "restored 1970-01-01T00:00:00.000Z\n",
+  );
+  expect(stderr).toBe("");
+});
+
 test("implicit conversions of a shadowed Date method read the own property", async () => {
   const { stdout, stderr } = await run(`"use strict";
 const d = new Date(0);

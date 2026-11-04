@@ -648,19 +648,32 @@ static bool hp_key_enumerable(ScrDyn *props, const ScrStr *key) {
 /* The ScrObjWalk modes scr_json.c passes (private to that unit). */
 enum { HP_WALK_KEYS = 0, HP_WALK_VALUES = 1, HP_WALK_ENTRIES = 2 };
 
-/* Object.keys/values/entries: the table's enumerable own string keys;
- * accessors run with the handle as `this`. */
+/* Object.keys/values/entries: the table's own string keys listed up front,
+ * each key's enumerability and value read when the walk reaches it, as
+ * EnumerableOwnProperties does. Accessors run with the handle as `this`. */
 static bool hp_objwalk(const ScrDyn *handle, int mode, ScrDyn **out) {
   if (!hp_accepts(handle->v.handle.tag)) return false;
   ScrDyn *props = hp_table_of(handle);
-  ScrDyn *keys = hp_names_merge(handle, props, true);
-  if (mode == HP_WALK_KEYS) { *out = keys; return true; }
+  /* The key list is a snapshot, but an accessor run for an earlier key can
+   * hide a later one or reveal one that was not enumerable when the walk
+   * began, so the snapshot holds every own key and the loop asks each key's
+   * descriptor when it reaches it. */
+  ScrDyn *keys = hp_names_merge(handle, props, false);
+  if (mode == HP_WALK_KEYS) {
+    ScrDyn *enumerable = scr_dyn_new_arr();
+    for (size_t i = 0; i < keys->v.arr.len; i++) {
+      if (hp_key_enumerable(props, keys->v.arr.items[i]->v.str))
+        scr_dyn_arr_push(enumerable, scr_dyn_retain(keys->v.arr.items[i]));
+    }
+    scr_dyn_release(keys);
+    *out = enumerable;
+    return true;
+  }
   ScrDyn *result = scr_dyn_new_arr();
   for (size_t i = 0; i < keys->v.arr.len; i++) {
     ScrStr *k = keys->v.arr.items[i]->v.str;
-    /* The key list is a snapshot, but an accessor run for an earlier key
-     * can delete or hide a later one; EnumerableOwnProperties reads each
-     * key's descriptor when it reaches it. */
+    /* A key the walk itself added is not in the snapshot; one it deleted or
+     * hid answers no enumerable descriptor here. */
     if (!hp_key_enumerable(props, k)) continue;
     ScrDyn *value = hp_read(props, (ScrDyn *)handle, k->data, k->len);
     if (!value) { scr_dyn_release(result); scr_dyn_release(keys); *out = NULL; return true; }

@@ -13841,10 +13841,27 @@ static bool scr_date_primitive_value(const ScrDyn *d) {
 static ScrDyn *scr_date_to_json_primitive(ScrDyn *self) {
   static const char message[] = "Cannot convert object to primitive value";
   const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(self);
-  ScrDyn *primitive = ops->invoke(self->v.handle.ptr, self, "valueOf", NULL, 0, "toJSON");
-  if (!primitive) return NULL;
-  if (scr_date_primitive_value(primitive)) return primitive;
-  scr_dyn_release(primitive);
+  /* Ordinary ToPrimitive READS each conversion member and skips one that is
+   * not callable. An own `valueOf` the program set to a non-function is
+   * therefore skipped and toString answers, where the method dispatch would
+   * throw "valueOf is not a function". */
+  ScrDyn *valueOf = ops->get ? ops->get(self->v.handle.ptr, "valueOf", 7) : NULL;
+  if (scr_exc_pending()) {
+    scr_dyn_release(valueOf);
+    return NULL;
+  }
+  ScrDyn *primitive;
+  if (valueOf && scr_dyn_is_callable(valueOf)) {
+    scr_dyn_this_push_dyn(self);
+    primitive = scr_dyn_call(valueOf, NULL, 0, "toJSON");
+    scr_dyn_this_pop();
+    scr_dyn_release(valueOf);
+    if (!primitive) return NULL;
+    if (scr_date_primitive_value(primitive)) return primitive;
+    scr_dyn_release(primitive);
+  } else {
+    scr_dyn_release(valueOf);
+  }
   ScrDyn *text = ops->get ? ops->get(self->v.handle.ptr, "toString", 8) : NULL;
   if (scr_exc_pending()) {
     scr_dyn_release(text);

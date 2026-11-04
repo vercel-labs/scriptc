@@ -76,8 +76,24 @@ export class ModuleBindings {
       const item = pending.pop()!;
       const node = item.node;
       let current = item.scope;
+      if (ts.isTypeNode(node)) {
+        // This type-shaped wrapper also holds runtime class bases and
+        // standalone instantiation expressions. Only its expression runs.
+        if (ts.isExpressionWithTypeArguments(node)) {
+          const heritage = node.parent;
+          const owner = heritage?.parent;
+          if (
+            heritage === undefined ||
+            !ts.isHeritageClause(heritage) ||
+            (heritage.token === ts.SyntaxKind.ExtendsKeyword &&
+              owner !== undefined &&
+              (ts.isClassDeclaration(owner) || ts.isClassExpression(owner)))
+          )
+            pending.push({ node: node.expression, scope: current });
+        }
+        continue;
+      }
       if (
-        ts.isTypeNode(node) ||
         ts.isInterfaceDeclaration(node) ||
         ts.isTypeAliasDeclaration(node) ||
         (ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Ambient) !== 0 ||

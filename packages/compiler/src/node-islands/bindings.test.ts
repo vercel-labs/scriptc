@@ -188,6 +188,51 @@ test("computed method names see outer bindings and method bodies see parameters"
   f.same("inside", "parameter");
 });
 
+test("class heritage expressions resolve values in their lexical scope", () => {
+  const f = fixture(`
+    const /*outer*/events = {};
+    class Sub extends /*declaration*/events.Base {}
+    const ctor = class extends /*expression*/events.Base {};
+    function local(/*parameter*/events) {
+      return class extends /*shadowed*/events.Base {};
+    }
+    const named = class /*self*/events extends /*innerName*/events.Base {};
+  `);
+  f.same("declaration", "outer");
+  f.same("expression", "outer");
+  f.same("shadowed", "parameter");
+  f.same("innerName", "self");
+});
+
+test("instantiation expressions retain values while their type arguments are erased", () => {
+  const f = fixture(
+    `
+    function /*outer*/identity<T>(value: T) { return value; }
+    const specialized = /*value*/identity<typeof /*typeArgument*/identity>;
+    class Sub extends /*heritage*/identity<typeof /*heritageType*/identity> {}
+  `,
+    "ts",
+  );
+  f.same("value", "outer");
+  f.same("heritage", "outer");
+  expect(f.resolve("typeArgument")).toBeUndefined();
+  expect(f.resolve("heritageType")).toBeUndefined();
+});
+
+test("class implements and interface extends are erased heritage", () => {
+  const f = fixture(
+    `
+    const /*outer*/types = {};
+    class C implements /*implemented*/types.Shape {}
+    interface I extends /*extended*/types.Shape {}
+  `,
+    "ts",
+  );
+  expect(f.resolve("outer")).toBeDefined();
+  expect(f.resolve("implemented")).toBeUndefined();
+  expect(f.resolve("extended")).toBeUndefined();
+});
+
 test("value imports bind but type declarations and type-only imports do not", () => {
   const f = fixture(
     `

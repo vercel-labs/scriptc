@@ -377,6 +377,17 @@ describe("R2.5 builtin patches (H3.1)", () => {
     ).toEqual(["builtin-patch fs.extra"]);
   });
 
+  test("runtime class heritage retains genuine patches and local shadowing", () => {
+    expect(patches("const fs = require('fs'); class C extends (fs.extra = Object) {};")).toEqual([
+      "builtin-patch fs.extra",
+    ]);
+    expect(
+      patches(
+        "const fs = require('fs'); function local(fs) { return class extends (fs.extra = Object) {}; }",
+      ),
+    ).toEqual([]);
+  });
+
   test("defineProperty, Object.assign, delete and bind are patches too", () => {
     expect(
       patches("const fs = require('fs'); Object.defineProperty(fs, 'readFileSync', { value: f });"),
@@ -450,6 +461,40 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
   ).toEqual(["fs.readFileSync"]);
   // A namespace import is not the CommonJS object.
   expect(reads("import * as fs from 'node:fs'; const { readFileSync } = fs;", "mjs")).toEqual([]);
+});
+
+test("class heritage and instantiation values retain builtin reads", () => {
+  const reads = (source: string, ext = "cjs"): string[] => {
+    const sf = parseSourceFile(
+      `/virtual/heritage${serial++}.${ext}`,
+      source,
+      ext === "ts" ? "ts" : "js",
+    );
+    return scanModuleFacts(sf).cjsReads.map((read) => read.member);
+  };
+  expect(
+    reads("const events = require('events'); class Sub extends events.EventEmitter {}"),
+  ).toEqual(["events.EventEmitter"]);
+  expect(
+    reads(
+      "import events from 'node:events'; const Sub = class extends events.EventEmitter {};",
+      "mjs",
+    ),
+  ).toEqual(["events.EventEmitter"]);
+  expect(
+    reads(
+      "const events = require('events'); function local(events) { return class extends events.EventEmitter {}; }",
+    ),
+  ).toEqual([]);
+  expect(
+    reads("const fs = require('fs'); const specialized = fs.readFileSync<string>;", "ts"),
+  ).toEqual(["fs.readFileSync"]);
+  expect(
+    reads(
+      "const fs = require('fs'); class C implements fs.Shape {} interface I extends fs.Shape {}",
+      "ts",
+    ),
+  ).toEqual([]);
 });
 
 test("global reads are recorded for the implicit-global check (H3.4)", () => {

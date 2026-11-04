@@ -8,8 +8,23 @@ import {
   type IrType,
   type IrUnionDef,
 } from "./ir.js";
-import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
+import {
+  exprFunctionReference,
+  FUNCTION_REFERENCE_KINDS,
+  moduleFunctionReferences,
+} from "./function-references.js";
+import {
+  eachNodeOfKinds,
+  type IrKindScan,
+  type IrNodeIndex,
+  type IrNodeKind,
+  lacksNode,
+} from "./node-index.js";
 import { everyStmtList, mapExprChildren, mapStmtChildren, transformStmtList } from "./traverse.js";
+
+const CALL_KINDS: readonly IrNodeKind[] = ["call"];
+/** The nodes that reach a function: calls, constructions and references. */
+const REFERENCE_KINDS: readonly IrNodeKind[] = ["call", "new", ...FUNCTION_REFERENCE_KINDS];
 
 const MAX_FUNCTION_NODES = 1024;
 /** The variants' bodies together: at least this many nodes, or a tenth of
@@ -30,7 +45,11 @@ interface NumericParameter {
   fallback: IrExpr | null;
 }
 
-function parameters(fn: IrFunction, unions: ReadonlyMap<string, IrUnionDef>): NumericParameter[] {
+function parameters(
+  fn: IrFunction,
+  unions: ReadonlyMap<string, IrUnionDef>,
+  nodes: IrNodeIndex | undefined,
+): NumericParameter[] {
   if (fn.async || fn.generator || fn.captures !== undefined || fn.classCaptures?.length) return [];
   const result: NumericParameter[] = [];
   fn.params.forEach((param, index) => {
@@ -51,6 +70,8 @@ function parameters(fn: IrFunction, unions: ReadonlyMap<string, IrUnionDef>): Nu
     });
   });
   if (!result.length) return result;
+  // The walk below refuses a body above the limit.
+  if ((nodes?.nodeCount(fn) ?? 0) > MAX_FUNCTION_NODES) return [];
   const selected = new Map(result.map((param) => [param.localId, param]));
   if (fn.locals.some((local) => selected.has(local.id) && (local.boxed || local.tdz))) return [];
   let size = 0;
@@ -188,7 +209,13 @@ function nativeArgument(arg: IrExpr | undefined, param: NumericParameter): IrExp
   return null;
 }
 
-function countNodes(body: IrStmt[]): number {
+/** The number of nodes in the body of `fn`, read from `nodes` when it
+ * records the function. */
+function countNodes(fn: IrFunction, nodes: IrNodeIndex | undefined): number {
+  return nodes?.nodeCount(fn) ?? countBodyNodes(fn.body);
+}
+
+function countBodyNodes(body: IrStmt[]): number {
   let size = 0;
   everyStmtList(body, {
     stmt: () => {
@@ -211,20 +238,22 @@ function countNodes(body: IrStmt[]): number {
  * representation; mixed or unknown incoming values retain the original
  * call. An ordinary function no reference reaches after the rewrite is
  * dropped. The variants share a node budget. The backend supplies its
- * symbol spelling to avoid collisions after name mangling. */
+ * symbol spelling to avoid collisions after name mangling. `nodes`, an
+ * index of `mod`, gives node counts and calls without walking the bodies. */
 export function specializeNumericCalls(
   mod: IrModule,
   symbolName: (name: string) => string = (name) => name,
+  nodes?: IrNodeIndex,
 ): IrModule {
   const unions = new Map(mod.unions?.map((union) => [union.id, union]));
   const candidates = new Map<string, { fn: IrFunction; slots: NumericParameter[] }>();
   for (const fn of mod.functions) {
-    const slots = parameters(fn, unions);
+    const slots = parameters(fn, unions, nodes);
     if (slots.length) candidates.set(fn.name, { fn, slots });
   }
   if (!candidates.size) return mod;
   let moduleNodes = 0;
-  for (const fn of mod.functions) moduleNodes += countNodes(fn.body);
+  for (const fn of mod.functions) moduleNodes += countNodes(fn, nodes);
   let budget = Math.max(MIN_SPECIALIZATION_BUDGET, moduleNodes / 10);
   const names = new Set(mod.functions.map((fn) => symbolName(fn.name)));
   const variants = new Map<string, IrFunction>();
@@ -246,7 +275,7 @@ export function specializeNumericCalls(
     let variant = variants.get(fn.name);
     if (!variant) {
       const body = specializeBody(fn, slots);
-      const size = countNodes(body);
+      const size = countBodyNodes(body);
       if (size > budget) return node;
       budget -= size;
       let name = `${fn.name}.nativeNumber`;
@@ -283,13 +312,16 @@ export function specializeNumericCalls(
   function rewriteStmt(stmt: IrStmt): IrStmt {
     return mapStmtChildren(stmt, rewriteExpr, rewriteStmt);
   }
+  const calls = nodes?.scan(CALL_KINDS);
   function rewriteFunction(fn: IrFunction): IrFunction {
     // Most bodies never call an eligible entry. Inspect without allocating
     // replacement nodes; preserve their original storage and identities.
-    const unchanged = everyStmtList(fn.body, {
-      stmt: () => true,
-      expr: (expr) => candidateCall(expr) === undefined,
-    });
+    const unchanged =
+      lacksNode(fn, calls, (node) => node.kind === "call" && candidateCall(node) !== undefined) ||
+      everyStmtList(fn.body, {
+        stmt: () => true,
+        expr: (expr) => candidateCall(expr) === undefined,
+      });
     return unchanged ? fn : { ...fn, body: fn.body.map(rewriteStmt) };
   }
   const functions = mod.functions.map(rewriteFunction);
@@ -298,7 +330,12 @@ export function specializeNumericCalls(
     functions.push(rewriteFunction(fn));
   }
   if (!variants.size) return mod;
-  const unreferenced = unreferencedOriginals(mod, functions, variants);
+  const unreferenced = unreferencedOriginals(
+    mod,
+    functions,
+    variants,
+    nodes?.scan(REFERENCE_KINDS),
+  );
   return {
     ...mod,
     functions: unreferenced.size ? functions.filter((fn) => !unreferenced.has(fn.name)) : functions,
@@ -314,6 +351,7 @@ function unreferencedOriginals(
   mod: IrModule,
   functions: readonly IrFunction[],
   variants: ReadonlyMap<string, IrFunction>,
+  references: IrKindScan | undefined,
 ): Set<string> {
   const result = new Set<string>();
   const members = (mod.classes ?? []).map((cls) => `%${cls.name}.`);
@@ -322,18 +360,16 @@ function unreferencedOriginals(
   for (const name of moduleFunctionReferences(mod)) result.delete(name);
   if (!result.size) return result;
   for (const fn of functions)
-    everyStmtList(fn.body, {
-      stmt: () => true,
-      expr: (expr) => {
-        const name =
-          expr.kind === "call"
-            ? expr.callee
-            : expr.kind === "new"
-              ? `%${expr.className}.constructor`
-              : exprFunctionReference(expr);
-        if (name !== undefined && name !== fn.name) result.delete(name);
-        return true;
-      },
+    eachNodeOfKinds(fn, references, (node, statement) => {
+      if (statement) return;
+      const expr = node as IrExpr;
+      const name =
+        expr.kind === "call"
+          ? expr.callee
+          : expr.kind === "new"
+            ? `%${expr.className}.constructor`
+            : exprFunctionReference(expr);
+      if (name !== undefined && name !== fn.name) result.delete(name);
     });
   return result;
 }

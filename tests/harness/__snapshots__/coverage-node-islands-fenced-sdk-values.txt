@@ -1,0 +1,15 @@
+scriptc coverage tests/coverage-fixtures/node-islands-fenced-sdk-values/main.ts
+
+  statements analyzed   16
+  compile statically    16  (100%)
+    in dynamic tier     11  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  npm package compilation:
+    ni-sdk  static
+
+  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+    gap  ni-sdk@2.0.0
+          tests/coverage-fixtures/node-islands-fenced-sdk-values/node_modules/ni-sdk/index.js:7:26: SC1090: extending classes not declared in the program ('Promise') is not supported yet
+    hint: scriptc coverage --explain-island=<package> lists every reason
+
+  fully static — all analyzed statements compile to native code.

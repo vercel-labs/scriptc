@@ -1,0 +1,8 @@
+host-global-alias-member-read.ts:10:13 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+   9 | const Socket = WebSocket;
+  10 | console.log(Socket.OPEN);
+     |             ^~~~~~~~~~~
+  11 | 
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use

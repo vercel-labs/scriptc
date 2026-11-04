@@ -12,6 +12,7 @@ import {
   isolatedFiles,
   leakSuppressions,
   memoryHeavyFiles,
+  nativeFrontendFiles,
   sanitizedNodesJobEnv,
   sideOwners,
   testCosts,
@@ -23,7 +24,9 @@ test.for([1, 3, 5, 10, 20])(
   (count) => {
     for (const flavor of ["plain", "san"]) {
       const plans = Array.from({ length: count }, (_, index) =>
-        ciTestPlan({ shard: `${index + 1}/${count}`, flavor }),
+        // The Linux shard plan: the sanitized native frontend builds leave it
+        // for their own jobs, and the macOS shards keep them.
+        ciTestPlan({ shard: `${index + 1}/${count}`, flavor, platform: "linux" }),
       );
       const sideFiles = plans.flatMap((plan) =>
         plan.side.filter((task) => task.args.length === 2).map((task) => task.args[1]),
@@ -53,7 +56,12 @@ test.for([1, 3, 5, 10, 20])(
       );
       const measured = [
         ...new Set([...Object.keys(testCosts[flavor]), ...Object.keys(memoryHeavyFiles)]),
-      ].filter((file) => !isolated.has(file));
+      ].filter(
+        (file) =>
+          !isolated.has(file) &&
+          // The sanitized native frontend builds run in their own jobs, not in a shard.
+          !(flavor === "san" && nativeFrontendFiles.includes(file)),
+      );
       expect(measured.length).toBeGreaterThan(0);
       expect(balanced.toSorted()).toEqual(measured.toSorted());
       for (const plan of plans) {
@@ -127,12 +135,64 @@ test("the sanitized three.js nodes build leaves the Linux corpus for its own job
   );
 });
 
+test("the sanitized native frontend builds leave the Linux shard side queue", () => {
+  const selected = (flavor: "plain" | "san", platform: string) =>
+    Array.from({ length: 20 }, (_, index) =>
+      ciTestPlan({ shard: `${index + 1}/20`, flavor, platform }),
+    )
+      .flatMap((plan) =>
+        plan.side.flatMap((task) => task.args).filter((arg) => nativeFrontendFiles.includes(arg)),
+      )
+      .sort();
+  const all = [...nativeFrontendFiles].sort();
+  for (const platform of ["linux", "darwin"]) {
+    // The plain compile fits in the shard's budget; the sanitized Linux one
+    // does not, and it runs in its own jobs instead. The macOS shards, which
+    // have no LeakSanitizer, keep them in the side queue.
+    expect(selected("plain", platform), platform).toEqual(all);
+    expect(selected("san", platform), platform).toEqual(platform === "linux" ? [] : all);
+  }
+});
+
+test("the sanitized native frontend builds run in a dedicated required job", () => {
+  type Job = {
+    "runs-on": string;
+    needs: string[];
+    if?: string;
+    "timeout-minutes": number;
+    strategy: { matrix: { include: { suite: string; file: string }[] } };
+    env: Record<string, string>;
+    steps: { run?: string; uses?: string }[];
+  };
+  const { jobs } = load(
+    readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  ) as { jobs: Record<string, Job> };
+  const job = jobs["native_frontend_san"]!;
+  expect(job).toBeDefined();
+  expect(job["runs-on"]).toBe("ubuntu-24.04");
+  expect(job.if).toBe(
+    "${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}",
+  );
+  expect(job.needs).toEqual(expect.arrayContaining(["validation_scope", "lanes", "native_linux"]));
+  expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(30);
+  expect(job.env["SCRIPTC_SAN"]).toBe("1");
+  expect(job.env["SCRIPTC_TEST_WORKERS"]).toBe("1");
+  expect(job.env["ASAN_OPTIONS"]).toBe("detect_leaks=0");
+  expect(job.strategy.matrix.include.map((entry) => entry.file).sort()).toEqual(
+    [...nativeFrontendFiles].sort(),
+  );
+  expect(job.steps.at(-1)!.run).toBe("pnpm test ${{ matrix.file }}");
+  expect(jobs["test"]!.needs).toContain("native_frontend_san");
+});
+
 test("the side queue balances measured files across the twenty Linux shards", () => {
   for (const flavor of ["plain", "san"] as const) {
     const costs = testCosts[flavor] as Record<string, number>;
     const owned = new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]);
+    // The sanitized native frontend builds run in their own Linux jobs.
+    if (flavor === "san") for (const file of nativeFrontendFiles) owned.delete(file);
     const shards = Array.from({ length: 20 }, (_, index) => {
-      const files = ciTestPlan({ shard: `${index + 1}/20`, flavor })
+      const files = ciTestPlan({ shard: `${index + 1}/20`, flavor, platform: "linux" })
         .side.slice(1)
         .flatMap((task) => task.args.filter((arg) => owned.has(arg)));
       return { files, load: files.reduce((sum, file) => sum + (costs[file] ?? 0) + 1000, 0) };

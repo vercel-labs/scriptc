@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8764-object-assign-narrowed-record.ts"
+ ],
+ "diags": []
+}

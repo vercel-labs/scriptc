@@ -1190,7 +1190,8 @@ export function emitBytesLoopVersionGuard(
   };
   const lengths = receivers.map((receiver, index) => {
     if (index === unitsIndex) {
-      const read = emitUnitsLength(host, receiver, () => emitUnitsSpan(host, version, index));
+      const step = version.counted ? Math.abs(version.counted.step) : NaN;
+      const read = emitUnitsLength(host, receiver, () => emitUnitsSpan(host, version, index), step);
       units.read = read;
       return read.length;
     }
@@ -1468,11 +1469,14 @@ function emitUnitsSpan(
  * `s` is not already the scan receiver, the runtime converts it to units
  * and publishes it if the loop's `span` makes that pay
  * (scr_str_scan_units_for). Also the units pointer, whether the loop is to
- * read it, and whether the published receiver is `s`. */
+ * read it, and whether the published receiver is `s`. `step` is the counted
+ * loop's counter stride, or NaN for a loop whose trip count the version does
+ * not know; the runtime weighs the loop's read rate with it. */
 function emitUnitsLength(
   host: LlvmEmitterContext,
   s: string,
   span: () => { from: string; to: string },
+  step: number,
 ): { length: string; pointer: string; taken: string; published: string } {
   const B = host.B;
   const sz = host.sizeType;
@@ -1505,7 +1509,9 @@ function emitUnitsLength(
     count = B.tmp(),
     published = B.tmp();
   const { from: first, to: bound } = span();
-  B.line(`call void @scr_str_scan_units_for(ptr ${s}, double ${first}, double ${bound})`);
+  B.line(
+    `call void @scr_str_scan_units_for(ptr ${s}, double ${first}, double ${bound}, double ${f64Lit(step)})`,
+  );
   B.br(load);
   B.startBlock(load);
   B.line(`${receiver} = load ptr, ptr @scr_str_scan`);

@@ -675,6 +675,16 @@ static SCR_TL size_t scr_cyc_nursery_threshold_cached = 0;
 static SCR_TL unsigned char scr_cyc_nursery_shift = 0;
 static SCR_TL size_t scr_cyc_nursery_freed = 0;
 
+/* A second signal, for a heap that produces no garbage at all: a nursery
+ * pass that walks candidates and reclaims nothing has not measured where
+ * garbage dies, it has measured that there is none, and repeating it every
+ * nursery's worth of candidates is pure walking. Such a pass therefore
+ * widens the window a doubling, up to the same cap the reclaim rule uses,
+ * and any pass that reclaims puts it back to what that rule asks for. The
+ * two counts are kept apart so the reclaim rule's transitions stay its own;
+ * `nursery_spare` holds what the unproductive passes added. */
+static SCR_TL unsigned char scr_cyc_nursery_spare = 0;
+
 static size_t scr_cyc_nursery_pinned(void) {
   if (scr_cyc_nursery_threshold_cached == 0) {
     const char *env = scr_getenv("SCR_CYCLE_THRESHOLD");
@@ -696,7 +706,9 @@ static size_t scr_cyc_nursery_base(void) {
 static size_t scr_cyc_nursery_threshold(void) {
   size_t pinned = scr_cyc_nursery_pinned();
   if (pinned != SCR_CYC_NURSERY_ADAPTIVE) return pinned;
-  return (size_t)SCR_CYC_NURSERY_CANDIDATES << scr_cyc_nursery_shift;
+  unsigned shift = scr_cyc_nursery_shift + scr_cyc_nursery_spare;
+  if (shift > SCR_CYC_NURSERY_MAX_SHIFT) shift = SCR_CYC_NURSERY_MAX_SHIFT;
+  return (size_t)SCR_CYC_NURSERY_CANDIDATES << shift;
 }
 
 /* Adapts an unpinned trigger to the mature and old objects a scheduled
@@ -721,6 +733,7 @@ void scr_cyc_set_nursery_threshold(long threshold) {
   scr_cyc_nursery_threshold_set = threshold;
   scr_cyc_nursery_threshold_cached = 0;
   scr_cyc_nursery_shift = 0;
+  scr_cyc_nursery_spare = 0;
   scr_cyc_nursery_freed = 0;
 }
 
@@ -953,6 +966,20 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
   size_t freed = scr_cyc_pass(gen, routed);
   scr_cyc_keep_base = false;
   size_t old_reclaimed = scr_cyc_old_freed - old_freed_before + scr_cyc_mature_dead;
+  /* A pass that reclaimed nothing after walking candidates says the heap is
+   * not producing garbage; at the nursery it widens the window, and any
+   * reclaim narrows it back. The explicit sweep is not a scheduling decision
+   * and leaves this alone. */
+  unsigned char spare = scr_cyc_nursery_spare;
+  if (freed != 0)
+    scr_cyc_nursery_spare = 0;
+  else if (gen == SCR_CYC_NURSERY && scr_cands.n != 0
+           && scr_cyc_nursery_shift + spare < SCR_CYC_NURSERY_MAX_SHIFT)
+    scr_cyc_nursery_spare = (unsigned char)(spare + 1);
+  if (scr_cyc_nursery_spare != spare) {
+    scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
+    scr_cyc_window_update();
+  }
   if (gen == SCR_CYC_NURSERY) {
     scr_cyc_nursery_freed += freed;
     return;
@@ -2509,6 +2536,9 @@ static size_t scr_cyc_pass(unsigned gen_limit, bool routed) {
 #ifdef SCR_CYC_TESTING
 /* Tests only: one pass at exactly `gen`, outside the schedule. */
 size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen, false); }
+/* Tests only: the candidate interval the release path arms its trigger
+ * with. */
+size_t scr_cyc_nursery_window_at(void) { return scr_cyc_nursery_threshold(); }
 /* Tests only: route appended candidates of bypassing types, as the next
  * scheduling decision or pass would. */
 void scr_cyc_route_bypassed_at(void) { scr_cyc_route_bypassed(); }

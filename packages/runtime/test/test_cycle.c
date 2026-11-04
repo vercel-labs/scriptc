@@ -621,6 +621,10 @@ static void check_program_nursery_threshold(void) {
   scr_collect_cycles();
 }
 
+/* Tests only: the candidate interval the release path arms its trigger
+ * with. */
+size_t scr_cyc_nursery_window_at(void);
+
 /* How many dead rings the release path takes to run its next pass, from
  * the end of the previous one: the nursery trigger in effect. */
 static size_t nursery_window(void) {
@@ -631,6 +635,18 @@ static size_t nursery_window(void) {
   }
   check(freed - before == n, "a nursery pass left dead rings behind");
   return n;
+}
+
+/* A release-triggered nursery pass over live leaves, which walks candidates
+ * and reclaims nothing: the window is spending a pass on a heap that holds
+ * no garbage at all. */
+static void nursery_pass_finding_nothing(void) {
+  size_t before_freed = freed, before_traced = traced, released = 0;
+  while (traced == before_traced) {
+    read_live(make_leaf());
+    check(++released < 65536, "a nursery pass over live leaves never ran");
+  }
+  check(freed == before_freed, "a nursery pass over live leaves freed something");
 }
 
 /* A scheduled full pass that reclaims nothing: its only candidate is an
@@ -671,6 +687,31 @@ static void check_adaptive_nursery_threshold(void) {
   leaf->rc--;
   scr_cyc_on_dead(leaf);
   node_free(leaf);
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+}
+
+/* A heap that produces no garbage never promotes anything and never frees
+ * anything, so the reclaim rule above never widens the window and it stays
+ * at 256 for the whole run. The second signal covers that heap: a nursery
+ * pass that walks candidates and reclaims nothing widens the window a
+ * doubling, up to 4096, and a pass that reclaims puts it back to 256. */
+static void check_unproductive_nursery_window(void) {
+  if (getenv("SCR_CYCLE_THRESHOLD") != NULL) return; /* it pins the trigger */
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+  check(scr_cyc_nursery_window_at() == 256, "the unpinned nursery trigger did not start at 256");
+  static const size_t widened[] = { 512, 1024, 2048, 4096, 4096 };
+  for (size_t i = 0; i < sizeof(widened) / sizeof(widened[0]); i++) {
+    nursery_pass_finding_nothing();
+    check(scr_cyc_nursery_window_at() == widened[i],
+          "a nursery pass that reclaimed nothing did not double the nursery trigger");
+  }
+  /* The window that widened reclaims at its wide trigger, and that reclaim
+   * puts it back. */
+  check(nursery_window() == 4096, "the widened window did not collect at 4096");
+  check(scr_cyc_nursery_window_at() == 256,
+        "a pass that reclaimed did not put the nursery trigger back to 256");
   scr_cyc_set_nursery_threshold(0);
   scr_collect_cycles();
 }
@@ -1957,6 +1998,7 @@ int main(void) {
   check_program_growth_cap();
   check_program_nursery_threshold();
   check_adaptive_nursery_threshold();
+  check_unproductive_nursery_window();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;

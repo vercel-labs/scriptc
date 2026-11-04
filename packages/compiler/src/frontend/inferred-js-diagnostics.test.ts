@@ -58,6 +58,20 @@ test("a missing required parameter is not a variadic inference mismatch", () => 
   ).toBe(true);
 });
 
+test.for([
+  "class ComputedMethod { [new.target]() { return 1; } }",
+  "class ComputedGetter { get [new.target]() { return 1; } }",
+  "class ComputedSetter { set [new.target](next) { console.log(next); } }",
+  "class ComputedArrow { [(() => new.target)()]() { return 1; } }",
+  "class ComputedField { static [new.target] = 1; }",
+])("a computed class member name keeps the early 'new.target' SyntaxError: %s", (source) => {
+  expect(
+    diagnostics(source, 'import "./library.js";').some((diagnostic) =>
+      diagnostic.message.includes("new.target"),
+    ),
+  ).toBe(true);
+});
+
 test("bare JavaScript fields may read their initial undefined value", () => {
   expect(
     diagnostics(

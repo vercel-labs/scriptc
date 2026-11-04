@@ -203,17 +203,22 @@ const deprecatedBufferCall = (_node: ts.Node, d: ts.Diagnostic): boolean => {
 
 /** TS17013 inside a method or accessor body (including an arrow nested in
  * one): `new.target` is legal there and always undefined, because a method is
- * not constructable. Global code and class field initializers keep the early
- * SyntaxError the specification makes them. */
+ * not constructable. The path must enter the member through its body or a
+ * parameter, which run in the method's function scope; a computed member name
+ * is evaluated outside it. Global code and class field initializers keep the
+ * early SyntaxError the specification makes them. */
 const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
-  for (let p: ts.Node | undefined = node; p !== undefined; p = p.parent) {
+  let child: ts.Node = node;
+  for (let p: ts.Node | undefined = node.parent; p !== undefined; child = p, p = p.parent) {
     if (ts.isArrowFunction(p)) continue;
     if (
       ts.isMethodDeclaration(p) ||
       ts.isGetAccessorDeclaration(p) ||
       ts.isSetAccessorDeclaration(p)
     )
-      return true;
+      return (
+        p.body === child || p.parameters?.nodes.includes(child as ts.ParameterDeclaration) === true
+      );
     if (ts.isFunctionLike(p) || ts.isSourceFile(p)) return false;
   }
   return false;

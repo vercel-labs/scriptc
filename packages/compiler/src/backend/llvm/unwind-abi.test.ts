@@ -305,6 +305,50 @@ test("an invoked function that never tests the pending flag needs no raise", () 
   ).toThrow(UnwindAbiViolation);
 });
 
+test("an invoked function's source-frame push is not a pending-flag test", () => {
+  const raising = [
+    "define internal void @sc_bf_raises() #0 {",
+    "entry:",
+    "  call void @scr_unwind_raise()",
+    "  unreachable",
+    "}",
+  ].join("\n");
+  const framed = (body: string) =>
+    [
+      "define internal double @sc_bf_leaf() #0 {",
+      "entry:",
+      "  %source_frame.cell = load ptr, ptr @scr_exc_active",
+      "  %source_frame.chain = getelementptr inbounds i8, ptr %source_frame.cell, i64 56",
+      "  %source_frame.previous = load ptr, ptr %source_frame.chain",
+      body,
+      "  store ptr %source_frame.previous, ptr %source_frame.chain",
+      "  ret double 1.0",
+      "}",
+    ].join("\n");
+  const caller = [
+    "define internal double @sc_bf_caller() #0 personality ptr @__gcc_personality_v0 {",
+    "entry:",
+    "  %r = invoke double @sc_bf_leaf() to label %ok unwind label %lp",
+    "lp:",
+    "  %x = landingpad { ptr, i32 } cleanup",
+    "  call void @scr_unwind_raise()",
+    "  unreachable",
+    "ok:",
+    "  ret double %r",
+    "}",
+  ].join("\n");
+  // The push alone reads the active cell for its frame chain only.
+  expect(() =>
+    bridgePlainUnwindCalls([[raising, framed("  %n = add i32 0, 0"), caller].join("\n")]),
+  ).not.toThrow();
+  // Any other read of the active cell still counts as a pending-flag test.
+  expect(() =>
+    bridgePlainUnwindCalls([
+      [raising, framed("  %cell = load ptr, ptr @scr_exc_active"), caller].join("\n"),
+    ]),
+  ).toThrow(UnwindAbiViolation);
+});
+
 test("calls that cannot unwind are marked nounwind", () => {
   const raising = [
     "define internal void @sc_bf_raises(ptr %b) #0 {",

@@ -64,6 +64,7 @@ import { f64Lit } from "./common.js";
 import { RESULT_ENTRY_PREFIX } from "./record-results.js";
 import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
 import { beginFunctionLoops, LOOPS } from "./loop-state.js";
+import { beginFunctionLanes } from "./lanes.js";
 import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
 import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
@@ -153,6 +154,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const initializerBindings = emitter.initializerBindings.get(fn.name) ?? [];
   const numericFn = withInitializerBindings(fn, initializerBindings);
   emitter.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
+  emitter.constLengthParams.clear();
+  for (const param of numericFn.params)
+    if (param.constLength !== undefined)
+      emitter.constLengthParams.set(param.localId, param.constLength);
   emitter.borrowedParameters.clear();
   emitter.referenceWrites?.enter(fn);
   emitter.reboundOwnerSlots.clear();
@@ -186,6 +191,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerTemps.clear();
   emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   beginFunctionLoops(emitter, fn, numericFn);
+  beginFunctionLanes(emitter, numericFn);
   emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
   emitter.loopCopiesEnabled = fn.plainLoops !== true;
   emitter.speculativeFunction = fn.name;

@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { resolveBuildCacheRoot } from "../backend/cache-root.js";
+import { resolveBuildCacheRoot, resolveCompilerStateRoot } from "../backend/cache-root.js";
 import { joinedParts, writeTextGeneratedSync } from "./text-file.js";
 
 /** UTF-8 bytes one native compiler string can hold (the runtime's
@@ -211,6 +211,7 @@ export class NativeCache {
         "sanitizer",
         "executable",
         "kept",
+        "unchanged",
         "linker-job",
         "runtime-pack",
         "helper",
@@ -281,6 +282,26 @@ export function openNativeCache(
   try {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     if (!isPrivate(root, process.env["SCRIPTC_CACHE_DIR"] === undefined)) return null;
+    const cache = new NativeCache(root);
+    if (!isPrivate(cache.root, false)) return null;
+    return cache;
+  } catch {
+    return null;
+  }
+}
+
+/** The compiler-level store, opened the same way as the build cache but at
+ * its own root, so it survives a build whose cache starts empty. Null when
+ * caching is disabled or the directory is not private to this user; a build
+ * then derives what it cannot read. */
+export function openCompilerStateCache(
+  isPrivate: (path: string, harden: boolean) => boolean,
+): NativeCache | null {
+  const root = resolveCompilerStateRoot();
+  if (root === null) return null;
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    if (!isPrivate(root, process.env["SCRIPTC_STATE_DIR"] === undefined)) return null;
     const cache = new NativeCache(root);
     if (!isPrivate(cache.root, false)) return null;
     return cache;

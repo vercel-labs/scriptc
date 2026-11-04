@@ -29,7 +29,24 @@ import { everyExprChild, everyStmtChild } from "./traverse.js";
 export type JsIcSite =
   | { kind: "get"; key: string }
   | { kind: "set"; key: string }
-  | { kind: "keyed" };
+  | { kind: "keyed" }
+  | { kind: "keyedSet" };
+
+/** Whether computed access sites index integral numbers without forming the
+ * property key: the backend gives a classified site arms for typed arrays and
+ * strings, and a keyed write with a Number key stores its element directly
+ * (backend/llvm/js-ic.ts). On by default; `SCRIPTC_DYN_INDEX_FASTPATH=0`
+ * selects the key path the sites used before the arms existed. The value
+ * changes emitted code, so the build cache keys on it
+ * (executable/executable-cache.ts). */
+export function dynIndexFastpath(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env["SCRIPTC_DYN_INDEX_FASTPATH"];
+  if (raw === undefined || raw === "" || raw === "1") return true;
+  if (raw === "0") return false;
+  throw new Error(`SCRIPTC_DYN_INDEX_FASTPATH must be 0 or 1, got ${raw}`);
+}
+
+export const DYN_INDEX_FASTPATH: boolean = dynIndexFastpath();
 
 const CAPSULE_TESTS = new Set(["dyn.typedRefIs", "dyn.typedRefKeyIs", "dyn.classIs"]);
 
@@ -97,9 +114,13 @@ export class JsIcSites {
     const tail = body.slice(i);
     let site: JsIcSite | null;
     if (fn.params.length === 1) site = this.getTail(tail, receiver);
-    else if (fn.params.length !== 2 || second === undefined) return null;
-    else site = this.setTail(tail, receiver, second) ?? this.keyedTail(tail, receiver, second);
-    if (site === null || site.kind === "keyed") return exits.length === 0 ? site : null;
+    else if (fn.params.length === 2 && second !== undefined)
+      site = this.setTail(tail, receiver, second) ?? this.keyedTail(tail, receiver, second);
+    else if (fn.params.length === 3 && second !== undefined && DYN_INDEX_FASTPATH)
+      site = this.keyedSetTail(tail, receiver, second, fn.params[2]!.localId);
+    else return null;
+    if (site === null || site.kind === "keyed" || site.kind === "keyedSet")
+      return exits.length === 0 ? site : null;
     // An exit answers plain values with the operation the site caches.
     return exits.every((exit) => exit.kind === site.kind && exit.key === site.key) ? site : null;
   }
@@ -205,6 +226,61 @@ export class JsIcSites {
     if (read?.kind !== "dynKeyGet" || !isVar(read.key, decl.localId)) return null;
     if (!this.bagOf(read.value, receiver)) return null;
     return { kind: "keyed" };
+  }
+
+  /** A computed write's helper: the two guards below, then `const s =
+   * String(key); dyn.keySet(BAG(receiver), s, value); return`. A program
+   * that declares classes may look the key up in each class's table first
+   * (dBAG, TODO(fix): remove). Keyed writes are sites only for the integral
+   * element arm (DYN_INDEX_FASTPATH). */
+  private keyedSetTail(
+    tail: IrStmt[],
+    receiver: string,
+    key: string,
+    value: string,
+  ): JsIcSite | null {
+    if (tail.length < 5) return null;
+    const [symbol, nullish, decl] = tail;
+    const write = tail[tail.length - 2];
+    const ret = tail[tail.length - 1];
+    if (!tail.slice(3, -2).every((s) => this.capsuleBranch(s, receiver))) return null;
+    if (!this.setGuard(symbol, "symbol", key, receiver, key, value)) return null;
+    if (!this.setGuard(nullish, "nullish", receiver, receiver, key, value)) return null;
+    if (decl?.kind !== "varDecl") return null;
+    const init = decl.init;
+    if (init?.kind !== "libCall" || init.fn !== "dyn.toStringCoerce") return null;
+    if (!isVar(init.args[0], key)) return null;
+    if (write?.kind !== "exprStmt" || ret?.kind !== "return" || ret.value !== null) return null;
+    const call = write.expr;
+    if (call.kind !== "libCall" || call.fn !== "dyn.keySet" || call.args.length !== 3) return null;
+    const [bag, storedKey, stored] = call.args;
+    if (!bag || !this.bagOf(bag, receiver) || !isVar(storedKey, decl.localId)) return null;
+    if (!isVar(stored, value)) return null;
+    return { kind: "keyedSet" };
+  }
+
+  /** `if (<test>(tested)) { dyn.keySetComputed(BAG(receiver), key, value);
+   * return }`, with no else: a computed write's first two guards. */
+  private setGuard(
+    s: IrStmt | undefined,
+    test: "symbol" | "nullish",
+    tested: string,
+    receiver: string,
+    key: string,
+    value: string,
+  ): boolean {
+    if (s?.kind !== "if" || s.else_ !== null || s.then.length !== 2) return false;
+    const { cond } = s;
+    if (cond.kind !== "dynTest" || cond.test !== test || cond.negated === true) return false;
+    if (!isVar(cond.value, tested)) return false;
+    const [write, ret] = s.then;
+    if (write?.kind !== "exprStmt" || ret?.kind !== "return" || ret.value !== null) return false;
+    const call = write.expr;
+    if (call.kind !== "libCall" || call.fn !== "dyn.keySetComputed") return false;
+    if (call.args.length !== 3) return false;
+    const [bag, writtenKey, stored] = call.args;
+    if (!bag || !this.bagOf(bag, receiver)) return false;
+    return isVar(writtenKey, key) && isVar(stored, value);
   }
 
   private guard(

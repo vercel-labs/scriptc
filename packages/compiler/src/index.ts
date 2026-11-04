@@ -194,6 +194,7 @@ import { executableLinkFeatures } from "./backend/executable-features.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
 import { debugJsIcWays } from "./backend/llvm/js-ic.js";
+import { dynIndexFastpath } from "./ir/js-ic.js";
 import { representationReportPath } from "./backend/llvm/repr-report.js";
 import {
   type FrontendInputSnapshot,
@@ -870,6 +871,7 @@ async function compileExecutableNative(
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
@@ -884,9 +886,10 @@ async function compileExecutableNative(
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
+    ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
-    ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
+    ...(features.builtinMethodValue ? { builtinMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     events: features.events,
     emitter: features.emitter,
@@ -1337,6 +1340,7 @@ async function prepareExecutableInput(
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
+      ...(opts.stdoutBuffering === true ? { stdoutBuffering: true } : {}),
       ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
       ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
       ...targetCpuField(opts.targetCpu),
@@ -1803,6 +1807,19 @@ async function compileTracked(
       sourceTexts: new Map(),
     };
   }
+  if (opts.stdoutBuffering === true && outputKind !== "exe") {
+    return {
+      ok: false,
+      diagnostics: [
+        nativeCodegenDiag(
+          "SC3002",
+          "--stdout-buffering is only supported for executable output",
+          entryPath,
+        ),
+      ],
+      sourceTexts: new Map(),
+    };
+  }
   if (opts.largePages === true && outputKind !== "exe") {
     return {
       ok: false,
@@ -2050,6 +2067,7 @@ async function compileTracked(
       ...(opts.staticLink === true ? { staticLink: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...(opts.stdoutBuffering === true ? { stdoutBuffering: true as const } : {}),
       // Calls into Node record the libnode pack; their entries record its
       // identity (node-islands/libnode.ts) and a hit requires it unchanged.
       libnodeIdentity: () => libnodeCacheKey(opts.libnode, process.env, dirname(entryPath)),
@@ -2072,6 +2090,7 @@ async function compileTracked(
         ? { jsInference: true as const }
         : {}),
       ...(jsIcWays === null ? {} : { jsIcWays }),
+      ...(dynIndexFastpath() ? { dynIndexFastpath: true as const } : {}),
       ffiProfile:
         opts.ffiProfilePath === undefined || ffiProfileBytes === null
           ? null

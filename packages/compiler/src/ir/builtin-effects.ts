@@ -512,6 +512,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestConnCb",
   "process.kill",
   "process.killNum",
+  // A replaced process.stdout/stderr.write runs JavaScript: what it throws
+  // propagates from the call.
+  "process.stdioWriteStr",
   "process.setExitCode",
   "process.setExitCodeTracked",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.

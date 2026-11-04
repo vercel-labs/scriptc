@@ -1445,6 +1445,49 @@ static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_
   if (callback->kind == SCR_DYN_FUNC) scr_next_tick(scr_stdio_callback(callback, (void *)scr_stdio_write_done));
   return scr_dyn_new_bool(true);
 }
+
+/* process.stdout.write(text) / process.stderr.write(text) at an untyped
+ * call site: the one-string-argument form of the write method above,
+ * without the dynamic call's receiver value, method read and chunk boxing.
+ * A replaced write still receives the call, with the string as its only
+ * argument and the stream as `this`; an unreplaced one reaches the
+ * descriptor through scr_stdio_write_raw, whose chunk is the string's
+ * UTF-8 with each lone surrogate as U+FFFD, exactly what
+ * scr_bytes_from_str produced here. */
+ScrDyn *scr_stdio_write_str_dyn(double fd, const ScrStr *data) {
+  ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
+  if (stream->write && !scr_dyn_strict_eq(stream->write, scr_stdio_methods[STDIO_WRITE])) {
+    /* The replacement may assign process.stdout.write during its own call —
+     * restoring the built-in method, for one — which releases the slot's
+     * reference to the function that is running and to its captured
+     * bindings. The call keeps its own until it returns. */
+    ScrDyn *write = scr_dyn_retain(stream->write);
+    ScrDyn *chunk = scr_dyn_new_str((ScrStr *)data);
+    ScrDyn *self = scr_dyn_new_handle(stream, SCR_DYNH_STDIO);
+    scr_dyn_this_push_dyn(self);
+    ScrDyn *result = scr_dyn_call(write, &chunk, 1,
+                                  stream->fd == 2 ? "process.stderr.write" : "process.stdout.write");
+    scr_dyn_this_pop();
+    scr_dyn_release(self);
+    scr_dyn_release(chunk);
+    scr_dyn_release(write);
+    return result;
+  }
+  int error;
+  if (__builtin_expect(scr_wtf8_any(), 0) && !data->ascii) {
+    char *owned;
+    const char *bytes = scr_str_utf8(data, &owned);
+    error = scr_stdio_write_raw(stream->fd, bytes, data->len);
+    scr_str_utf8_end(owned);
+  } else {
+    error = scr_stdio_write_raw(stream->fd, data->data, data->len);
+  }
+  if (error) {
+    scr_stdio_queue_write_error(stream, scr_dyn_undefined(), error);
+    return scr_dyn_new_bool(false);
+  }
+  return scr_dyn_new_bool(true);
+}
 #endif
 
 static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
@@ -1835,6 +1878,7 @@ void scr_run_exit_listeners(double code) {
     if (scr_exc_pending()) {
       /* Node: a throw in an 'exit' listener is fatal (exit code 7). */
       scr_exc_print_uncaught();
+      scr_stdout_settle();
       fflush(stdout);
 #ifdef SCR_WORKERS
       if (!scr_context_is_main()) { scr_context_stop(7); break; }

@@ -45,9 +45,10 @@ const withThis = {
 };
 console.log(withThis.m(2));
 
-// Generic methods as VALUES: bound-method references stay fenced (class
-// receivers), and an unpinned object-literal reference keeps the
-// generic-value fence.
+// Generic methods as VALUES: a bound-method reference and an unpinned
+// object-literal reference both erase to the method's dynamic closure, so
+// neither reports here — the fences above are the receiver and override
+// rules, not the value form.
 class Inst {
   g<T>(x: T): T {
     return x;

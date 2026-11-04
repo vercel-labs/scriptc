@@ -1,9 +1,22 @@
 import { analyzeFinalFields, constructorClass, type FinalFields } from "./final-fields.js";
 import type { IrExpr, IrFunction, IrLocal, IrModule, IrStmt } from "./ir.js";
+import {
+  eachNodeOfKinds,
+  type IrNodeIndex,
+  type IrNodeKind,
+  lacksKinds,
+  lacksNode,
+  LOCAL_BINDING_KINDS,
+} from "./node-index.js";
 import { everyStmtList, mapExprChildren, mapStmtChildren } from "./traverse.js";
 
 type FieldRead = IrExpr & { kind: "fieldGet"; obj: IrExpr & { kind: "varRef" } };
 type Loop = IrStmt & { kind: "for" | "while" | "doWhile" | "forOf" };
+
+const LOOP_KINDS: readonly IrNodeKind[] = ["for", "while", "doWhile", "forOf"];
+/** The nodes that rebind a local. */
+const REBINDING_KINDS: readonly IrNodeKind[] = [...LOCAL_BINDING_KINDS, "tryCatch"];
+const FIELD_READ_KINDS: readonly IrNodeKind[] = ["fieldGet"];
 
 /** Final fields of parameters read once per loop instead of once per use.
  *
@@ -18,9 +31,14 @@ type Loop = IrStmt & { kind: "for" | "while" | "doWhile" | "forOf" };
  * into an immutable local declared just before the outermost loop that
  * contains them; a reference value borrows from the still-alive receiver
  * exactly as the field read itself would. Async functions and generators
- * are excluded: a suspension lets a still-running constructor continue. */
-export function hoistFinalFieldReads(mod: IrModule): IrModule {
+ * are excluded: a suspension lets a still-running constructor continue.
+ * With `nodes`, an index of `mod`, the functions it records without a loop
+ * or without a final field read through a receiver are kept unwalked. */
+export function hoistFinalFieldReads(mod: IrModule, nodes?: IrNodeIndex): IrModule {
   if (mod.lib || !mod.classes?.length) return mod;
+  const loops = nodes?.scan(LOOP_KINDS);
+  const rebindings = nodes?.scan(REBINDING_KINDS);
+  const fieldReads = nodes?.scan(FIELD_READ_KINDS);
   let finals: FinalFields | undefined;
   let changed = false;
   const functions = mod.functions.map((fn) => {
@@ -30,23 +48,19 @@ export function hoistFinalFieldReads(mod: IrModule): IrModule {
       const local = fn.locals.find((l) => l.id === param.localId);
       if (local && !local.boxed && local.type.kind === "object") receivers.add(local.id);
     }
-    if (receivers.size === 0 || !hasLoop(fn.body)) return fn;
+    if (receivers.size === 0 || lacksKinds(fn, loops) || !hasLoop(fn.body)) return fn;
     // A parameter the body rebinds no longer names one object.
-    everyStmtList(fn.body, {
-      stmt: (s) => {
-        if ("localId" in s && typeof s.localId === "string") receivers.delete(s.localId);
-        if (s.kind === "tryCatch" && s.catchLocalId) receivers.delete(s.catchLocalId);
-        return true;
-      },
-      expr: (e) => {
-        if (e.kind !== "varRef" && "localId" in e && typeof e.localId === "string")
-          receivers.delete(e.localId);
-        return true;
-      },
+    eachNodeOfKinds(fn, rebindings, (node) => {
+      if (node.kind === "tryCatch") {
+        if (node.catchLocalId) receivers.delete(node.catchLocalId);
+      } else if (node.kind !== "varRef" && "localId" in node && typeof node.localId === "string")
+        receivers.delete(node.localId);
     });
     if (receivers.size === 0) return fn;
-    finals ??= analyzeFinalFields(mod, true);
+    finals ??= analyzeFinalFields(mod, true, undefined, nodes);
     if (finals.size === 0) return fn;
+    const known = finals;
+    if (lacksNode(fn, fieldReads, (node) => isFinalRead(node, receivers, known))) return fn;
     const hoisted = hoistInFunction(fn, receivers, finals);
     if (hoisted !== fn) changed = true;
     return hoisted;
@@ -61,11 +75,7 @@ function hoistInFunction(
 ): IrFunction {
   const added: IrLocal[] = [];
   const taken = new Set(fn.locals.map((l) => l.id));
-  const isTarget = (e: IrExpr): e is FieldRead =>
-    e.kind === "fieldGet" &&
-    e.obj.kind === "varRef" &&
-    receivers.has(e.obj.localId) &&
-    finals.isFinal(e.className, e.field);
+  const isTarget = (e: IrExpr): e is FieldRead => isFinalRead(e, receivers, finals);
   const keyOf = (e: FieldRead): string => `${e.obj.localId}\0${e.className}\0${e.field}`;
 
   const hoistLoop = (loop: Loop): IrStmt | null => {
@@ -118,6 +128,20 @@ function hoistInFunction(
   const visitExpr = (e: IrExpr): IrExpr => mapExprChildren(e, visitExpr, visitStmt);
   const body = fn.body.map(visitStmt);
   return changed ? { ...fn, body, locals: [...fn.locals, ...added] } : fn;
+}
+
+/** A read of a final field through one of the `receivers`. */
+function isFinalRead(
+  e: IrExpr | IrStmt,
+  receivers: ReadonlySet<string>,
+  finals: FinalFields,
+): e is FieldRead {
+  return (
+    e.kind === "fieldGet" &&
+    e.obj.kind === "varRef" &&
+    receivers.has(e.obj.localId) &&
+    finals.isFinal(e.className, e.field)
+  );
 }
 
 function hasLoop(body: IrStmt[]): boolean {

@@ -145,6 +145,9 @@ ScrStr *scr_idna_to_unicode(const char *p, size_t n);
  * astral pair → that lone surrogate. Returns +1. */
 ScrStr *scr_str_char_at(ScrStr *s, double i);
 
+/* The immortal one-character ASCII string for `code` (0-127). Borrowed. */
+ScrStr *scr_str_ascii_char(unsigned code);
+
 /* The string iterator's step (for-of over strings): the full code-POINT
  * character starting at UTF-16 index i — astral chars come back whole
  * (two units); the consuming loop advances by the result's length.

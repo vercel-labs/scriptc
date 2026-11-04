@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/bigint-union-array-arms.ts"
+ ],
+ "diags": []
+}

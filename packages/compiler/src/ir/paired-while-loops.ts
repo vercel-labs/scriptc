@@ -10,9 +10,12 @@ import {
   type IrStmt,
 } from "./ir.js";
 import { type IrFieldWalker, walkStmtFields } from "./fields.generated.js";
+import { type IrNodeIndex, type IrNodeKind, lacksKinds } from "./node-index.js";
 import { everyExprChild, everyStmtChild, mapExprChildren, mapStmtChildren } from "./traverse.js";
 
 type WhileLoop = IrStmt & { kind: "while" };
+
+const WHILE_KINDS: readonly IrNodeKind[] = ["while"];
 
 /** Two-counter while loops run as two-counter for loops.
  *
@@ -36,10 +39,13 @@ type WhileLoop = IrStmt & { kind: "while" };
  * values on entry, so the declarations stay where they are and nothing
  * between them and the loop moves. The original counters are not read
  * after the loop, so they need no final value. A loop that the paired match
- * would refuse is left as it is. */
-export function runPairedWhileLoopsAsFor(mod: IrModule): IrModule {
+ * would refuse is left as it is. `nodes`, an index of `mod`, lets the
+ * pass skip the functions without a while loop. */
+export function runPairedWhileLoopsAsFor(mod: IrModule, nodes?: IrNodeIndex): IrModule {
+  const loops = nodes?.scan(WHILE_KINDS);
   let changed = false;
   const functions = mod.functions.map((fn) => {
+    if (lacksKinds(fn, loops)) return fn;
     const next = rewriteFunction(fn);
     if (next !== fn) changed = true;
     return next;

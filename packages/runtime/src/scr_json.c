@@ -4926,17 +4926,28 @@ static void scr_typed_ref_view_numeric_properties(const ScrDyn *capsule, ScrDyn 
  * key stored on a view whose storage cannot hold it -- an own property of a
  * compiled Error subclass, for one -- would vanish on the next refresh and
  * read back absent. Carry each cached own property the fresh view lacks,
- * descriptor and all, as the record-view branch below does for records. */
-static void scr_typed_ref_view_keep_own(const ScrDyn *cached, ScrDyn *fresh) {
+ * descriptor and all, as the record-view branch below does for records.
+ *
+ * A live array's noncanonical numeric properties are the exception: they
+ * are copies of the native storage's own (scr_typed_ref_view_numeric_properties
+ * asks the native array for each one), so a refresh that does not carry one
+ * means the native storage no longer has it, and the cached copy belongs to
+ * a state a delete has already left. */
+static void scr_typed_ref_view_keep_own(
+    const ScrDyn *capsule, const ScrDyn *cached, ScrDyn *fresh) {
   const ScrDyn *from = NULL;
+  bool native_numerics = false;
   if (cached->kind == SCR_DYN_OBJ && fresh->kind == SCR_DYN_OBJ) {
     from = cached;
   } else if (cached->kind == SCR_DYN_ARR && fresh->kind == SCR_DYN_ARR) {
     from = cached->v.arr.properties;
+    native_numerics = scr_dyn_typed_ref_array_ops(capsule) != NULL;
   }
   if (!from) return;
   for (size_t i = 0; i < from->v.obj.len; i++) {
     ScrDynEntry *entry = &scr_dyn_obj_dict_entries(from)[i];
+    double number;
+    if (native_numerics && scr_arr_numeric_key(entry->key, entry->key_len, &number)) continue;
     const ScrDyn *have = fresh->kind == SCR_DYN_OBJ
                              ? scr_dyn_obj_get(fresh, entry->key, entry->key_len)
                              : (fresh->v.arr.properties
@@ -5003,7 +5014,7 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
         scr_str_release(name);
       }
     } else {
-      scr_typed_ref_view_keep_own(cached, fresh);
+      scr_typed_ref_view_keep_own(capsule, cached, fresh);
     }
     /* A native record stores its own fields, while its checked view owns
      * prototype changes. Refreshing fields must preserve that prototype. */

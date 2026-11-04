@@ -28,6 +28,7 @@ import {
   type DynamicSlotEntry,
 } from "../diagnostics/dynamic-slots.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
+import type { NpmStaticStatus } from "../frontend/npm-static-status.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
 import type {
   DemotionUnit,
@@ -95,15 +96,10 @@ export interface CoverageInput {
   preflightFailed: boolean;
 }
 
-/** One dependency's native compilation outcome. */
-export interface NpmStaticStatus {
-  package: string;
-  status: "static" | "refused";
-  /** The first refusal reason for a refused package. */
-  detail?: string;
-  /** How to act on the refusal, when there is a specific remedy. */
-  hint?: string;
-}
+/** Declared in the frontend, which carries the statuses
+ * (frontend/npm-static-status.ts), and re-exported here for the coverage
+ * readers. */
+export type { NpmStaticStatus };
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";

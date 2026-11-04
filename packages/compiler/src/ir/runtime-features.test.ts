@@ -47,6 +47,12 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("links the inspect unit for a BigInt rendered in Node's form", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("bigint.inspect"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({ bigint: true, inspect: true });
+  });
+
   test("gates the BigIntStats unit on its member reads, not on bigint", () => {
     const reads = module();
     reads.functions[0]!.body.push(call("bigstats.size"));
@@ -218,6 +224,20 @@ describe("runtime feature snapshots", () => {
     }
   });
 
+  test("the generic Promise statics link the units their algorithms call", () => {
+    // The implementing unit calls C's resolve and the iterable's next/return
+    // through scr_dyn_invoke and builds and settles capability promises with
+    // scr_async_dyn: a program that makes only this call still links both, or
+    // the source build fails to link.
+    const mod = module();
+    mod.functions[0]!.body.push(call("promise.genericStatic"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({
+      promiseGeneric: true,
+      dynInvoke: true,
+      dynAsync: true,
+    });
+  });
+
   test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
     const reads = (key: string): IrModule => {
       const mod = module();
@@ -240,17 +260,44 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
   });
 
-  test("the JavaScript object model build owns no entry yet", () => {
+  test("the JavaScript object model build owns the buffer views registry calls", () => {
     // t262-da §J: the features only a JavaScript source reaches share one
-    // runtime feature, whose entry list the slices fill as they land. This
-    // branch lists none, so a program with a sibling dynamic feature keeps
-    // the default objects.
-    expect(JS_OBJECT_MODEL_LIB_FNS.size).toBe(0);
+    // runtime feature, whose entry list the slices fill as they land. The
+    // buffer views registry (t262-dc C2) arms itself through these calls, and
+    // the resizable constructors lower to them, so a program that makes one
+    // selects the object model build; every other program keeps the default
+    // objects.
+    expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
+      "arrayBuffer.armMutable",
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+    ]);
     const mod = module();
     mod.functions[0]!.body.push(call("dyn.stdlibPrototype"));
     const features = moduleRuntimeFeatures(mod);
     expect(features.stdlibPrototypeValue).toBe(true);
     expect(features.jsObjectModel).toBe(false);
+    expect(features.mutableBuffers).toBe(false);
+    for (const fn of JS_OBJECT_MODEL_LIB_FNS) {
+      const armed = module();
+      armed.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
+      expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);
+    }
+  });
+
+  test("arms the host-global check for a computed global read and `in`", () => {
+    // A computed read of the global object, or `… in globalThis`, links the
+    // derived name table's runtime check (scr_global_host_absent.c) and the
+    // SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c.
+    for (const fn of ["global.hostAbsent", "dyn.globalHas"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      const features = moduleRuntimeFeatures(mod);
+      expect(features.hostAbsentGlobals, fn).toBe(true);
+      expect(features.jsObjectModel, fn).toBe(false);
+    }
+    expect(moduleRuntimeFeatures(module()).hostAbsentGlobals).toBe(false);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {

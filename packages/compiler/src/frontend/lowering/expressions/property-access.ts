@@ -1,8 +1,19 @@
+import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
+import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
+import {
+  HOST_GLOBAL_PROTOTYPE_MEMBERS,
+  HOST_GLOBAL_VALUE_MEMBERS,
+  hostGlobalCallTarget,
+  hostGlobalNameOfMember,
+  hostGlobalNameOfRead,
+  hostGlobalPrototypeOf,
+} from "../host-globals.js";
+import { hostGlobalValue } from "../host-global-values.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
@@ -142,6 +153,7 @@ import {
   deferredProbeReadAccess,
 } from "./asserted-receiver.js";
 import { lowerRecordInheritedMember } from "../record-inherited.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
   cjsClassExprWholeExportOf,
@@ -197,7 +209,7 @@ import {
 } from "../generic-functions.js";
 import { narrowStoredClassValue, structuralReadType } from "../class-unions.js";
 import { InternalCompilerError } from "../../../errors.js";
-import { lowerUnionFieldRead } from "./union-fields.js";
+import { lowerUnionFieldRead, narrowedArmRead, narrowedUnionView } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { partialAssertionFields, partialFieldRead } from "../partial-assertions.js";
@@ -299,6 +311,27 @@ function isStatFsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression
   );
 }
 
+/** The Iterator.prototype helpers and the iterator members with no typed
+ * value lowering, read as values on a typed iterator in JavaScript.
+ * `next` and `return` answer the function Node's prototype chain holds
+ * (a generator's, or an iterator helper object's); `throw` is not here
+ * because an iterator helper object has none. */
+const TYPED_ITERATOR_MEMBER_VALUES = new Set([
+  "next",
+  "map",
+  "filter",
+  "take",
+  "drop",
+  "flatMap",
+  "reduce",
+  "toArray",
+  "forEach",
+  "some",
+  "every",
+  "find",
+  "return",
+]);
+
 /** The dgram.Socket methods its checked-dynamic handle answers as
  * function values (scr_dgram.c's scr_dgram_dyn_method_names). */
 const DGRAM_METHOD_VALUES = new Set([
@@ -317,6 +350,26 @@ const DGRAM_METHOD_VALUES = new Set([
   "ref",
   "unref",
 ]);
+
+/** A lib builtin iterator whose prototype chain holds no `return` in Node
+ * 24: the Array, String, Map and Set iterators. Generators and iterator
+ * helper objects do have one. */
+function builtinIteratorWithoutReturn(lowerer: Lowerer, node: ts.Expression): boolean {
+  const symbol = lowerer.typeOf(node).getSymbol();
+  if (symbol === undefined) return false;
+  const name = ts.symbolName(symbol);
+  if (
+    name !== "ArrayIterator" &&
+    name !== "StringIterator" &&
+    name !== "MapIterator" &&
+    name !== "SetIterator"
+  )
+    return false;
+  return (
+    symbol.declarations.length > 0 &&
+    symbol.declarations.every((d) => lowerer.isStdlibFile(ts.getSourceFileOfNode(d)))
+  );
+}
 
 function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
   let resolve: ts.Expression = expr;
@@ -339,6 +392,11 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // A JavaScript source reading a member that resizes, grows or detaches a
+  // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The name
+  // decides: the receiver may be a checked-dynamic value.
+  if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+    lowerer.buffersMutable = true;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `R.#x` for a static private on a checked-dynamic receiver: the brand
@@ -602,6 +660,35 @@ export function lowerPropertyAccessExpr(
       type: DYN,
       loc,
     };
+  }
+  // A read of a Node 24 global the native runtime does not implement
+  // (globalThis.WebSocket, (globalThis as T).FormData, alias.X) is not a
+  // capability probe: the branch below would answer undefined, where Node
+  // has the constructor. Answer the constructor (host-global-values.ts);
+  // constructing or calling it is the use that refuses (SC2020,
+  // host-global).
+  {
+    const hostGlobal = hostGlobalNameOfMember(lowerer, expr);
+    if (hostGlobal !== null) {
+      if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
+      return hostGlobalValue(lowerer, hostGlobal, expr);
+    }
+  }
+  // A member read off that value (`WebSocket.OPEN`, `FormData.prototype`):
+  // the value carries the function intrinsics only, and its prototype
+  // carries the constructor link (`FormData.prototype.constructor`). Node's
+  // class also has static members and instance methods, which native code
+  // does not provide, so reading one is a use of that surface and refuses
+  // (SC2020, host-global) instead of answering undefined.
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    if (hostGlobal !== null) {
+      if (!HOST_GLOBAL_VALUE_MEMBERS.has(expr.name.text)) lowerer.hostGlobalFence(hostGlobal, expr);
+    } else {
+      const prototypeOf = hostGlobalPrototypeOf(lowerer, expr.expression);
+      if (prototypeOf !== null && !HOST_GLOBAL_PROTOTYPE_MEMBERS.has(expr.name.text))
+        lowerer.hostGlobalFence(prototypeOf, expr);
+    }
   }
   // Missing host globals (Bun/Deno capability probes) have no binding
   // in a native program. Declared globals retain their own lowering;
@@ -1727,6 +1814,24 @@ export function lowerPropertyAccessExpr(
       expr,
     );
   }
+  // A NULLISH receiver: JavaScript's RequireObjectCoercible throws Node's
+  // TypeError at the read (only an optional chain, lowered elsewhere,
+  // answers undefined). A primitive receiver that is not nullish never
+  // reaches this fence — its members lower above.
+  if (isUnitType(recvLowered.type)) {
+    const unit = recvLowered.type.kind === "nullT" ? "null" : "undefined";
+    const t = ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+    return throwAfterEach([recvLowered], nullishReadTypeError(unit, expr.name.text, t, loc), loc);
+  }
+  // The site is about to be refused: a checker-narrowed receiver still
+  // stores the wider union, whose other arms may be what refuse the member
+  // (the OAuth arm's index signature beside `ApiKeyCredential.key`). Read
+  // it off the arms the checker still allows, exactly where the refusal
+  // would be.
+  if (recvLowered.type.kind === "union") {
+    const read = narrowedUnionValueRead(lowerer, expr, recvLowered);
+    if (read) return read;
+  }
   lowerer.unsupported(
     "SC1090",
     expr,
@@ -2130,6 +2235,46 @@ export function lowerIntrinsicProperty(
   // because a write lowers the prototype read with the chain blocked.
   fenceDatePrototypeWrite(lowerer, expr);
   if (lowerer.chainBlocked(expr)) return null;
+  // Iterator.prototype, its members and Iterator's own members in
+  // JavaScript: the live objects (scr_js_iterator.c).
+  const iteratorMember = lowerIteratorMemberValue(lowerer, expr);
+  if (iteratorMember) return iteratorMember;
+  // A helper method read as a value on a typed iterator in JavaScript
+  // (`g().map === Iterator.prototype.map`), or a member the typed iterator
+  // has no lowering for (`[].values().return` is undefined): the value the
+  // runtime answers through the boxed iterator, exactly Node's.
+  if (
+    !expr.questionDotToken &&
+    TYPED_ITERATOR_MEMBER_VALUES.has(expr.name.text) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
+  ) {
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    if (recvT?.kind === "generator" && recvT.async !== true) {
+      // Node's builtin iterators (%ArrayIteratorPrototype%'s family) hold
+      // no `return`; a generator's and an iterator helper object's do.
+      if (expr.name.text === "return" && builtinIteratorWithoutReturn(lowerer, expr.expression))
+        return {
+          kind: "seqExpr",
+          stmts: [
+            {
+              kind: "exprStmt",
+              expr: lowerer.lowerExpr(expr.expression),
+              loc: locOf(expr.expression),
+            },
+          ],
+          result: dynUndefinedExpr(locOf(expr)),
+          type: DYN,
+          loc: locOf(expr),
+        };
+      return {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
+  }
   // Object.prototype.constructor: the Object constructor value.
   if (
     expr.name.text === "constructor" &&
@@ -3912,6 +4057,21 @@ export function lowerUnionProperty(
       loc: locOf(expr),
     };
   }
+  if (isUnitType(value.type)) {
+    // A nullish receiver: Node's RequireObjectCoercible TypeError, after
+    // the receiver's own evaluation.
+    const unit = value.type.kind === "nullT" ? "null" : "undefined";
+    return throwAfterEach(
+      [value],
+      nullishReadTypeError(
+        unit,
+        expr.name.text,
+        lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN,
+        locOf(expr),
+      ),
+      locOf(expr),
+    );
+  }
   if (value.type.kind !== "union") {
     lowerer.unsupported(
       "SC1090",
@@ -3919,7 +4079,8 @@ export function lowerUnionProperty(
       "shared property access without a represented union receiver",
     );
   }
-  const read = lowerUnionValueRead(lowerer, expr, value);
+  const read =
+    lowerUnionValueRead(lowerer, expr, value) ?? narrowedUnionValueRead(lowerer, expr, value);
   if (read) return read;
   lowerer.unsupported(
     "SC1090",
@@ -3941,6 +4102,33 @@ export function lowerUnionValueRead(
   expr: ts.PropertyAccessExpression,
   value: IrExpr,
   missingFieldAsUndefined = false,
+): IrExpr | null {
+  return unionValueRead(lowerer, expr, value, missingFieldAsUndefined);
+}
+
+/** The stored-union read again over the arms the checker's narrowing still
+ * allows: an arm it ruled out at this site refused the read (the OAuth
+ * arm's index signature beside `ApiKeyCredential.key`, behind an
+ * optional-chain discriminant guard). Only the REFUSAL points call this —
+ * a site another lowering answers keeps it — so no compiling program
+ * gains a second, narrowed lowering. Returns null when the site's type is
+ * not a narrowing of the value's union. */
+export function narrowedUnionValueRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  value: IrExpr,
+): IrExpr | null {
+  const narrowed = narrowedUnionView(lowerer, expr.expression, value, locOf(expr));
+  if (!narrowed) return null;
+  if (narrowed.arm) return narrowedArmRead(lowerer, expr, narrowed.value, narrowed.arm);
+  return unionValueRead(lowerer, expr, narrowed.value, false);
+}
+
+function unionValueRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  value: IrExpr,
+  missingFieldAsUndefined: boolean,
 ): IrExpr | null {
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
@@ -4656,6 +4844,62 @@ function readOnlyAccess(access: ts.PropertyAccessExpression): boolean {
   );
 }
 
+/** The operand a member WRITE addresses through a chain of type assertions:
+ * `(p as View).x = v` names `p`. Node erases a type assertion, so a write
+ * mutates the very object the operand names; the assertion only decides what
+ * the checker accepts. Null when no `as`/`<T>` wraps the receiver (a write
+ * there keeps the ordinary lowering). */
+function assertionOperand(access: ts.PropertyAccessExpression): ts.Expression | null {
+  let node: ts.Expression = access.expression;
+  let asserted = false;
+  for (;;) {
+    if (ts.isParenthesizedExpression(node)) {
+      node = node.expression;
+      continue;
+    }
+    if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
+      node = node.expression;
+      asserted = true;
+      continue;
+    }
+    break;
+  }
+  return asserted ? node : null;
+}
+
+/** The unasserted value a member write addresses, when its OWN stored
+ * layout holds the member at the asserted type — the erased write of Node.
+ * The asserted view's conversion may instead build a fresh width record
+ * (`%rec.width`), and a write into that temporary is dropped, so a view
+ * that adds a member to a record has nothing to write and the caller
+ * refuses. Only a RECORD operand converts like that: a dyn value's cast is
+ * a checked, identity-preserving view (`dyn-literal-identity.ts`), and the
+ * ordinary lowering already writes through it. The static type decides, so
+ * the operand is lowered exactly once even when it has side effects. */
+function assertedWrite(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  operand: ts.Expression,
+  fieldType: IrType,
+  assertedType: IrType & { kind: "record" },
+): { receiver: IrExpr | null; refuse: boolean } {
+  if (lowerer.mapTypeOf(lowerer.typeOf(operand))?.kind !== "record") {
+    return { receiver: null, refuse: false };
+  }
+  const value = lowerer.lowerExpr(operand);
+  if (value.type.kind === "record") {
+    const field = lowerer.shapes
+      .get(value.type.shapeId)
+      ?.fields.find((f) => f.name === access.name.text);
+    return field && typeEquals(field.type, fieldType)
+      ? { receiver: value, refuse: false }
+      : { receiver: null, refuse: true };
+  }
+  // The value stayed non-record (a generic body, an aliased layout): keep
+  // the assertion's conversion over the value already lowered.
+  return { receiver: lowerer.coerceInto(access.expression, value, assertedType), refuse: false };
+}
+
 export function fieldTarget(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -4782,19 +5026,42 @@ export function fieldTarget(
       lowerer.lowerExpr(access.expression),
     );
   }
+  // A member the checker ADMITS on a receiver that has no static layout: a
+  // write through an assertion on a checked-dynamic value (a caught binding
+  // — `(error as { headers?: Headers }).headers = undefined`). Node erases
+  // the assertion, so the write lands on the runtime object as an own
+  // property; the checked-dynamic keyed write sets exactly that, and the
+  // class-typed value converts at the write like every other dyn→static edge.
+  if (receiverIr?.kind === "dyn" && !readOnlyAccess(access)) {
+    // The assertion itself may be unrepresentable (a class member on a
+    // structural view); it is erased at runtime, so address the operand.
+    const writeOperand = assertionOperand(access);
+    const admitted = lowerer.mapTypeOf(lowerer.typeOf(access));
+    if (writeOperand && admitted && admitted.kind !== "void")
+      return {
+        container: "dynamic",
+        obj: lowerer.coerceToExpected(lowerer.lowerExpr(writeOperand), DYN),
+        field: access.name.text,
+        fieldType: admitted,
+      };
+  }
   // A member the checker ADMITS but the stored layout cannot hold. The
   // constraint of a type parameter declares it (a generic options bag read
-  // through an `"sessionId" in options` guard), and so does a cast that
-  // intersects the member onto a record (`options as Omit<T, "k"> &
-  // ProviderRequestOptions<M>`), while the record the value was STORED as
-  // has no such slot: the call site omitted the optional member, the
-  // instantiation is a union of option shapes, or the cast added a member
-  // its source layout never declared. Node reads the property off the
-  // object it actually has — undefined when the object lacks it, the value
-  // when the value kept one — so the read is the checked-dynamic keyed read
-  // of the stored value, entering the static code at the type the checker
+  // through an `"sessionId" in options` guard, or `options?.apiKey` with the
+  // guarded spelling), and so does a cast that intersects the member onto a
+  // record (`options as Omit<T, "k"> & ProviderRequestOptions<M>`), while the
+  // record the value was STORED as has no such slot: the call site omitted the
+  // optional member, the instantiation is a union of option shapes, or the cast
+  // added a member its source layout never declared. Node reads the property
+  // off the object it actually has — undefined when the object lacks it, the
+  // value when the value kept one — so the read is the checked-dynamic keyed
+  // read of the stored value, entering the static code at the type the checker
   // gave the read (a failed conversion throws; it never diverges).
-  if (!access.questionDotToken && readOnlyAccess(access)) {
+  //
+  // Inside a `?.` chain this lowering runs on the re-dispatch, with the
+  // receiver node bound to the chain's present (non-nullish) arm, so the
+  // stored value is already the record and the chain supplies the guard.
+  if ((!access.questionDotToken || lowerer.chainHandled.has(access)) && readOnlyAccess(access)) {
     const storedIr = stored ?? narrowed;
     const present = storedIr?.kind === "union" ? lowerer.stripUndefinedArm(storedIr) : storedIr;
     const arms =
@@ -4850,7 +5117,12 @@ export function fieldTarget(
     const shape = lowerer.shapes.get(receiverIr.shapeId);
     const fieldType = shape?.fields.find((f) => f.name === access.name.text)?.type;
     if (fieldType) {
-      let obj = lowerer.lowerExpr(access.expression);
+      const writeOperand = readOnlyAccess(access) ? null : assertionOperand(access);
+      const write =
+        writeOperand === null
+          ? null
+          : assertedWrite(lowerer, access, writeOperand, fieldType, receiverIr);
+      let obj = write?.receiver ?? lowerer.lowerExpr(access.expression);
       const nominal = representedClassFieldTarget(
         lowerer,
         access.expression,
@@ -4893,6 +5165,17 @@ export function fieldTarget(
             : lowerer.maybeNarrow(obj, access.expression));
       }
       if (obj.type.kind !== "record") return null;
+      // A write through a type assertion that the value's own layout cannot
+      // host would land on the assertion's converted copy (`%rec.width.<id>`)
+      // and be dropped. Node erases the assertion and mutates the object the
+      // operand names, so refuse rather than diverge silently.
+      if (write?.refuse === true) {
+        lowerer.unsupported(
+          "SC1090",
+          access,
+          `writing '${access.name.text}' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type)`,
+        );
+      }
       const actualShape = lowerer.shapes.get(obj.type.shapeId);
       const actualField = actualShape?.fields.find((f) => f.name === access.name.text);
       return {

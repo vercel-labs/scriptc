@@ -34,6 +34,7 @@ import type {
   LocalizedFailureReport,
   TierReport,
 } from "../frontend/tier-analysis.js";
+import type { RuntimeOptionalNarrowing } from "../frontend/lowering/runtime-optional-report.js";
 import type { WasmModuleReport } from "../wasm/discover.js";
 import {
   describe as describeReason,
@@ -703,6 +704,19 @@ function tiersEnvelope(tiers: TierReport, locator: SourceLocator): TiersEnvelope
       ...at(r.loc),
     })),
     units: tiers.units.map((u) => ({ ...unit(u), requests: u.requests, sites: u.sites })),
+    runtimeOptional: tiers.runtimeOptional.map((slot) => ({
+      name: slot.name,
+      storage: slot.storage,
+      narrowed: slot.narrowed,
+      ...(slot.decisions.length > 0 ? { slot: at(slot.decisions[0]!.target) } : {}),
+      reads: slot.reads.map(at),
+      decisions: slot.decisions.map((d) => ({
+        kind: d.kind,
+        target: at(d.target),
+        ...(d.cause !== null ? { cause: at(d.cause) } : {}),
+        detail: d.detail,
+      })),
+    })),
     localizedFailure: {
       errors: tiers.localizedFailure.errors,
       typeFailures: tiers.localizedFailure.typeFailures,
@@ -810,6 +824,52 @@ function renderLocalizedFailure(
     );
 }
 
+const RUNTIME_OPTIONAL_SLOTS_SHOWN = 20;
+const RUNTIME_OPTIONAL_READS_SHOWN = 3;
+const RUNTIME_OPTIONAL_DECISIONS_SHOWN = 2;
+
+/** The runtime-optional storage section of --explain-dynamic (report-only):
+ * the bindings and parameters the indexed-read analysis widened past the
+ * checker's type, with the decisions that widened them and the reads at
+ * which the checker still types them at the declared type. Those reads are
+ * where the checker's narrowing does not reach the storage, so lowering
+ * extracts the payload with a checked narrowing. */
+function renderRuntimeOptionalStorage(
+  slots: readonly RuntimeOptionalNarrowing[],
+  out: string[],
+  c: (code: string, s: string) => string,
+  where: (loc: { file: string; start: number }) => string,
+): void {
+  if (slots.length === 0) return;
+  out.push("");
+  out.push(
+    `    ${slots.length} runtime-optional slot${slots.length === 1 ? "" : "s"} ${c(DIM, "(report-only: widened storage the checker still reads at its declared type)")}`,
+  );
+  for (const slot of slots.slice(0, RUNTIME_OPTIONAL_SLOTS_SHOWN)) {
+    const slotAt = slot.decisions[0] !== undefined ? `  ${where(slot.decisions[0].target)}` : "";
+    out.push(
+      `    ${slot.name}${slotAt}  ${c(DIM, `(${slot.storage}, read as ${slot.narrowed} at ${slot.reads.length} site${slot.reads.length === 1 ? "" : "s"})`)}`,
+    );
+    for (const decision of slot.decisions.slice(0, RUNTIME_OPTIONAL_DECISIONS_SHOWN)) {
+      const cause = decision.cause === null ? "" : ` from ${where(decision.cause)}`;
+      const detail = decision.detail === "" ? "" : ` ${decision.detail}`;
+      out.push(`      ${c(DIM, "<-")} ${decision.kind}${cause}${detail}`);
+    }
+    const moreDecisions = slot.decisions.length - RUNTIME_OPTIONAL_DECISIONS_SHOWN;
+    if (moreDecisions > 0)
+      out.push(
+        `      ${c(DIM, `<- ${moreDecisions} more decision${moreDecisions === 1 ? "" : "s"}`)}`,
+      );
+    const shown = slot.reads.slice(0, RUNTIME_OPTIONAL_READS_SHOWN).map(where).join(", ");
+    const more = slot.reads.length - RUNTIME_OPTIONAL_READS_SHOWN;
+    out.push(`      ${c(DIM, `-> read at ${shown}${more > 0 ? ` (+${more} more)` : ""}`)}`);
+  }
+  if (slots.length > RUNTIME_OPTIONAL_SLOTS_SHOWN)
+    out.push(
+      `    ${c(DIM, `${slots.length - RUNTIME_OPTIONAL_SLOTS_SHOWN} more (--print=diagnostics lists all)`)}`,
+    );
+}
+
 /** `scriptc coverage --explain-dynamic[=<unit>]`: the dynamic tier today
  * and the demotion chains the report-only analysis computed. With a query,
  * only units whose name matches it (`x`, `Point.x`, `parse:x`). */
@@ -851,6 +911,7 @@ export function renderExplainDynamic(
     );
   }
   if (query === undefined) renderLocalizedFailure(tiers.localizedFailure, out, c, where);
+  if (query === undefined) renderRuntimeOptionalStorage(tiers.runtimeOptional, out, c, where);
   const units = tiers.units.filter((u) => query === undefined || unitMatches(u, query));
   if (query !== undefined && units.length === 0) {
     out.push(`    no demoted unit matches '${query}'`);

@@ -530,6 +530,17 @@ ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth) {
   return out;
 }
 
+/* console.dir with showHidden: the checked-dynamic walk's hidden entries,
+ * with custom inspection still off (dir's default). */
+ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth) {
+  if (scr_console_holds_buffer(value)) {
+    static const char message[] = "console.dir of a Buffer has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return scr_str_new("", 0);
+  }
+  return scr_insp_dyn_hidden_as(value, depth, "console.dir", false, 0);
+}
+
 /* ── console.table ───────────────────────────────────────────────────
  * Node's table(): the index column holds the data's own keys, one column
  * per property seen across the rows (or the properties argument), and a

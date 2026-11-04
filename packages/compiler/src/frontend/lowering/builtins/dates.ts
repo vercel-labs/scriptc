@@ -4,7 +4,7 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { lowerToNumberArguments } from "../lower-exprs.js";
 import { programDeclaresDateClass } from "./date-classes.js";
-import { programAddsHandleProperties } from "../handle-properties.js";
+import { programAddsHandleProperties, refuseShadowedImplicitReader } from "../handle-properties.js";
 import {
   BOOL,
   DATE_T,
@@ -256,6 +256,13 @@ function lowerDateToJson(
   const loc = locOf(call);
   if (call.arguments.nodes.length > 1 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
     lowerer.noLowering(`Date.prototype.toJSON with ${call.arguments.nodes.length} arguments`, call);
+  // Node's Date.prototype.toJSON is ToPrimitive(this, number) followed by
+  // this.toISOString(): it reads the own valueOf (and toString when valueOf
+  // answers an object), which the native lowering would skip. An own
+  // toISOString is a denied grant (handle-properties.ts), so this is the
+  // remaining silent reader.
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "valueOf", "toJSON conversion");
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "toString", "toJSON conversion");
   const raw = lowerer.lowerExpr(access.expression);
   const receiver: IrExpr =
     raw.type.kind === "dyn"
@@ -462,7 +469,12 @@ export function lowerDateToPrimitiveCall(
     raw.type.kind === "dyn"
       ? { kind: "libCall", fn: "date.checkedValue", args: [raw], type: DATE_T, loc }
       : raw;
-  return text === "number"
-    ? { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc }
-    : { kind: "libCall", fn: "date.toString", args: [date], type: STRING, loc };
+  if (text === "number") {
+    refuseShadowedImplicitReader(lowerer, call, DATE_T, "valueOf", "ToPrimitive");
+    return { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc };
+  }
+  // The string and default hints read toString, which the program may have
+  // replaced with an own property this typed path cannot see.
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "toString", "ToPrimitive");
+  return { kind: "libCall", fn: "date.toString", args: [date], type: STRING, loc };
 }

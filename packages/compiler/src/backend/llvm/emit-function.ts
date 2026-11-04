@@ -279,7 +279,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   beginLoopEntryVersions(emitter, numericFn, slotFacts, rangeFacts);
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
-  emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
+  emitter.bytesBounds =
+    emitter.mod.bytesHeadersMutable === true
+      ? new Set()
+      : findBytesBounds(numericFn, emitter.integerRanges);
   emitter.bytesOwned = new Set();
   // Debug builds keep every number local a double for the debugger's
   // variable view. Lazily boxed captured parameters keep their double,

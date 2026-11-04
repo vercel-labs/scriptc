@@ -87,6 +87,7 @@ import {
   replayJournal,
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
+import { specializeTypedArguments } from "../../ir/typed-argument-clones.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
 import {
@@ -130,6 +131,7 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { versionUnionArmLoops } from "../../ir/union-arm-loops.js";
 import { unitSafeFunctions } from "./string-unit-versions.js";
 import { stringScanInline } from "./string-reads.js";
 import {
@@ -169,7 +171,7 @@ import {
   bridgePlainUnwindCalls,
   unwindAbiFunctions,
 } from "./unwind-abi.js";
-import { cloneForCpuDispatch } from "./cpu-dispatch.js";
+import { cloneForCpuDispatch, type CpuCopies } from "./cpu-dispatch.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -384,7 +386,12 @@ import {
 import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
-import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
+import {
+  absentTrapLines,
+  planRecordViews,
+  recordViewFieldPtr,
+  recordViewTestLines,
+} from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
@@ -779,25 +786,31 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // an earlier pass rewrote, which the index does not record.
   const nodes = new IrNodeIndex(mod);
   rounds.nodes = nodes;
-  const passed = versionParameters(
-    addRecordResultEntries(
-      scalarizeLiteralResults(
-        scalarizeNumericRecords(
-          specializeCallbackCalls(
-            specializeNumericCalls(
-              pairRowSums(
-                jamSaturatingLoops(
-                  inlineArraysPass(
-                    options,
-                    inlineExpressionFunctions(
-                      foldConstantGlobals(
-                        copyStableCaptures(
-                          resolveSelfCaptures(
-                            hoistFinalFieldReads(
-                              freezeInitOnlyGlobals(
-                                holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(
-                                    runPairedWhileLoopsAsFor(mod, nodes),
+  const passed = versionUnionArmLoops(
+    versionParameters(
+      addRecordResultEntries(
+        scalarizeLiteralResults(
+          scalarizeNumericRecords(
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                specializeTypedArguments(
+                  pairRowSums(
+                    jamSaturatingLoops(
+                      inlineArraysPass(
+                        options,
+                        inlineExpressionFunctions(
+                          foldConstantGlobals(
+                            copyStableCaptures(
+                              resolveSelfCaptures(
+                                hoistFinalFieldReads(
+                                  freezeInitOnlyGlobals(
+                                    holdCharLocalsAsUnits(
+                                      dropUnwrittenPropertyBags(
+                                        runPairedWhileLoopsAsFor(mod, nodes),
+                                        nodes,
+                                      ),
+                                      nodes,
+                                    ),
                                     nodes,
                                   ),
                                   nodes,
@@ -810,21 +823,22 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                           ),
                           nodes,
                         ),
-                        nodes,
                       ),
                       nodes,
                     ),
+                    nodes,
                   ),
+                  mangleFunction,
                   nodes,
                 ),
+                mangleFunction,
                 nodes,
               ),
               mangleFunction,
               nodes,
             ),
-            mangleFunction,
-            nodes,
           ),
+          nodes,
         ),
         nodes,
       ),
@@ -1468,6 +1482,9 @@ export class LlEmitter {
   readonly sanitizeAttributes: boolean;
   /** LlvmTargetOptions.cpuDispatch, where it applies. */
   readonly cpuDispatch: boolean;
+  /** How the program's functions are copied (cpu-dispatch.ts): for runtime
+   * dispatch, for an x86-64-v3 `targetCpu` ("target"), or not at all. */
+  readonly cpuCopies: CpuCopies | null;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -2237,13 +2254,17 @@ export class LlEmitter {
     this.nodeIslandModuleData = options.nodeIslandModuleData ?? null;
     this.targetCpu = options.targetCpu;
     this.sanitizeAttributes = options.sanitizeAttributes !== false;
-    this.cpuDispatch =
-      options.cpuDispatch === true &&
-      options.targetCpu === undefined &&
+    const copyable =
       !this.wasi &&
       mod.lib === undefined &&
       this.debug === null &&
       /^(x86_64|amd64|x64)\b/.test(options.targetTriple || process.arch);
+    this.cpuDispatch = options.cpuDispatch === true && options.targetCpu === undefined && copyable;
+    this.cpuCopies = this.cpuDispatch
+      ? "dispatch"
+      : options.targetCpu === "x86-64-v3" && copyable
+        ? "target"
+        : null;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -2883,7 +2904,7 @@ export class LlEmitter {
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    const out = this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    const out = this.cpuCopies === null ? bridged : cloneForCpuDispatch(bridged, this.cpuCopies);
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 
@@ -5222,6 +5243,183 @@ export class LlEmitter {
     }
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
+  }
+
+  /** Whether a value of `shapeId` may lack field `field`: a PARTIAL record
+   * view (record-views.ts) whose viewed record does not declare it. A field
+   * with no value representation (a unit type) keeps its slot lookup. */
+  partialFieldMissing(shapeId: string, field: string): boolean {
+    if (this.shapeHost.recordViews?.partialMissing(shapeId, field) !== true) return false;
+    const type = this.recordShape(shapeId).fields.find((f) => f.name === field)?.type;
+    return type !== undefined && !isUnitType(type);
+  }
+
+  /** The viewed record's slot for `field` of a partial view, or NULL when
+   * that record does not declare the field. The caller has established that
+   * `obj` is a view. */
+  private partialViewSlot(objName: string, shapeId: string, field: string): string {
+    const position = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    this.declare(`declare ptr @scr_record_view_slot(ptr, ${this.sizeType})`);
+    const slot = this.B.tmp();
+    this.B.line(
+      `${slot} = call ptr @scr_record_view_slot(ptr ${objName}, ${this.sizeType} ${position})`,
+    );
+    return slot;
+  }
+
+  /** The boxed property a partial view keeps for a field its viewed record
+   * does not declare (NULL until something writes it). */
+  private partialViewExtra(objName: string, field: string): string {
+    this.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${this.sizeType})`);
+    const extra = this.B.tmp();
+    this.B.line(
+      `${extra} = call ptr @scr_record_view_extra(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")})`,
+    );
+    return extra;
+  }
+
+  /** Reads field `field` of `obj` (shape `shapeId`) where a PARTIAL view may
+   * lack it. A view's present field reads through the viewed record's slot;
+   * a field that record does not declare reads the property a write left in
+   * the view's extra store, converted back to the field type; a field
+   * nothing wrote stops the program (the frontend's checked read throws its
+   * TypeError first). The answer is owned, like a checked conversion's. */
+  readPartialField(objName: string, shapeId: string, field: string, type: IrType): LlValue {
+    const B = this.B;
+    const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    const inline = this.inlineUnions.record(type);
+    const isView = B.tmp();
+    const view = B.newLabel("pf.view");
+    const notView = B.newLabel("pf.slot");
+    const slots = B.newLabel("pf.slots");
+    const extra = B.newLabel("pf.extra");
+    const answer = B.newLabel("pf.answer");
+    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+      B.line(line.trimStart());
+    B.condBr(isView, view, notView);
+    // Not a view: the field's own slot.
+    B.startBlock(notView);
+    const own = B.tmp();
+    B.line(
+      `${own} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
+    );
+    const ownFrom = B.currentLabel();
+    B.br(slots);
+    B.startBlock(view);
+    const slot = this.partialViewSlot(objName, shapeId, field);
+    const present = B.tmp();
+    B.line(`${present} = icmp ne ptr ${slot}, null`);
+    const slotFrom = B.currentLabel();
+    B.condBr(present, slots, extra);
+    B.startBlock(slots);
+    const addr = B.tmp();
+    B.line(`${addr} = phi ptr [ ${own}, %${ownFrom} ], [ ${slot}, %${slotFrom} ]`);
+    // An inline union field answers a private stack box, as a plain read does.
+    const loaded = inline
+      ? this.inlineFieldUnion(addr, type)
+      : this.loadRecordField(addr, type, false);
+    const hit = isRefCounted(type) ? this.retainFrame(loaded, type) : loaded;
+    const hitFrom = B.currentLabel();
+    B.br(answer);
+    B.startBlock(extra);
+    const stored = this.partialViewExtra(objName, field);
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${stored}, null`);
+    const trap = B.newLabel("pf.absent");
+    const convert = B.newLabel("pf.convert");
+    B.condBr(absent, trap, convert);
+    B.startBlock(trap);
+    absentTrapLines(
+      B,
+      (text) => this.cstr(text),
+      (decl) => this.declare(decl),
+    );
+    B.startBlock(convert);
+    const path = B.slot();
+    B.entryAllocas.push(`${path} = alloca %ScrDynPath`);
+    const parentPtr = B.tmp();
+    const keyPtr = B.tmp();
+    const indexPtr = B.tmp();
+    B.line(`${parentPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 0`);
+    B.line(`store ptr null, ptr ${parentPtr}`);
+    B.line(`${keyPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 1`);
+    B.line(`store ptr ${this.cstr(field)}, ptr ${keyPtr}`);
+    B.line(`${indexPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 2`);
+    B.line(`store ${this.sizeType} 0, ptr ${indexPtr}`);
+    const helper = this.dyn.dynCheckHelper(type);
+    const ty = this.llType(type);
+    const checked = B.tmp();
+    B.line(
+      `${checked} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${stored}, ptr ${path})`,
+    );
+    const convertFrom = B.currentLabel();
+    B.br(answer);
+    B.startBlock(answer);
+    const value = B.tmp();
+    B.line(`${value} = phi ${ty} [ ${hit}, %${hitFrom} ], [ ${checked}, %${convertFrom} ]`);
+    return { name: value, type };
+  }
+
+  /** Stores `value` into field `field` of `obj` (shape `shapeId`) where a
+   * PARTIAL view may lack it, calling `storeAt` with the address to write.
+   * A field the viewed record does not declare is kept as a boxed property
+   * in the view's extra store, where reflection and a later read see it;
+   * `released` gives up a caller reference the frame does not own. */
+  storePartialField(
+    objName: string,
+    shapeId: string,
+    field: string,
+    type: IrType,
+    value: LlValue,
+    storeAt: (ptr: string) => void,
+    released?: () => void,
+  ): void {
+    const B = this.B;
+    const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    const isView = B.tmp();
+    const notView = B.newLabel("ps.slot");
+    const view = B.newLabel("ps.view");
+    const present = B.newLabel("ps.present");
+    const store = B.newLabel("ps.store");
+    const extra = B.newLabel("ps.extra");
+    const done = B.newLabel("ps.done");
+    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+      B.line(line.trimStart());
+    B.condBr(isView, view, notView);
+    B.startBlock(notView);
+    const own = B.tmp();
+    B.line(
+      `${own} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
+    );
+    const ownFrom = B.currentLabel();
+    B.br(store);
+    B.startBlock(view);
+    const slot = this.partialViewSlot(objName, shapeId, field);
+    const hasSlot = B.tmp();
+    B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+    B.condBr(hasSlot, present, extra);
+    B.startBlock(present);
+    const presentFrom = B.currentLabel();
+    B.br(store);
+    // One store site whichever slot answers: the value's frame ownership
+    // ends in one place, whether the write runs on this program's path or
+    // on the other branch of the test.
+    B.startBlock(store);
+    const addr = B.tmp();
+    B.line(`${addr} = phi ptr [ ${own}, %${ownFrom} ], [ ${slot}, %${presentFrom} ]`);
+    storeAt(addr);
+    B.br(done);
+    B.startBlock(extra);
+    const boxed = B.tmp();
+    const box = this.dyn.toDynHelper(type);
+    B.line(`${boxed} = call ptr @${box}(${this.llType(type)} ${value.name})`);
+    this.declare(`declare void @scr_record_view_extra_set(ptr, ptr, ${this.sizeType}, ptr)`);
+    B.line(
+      `call void @scr_record_view_extra_set(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")}, ptr ${boxed})`,
+    );
+    released?.();
+    B.br(done);
+    B.startBlock(done);
   }
 
   /** The overflow map's slot pointer on an index-signature shape. */

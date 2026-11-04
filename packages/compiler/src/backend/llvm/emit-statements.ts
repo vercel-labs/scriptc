@@ -693,6 +693,35 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         );
       } else if (emitter.publishedTypes?.recordGuarded(s.shapeId) === true)
         emitter.emitPublishedFieldGuard(obj.name, null, s.field);
+      if (s.kind === "recordSet" && emitter.partialFieldMissing(s.shapeId, s.field)) {
+        // A field a partial record view may lack: the view keeps it as a
+        // boxed property when the viewed record does not declare it.
+        const fieldType = emitter
+          .recordShape(s.shapeId)
+          .fields.find((f) => f.name === s.field)!.type;
+        const fieldInline = emitter.recordFieldInline(s.shapeId, s.field);
+        emitter.storePartialField(
+          obj.name,
+          s.shapeId,
+          s.field,
+          fieldType,
+          v,
+          (slot) => {
+            // A result-slot entry fills zeroed caller storage, each field
+            // once; a constructor's first store to its own field fills the
+            // slot `new` left.
+            if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+              emitter.initField(slot, fieldType, fieldInline, v);
+            else emitter.replaceField(slot, fieldType, fieldInline, v);
+          },
+          // The store owns the value on the slot path; the extra-property
+          // path boxes it (retaining) and gives up the store's reference.
+          () => {
+            if (!fieldInline && isRefCounted(fieldType)) emitter.releaseHeap(v.name, fieldType);
+          },
+        );
+        break;
+      }
       const { ptr, type, inline } =
         s.kind === "fieldSet"
           ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
@@ -846,19 +875,32 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const ln = B.newLabel("rks.n");
         B.condBr(hit, lh, ln);
         B.startBlock(lh);
-        const { ptr, type, inline } = emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
-        if (inline) {
-          // The write owns the moved-in value; the slot copies its bits.
-          emitter.storeField(ptr, type, v.name, true);
-          emitter.releaseHeap(v.name, type);
-        } else if (isRefCounted(type)) {
-          const old = B.tmp();
-          B.line(`${old} = load ptr, ptr ${ptr}`);
-          emitter.storeField(ptr, type, v.name, false);
-          emitter.releaseHeap(old, type);
-        } else {
-          emitter.storeField(ptr, type, v.name, false);
-        }
+        const partial = emitter.partialFieldMissing(s.shapeId, f.name);
+        // A field a partial record view may lack has no slot to address:
+        // its write goes through the view's extra-property store.
+        const field = partial
+          ? { type: f.type, inline: emitter.recordFieldInline(s.shapeId, f.name), ptr: "" }
+          : emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
+        const { ptr, type, inline } = field;
+        const storeAt = (slot: string): void => {
+          if (inline) {
+            // The write owns the moved-in value; the slot copies its bits.
+            emitter.storeField(slot, type, v.name, true);
+            emitter.releaseHeap(v.name, type);
+          } else if (isRefCounted(type)) {
+            const old = B.tmp();
+            B.line(`${old} = load ptr, ptr ${slot}`);
+            emitter.storeField(slot, type, v.name, false);
+            emitter.releaseHeap(old, type);
+          } else {
+            emitter.storeField(slot, type, v.name, false);
+          }
+        };
+        if (partial)
+          emitter.storePartialField(obj.name, s.shapeId, f.name, type, v, storeAt, () => {
+            if (inline || isRefCounted(type)) emitter.releaseHeap(v.name, type);
+          });
+        else storeAt(ptr);
         B.br(join);
         B.startBlock(ln);
       }

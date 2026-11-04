@@ -86,17 +86,19 @@ test("scr_lib.c builds once per flavor, whatever the program's features", () => 
   ]);
 });
 
-test("every scr_json build has a JavaScript object model twin", () => {
+test("scr_json builds one object per flavor, plus its object model twin", () => {
   // The JavaScript object model build (t262-da §J) is one column for every
   // runtime feature only a JavaScript source reaches: each scr_json.c build
   // gets one twin, so any combination of features selects a build that
-  // carries the object model's code.
+  // carries the object model's code. The unit has no partial record view
+  // build: its view slot answers NULL for a field a partial record view does
+  // not have in every build.
   const variants = variantsFor("scr_json.c");
   expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
     "default",
-    "record-view-partial",
+    "node-island",
     "js-om",
-    "js-om-record-view-partial",
+    "js-om-node-island",
   ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
@@ -108,24 +110,37 @@ test("every scr_json build has a JavaScript object model twin", () => {
   expect(selected("scr_json.c", { workers: false, jsObjectModel: true }).defines).toEqual([
     "SCR_JS_OBJECT_MODEL",
   ]);
-  // ...keeps the record-view twin beside a partial record assertion...
-  const partial = { workers: false, jsObjectModel: true, recordViewPartial: true };
-  expect(selected("scr_json.c", partial).id).toBe("js-om-record-view-partial");
-  expect(selected("scr_json.c", partial).defines).toEqual([
-    "SCR_RECORD_VIEW_PARTIAL",
-    "SCR_JS_OBJECT_MODEL",
-  ]);
   // ...and keeps the worker build when the program starts threads.
   expect(selected("scr_json.c", { workers: true, jsObjectModel: true }).defines).toEqual([
     "SCR_JS_OBJECT_MODEL",
     "SCR_WORKERS",
   ]);
+  // A program that runs a Node island selects the island build, alone and
+  // beside the object model build it may also carry.
+  expect(selected("scr_json.c", { workers: false, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A partial record assertion selects nothing: the view slot answers NULL in
+  // every build, so a program with one keeps the build its other features
+  // name, alone or beside the island and object model builds.
+  expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([]);
+  expect(
+    selected("scr_json.c", { workers: false, nodeIsland: true, recordViewPartial: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      nodeIsland: true,
+      recordViewPartial: true,
+    }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
-  expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([
-    "SCR_RECORD_VIEW_PARTIAL",
-  ]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
@@ -146,7 +161,6 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   // gets a build column of its own.
   const plain = {
     jsObjectModel: false,
-    recordViewPartial: false,
     textDecoderLegacy: false,
     webStreams: false,
     nodeIsland: false,
@@ -178,4 +192,19 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   ]) {
     expect(selected(source, plain).defines).toEqual([]);
   }
+});
+
+test("a dynamic global read selects the host-global build of the global unit", () => {
+  // A computed read of the global object, or `… in globalThis`, arms the
+  // check for the Node globals the native runtime does not implement
+  // (host-globals.ts); every other program keeps the default object.
+  const plain = { hostAbsentGlobals: false, workers: false };
+  expect(selected("scr_node_builtin.c", plain).defines).toEqual([]);
+  expect(selected("scr_node_builtin.c", { ...plain, hostAbsentGlobals: true }).defines).toEqual([
+    "SCR_GLOBAL_HOST_ABSENT",
+  ]);
+  // A worker program keeps its thread-state build AND the check.
+  expect(
+    selected("scr_node_builtin.c", { hostAbsentGlobals: true, workers: true }).defines,
+  ).toEqual(["SCR_GLOBAL_HOST_ABSENT", "SCR_WORKERS"]);
 });

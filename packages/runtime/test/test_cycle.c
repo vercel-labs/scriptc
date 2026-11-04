@@ -833,6 +833,9 @@ static void check_deferred_white_restoration(void) {
  * scheduling decision or pass would do. */
 size_t scr_cyc_pass_at(unsigned gen);
 void scr_cyc_route_bypassed_at(void);
+size_t scr_cyc_site_table_bytes_at(void);
+size_t scr_cyc_body_walked_at(void);
+void scr_cyc_forget_per_body_at(void);
 
 /* A nursery pass over a dead ring, longer than the walk recurses, whose
  * nodes hold edges into an older ring, and two live nodes the ring reaches
@@ -1103,6 +1106,110 @@ static void check_probe_window_runs_mature_pass(void) {
     live[i]->rc = 0;
     scr_cyc_on_dead(live[i]);
     window_kind_free(live[i]);
+  }
+  free(live);
+  scr_collect_cycles();
+}
+
+/* Closures are judged per function (ScrClosure.fn) in the nursery bypass:
+ * closures of a function whose candidates always survive go past the
+ * nursery, and those of another function are still walked there. These
+ * objects stand in for closures: the collector reads only the function
+ * pointer of a closure-kind object, at ScrClosure.fn's offset. */
+typedef struct FakeClosure {
+  size_t rc;
+  void *fn;
+  struct FakeClosure *next;
+} FakeClosure;
+_Static_assert(offsetof(FakeClosure, fn) == offsetof(ScrClosure, fn), "fake closures keep fn where ScrClosure does");
+static size_t fake_closure_traced;
+static void fake_closure_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  fake_closure_traced++;
+  visit(((FakeClosure *)obj)->next, ctx);
+}
+static void fake_closure_free(void *obj) { scr_cyc_free(obj); }
+static ScrCycType fake_closure_type = { &fake_closure_trace, &fake_closure_free, SCR_CYC_KIND_CLOSURE };
+static void fake_body_long_lived(void) {}
+static void fake_body_short_lived(void) {}
+
+static FakeClosure *make_fake_closure(void (*fn)(void)) {
+  FakeClosure *c = scr_cyc_alloc(sizeof(*c), &fake_closure_type);
+  c->rc = 1;
+  c->fn = (void *)fn;
+  return c;
+}
+
+/* Trace calls spent on PROBE fresh, externally owned closures of `fn`, by
+ * nursery passes only (see probe_bypass_walks). */
+static size_t fake_closure_walks(FakeClosure **owned, size_t probe, void (*fn)(void)) {
+  scr_collect_cycles();
+  size_t before = fake_closure_traced;
+  for (size_t i = 0; i < probe; i++) {
+    owned[i] = make_fake_closure(fn);
+    owned[i]->rc++;
+    owned[i]->rc--;
+    scr_cyc_on_release(owned[i]);
+  }
+  run_release_passes();
+  return fake_closure_traced - before;
+}
+
+/* Per-body statistics start only once the closure family has walked a full
+ * window. A closure body cannot complete a window of its own before the
+ * family does, so below that point the family statistics judge closures
+ * exactly as they did before the change, and a program whose closures never
+ * fill a window never allocates the table. */
+static void check_per_body_starts_after_a_window(void) {
+  enum { WINDOW = 8192, CAP = 4 * WINDOW };
+  FakeClosure **live = calloc(CAP, sizeof(*live));
+  if (!live) scr_trap("cycle test: out of memory\n");
+  scr_collect_cycles();
+  scr_cyc_forget_per_body_at();
+  check(scr_cyc_site_table_bytes_at() == 0, "per-body statistics existed on a fresh thread");
+  size_t nlive = 0;
+  while (scr_cyc_body_walked_at() < WINDOW && nlive < (size_t)CAP) {
+    check(scr_cyc_site_table_bytes_at() == 0, "per-body statistics were allocated inside the first window");
+    live[nlive] = make_fake_closure(fake_body_long_lived);
+    live[nlive]->rc++;
+    live[nlive]->rc--;
+    scr_cyc_on_release(live[nlive]);
+    scr_cyc_pass_at(SCR_CYC_NURSERY);
+    nlive++;
+  }
+  run_release_passes();
+  check(scr_cyc_site_table_bytes_at() > 0, "per-body statistics were not allocated after a full window");
+  check(scr_cyc_body_walked_at() >= WINDOW, "per-body statistics were allocated before a full window was walked");
+  for (size_t i = 0; i < nlive; i++) {
+    live[i]->rc = 0;
+    scr_cyc_on_dead(live[i]);
+    scr_cyc_free(live[i]);
+  }
+  free(live);
+  scr_collect_cycles();
+}
+
+static void check_bypass_per_closure_function(void) {
+  enum { WINDOW = 8192, LIVE = 3 * WINDOW, PROBE = 4096 };
+  FakeClosure **live = calloc(LIVE + 2 * PROBE, sizeof(*live));
+  if (!live) scr_trap("cycle test: out of memory\n");
+  size_t nlive = 0;
+  for (; nlive < LIVE; nlive++) {
+    live[nlive] = make_fake_closure(fake_body_long_lived);
+    live[nlive]->rc++;
+    live[nlive]->rc--;
+    scr_cyc_on_release(live[nlive]);
+    scr_cyc_pass_at(SCR_CYC_NURSERY);
+  }
+  size_t walks = fake_closure_walks(live + nlive, PROBE, fake_body_long_lived);
+  nlive += PROBE;
+  check(walks < PROBE / 2, "closures of a function whose closures always survive were not bypassed");
+  walks = fake_closure_walks(live + nlive, PROBE, fake_body_short_lived);
+  nlive += PROBE;
+  check(walks >= PROBE, "closures of another function were bypassed with them");
+  for (size_t i = 0; i < nlive; i++) {
+    live[i]->rc = 0;
+    scr_cyc_on_dead(live[i]);
+    scr_cyc_free(live[i]);
   }
   free(live);
   scr_collect_cycles();
@@ -1786,8 +1893,10 @@ int main(void) {
   check_death_waits_for_idle();
   check_phase_sweep_restarts_schedule();
   check_death_brings_full_pass();
+  check_per_body_starts_after_a_window();
   check_nursery_bypass();
   check_mature_bypass();
+  check_bypass_per_closure_function();
   check_probe_window_runs_mature_pass();
   check_probe_sees_candidate_rings();
   check_rebuffer_past_mature();

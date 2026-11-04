@@ -1,5 +1,5 @@
 {
-  "comment": "Temporary libnode source for CI until the NI-13 packs (@scriptc/libnode-<platform>) are published. linux-x64: the community dockfries/libnode build of Node 24.22.1. darwin-arm64 and darwin-x64: libnode of the pinned Node 24.22.0 from the libnode-packs workflow (NI-13), mirrored. Each with Node's official headers of the same release for the bridge. The first URL is scriptc's CI-only mirror (prerelease libnode-dev-24.22.1), the others the original locations; fetch-dev-pack.mjs tries them in order and verifies the sha256.",
+  "comment": "Temporary libnode source for CI until the NI-13 packs (@scriptc/libnode-<platform>) are published. linux-x64: the community dockfries/libnode build of Node 24.22.1. darwin-arm64 and darwin-x64: libnode of Node 24.22.0 from the libnode-packs workflow (NI-13), mirrored — that pack predates the 24.22.1 pin and stays until NI-13 republishes it. Each with Node's official headers of the same release for the bridge. The first URL is scriptc's CI-only mirror (prerelease libnode-dev-24.22.1), the others the original locations; fetch-dev-pack.mjs tries them in order and verifies the sha256.",
   "nodeVersion": "24.22.1",
   "linux-x64": {
     "libnode": {

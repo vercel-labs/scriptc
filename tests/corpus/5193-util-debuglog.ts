@@ -18,6 +18,7 @@ if (process.argv[2] === "child") {
   const enabled: boolean = log.enabled;
   console.log("app enabled", enabled);
   log("started with %d workers", 4);
+  log("hidden %o", { tag: "t", list: [1, 2] });
   const services: Service[] = [
     { name: "db", log: debuglog("app-db") },
     { name: "cache", log: util.debug("app-cache") },

@@ -6,14 +6,17 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, test, vi } from "vitest";
 import { NativeCompiler } from "./compiler.js";
+import { selectNativeRuntimePack } from "../backend/runtime-pack-native.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { runNativeFrontend } from "../frontend/pipeline-native.js";
+import { trackedReadFile } from "../frontend/input-tracker.js";
 import { emitNativeObject } from "../backend/native-tools.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET } from "../backend/targets.js";
 import { VOID, type IrModule } from "../ir/ir.js";
@@ -34,14 +37,37 @@ vi.mock("./executable-cache.js", async (original) => ({
   ...(await original<typeof import("./executable-cache.js")>()),
   openNativeExecutableCache: vi.fn(),
 }));
+/** The selection the runtime pack mock returns; a test that needs pack
+ * artifacts replaces it. */
+const runtimePack = vi.hoisted(() => ({
+  selection: {
+    root: "/nonexistent",
+    licenses: [] as { path: string }[],
+    packageText: "",
+    manifestText: "",
+    selected: {
+      runtime: [] as { path: string }[],
+      archives: [] as { path: string }[],
+      data: [] as { path: string }[],
+      systemLibraries: [] as string[],
+    },
+    flavor: "release",
+  },
+}));
 vi.mock("../backend/runtime-pack-native.js", () => ({
-  selectNativeRuntimePack: () => ({}),
+  selectNativeRuntimePack: vi.fn(() => runtimePack.selection),
   stageNativeRuntimeSelection: () => ({ runtimeObjects: [], archives: [], systemLibraries: [] }),
 }));
 
 const directories: string[] = [];
 afterEach(() => {
   vi.resetAllMocks();
+  runtimePack.selection = {
+    ...runtimePack.selection,
+    root: "/nonexistent",
+    licenses: [],
+    selected: { runtime: [], archives: [], data: [], systemLibraries: [] },
+  };
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -463,5 +489,236 @@ test.skipIf(process.platform === "win32")(
       profileUse: profile,
     });
     expect(result).toMatchObject({ ok: true, artifact: { kind: "exe", profileMatch: match } });
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "an unchanged build keeps its executable without lowering the program again",
+  () => {
+    const directory = mkdtempSync(join("/tmp", "scriptc-native-unchanged-"));
+    directories.push(directory);
+    const tool = (name: string): string => {
+      const path = join(directory, name);
+      writeFileSync(path, "#!/bin/sh\n");
+      chmodSync(path, 0o755);
+      return path;
+    };
+    const helperRoot = join(directory, "helper");
+    mkdirSync(helperRoot);
+    writeFileSync(join(helperRoot, "package.json"), '{"name":"helper","version":"0.0.0"}');
+    const packRoot = join(directory, "pack");
+    mkdirSync(packRoot);
+    writeFileSync(join(packRoot, "package.json"), '{"name":"pack","version":"0.0.0"}');
+    // The link consumes one artifact of the pack.
+    const archive = join(packRoot, "libruntime.a");
+    writeFileSync(archive, "runtime archive");
+    runtimePack.selection = {
+      ...runtimePack.selection,
+      root: packRoot,
+      selected: {
+        runtime: [],
+        archives: [{ path: "libruntime.a" }],
+        data: [],
+        systemLibraries: [],
+      },
+    };
+    const entry = join(directory, "entry.ts");
+    writeFileSync(entry, "export const value = 1;\n");
+    // The input probes only name a file's identity once it has settled.
+    const settled = new Date(Date.now() - 60_000);
+    utimesSync(entry, settled, settled);
+    const output = join(directory, "program");
+    const module: IrModule = {
+      irVersion: 17,
+      sourceFile: entry,
+      entry: "%main",
+      functions: [
+        {
+          name: "%main",
+          params: [],
+          locals: [],
+          body: [],
+          returnType: VOID,
+          loc: { file: entry, start: 0, end: 0 },
+        },
+      ],
+    };
+    vi.mocked(runNativeFrontend).mockImplementation(() => {
+      // The input tracker the compiler records probes in is running here.
+      trackedReadFile(entry);
+      return {
+        preflight: [],
+        entryText: () => "",
+        entryExports: () => new Map(),
+        entryContract: () => {
+          throw new Error("unexpected contract request");
+        },
+        sourceTexts: () => new Map(),
+        npmStatic: [],
+        npmImportSites: new Map(),
+        dispose: () => {},
+        lower: () => ({
+          module,
+          diagnostics: [],
+          runtimeFences: [],
+          stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+        }),
+      };
+    });
+    vi.mocked(emitNativeObject).mockImplementation((options) => {
+      writeFileSync(options.outputPath, "object");
+      return { outputs: [options.outputPath], profileMatch: null };
+    });
+    vi.mocked(openNativeExecutableCache).mockReturnValue(null);
+    vi.mocked(execFileSync).mockImplementation((_command, args) => {
+      const list = args as string[];
+      writeFileSync(list[list.indexOf("-o") + 1]!, "executable");
+      return "";
+    });
+    const target = LINUX_X64_GNU_TARGET;
+    const cache = new NativeCache(join(directory, "cache"));
+    const compiler = new NativeCompiler(
+      {
+        compilerVersion: "0.0.0",
+        target,
+        helper: target.helper,
+        ts7Executable: tool("ts7"),
+        helperExecutable: tool("codegen"),
+        helperPackageRoot: helperRoot,
+        runtimePackRoot: packRoot,
+        linker: tool("clang"),
+        linkerArgs: [],
+        dsymutil: tool("dsymutil"),
+      },
+      cache,
+    );
+    const options = { outDir: directory, outPath: output, backend: "llvm" as const };
+    expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
+    expect(vi.mocked(runNativeFrontend)).toHaveBeenCalledTimes(1);
+    // The record names the pack artifact the link read, so a pack edited in
+    // place cannot leave this executable standing.
+    const recorded = readdirSync(join(cache.root, "unchanged")).filter(
+      (name) => !name.endsWith(".sha256"),
+    );
+    expect(recorded).toHaveLength(1);
+    const record: { packInputs: { path: string }[] } = JSON.parse(
+      readFileSync(join(cache.root, "unchanged", recorded[0]!), "utf8"),
+    );
+    expect(record.packInputs.map((input) => input.path)).toEqual([archive]);
+    const kept = readFileSync(output, "utf8");
+    expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
+    // Nothing lowered, generated or linked the second time, and the
+    // executable it kept is the first build's.
+    expect(vi.mocked(runNativeFrontend)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(emitNativeObject)).toHaveBeenCalledTimes(1);
+    expect(readFileSync(output, "utf8")).toBe(kept);
+    // A removed executable is built again, not reported as kept (from the
+    // frontend cache, which this record sits in front of).
+    rmSync(output);
+    expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
+    expect(vi.mocked(emitNativeObject)).toHaveBeenCalledTimes(2);
+    // Another build request is another key.
+    expect(compiler.compile(entry, { ...options, strip: true })).toMatchObject({
+      ok: true,
+      binaryPath: output,
+    });
+    expect(vi.mocked(runNativeFrontend)).toHaveBeenCalledTimes(2);
+    // An edited source is not kept: the record's probes name the identity the
+    // file had when it was read, and a write changes it.
+    writeFileSync(entry, "export const value = 2;\n");
+    expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
+    expect(vi.mocked(runNativeFrontend)).toHaveBeenCalledTimes(3);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a static native link selects the runtime pack's /etc/passwd build",
+  () => {
+    const directory = mkdtempSync(join("/tmp", "scriptc-native-static-pack-"));
+    directories.push(directory);
+    const entry = join(directory, "entry.ts");
+    writeFileSync(entry, "export const value = 1;\n");
+    const output = join(directory, "program");
+    const clang = join(directory, "clang");
+    writeFileSync(clang, "#!/bin/sh\n");
+    chmodSync(clang, 0o755);
+    const module: IrModule = {
+      irVersion: 17,
+      sourceFile: entry,
+      entry: "%main",
+      functions: [
+        {
+          name: "%main",
+          params: [],
+          locals: [],
+          body: [],
+          returnType: VOID,
+          loc: { file: entry, start: 0, end: 0 },
+        },
+      ],
+    };
+    vi.mocked(runNativeFrontend).mockReturnValue({
+      preflight: [],
+      entryText: () => "",
+      entryExports: () => new Map(),
+      entryContract: () => {
+        throw new Error("unexpected contract request");
+      },
+      sourceTexts: () => new Map(),
+      npmStatic: [],
+      npmImportSites: new Map(),
+      dispose: () => {},
+      lower: () => ({
+        module,
+        diagnostics: [],
+        runtimeFences: [],
+        stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+      }),
+    });
+    vi.mocked(emitNativeObject).mockImplementation((options) => {
+      writeFileSync(options.outputPath, "object");
+      return { outputs: [options.outputPath], profileMatch: null };
+    });
+    vi.mocked(openNativeExecutableCache).mockReturnValue(null);
+    vi.mocked(execFileSync).mockImplementation((_command, args) => {
+      const list = args as string[];
+      // The static link asks for a map (`-Xlinker -Map -Xlinker <path>`);
+      // an empty one keeps no NSS member.
+      const map = list.indexOf("-Map");
+      if (map >= 0) writeFileSync(list[map + 2]!, "");
+      writeFileSync(list[list.indexOf("-o") + 1]!, "executable");
+      return "";
+    });
+    const target = LINUX_X64_GNU_TARGET;
+    const compiler = new NativeCompiler({
+      compilerVersion: "0.0.0",
+      target,
+      helper: target.helper,
+      ts7Executable: "unused",
+      helperExecutable: "unused",
+      helperPackageRoot: "unused",
+      runtimePackRoot: "unused",
+      linker: clang,
+      linkerArgs: [],
+      dsymutil: "unused",
+    });
+    const select = vi.mocked(selectNativeRuntimePack);
+    select.mockClear();
+    vi.mocked(openNativeExecutableCache).mockClear();
+    const options = { outDir: directory, outPath: output, backend: "llvm" as const };
+    // The dynamic link leaves the selection to the program's features.
+    expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
+    expect(select.mock.calls[0]![3]).not.toHaveProperty("staticLink");
+    // A static link names the fact the variant selection reads (SCR_STATIC_PASSWD),
+    // and the executable cache keys the same selection: a static build never
+    // keeps a dynamic executable, nor the other way round.
+    expect(compiler.compile(entry, { ...options, staticLink: true })).toMatchObject({
+      ok: true,
+      binaryPath: output,
+    });
+    expect(select.mock.calls[1]![3]).toMatchObject({ staticLink: true });
+    const cachePack = (index: number) => vi.mocked(openNativeExecutableCache).mock.calls[index]![6];
+    expect(cachePack(0).features).not.toHaveProperty("staticLink");
+    expect(cachePack(1).features).toMatchObject({ staticLink: true });
   },
 );

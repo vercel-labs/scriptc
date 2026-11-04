@@ -66,12 +66,21 @@ export function windowsSubsystemLinkerArgs(
 /** Linker flags that belong to an optimization posture rather than the
  * target ABI. Zig's WASI runtime objects carry DWARF custom sections even
  * when compiled with -O2; release executables discard that non-runtime
- * payload, while dev executables retain it for inspection and debugging. */
+ * payload, while dev executables retain it for inspection and debugging.
+ *
+ * Windows needs the same request for a different reason: zig hands COFF
+ * links to lld-link with /DEBUG, which implies /OPT:NOREF and therefore
+ * disables the COMDAT elimination that keeps each executable to the runtime
+ * functions it reaches (the --gc-sections this compiler asks for is a
+ * GNU-flavor flag zig drops on that route). Asking for no debug info keeps
+ * zig off that route, so a release hello is the runtime it uses rather than
+ * the whole pack; dev keeps its debug info and the option to debug a build. */
 export function executableOptimizationLinkerArgs(
   platform: string,
   optimization: NativeOptimization,
 ): string[] {
-  return platform === "wasi" && optimization !== "dev" ? ["-Wl,--strip-debug"] : [];
+  const stripped = platform === "wasi" || platform === "win32";
+  return stripped && optimization !== "dev" ? ["-Wl,--strip-debug"] : [];
 }
 
 /** Remove symbol/debug payload at link time so the executable cache stores

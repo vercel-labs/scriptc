@@ -320,6 +320,7 @@ static void scr_et_warn_tick(ScrClosure *cb) {
     scr_warning_emit_hook(w->name, NULL, w->message);
     return;
   }
+  scr_stdout_settle();
   fflush(stdout);
   fprintf(stderr, "(node:%ld) %s: %.*s\n", SCR_ET_PID(), w->name, (int)w->message->len,
           w->message->data);

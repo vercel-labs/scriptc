@@ -422,6 +422,29 @@ export async function mergeNativeProfiles(
   ]);
 }
 
+/** The function names an indexed profile records: the functions a
+ * `--profile-use` build may copy for CPU dispatch. Null when the helper
+ * cannot report them (an older helper, an unreadable profile), and the
+ * build then copies every function whose loop x86-64-v3 widens. */
+export async function readProfileFunctionNames(profilePath: string): Promise<string[] | null> {
+  const target = nativeCodegenTarget();
+  if (target === null) return null;
+  try {
+    const helper = await resolveHelper(target);
+    const { stdout } = await invoke(helper.binaryPath, [
+      "profile-functions",
+      "--input",
+      profilePath,
+    ]);
+    const parsed = parseJsonObject(stdout.trim());
+    const functions = parsed?.["functions"];
+    if (parsed?.["ok"] !== true || !Array.isArray(functions)) return null;
+    return functions.filter((name): name is string => typeof name === "string");
+  } catch {
+    return null;
+  }
+}
+
 export async function emitNativeArtifact(
   options: NativeCodegenOptions,
 ): Promise<NativeCodegenArtifact> {

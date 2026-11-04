@@ -1,4 +1,5 @@
 import { ProgramAnalysis } from "../program-analysis.js";
+import { isBundledLibraryFile } from "../default-library.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Shared program lifecycle over the native TypeScript server API.
  *
@@ -550,7 +551,7 @@ export class Ts7Program {
     const supplied = (name: string): boolean =>
       declarations.has(tsgoPath(name)) ||
       isFallbackDtsPath(name) ||
-      program.getSourceFileMetadataByPath(name)?.isDefaultLibrary === true;
+      isBundledLibraryFile(this, name);
     const sourceFile = (name: string): SourceFile | undefined => this.getSourceFile(name);
     // By path: a supplied file that is not one of scriptc's is a default library.
     const kind = (name: string): SuppliedKind =>

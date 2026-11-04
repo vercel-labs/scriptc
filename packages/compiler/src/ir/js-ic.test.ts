@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { BOOL, DYN, F64, STRING, VOID, type IrExpr, type IrFunction, type IrStmt } from "./ir.js";
-import { JsIcSites, hasJsIcSite } from "./js-ic.js";
+import { JsIcSites, dynIndexFastpath, hasJsIcSite } from "./js-ic.js";
 
 const loc = { file: "js-ic.ts", start: 0, end: 0 };
 const ref = (id: string, type = DYN): IrExpr => ({ kind: "varRef", localId: id, type, loc });
@@ -484,4 +484,14 @@ test("helpers that answer plain values first with the same operation are cache s
   expect(sites.site("%dyn.class.property.1")).toEqual({ kind: "get", key: "x" });
   expect(sites.site("%dyn.class.property.2")).toBeNull();
   expect(sites.site("%dyn.class.property.3")).toBeNull();
+});
+
+test("the computed-access fast path is the default and has an opt-out", () => {
+  expect(dynIndexFastpath({})).toBe(true);
+  expect(dynIndexFastpath({ SCRIPTC_DYN_INDEX_FASTPATH: "" })).toBe(true);
+  expect(dynIndexFastpath({ SCRIPTC_DYN_INDEX_FASTPATH: "1" })).toBe(true);
+  expect(dynIndexFastpath({ SCRIPTC_DYN_INDEX_FASTPATH: "0" })).toBe(false);
+  expect(() => dynIndexFastpath({ SCRIPTC_DYN_INDEX_FASTPATH: "2" })).toThrow(
+    "SCRIPTC_DYN_INDEX_FASTPATH must be 0 or 1, got 2",
+  );
 });

@@ -1543,6 +1543,31 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index);
  * (other receivers, holes, out-of-range and non-index numbers), and the
  * caller takes the keyed path. Never throws. */
 ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index);
+/* d[index] on a dynamic string (+1): the one-character string at an
+ * in-range integral UTF-16 index. NULL otherwise (out of range and
+ * non-integral numbers), and the caller takes the keyed path. Never
+ * throws. */
+ScrDyn *scr_dyn_string_index_get(const ScrDyn *d, double index);
+/* d[index] on a typed array or Buffer (+1): the element at an in-range
+ * integral index. NULL for a DataView (numeric keys name properties), out
+ * of range and non-integral numbers. Never throws. */
+ScrDyn *scr_dyn_bytes_index_get(const ScrDyn *d, double index);
+/* The answers of scr_dyn_index_set: the shortcut stored the element (or
+ * ignored an index the receiver does not have), raised while coercing the
+ * value or while fencing a receiver, or does not apply and the string-key
+ * path must answer. */
+typedef enum {
+  SCR_DYN_INDEX_NOT_HANDLED = 0,
+  SCR_DYN_INDEX_STORED = 1,
+  SCR_DYN_INDEX_THREW = 2,
+} ScrDynIndexSet;
+/* d[index] = value for a Number key (+0 control): the element store of a
+ * typed array or a dense array, without forming the key string. A number
+ * spells itself as the string-key path spells it, so the index -0 is the
+ * element 0. Borrows both operands; anything outside those receivers and
+ * their plain element stores answers SCR_DYN_INDEX_NOT_HANDLED, and the
+ * caller takes the keyed path (whose mode decides an assignment failure). */
+int scr_dyn_index_set(ScrDyn *recv, double index, ScrDyn *value);
 void *scr_dyn_typed_ref_cached_cast(
     const ScrDyn *d, const char *type_key, size_t type_key_len); /* +1/NULL */
 void scr_dyn_typed_ref_cache_cast(

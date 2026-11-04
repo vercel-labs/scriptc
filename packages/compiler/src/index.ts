@@ -194,6 +194,7 @@ import { executableLinkFeatures } from "./backend/executable-features.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
 import { debugJsIcWays } from "./backend/llvm/js-ic.js";
+import { dynIndexFastpath } from "./ir/js-ic.js";
 import { representationReportPath } from "./backend/llvm/repr-report.js";
 import {
   type FrontendInputSnapshot,
@@ -2073,6 +2074,7 @@ async function compileTracked(
         ? { jsInference: true as const }
         : {}),
       ...(jsIcWays === null ? {} : { jsIcWays }),
+      ...(dynIndexFastpath() ? { dynIndexFastpath: true as const } : {}),
       ffiProfile:
         opts.ffiProfilePath === undefined || ffiProfileBytes === null
           ? null

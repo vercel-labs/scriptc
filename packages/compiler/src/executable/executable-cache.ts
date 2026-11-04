@@ -251,6 +251,10 @@ export interface EarlyExecutableCacheOptions {
    * which emits a different number of inline cache ways
    * (backend/llvm/js-ic.ts). */
   jsIcWays?: 0 | 1 | 2;
+  /** Omitted unless computed-access sites index integral numbers without
+   * forming the property key (on by default; SCRIPTC_DYN_INDEX_FASTPATH=0
+   * opts out) (backend/llvm/js-ic.ts). */
+  dynIndexFastpath?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -430,6 +434,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.shapeOverlay ? ["shape-overlay"] : []),
     ...(options.jsInference ? ["js-inference"] : []),
     ...(options.jsIcWays !== undefined ? [`js-ic-ways:${options.jsIcWays}`] : []),
+    ...(options.dynIndexFastpath ? ["dyn-index-fastpath"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -485,6 +490,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.shapeOverlay) hash.update("shape-overlay\0");
   if (options.jsInference) hash.update("js-inference\0");
   if (options.jsIcWays !== undefined) hash.update(`js-ic-ways:${options.jsIcWays}\0`);
+  if (options.dynIndexFastpath) hash.update("dyn-index-fastpath\0");
   hash
     .update(
       options.npmStatic === null

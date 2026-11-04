@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { ARRAY_PROTOTYPE_MEMBER_NAMES } from "../../ir/runtime-features.js";
-import { BYTES_ELEM_NUM, CLOSURE_KIND, SCR_ARR_FROZEN, SCR_ARR_STATES } from "./common.js";
+import {
+  BYTES_ELEM_NUM,
+  CLOSURE_KIND,
+  DYN_INDEX_SET,
+  SCR_ARR_FROZEN,
+  SCR_ARR_STATES,
+} from "./common.js";
 import { DYN_KIND, MESSAGE_KIND } from "./dyn.js";
 
 // The backend writes the numbers of several runtime enums and flag sets
@@ -92,6 +98,14 @@ test("MESSAGE_KIND matches ScrMessageKind", () => {
   expectDistinct(kinds, "ScrMessageKind");
   for (const [name, value] of Object.entries(MESSAGE_KIND)) {
     expect(kinds.get(`SCR_MESSAGE_${name}`), name).toBe(value);
+  }
+});
+
+test("DYN_INDEX_SET matches ScrDynIndexSet", () => {
+  const answers = cEnum("scr_dyn.h", "ScrDynIndexSet");
+  expectDistinct(answers, "ScrDynIndexSet");
+  for (const [name, value] of Object.entries(DYN_INDEX_SET)) {
+    expect(answers.get(`SCR_DYN_INDEX_${name}`), name).toBe(value);
   }
 });
 

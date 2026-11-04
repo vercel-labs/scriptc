@@ -101,7 +101,7 @@ static SCR_TL size_t scr_arena_chunk_bytes;
  * only the window's blocks to name, arena objects included. The compiler
  * calls scr_sa_require_window at startup, before any arena opens, so a
  * program's chunks have one source from the start. */
-#if defined(__linux__)
+#ifdef SCR_COMPACT_REFS
 static inline bool scr_arena_windowed(void) { return scr_sa_refs_required(); }
 #else
 static inline bool scr_arena_windowed(void) { return false; } /* no window */

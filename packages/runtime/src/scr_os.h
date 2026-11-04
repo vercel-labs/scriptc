@@ -29,7 +29,7 @@ double scr_os_uptime(void);
  * with ERR_INVALID_ARG_VALUE pending (scr_os.c). */
 double scr_util_signal_exit_code(const struct ScrDyn *code);
 ScrArr *scr_os_loadavg(void);
-/* Node's uvException (scr_os.c): throws the SystemError a failed libuv call
+/* Node's uvException (scr_lib.c): throws the SystemError a failed libuv call
  * becomes — named SystemError, code ERR_SYSTEM_ERROR, the uv error's
  * message and its errno, syscall and info properties. Always throws. */
 void scr_os_throw_system_error(const char *syscall, int uv_code);

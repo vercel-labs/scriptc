@@ -275,40 +275,11 @@ ScrArr *scr_os_loadavg(void) {
 enum { SCR_OS_PRIORITY_LOW = 19, SCR_OS_PRIORITY_BELOW_NORMAL = 10, SCR_OS_PRIORITY_NORMAL = 0,
        SCR_OS_PRIORITY_ABOVE_NORMAL = -7, SCR_OS_PRIORITY_HIGH = -14, SCR_OS_PRIORITY_HIGHEST = -20 };
 
-typedef struct { int value; const char *name; const char *message; } ScrOsUvError;
-#define SCR_OS_UV_ERROR(name, message) { SCR_NODE_UV__##name, #name, message },
-static const ScrOsUvError scr_os_uv_errors[] = { SCR_NODE_UV_ERRNO_MAP(SCR_OS_UV_ERROR) };
-#undef SCR_OS_UV_ERROR
-
-/* Node's uvException: the SystemError every failed libuv call in node:os
- * becomes — "A system error occurred: <syscall> returned <NAME> (<message>)",
- * named SystemError, with code ERR_SYSTEM_ERROR and the uv error's errno,
- * syscall and info ({ message, syscall, errno, code }) own properties. The
- * os unit in scr_lib.c throws the same shape for a passwd lookup that
- * answers nothing. */
-void scr_os_throw_system_error(const char *syscall, int uv_code) {
-  const char *name = "UNKNOWN", *message = "unknown error";
-  for (size_t i = 0; i < sizeof scr_os_uv_errors / sizeof scr_os_uv_errors[0]; i++) {
-    if (scr_os_uv_errors[i].value == uv_code) {
-      name = scr_os_uv_errors[i].name;
-      message = scr_os_uv_errors[i].message;
-      break;
-    }
-  }
-  char text[256];
-  int n = snprintf(text, sizeof text, "A system error occurred: %s returned %s (%s)", syscall, name, message);
-  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
-  ScrStr *error_name = scr_str_new("SystemError", 11);
-  scr_throw_error_named(error_name, msg);
-  ScrExcCell *cell = scr_exc_current_cell();
-  if (cell->kind != SCR_EXC_OBJ) return;
-  ScrError *error = (ScrError *)cell->payload;
-  scr_error_set_code(error, "ERR_SYSTEM_ERROR");
-  error->system_errno = uv_code;
-  error->system_call = scr_str_new(syscall, strlen(syscall));
-  error->system_message = scr_str_new(message, strlen(message));
-  error->system_code = scr_str_new(name, strlen(name));
-}
+/* The SystemError the priority calls below throw (Node's uvException)
+ * is scr_os_throw_system_error, defined in scr_lib.c and declared in
+ * scr_os.h. Every link that carries this unit carries scr_lib.c: both are
+ * base runtime units, and the runtime's own C tests link scr_lib.c
+ * without this one. */
 
 static bool scr_os_validate_int32_in(const char *name, double value, int min, int max) {
   if (isfinite(value) && trunc(value) == value) {

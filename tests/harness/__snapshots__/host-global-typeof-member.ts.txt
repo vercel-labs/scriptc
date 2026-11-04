@@ -1,0 +1,8 @@
+host-global-typeof-member.ts:3:20 - error SC2020: 'FormData' is a Node global that native code does not provide
+
+  2 | // the global (SC2020, host-global): Node has FormData, native code does not.
+  3 | console.log(typeof (globalThis as Record<string, unknown>).FormData);
+    |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  4 | 
+
+  hint: the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global

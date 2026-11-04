@@ -828,7 +828,11 @@ export function checkedNativeCallableValue(
   if (!fnName) {
     fnName = keyedHelperName(lowerer, `%builtin.value.${callee}`, key);
     lowerer.builtinCallableValueFns.set(key, fnName);
-    lowerer.builtinCallableValueNames.set(fnName, display.slice(display.lastIndexOf(".") + 1));
+    lowerer.builtinCallableValueNames.set(
+      fnName,
+      fn.valueName ?? display.slice(display.lastIndexOf(".") + 1),
+    );
+    if (fn.valueNameMainThreadOnly) lowerer.builtinCallableValueMainThreadNames.add(fnName);
     const params = valueParams.map((_, index) => ({
       localId: `arg.${index}`,
       name: `arg${index}`,
@@ -921,6 +925,7 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
   const names = lowerer.builtinCallableValueNames;
   if (names.size === 0) return;
   const lengths = lowerer.builtinCallableValueLengths;
+  const mainThreadNames = lowerer.builtinCallableValueMainThreadNames;
   const builtin = (expr: IrExpr | null): expr is Extract<IrExpr, { kind: "closure" }> =>
     expr !== null &&
     expr.kind === "closure" &&
@@ -991,11 +996,16 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
           expr.fnLength ??
           lengths.get(source.fnName) ??
           (value.kind === "closure" ? lengths.get(value.fnName) : undefined);
+        const nameMainThreadOnly =
+          expr.fnNameMainThreadOnly === true ||
+          mainThreadNames.has(source.fnName) ||
+          (value.kind === "closure" && mainThreadNames.has(value.fnName));
         const boxed: IrExpr = {
           ...expr,
           value,
           ...(fnName !== undefined ? { fnName } : {}),
           ...(fnLength !== undefined ? { fnLength } : {}),
+          ...(nameMainThreadOnly ? { fnNameMainThreadOnly: true as const } : {}),
         };
         if (!read) return boxed;
         return {

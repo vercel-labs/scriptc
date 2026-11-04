@@ -1140,6 +1140,10 @@ class FnAnalyzer {
         }
         return out;
       }
+      case "genBindBarrier":
+        // An invisible suspension at the end of a generator's parameter
+        // prologue: no value, no binding, no env change.
+        return env;
     }
   }
 

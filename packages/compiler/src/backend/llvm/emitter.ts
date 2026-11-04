@@ -130,6 +130,7 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { versionUnionArmLoops } from "../../ir/union-arm-loops.js";
 import { unitSafeFunctions } from "./string-unit-versions.js";
 import { stringScanInline } from "./string-reads.js";
 import {
@@ -641,9 +642,9 @@ export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
 /** Function versions on loop-bounding number parameters
  * (ir/parameter-versions.ts). Library builds have no int32 entries, and a
  * module that observes call stacks could see the version's frame. */
-function versionParameters(mod: IrModule): IrModule {
-  if (mod.lib !== undefined || observesStacks(mod)) return mod;
-  return versionLoopBoundParameters(mod, mangleFunction);
+function versionParameters(mod: IrModule, nodes: IrNodeIndex): IrModule {
+  if (mod.lib !== undefined || observesStacks(mod, nodes)) return mod;
+  return versionLoopBoundParameters(mod, mangleFunction, nodes);
 }
 
 /** The int32 slot analysis of one module and the inputs it read: the
@@ -659,12 +660,15 @@ export interface Int32SlotAnalysis {
 
 /** The int32 slot analysis of `mod`, with the inputs LlEmitter gives it.
  * With `revise`, the analysis revises the functions of candidates that drop
- * (Int32SlotInputs.revise), and `mod` is the module it started from. */
+ * (Int32SlotInputs.revise), and `mod` is the module it started from. The
+ * node index of `mod` takes the nodes `previous` recorded for the functions
+ * both hold. */
 function analyzeModuleInt32Slots(
   mod: IrModule,
+  previous: IrNodeIndex | undefined,
   revise?: (fnName: string, dropped: ReadonlySet<string>) => IrFunction,
 ): Int32SlotAnalysis {
-  const nodeIndex = new IrNodeIndex(mod);
+  const nodeIndex = new IrNodeIndex(mod, previous);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
   const slots = analyzeInt32Slots(mod, {
@@ -686,7 +690,7 @@ function keptInt32Arrays(analysis: Int32SlotAnalysis): ReadonlySet<string> {
  * node index of `mod`, and its initializer bindings and dynamic stores,
  * which must be the ones the analysis read. Null when they differ. */
 function revisedAnalysis(analysis: Int32SlotAnalysis, mod: IrModule): Int32SlotAnalysis | null {
-  const nodeIndex = new IrNodeIndex(mod);
+  const nodeIndex = new IrNodeIndex(mod, analysis.nodeIndex);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
   const read = analysis.initializerBindings;
@@ -735,20 +739,24 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Each proof selectInt32Arrays asks for analyzes a marked module; the
   // emitter of the module it returns reuses the last one. A proof that
   // revised functions analyzed the module of the functions it ended with.
+  // Each round's node index takes the recorded nodes of the functions it
+  // shares with the latest index (`nodes`).
   const rounds: {
     last: Int32SlotAnalysis | null;
     functions: readonly IrFunction[] | null;
     revising: boolean;
-  } = { last: null, functions: null, revising: true };
+    nodes: IrNodeIndex | undefined;
+  } = { last: null, functions: null, revising: true, nodes: undefined };
   const proven = (marked: IrModule, revise: Int32ArrayRevision | null): Int32ArrayProof | null => {
     rounds.functions = null;
     if (revise === null || !rounds.revising) {
-      rounds.last = analyzeModuleInt32Slots(marked);
+      rounds.last = analyzeModuleInt32Slots(marked, rounds.nodes);
+      rounds.nodes = rounds.last.nodeIndex;
       return { kept: keptInt32Arrays(rounds.last), functions: null };
     }
     const latest = new Map<string, IrFunction>();
     try {
-      rounds.last = analyzeModuleInt32Slots(marked, (fnName, dropped) => {
+      rounds.last = analyzeModuleInt32Slots(marked, rounds.nodes, (fnName, dropped) => {
         const fn = revise(fnName, dropped);
         latest.set(fnName, fn);
         return fn;
@@ -758,6 +766,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       rounds.last = null;
       return null;
     }
+    rounds.nodes = rounds.last.nodeIndex;
     if (latest.size === 0) return { kept: keptInt32Arrays(rounds.last), functions: null };
     rounds.functions = marked.functions.map((fn) => latest.get(fn.name) ?? fn);
     return { kept: keptInt32Arrays(rounds.last), functions: rounds.functions };
@@ -765,41 +774,67 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Keep source storage intact for debugger inspection in dev builds.
   if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
   const timing = options.timing ?? (() => {});
-  const passed = versionParameters(
-    addRecordResultEntries(
-      scalarizeLiteralResults(
-        scalarizeNumericRecords(
-          specializeCallbackCalls(
-            specializeNumericCalls(
-              pairRowSums(
-                jamSaturatingLoops(
-                  inlineArraysPass(
-                    options,
-                    inlineExpressionFunctions(
-                      foldConstantGlobals(
-                        copyStableCaptures(
-                          resolveSelfCaptures(
-                            hoistFinalFieldReads(
-                              freezeInitOnlyGlobals(
-                                holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+  // One index of the module the passes start from. Each pass skips the
+  // functions the index records without the node kinds it rewrites, and
+  // reads its scans of whole bodies from the index; it walks the functions
+  // an earlier pass rewrote, which the index does not record.
+  const nodes = new IrNodeIndex(mod);
+  rounds.nodes = nodes;
+  const passed = versionUnionArmLoops(
+    versionParameters(
+      addRecordResultEntries(
+        scalarizeLiteralResults(
+          scalarizeNumericRecords(
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                pairRowSums(
+                  jamSaturatingLoops(
+                    inlineArraysPass(
+                      options,
+                      inlineExpressionFunctions(
+                        foldConstantGlobals(
+                          copyStableCaptures(
+                            resolveSelfCaptures(
+                              hoistFinalFieldReads(
+                                freezeInitOnlyGlobals(
+                                  holdCharLocalsAsUnits(
+                                    dropUnwrittenPropertyBags(
+                                      runPairedWhileLoopsAsFor(mod, nodes),
+                                      nodes,
+                                    ),
+                                    nodes,
+                                  ),
+                                  nodes,
                                 ),
+                                nodes,
                               ),
+                              nodes,
                             ),
+                            nodes,
                           ),
+                          nodes,
                         ),
+                        nodes,
                       ),
                     ),
+                    nodes,
                   ),
+                  nodes,
                 ),
+                mangleFunction,
+                nodes,
               ),
               mangleFunction,
+              nodes,
             ),
-            mangleFunction,
           ),
+          nodes,
         ),
+        nodes,
       ),
+      nodes,
     ),
+    nodes,
   );
   timing("llvm-emit-rewrites");
   let emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
@@ -829,6 +864,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
     options,
     null,
     prepared?.mod === emitted ? prepared : null,
+    rounds.nodes,
   );
   timing("llvm-emit-analyses");
   return emitter;
@@ -846,7 +882,7 @@ function verifyInt32Selection(
   const reference = selectInt32Arrays(
     passed,
     (marked) => {
-      last = analyzeModuleInt32Slots(marked);
+      last = analyzeModuleInt32Slots(marked, undefined);
       return { kept: keptInt32Arrays(last), functions: null };
     },
     resultEntryTargets,
@@ -855,7 +891,7 @@ function verifyInt32Selection(
   if (text(reference) !== text(emitted))
     throw new InternalCompilerError("int32 selection: the revised module differs from the rounds'");
   const facts = (mod: IrModule, prepared: Int32SlotAnalysis | null): string =>
-    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod)).slots.summary(mod);
+    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod, undefined)).slots.summary(mod);
   const expected = facts(reference, last);
   const actual = facts(emitted, analysis);
   if (expected !== actual) {
@@ -949,6 +985,25 @@ function isIdentifierByte(code: number): boolean {
  * bookkeeping calls do not suspend it. */
 export const SUSPENDS =
   /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_)|sc_a[wd]_)/;
+/** The literal text each SUSPENDS alternative starts with. The `@scr_` prefix
+ * is joined to each suffix here so that a prefix is not read as an emitted
+ * symbol name by the runtime ABI scan. */
+const SUSPEND_PREFIXES = [
+  "await_",
+  "module_await",
+  "promise_await_settled",
+  "test_sub",
+  "gen_yield_",
+  "async_gen_",
+  "fiber_",
+]
+  .map((suffix) => `@scr_${suffix}`)
+  .concat("@sc_aw_", "@sc_ad_");
+/** Whether `text` mentions a SUSPENDS entry point. The regex runs only on
+ * text that holds one of its prefixes, which most function bodies do not. */
+export function mentionsSuspension(text: string): boolean {
+  return SUSPEND_PREFIXES.some((prefix) => text.includes(prefix)) && SUSPENDS.test(text);
+}
 /** The suspensions of a fiber body's own awaits, which its stackless
  * coroutine form suspends itself at instead. */
 const AWAIT_SUSPENSIONS =
@@ -1055,6 +1110,10 @@ function countLocalMentions(body: readonly IrStmt[], id: string): number {
 export class LlEmitter {
   /** Per-feature state (emitter-state.ts), indexed by each key's slot. */
   readonly moduleStates: unknown[] = [];
+  /** The names of the functions that `versionLoopBoundParameters` versions
+   * for int32 loop bounds: the ones that keep their name and call the copy
+   * and the fallback. Computed on first use. */
+  int32Versioned: Set<string> | null = null;
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
@@ -2094,6 +2153,7 @@ export class LlEmitter {
     options: LlvmTargetOptions,
     journal: EmitJournal | null = null,
     int32Analysis: Int32SlotAnalysis | null = null,
+    previousIndex?: IrNodeIndex,
   ) {
     this.targetOptions = options;
     this.journal = journal;
@@ -2101,8 +2161,9 @@ export class LlEmitter {
       journal !== null ||
       ((options.functionWorkers ?? 1) > 1 && options.forkPrimitives !== undefined);
     // One walk of every body, which the analyses below read instead of
-    // walking the bodies themselves.
-    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
+    // walking the bodies themselves. The functions `previousIndex` (an index
+    // of an earlier module) recorded are not walked again.
+    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod, previousIndex);
     this.initializerBindings =
       int32Analysis?.initializerBindings ?? findInitializerBindings(mod, this.nodeIndex);
     // One walk finds the dynamic field stores every analysis below consults.
@@ -2836,9 +2897,17 @@ export class LlEmitter {
    * displayName, else its sourceName. Function boxes without a static name
    * look the closure's entry up in this table. */
   private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  private closureNameByEntry: Map<string, string> | undefined;
+  /** The declared functions `closureNames` lists by their wrapper. A scan
+   * sees closures in statements the emitter never reaches (a statement
+   * after a runtimeFence: the fence always jumps), so some of these names
+   * never enter `fnValues`; emitFnValueDefs defines their wrapper anyway,
+   * because the table's entry has to resolve. */
+  private readonly closureWrapperNames = new Set<string>();
   closureNames(): readonly { entry: string; name: string }[] {
     if (this.closureNameEntries !== undefined) return this.closureNameEntries;
     const entries = new Map<string, string>();
+    this.closureNameByEntry = entries;
     const scan = this.nodeIndex.scan(CLOSURE_KINDS);
     for (const fn of this.mod.functions) {
       eachNodeOfKinds(fn, scan, (node) => {
@@ -2848,13 +2917,29 @@ export class LlEmitter {
           target?.displayName ??
           (target?.sourceName !== "<anonymous>" ? target?.sourceName : undefined);
         if (target === undefined || name === undefined || name === "") return true;
-        const entry =
-          target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        const entry = this.closureEntry(node.fnName, target);
+        if (target.captures === undefined) this.closureWrapperNames.add(node.fnName);
         if (!entries.has(entry)) entries.set(entry, name);
         return true;
       });
     }
     return (this.closureNameEntries = [...entries].map(([entry, name]) => ({ entry, name })));
+  }
+
+  /** The entry point of a closure of `fnName` (closureNames). */
+  private closureEntry(fnName: string, target: IrFunction): string {
+    return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
+  }
+
+  /** The name the closure-name table gives a closure made of `fnName`
+   * (null when it has none), which lets a box of a closure made at the site
+   * skip the table lookup; undefined for a function the module does not
+   * define. */
+  closureNameOf(fnName: string): string | null | undefined {
+    const target = this.fnByName.get(fnName);
+    if (target === undefined) return undefined;
+    this.closureNames();
+    return this.closureNameByEntry!.get(this.closureEntry(fnName, target)) ?? null;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -2912,10 +2997,14 @@ export class LlEmitter {
 
   /** Env-signature wrappers + interned immortal closures for declared
    * functions used as values (the runtime ABI’s sc_w_/sc_fc_ pair): every
-   * mention of `f` yields the same pointer, so `f === f` holds. */
+   * mention of `f` yields the same pointer, so `f === f` holds. The
+   * closure-name table's wrapper entries are included even when their
+   * closure was never emitted (see closureWrapperNames). */
   emitFnValueDefs(): string[] {
     const out: string[] = [];
-    for (const name of this.fnValues) {
+    const names = new Set(this.fnValues);
+    for (const name of this.closureWrapperNames) names.add(name);
+    for (const name of names) {
       const fn = this.fnByName.get(name)!;
       const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
       const args = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`).join(", ");
@@ -6030,6 +6119,8 @@ export class LlEmitter {
       this.mod,
       { ...this.targetOptions, functionChunks: 1 },
       new EmitJournal(),
+      null,
+      this.nodeIndex,
     );
     chunk.debug?.record();
     return chunk;

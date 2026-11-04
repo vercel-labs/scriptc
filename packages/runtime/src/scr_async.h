@@ -464,6 +464,16 @@ double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves 
  * array element, whose NaN may be the undefined of a read past the end,
  * which warns nothing. */
 double scr_timer_user_delay(double after, double kind);
+/* The handle of the timer or immediate whose callback is running: the id
+ * setTimeout's handle form, setInterval or setImmediate returned, or 0
+ * outside one and for a setTimeout called as a statement, which has no
+ * handle. */
+double scr_timer_running_handle(void);
+/* A timer callback that runs with `this` bound to its handle, as Node
+ * calls a timer callback with the Timeout or Immediate (scr_async_dyn.c):
+ * the ambient receiver a plain JavaScript function reads at entry, and
+ * that test/common's mustCall forwards. cb borrowed; +1. */
+ScrClosure *scr_timer_this_callback(ScrClosure *cb);
 /* The mocked global timer functions (scr_test.c): bit 0 setTimeout, bit 1
  * setInterval. */
 extern SCR_TL int scr_timer_mocked_apis;

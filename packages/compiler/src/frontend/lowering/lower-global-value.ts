@@ -2,7 +2,7 @@ import * as ts from "../ts7/adapter.js";
 import { DYN, STRING, arrayOf, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../builtin-modules.js";
 
 /** A stored global object has identity and survives module/function boundaries.
  * Known globals without a value implementation refuse at runtime; absent host
@@ -29,10 +29,11 @@ export function lowerSloppyGlobalReceiver(lowerer: Lowerer, node: ts.Node, loc: 
 
 function lowerGlobalValueOfType(lowerer: Lowerer, type: ts.Type | undefined, loc: SrcLoc): IrExpr {
   // The temporal global is typed for the programs that name it (TS 7's
-  // lib slice) but absent in Node 24: reads answer undefined.
+  // lib slice) but absent in Node 24, and the CommonJS module bindings are
+  // not properties of the global object: reads answer undefined.
   const names = (type === undefined ? [] : lowerer.checker.getPropertiesOfType(type))
     .map((property) => ts.symbolName(property))
-    .filter((name) => name !== TEMPORAL_GLOBAL);
+    .filter((name) => name !== TEMPORAL_GLOBAL && !COMMONJS_MODULE_BINDINGS.has(name));
   return {
     kind: "libCall",
     fn: "global.native",

@@ -265,31 +265,32 @@ declare module "http" {
     end(data?: string | Uint8Array): void;
     destroy(error?: Error): void;
     abort(): void;
-    on(event: "response", listener: (res: IncomingMessage) => void): void;
-    on(event: "socket", listener: (socket: Socket) => void): void;
+    on(event: "response", listener: (res: IncomingMessage) => void): this;
+    on(event: "socket", listener: (socket: Socket) => void): this;
     on(
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    /* addListener IS on (Node aliases them) — the suite spells both. */
-    addListener(event: "response", listener: (res: IncomingMessage) => void): void;
-    addListener(event: "socket", listener: (socket: Socket) => void): void;
+    ): this;
+    on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    /* addListener IS on (Node aliases them) — the suite spells both. Each
+     * answers the request, as Node's does. */
+    addListener(event: "response", listener: (res: IncomingMessage) => void): this;
+    addListener(event: "socket", listener: (socket: Socket) => void): this;
     addListener(
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    addListener(event: "timeout" | "close" | "finish" | "abort", listener: () => void): void;
-    addListener(event: "error", listener: (err: Error) => void): void;
-    once(event: "response", listener: (res: IncomingMessage) => void): void;
-    once(event: "socket", listener: (socket: Socket) => void): void;
+    ): this;
+    addListener(event: "timeout" | "close" | "finish" | "abort", listener: () => void): this;
+    addListener(event: "error", listener: (err: Error) => void): this;
+    once(event: "response", listener: (res: IncomingMessage) => void): this;
+    once(event: "socket", listener: (socket: Socket) => void): this;
     once(
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
+    ): this;
+    once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
   }
   export function createServer(
     requestListener?: (req: IncomingMessage, res: ServerResponse) => void,

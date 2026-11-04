@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/inspect-show-hidden-prototypes.ts"
+ ],
+ "diags": []
+}

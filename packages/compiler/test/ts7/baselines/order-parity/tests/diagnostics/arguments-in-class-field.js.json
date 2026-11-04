@@ -31,7 +31,7 @@
    }
   },
   {
-   "code": "SC0008",
+   "code": "SC0011",
    "message": "'arguments' cannot be referenced from a class field initializer or a static block",
    "loc": {
     "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",
@@ -40,7 +40,7 @@
    }
   },
   {
-   "code": "SC0008",
+   "code": "SC0011",
    "message": "'arguments' cannot be referenced from a class field initializer or a static block",
    "loc": {
     "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",
@@ -49,7 +49,7 @@
    }
   },
   {
-   "code": "SC0008",
+   "code": "SC0011",
    "message": "'arguments' cannot be referenced from a class field initializer or a static block",
    "loc": {
     "file": "<repo>/tests/diagnostics/arguments-in-class-field.js",

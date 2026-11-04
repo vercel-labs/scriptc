@@ -1,4 +1,6 @@
 - **Globals:** Stored `globalThis` references support identity and probes for absent capabilities.
+  A name that Node.js 24 defines but scriptc does not implement, such as `WebSocket`, `FormData`, `BroadcastChannel`, or `URLPattern`, is not an absent capability: reading it (`typeof X`, `X`, `globalThis.X`, or through a stored `globalThis`) raises `SC2020` naming the global, with `host-global` as the Node island reason, instead of answering `undefined`.
+  Probes for capabilities Node.js 24 also lacks, such as `Bun`, `Deno`, or `Temporal`, still answer `undefined`.
   In JavaScript, reading a builtin global through the global object by name (`globalThis[name]`, or a stored global object) answers what the global's own spelling reads, and builtin module members that are global objects in Node, such as `require("buffer").atob` and `require("timers").setTimeout`, are the same values.
   `WebAssembly` read this way, and builtin members read through a global object that untyped code received, can raise `SC2020`.
   `for (key in globalThis)` visits Node's enumerable globals in Node's order, then the program's own global properties.

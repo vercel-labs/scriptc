@@ -189,7 +189,7 @@ export interface StdioPatchSite {
  * type maps to the process stream). Such a program routes its typed
  * stdout/stderr writes through the stream object, so the replacement sees
  * them with their arguments, as in Node. Cached per program; the first
- * site found is recorded for the executable planner's SC8020 check. */
+ * site found is recorded for the executable planner's SC8006 refusal. */
 export function programPatchesStdio(lowerer: Lowerer): boolean {
   if (lowerer.patchesStdio !== null) return lowerer.patchesStdio;
   let found = false;

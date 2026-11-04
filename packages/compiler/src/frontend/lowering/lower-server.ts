@@ -2268,6 +2268,36 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "clientError") {
+      // (err, socket): a request the parser rejects, or a connection error,
+      // goes to the listeners instead of the default answer.
+      const cb = lowerer.lowerExpr(args[1]!);
+      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
+        lowerer.unsupported(
+          "SC1090",
+          args[1]!,
+          "clientError listeners with more than two parameters or returning a value (use (err, socket) with a block body)",
+        );
+      }
+      const [err, socket] = cb.type.params;
+      if (
+        (err !== undefined && !(err.kind === "object" && err.className === "%Error")) ||
+        (socket !== undefined && socket.kind !== "netSocket")
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          args[1]!,
+          "clientError listeners whose parameters are not (err: Error, socket: Socket)",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "http.serverOnClientError",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "sessionError") {
       const cb = lowerer.lowerExpr(args[1]!);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
@@ -2299,7 +2329,7 @@ function lowerNetServerMethodCall(
     lowerer.noLowering(
       `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"connection", "request", "checkContinue", "checkExpectation", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
+      '"connection", "request", "checkContinue", "checkExpectation", "clientError", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
     );
   }
   if ((name === "off" || name === "removeListener") && args.length === 2) {
@@ -7631,137 +7661,157 @@ function lowerHttpClientMethodCall(
     };
   }
   if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
-    requireStatementPosition(lowerer, call, `request.${name}(...)`);
     const once = boolLit(name === "once", loc);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
-    const receiver = lowerer.lowerExpr(access.expression);
-    if (event === "response") {
-      const { cb } = lowerCallbackArg(
-        lowerer,
-        args[1]!,
-        "response listeners",
-        1,
-        (p) => p.kind === "httpReq",
-        "use (res) or ()",
-        [HTTPREQ_T],
-      );
-      return {
-        kind: "libCall",
-        fn: "http.clientOnResponse",
-        args: [receiver, cb, once],
-        type: VOID,
-        loc,
-      };
-    }
-    if (event === "socket") {
-      const { cb } = lowerCallbackArg(
-        lowerer,
-        args[1]!,
-        "socket listeners",
-        1,
-        (p) => p.kind === "netSocket",
-        "use (socket) or ()",
-        [NETSOCKET_T],
-      );
-      return {
-        kind: "libCall",
-        fn: "http.clientOnSocket",
-        args: [receiver, cb, once],
-        type: VOID,
-        loc,
-      };
-    }
-    if (event === "error") {
-      const { cb } = lowerCallbackArg(
-        lowerer,
-        args[1]!,
-        "error listeners",
-        1,
-        (p) => p.kind === "object" && p.className === "%Error",
-        "use (err) or ()",
-        [ERROR_T],
-      );
-      return {
-        kind: "libCall",
-        fn: "http.clientOnError",
-        args: [receiver, cb, once],
-        type: VOID,
-        loc,
-      };
-    }
-    if (
-      event === "timeout" ||
-      event === "close" ||
-      event === "finish" ||
-      event === "abort" ||
-      event === "continue"
-    ) {
-      const { cb } = lowerCallbackArg(
-        lowerer,
-        args[1]!,
-        `${event} listeners`,
-        0,
-        () => false,
-        "use ()",
-        [],
-      );
-      const fn: IrLibFn =
-        event === "timeout"
-          ? "http.clientOnTimeout"
-          : event === "close"
-            ? "http.clientOnClose"
-            : event === "abort"
-              ? "http.clientOnAbort"
-              : event === "continue"
-                ? "http.clientOnContinue"
-                : "http.clientOnFinish";
-      return { kind: "libCall", fn, args: [receiver, cb, once], type: VOID, loc };
-    }
-    if (event === "upgrade") {
-      // The client half of the WebSocket handover: a 101 response fires
-      // (res, socket, head) INSTEAD of 'response'; no listener destroys
-      // the connection, Node's default.
-      const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.params.length > 3) {
-        lowerer.unsupported(
-          "SC1090",
+    // Node's on() answers the request: unless the call is an expression
+    // statement (a chained .on(...).end(), a concise arrow body), the
+    // receiver is bound once and the registration answers it.
+    const lowered = lowerer.lowerExpr(access.expression);
+    const chained = ts.isExpressionStatement(call.parent)
+      ? null
+      : lowerer.declareHiddenLocal("%request", lowered.type);
+    const receiver: IrExpr = chained === null ? lowered : varRef(chained.id, lowered.type, loc);
+    const register = (): IrExpr => {
+      if (event === "response") {
+        const { cb } = lowerCallbackArg(
+          lowerer,
           args[1]!,
-          "upgrade listeners with more than three parameters (use (res, socket, head))",
+          "response listeners",
+          1,
+          (p) => p.kind === "httpReq",
+          "use (res) or ()",
+          [HTTPREQ_T],
         );
+        return {
+          kind: "libCall",
+          fn: "http.clientOnResponse",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
       }
-      if (cb.type.ret.kind !== "void") {
-        lowerer.unsupported(
-          "SC1090",
+      if (event === "socket") {
+        const { cb } = lowerCallbackArg(
+          lowerer,
           args[1]!,
-          "upgrade listeners returning a value (make the callback body a block)",
+          "socket listeners",
+          1,
+          (p) => p.kind === "netSocket",
+          "use (socket) or ()",
+          [NETSOCKET_T],
         );
+        return {
+          kind: "libCall",
+          fn: "http.clientOnSocket",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
       }
-      const [p0, p1, p2] = cb.type.params;
+      if (event === "error") {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[1]!,
+          "error listeners",
+          1,
+          (p) => p.kind === "object" && p.className === "%Error",
+          "use (err) or ()",
+          [ERROR_T],
+        );
+        return {
+          kind: "libCall",
+          fn: "http.clientOnError",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
+      }
       if (
-        (p0 !== undefined && p0.kind !== "httpReq") ||
-        (p1 !== undefined && p1.kind !== "netSocket") ||
-        (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8"))
+        event === "timeout" ||
+        event === "close" ||
+        event === "finish" ||
+        event === "abort" ||
+        event === "continue"
       ) {
-        lowerer.unsupported(
-          "SC1090",
+        const { cb } = lowerCallbackArg(
+          lowerer,
           args[1]!,
-          "upgrade listeners whose parameters are not (res: IncomingMessage, socket: Socket, head: Buffer)",
+          `${event} listeners`,
+          0,
+          () => false,
+          "use ()",
+          [],
         );
+        const fn: IrLibFn =
+          event === "timeout"
+            ? "http.clientOnTimeout"
+            : event === "close"
+              ? "http.clientOnClose"
+              : event === "abort"
+                ? "http.clientOnAbort"
+                : event === "continue"
+                  ? "http.clientOnContinue"
+                  : "http.clientOnFinish";
+        return { kind: "libCall", fn, args: [receiver, cb, once], type: VOID, loc };
       }
-      return {
-        kind: "libCall",
-        fn: "http.clientOnUpgrade",
-        args: [receiver, cb, once],
-        type: VOID,
-        loc,
-      };
-    }
-    lowerer.noLowering(
-      `request.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
-      args[0]!,
-      '"response", "socket", "upgrade", "error", "timeout", "finish", "abort", and "close" are the supported request events (as literals)',
-    );
+      if (event === "upgrade") {
+        // The client half of the WebSocket handover: a 101 response fires
+        // (res, socket, head) INSTEAD of 'response'; no listener destroys
+        // the connection, Node's default.
+        const cb = lowerer.lowerExpr(args[1]!);
+        if (cb.type.kind !== "func" || cb.type.params.length > 3) {
+          lowerer.unsupported(
+            "SC1090",
+            args[1]!,
+            "upgrade listeners with more than three parameters (use (res, socket, head))",
+          );
+        }
+        if (cb.type.ret.kind !== "void") {
+          lowerer.unsupported(
+            "SC1090",
+            args[1]!,
+            "upgrade listeners returning a value (make the callback body a block)",
+          );
+        }
+        const [p0, p1, p2] = cb.type.params;
+        if (
+          (p0 !== undefined && p0.kind !== "httpReq") ||
+          (p1 !== undefined && p1.kind !== "netSocket") ||
+          (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8"))
+        ) {
+          lowerer.unsupported(
+            "SC1090",
+            args[1]!,
+            "upgrade listeners whose parameters are not (res: IncomingMessage, socket: Socket, head: Buffer)",
+          );
+        }
+        return {
+          kind: "libCall",
+          fn: "http.clientOnUpgrade",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
+      }
+      lowerer.noLowering(
+        `request.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
+        args[0]!,
+        '"response", "socket", "upgrade", "error", "timeout", "finish", "abort", and "close" are the supported request events (as literals)',
+      );
+    };
+    const registration = register();
+    if (chained === null) return registration;
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: chained.id, init: lowered, loc },
+        { kind: "exprStmt", expr: registration, loc },
+      ],
+      result: varRef(chained.id, lowered.type, loc),
+      type: lowered.type,
+      loc,
+    };
   }
   lowerer.noLowering(
     `ClientRequest.${name}`,

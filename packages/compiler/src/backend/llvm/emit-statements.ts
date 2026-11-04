@@ -1886,6 +1886,28 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       emitter.emitUnwind();
       break;
     }
+    case "genBindBarrier": {
+      // The end of a generator's parameter prologue (fn.generator.bindAtCall):
+      // suspend invisibly so the spawn wrapper can run the prologue at the
+      // call. No OUT value is produced and no IN value is taken — the first
+      // `.next(v)` argument stays unread, exactly as a suspendedStart
+      // generator discards it — but the resumption may carry an injected
+      // throw or the `.return()` sentinel, so it checks like a yield.
+      if (emitter.currentGenerator === null)
+        throw new InternalCompilerError(
+          "llvm emitter bug: genBindBarrier outside a generator body",
+        );
+      if (emitter.currentCoro !== null) {
+        emitter.emitCoroSuspendPrepared();
+      } else {
+        // A fiber body parks no OUT value and switches back to the resumer:
+        // the valueless yield form the runtime already offers.
+        emitter.declare(`declare void @scr_gen_yield_ref(ptr, ptr)`);
+        B.line(`call void @scr_gen_yield_ref(ptr null, ptr null)`);
+      }
+      emitter.emitPendingCheck();
+      break;
+    }
     case "tryCatch":
       emitter.emitTryCatch(s);
       break;

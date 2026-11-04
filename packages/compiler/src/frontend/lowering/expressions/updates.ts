@@ -47,7 +47,7 @@ import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
-import { staticFieldWriteTarget } from "../lower-classes.js";
+import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
 import { expandoWritableTarget } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
@@ -56,7 +56,7 @@ import { partialFieldWriteError } from "../partial-assertions.js";
 import { errorPropertyWrite } from "../error-methods.js";
 import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { declareContextLocal } from "../function-context.js";
 import { keyedFieldTarget, keyedFieldWrite, saveKeyedFieldKey } from "./keyed-field-targets.js";
 
@@ -1028,7 +1028,20 @@ export function lowerFieldCompoundValue(
     let probed = tryLowerExpression(lowerer, access.expression);
     const staticClass =
       probed?.type.kind === "classval" ? lowerer.classes.get(probed.type.className) : undefined;
-    if (probed && staticClass && hasRuntimeStatics(staticClass))
+    // A statically known member that the class value's table does not carry
+    // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+    // updates its own storage, as it would without the hook; a member the
+    // class does not declare at all is a property of the class object.
+    const staticMember =
+      staticClass && !ts.isPrivateIdentifier(access.name)
+        ? findStaticOn(lowerer, staticClass, access.name.text)
+        : undefined;
+    if (
+      probed &&
+      staticClass &&
+      hasRuntimeStatics(staticClass) &&
+      (!staticMember || runtimeStaticDefines(lowerer, staticClass, access.name.text))
+    )
       probed = lowerer.coerceToExpected(probed, DYN);
     // A private name is the field of its class (fieldTarget).
     if (probed?.type.kind === "dyn" && !ts.isPrivateIdentifier(access.name)) {

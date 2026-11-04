@@ -19,7 +19,7 @@ import { typedRefRecipe } from "./expr-calls.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
-  if (e.fn === "cp.execFile") {
+  if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
     const callbackArg = e.args[2];
     if (!callbackArg)
       throw new InternalCompilerError("llvm emitter bug: execFile callback missing");
@@ -33,8 +33,17 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const shell = host.emitExpr(e.args[3]!);
     const adapter = host.execFileThunkFor(cbT);
     host.usesTimers = true;
-    host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr, i1)`);
     const out = B.tmp();
+    if (e.fn === "cp.execFileCwd") {
+      // The cwd slice (SCR_CHILD_CP_OPTIONS): the child starts in cwd.
+      const cwd = host.emitExpr(e.args[4]!);
+      host.declare(`declare ptr @scr_exec_file_cwd(ptr, ptr, ptr, ptr, i1, ptr)`);
+      B.line(
+        `${out} = call ptr @scr_exec_file_cwd(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name}, ptr ${cwd.name})`,
+      );
+      return host.own({ name: out, type: e.type });
+    }
+    host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr, i1)`);
     B.line(
       `${out} = call ptr @scr_exec_file(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name})`,
     );
@@ -46,7 +55,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     e.fn === "cp.spawnDynamic" ||
     e.fn === "cp.fork"
   ) {
-    // child_process.spawn: the child starts NOW (posix_spawnp); the
+    // child_process.spawn: the child starts NOW (posix_spawn); the
     // loop reaps it and fires its listeners. Never throws — spawn
     // failure defers to "error".
     host.usesTimers = true;

@@ -726,6 +726,12 @@ static inline void scr_cyc_dead(void *obj) {
   if (scr_cyc_is_buffered(scr_cyc_hdr(obj))) scr_cyc_on_dead(obj);
 }
 
+/* Runs at the start of every collector pass, before the candidate buffers
+ * are drained: the runtime's caches that hold references the collector
+ * cannot trace release them here (scr_json.c's parked capsules). NULL
+ * until such a cache first holds one. */
+extern SCR_TL void (*scr_cyc_pass_hook)(void);
+
 /* Full sweep: trial-deletion passes over EVERY generation, to a fixpoint.
  * This is the exit / session-reset entry point (the RC audit runs straight
  * after and wants nothing reclaimable left), and it costs a walk of the

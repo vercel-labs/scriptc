@@ -38,6 +38,7 @@ export const NATIVE_RECIPE_IMPLEMENTATION_PATHS = [
   "native/runtime-objects",
   "native/vendor",
   "native/artifact-stamps",
+  "native/helper-identity-record",
   "native/executable",
   "native/cache-warm",
 ].map((stem) => join(backendDir, `${stem}${extname(implementationPath)}`));

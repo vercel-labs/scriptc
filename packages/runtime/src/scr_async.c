@@ -1330,6 +1330,22 @@ void scr_set_timeout(ScrClosure *cb, double ms) {
 
 static SCR_TL unsigned long scr_interval_next_id = 1;
 static SCR_TL unsigned long scr_firing_id = 0; /* interval currently running */
+/* The immediate whose callback is running (0 outside one). */
+static SCR_TL unsigned long scr_immediate_firing = 0;
+#ifdef SCR_NODE_ISLANDS
+/* The handle of the timer or immediate running on the hosted loop (0
+ * outside one). Kept out of the pair above: the hosted loop's timer lives
+ * in Node, so clear/ref/refresh/hasRef of this id must keep routing through
+ * the job table rather than the runtime's own queues. */
+static SCR_TL unsigned long scr_hosted_firing = 0;
+#endif
+
+double scr_timer_running_handle(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_hosted_firing != 0) return (double)scr_hosted_firing;
+#endif
+  return (double)(scr_immediate_firing != 0 ? scr_immediate_firing : scr_firing_id);
+}
 static SCR_TL bool scr_firing_cleared = false;
 static SCR_TL bool scr_firing_reffed = true;  /* the running interval's ref state */
 static SCR_TL bool scr_firing_refresh = false; /* refresh() called mid-callback */
@@ -5347,7 +5363,10 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     ScrClosure *cb = (ScrClosure *)j->p;
     j->firing = true;
     j->refreshed = false;
+    unsigned long firing = scr_hosted_firing;
+    scr_hosted_firing = j->id;
     ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_hosted_firing = firing;
     j = &scr_hjobs[token - 1];
     j->firing = false;
     if (j->cleared) {
@@ -5377,8 +5396,12 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     if (j == NULL) return;
     ScrClosure *cb = (ScrClosure *)j->p;
     scr_hmap_delete(j->id * 2 + 1);
+    unsigned long id = j->id;
     scr_hjob_free(token);
+    unsigned long firing = scr_hosted_firing;
+    scr_hosted_firing = id;
     ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_hosted_firing = firing;
     scr_closure_release(cb);
     break;
   }
@@ -6147,7 +6170,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           scr_immediates[i].reffed = false;
           if (scr_reffed_immediates > 0) scr_reffed_immediates--;
         }
+        scr_immediate_firing = scr_immediates[i].id;
         ((void (*)(ScrClosure *))cb->fn)(cb);
+        scr_immediate_firing = 0;
         scr_closure_release(cb);
         if (scr_exc_pending()) return false; /* uncaught throw: main handles it */
 #ifdef SCR_NODE_ISLANDS
@@ -6513,33 +6538,7 @@ void scr_promise_run_executor2(ScrPromise *p, ScrClosure *exec, ScrClosure *reso
  * loop — .next() from the main stack (or any fiber) blocks until the
  * yield. */
 
-enum {
-  SCR_GEN_UNSTARTED = 0,
-  SCR_GEN_SUSPENDED,
-  SCR_GEN_AWAITING,
-  SCR_GEN_RUNNING,
-  SCR_GEN_DONE
-};
-
-/* One type-erased value slot: the exception cell's payload technique,
- * with only the release entry point (takes MOVE — nothing here retains). */
-typedef struct {
-  ScrExcKind kind; /* NONE / F64 / BOOL / REF (strings ride REF) */
-  double f64;
-  bool b;
-  void *payload;
-  void (*release_fn)(void *);
-} ScrGenSlot;
-
-enum { SCR_AG_NEXT = 0, SCR_AG_RETURN, SCR_AG_THROW };
-
-typedef struct ScrAsyncGenRequest {
-  int mode;
-  ScrGenSlot arg;
-  ScrExcCell thrown;
-  ScrPromise *promise; /* owned until this request settles */
-  struct ScrAsyncGenRequest *next;
-} ScrAsyncGenRequest;
+#include "scr_generator_private.h"
 
 static void scr_gen_slot_reset(ScrGenSlot *s) {
   if (s->kind == SCR_EXC_REF && s->payload != NULL) s->release_fn(s->payload);
@@ -6570,44 +6569,6 @@ static void scr_gen_exc_move(ScrExcCell *dst, ScrExcCell *src) {
   src->stack = src_stack;
   scr_exc_cell_changed();
 }
-
-struct ScrGen {
-  size_t rc;
-  ScrDyn *receiver;
-  ScrFiber *fiber; /* NULL once torn down (done, or unstarted release) */
-  int state;
-  ScrGenSlot out; /* yielded value / completion value */
-  ScrGenSlot in;  /* the .next(v) argument */
-  ScrGenSlot ret; /* a parked .return(v) value */
-  /* The never-started teardown: drops the packed (already-retained)
-   * arguments the spawn wrapper built. Emitted per generator function. */
-  void (*drop_args)(void *);
-  /* scr_gen_set_unstarted_return's hook; NULL for most generators. */
-  void (*unstarted_return)(void *);
-  const char *tag; /* scr_gen_set_tag's; NULL is the default */
-  bool is_async;
-  void (*settle_async)(ScrGen *, ScrPromise *);
-  ScrAsyncGenRequest *requests_head;
-  ScrAsyncGenRequest *requests_tail;
-  ScrPromise *active_request;
-  ScrExcCell async_error;
-  bool settle_queued;
-  bool success_hop_done;
-  /* A return() request at a yield: the queued job resumes the body after
-   * the return value's await (return_queued), and the body's completion,
-   * on that request or a later one, settles without another turn
-   * (return_awaited). An explicit `return x` during the unwind clears it,
-   * since that return takes its own turn to await x. */
-  bool return_queued;
-  bool return_awaited;
-  /* The AsyncLocalStorage context of a return() request deferred at a
-   * yield (+1): the body's unwind runs in it, as Node resumes it from the
-   * return value's await. */
-  ScrAlsCtx *return_ctx;
-#ifdef SCR_WORKERS
-  bool context_abandoned;
-#endif
-};
 
 /* The LLVM emitter stores number and boolean yields into OUT and takes
  * them back out inline, through %ScrGenHead { rc, receiver, fiber, state,

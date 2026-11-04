@@ -521,9 +521,7 @@ double scr_stats_big_birthtime(ScrStats *s);
 /* fstat without throwing: +1, or NULL with *error set to the errno. */
 ScrStats *scr_stats_of_fd(int fd, int *error);
 /* stat(2) following symlinks without throwing (the fs.watchFile poll):
- * +1, or NULL with *error set to the errno. Both this and scr_stats_zero
- * exist only in the SCR_FS_WATCH_FILE build of scr_lib.c, which programs
- * that poll link; every other program links the default object. */
+ * +1, or NULL with *error set to the errno. */
 ScrStats *scr_stats_poll_path(ScrStr *path, int *error);
 /* The all-zero snapshot a failed poll reports (Node's kZeroStats). +1. */
 ScrStats *scr_stats_zero(void);

@@ -1,16 +1,19 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import type { CompileFailure, CompileRequestOptions } from "../compile-types.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
   checkerPanicDiag,
   nodeIslandEntryPatchDiag,
+  nodeIslandEntryReadDiag,
+  nodeIslandImplicitGlobalReadDiag,
   nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
-  nodeIslandPatchedReadDiag,
+  nodeIslandReaderStripDiag,
   nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
   npmStaticRefusalDiag,
+  nativePackageDiag,
   iceDiag,
   isCheckerPanic,
   stdioPatchAcrossIslandsDiag,
@@ -474,6 +477,29 @@ function decideNodeIslands(
   const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
   const moduleDecision = moduleIslands(entryPath, policy, scan);
   const modules = moduleDecision.modules;
+  // A sloppy write to an undeclared name creates a global — a sloppy-only
+  // semantic the native tier does not implement, so the module runs in
+  // Node (the user's policy, 2026-10-31). The checker decides this one, not
+  // the syntax pre-scan: a write target needs bindings, and its sloppiness
+  // depends on the enclosing function and file strictness. Preflight
+  // reports it as SC1091 carrying the R2.4 reason. The entry stays native
+  // (a whole-file island is a different feature), and a strict-mode write
+  // is an ordinary lowering gap, so neither joins here.
+  if (policy.mode === "auto") {
+    for (const d of fe.preflight) {
+      if (d.code !== "SC1091" || d.reason !== "implicit-global-write") continue;
+      const file = d.loc.file;
+      if (modules.has(file) || sameFile(file, entryPath)) continue;
+      if (!isJsSourceFileName(file) || file.includes("/node_modules/")) continue;
+      const reason = classifyDiagnostic(d, "refusal");
+      modules.set(file, {
+        file,
+        class: reason.class,
+        reason: describe(reason),
+        decision: "auto",
+      });
+    }
+  }
   // Modules the lowering refused keep their first reason (the reload no
   // longer compiles them).
   for (const [file, island] of lowerModules) if (!modules.has(file)) modules.set(file, island);
@@ -491,10 +517,12 @@ function decideNodeIslands(
   }
   for (const problem of moduleDecision.stripProblems)
     errors.push(nodeIslandStripDiag(problem.file, problem.construct, problem.loc));
-  // Who else must see the patch (H3.4): every non-islanded module that
-  // reads a patched member through the builtin's CommonJS object. An npm
-  // package joins the island set (a patch meant for it must reach it); a
-  // user module is SC8020, because native code cannot see the patch.
+  // Who else must see the patch (H3.4): every module that reads a patched
+  // member through the builtin's CommonJS object joins the island set, npm
+  // package or user module alike — the patch lives in the islands' Node, and
+  // only sharing the builtin shows the read the patch, as in Node. The entry
+  // stays native, and a user TypeScript module Node cannot strip cannot run
+  // in Node at all: both are SC8006.
   const patchedMembers = new Map<string, string>();
   for (const m of scan.modules) {
     if (!modules.has(m.file)) continue;
@@ -507,6 +535,10 @@ function decideNodeIslands(
     string,
     { packageDir: string; member: string; patchFile: string }
   >();
+  // A package the build marks native stays native: a read that only an
+  // island could satisfy is SC8003, once per package and construct.
+  const forcedNativeReads = new Set<string>();
+  const readerModules = new Map<string, { member: string; patchFile: string }>();
   if (policy.mode === "auto" && patchedMembers.size > 0) {
     for (const m of scan.modules) {
       if (modules.has(m.file)) continue;
@@ -514,6 +546,20 @@ function decideNodeIslands(
         const patchFile = patchFileOf(patchedMembers, read.member);
         if (patchFile === undefined) continue;
         if (m.origin === "npm" && m.packageName !== null && m.packageDir !== null) {
+          if (policy.forcedNative.has(m.packageName)) {
+            const key = `${m.packageName}:${read.member}`;
+            if (!forcedNativeReads.has(key)) {
+              forcedNativeReads.add(key);
+              errors.push(
+                nativePackageDiag(
+                  m.packageName,
+                  `it reads '${read.member}' through the CommonJS ${builtinModuleOf(read.member)} object, which island module ${patchFile} patches; a native read cannot see the patch`,
+                  fe.npmImportSites.get(m.packageName) ?? read.loc,
+                ),
+              );
+            }
+            continue;
+          }
           if (!readerPackages.has(m.packageName) && !refused.has(m.packageName))
             readerPackages.set(m.packageName, {
               packageDir: m.packageDir,
@@ -521,17 +567,97 @@ function decideNodeIslands(
               patchFile,
             });
         } else if (m.origin === "user") {
-          errors.push(nodeIslandPatchedReadDiag(read.member, patchFile, read.loc));
+          if (sameFile(m.file, entryPath)) {
+            errors.push(
+              nodeIslandEntryReadDiag(
+                m.file,
+                read.member,
+                builtinModuleOf(read.member),
+                patchFile,
+                read.loc,
+              ),
+            );
+            continue;
+          }
+          if (m.stripProblem !== null) {
+            errors.push(
+              nodeIslandReaderStripDiag(
+                m.file,
+                read.member,
+                patchFile,
+                m.stripProblem.construct,
+                m.stripProblem.loc,
+              ),
+            );
+            continue;
+          }
+          if (!readerModules.has(m.file))
+            readerModules.set(m.file, { member: read.member, patchFile });
+        }
+      }
+    }
+  }
+  // Who else must see an implicit global (H3.4): a sloppy write creates the
+  // name on Node's global object when its island module runs, and native
+  // code has no global object to read it from. An npm package that reads
+  // the name joins the island set (its Node sees the global); a user module
+  // or the entry is SC8020.
+  const readerGlobals = new Map<
+    string,
+    { packageDir: string; global: string; writerFile: string }
+  >();
+  const createdGlobals =
+    policy.mode === "auto" ? implicitGlobalWrites(fe, modules) : new Map<string, string>();
+  if (createdGlobals.size > 0) {
+    for (const m of scan.modules) {
+      if (modules.has(m.file)) continue;
+      for (const read of m.globalReads) {
+        const writerFile = createdGlobals.get(read.name);
+        if (writerFile === undefined) continue;
+        if (m.origin === "npm" && m.packageName !== null && m.packageDir !== null) {
+          if (policy.forcedNative.has(m.packageName)) {
+            const key = `${m.packageName}:${read.name}`;
+            if (!forcedNativeReads.has(key)) {
+              forcedNativeReads.add(key);
+              errors.push(
+                nativePackageDiag(
+                  m.packageName,
+                  `it reads '${read.name}', which island module ${writerFile} creates as an implicit global; the native build has no global object, so the read cannot see it`,
+                  fe.npmImportSites.get(m.packageName) ?? read.loc,
+                ),
+              );
+            }
+            continue;
+          }
+          if (!readerGlobals.has(m.packageName) && !refused.has(m.packageName))
+            readerGlobals.set(m.packageName, {
+              packageDir: m.packageDir,
+              global: read.name,
+              writerFile,
+            });
+        } else if (m.origin === "user") {
+          errors.push(nodeIslandImplicitGlobalReadDiag(read.name, writerFile, read.loc));
         }
       }
     }
   }
   if (errors.length > 0) return { packages: new Map(), modules: new Map(), notes: [], errors };
+  // A user module that reads a patched member runs in a Node island, so its
+  // read goes through the patched object exactly as in Node (H3.4).
+  for (const [file, reader] of readerModules) {
+    modules.set(file, {
+      file,
+      class: "object-model",
+      reason: `it reads '${reader.member}' through the CommonJS ${builtinModuleOf(reader.member)} object, which island module ${reader.patchFile} patches`,
+      decision: "auto",
+    });
+  }
   if (
     refused.size === 0 &&
     policy.forcedNode.size === 0 &&
     modules.size === 0 &&
-    readerPackages.size === 0
+    readerPackages.size === 0 &&
+    readerGlobals.size === 0
   )
     return null;
   const report = buildNodeIslandReport({
@@ -632,6 +758,29 @@ function decideNodeIslands(
       ),
     );
   }
+  // npm packages that read an implicit global an island module creates join
+  // the island set: the global lives on their Node's global object.
+  for (const [name, reader] of readerGlobals) {
+    if (packages.has(name)) continue;
+    const version = packageVersionOf(reader.packageDir);
+    const reason = `it reads '${reader.global}', the implicit global island module ${reader.writerFile} creates`;
+    packages.set(name, {
+      name,
+      version,
+      dir: reader.packageDir,
+      class: "object-model",
+      reason,
+    });
+    notes.push(
+      nodeIslandNoteDiag(
+        name,
+        version,
+        "object-model",
+        reason,
+        fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 },
+      ),
+    );
+  }
   for (const island of [...modules.values()].sort((a, b) =>
     a.file < b.file ? -1 : a.file > b.file ? 1 : 0,
   ))
@@ -643,6 +792,30 @@ function decideNodeIslands(
       }),
     );
   return packages.size === 0 && modules.size === 0 ? null : { packages, modules, notes, errors };
+}
+
+/** The names the island modules' sloppy implicit-global writes create, each
+ * with the file that creates it. Preflight reports each write as an SC1091
+ * whose range is the write target. */
+function implicitGlobalWrites(
+  fe: ReturnType<FrontendFactory>,
+  modules: ReadonlyMap<string, IslandModule>,
+): Map<string, string> {
+  const globals = new Map<string, string>();
+  const sources = new Map<string, string>();
+  for (const d of fe.preflight) {
+    if (d.code !== "SC1091" || d.reason !== "implicit-global-write") continue;
+    const file = d.loc.file;
+    if (!modules.has(file)) continue;
+    let source = sources.get(file);
+    if (source === undefined) {
+      source = readFileSync(file, "utf8");
+      sources.set(file, source);
+    }
+    const name = source.slice(d.loc.start, d.loc.end);
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) && !globals.has(name)) globals.set(name, file);
+  }
+  return globals;
 }
 
 /** The builtin module a patched member belongs to ("fs" of

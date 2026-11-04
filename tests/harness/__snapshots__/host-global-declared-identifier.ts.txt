@@ -1,0 +1,8 @@
+host-global-declared-identifier.ts:5:14 - error SC2020: 'FormData' is a Node global that native code does not provide
+
+  4 | declare var FormData: { new (): unknown };
+  5 | const ctor = FormData;
+    |              ^~~~~~~~
+  6 | console.log(typeof ctor);
+
+  hint: the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global

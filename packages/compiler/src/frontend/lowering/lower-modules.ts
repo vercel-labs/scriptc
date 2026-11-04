@@ -175,7 +175,11 @@ import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
 import { dateClassOperationPrelude } from "./builtins/date-classes.js";
-import { cjsAccessorSnapshotStores, jsHoldsDynObject } from "./lower-exprs.js";
+import {
+  cjsAccessorSnapshotStores,
+  jsHoldsDynObject,
+  jsHoldsMixedClassConstructors,
+} from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
@@ -2452,6 +2456,37 @@ export function collectGlobals(
             decl.initializer !== undefined &&
             ts.isArrayLiteralExpression(decl.initializer) &&
             jsHoldsDynObject(lowerer, decl.initializer)
+          ) {
+            const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+            if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              const g: IrGlobal = {
+                id: `%g.${tag}${nsPrefix}${nameNode.text}`,
+                name: nameNode.text,
+                type: DYN,
+                mutable: isLet,
+                source: bindingSource(nameNode),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+            }
+            continue;
+          }
+          // A JS file-scope ARRAY LITERAL of several class constructors
+          // (`const classes = [A, B]`): tsc's best common type spells the
+          // FIRST constructor, but the literal is a fresh array of every
+          // constructor it names, so the binding holds the checked-dynamic
+          // array (lowerArrayLiteral's own rule). The spelled element type
+          // would check each element against A's class key and reject B at
+          // module init.
+          if (
+            isJsSourceFile(sf) &&
+            ts.isIdentifier(decl.name) &&
+            nameNode === decl.name &&
+            !decl.type &&
+            !hasJsTypeAnnotation(decl) &&
+            decl.initializer !== undefined &&
+            jsHoldsMixedClassConstructors(lowerer, decl.initializer)
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {

@@ -663,6 +663,20 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     );
     return { name: "", type: e.type };
   }
+  if (e.fn === "http.serverOnClientError") {
+    const cbT = e.args[1]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[1]!);
+    const adapter = `scr_http_client_error_thunk${Math.min(cbT.params.length, 2)}`;
+    host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
+    host.declare(`declare void @scr_http_server_on_client_error(ptr, ptr, ptr, i1 zeroext)`);
+    B.line(
+      `call void @scr_http_server_on_client_error(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
+    );
+    return { name: "", type: e.type };
+  }
   if (
     e.fn === "http.clientOnResponse" ||
     e.fn === "http.clientOnError" ||

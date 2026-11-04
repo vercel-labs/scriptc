@@ -35,7 +35,7 @@ import { emitUnionWiden } from "./expr-records.js";
 import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
 import { jsImmediates } from "./jsval.js";
 import { jsIcLiteralKey } from "../../ir/js-ic.js";
-import { DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
+import { ARRAY_PROTOTYPE_MEMBER_NAMES, DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -119,12 +119,30 @@ export function emitDynamicExpr(
       if (v.type.kind === "func") {
         // A closure boxes as the checked-dynamic tree's function kind: retained closure +
         // the per-signature call thunk + the interned signature key. The
-        // best-effort name rides along (null when the lowering had none).
+        // best-effort name rides along (null when the lowering had none). A
+        // closure made here takes its name from the closure-name table at
+        // compile time.
         const t = B.tmp();
-        if (e.fnName !== undefined && e.fnName !== "") {
-          const name = host.cstr(e.fnName);
+        const name =
+          e.fnName !== undefined && e.fnName !== ""
+            ? e.fnName
+            : e.value.kind === "closure" && e.value.adapts !== true
+              ? host.closureNameOf(e.value.fnName)
+              : undefined;
+        if (name !== undefined) {
           const box = host.dyn.dynFuncBoxHelper(v.type);
-          B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${name})`);
+          let nameArg = name === null ? "null" : host.cstr(name);
+          if (name !== null && e.fnNameMainThreadOnly) {
+            // Node's main thread wraps the function under this name; a
+            // Worker hands out the unwrapped function, named "".
+            host.declare(`declare zeroext i1 @scr_context_is_main()`);
+            const onMain = B.tmp();
+            B.line(`${onMain} = call zeroext i1 @scr_context_is_main()`);
+            const chosen = B.tmp();
+            B.line(`${chosen} = select i1 ${onMain}, ptr ${nameArg}, ptr ${host.cstr("")}`);
+            nameArg = chosen;
+          }
+          B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${nameArg})`);
         } else B.line(`${t} = ${host.dyn.unnamedFuncBoxCall(v.type, v.name)}`);
         if (e.fnLength !== undefined) {
           host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);
@@ -709,9 +727,13 @@ export function emitDynamicExpr(
         e.key.type.kind === "dyn" ? host.dyn.dynComputedKeyGetHelper() : host.dyn.dynKeyGetHelper();
       const t = B.tmp();
       const generic = `call ptr @${helper}(ptr ${d.name}, ptr ${k.name}, i1 ${e.optional ? "true" : "false"})`;
-      const inherited = e.key.kind === "strLit" && INHERITED_OBJECT_MEMBERS.has(e.key.value);
+      const inherited =
+        e.key.kind === "strLit" &&
+        (INHERITED_OBJECT_MEMBERS.has(e.key.value) ||
+          ARRAY_PROTOTYPE_MEMBER_NAMES.has(e.key.value));
       // Object.prototype itself answers its own members before the ordinary
-      // read (which fences reflection on the prototype).
+      // read (which fences reflection on the prototype); an array answers
+      // the methods its prototype installs.
       let prototypeJoin: { member: string; from: string; join: string } | null = null;
       if (inherited) {
         host.declare(`declare ptr @scr_dyn_object_prototype_member(ptr, ptr)`);
@@ -757,9 +779,10 @@ export function emitDynamicExpr(
       }
       let result = t;
       if (prototypeJoin) {
-        // An undefined read of an Object.prototype member name answers the
-        // member the receiver inherits (scr_dyn_invoke.c; the frontend
-        // links that unit for these reads).
+        // An undefined read of an Object.prototype member name, or of an
+        // Array.prototype method on an array, answers the member the
+        // receiver inherits (scr_dyn_invoke.c; the frontend links that unit
+        // for these reads).
         host.declare(`declare ptr @scr_dyn_inherited_read(ptr, ptr, ptr)`);
         const read = B.tmp();
         B.line(

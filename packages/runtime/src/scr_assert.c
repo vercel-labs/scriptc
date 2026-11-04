@@ -1358,6 +1358,10 @@ static const char *scr_assert_cf_bytes_class(ScrBytesElem elem) {
     case SCR_BYTES_U16: return "Uint16Array";
     case SCR_BYTES_I16: return "Int16Array";
     case SCR_BYTES_U8C: return "Uint8ClampedArray";
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: return "BigInt64Array";
+    case SCR_BYTES_U64: return "BigUint64Array";
+#endif
   }
   return "Uint8Array";
 }
@@ -1573,6 +1577,15 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
       for (size_t i = 0; i < bs->len; i++) {
         ab_char(b, '\n');
         scr_assert_cf_pad(b, indent + 2);
+#ifdef SCR_JS_OBJECT_MODEL
+        if (scr_bytes_elem_is_bigint(bs->elem)) {
+          ScrDyn *element = scr_bytes_get_bigint(bs, (double)i);
+          scr_assert_cf_value(b, element, indent + 2, 0);
+          scr_dyn_release(element);
+          if (i + 1 < bs->len) ab_char(b, ',');
+          continue;
+        }
+#endif
         char tmp[40];
         size_t n = scr_assert_inspect_f64(scr_bytes_get(bs, (double)i), tmp);
         ab_bytes(b, tmp, n);
@@ -2512,9 +2525,10 @@ failed:
 
 /* Node's expectedException over an object expected (assert.throws/rejects
  * second argument), in Node's order. The keys are a validation object's
- * own enumerable keys, or every key of an error instance's encoding (the
- * %error marker skipped; name/message/code is its surface, the keys Node
- * adds for an Error), taken once before the comparison. Values are read
+ * own enumerable keys, plus name and message when it is an Error instance
+ * (the two keys Node adds; an error encoding's other slots stay out, as
+ * Node's non-enumerable stack and prototype name/message do), taken once
+ * before the comparison. Values are read
  * when Node's expressions read them, each held only while it is used, so
  * a caught object's getter that changes the validation object is seen as
  * Node sees it.
@@ -2550,14 +2564,23 @@ void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, b
   }
   bool is_error = scr_dyn_obj_get(expected, "%error", 6) != NULL;
   size_t total = scr_dyn_obj_count(expected);
-  ScrStr **keys = total > 0 ? malloc(total * sizeof *keys) : NULL;
-  if (total > 0 && keys == NULL) scr_trap("scriptc: out of memory\n");
+  /* ObjectKeys(expected) is the enumerable own keys; an Error instance adds
+   * `name` and `message` on top (they are own non-enumerable properties, or
+   * inherited from the prototype, in an error's encoding). `stack` and the
+   * %error marker are never compared. */
+  size_t cap = total + (is_error ? 2 : 0);
+  ScrStr **keys = cap > 0 ? malloc(cap * sizeof *keys) : NULL;
+  if (cap > 0 && keys == NULL) scr_trap("scriptc: out of memory\n");
   size_t count = 0;
   for (size_t i = 0; i < total; i++) {
     ScrDynProp e = scr_dyn_obj_prop_at(expected, i);
     if (e.key_len == 6 && memcmp(e.key, "%error", 6) == 0) continue;
-    if (!is_error && !e.enumerable) continue;
+    if (!e.enumerable) continue;
     keys[count++] = scr_str_new(e.key, e.key_len);
+  }
+  if (is_error) {
+    keys[count++] = scr_str_new("name", 4);
+    keys[count++] = scr_str_new("message", 7);
   }
   if (count == 0 && !is_error) {
     free(keys);

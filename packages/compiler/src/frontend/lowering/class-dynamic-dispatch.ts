@@ -59,6 +59,7 @@ import {
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
+import { runtimeStaticDefines } from "./class-runtime-statics.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
@@ -3282,6 +3283,10 @@ export class ClassDynamicDispatch {
     for (const dispatch of this.dispatches.values()) {
       for (const name of this.boxedConstructors) {
         const info = lowerer.classes.get(name);
+        // The class value's property table answers a static its chain defines
+        // there, computed names included; the declarer's method is not what
+        // the class value holds.
+        if (info && runtimeStaticDefines(lowerer, info, dispatch.source.method)) continue;
         const found = info && findStaticOn(lowerer, info, dispatch.source.method);
         const key = `constructor:${name}`;
         if (!found?.method || dispatch.classes.has(key)) continue;
@@ -3574,6 +3579,8 @@ export class ClassDynamicDispatch {
       if (!dispatch.write)
         for (const name of this.boxedConstructors) {
           const info = lowerer.classes.get(name);
+          // A table the chain defines the name in answers the read itself.
+          if (info && runtimeStaticDefines(lowerer, info, dispatch.name)) continue;
           const found = info && findStaticOn(lowerer, info, dispatch.name);
           const field = found?.field;
           const key = `constructor:${name}`;

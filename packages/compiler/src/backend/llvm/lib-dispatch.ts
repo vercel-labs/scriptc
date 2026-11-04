@@ -1096,6 +1096,9 @@ function emitTypedRegexReplace(host: LlvmEmitterContext, e: LibCallExpr): LlValu
 
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
+  // A Promise static with a foreign constructor creates promises whose
+  // jobs and unhandled-rejection accounting need the event loop.
+  if (e.fn === "promise.genericStatic") host.usesPromises = true;
   if (e.fn === "regex.replaceCallback") {
     const typed = emitTypedRegexReplace(host, e);
     if (typed) return typed;

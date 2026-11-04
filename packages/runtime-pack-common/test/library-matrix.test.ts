@@ -51,11 +51,14 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         expect(sources).toContain(source);
       for (const unit of flavor.runtime_units)
         for (const variant of unit.variants) expect(variant.defines).not.toContain("SCR_DYNAMIC");
+      // BigInt typed arrays read their elements through the JavaScript object
+      // model build (t262-da §J), so each build has its object model twin
+      // here too.
       expect(
         flavor.runtime_units
           .find((unit) => unit.source === "scr_bytes.c")
           .variants.map((variant) => variant.id),
-      ).toEqual(["default", "text-decoder-legacy"]);
+      ).toEqual(["default", "text-decoder-legacy", "js-om", "js-om-text-decoder-legacy"]);
     }
   }
   expect(matrix.runtime_units.some((unit) => unit.source === "scr_library.c")).toBe(false);

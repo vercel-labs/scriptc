@@ -25,11 +25,7 @@
  * lowering, bound a site exactly as its lowering does. */
 
 import * as ts from "./ts7/adapter.js";
-import {
-  bindingNeverReassigned,
-  stripValueWrappers,
-  type BindingScope,
-} from "./lowering/binding-analysis.js";
+import { bindingNeverReassigned, stripValueWrappers, type BindingScope } from "./binding-writes.js";
 
 /** At most this many values: beyond it the cartesian products are no longer
  * a catalogue a selector should spell out. */

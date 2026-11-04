@@ -5,6 +5,7 @@ import type { NativeOptimization } from "./backend/optimization.js";
 import type { NativeProfileMatch } from "./backend/native-profile.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
+import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import type { TierMode } from "./frontend/tier-analysis.js";
 import type { NodeIslandOptions } from "./node-islands/policy.js";
 
@@ -176,6 +177,15 @@ export interface CompileWarnings {
    * modules (absolute file paths). Reported again on an executable cache
    * hit, so a runner can tell an island result from a native one. */
   islands?: { packages: string[]; modules: string[] };
+  /** What the build's frontend pass lowered (lowerer.ts's coverage stats):
+   * statements attempted, statements that could not be lowered, functions
+   * whose signatures were skipped, and how many statements compile into
+   * dynamic-tier functions. The build measured these on the program it
+   * compiled, so a caller can assert its lowering quality without a second
+   * `analyze()` pass over the same program. Absent on an executable cache
+   * hit, which skips the frontend; `scriptc coverage` reports coverage from
+   * the analysis that always lowers. */
+  stats?: LowerStats;
 }
 
 export type CompileSourceResult =

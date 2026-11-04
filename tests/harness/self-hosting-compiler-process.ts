@@ -18,6 +18,7 @@ async function compilerProcess(
   operation: "analyze" | "compile",
   entry: string,
   options: object,
+  control: { timeout?: number } = {},
 ): Promise<unknown> {
   const { stdout, stderr } = await execFileAsync(
     process.execPath,
@@ -37,7 +38,13 @@ async function compilerProcess(
       entry,
       JSON.stringify(options),
     ],
-    { cwd: root, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 },
+    {
+      cwd: root,
+      // The caller's test budget: the child must outlive the band the test
+      // allows, or the exec would kill a build the test still times.
+      timeout: control.timeout ?? 300_000,
+      maxBuffer: 16 * 1024 * 1024,
+    },
   );
   if (stderr !== "") throw new Error(stderr);
   return JSON.parse(stdout);
@@ -57,6 +64,7 @@ type ExecutableResult =
 export async function compileInChild(
   entry: string,
   options: CompileOptions,
+  control: { timeout?: number } = {},
 ): Promise<ExecutableResult> {
-  return (await compilerProcess("compile", entry, options)) as ExecutableResult;
+  return (await compilerProcess("compile", entry, options, control)) as ExecutableResult;
 }

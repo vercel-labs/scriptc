@@ -167,12 +167,17 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     if (!ts.isObjectLiteralExpression(optsNode)) {
       const runtime = lowerSpawnSyncRuntimeOptions(lowerer, optsNode, expr.arguments.nodes[1], loc);
       if (runtime) {
-        const call = (fn: "cp.spawnSyncExt" | "cp.spawnSyncExtEnv", extra: IrExpr[]): IrExpr => ({
+        const call = (
+          fn: "cp.spawnSyncExt" | "cp.spawnSyncExtEnv",
+          extra: IrExpr[],
+          callCmd: IrExpr = cmd,
+          callArgs: IrExpr = argv,
+        ): IrExpr => ({
           kind: "libCall",
           fn,
           args: [
-            cmd,
-            argv,
+            callCmd,
+            callArgs,
             runtime.timeout,
             killSignal,
             runtime.inMode,
@@ -189,13 +194,30 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         });
         // An absent `env` inherits our environment; a present one replaces
         // it. The two entry points differ only in that argument, so the
-        // member's presence test picks one at the call.
+        // member's presence test picks one at the call. Node evaluates the
+        // command and its arguments before it reads the options record, so
+        // both go into hidden locals the presence test follows: a command
+        // that adds or drops `env` in the record decides the entry point,
+        // as it does under Node.
         if (runtime.hasEnv !== null && runtime.envPairs !== null) {
+          const cmdLocal = lowerer.declareHiddenLocal("%spawnSyncCmd", cmd.type);
+          const argvLocal = lowerer.declareHiddenLocal("%spawnSyncArgs", argv.type);
+          const cmdArg = varRef(cmdLocal.id, cmd.type, loc);
+          const argvArg = varRef(argvLocal.id, argv.type, loc);
           return {
-            kind: "ternary",
-            cond: runtime.hasEnv,
-            then: call("cp.spawnSyncExtEnv", [runtime.envPairs]),
-            else_: call("cp.spawnSyncExt", []),
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: cmdLocal.id, init: cmd, loc },
+              { kind: "varDecl", localId: argvLocal.id, init: argv, loc },
+            ],
+            result: {
+              kind: "ternary",
+              cond: runtime.hasEnv,
+              then: call("cp.spawnSyncExtEnv", [runtime.envPairs], cmdArg, argvArg),
+              else_: call("cp.spawnSyncExt", [], cmdArg, argvArg),
+              type: SPAWNRES_T,
+              loc,
+            },
             type: SPAWNRES_T,
             loc,
           };
@@ -1036,6 +1058,19 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   let cwd: IrExpr = emptyStr;
   let plain = true; // exactly { stdio: "ignore" }: the historical libCall
+  // Node evaluates the command, then the arguments, then the options
+  // object's members in source order. A member value that needs a hidden
+  // local is bound in that order, so a side effect in an earlier member (a
+  // call, an assignment) shapes a later one as it does under Node.
+  const valuePrelude: IrStmt[] = [];
+  const bindInto = (stmts: IrStmt[], name: string, value: IrExpr): IrExpr => {
+    if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
+      return value;
+    const local = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, value.type, loc);
+  };
+  const bind = (name: string, value: IrExpr): IrExpr => bindInto(valuePrelude, name, value);
 
   if (optsNode && ts.isObjectLiteralExpression(optsNode)) {
     for (const p of optsNode.properties.nodes) {
@@ -1062,14 +1097,14 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                 : null;
           if (lit !== null) {
             const cond = lowerer.lowerCondition(cs.cond);
-            detached = {
+            detached = bind("%spawnDetached", {
               kind: "ternary",
               cond,
               then: boolLit(cs.whenTrue ? lit : false, loc),
               else_: boolLit(cs.whenTrue ? false : lit, loc),
               type: BOOL,
               loc,
-            };
+            });
             plain = false;
             continue;
           }
@@ -1116,9 +1151,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
               }
               const runtimeMode = stdioModeExpr(lowerer, el, t, which);
               if (runtimeMode) {
-                if (which === 0) inMode = runtimeMode;
-                else if (which === 1) outMode = runtimeMode;
-                else errMode = runtimeMode;
+                const mode = bind(`%spawnStdio${which}Mode`, runtimeMode);
+                if (which === 0) inMode = mode;
+                else if (which === 1) outMode = mode;
+                else errMode = mode;
                 plain = false;
                 return;
               }
@@ -1136,7 +1172,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                   'each slot is "ignore", "inherit", or a number fd (an openSync result)',
                 );
               }
-              const fd = lowerer.lowerExprExpecting(el, F64);
+              const fd = bind(
+                which === 1 ? "%spawnStdoutFd" : "%spawnStderrFd",
+                lowerer.lowerExprExpecting(el, F64),
+              );
               if (which === 1) {
                 outMode = numLit(2, loc);
                 outFd = fd;
@@ -1176,18 +1215,18 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             // A runtime boolean — the portable daemon idiom `detached:
             // process.platform !== "win32"` — reaches the same
             // POSIX_SPAWN_SETSID flag through scr_spawn_opts's bool slot.
-            detached = lowerer.lowerExprExpecting(m.value, BOOL);
+            detached = bind("%spawnDetached", lowerer.lowerExprExpecting(m.value, BOOL));
             plain = false;
           }
           break;
         }
         case "env":
           hasEnv = boolLit(true, loc);
-          envPairs = recordToEnvPairs(lowerer, m.value);
+          envPairs = bind("%spawnEnv", recordToEnvPairs(lowerer, m.value));
           plain = false;
           break;
         case "cwd":
-          cwd = lowerer.lowerExprExpecting(m.value, STRING);
+          cwd = bind("%spawnCwd", lowerer.lowerExprExpecting(m.value, STRING));
           plain = false;
           break;
         case "windowsHide":
@@ -1237,12 +1276,12 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   if (plain) {
     return { kind: "libCall", fn: "cp.spawn", args: [cmd, argv], type: CHILD_T, loc };
   }
-  return {
+  const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "cp.spawnOpts",
     args: [
-      cmd,
-      argv,
+      callCmd,
+      callArgs,
       inMode,
       outMode,
       errMode,
@@ -1256,7 +1295,16 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     ],
     type: CHILD_T,
     loc,
-  };
+  });
+  if (valuePrelude.length === 0) return callOf(cmd, argv);
+  // The bound member values were collected in source order; the command and
+  // the arguments precede them, so an earlier value that changes a later
+  // one's input is seen as in Node.
+  const stmts: IrStmt[] = [];
+  const callCmd = bindInto(stmts, "%spawnCmd", cmd);
+  const callArgs = bindInto(stmts, "%spawnArgs", argv);
+  stmts.push(...valuePrelude);
+  return { kind: "seqExpr", stmts, result: callOf(callCmd, callArgs), type: CHILD_T, loc };
 }
 
 /** `fork(staticModulePath, args?, options?)` embeds the selected program

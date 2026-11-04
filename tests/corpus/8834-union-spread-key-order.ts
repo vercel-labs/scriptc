@@ -39,6 +39,25 @@ console.log(merge({ headers: "h0" }, { label: "l", headers: "h1" }));
 // The absent arm copies nothing.
 console.log(merge({ apiKey: "k0" }, undefined));
 
+interface Wide extends Opts {
+  extra: number;
+}
+
+function showWide(o: Wide): string {
+  return JSON.stringify(o) + " " + Object.keys(o).join(",");
+}
+
+// A copy a union spread built is itself a source: spreading it into a wider
+// declared record copies its own key order, which the union made
+// value-dependent.
+function widen(base: Opts, src: Src): string {
+  const merged: Opts = { ...base, ...src, maxTokens: 1 };
+  return showWide({ ...merged, extra: 2 });
+}
+
+console.log(widen({ headers: "h0" }, { apiKey: "k", env: "e" }));
+console.log(widen({ headers: "h0" }, undefined));
+
 interface Compat {
   b?: string;
   image?: boolean;

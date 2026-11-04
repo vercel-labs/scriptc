@@ -3441,8 +3441,11 @@ __attribute__((always_inline)) static inline size_t scr_latin1_into(uint8_t *dst
                                                                     bool limited, size_t cap,
                                                                     bool ascii) {
   const uint64_t top = UINT64_C(0x8080808080808080);
-  /* An ASCII prefix (all of an ASCII string) is its own encoding. */
-  size_t o = ascii ? n : scr_bytes_ascii_prefix(in, n);
+  /* An ASCII prefix (all of an ASCII string) is its own encoding. A limited
+   * write scans no further than its budget: the bytes past it are not
+   * written, so the scan is bounded by the caller's room, not by n. */
+  size_t scan = limited && cap < n ? cap : n;
+  size_t o = ascii ? scan : scr_bytes_ascii_prefix(in, scan);
   if (limited && o > cap) o = cap;
   size_t i = o;
   memcpy(dst, in, o);

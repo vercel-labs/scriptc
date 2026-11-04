@@ -26,6 +26,27 @@ for (const enc of encodings) {
   }
 }
 
+// A long ASCII run with non-ASCII text behind it, written in short pieces:
+// the bytes written are the run's first ones and the text after the write is
+// untouched, whatever the text's length.
+const prefixed = "p".repeat(20000) + "café \u{1F600} 本語" + "q".repeat(500);
+for (const enc of encodings) {
+  const whole = Buffer.from(prefixed, enc);
+  console.log("prefixed", enc, whole.length);
+  for (const offset of [0, 1, 8]) {
+    for (const budget of [0, 1, 2, 3, 8, 9, 20000, 20001, 20002, 20010, 21000]) {
+      const target = Buffer.alloc(offset + budget + 8, 0xaa);
+      const written = target.write(prefixed, offset, budget, enc);
+      const tail = Buffer.alloc(target.length - offset - written, 0xaa);
+      const same =
+        written === Math.min(budget, whole.length) &&
+        target.subarray(offset, offset + written).equals(whole.subarray(0, written)) &&
+        target.subarray(offset + written).equals(tail);
+      console.log(offset, budget, written, same, target.subarray(offset, offset + 8).toString("hex"));
+    }
+  }
+}
+
 // The same writes with the encoding name held in a variable, including the
 // upper-case spellings Node's table accepts.
 const names = ["latin1", "LATIN1", "ascii", "ASCII"];

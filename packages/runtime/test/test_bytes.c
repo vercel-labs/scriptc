@@ -466,6 +466,13 @@ static void test_write_str_latin1(void) {
   static uint8_t big[4096];
   for (size_t i = 0; i < sizeof big; i++) big[i] = i % 3 == 0 ? (uint8_t)'x' : i % 3 == 1 ? 0xc3 : 0xa9;
   check_write_str(big, sizeof big, "write latin1 long");
+  /* A long ASCII run with non-ASCII text after it, under budgets that end
+   * inside the run: the write is the run's first bytes, however much text
+   * follows. */
+  static uint8_t prefixed[4096];
+  memset(prefixed, 'p', 4000);
+  memcpy(prefixed + 4000, "\xc3\xa9\xe2\x82\xac\xf0\x9f\x92\xa9", 9);
+  check_write_str(prefixed, 4009, "write latin1 long prefix");
 }
 
 static void test_concat_and_u32be(void) {

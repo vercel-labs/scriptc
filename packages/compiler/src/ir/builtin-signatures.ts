@@ -4649,6 +4649,10 @@ function buildLibFnSignatures() {
      * listener of the name needs the converted tuple. */
     "emitter.emitMixed": { argTypes: [null, STRING, F64], result: BOOL },
     "emitter.hasTyped": { argTypes: [null, STRING], result: BOOL },
+    /** The converse: whether a listener of the name was registered through
+     * an untyped value with no typed form, so a typed emit's arguments must
+     * also convert to checked-dynamic values. */
+    "emitter.hasDyn": { argTypes: [null, STRING], result: BOOL },
     "emitter.emitError": { argTypes: [null, STRING, null], result: BOOL },
     "emitter.count": { argTypes: [null, STRING], result: F64 },
     "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },

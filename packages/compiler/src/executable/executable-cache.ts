@@ -81,6 +81,7 @@ export interface EarlyExecutableNativeFeatures {
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
   primitiveWrapper?: boolean;
+  iteratorProto?: boolean;
   zlib: boolean;
   brotli?: boolean;
   zstd?: boolean;
@@ -118,6 +119,9 @@ export interface EarlyExecutableNativeFeatures {
   stdlibPrototypeValue?: boolean;
   /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
   promiseGeneric?: boolean;
+  /** A computed read of the global object, or `… in globalThis`:
+   * scr_global_host_absent.c. */
+  hostAbsentGlobals?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;

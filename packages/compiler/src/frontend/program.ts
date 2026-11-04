@@ -132,10 +132,11 @@ import {
 } from "./workspace-registry.js";
 import {
   ADOPTED_OPTIONS,
+  type AdmittedOpinion,
   isJsSourceFileName,
+  jsOpinion,
   jsTscCodeTriage,
-  JS_ANY_OPERATOR_CODES,
-  JS_RELAXED_TSC_CODES,
+  type Opinion,
 } from "./tsc-codes.js";
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { earlyErrorDiagnostics7 } from "./early-errors.js";
@@ -405,6 +406,12 @@ export interface LoadResult {
    * instead of failing the build, and the module never joins the compiled
    * graph. Filled by checkPreflight. */
   dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
+  /** The JavaScript checker diagnostics preflight admitted under an opinion
+   * row (tsc-codes.ts, JS_OPINIONS), each recorded only where no other
+   * filter would have suppressed it. Empty for every program that admits
+   * none — every TypeScript program, and every JavaScript program that
+   * compiles without one. Filled by checkPreflight. */
+  admittedOpinions?: readonly AdmittedOpinion[];
   /** Node's startup refusal, when the graph carries an import edge Node
    * rejects before ANY module evaluates — a RESOLUTION refusal (a bare
    * specifier nothing installed resolves, an exports/imports map that
@@ -1494,83 +1501,92 @@ export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
     inlineRequireCycleCalls,
     moduleEdges,
     dynamicImportRejections,
+    admittedOpinions,
   } = preflight7(load);
   load.moduleOrder = moduleOrder;
   load.startupCrash = startupCrash;
   load.inlineRequireCycleCalls = inlineRequireCycleCalls;
   load.moduleEdges = moduleEdges;
   load.dynamicImportRejections = dynamicImportRejections;
+  load.admittedOpinions = admittedOpinions;
+  // Measurement aid: prints every opinion site this preflight admitted, so a
+  // corpus run can show which rows carry evidence (SCRIPTC_DEBUG_ADMITTED=1).
+  // Silent by default; no lowering reads the set.
+  if (process.env["SCRIPTC_DEBUG_ADMITTED"] === "1")
+    for (const site of admittedOpinions)
+      process.stderr.write(
+        `scriptc admitted TS${site.code} ${site.view} ${site.file}:${site.pos}-${site.end}\n`,
+      );
   return diags;
 }
 
-/* Finding 5: tsgo's strict CommonJS modeling fires checker codes on JS
- * shapes 5.9.3 accepted, and the real hazards those shapes carry are fenced
- * by scriptc's OWN analysis, never by these codes — so for JS FILES ONLY
- * they join the relaxation (TS sources keep the full gate; the order-parity
- * harness holds both lanes to identical verdicts, so a case where 5.9.3
- * itself raises one of these on a JS file would fail there, not slip by):
- *  - TS2309 ("export assignment with other exported elements") on the
- *    table-then-member pattern — cjsExportDiscardReason names every export
- *    Node actually discards.
- *  - TS2323 ("cannot redeclare exported variable") on symbol-keyed expando
- *    assignments in CJS classes (`this[kSym] = v` under `module.exports =
- *    Class`) — 5.9.3 synthesized expando symbols, tsgo trips its
- *    redeclaration check instead (the corpus's countdown fixture). */
-// Ordinary JavaScript functions are constructable even when the checker
-// retains only their call signature after a factory return. Heritage
-// lowering separately verifies the actual constructor implementation.
-const TS7_JS_RELAXED_EXTRA: ReadonlySet<number> = new Set([2309, 2323, 2507]);
-
-/** Relaxed JavaScript codes that checked JavaScript files keep: values of
- * another type in a typed slot (2322 and its elaborations 2740/2741/2559,
- * 2345, 2769), call arity (2554-2556) and incompatible subclass members
- * (2415). */
-const CHECKED_JS_ENFORCED_CODES: ReadonlySet<number> = new Set([
-  2322, 2345, 2415, 2554, 2555, 2556, 2559, 2740, 2741, 2769,
-]);
-
-function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
-  const file = d.fileName;
-  if (!file || !isJsSourceFileName(file)) return false;
-  // A private setter's implicit any stays reported: the private-element
-  // lowering does not implement the shadowing and brand-check rules these
-  // programs exercise (a private setter shadowed across nested classes
-  // reaches the LLVM emitter's unknown-class path), so the program keeps
-  // refusing until that lowering exists.
-  if (d.code === 7032 && ts.flattenDiagnosticMessageText(d, "\n").includes("Property '#"))
-    return false;
-  if (JS_RELAXED_TSC_CODES.has(d.code) || TS7_JS_RELAXED_EXTRA.has(d.code)) return true;
-  // The triage table's `relax` rows: legal JavaScript whose construct the
-  // lowering already builds Node-exactly (tsc-codes.ts).
-  if (jsTscCodeTriage(d.code)?.action === "relax") return true;
-  // The 8xxx range is TypeScript's JSDoc-specific diagnostic family
-  // (malformed tags, signature/tag mismatches): comment semantics with no
-  // runtime meaning in a JS file.
-  if (d.code >= 8000 && d.code <= 8999) return true;
-  if (JS_ANY_OPERATOR_CODES.has(d.code)) {
-    const text = ts.flattenDiagnosticMessageText(d, "\n");
-    // A primitive wrapper operand (`new Number(1) * 2`): the operator
-    // converts it with ToPrimitive, as for any object.
-    return text.includes("'any'") || /'(Number|String|Boolean)'/.test(text);
+/** The innermost node whose token span contains [pos, end): the node an
+ * opinion row's site guard inspects, and the one `island` rows ask about
+ * (a diagnostic carries no node). */
+function diagnosticNode7(sf: ts.SourceFile, pos: number, end: number): ts.Node {
+  let node: ts.Node = sf;
+  // The lowering's nesting fence is 200 levels; a recovered AST is never
+  // deeper than that on the path to one diagnostic.
+  for (let depth = 0; depth < 200; depth++) {
+    let next: ts.Node | undefined;
+    ts.forEachChild(node, (child) => {
+      if (ts.tokenStartOfNode(child) <= pos && end <= child.end) {
+        next = child;
+        return true;
+      }
+      return undefined;
+    });
+    if (next === undefined) break;
+    node = next;
   }
-  // An index write on a String wrapper (`new String("ab")[5] = "q"`): Node
-  // adds the property past the end and ignores writes to the read-only
-  // index properties (sloppy) or throws (strict), as the object does.
-  if (d.code === 2542 && ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'"))
-    return true;
-  // The deprecated Buffer(...) call without `new`, which Node's Buffer
-  // function accepts (containers/bytes.ts lowers it), and fs.ReadStream(...)
-  // and fs.WriteStream(...), which construct their stream
-  // (builtins/fs-streams.ts).
-  if (d.code === 2348) {
-    const text = ts.flattenDiagnosticMessageText(d, "\n");
-    return (
-      text.includes("'BufferConstructor'") ||
-      text.includes("'typeof ReadStream'") ||
-      text.includes("'typeof WriteStream'")
-    );
-  }
-  return false;
+  return node;
+}
+
+/** The JS_OPINIONS admission for one checker diagnostic (tsc-codes.ts), or
+ * null when the diagnostic stays. Five conditions, in order:
+ *
+ *  1. the file is a JavaScript source (never .ts/.mts/.cts/.tsx/.d.ts);
+ *  2. a row admits the code, and the file is unchecked JavaScript unless the
+ *     row is one a checked project has always seen (`checkedJs: "enforce"`);
+ *  3. the diagnostic is a checker diagnostic, not a parser one (a syntactic
+ *     diagnostic leaves a recovered AST);
+ *  4. the row's site guard accepts the diagnostic's node, if it has one;
+ *  5. an `island` row does not apply in strict code (scriptc's own
+ *     isStrictCode, never tsc's module opinion).
+ *
+ * Admission says nothing about the LOWERING: the caller records the site
+ * (AdmittedOpinion) so a view's lowering path can be gated on it. */
+function jsOpinionOf7(
+  p: ts.Program,
+  d: ts.Diagnostic,
+  projectCheckJs: boolean,
+  syntacticOf: (sf: ts.SourceFile) => readonly ts.Diagnostic[],
+): Opinion | null {
+  if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return null;
+  const opinion = jsOpinion(d.code);
+  if (opinion === null) return null;
+  const sf = p.getSourceFile(d.fileName);
+  if (
+    sf !== undefined &&
+    opinion.checkedJs === "enforce" &&
+    isCheckedJsSourceFile(sf, projectCheckJs)
+  )
+    return null;
+  const pos = d.pos;
+  const end = d.end;
+  const spanless = pos === undefined || end === undefined;
+  // A diagnostic with no span, or one that names a file the program does
+  // not carry, cannot be placed in the AST. A row with no node guard needs
+  // no node, so the admission applies exactly as it always has; the caller
+  // records nothing (there is no site a view could be gated on).
+  const nodeFree = opinion.site === undefined && opinion.view !== "island";
+  if (spanless || sf === undefined) return nodeFree ? opinion : null;
+  if (syntacticOf(sf).some((s) => s.code === d.code && s.pos === pos && s.end === end)) return null;
+  if (nodeFree) return opinion;
+  const node = diagnosticNode7(sf, pos, end);
+  if (opinion.site !== undefined && !opinion.site(node, d)) return null;
+  if (opinion.view === "island" && isStrictCode(node)) return null;
+  return opinion;
 }
 
 /** The specifier of a `require("...")` call: the callee is the bare
@@ -5635,6 +5651,7 @@ function preflight7(load: LoadResult): {
   inlineRequireCycleCalls: ReadonlySet<ts.Node>;
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]>;
   dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash>;
+  admittedOpinions: readonly AdmittedOpinion[];
 } {
   const { program, entry } = load;
   const diags: ScrDiagnostic[] = [...load.configDiags];
@@ -5828,12 +5845,34 @@ function preflight7(load: LoadResult): {
   // A JavaScript file that TypeScript checks keeps the type errors that
   // protect its JSDoc types: a value of another type reaching a typed slot,
   // a call with the wrong arity, and a subclass member that does not
-  // match its base.
+  // match its base (the rows that say `checkedJs: "enforce"` in
+  // JS_OPINIONS).
   const projectCheckJs = load.typeWorld?.projectCheckJs ?? false;
-  const enforcedInCheckedJs = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (!CHECKED_JS_ENFORCED_CODES.has(d.code) || d.fileName === undefined) return false;
-    const sf = p.getSourceFile(d.fileName);
-    return sf !== undefined && isCheckedJsSourceFile(sf, projectCheckJs);
+  // The opinion sites this preflight admits (tsc-codes.ts, JS_OPINIONS),
+  // deduped across the worlds the gate consults (the lowering world, the
+  // project world, the JSX text). The lowering asks opinionAt about one of
+  // them; a view's lowering path is gated on the record, never on syntax.
+  const admittedOpinions = new Map<string, AdmittedOpinion>();
+  const recordAdmittedOpinion = (site: AdmittedOpinion): void => {
+    admittedOpinions.set(`${site.file}\0${site.pos}\0${site.end}\0${site.code}`, site);
+  };
+  // A diagnostic's span is an offset into the text of the program that
+  // answered it. With JSX sources the gate's worlds hold the files as
+  // written, while the lowering asks opinionAt about nodes of `program`,
+  // which carries the rewritten text; an original offset recorded as a site
+  // would name an unrelated node wherever a rewrite moved the text. The span
+  // moves into that text exactly as a reported diagnostic's location does
+  // below: copied text keeps its offset, a span inside JSX maps to the call
+  // it lowered to.
+  const admittedSite = (p: ts.Program, site: AdmittedOpinion): AdmittedOpinion => {
+    if (p === program) return site;
+    const lowered = load.jsxSources?.get(site.file);
+    if (lowered === undefined) return site;
+    return {
+      ...site,
+      pos: lowered.rewrittenPosition(site.pos, false),
+      end: lowered.rewrittenPosition(site.end, true),
+    };
   };
   // keptErrors drops every diagnostic of these files: the gate does not ask
   // the checker for them.
@@ -5855,21 +5894,77 @@ function preflight7(load: LoadResult): {
       if (sf && insideBlockComment(sf.text, d.pos))
         commentDup.add(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
     }
-    return all.filter(
-      (d) =>
-        d.category === ts.DiagnosticCategory.Error &&
-        (!suppressedJsStrictness7(d) || enforcedInCheckedJs(p, d)) &&
-        !npmStaticFileSuppressed(d) &&
-        !nodeModulesJsSuppressed(d) &&
-        (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
-        !namespaceCalleeSuppressed(p, d) &&
-        !inferredJsDiagnosticSuppressed(p, d) &&
-        !isNpmStaticSubclassArgument(p, d) &&
-        !workspaceImplicitAnySuppressed(p, d) &&
-        !typeofTestedNameSuppressed(p, d) &&
-        !cjsTopLevelReturnSuppressed(p, d) &&
-        !jsdocTypeSuppressed(p, d, commentDup),
-    );
+    // The syntactic diagnostics of a JS file, asked for only when a
+    // diagnostic names a code an opinion row covers.
+    const syntactic = new Map<string, readonly ts.Diagnostic[]>();
+    const syntacticOf = (sf: ts.SourceFile): readonly ts.Diagnostic[] => {
+      let list = syntactic.get(sf.fileName);
+      if (list === undefined) {
+        list = p.getSyntacticDiagnostics(sf);
+        syntactic.set(sf.fileName, list);
+      }
+      return list;
+    };
+    // The older filters that answer from the file name, the source text or
+    // the syntax alone. The recording pass below uses this subset: the two
+    // filters that ask the CHECKER a question
+    // (inferredJsDiagnosticSuppressed, isNpmStaticSubclassArgument) are
+    // deliberately not consulted for an admitted diagnostic. Before this
+    // table, an admitted diagnostic was dropped before the chain reached
+    // them, so asking now would add a checker query a program's compile
+    // never made — and tsgo answers the query on a destructuring pattern
+    // with a panic ("Value is not an instance of 'TupleType'"), which is how
+    // this slice's Test262 replay first failed. The kept path still consults
+    // every filter, in the order it always did.
+    const keptApartFromOpinionTextually = (d: ts.Diagnostic): boolean =>
+      !npmStaticFileSuppressed(d) &&
+      !nodeModulesJsSuppressed(d) &&
+      (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
+      !namespaceCalleeSuppressed(p, d) &&
+      !workspaceImplicitAnySuppressed(p, d) &&
+      !typeofTestedNameSuppressed(p, d) &&
+      !cjsTopLevelReturnSuppressed(p, d) &&
+      !jsdocTypeSuppressed(p, d, commentDup);
+    // Every filter except the opinion admission, in its historical order.
+    const keptApartFromOpinion = (d: ts.Diagnostic): boolean =>
+      keptApartFromOpinionTextually(d) &&
+      !inferredJsDiagnosticSuppressed(p, d) &&
+      !isNpmStaticSubclassArgument(p, d);
+    const admitted: { d: ts.Diagnostic; opinion: Opinion }[] = [];
+    const kept = all.filter((d) => {
+      if (d.category !== ts.DiagnosticCategory.Error) return false;
+      // The 8xxx range is TypeScript's JSDoc-specific diagnostic family
+      // (malformed tags, signature/tag mismatches): comment semantics with no
+      // runtime meaning in a JS file, and no lowering view to record.
+      if (
+        d.fileName !== undefined &&
+        isJsSourceFileName(d.fileName) &&
+        d.code >= 8000 &&
+        d.code <= 8999
+      )
+        return false;
+      const opinion = jsOpinionOf7(p, d, projectCheckJs, syntacticOf);
+      if (opinion !== null) {
+        admitted.push({ d, opinion });
+        return false;
+      }
+      return keptApartFromOpinion(d);
+    });
+    for (const { d, opinion } of admitted) {
+      // No span, no site: nothing a view's lowering could be gated on.
+      if (d.fileName === undefined || d.pos === undefined || d.end === undefined) continue;
+      if (keptApartFromOpinionTextually(d))
+        recordAdmittedOpinion(
+          admittedSite(p, {
+            file: d.fileName,
+            pos: d.pos,
+            end: d.end,
+            code: d.code,
+            view: opinion.view,
+          }),
+        );
+    }
+    return kept;
   };
 
   // The tsc gate, with a second chance: the LOWERING world's checker
@@ -6992,6 +7087,7 @@ function preflight7(load: LoadResult): {
     inlineRequireCycleCalls,
     moduleEdges: edges,
     dynamicImportRejections,
+    admittedOpinions: [...admittedOpinions.values()],
   };
 }
 

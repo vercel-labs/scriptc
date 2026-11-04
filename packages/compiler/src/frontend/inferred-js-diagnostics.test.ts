@@ -170,7 +170,7 @@ test.for([
   ],
   ["2464", "export const box = {};\nexport function keyed() { return { [box]: 1 }; }"],
   ["2365", "export function joined() { return true + 1; }"],
-  ["2508", "export class Derived extends Iterator {}"],
+  ["2689", "export class Derived extends AsyncIterator {}"],
   ["1166", 'export class Field { ["a" + "b"] = 1; }'],
   [
     "7032",
@@ -181,9 +181,35 @@ test.for([
   // exactly (a delete of a builtin's own property, a class element's computed
   // key, an operator on operands it cannot convert, a class over a stdlib
   // base, a class field with no stable key), so the relaxation must not
-  // admit them. The invalid assignment-target pair (2364 `f() += g()`,
+  // admit them. The base is the async iterator interface: `extends Iterator`
+  // is a program the lowering builds, so it no longer carries an opinion to
+  // keep. The invalid assignment-target pair (2364 `f() += g()`,
   // 2357 `f()++`) stays refused the same way: Node calls `f`, then throws.
   expect(
     diagnostics(library, 'import * as library from "./library.js"; console.log(library);').length,
   ).toBeGreaterThan(0);
+});
+
+test("a checked JavaScript file keeps a typed slot its JSDoc declared", () => {
+  // TS2322 is one of the opinion table's `checkedJs: "enforce"` rows: a
+  // project that asked tsc to check its JavaScript keeps the error, while
+  // the same file unchecked takes the opinion (nothing at runtime checks the
+  // annotation Node never reads).
+  const main = 'import * as library from "./library.js"; console.log(library);';
+  const library = "/** @type {string} */\nexport let box = 1;\n";
+  expect(diagnostics(`// @ts-check\n${library}`, main).map((d) => d.message)).toContain(
+    "Type 'number' is not assignable to type 'string'.",
+  );
+  expect(diagnostics(library, main)).toEqual([]);
+});
+
+test("a checked JavaScript file still takes the opinions its JSDoc never asked for", () => {
+  // TS7006 has no `checkedJs: "enforce"`: checkJs asks tsc to check the
+  // JSDoc a file carries, not to invent parameter annotations it does not.
+  expect(
+    diagnostics(
+      "// @ts-check\nexport function add(a, b) { return a + b; }\n",
+      'import { add } from "./library.js"; console.log(add(1, 2));',
+    ),
+  ).toEqual([]);
 });

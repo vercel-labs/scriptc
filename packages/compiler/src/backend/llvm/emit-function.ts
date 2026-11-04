@@ -28,6 +28,7 @@ import {
 } from "./map-read-lifetimes.js";
 import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
+import { findRecordEntryFusions } from "./record-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
 import { findLocalUnionStorage } from "./local-union-storage.js";
@@ -252,6 +253,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
   emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
+  emitter.recordEntryFusion = emitter.debug === null ? findRecordEntryFusions(emitter, fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,
     emitter.callLifetimes,

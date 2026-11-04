@@ -18725,6 +18725,7 @@
           "tests/corpus/5884-inspect-layout-options.ts",
           "tests/corpus/console-dir-show-hidden.ts",
           "tests/corpus/console-native-value.js",
+          "tests/corpus/inspect-getters.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -18879,6 +18880,7 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.assert",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/5884-inspect-layout-options.ts",
@@ -19020,6 +19022,7 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.dir",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/5884-inspect-layout-options.ts",
@@ -19049,6 +19052,7 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.dirxml",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/5884-inspect-layout-options.ts",
@@ -101962,6 +101966,8 @@
           "tests/corpus/7711-util-throttle.cjs",
           "tests/corpus/7712-util-debounce-throttle.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/inspect-getters-dyn.cjs",
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/inspect-hidden-properties.cjs",
           "tests/corpus/inspect-max-array-length.ts",
           "tests/corpus/inspect-max-string-length.ts",
@@ -103371,6 +103377,8 @@
         "tests": [
           "tests/corpus/1630-inspect-scalars.ts",
           "tests/corpus/1632-inspect-records.ts",
+          "tests/corpus/inspect-getters.ts",
+          "tests/corpus/inspect-getters-dyn.cjs",
           "tests/corpus/1637-inspect-dyn.ts",
           "tests/corpus/2485-inspect-circular-refs.ts",
           "tests/corpus/5884-inspect-layout-options.ts",

@@ -974,6 +974,24 @@ export function lowerObjectLiteral(
    * whole union, so its contextual type cannot choose the layout. */
   exact = false,
 ): IrExpr {
+  // `__proto__: v` sets the literal's [[Prototype]] as the literal is built.
+  // A record is a native struct with no dynamic prototype slot, so a
+  // JavaScript literal that carries one builds as a checked-dynamic object,
+  // which models the prototype chain like every other JS object. A bare
+  // `__proto__: null` keeps its existing route (both representations model
+  // a null prototype, and the checked-dynamic one is the only one anyway).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    expr.properties.nodes.some(
+      (prop) =>
+        ts.isPropertyAssignment(prop) &&
+        !ts.isComputedPropertyName(prop.name) &&
+        prop.name.text === "__proto__" &&
+        prop.initializer.kind !== ts.SyntaxKind.NullKeyword,
+    )
+  ) {
+    return lowerDynObjectLiteral(lowerer, expr);
+  }
   // A spread of an untyped (`any`) source into a typed slot: TypeScript
   // types such a literal `any`, and the copy holds whatever own properties
   // the source has at runtime. Build it as a checked-dynamic object, then

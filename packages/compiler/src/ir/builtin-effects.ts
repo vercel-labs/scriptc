@@ -201,6 +201,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.init",
   "event.targetCall",
   "event.targetDispatch",
+  // events.getEventListeners and events.listenerCount over an EventTarget:
+  // Node's receiver errors.
+  "event.targetListeners",
+  "event.targetListenersDyn",
+  "event.targetListenerCount",
+  "event.targetListenerCountDyn",
+  "event.targetGetMax",
+  "event.targetSetMax",
   "event.call",
   "blob.new",
   "blob.fileNew",
@@ -240,6 +248,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  // A getter the walk invokes renders its result, and that rendering can
+  // refuse (SC2020) exactly like the walk's own.
+  "insp.accessorValue",
   // The options object reads the caller's options (getters included), and
   // the checked-dynamic walk calls custom inspect functions.
   "insp.customOptions",
@@ -286,6 +297,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",
+  "http.clientProtocolCheck",
+  "http.clientProtocolCheckAgent",
   "http.serverMaxHeaderSize",
   "http.clientMaxHeaderSize",
   "http.resAppendHeader",
@@ -395,6 +408,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  // The URL+options form adds the URL parse's throws to that walk's.
+  "http.requestUrlDyn",
+  "http.requestUrlDynCb",
+  "https.requestUrlDyn",
+  "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
   // The h2 client's throwing entries: connect on a bad/non-http

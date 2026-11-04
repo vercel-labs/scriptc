@@ -217,6 +217,7 @@ import {
 } from "./dense-array-access.js";
 import { matchMapRead, pointerMapGet, type MapReadLifetimes } from "./map-read-lifetimes.js";
 import { type MapEntryFusion } from "./map-entry-fusion.js";
+import { type RecordEntryFusion } from "./record-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
@@ -375,6 +376,7 @@ import {
   type LlInlineTail,
 } from "./classes.js";
 import { LifetimeRegions, REGION_TYPES } from "./regions.js";
+import { planTreeClasses } from "../tree-classes.js";
 import {
   arenaAware,
   arenaCurrentAddress,
@@ -1597,6 +1599,8 @@ export class LlEmitter {
   numberMapKeyIntegers = new Map<string, LlInteger>();
   /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
   mapEntryFusion: MapEntryFusion | null = null;
+  /** The current function's fused record get-then-set pairs (record-entry-fusion.ts). */
+  recordEntryFusion: RecordEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
   /** The locals whose value never leaves its frame (frame-escapes.ts), for
    * class instances with reference fields in frame storage. */
@@ -2734,48 +2738,6 @@ export class LlEmitter {
       mod.lib === undefined &&
       options.lowRegion === true &&
       [...this.classMeta.values()].some((m) => m.compact);
-    // Group arenas: off with lifetime regions, which own their classes'
-    // allocation, and in libraries, whose exports any host code calls.
-    if (arenasRequested() && mod.lifetimeRegions !== true && mod.lib === undefined) {
-      this.arenas = planArenas(mod, {
-        shape: (id) => {
-          const shape = this.recordsById.get(id);
-          return (
-            shape !== undefined &&
-            shape.freezable !== true &&
-            shape.indexValue === undefined &&
-            this.publishedTypes?.recordGuarded(id) !== true
-          );
-        },
-        cls: (def) => {
-          const meta = this.classMeta.get(def.name);
-          return (
-            meta !== undefined &&
-            !meta.compact &&
-            !meta.threadSlot &&
-            // An Array subclass's instance is an array (the runtime's header).
-            def.arrayElem === undefined &&
-            meta.root.def.arrayElem === undefined &&
-            !this.programLifetime.has(def.name) &&
-            this.publishedTypes?.classGuarded(def.name) !== true
-          );
-        },
-        nullableArm: (unionId) => this.nullableUnions.single(unionId)?.arm ?? null,
-        traced: (t) => traceAdapter(this.shapeHost, t) !== null,
-      });
-      if (this.arenas !== null) {
-        this.shapeHost.arenaShapes = this.arenas.shapes;
-        this.shapeHost.arenaClasses = this.arenas.classes;
-        this.shapeHost.arenasClosed = this.arenas.allClosed;
-      }
-    }
-    // Arena shapes are known only now; the plan's target set is shared by
-    // every host that copied the shape host, so dropping them here reaches
-    // all of them.
-    const arenaShapes = this.shapeHost.arenaShapes;
-    const viewTargets = this.recordViewTargets;
-    if (arenaShapes !== undefined && viewTargets !== null)
-      for (const id of arenaShapes) viewTargets.delete(id);
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -2801,6 +2763,70 @@ export class LlEmitter {
     );
     // After the vtable slots: borrowing slots exclude their implementations.
     if (this.debug === null) this.analyzeBorrowedReturns();
+    // Which classes drop their count word: a node of a graph the program
+    // proves acyclic, singly owned and unobserved (backend/tree-classes.ts,
+    // out/unique-ownership/DESIGN.md). The linear-use analysis agrees with
+    // the emitter's own ownership discipline, so it reads the facts above
+    // and nothing else. A debug build skips the borrowed-return analysis
+    // this needs; it keeps every class counted.
+    if (this.debug === null && mod.lib === undefined && mod.lifetimeRegions !== true) {
+      const plan = planTreeClasses(mod, {
+        borrowed: this.callLifetimes.borrowed,
+        borrowedReturns: this.borrowedReturns,
+        traced: { shapes: this.tracedShapes, unions: this.tracedUnions },
+        immutable: this.immutableFields,
+        published: this.publishedTypes,
+      });
+      for (const name of plan.classes) this.classMeta.get(name)!.tree = true;
+      this.treeMoves = plan.classes.size > 0 ? new Set(plan.moves) : null;
+    }
+    // Group arenas: off with lifetime regions, which own their classes'
+    // allocation, and in libraries, whose exports any host code calls.
+    // Planned after the tree classes, which keep the general allocator:
+    // their teardown is a plain free, and an arena block's disposal runs
+    // the counted path.
+    if (arenasRequested() && mod.lifetimeRegions !== true && mod.lib === undefined) {
+      this.arenas = planArenas(mod, {
+        shape: (id) => {
+          const shape = this.recordsById.get(id);
+          return (
+            shape !== undefined &&
+            shape.freezable !== true &&
+            shape.indexValue === undefined &&
+            this.publishedTypes?.recordGuarded(id) !== true
+          );
+        },
+        cls: (def) => {
+          const meta = this.classMeta.get(def.name);
+          return (
+            meta !== undefined &&
+            !meta.compact &&
+            !meta.tree &&
+            !meta.threadSlot &&
+            // An Array subclass's instance is an array (the runtime's header).
+            def.arrayElem === undefined &&
+            meta.root.def.arrayElem === undefined &&
+            !this.programLifetime.has(def.name) &&
+            this.publishedTypes?.classGuarded(def.name) !== true
+          );
+        },
+        nullableArm: (unionId) => this.nullableUnions.single(unionId)?.arm ?? null,
+        traced: (t) => traceAdapter(this.shapeHost, t) !== null,
+        tree: (def) => this.classMeta.get(def.name)?.tree === true,
+      });
+      if (this.arenas !== null) {
+        this.shapeHost.arenaShapes = this.arenas.shapes;
+        this.shapeHost.arenaClasses = this.arenas.classes;
+        this.shapeHost.arenasClosed = this.arenas.allClosed;
+      }
+    }
+    // Arena shapes are known only now; the plan's target set is shared by
+    // every host that copied the shape host, so dropping them here reaches
+    // all of them.
+    const arenaShapes = this.shapeHost.arenaShapes;
+    const viewTargets = this.recordViewTargets;
+    if (arenaShapes !== undefined && viewTargets !== null)
+      for (const id of arenaShapes) viewTargets.delete(id);
     this.int32SlotsValue ??= this.joinInt32Slots();
   }
 
@@ -3919,10 +3945,30 @@ export class LlEmitter {
     this.disownTemp(v);
   }
 
+  /** Whether a value of `type` is an instance of a tree class, whose retain
+   * is a no-op and whose release destroys the subtree: it has exactly one
+   * owner, so it may only be moved. */
+  isTreeValue(type: IrType): boolean {
+    if (this.treeMoves === null) return false;
+    const nullable = this.shapeHost.nullableUnions.of(type);
+    const arm = nullable === null ? type : nullable.repr === "single" ? nullable.arm : null;
+    return (
+      arm !== null && arm.kind === "object" && this.classMeta.get(arm.className)?.tree === true
+    );
+  }
+
   /** The retained (+1) read of a refcounted value — type-directed through
    * the `_v` table (immortals skip, exactly the C retain calls). */
   private retainCall(name: string, type: IrType): string {
     if (this.isImmortal(name)) return name;
+    // A copy of a tree value would be a second owner, and the two would
+    // destroy the same nodes. Every accepted read of one is a move
+    // (takeLastUseMove), so a retain means the plan and the emitter
+    // disagree: fail here rather than corrupt the heap.
+    if (this.isTreeValue(type))
+      throw new InternalCompilerError(
+        `llvm emitter bug: tree value ${name} is copied instead of moved`,
+      );
     const t = this.B.tmp();
     this.B.line(`${t} = call ptr ${retainSym(this.shapeHost, type)}(ptr ${name})`);
     return t;
@@ -6507,7 +6553,9 @@ export class LlEmitter {
       B.startBlock(pad);
       const exception = B.tmp();
       B.line(`${exception} = landingpad { ptr, i32 } cleanup`);
-      for (const index of borrowed) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
+      for (const index of borrowed)
+        if (!this.isTreeValue(fn.params[index]!.type))
+          this.releaseFrame(`%p${index}`, fn.params[index]!.type);
       this.declare(UNWIND_RESUME_DECLARATION);
       B.resumeUnwind(exception);
       B.startBlock(ok);
@@ -6532,8 +6580,11 @@ export class LlEmitter {
       result = B.tmp();
       B.line(`${result} = load ptr, ptr ${slot}`);
     }
+    // A tree value is passed by reference to its owner and never counted,
+    // so the wrapper has nothing to drop for it.
     for (const index of borrowed)
-      if (!kept.has(index)) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
+      if (!kept.has(index) && !this.isTreeValue(fn.params[index]!.type))
+        this.releaseFrame(`%p${index}`, fn.params[index]!.type);
     B.terminate(ret === "void" ? "ret void" : `ret ${ret} ${result}`);
     const symbol =
       kept.size > 0 ? `${mangleBorrowedFunction(fn.name)}.virtual` : mangleFunction(fn.name);
@@ -6782,6 +6833,16 @@ export class LlEmitter {
   /** Emits the move of a noted last read: the slot is cleared, so scope
    * exits release nothing and the read's owned temp carries the reference. */
   takeLastUseMove(e: IrExpr, slot: string, type: IrType): boolean {
+    if (this.isTreeValue(e.type)) {
+      // A tree value has one owner and no count: every read of it that the
+      // plan accepted IS its transfer (backend/tree-classes.ts records the
+      // expression), so the read takes the reference exactly as a last-use
+      // move does. A read the plan did not record would copy the node,
+      // which retainCall refuses.
+      if (this.treeMoves?.delete(e) !== true) return false;
+      this.B.line(`store ptr null, ptr ${slot}`);
+      return true;
+    }
     if (this.lastUseMoves.get(e) !== slot || !typeEquals(type, e.type)) return false;
     this.lastUseMoves.delete(e);
     this.B.line(`store ptr null, ptr ${slot}`);
@@ -8270,6 +8331,11 @@ export class LlEmitter {
   /** Group arenas (arenas.ts): the plan, the list slot of each root and
    * call region, and which locals' scopes drop which roots' arenas. */
   arenas: ArenaPlan | null = null;
+  /** The varRef reads the tree-class plan proved move a node out of its
+   * local (backend/tree-classes.ts). Each one emits its own last-use move:
+   * the source slot is nulled and the value taken without a retain, since
+   * a tree instance has no count to raise. */
+  private treeMoves: Set<IrExpr> | null = null;
   private arenaSlots = new Map<Node, string>();
   /** The frames emitStmtBody opens for whole statements (arenas only). */
   readonly statementFrames = new Set<LlValue[]>();
@@ -8764,6 +8830,8 @@ export class LlEmitter {
     overflowOnly: boolean,
     loc?: SrcLoc,
     missNaN = false,
+    missInto: (() => void) | null = null,
+    read: IrExpr | null = null,
   ): void {
     return keyedRecordReadInto(
       this,
@@ -8776,6 +8844,8 @@ export class LlEmitter {
       overflowOnly,
       loc,
       missNaN,
+      missInto,
+      read,
     );
   }
 

@@ -1087,7 +1087,15 @@ export function lowerFieldCompoundValue(
   saveKeyedFieldKey(target, save);
   // Accessors observe getter, RHS side effects, then setter, all through
   // the saved receiver.
-  const fieldRead = lowerer.fieldGetExpr(target, locOf(access), access);
+  const fieldRead = lowerOptionalStringRead(
+    lowerer,
+    lowerer.fieldGetExpr(target, locOf(access), access),
+    access,
+    rhsNode,
+    op,
+    save,
+    loc,
+  );
   // `+=` on a stored string field reads it into a mutable local, so the
   // concat below can append to that local in place.
   const storedString =
@@ -1194,4 +1202,70 @@ export function lowerFieldCompoundValue(
     lowerer.fieldSetStmt(target, lowerer.coerceInto(access, result, target.fieldType), loc, access),
   );
   return { kind: "seqExpr", stmts: body, result, type: result.type, loc };
+}
+
+/** `+=` on an OPTIONAL string field (`label?: string`, `errorMessage:
+ * string | undefined`). JavaScript reads the absent value as a value and
+ * the abstract `+` converts it with ToString, so `label += "x"` on a label
+ * nobody set appends the text "undefined"; the compiler's string concat
+ * needs a string operand, which the declared `string | undefined` slot is
+ * not. The checker may also have narrowed the slot to `string` at this site
+ * (an earlier assignment — `block.label = block.label || ""` — or a typeof
+ * guard); then the absent arm cannot run, and the read narrows through the
+ * string arm, trapping like every checked narrowing. Null conversions leave
+ * the read alone: the compound's own fences answer those. */
+function lowerOptionalStringRead(
+  lowerer: Lowerer,
+  read: IrExpr,
+  access: ts.Node,
+  rhsNode: ts.Node | null,
+  op: string,
+  save: (value: IrExpr, name: string) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (op !== "+" || read.type.kind !== "union") return read;
+  const unionId = read.type.unionId;
+  const absentTag = lowerer.armTag(unionId, UNDEFINED_T);
+  const presentTag = lowerer.armTag(unionId, STRING);
+  if (absentTag < 0 || presentTag < 0) return read;
+  const present = lowerer.stripUndefinedArm(read.type);
+  if (present.kind !== "string") return read;
+  const stable = save(read, "%compoundOldUnion");
+  const stringArm = (): IrExpr => ({
+    kind: "unionNarrow",
+    unionId,
+    tag: presentTag,
+    value: stable,
+    type: STRING,
+    loc,
+  });
+  // The checker proved the slot holds a string here: extract it, and a
+  // lying binding throws the catchable TypeError instead of appending to a
+  // value Node would have converted.
+  if (lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "string") {
+    const helper = lowerer.narrowedArmHelper(unionId, STRING, loc);
+    return helper ? lowerer.checkedNarrowCall(helper, stable, STRING, loc) : stringArm();
+  }
+  // An absent value appends its ToString, which is a string only when the
+  // right operand is one too (`undefined + 1` is NaN in JavaScript). Any
+  // other right side keeps the union read for the compound below, which
+  // takes the value already evaluated here: a getter runs once.
+  if (rhsNode === null || lowerer.mapTypeOf(lowerer.typeOf(rhsNode))?.kind !== "string")
+    return stable;
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId,
+      tag: absentTag,
+      negated: false,
+      value: stable,
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "strLit", value: "undefined", type: STRING, loc },
+    else_: stringArm(),
+    type: STRING,
+    loc,
+  };
 }

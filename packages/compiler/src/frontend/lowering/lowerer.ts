@@ -2235,19 +2235,40 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
 
 /** The name a property key gives an anonymous definition it initializes
  * (V8's SetFunctionName): an identifier, quoted string or numeric key, and a
- * computed key that spells one of those literals. A numeric key names its
+ * computed key whose expression is a constant string. A numeric key names its
  * canonical string key. Null for any other key, whose value keeps whatever
  * name it was created with. */
-function propertyKeyName(name: ts.PropertyName): string | null {
-  if (ts.isComputedPropertyName(name)) {
-    const key = name.expression;
-    if (ts.isStringLiteral(key)) return key.text;
-    if (ts.isNumericLiteral(key)) return String(Number(key.text));
-    return null;
-  }
+function propertyKeyName(name: ts.PropertyName, lowerer?: Lowerer): string | null {
+  if (ts.isComputedPropertyName(name)) return constantKeyName(name.expression, lowerer);
   if (ts.isIdentifier(name)) return name.text;
   if (ts.isStringLiteral(name)) return name.text;
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
+  return null;
+}
+
+/** The string a computed property key evaluates to when the source pins it:
+ * a string, numeric or substitution-free template literal, or a `const`
+ * binding whose initializer is one. The key is evaluated before the
+ * definition it initializes, so a `const` key names the definition
+ * statically. Null when the value is a runtime fact. */
+function constantKeyName(expr: ts.Expression, lowerer?: Lowerer): string | null {
+  let key: ts.Expression = expr;
+  // Bound the walk through const aliases so a malformed chain cannot spin.
+  for (let hops = 0; hops < 8; hops++) {
+    while (ts.isParenthesizedExpression(key) || ts.isAsExpression(key)) key = key.expression;
+    if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+    if (ts.isNumericLiteral(key)) return String(Number(key.text));
+    if (lowerer === undefined || !ts.isIdentifier(key)) return null;
+    const declaration = lowerer.resolveValueSymbol(key)?.valueDeclaration;
+    if (
+      declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 ||
+      declaration.initializer === undefined
+    )
+      return null;
+    key = declaration.initializer;
+  }
   return null;
 }
 
@@ -2409,10 +2430,10 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     const file = ts.getSourceFileOfNode(declared);
     if (file.isDeclarationFile || !isJsSourceFile(file)) return n.name.text;
     if (ts.isMethodDeclaration(declared)) {
-      return propertyKeyName(declared.name);
+      return propertyKeyName(declared.name, lowerer);
     }
     if (ts.isPropertyAssignment(declared) || ts.isPropertyDeclaration(declared)) {
-      const keyName = propertyKeyName(declared.name);
+      const keyName = propertyKeyName(declared.name, lowerer);
       const initializer = declared.initializer;
       if (initializer !== undefined && keyName !== null) {
         let held: ts.Node = initializer;
@@ -2443,10 +2464,11 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     if (p && ts.isPropertyAssignment(p) && p.initializer === outer) {
       if (ts.isIdentifier(p.name)) return p.name.text;
-      // A quoted or numeric key names the definition it initializes the same
-      // way an identifier key does (`{ "m": function () {} }`).
+      // A quoted, numeric or constant computed key names the definition it
+      // initializes the same way an identifier key does
+      // (`{ "m": function () {} }`, `const k = "m"; { [k]: function () {} }`).
       if (js) {
-        const keyName = propertyKeyName(p.name);
+        const keyName = propertyKeyName(p.name, lowerer);
         if (keyName !== null) return keyName;
       }
     }
@@ -2470,7 +2492,7 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     // `class C { f = function () {} }`: a field initializer takes the field's
     // name, exactly like a variable initializer.
     if (js && p && ts.isPropertyDeclaration(p) && p.initializer === outer) {
-      const keyName = propertyKeyName(p.name);
+      const keyName = propertyKeyName(p.name, lowerer);
       if (keyName !== null) return keyName;
     }
   }

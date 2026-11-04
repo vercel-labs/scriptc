@@ -8168,9 +8168,10 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
 /** A conventional primitive brand has one runtime-carrying primitive part
  * and one or more phantom object parts whose fields are literal marker
  * values. The marker can use a string or unique-symbol key, can be imported
- * from a declaration file, and can be expressed through a generic alias;
- * none of those facts changes the runtime value. Empty `{}` refinements are
- * the marker-free form of the same primitive narrowing.
+ * from a declaration file, can be expressed through a generic alias, and can
+ * nest tables of further markers; none of those facts changes the runtime
+ * value. Empty `{}` refinements are the marker-free form of the same
+ * primitive narrowing.
  *
  * Arbitrary primitive/object intersections do not erase here. A companion
  * with a class identity, call/construct/index signature, accessor, or a
@@ -8202,7 +8203,7 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     return null;
   };
-  const markerValue = (value: ts.Type): boolean => {
+  const markerValue = (value: ts.Type, seen = new Set<ts.Type>()): boolean => {
     if (
       value.flags &
       (ts.TypeFlags.StringLiteral |
@@ -8218,15 +8219,39 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     ) {
       return true;
     }
-    if (value.isUnionType()) return ts.constituentTypes(value).every(markerValue);
+    if (value.isUnionType())
+      return ts.constituentTypes(value).every((part) => markerValue(part, seen));
     if (value.flags & ts.TypeFlags.TypeParameter) {
       const bound = resolveTypeParamTs?.(value) ?? null;
       if (bound) {
         contextResolutions++;
-        return markerValue(bound);
+        return markerValue(bound, seen);
       }
     }
-    return false;
+    // A NESTED marker table (`{ readonly ["~effect/Brand"]: { readonly
+    // ProviderDriverKind: "ProviderDriverKind" } }`): an object whose own
+    // members are all markers describes no runtime data, so the nesting
+    // does not make the marker observable. Class identity, call, construct
+    // or index signatures, accessors, and non-literal value fields stay
+    // outside the rule, because those can describe runtime behavior.
+    if ((value.flags & ts.TypeFlags.Object) === 0) return false;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    const sym = value.getSymbol();
+    if (sym !== undefined && (sym.flags & ts.SymbolFlags.Class) !== 0) return false;
+    if (
+      checker.getCallSignatures(value).length > 0 ||
+      checker.getConstructSignatures(value).length > 0 ||
+      checker.getIndexInfosOfType(value).length > 0
+    )
+      return false;
+    return checker
+      .getPropertiesOfType(value)
+      .every(
+        (prop) =>
+          (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) === 0 &&
+          markerValue(checker.getTypeOfSymbol(prop), seen),
+      );
   };
   let primitive: IrType | null = null;
   let markerParts = 0;

@@ -45,7 +45,7 @@ import {
   moduleNamespaceValue,
 } from "./module-namespace-elements.js";
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
-import { ZLIB_STREAM_FACTORIES, ZLIB_STREAM_T } from "./builtins/compression.js";
+import { noteCodecMode, ZLIB_STREAM_FACTORIES, ZLIB_STREAM_T } from "./builtins/compression.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
   activeNodeIslands,
@@ -212,6 +212,7 @@ import type { UnionClassRoute } from "./union-retag.js";
 import {
   bindingInContext,
   captureContextBinding,
+  captureContextLocal,
   declareContextLocal,
   declareContextThis,
   newFnCtx,
@@ -16132,6 +16133,13 @@ export class Lowerer {
     return declareContextLocal(this.ctx, name, type, false, undefined, undefined);
   }
 
+  /** Read a hidden slot from the current function: the slot itself when it
+   * was declared here, a threaded capture when the read sits in a function
+   * the declaring one encloses. Null when the owner context is gone. */
+  captureHiddenLocal(local: IrLocal, owner: FnCtx): IrLocal | null {
+    return captureContextLocal(this.fnStack, local, owner);
+  }
+
   /** The body binding of a fixed-tuple rest parameter: one native slot per
    * position (the flattened ABI), rebuilt into the tuple the source names.
    * The empty tuple rides the empty-array representation. */
@@ -18225,6 +18233,10 @@ export class Lowerer {
    * same runtime constructor the direct call uses, and the value keeps
    * Node's name and length. */
   lowerZlibStreamFactoryValue(member: string, mode: number, loc: SrcLoc): IrExpr {
+    // The value is called later, often with no other Brotli or zstd call in
+    // the program: connect the codec at the point the factory is read, the
+    // same way a direct call does.
+    noteCodecMode(this, mode, loc);
     const key = `zlib.streamNew:${member}`;
     let fnName = this.builtinCallableValueFns.get(key);
     if (!fnName) {

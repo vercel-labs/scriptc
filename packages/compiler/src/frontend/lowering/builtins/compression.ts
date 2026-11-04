@@ -64,7 +64,7 @@ const ZSTD_CALLBACK_MEMBERS: ReadonlySet<string> = new Set(["zstdCompress", "zst
 
 /** A Brotli or zstd mode connects the codec (scr_brotli.c, scr_zstd.c) to
  * the zlib engine before any module initializer runs. */
-function noteCodecMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
+export function noteCodecMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
   const fn: IrLibFn | undefined =
     mode === BROTLI_DECODE || mode === BROTLI_ENCODE
       ? "zlib.brotliInstall"

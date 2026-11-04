@@ -12,6 +12,7 @@ import {
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { ladderFenceExpr } from "./lowerer.js";
+import type { FnCtx } from "./function-context.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import {
   arrayOf,
@@ -30,6 +31,7 @@ import {
   HTTPRES_T,
   type IrExpr,
   type IrLibFn,
+  type IrLocal,
   type IrStmt,
   type IrType,
   NETSERVER_T,
@@ -5820,7 +5822,22 @@ export interface HttpClientFnBinding {
   /** The declaration-time capture of the condition. Present when the
    * condition is not a stable identifier read: Node evaluates the ternary
    * ONCE, so calls read this bool instead of re-evaluating the expression. */
-  secureLocalId?: string;
+  secureStorage?: HiddenBool;
+}
+
+/** Where a saved condition lives. A module-scope declaration stores it in a
+ * module global, because function bodies lower outside the module's
+ * statement context and cannot capture a local declared there. A declaration
+ * inside a function stores it in a hidden local, threaded into nested
+ * functions as a capture. */
+type HiddenBool = { kind: "global"; id: string } | { kind: "local"; local: IrLocal; owner: FnCtx };
+
+function moduleScopeDecl(decl: ts.Node): boolean {
+  for (let node: ts.Node | undefined = decl.parent; node !== undefined; node = node.parent) {
+    if (ts.isSourceFile(node)) return true;
+    if (ts.isFunctionLike(node)) return false;
+  }
+  return false;
 }
 
 export function httpClientFnBindingOf(
@@ -6034,9 +6051,48 @@ export function lowerHttpClientFnBindingDecl(
   }
   const loc = locOf(decl);
   const secure = lowerer.lowerCondition(shape.cond);
+  if (moduleScopeDecl(decl)) {
+    const sf = ts.getSourceFileOfNode(decl);
+    const rawTag = lowerer.fileTag.get(sf) ?? "";
+    const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
+    const id = `%g.${tag}%clientFnSecure.${lowerer.globalsList.length}`;
+    lowerer.globalsList.push({ id, name: "%clientFnSecure", type: BOOL, mutable: true });
+    lowerer.httpClientFnBindings.set(symbol, {
+      ...shape,
+      secureStorage: { kind: "global", id },
+    });
+    return { kind: "assign", localId: id, value: secure, loc };
+  }
   const local = lowerer.declareHiddenLocal("%clientFnSecure", BOOL);
-  lowerer.httpClientFnBindings.set(symbol, { ...shape, secureLocalId: local.id });
+  lowerer.httpClientFnBindings.set(symbol, {
+    ...shape,
+    secureStorage: { kind: "local", local, owner: lowerer.ctx },
+  });
   return { kind: "varDecl", localId: local.id, init: secure, loc };
+}
+
+/** A read of a binding's saved condition bool: the module global at module
+ * scope, or the hidden local itself at the declaring function and a threaded
+ * capture inside a function that one encloses. A local miss means the owner
+ * context is gone, which no declaration a use can reach should allow; it is
+ * surfaced as a fence rather than a reference the backend cannot see. */
+export function httpClientSecureRef(
+  lowerer: Lowerer,
+  binding: HttpClientFnBinding,
+  node: ts.Node,
+  loc: SrcLoc,
+): IrExpr {
+  const storage = binding.secureStorage!;
+  if (storage.kind === "global") return { kind: "varRef", localId: storage.id, type: BOOL, loc };
+  const local = lowerer.captureHiddenLocal(storage.local, storage.owner);
+  if (local === null) {
+    lowerer.noLowering(
+      "a client function chosen at run time, used outside the function that declared it",
+      node,
+      "declare the binding and use it inside the same function (a nested function in that function can use it)",
+    );
+  }
+  return { kind: "varRef", localId: local.id, type: BOOL, loc };
 }
 
 /** The client-function REFERENCE an expression names (a module member, a
@@ -6889,8 +6945,8 @@ function lowerHttpClientCall(
   const secureExpr = (): IrExpr => {
     const b = binding!;
     const c =
-      b.secureLocalId !== undefined
-        ? ({ kind: "varRef", localId: b.secureLocalId, type: BOOL, loc } as IrExpr)
+      b.secureStorage !== undefined
+        ? httpClientSecureRef(lowerer, b, expr, loc)
         : lowerer.lowerCondition(b.cond);
     return b.trueSecure ? c : { kind: "unary", op: "!", operand: c, type: BOOL, loc };
   };

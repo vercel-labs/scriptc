@@ -45,7 +45,7 @@ import {
   neverTaintedJsType,
   own,
 } from "../lowerer.js";
-import { httpClientFnBindingOf } from "../lower-server.js";
+import { httpClientFnBindingOf, httpClientSecureRef } from "../lower-server.js";
 import {
   ARRAY_METHODS,
   MAP_METHODS,
@@ -1271,8 +1271,8 @@ export function lowerPropertyAccessExpr(
       const httpsLength = binding.member === "get" ? 3 : 0;
       if (httpsLength === httpLength) return { kind: "numLit", value: httpLength, type: F64, loc };
       const secure: IrExpr =
-        binding.secureLocalId !== undefined
-          ? { kind: "varRef", localId: binding.secureLocalId, type: BOOL, loc }
+        binding.secureStorage !== undefined
+          ? httpClientSecureRef(lowerer, binding, expr, loc)
           : lowerer.lowerCondition(binding.cond);
       return {
         kind: "ternary",

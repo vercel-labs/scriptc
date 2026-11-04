@@ -1081,7 +1081,11 @@ export function lowerRecordRestCaptureHelper(
 ): string | null {
   const names = [...new Set(excluded)].sort();
   return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
-    key: `rest:${fromId}:${toId}:${names.join(",")}`,
+    // The set is part of the key, spelled so that two DIFFERENT sets can
+    // never produce one spelling: a property name may hold a comma
+    // (`{ "a,b": x, ...rest }` beside `{ a, b, ...rest }`) or be empty,
+    // and either would join into the other set's text.
+    key: `rest:${fromId}:${toId}:${JSON.stringify(names)}`,
     namePrefix: "%rec.rest",
     excluded: new Set(names),
     propagateNullProto: false,

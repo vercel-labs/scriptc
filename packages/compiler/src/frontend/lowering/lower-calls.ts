@@ -9,6 +9,7 @@ import {
 import { structuralCallInstance } from "./structural-instances.js";
 import { classViewOf } from "./class-views.js";
 import { lowerPresentArmCall } from "./expressions/optional-chains.js";
+import { typedReceiverFunction } from "./receiver-binding.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { lowerStaticPrivateCall } from "./private-statics.js";
 import { assertFunctionAliasOf } from "./lower-assert.js";
@@ -11264,6 +11265,25 @@ function lowerObjLitGenericMethodCall(
   }
   const found = objLitGenericFnNodeOf(lowerer, propSym);
   if (!found) {
+    // `f.call(receiver, ...args)` on a function with a typed `this`: the
+    // receiver is its first parameter (receiver-binding.ts).
+    if (name === "call" && !call.arguments.nodes.some(ts.isSpreadElement)) {
+      const typed = typedReceiverFunction(lowerer, access.expression);
+      if (typed !== null && call.arguments.nodes.length === typed.params.length + 1) {
+        lowerer.noteEdge(typed.name);
+        const [receiverNode, ...argNodes] = call.arguments.nodes;
+        return {
+          kind: "call",
+          callee: typed.name,
+          args: [
+            lowerer.lowerExprExpecting(receiverNode!, typed.thisType),
+            ...argNodes.map((arg, i) => lowerer.lowerExprExpecting(arg, typed.params[i]!)),
+          ],
+          type: typed.ret,
+          loc: locOf(call),
+        };
+      }
+    }
     const arrowBind = lowerInlineArrowBind(lowerer, call, access);
     if (arrowBind !== null) return arrowBind;
     const arrowApply = lowerArrowFunctionApply(lowerer, call, access);

@@ -1,0 +1,12 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typed-this-receiver-escapes/lib.ts",
+  "<repo>/tests/corpus/typed-this-receiver-escapes/doubler.ts",
+  "<repo>/tests/corpus/typed-this-receiver-escapes/reexport.ts",
+  "<repo>/tests/corpus/typed-this-receiver-escapes/counter.ts",
+  "<repo>/tests/corpus/typed-this-receiver-escapes/adder.ts",
+  "<repo>/tests/corpus/typed-this-receiver-escapes/named.ts",
+  "<repo>/tests/corpus/typed-this-receiver-escapes/main.mjs"
+ ],
+ "diags": []
+}

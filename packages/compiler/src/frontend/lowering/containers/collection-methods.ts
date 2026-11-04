@@ -1,3 +1,4 @@
+import { bindTypedReceiver, typedReceiverFunction } from "../receiver-binding.js";
 import { keyedHelperName } from "../stable-names.js";
 import { primitiveElement } from "../array-values.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -509,9 +510,12 @@ export function lowerMapForEachCall(
     });
   }
   if (contextualTs !== null) lowerer.implicitParamTypes = contextualTs;
+  const typedReceiver = forEachTypedReceiver(lowerer, call);
   let fnArg: IrExpr;
   try {
-    fnArg = lowerer.lowerExpr(argNode);
+    fnArg = typedReceiver
+      ? bindTypedReceiver(lowerer, typedReceiver, call.arguments.nodes[1]!)
+      : lowerer.lowerExpr(argNode);
   } finally {
     lowerer.implicitParamTypes = previousImplicit;
     for (const { symbol, type } of previousRuntime) {
@@ -533,7 +537,7 @@ export function lowerMapForEachCall(
   // JS's forEach does.
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const thisArg = collectionForEachThisArg(lowerer, call);
+  const thisArg = typedReceiver ? null : collectionForEachThisArg(lowerer, call);
   const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
@@ -706,7 +710,10 @@ export function lowerSetForEachCall(
   const loc = locOf(call);
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
-  const fnArg = lowerer.lowerExpr(argNode);
+  const typedReceiver = forEachTypedReceiver(lowerer, call);
+  const fnArg = typedReceiver
+    ? bindTypedReceiver(lowerer, typedReceiver, call.arguments.nodes[1]!)
+    : lowerer.lowerExpr(argNode);
   if (
     fnArg.type.kind !== "func" ||
     fnArg.type.params.length > 2 ||
@@ -716,7 +723,7 @@ export function lowerSetForEachCall(
   }
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const thisArg = collectionForEachThisArg(lowerer, call);
+  const thisArg = typedReceiver ? null : collectionForEachThisArg(lowerer, call);
   const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
@@ -1586,6 +1593,19 @@ function buildMapSeedFn(
     body,
     loc,
   };
+}
+
+/** The callback of `forEach(callback, thisArg)` when it names a function
+ * whose typed `this` is its first parameter: the receiver binds into a
+ * closure (receiver-binding.ts) instead of riding the helper's thisArg. */
+function forEachTypedReceiver(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): ReturnType<typeof typedReceiverFunction> {
+  const [callback, thisArg] = call.arguments.nodes;
+  return callback !== undefined && thisArg !== undefined
+    ? typedReceiverFunction(lowerer, callback)
+    : null;
 }
 
 /** The optional thisArg of a `forEach(callback, thisArg)` call, lowered as

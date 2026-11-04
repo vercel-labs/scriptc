@@ -3,6 +3,7 @@ import { isJsIteratorGlobal, iteratorConstructorExpr } from "../iterator-prototy
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
 import { hostGlobalCallTarget, hostGlobalNameOfIdentifier } from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
+import { typedReceiverFunction } from "../receiver-binding.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
@@ -544,6 +545,15 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   }
   const sig = lowerer.fnSigOf(expr);
   if (sig && lowerer.isTopLevelFnSymbol(expr)) {
+    // A typed `this` is the function's first parameter, which only callers
+    // that supply the receiver pass (receiver-binding.ts); a function gets
+    // one only when those are its only uses (typedThisParameter).
+    if (typedReceiverFunction(lowerer, expr) !== null)
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "functions with a typed 'this' parameter as values (call them with .call(receiver, ...), or pass them with a thisArg to forEach)",
+      );
     // A declared function used as a value: a zero-capture closure. The
     // backend interns one per function so `f === f` holds (JS identity).
     // The value's type is the completed ABI signature; optional/default

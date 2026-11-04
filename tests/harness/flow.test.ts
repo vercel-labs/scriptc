@@ -308,3 +308,13 @@ export function make(): Point {
   const ir = await lowered(join(dir, "main.mjs"));
   expect(ir.functions.filter((f) => f.name.startsWith("%new.")).map((f) => f.name)).toEqual([]);
 });
+
+test("a function with a typed `this` takes it as its first parameter when every use binds the receiver", async () => {
+  const ir = await lowered(join(flowRoot, "receivers", "main.mjs"));
+  const params = (name: string): string[] =>
+    ir.functions.find((f) => f.sourceName === name)!.params.map((p) => `${p.name}:${p.type.kind}`);
+  expect(params("finishTask")).toEqual(["this:record", "task:record"]);
+  expect(params("noteTask")).toEqual(["this:record", "task:record", "id:f64"]);
+  // Exported under another name, so its uses there are not all seen.
+  expect(params("markTask")).toEqual(["task:record"]);
+});

@@ -1057,6 +1057,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
               type: BOOL,
               loc,
             };
+            // The spread sits among the members: its condition runs where
+            // the member does, before a stdio expression that follows it.
+            optionOrder.push("detached");
             plain = false;
             continue;
           }
